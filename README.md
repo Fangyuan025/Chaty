@@ -14,13 +14,13 @@ Tauri 2 · React + TypeScript · Rust · llama.cpp
 
 ---
 
-## ✨ Features
+## Features
 
 - **Local GGUF inference** — point it at any `.gguf` and chat. Tokenizer and chat template come straight from the file, so a single file just works. Powered by `llama-cpp-2` (llama.cpp).
 - **Fast multi‑turn** — a persistent context per model with KV‑cache prefix reuse, so a long conversation doesn't re‑process its whole history every turn.
 - **Model hot‑swap** — drop `.gguf` files into the install's `models/` folder and switch between them from the title bar; the last model auto‑loads on launch.
 - **Polished chat UI** — neutral ChatGPT‑style design, streaming tokens, a foldable `<think>` reasoning panel, a thinking‑mode toggle, KaTeX math, GFM tables, syntax‑highlighted code blocks with per‑block copy, and an **in‑app HTML preview** for HTML the model writes.
-- **🎙️ Voice (English)** — speak to it and hear it back, running entirely on **CPU** (Whisper‑base.en + Kokoro‑82M via ONNX Runtime) so it never touches the LLM's VRAM:
+- **Voice (English)** — speak to it and hear it back, running entirely on **CPU** (Whisper‑base.en + Kokoro‑82M via ONNX Runtime) so it never touches the LLM's VRAM:
   - Voice input with automatic **silence detection** (speak, pause, it sends).
   - **Streaming read‑aloud** — replies are synthesized and played sentence‑by‑sentence as they generate.
   - **Live mode** — a hands‑free, Gemini‑style continuous conversation with an animated orb that reacts to the audio.
@@ -32,11 +32,11 @@ Tauri 2 · React + TypeScript · Rust · llama.cpp
 
 > Everything is offline‑first. The only network use is the optional web search and the one‑time download of the voice models.
 
-## 📦 Install (Windows)
+## Install (Windows)
 
 Grab `Chaty_x.y.z_x64-setup.exe` from the [**Releases**](../../releases) page and run it. It installs per‑user (no admin needed). The voice module is bundled; the voice **models** (~0.5 GB) download automatically the first time you use a voice feature.
 
-## 🛠️ Build from source
+## Build from source
 
 See **[BUILD.md](BUILD.md)**. In short, on Windows:
 
@@ -52,7 +52,7 @@ To produce the installer:
 npm run tauri build
 ```
 
-## 🧩 Tech stack
+## Tech stack
 
 | Layer | What |
 |-------|------|
@@ -63,7 +63,7 @@ npm run tauri build
 | Storage | SQLite (`rusqlite`) for conversations |
 | Web/Docs | `reqwest` + `scraper`, `pdf-extract`, `ocrs` (Latin OCR) |
 
-## 📝 Notes
+## Notes
 
 - CPU inference for now (`n_gpu_layers = 0`); GPU offload is planned.
 - Voice is **English‑only** (the base.en / Kokoro‑en models). Voice controls are hidden when the UI language is set to Chinese.
