@@ -50,11 +50,22 @@ fn llama_backend() -> Result<&'static LlamaBackend> {
 
 /// Quickly read a model's transformer-layer count via a vocab-only load (no
 /// weights), used to size the GPU offload before the real load.
+///
+/// NOTE: `n_layer()` returns 0 in vocab-only mode (the architecture isn't
+/// built), so we read `<arch>.block_count` from the GGUF metadata, which *is*
+/// available.
 fn probe_n_layer(backend: &LlamaBackend, path: &str) -> Option<u32> {
     let params = LlamaModelParams::default().with_vocab_only(true);
-    LlamaModel::load_from_file(backend, path, &params)
+    let model = LlamaModel::load_from_file(backend, path, &params).ok()?;
+    let arch = model.meta_val_str("general.architecture").ok()?;
+    model
+        .meta_val_str(&format!("{arch}.block_count"))
         .ok()
-        .map(|m| m.n_layer())
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .or_else(|| match model.n_layer() {
+            0 => None,
+            n => Some(n),
+        })
 }
 
 /// A unit of work sent to a model's worker thread.
@@ -93,7 +104,9 @@ impl LlamaEngine {
             _ => match &gpu {        // auto (None / negative sentinel)
                 Some(g) => match probe_n_layer(backend, path) {
                     Some(nl) => crate::gpu::auto_gpu_layers(Path::new(path), nl, g.vram_mb),
-                    None => 0,
+                    // Layer count unknown: try to offload everything; the
+                    // retry-halving below backs off if it doesn't fit.
+                    None => 999,
                 },
                 None => 0,
             },
@@ -119,7 +132,9 @@ impl LlamaEngine {
                 }
             }
         };
-        let gpu_layers = layers;
+        // `layers` may be n_layer+1 (output layer) or 999 (offload-all); clamp
+        // the reported count to the block count so the panel reads e.g. "28/28".
+        let gpu_layers = layers.min(model.n_layer() as i32);
         let gpu_name = if gpu_layers > 0 {
             gpu.as_ref().map(|g| g.name.clone())
         } else {
