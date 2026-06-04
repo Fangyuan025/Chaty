@@ -48,6 +48,15 @@ fn llama_backend() -> Result<&'static LlamaBackend> {
     Ok(LLAMA_BACKEND.get().unwrap())
 }
 
+/// Quickly read a model's transformer-layer count via a vocab-only load (no
+/// weights), used to size the GPU offload before the real load.
+fn probe_n_layer(backend: &LlamaBackend, path: &str) -> Option<u32> {
+    let params = LlamaModelParams::default().with_vocab_only(true);
+    LlamaModel::load_from_file(backend, path, &params)
+        .ok()
+        .map(|m| m.n_layer())
+}
+
 /// A unit of work sent to a model's worker thread.
 enum Job {
     Generate {
@@ -67,16 +76,55 @@ pub struct LlamaEngine {
 
 impl LlamaEngine {
     /// Load a GGUF file and spin up its worker thread. Blocking; run off-thread.
-    pub fn load(path: &str) -> Result<(Self, ModelInfo)> {
+    ///
+    /// `gpu_pref`: `None`/negative = auto‑tune by VRAM, `Some(0)` = force CPU,
+    /// `Some(n>0)` = offload exactly `n` layers.
+    pub fn load(path: &str, gpu_pref: Option<i32>) -> Result<(Self, ModelInfo)> {
         let backend = llama_backend()?;
         if !Path::new(path).exists() {
             bail!("model file not found: {path}");
         }
 
-        // CPU build for now (GPU offload + auto-tuning comes later).
-        let model_params = LlamaModelParams::default().with_n_gpu_layers(0);
-        let model = LlamaModel::load_from_file(backend, path, &model_params)
-            .with_context(|| format!("failed to load GGUF model: {path}"))?;
+        // ---- GPU auto-tuning: offload as many layers as fit in VRAM ----
+        let gpu = crate::gpu::detect_gpu();
+        let requested = match gpu_pref {
+            Some(0) => 0,            // force CPU
+            Some(n) if n > 0 => n,   // manual layer count
+            _ => match &gpu {        // auto (None / negative sentinel)
+                Some(g) => match probe_n_layer(backend, path) {
+                    Some(nl) => crate::gpu::auto_gpu_layers(Path::new(path), nl, g.vram_mb),
+                    None => 0,
+                },
+                None => 0,
+            },
+        };
+
+        // Load, backing off if the GPU can't fit the requested layers, so an
+        // over-estimate degrades gracefully instead of crashing.
+        let mut layers = requested.max(0);
+        let model = loop {
+            let params = LlamaModelParams::default().with_n_gpu_layers(layers as u32);
+            match LlamaModel::load_from_file(backend, path, &params) {
+                Ok(m) => break m,
+                Err(e) => {
+                    if layers > 0 {
+                        let next = if layers > 8 { layers / 2 } else { 0 };
+                        eprintln!(
+                            "GPU load failed at {layers} layers ({e:#}); retrying with {next}"
+                        );
+                        layers = next;
+                        continue;
+                    }
+                    return Err(e).with_context(|| format!("failed to load GGUF model: {path}"));
+                }
+            }
+        };
+        let gpu_layers = layers;
+        let gpu_name = if gpu_layers > 0 {
+            gpu.as_ref().map(|g| g.name.clone())
+        } else {
+            None
+        };
 
         let n_ctx_train = model.n_ctx_train();
         let n_ctx = n_ctx_train.clamp(512, 8192);
@@ -99,6 +147,9 @@ impl LlamaEngine {
             params_b: Some(model.n_params() as f64 / 1e9),
             n_ctx_train: Some(n_ctx_train),
             n_ctx: Some(n_ctx),
+            n_layer: Some(model.n_layer()),
+            gpu_layers,
+            gpu_name,
         };
 
         let model = Arc::new(model);

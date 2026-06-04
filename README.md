@@ -17,6 +17,7 @@ Tauri 2 · React + TypeScript · Rust · llama.cpp
 ## Features
 
 - **Local GGUF inference** — point it at any `.gguf` and chat. Tokenizer and chat template come straight from the file, so a single file just works. Powered by `llama-cpp-2` (llama.cpp).
+- **GPU acceleration (auto‑tuned)** — cross‑vendor **Vulkan** offload (NVIDIA / AMD / Intel). It detects your VRAM and automatically offloads as many layers as fit, backing off gracefully and falling back to CPU when there's no GPU. A **hardware panel** (top‑right) shows your CPU / RAM / GPU and the current model's offload.
 - **Fast multi‑turn** — a persistent context per model with KV‑cache prefix reuse, so a long conversation doesn't re‑process its whole history every turn.
 - **Model hot‑swap** — drop `.gguf` files into the install's `models/` folder and switch between them from the title bar; the last model auto‑loads on launch.
 - **Polished chat UI** — neutral ChatGPT‑style design, streaming tokens, a foldable `<think>` reasoning panel, a thinking‑mode toggle, KaTeX math, GFM tables, syntax‑highlighted code blocks with per‑block copy, and an **in‑app HTML preview** for HTML the model writes.
@@ -65,7 +66,7 @@ npm run tauri build
 
 ## Notes
 
-- CPU inference for now (`n_gpu_layers = 0`); GPU offload is planned.
+- GPU offload uses **Vulkan** and is auto‑tuned from your VRAM; set it to Auto / Off / a manual layer count in Settings. With no usable GPU it runs on CPU.
 - Voice is **English‑only** (the base.en / Kokoro‑en models). Voice controls are hidden when the UI language is set to Chinese.
 
 ## License

@@ -98,6 +98,12 @@ pub struct ModelInfo {
     pub n_ctx_train: Option<u32>,
     /// Context length we actually loaded it with.
     pub n_ctx: Option<u32>,
+    /// Total transformer layers in the model.
+    pub n_layer: Option<u32>,
+    /// Layers actually offloaded to the GPU (0 = pure CPU).
+    pub gpu_layers: i32,
+    /// Name of the GPU used for offload, if any.
+    pub gpu_name: Option<String>,
 }
 
 #[async_trait]

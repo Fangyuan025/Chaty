@@ -18,11 +18,16 @@ use crate::state::AppState;
 /// Load a GGUF file and make it the active engine. Heavy and blocking, so the
 /// actual load runs on a blocking thread.
 #[tauri::command]
-pub async fn load_model(state: State<'_, AppState>, path: String) -> Result<ModelInfo, String> {
-    let (engine, mut info) = tokio::task::spawn_blocking(move || LlamaEngine::load(&path))
-        .await
-        .map_err(|e| format!("加载任务异常: {e}"))?
-        .map_err(|e| format!("{e:#}"))?;
+pub async fn load_model(
+    state: State<'_, AppState>,
+    path: String,
+    gpu_layers: Option<i32>,
+) -> Result<ModelInfo, String> {
+    let (engine, mut info) =
+        tokio::task::spawn_blocking(move || LlamaEngine::load(&path, gpu_layers))
+            .await
+            .map_err(|e| format!("加载任务异常: {e}"))?
+            .map_err(|e| format!("{e:#}"))?;
 
     let backend: Arc<dyn InferenceBackend> = Arc::new(engine);
     info.backend = backend.name().to_string();
@@ -35,6 +40,12 @@ pub async fn load_model(state: State<'_, AppState>, path: String) -> Result<Mode
 #[tauri::command]
 pub async fn get_model(state: State<'_, AppState>) -> Result<Option<ModelInfo>, String> {
     Ok(state.model.read().await.clone())
+}
+
+/// CPU / RAM / GPU info + the compiled GPU backend, for the hardware panel.
+#[tauri::command]
+pub fn get_hardware_info() -> crate::gpu::HardwareInfo {
+    crate::gpu::hardware()
 }
 
 #[derive(Serialize)]

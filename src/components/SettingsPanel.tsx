@@ -5,6 +5,8 @@ export interface GenSettings {
   temperature: number;
   topP: number;
   maxTokens: number;
+  /** GPU offload: -1 = auto‑tune by VRAM, 0 = CPU only, >0 = that many layers. */
+  gpuLayers: number;
 }
 
 export const defaultSettings: GenSettings = {
@@ -12,6 +14,7 @@ export const defaultSettings: GenSettings = {
   temperature: 0.7,
   topP: 0.95,
   maxTokens: 1024,
+  gpuLayers: -1,
 };
 
 export function SettingsPanel({
@@ -104,6 +107,49 @@ export function SettingsPanel({
             onChange={(e) => set("maxTokens", Number(e.target.value))}
           />
         </label>
+
+        <label className="field">
+          <span>{t("gpuAccel")}</span>
+          <div className="lang-switch">
+            <button
+              type="button"
+              className={value.gpuLayers < 0 ? "active" : ""}
+              onClick={() => set("gpuLayers", -1)}
+            >
+              {t("gpuAuto")}
+            </button>
+            <button
+              type="button"
+              className={value.gpuLayers === 0 ? "active" : ""}
+              onClick={() => set("gpuLayers", 0)}
+            >
+              {t("gpuOff")}
+            </button>
+            <button
+              type="button"
+              className={value.gpuLayers > 0 ? "active" : ""}
+              onClick={() => set("gpuLayers", value.gpuLayers > 0 ? value.gpuLayers : 20)}
+            >
+              {t("gpuCustom")}
+            </button>
+          </div>
+        </label>
+        {value.gpuLayers > 0 && (
+          <label className="field">
+            <span>
+              {t("gpuLayersLabel")} <b>{value.gpuLayers}</b>
+            </span>
+            <input
+              type="range"
+              min={1}
+              max={80}
+              step={1}
+              value={value.gpuLayers}
+              onChange={(e) => set("gpuLayers", Number(e.target.value))}
+            />
+          </label>
+        )}
+        <div className="settings-hint">{t("gpuHint")}</div>
 
         <button className="settings-reset" onClick={() => onChange(defaultSettings)}>
           {t("resetDefaults")}

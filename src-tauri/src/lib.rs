@@ -1,5 +1,6 @@
 pub mod attach;
 mod commands;
+pub mod gpu;
 mod inference;
 pub mod ocr;
 pub mod search;
@@ -122,6 +123,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::load_model,
             commands::get_model,
+            commands::get_hardware_info,
             commands::list_models,
             commands::set_tray_language,
             commands::generate,

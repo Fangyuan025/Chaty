@@ -32,6 +32,27 @@ export interface ModelInfo {
   paramsB?: number | null;
   nCtxTrain?: number | null;
   nCtx?: number | null;
+  nLayer?: number | null;
+  gpuLayers: number;
+  gpuName?: string | null;
+}
+
+export interface GpuInfo {
+  name: string;
+  vramMb: number;
+}
+
+export interface HardwareInfo {
+  cpu: string;
+  cpuThreads: number;
+  ramMb: number;
+  gpu?: GpuInfo | null;
+  /** Compiled GPU backend for the LLM ("Vulkan" | "CPU"). */
+  gpuBackend: string;
+}
+
+export async function getHardwareInfo(): Promise<HardwareInfo> {
+  return await invoke<HardwareInfo>("get_hardware_info");
 }
 
 export interface GenStats {
@@ -56,8 +77,9 @@ export async function pickModelFile(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-export async function loadModel(path: string): Promise<ModelInfo> {
-  return await invoke<ModelInfo>("load_model", { path });
+/** Load a GGUF. `gpuLayers`: omit/-1 = auto‑tune by VRAM, 0 = CPU, n = n layers. */
+export async function loadModel(path: string, gpuLayers?: number): Promise<ModelInfo> {
+  return await invoke<ModelInfo>("load_model", { path, gpuLayers });
 }
 
 export async function getModel(): Promise<ModelInfo | null> {

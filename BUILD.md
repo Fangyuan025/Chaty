@@ -10,8 +10,13 @@ local GGUF inference.
   (provides `cl`, `cmake`, the Windows SDK)
 - **libclang** for `bindgen` (used by `llama-cpp-sys-2`). Any LLVM/libclang works;
   set `LIBCLANG_PATH` to the folder containing `libclang.dll`.
+- **Vulkan SDK** (LunarG) for the GPU build — provides `glslc` + `vulkan-1.lib`.
+  Install from <https://vulkan.lunarg.com/sdk/home> (needs admin). `dev.ps1`
+  auto‑detects it under `C:\VulkanSDK`. For a **CPU‑only** build that doesn't
+  need the Vulkan SDK, pass `--no-default-features` to cargo / tauri.
 
-`cl`, `cmake`, and `libclang` usually aren't on `PATH` — `dev.ps1` wires them up.
+`cl`, `cmake`, `libclang`, and the Vulkan SDK usually aren't on `PATH` —
+`dev.ps1` wires them up.
 
 ## Run (dev)
 
@@ -47,6 +52,10 @@ src-tauri/src/
 
 ## Notes
 
-- CPU build for now (`n_gpu_layers = 0`). GPU offload + hardware auto-tuning are planned.
+- **GPU offload** uses the cross‑vendor **Vulkan** backend (NVIDIA / AMD / Intel).
+  `n_gpu_layers` is **auto‑tuned** from detected VRAM (DXGI); the loader backs off
+  to fewer layers if a GPU allocation fails, and falls back to CPU when there's no
+  usable GPU. Override it in Settings → GPU acceleration. The hardware panel
+  (top‑right) shows CPU/RAM/GPU and the current model's offload.
 - The chat prompt uses the GGUF's **embedded chat template**, so a single `.gguf`
   file is all that's needed — no separate tokenizer.

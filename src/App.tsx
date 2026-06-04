@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextMenu } from "./components/ContextMenu";
+import { HardwarePanel } from "./components/HardwarePanel";
 import { LiveMode } from "./components/LiveMode";
 import { WindowControls } from "./components/WindowControls";
 import { useI18n, type Lang, type TKey } from "./lib/i18n";
@@ -135,6 +136,7 @@ export default function App() {
   const [loadingModel, setLoadingModel] = useState(false);
   const [settings, setSettings] = useState<GenSettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
+  const [showHardware, setShowHardware] = useState(false);
   const [webEnabled, setWebEnabled] = useState(false);
   const [thinkEnabled, setThinkEnabled] = useState(() => {
     try {
@@ -177,7 +179,7 @@ export default function App() {
         if (!target) return;
         setLoadingModel(true);
         try {
-          const info = await loadModel(target);
+          const info = await loadModel(target, settings.gpuLayers);
           setModel(info);
           localStorage.setItem(LAST_MODEL_KEY, info.path);
         } catch {
@@ -348,7 +350,7 @@ export default function App() {
     if (busy || model?.path === path) return;
     setLoadingModel(true);
     try {
-      const info = await loadModel(path);
+      const info = await loadModel(path, settings.gpuLayers);
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
     } catch (e) {
@@ -364,7 +366,7 @@ export default function App() {
       const path = await pickModelFile();
       if (!path) return;
       setLoadingModel(true);
-      const info = await loadModel(path);
+      const info = await loadModel(path, settings.gpuLayers);
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
       void refreshModels();
@@ -823,6 +825,33 @@ export default function App() {
                 {t("loadFromFile")}
               </button>
             </div>
+          )}
+        </div>
+
+        <div className="settings-wrap">
+          <button
+            className={`icon-btn ${showHardware ? "active" : ""}`}
+            onClick={() => setShowHardware((v) => !v)}
+            title={t("hwTitleBtn")}
+          >
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              aria-hidden="true"
+            >
+              <rect x="7" y="7" width="10" height="10" rx="1.5" />
+              <path
+                d="M10 4v2M14 4v2M10 18v2M14 18v2M4 10h2M4 14h2M18 10h2M18 14h2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          {showHardware && (
+            <HardwarePanel model={model} onClose={() => setShowHardware(false)} />
           )}
         </div>
 
