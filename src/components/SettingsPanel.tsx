@@ -1,0 +1,114 @@
+import { useI18n } from "../lib/i18n";
+
+export interface GenSettings {
+  systemPrompt: string;
+  temperature: number;
+  topP: number;
+  maxTokens: number;
+}
+
+export const defaultSettings: GenSettings = {
+  systemPrompt: "",
+  temperature: 0.7,
+  topP: 0.95,
+  maxTokens: 1024,
+};
+
+export function SettingsPanel({
+  value,
+  onChange,
+  onClose,
+}: {
+  value: GenSettings;
+  onChange: (next: GenSettings) => void;
+  onClose: () => void;
+}) {
+  const { t, lang, setLang } = useI18n();
+  const set = <K extends keyof GenSettings>(key: K, v: GenSettings[K]) =>
+    onChange({ ...value, [key]: v });
+
+  return (
+    <>
+      <div className="popover-backdrop" onClick={onClose} />
+      <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="settings-title">{t("settingsTitle")}</div>
+
+        <label className="field">
+          <span>{t("language")}</span>
+          <div className="lang-switch">
+            <button
+              type="button"
+              className={lang === "zh" ? "active" : ""}
+              onClick={() => setLang("zh")}
+            >
+              中文
+            </button>
+            <button
+              type="button"
+              className={lang === "en" ? "active" : ""}
+              onClick={() => setLang("en")}
+            >
+              English
+            </button>
+          </div>
+        </label>
+
+        <label className="field">
+          <span>{t("systemPrompt")}</span>
+          <textarea
+            rows={3}
+            placeholder={t("systemPromptPh")}
+            value={value.systemPrompt}
+            onChange={(e) => set("systemPrompt", e.target.value)}
+          />
+        </label>
+
+        <label className="field">
+          <span>
+            {t("temperature")} <b>{value.temperature.toFixed(2)}</b>
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={1.5}
+            step={0.05}
+            value={value.temperature}
+            onChange={(e) => set("temperature", Number(e.target.value))}
+          />
+        </label>
+
+        <label className="field">
+          <span>
+            Top-P <b>{value.topP.toFixed(2)}</b>
+          </span>
+          <input
+            type="range"
+            min={0.1}
+            max={1}
+            step={0.01}
+            value={value.topP}
+            onChange={(e) => set("topP", Number(e.target.value))}
+          />
+        </label>
+
+        <label className="field">
+          <span>
+            {t("maxTokens")} <b>{value.maxTokens}</b>
+          </span>
+          <input
+            type="range"
+            min={128}
+            max={4096}
+            step={128}
+            value={value.maxTokens}
+            onChange={(e) => set("maxTokens", Number(e.target.value))}
+          />
+        </label>
+
+        <button className="settings-reset" onClick={() => onChange(defaultSettings)}>
+          {t("resetDefaults")}
+        </button>
+      </div>
+    </>
+  );
+}

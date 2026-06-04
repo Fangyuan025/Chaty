@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Chaty",
+  "version": "0.1.0",
+  "identifier": "com.chaty.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Chaty",
+        "width": 1040,
+        "height": 720,
+        "minWidth": 720,
+        "minHeight": 480,
+        "decorations": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "libs/onnxruntime.dll": "onnxruntime.dll",
+      "libs/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll",
+      "libs/sherpa-onnx-c-api.dll": "sherpa-onnx-c-api.dll",
+      "libs/sherpa-onnx-cxx-api.dll": "sherpa-onnx-cxx-api.dll",
+      "libs/cargs.dll": "cargs.dll"
+    },
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp",
+        "installMode": "currentUser",
+        "languages": ["English"]
+      }
+    }
+  }
+}
