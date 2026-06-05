@@ -34,11 +34,14 @@ export function stripEmoji(s: string): string {
   return s.replace(EMOJI_RE, "");
 }
 
-/** Reduce assistant text to something natural to read aloud (TTS). */
+/** Reduce assistant text to something natural to read aloud (TTS). Flattens
+ *  any lists the model produced into flowing prose. */
 export function forSpeech(text: string): string {
   return stripEmoji(stripThink(text))
     .replace(/```[\s\S]*?```/g, ". ")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    // Drop line-leading bullet / numbered-list markers so lists read as prose.
+    .replace(/^[ \t]*(?:[-*•‣◦·]|\d+[.)])[ \t]+/gm, "")
     .replace(/[*_`#>~|]/g, "")
     .replace(/\s+/g, " ")
     .trim()

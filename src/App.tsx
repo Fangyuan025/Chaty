@@ -1204,7 +1204,7 @@ export default function App() {
           preamble={[
             t("todayNote", { date: formatDate(lang) }),
             settings.systemPrompt.trim(),
-            "You are a friendly voice assistant. Reply in brief, natural spoken English — usually 1 to 3 sentences. Do not use markdown, lists, code blocks, or emoji.",
+            "You are a voice assistant in a live, spoken conversation. Talk the way people actually speak out loud: relaxed, warm, and flowing, using contractions. Keep replies short — usually one to three sentences. Absolutely NO bullet points, numbered lists, headings, markdown, code, or emoji. If you would normally list things, weave them into a natural sentence instead (say \"you could try A, B, or C\" rather than listing them). Just talk naturally, like a friend on the phone.",
           ]
             .filter(Boolean)
             .join("\n\n")}
