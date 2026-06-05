@@ -34,16 +34,26 @@ export function stripEmoji(s: string): string {
   return s.replace(EMOJI_RE, "");
 }
 
+// Common LLM "closer" filler that sounds robotic when spoken aloud.
+const OFFER = String.raw`(?:and |so |well |okay,? )?(?:please )?(?:just )?(?:let me know\b|feel free\b|don'?t hesitate\b|hope (?:this|that|it) helps\b|is there anything else\b)[^.!?]*[.!?"')\]]*`;
+const TRAILING_OFFER_MID = new RegExp(String.raw`([.!?])\s+${OFFER}\s*$`, "i");
+const TRAILING_OFFER_ALL = new RegExp(String.raw`^${OFFER}\s*$`, "i");
+
+/** Drop a trailing "let me know if…/feel free to…/hope this helps" closer. */
+export function dropTrailingOffer(s: string): string {
+  return s.replace(TRAILING_OFFER_MID, "$1").replace(TRAILING_OFFER_ALL, "").trim();
+}
+
 /** Reduce assistant text to something natural to read aloud (TTS). Flattens
- *  any lists the model produced into flowing prose. */
+ *  any lists the model produced into flowing prose and drops robotic closers. */
 export function forSpeech(text: string): string {
-  return stripEmoji(stripThink(text))
+  const cleaned = stripEmoji(stripThink(text))
     .replace(/```[\s\S]*?```/g, ". ")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     // Drop line-leading bullet / numbered-list markers so lists read as prose.
     .replace(/^[ \t]*(?:[-*•‣◦·]|\d+[.)])[ \t]+/gm, "")
     .replace(/[*_`#>~|]/g, "")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 1200);
+    .trim();
+  return dropTrailingOffer(cleaned).slice(0, 1200);
 }
