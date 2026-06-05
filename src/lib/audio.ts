@@ -66,7 +66,7 @@ export async function startRecording(opts?: RecordOptions): Promise<Recorder> {
     vadTimer = window.setInterval(() => {
       const level = readLevel(analyser, buf);
       const now = performance.now();
-      if (level > 0.035) {
+      if (level > 0.05) {
         speechStarted = true;
         lastVoice = now;
       }

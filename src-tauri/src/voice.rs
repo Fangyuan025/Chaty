@@ -127,6 +127,38 @@ fn tts_engine(dir: &Path) -> Result<&'static Mutex<KokoroTts>> {
     Ok(TTS.get().unwrap())
 }
 
+/// Strip Whisper's non-speech annotations for noise — `(buzzing)`, `[BLANK_AUDIO]`,
+/// `*wind*`, `（音乐）` etc. If nothing meaningful remains, returns an empty string
+/// so the caller ignores it instead of "transcribing" the room tone.
+fn clean_transcript(s: &str) -> String {
+    let mut out = String::new();
+    let mut paren = 0i32;
+    let mut brack = 0i32;
+    let mut star = false;
+    for c in s.chars() {
+        match c {
+            '(' | '（' | '〔' => paren += 1,
+            ')' | '）' | '〕' => paren = (paren - 1).max(0),
+            '[' | '【' | '［' => brack += 1,
+            ']' | '】' | '］' => brack = (brack - 1).max(0),
+            '*' => star = !star, // drop *...* asides
+            _ if paren == 0 && brack == 0 && !star => out.push(c),
+            _ => {}
+        }
+    }
+    let cleaned: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Treat punctuation-only / single-letter leftovers as nothing.
+    let meaningful = cleaned
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .count();
+    if meaningful <= 1 {
+        String::new()
+    } else {
+        cleaned
+    }
+}
+
 /// Transcribe mono audio to text (Whisper). Resamples to 16 kHz as needed.
 pub async fn transcribe(models_dir: PathBuf, samples: Vec<f32>, sample_rate: u32) -> Result<String> {
     let dir = ensure_extracted(&models_dir, WHISPER_URL, WHISPER_DIR).await?;
@@ -134,7 +166,8 @@ pub async fn transcribe(models_dir: PathBuf, samples: Vec<f32>, sample_rate: u32
         let engine = stt_engine(&dir)?;
         let audio = resample_to_16k(&samples, sample_rate);
         let mut rec = engine.lock().map_err(|_| anyhow!("STT lock poisoned"))?;
-        Ok(rec.transcribe(16000, &audio).text.trim().to_string())
+        let raw = rec.transcribe(16000, &audio).text;
+        Ok(clean_transcript(raw.trim()))
     })
     .await?
 }

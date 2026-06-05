@@ -21,6 +21,7 @@ Tauri 2 · React + TypeScript · Rust · llama.cpp
 - **Fast multi‑turn** — a persistent context per model with KV‑cache prefix reuse, so a long conversation doesn't re‑process its whole history every turn.
 - **Model hot‑swap** — drop `.gguf` files into the install's `models/` folder and switch between them from the title bar; the last model auto‑loads on launch.
 - **Polished chat UI** — neutral ChatGPT‑style design, streaming tokens, a foldable `<think>` reasoning panel, a thinking‑mode toggle, KaTeX math, GFM tables, syntax‑highlighted code blocks with per‑block copy, and an **in‑app HTML preview** for HTML the model writes.
+- **`/webdesign` mode** — type `/webdesign` to steer the model toward producing one polished, self‑contained HTML UI, then render it instantly with the in‑app preview.
 - **Voice (English)** — speak to it and hear it back, running entirely on **CPU** (Whisper‑base.en + Kokoro‑82M via ONNX Runtime) so it never touches the LLM's VRAM:
   - Voice input with automatic **silence detection** (speak, pause, it sends).
   - **Streaming read‑aloud** — replies are synthesized and played sentence‑by‑sentence as they generate.

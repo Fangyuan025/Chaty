@@ -1544,3 +1544,37 @@ body {
   background: var(--accent);
   transition: width 0.4s ease;
 }
+
+/* Web-design mode chip in the composer */
+.mode-bar {
+  display: flex;
+  padding: 0 4px 8px;
+}
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 11px;
+  font-size: 12.5px;
+  color: var(--accent);
+  background: rgba(25, 195, 125, 0.12);
+  border: 1px solid rgba(25, 195, 125, 0.35);
+  border-radius: 999px;
+}
+.mode-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.mode-chip-x:hover {
+  background: rgba(25, 195, 125, 0.2);
+}

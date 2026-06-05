@@ -93,6 +93,22 @@ const SUGGESTIONS_EN = [
   "Give me three ideas for a weekend getaway",
 ];
 
+/** System prompt for `/webdesign` mode — pushes the model to produce a single,
+ *  polished, self-contained HTML UI (pairs with the in-app HTML preview). */
+const WEBDESIGN_PROMPT = `You are an elite front-end designer and developer. The user will describe a UI or web page; you deliver ONE complete, self-contained HTML file that renders it beautifully.
+
+Hard requirements:
+- Output ONLY a single \`\`\`html code block containing a full document (<!doctype html> … </html>), with ALL CSS in a <style> tag and ALL JavaScript in a <script> tag. No external files and no build step (a Google Fonts <link> is allowed). It must run as-is when saved as one .html file.
+- No placeholders, no "TODO", no lorem ipsum — write real, specific, relevant content and copy.
+
+Design bar (make it look like a senior product designer built it, not a template):
+- Clear visual hierarchy, generous whitespace, a deliberate type scale, and a cohesive, restrained color palette. Avoid the generic purple-gradient "AI" look.
+- Polished details: consistent spacing, tasteful rounded corners, subtle shadows or hairline borders, and hover/focus states with smooth transitions.
+- Responsive (mobile-first) and accessible: semantic HTML, labels, strong contrast, keyboard-focusable controls.
+- Use a tasteful Google Font or clean system fonts, and inline SVG for icons.
+
+Put at most one short sentence before the code block; let the design speak for itself.`;
+
 function greetingKey(): TKey {
   const h = new Date().getHours();
   if (h < 6) return "greetNight";
@@ -143,6 +159,13 @@ export default function App() {
       return localStorage.getItem("chaty.think") !== "0";
     } catch {
       return true;
+    }
+  });
+  const [webDesign, setWebDesign] = useState(() => {
+    try {
+      return localStorage.getItem("chaty.webdesign") === "1";
+    } catch {
+      return false;
     }
   });
   const [searching, setSearching] = useState(false);
@@ -263,6 +286,14 @@ export default function App() {
       /* ignore */
     }
   }, [thinkEnabled]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("chaty.webdesign", webDesign ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [webDesign]);
 
   async function refreshConversations() {
     try {
@@ -454,6 +485,12 @@ export default function App() {
   async function handleSend(override?: string) {
     const text = (override ?? input).trim();
     if (!text || busy) return;
+    // Slash command: `/webdesign` toggles web-design mode (no message sent).
+    if (!override && /^\/webdesign\s*$/i.test(text)) {
+      setWebDesign((v) => !v);
+      setInput("");
+      return;
+    }
     if (!model) {
       await handleLoad();
       return;
@@ -550,6 +587,7 @@ export default function App() {
     const sys = settings.systemPrompt.trim();
     const sent: ChatMessage[] = [
       { role: "system", content: t("todayNote", { date: formatDate(lang) }) },
+      ...(webDesign ? [{ role: "system" as const, content: WEBDESIGN_PROMPT }] : []),
       ...(sys ? [{ role: "system" as const, content: sys }] : []),
       ...(attachment
         ? [
@@ -1020,6 +1058,24 @@ export default function App() {
                 {attachError && <span className="attach-error">{attachError}</span>}
               </div>
             )}
+            {webDesign && (
+              <div className="mode-bar">
+                <span className="mode-chip">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <rect x="3" y="4.5" width="18" height="15" rx="2" />
+                    <path d="M3 9h18" strokeLinecap="round" />
+                  </svg>
+                  {t("webDesignChip")}
+                  <button
+                    className="mode-chip-x"
+                    onClick={() => setWebDesign(false)}
+                    title={t("webDesignOff")}
+                  >
+                    ×
+                  </button>
+                </span>
+              </div>
+            )}
             <div className="input-row">
               <button
                 className="tool-toggle"
@@ -1083,6 +1139,25 @@ export default function App() {
                   />
                 </svg>
               </button>
+              <button
+                className={`tool-toggle ${webDesign ? "active" : ""}`}
+                title={webDesign ? t("webDesignOn") : t("webDesignOff")}
+                onClick={() => setWebDesign((v) => !v)}
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  aria-hidden="true"
+                >
+                  <rect x="3" y="4.5" width="18" height="15" rx="2" />
+                  <path d="M3 9h18" strokeLinecap="round" />
+                  <path d="M6 6.7h.01M8.4 6.7h.01" strokeLinecap="round" />
+                </svg>
+              </button>
               {lang === "en" && (
                 <div className="voice-wrap">
                   <button
@@ -1135,7 +1210,13 @@ export default function App() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={onKeyDown}
                 placeholder={
-                  model ? (webEnabled ? t("inputPhWeb") : t("inputPh")) : t("inputPhNoModel")
+                  !model
+                    ? t("inputPhNoModel")
+                    : webDesign
+                      ? t("inputPhDesign")
+                      : webEnabled
+                        ? t("inputPhWeb")
+                        : t("inputPh")
                 }
                 rows={1}
               />

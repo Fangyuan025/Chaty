@@ -1,6 +1,6 @@
 [package]
 name = "chaty"
-version = "0.2.3"
+version = "0.3.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -15,8 +15,8 @@ name = "chaty_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-# GPU offload via the Vulkan backend (cross‑vendor). On by default; build with
-# `--no-default-features` for a pure‑CPU build that doesn't need the Vulkan SDK.
+# GPU offload via the Vulkan backend (crossâ€‘vendor). On by default; build with
+# `--no-default-features` for a pureâ€‘CPU build that doesn't need the Vulkan SDK.
 default = ["gpu"]
 gpu = ["llama-cpp-2/vulkan"]
 
@@ -50,7 +50,7 @@ tar = "0.4"
 bzip2 = "0.4"
 base64 = "0.22"
 
-# GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers — cross-vendor on Windows.
+# GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers â€” cross-vendor on Windows.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
