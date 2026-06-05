@@ -124,6 +124,7 @@ pub fn run() {
             commands::load_model,
             commands::get_model,
             commands::get_hardware_info,
+            commands::get_gpu_usage,
             commands::list_models,
             commands::set_tray_language,
             commands::generate,

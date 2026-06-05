@@ -55,6 +55,15 @@ export async function getHardwareInfo(): Promise<HardwareInfo> {
   return await invoke<HardwareInfo>("get_hardware_info");
 }
 
+export interface GpuUsage {
+  usedMb: number;
+  totalMb: number;
+}
+
+export async function getGpuUsage(): Promise<GpuUsage | null> {
+  return await invoke<GpuUsage | null>("get_gpu_usage");
+}
+
 export interface GenStats {
   promptTokens: number;
   completionTokens: number;

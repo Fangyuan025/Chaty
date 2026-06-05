@@ -26,9 +26,17 @@ export function cutSentences(buf: string): [string, string] {
   return [buf.slice(0, m[0].length), buf.slice(m[0].length)];
 }
 
+// Emoji + pictographs + variation selectors / ZWJ / regional indicators.
+const EMOJI_RE = /[\p{Extended_Pictographic}\p{Regional_Indicator}\u{FE0F}\u{20E3}\u{200D}]/gu;
+
+/** Remove emoji/pictographs (TTS can't read them; live mode forbids them). */
+export function stripEmoji(s: string): string {
+  return s.replace(EMOJI_RE, "");
+}
+
 /** Reduce assistant text to something natural to read aloud (TTS). */
 export function forSpeech(text: string): string {
-  return stripThink(text)
+  return stripEmoji(stripThink(text))
     .replace(/```[\s\S]*?```/g, ". ")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/[*_`#>~|]/g, "")

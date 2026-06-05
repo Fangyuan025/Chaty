@@ -110,6 +110,7 @@ export const T = {
   hwCpu: { zh: "处理器", en: "CPU" },
   hwRam: { zh: "内存", en: "Memory" },
   hwGpu: { zh: "显卡", en: "GPU" },
+  hwVram: { zh: "显存占用", en: "VRAM usage" },
   hwBackend: { zh: "GPU 后端", en: "GPU backend" },
   hwAccel: { zh: "当前模型加速", en: "Current model" },
   hwNoGpu: { zh: "未检测到独立显卡", en: "No discrete GPU detected" },

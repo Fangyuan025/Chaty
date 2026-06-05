@@ -1204,7 +1204,7 @@ export default function App() {
           preamble={[
             t("todayNote", { date: formatDate(lang) }),
             settings.systemPrompt.trim(),
-            "You are a friendly voice assistant. Reply in brief, natural spoken English — usually 1 to 3 sentences. Do not use markdown, lists, or code blocks.",
+            "You are a friendly voice assistant. Reply in brief, natural spoken English — usually 1 to 3 sentences. Do not use markdown, lists, code blocks, or emoji.",
           ]
             .filter(Boolean)
             .join("\n\n")}

@@ -48,6 +48,12 @@ pub fn get_hardware_info() -> crate::gpu::HardwareInfo {
     crate::gpu::hardware()
 }
 
+/// Live VRAM usage of the primary GPU (polled by the hardware panel).
+#[tauri::command]
+pub fn get_gpu_usage() -> Option<crate::gpu::GpuUsage> {
+    crate::gpu::gpu_usage()
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelEntry {

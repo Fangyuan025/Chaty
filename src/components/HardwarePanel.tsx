@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { useI18n } from "../lib/i18n";
-import { getHardwareInfo, type HardwareInfo, type ModelInfo } from "../lib/ipc";
+import {
+  getGpuUsage,
+  getHardwareInfo,
+  type GpuUsage,
+  type HardwareInfo,
+  type ModelInfo,
+} from "../lib/ipc";
 
 /** Top-right popover showing the machine's CPU / RAM / GPU and the current
  *  model's GPU‑acceleration status. */
@@ -13,11 +19,29 @@ export function HardwarePanel({
 }) {
   const { t } = useI18n();
   const [hw, setHw] = useState<HardwareInfo | null>(null);
+  const [usage, setUsage] = useState<GpuUsage | null>(null);
 
   useEffect(() => {
     getHardwareInfo()
       .then(setHw)
       .catch(() => {});
+  }, []);
+
+  // Poll live VRAM usage while the panel is open.
+  useEffect(() => {
+    let alive = true;
+    const tick = () =>
+      getGpuUsage()
+        .then((u) => {
+          if (alive) setUsage(u);
+        })
+        .catch(() => {});
+    tick();
+    const id = setInterval(tick, 1500);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
   }, []);
 
   const accel = () => {
@@ -57,6 +81,24 @@ export function HardwarePanel({
                 {hw.gpu ? `${hw.gpu.name} · ${(hw.gpu.vramMb / 1024).toFixed(1)} GB` : t("hwNoGpu")}
               </span>
             </div>
+            {usage && usage.totalMb > 0 && (
+              <div className="hw-usage">
+                <div className="hw-usage-head">
+                  <span className="hw-k">{t("hwVram")}</span>
+                  <span className="hw-v">
+                    {(usage.usedMb / 1024).toFixed(1)} / {(usage.totalMb / 1024).toFixed(1)} GB
+                  </span>
+                </div>
+                <div className="hw-bar">
+                  <div
+                    className="hw-bar-fill"
+                    style={{
+                      width: `${Math.min(100, Math.round((usage.usedMb / usage.totalMb) * 100))}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
             <div className="hw-row">
               <span className="hw-k">{t("hwBackend")}</span>
               <span className="hw-v">{hw.gpuBackend}</span>

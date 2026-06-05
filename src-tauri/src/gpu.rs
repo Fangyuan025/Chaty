@@ -92,6 +92,61 @@ pub fn detect_gpu() -> Option<GpuInfo> {
     None
 }
 
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuUsage {
+    /// VRAM currently in use by all apps, in MB.
+    pub used_mb: u64,
+    /// Total dedicated VRAM, in MB.
+    pub total_mb: u64,
+}
+
+/// Live VRAM usage of the primary GPU (DXGI 1.4 `QueryVideoMemoryInfo`).
+#[cfg(windows)]
+pub fn gpu_usage() -> Option<GpuUsage> {
+    use windows::core::Interface;
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIAdapter3, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+        DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
+    };
+
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
+        let mut best: Option<(u64, IDXGIAdapter3)> = None;
+        let mut i = 0u32;
+        while let Ok(adapter) = factory.EnumAdapters1(i) {
+            i += 1;
+            let desc = match adapter.GetDesc1() {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0 {
+                continue;
+            }
+            let vram = desc.DedicatedVideoMemory as u64;
+            if let Ok(a3) = adapter.cast::<IDXGIAdapter3>() {
+                if best.as_ref().map_or(true, |(v, _)| vram > *v) {
+                    best = Some((vram, a3));
+                }
+            }
+        }
+        let (total, adapter) = best?;
+        let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+        adapter
+            .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
+            .ok()?;
+        Some(GpuUsage {
+            used_mb: info.CurrentUsage / (1024 * 1024),
+            total_mb: total / (1024 * 1024),
+        })
+    }
+}
+
+#[cfg(not(windows))]
+pub fn gpu_usage() -> Option<GpuUsage> {
+    None
+}
+
 /// How many layers (incl. the output layer) to offload to fill VRAM.
 ///
 /// `n_layer` is the model's transformer block count; `vram_mb` the GPU's total
