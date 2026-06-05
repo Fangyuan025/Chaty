@@ -27,6 +27,22 @@ npm install
 
 First run compiles llama.cpp from source (~3–4 min); afterwards it's cached.
 
+## Installer (Inno Setup)
+
+The release installer is a modern **Inno Setup** wizard (per-user, no admin;
+bundles the voice DLLs and auto-installs the WebView2 runtime if it's missing).
+Build it with the **Inno Setup Compiler** (`ISCC.exe`):
+
+```powershell
+.\dev.ps1                              # (env only), then:
+npm run tauri build -- --no-bundle     # builds chaty.exe + DLLs into the target dir
+ISCC /DAppVersion=0.3.1 /DSrcDir=C:\ct\release src-tauri\installer\Chaty.iss
+# → <SrcDir>\bundle\inno\Chaty_<ver>_x64-setup.exe
+```
+
+The script is `src-tauri/installer/Chaty.iss`. (Tauri's built-in NSIS target is
+no longer used.)
+
 ## Headless engine smoke test
 
 Verifies real inference without the GUI (load GGUF → chat template → stream):

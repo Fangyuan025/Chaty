@@ -1337,17 +1337,17 @@ body {
   cursor: default;
 }
 
-/* Voice up-menu (read-aloud + live) */
-.voice-wrap {
+/* Composer tools up-menu (attach / web / think / design / voice) */
+.tools-wrap {
   position: relative;
   display: flex;
 }
-.voice-menu {
+.tools-menu {
   position: absolute;
   bottom: calc(100% + 8px);
   left: 0;
   z-index: 70;
-  min-width: 196px;
+  min-width: 212px;
   padding: 5px;
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
@@ -1355,10 +1355,15 @@ body {
   box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.45);
   animation: ctxin 0.1s ease-out;
 }
-.voice-item {
+.tools-sep {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--border);
+}
+.tool-item {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   width: 100%;
   padding: 9px 10px;
   font-size: 13px;
@@ -1369,17 +1374,25 @@ body {
   text-align: left;
   cursor: pointer;
 }
-.voice-item:hover:not(:disabled) {
+.tool-item:hover:not(:disabled) {
   background: var(--surface);
 }
-.voice-item:disabled {
+.tool-item:disabled {
   opacity: 0.55;
   cursor: default;
 }
-.voice-item.on {
+.tool-item.on {
   color: var(--accent);
 }
-.vi-check {
+.ti-icon {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+}
+.ti-label {
+  flex: 1;
+}
+.ti-check {
   width: 14px;
   text-align: center;
   color: var(--accent);

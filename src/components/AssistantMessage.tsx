@@ -37,12 +37,42 @@ export function AssistantMessage({
   content,
   streaming,
   searching,
+  hideThinking,
 }: {
   content: string;
   streaming: boolean;
   searching?: boolean;
+  hideThinking?: boolean;
 }) {
   const { t } = useI18n();
+
+  // Thinking off: never use the reasoning panel — strip the whole <think> block
+  // and any stray tags so a buggy/empty panel can never appear.
+  if (hideThinking) {
+    const answer = content
+      .replace(/<think>[\s\S]*?<\/think>/g, "")
+      .replace(/<\/?think>/g, "")
+      .replace(SOURCE_RE, "")
+      .replace(/^\s+/, "");
+    return (
+      <div className="bubble">
+        {answer && (
+          <div className="answer">
+            <Markdown>{answer}</Markdown>
+          </div>
+        )}
+        {searching && !answer ? (
+          <span className="searching-hint">
+            <span className="searching-spinner" />
+            {t("searching")}
+          </span>
+        ) : streaming && !answer ? (
+          <span className="cursor" />
+        ) : null}
+      </div>
+    );
+  }
+
   const { reasoning, answer, thinking, hasThink } = parseThinking(content);
   const cleanAnswer = answer.replace(SOURCE_RE, "");
   // Manual override of the panel; until the user clicks, follow the thinking state

@@ -178,7 +178,7 @@ export default function App() {
   const [speakReplies, setSpeakReplies] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [showLive, setShowLive] = useState(false);
-  const [showVoiceMenu, setShowVoiceMenu] = useState(false);
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
   const liveConvRef = useRef<string | null>(null);
   const playbackRef = useRef<{ stop: () => void } | null>(null);
   const speechRef = useRef<SpeechQueue | null>(null);
@@ -232,20 +232,20 @@ export default function App() {
     return () => window.removeEventListener("mousedown", close);
   }, [showModelMenu]);
 
-  // Close the voice menu when clicking outside it.
+  // Close the tools menu when clicking outside it.
   useEffect(() => {
-    if (!showVoiceMenu) return;
+    if (!showToolsMenu) return;
     const close = (e: MouseEvent) => {
-      if (!(e.target as HTMLElement).closest(".voice-wrap")) setShowVoiceMenu(false);
+      if (!(e.target as HTMLElement).closest(".tools-wrap")) setShowToolsMenu(false);
     };
     window.addEventListener("mousedown", close);
     return () => window.removeEventListener("mousedown", close);
-  }, [showVoiceMenu]);
+  }, [showToolsMenu]);
 
   function openLive() {
     if (!model) return;
     liveConvRef.current = conversationId; // continue current chat, or null → new
-    setShowVoiceMenu(false);
+    setShowToolsMenu(false);
     setShowLive(true);
   }
 
@@ -973,6 +973,7 @@ export default function App() {
                       content={m.content}
                       streaming={streamingId === m.id}
                       searching={streamingId === m.id && searching}
+                      hideThinking={!thinkEnabled}
                     />
                     {m.sources && m.sources.length > 0 && (
                       <div className="sources">
@@ -1077,134 +1078,108 @@ export default function App() {
               </div>
             )}
             <div className="input-row">
-              <button
-                className="tool-toggle"
-                title={t("attachTitle")}
-                onClick={handleAttach}
-                disabled={attaching}
-              >
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                  aria-hidden="true"
+              <div className="tools-wrap">
+                <button
+                  className={`tool-toggle ${showToolsMenu ? "active" : ""}`}
+                  title={t("toolsMenu")}
+                  onClick={() => setShowToolsMenu((v) => !v)}
                 >
-                  <path
-                    d="M21.5 11.5l-9 9a5.5 5.5 0 0 1-7.8-7.8l9-9a3.6 3.6 0 1 1 5.1 5.1l-9 9a1.8 1.8 0 0 1-2.5-2.5l8.3-8.3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
-              <button
-                className={`tool-toggle ${webEnabled ? "active" : ""}`}
-                title={webEnabled ? t("webOn") : t("webOff")}
-                onClick={() => setWebEnabled((v) => !v)}
-              >
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                  aria-hidden="true"
-                >
-                  <circle cx="12" cy="12" r="9" />
-                  <path d="M3 12h18" />
-                  <path d="M12 3c2.6 2.7 2.6 15.3 0 18M12 3c-2.6 2.7-2.6 15.3 0 18" />
-                </svg>
-              </button>
-              <button
-                className={`tool-toggle ${thinkEnabled ? "active" : ""}`}
-                title={thinkEnabled ? t("thinkOn") : t("thinkOff")}
-                onClick={() => setThinkEnabled((v) => !v)}
-              >
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                  aria-hidden="true"
-                >
-                  <path d="M9.5 18h5M10.5 21h3" strokeLinecap="round" />
-                  <path
-                    d="M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8v.3h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3z"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
-              <button
-                className={`tool-toggle ${webDesign ? "active" : ""}`}
-                title={webDesign ? t("webDesignOn") : t("webDesignOff")}
-                onClick={() => setWebDesign((v) => !v)}
-              >
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                  aria-hidden="true"
-                >
-                  <rect x="3" y="4.5" width="18" height="15" rx="2" />
-                  <path d="M3 9h18" strokeLinecap="round" />
-                  <path d="M6 6.7h.01M8.4 6.7h.01" strokeLinecap="round" />
-                </svg>
-              </button>
-              {lang === "en" && (
-                <div className="voice-wrap">
-                  <button
-                    className={`tool-toggle ${speakReplies || speaking ? "active" : ""} ${
-                      speaking ? "speaking" : ""
-                    }`}
-                    title={t("voiceMenu")}
-                    onClick={() => setShowVoiceMenu((v) => !v)}
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    aria-hidden="true"
                   >
-                    <svg
-                      width="18"
-                      height="18"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.7"
-                      aria-hidden="true"
+                    <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+                  </svg>
+                </button>
+                {showToolsMenu && (
+                  <div className="tools-menu">
+                    <button
+                      className="tool-item"
+                      onClick={() => {
+                        setShowToolsMenu(false);
+                        handleAttach();
+                      }}
+                      disabled={attaching}
                     >
-                      <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z" strokeLinejoin="round" />
-                      <path
-                        d="M15.5 8.5a4.2 4.2 0 0 1 0 7M17.8 6a7.5 7.5 0 0 1 0 12"
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                  </button>
-                  {showVoiceMenu && (
-                    <div className="voice-menu">
-                      <button
-                        className={`voice-item ${speakReplies ? "on" : ""}`}
-                        onClick={() => {
-                          if (speaking) stopSpeaking();
-                          else if (speakReplies) stopSpeaking();
-                          setSpeakReplies((v) => !v);
-                          setShowVoiceMenu(false);
-                        }}
-                      >
-                        <span className="vi-check">{speakReplies ? "✓" : ""}</span>
-                        {t("speakAloud")}
-                      </button>
-                      <button className="voice-item" onClick={openLive} disabled={!model}>
-                        <span className="vi-check">◉</span>
-                        {t("liveStart")}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
+                      <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                        <path d="M21.5 11.5l-9 9a5.5 5.5 0 0 1-7.8-7.8l9-9a3.6 3.6 0 1 1 5.1 5.1l-9 9a1.8 1.8 0 0 1-2.5-2.5l8.3-8.3" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                      <span className="ti-label">{t("toolAttach")}</span>
+                    </button>
+                    <button
+                      className={`tool-item ${webEnabled ? "on" : ""}`}
+                      onClick={() => setWebEnabled((v) => !v)}
+                    >
+                      <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="M3 12h18" />
+                        <path d="M12 3c2.6 2.7 2.6 15.3 0 18M12 3c-2.6 2.7-2.6 15.3 0 18" />
+                      </svg>
+                      <span className="ti-label">{t("toolWeb")}</span>
+                      <span className="ti-check">{webEnabled ? "✓" : ""}</span>
+                    </button>
+                    <button
+                      className={`tool-item ${thinkEnabled ? "on" : ""}`}
+                      onClick={() => setThinkEnabled((v) => !v)}
+                    >
+                      <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                        <path d="M9.5 18h5M10.5 21h3" strokeLinecap="round" />
+                        <path d="M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8v.3h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3z" strokeLinejoin="round" />
+                      </svg>
+                      <span className="ti-label">{t("toolThink")}</span>
+                      <span className="ti-check">{thinkEnabled ? "✓" : ""}</span>
+                    </button>
+                    <button
+                      className={`tool-item ${webDesign ? "on" : ""}`}
+                      onClick={() => setWebDesign((v) => !v)}
+                    >
+                      <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                        <rect x="3" y="4.5" width="18" height="15" rx="2" />
+                        <path d="M3 9h18" strokeLinecap="round" />
+                        <path d="M6 6.7h.01M8.4 6.7h.01" strokeLinecap="round" />
+                      </svg>
+                      <span className="ti-label">{t("toolDesign")}</span>
+                      <span className="ti-check">{webDesign ? "✓" : ""}</span>
+                    </button>
+                    {lang === "en" && (
+                      <>
+                        <div className="tools-sep" />
+                        <button
+                          className={`tool-item ${speakReplies ? "on" : ""}`}
+                          onClick={() => {
+                            if (speaking) stopSpeaking();
+                            else if (speakReplies) stopSpeaking();
+                            setSpeakReplies((v) => !v);
+                          }}
+                        >
+                          <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                            <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z" strokeLinejoin="round" />
+                            <path d="M15.5 8.5a4.2 4.2 0 0 1 0 7" strokeLinecap="round" />
+                          </svg>
+                          <span className="ti-label">{t("speakAloud")}</span>
+                          <span className="ti-check">{speakReplies ? "✓" : ""}</span>
+                        </button>
+                        <button
+                          className="tool-item"
+                          onClick={openLive}
+                          disabled={!model}
+                        >
+                          <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                            <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
+                            <path d="M7.5 7.5a6 6 0 0 0 0 9M16.5 7.5a6 6 0 0 1 0 9" strokeLinecap="round" />
+                          </svg>
+                          <span className="ti-label">{t("liveStart")}</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
