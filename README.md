@@ -1,14 +1,14 @@
 <div align="center">
 
-<img src="icon.png" width="104" height="104" alt="Chaty" />
+<img src="icon.png" width="100" height="100" alt="Chaty" />
 
 # Chaty
 
-**A local, private desktop chat app for GGUF models — with the polish of a closed‑source app.**
+**A local, private desktop chat app for GGUF models.**
 
-Load a `.gguf` file and talk to it. Everything runs on your machine; nothing leaves it.
+Load a `.gguf` and talk to it — everything runs on your machine, nothing leaves it.
 
-Tauri 2 · React + TypeScript · Rust · llama.cpp
+Tauri 2 · React + TypeScript · Rust · llama.cpp · [**Releases**](../../releases)
 
 </div>
 
@@ -16,59 +16,50 @@ Tauri 2 · React + TypeScript · Rust · llama.cpp
 
 ## Features
 
-- **Local GGUF inference** — point it at any `.gguf` and chat. Tokenizer and chat template come straight from the file, so a single file just works. Powered by `llama-cpp-2` (llama.cpp).
-- **GPU acceleration (auto‑tuned)** — cross‑vendor **Vulkan** offload (NVIDIA / AMD / Intel). It detects your VRAM and automatically offloads as many layers as fit, backing off gracefully and falling back to CPU when there's no GPU. A **hardware panel** (top‑right) shows your CPU / RAM / GPU and the current model's offload.
-- **Fast multi‑turn** — a persistent context per model with KV‑cache prefix reuse, so a long conversation doesn't re‑process its whole history every turn.
-- **Model hot‑swap** — drop `.gguf` files into the install's `models/` folder and switch between them from the title bar; the last model auto‑loads on launch.
-- **Polished chat UI** — neutral ChatGPT‑style design, streaming tokens, a foldable `<think>` reasoning panel, a thinking‑mode toggle, KaTeX math, GFM tables, syntax‑highlighted code blocks with per‑block copy, and an **in‑app HTML preview** for HTML the model writes.
-- **`/webdesign` mode** — type `/webdesign` to steer the model toward producing one polished, self‑contained HTML UI, then render it instantly with the in‑app preview.
-- **Voice (English)** — speak to it and hear it back, running entirely on **CPU** (Whisper‑base.en + Kokoro‑82M via ONNX Runtime) so it never touches the LLM's VRAM:
-  - Voice input with automatic **silence detection** (speak, pause, it sends).
-  - **Streaming read‑aloud** — replies are synthesized and played sentence‑by‑sentence as they generate.
-  - **Live mode** — a hands‑free, Gemini‑style continuous conversation with an animated orb that reacts to the audio.
-- **Web search & fetch** — optional DuckDuckGo search with page‑body extraction and context‑aware query rewriting; paste a URL to have it read the page.
-- **Attachments & OCR** — attach `txt/md/pdf/code` (text extracted and used as context) or images (Latin OCR).
-- **Native shell** — frameless custom title bar, system tray, global hotkey (`Ctrl+Shift+Space`), single‑instance, custom right‑click menu.
-- **Conversations** — SQLite‑backed history, branching from any message, model‑generated titles.
-- **Bilingual UI** — English / 简体中文, persisted.
+**Inference**
+- Run any `.gguf` locally — tokenizer & chat template come straight from the file.
+- **GPU acceleration** — cross‑vendor **Vulkan**, auto‑tuned to your VRAM, graceful CPU fallback.
+- Fast multi‑turn via a persistent context with KV‑cache reuse.
+- **Model hot‑swap** from a `models/` folder; the last model auto‑loads on launch.
 
-> Everything is offline‑first. The only network use is the optional web search and the one‑time download of the voice models.
+**Chat UI**
+- Streaming, foldable `<think>` panel + thinking toggle, KaTeX, tables, per‑block code copy.
+- **In‑app HTML preview** and a **`/webdesign`** mode for polished single‑file UIs.
+- Compact **Tools** menu, plus **Model info** & **Hardware** panels (top‑right).
 
-## Install (Windows)
+**Voice** — English, runs on CPU so it never touches the LLM's VRAM
+- Voice in/out with silence auto‑send and sentence‑by‑sentence read‑aloud.
+- **Live mode** — hands‑free continuous conversation with an animated orb.
 
-Grab `Chaty_x.y.z_x64-setup.exe` from the [**Releases**](../../releases) page and run it. It installs per‑user (no admin needed). The voice module is bundled; the voice **models** (~0.5 GB) download automatically the first time you use a voice feature.
+**More**
+- Web search + URL fetch · PDF / code attachments · Latin OCR.
+- SQLite history with branching · system tray · global hotkey · EN / 简体中文.
 
-## Build from source
+> Offline‑first. Network is used only for optional web search and a one‑time voice‑model download (~0.5 GB).
+
+## Install (Windows x64)
+
+Download `Chaty_x.y.z_x64-setup.exe` from the [**Releases**](../../releases) page and run it — per‑user, no admin. Voice models download on first use.
+
+## Build
 
 See **[BUILD.md](BUILD.md)**. In short, on Windows:
 
 ```powershell
 npm install
-.\dev.ps1     # wires up MSVC + libclang, then runs `npm run tauri dev`
+.\dev.ps1                            # dev
+npm run tauri build -- --no-bundle   # release exe → then compile the Inno installer
 ```
 
-To produce the installer:
+## Stack
 
-```powershell
-.\dev.ps1   # (env only); then:
-npm run tauri build
-```
-
-## Tech stack
-
-| Layer | What |
-|-------|------|
-| Shell | Tauri 2.x, system tray, global shortcut, single‑instance |
-| Frontend | React 19, TypeScript, Vite 7, react‑markdown + KaTeX + highlight.js |
-| Inference | Rust + `llama-cpp-2` (llama.cpp), persistent‑context actor with KV reuse |
-| Voice | `sherpa-rs` (sherpa‑onnx / ONNX Runtime, CPU) — Whisper‑base.en STT + Kokoro‑82M TTS |
-| Storage | SQLite (`rusqlite`) for conversations |
-| Web/Docs | `reqwest` + `scraper`, `pdf-extract`, `ocrs` (Latin OCR) |
-
-## Notes
-
-- GPU offload uses **Vulkan** and is auto‑tuned from your VRAM; set it to Auto / Off / a manual layer count in Settings. With no usable GPU it runs on CPU.
-- Voice is **English‑only** (the base.en / Kokoro‑en models). Voice controls are hidden when the UI language is set to Chinese.
+| Layer | |
+|---|---|
+| Shell | Tauri 2 — tray, global shortcut, single‑instance |
+| Frontend | React 19 · Vite · react‑markdown · KaTeX |
+| Inference | Rust · `llama-cpp-2` (llama.cpp) with Vulkan GPU offload |
+| Voice | `sherpa-rs` (ONNX Runtime, CPU) — Whisper‑base.en + Kokoro‑82M |
+| Storage | SQLite |
 
 ## License
 
