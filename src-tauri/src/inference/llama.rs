@@ -152,12 +152,50 @@ impl LlamaEngine {
             .unwrap_or("model.gguf")
             .to_string();
 
+        // ---- intelligent GGUF probe (best-effort metadata sniffing) ----
+        let arch = model.meta_val_str("general.architecture").unwrap_or_default();
+        let arch_lc = arch.to_lowercase();
+        let model_name = model
+            .meta_val_str("general.name")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let name_lc = format!(
+            "{} {}",
+            model_name.as_deref().unwrap_or(""),
+            name
+        )
+        .to_lowercase();
+        let template = model.meta_val_str("tokenizer.chat_template").ok();
+        let template_lc = template.as_deref().unwrap_or("").to_lowercase();
+
+        let supports_tools = template_lc.contains("tool");
+        let supports_thinking = template_lc.contains("think")
+            || template_lc.contains("reasoning")
+            || ["qwen3", "qwq", "deepseek-r1", "-r1", "reasoning", "thinking", "magistral", "cogito"]
+                .iter()
+                .any(|k| name_lc.contains(k) || arch_lc.contains(k));
+        let multimodal = model
+            .meta_val_str(&format!("{arch}.vision.block_count"))
+            .is_ok()
+            || model.meta_val_str("clip.has_vision_encoder").is_ok()
+            || [
+                "-vl", " vl", "vision", "llava", "mllama", "qwen2vl", "qwen2.5-vl",
+                "minicpm-v", "internvl", "pixtral", "idefics", "smolvlm", "gemma-3",
+            ]
+            .iter()
+            .any(|k| name_lc.contains(k) || arch_lc.contains(k));
+        let quant = model
+            .meta_val_str("general.file_type")
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .map(|ft| quant_name(ft).to_string());
+
         let info = ModelInfo {
             name,
             path: path.to_string(),
             backend: "llama.cpp".to_string(),
             loaded: true,
-            arch: model.meta_val_str("general.architecture").ok(),
+            arch: (!arch.is_empty()).then(|| arch.clone()),
             size_mb: Some(model.size() / (1024 * 1024)),
             params_b: Some(model.n_params() as f64 / 1e9),
             n_ctx_train: Some(n_ctx_train),
@@ -165,6 +203,13 @@ impl LlamaEngine {
             n_layer: Some(model.n_layer()),
             gpu_layers,
             gpu_name,
+            model_name,
+            quant,
+            n_embd: Some(model.n_embd() as u32),
+            has_chat_template: template.is_some(),
+            supports_thinking,
+            supports_tools,
+            multimodal,
         };
 
         let model = Arc::new(model);
@@ -390,6 +435,45 @@ fn piece_bytes(model: &LlamaModel, token: LlamaToken) -> Vec<u8> {
             .token_to_piece_bytes(token, (-i) as usize, false, None)
             .unwrap_or_default(),
         Err(_) => Vec::new(),
+    }
+}
+
+/// Map a GGUF `general.file_type` enum to a readable quant name.
+fn quant_name(ft: u32) -> &'static str {
+    match ft {
+        0 => "F32",
+        1 => "F16",
+        2 => "Q4_0",
+        3 => "Q4_1",
+        7 => "Q8_0",
+        8 => "Q5_0",
+        9 => "Q5_1",
+        10 => "Q2_K",
+        11 => "Q3_K_S",
+        12 => "Q3_K_M",
+        13 => "Q3_K_L",
+        14 => "Q4_K_S",
+        15 => "Q4_K_M",
+        16 => "Q5_K_S",
+        17 => "Q5_K_M",
+        18 => "Q6_K",
+        19 => "IQ2_XXS",
+        20 => "IQ2_XS",
+        21 => "Q2_K_S",
+        22 => "IQ3_XS",
+        23 => "IQ3_XXS",
+        24 => "IQ1_S",
+        25 => "IQ4_NL",
+        26 => "IQ3_S",
+        27 => "IQ3_M",
+        28 => "IQ2_S",
+        29 => "IQ2_M",
+        30 => "IQ4_XS",
+        31 => "IQ1_M",
+        32 => "BF16",
+        36 => "TQ1_0",
+        37 => "TQ2_0",
+        _ => "mixed",
     }
 }
 

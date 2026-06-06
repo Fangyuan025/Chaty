@@ -35,6 +35,13 @@ export interface ModelInfo {
   nLayer?: number | null;
   gpuLayers: number;
   gpuName?: string | null;
+  modelName?: string | null;
+  quant?: string | null;
+  nEmbd?: number | null;
+  hasChatTemplate: boolean;
+  supportsThinking: boolean;
+  supportsTools: boolean;
+  multimodal: boolean;
 }
 
 export interface GpuInfo {

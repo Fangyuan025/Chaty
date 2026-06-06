@@ -104,6 +104,20 @@ pub struct ModelInfo {
     pub gpu_layers: i32,
     /// Name of the GPU used for offload, if any.
     pub gpu_name: Option<String>,
+    /// Pretty model name from `general.name`, if present.
+    pub model_name: Option<String>,
+    /// Quantization (e.g. "Q5_K_M"), derived from `general.file_type`.
+    pub quant: Option<String>,
+    /// Embedding dimension.
+    pub n_embd: Option<u32>,
+    /// Whether the GGUF ships a chat template.
+    pub has_chat_template: bool,
+    /// Best-effort: the model appears to support `<think>` reasoning.
+    pub supports_thinking: bool,
+    /// Best-effort: the chat template supports tool / function calling.
+    pub supports_tools: bool,
+    /// Best-effort: the model appears to be multimodal (vision).
+    pub multimodal: bool,
 }
 
 #[async_trait]

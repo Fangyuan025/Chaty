@@ -55,10 +55,17 @@ export function LiveMode({
   const messagesRef = useRef<ChatMessage[]>([...initialHistory]);
   const onTurnRef = useRef(onTurn);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const captionRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     onTurnRef.current = onTurn;
   });
+
+  // Keep the (scrollable, height-capped) transcript pinned to the latest line.
+  useEffect(() => {
+    const el = captionRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [caption]);
 
   const setBoth = (s: Status) => {
     statusRef.current = s;
@@ -311,7 +318,11 @@ export function LiveMode({
       <div className="live-stage">
         <canvas ref={canvasRef} className="live-orb" style={{ width: 260, height: 260 }} />
         <div className="live-status">{statusText}</div>
-        {caption && <div className="live-caption">{caption}</div>}
+        {caption && (
+          <div className="live-caption" ref={captionRef}>
+            {caption}
+          </div>
+        )}
         {error && <div className="live-error">{error}</div>}
       </div>
       <button className="live-end" onClick={onClose}>

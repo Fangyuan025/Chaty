@@ -21,10 +21,13 @@ export function SettingsPanel({
   value,
   onChange,
   onClose,
+  maxTokensLimit = 4096,
 }: {
   value: GenSettings;
   onChange: (next: GenSettings) => void;
   onClose: () => void;
+  /** Upper bound for the max-length slider — adapts to the loaded model's context. */
+  maxTokensLimit?: number;
 }) {
   const { t, lang, setLang } = useI18n();
   const set = <K extends keyof GenSettings>(key: K, v: GenSettings[K]) =>
@@ -101,9 +104,9 @@ export function SettingsPanel({
           <input
             type="range"
             min={128}
-            max={4096}
+            max={maxTokensLimit}
             step={128}
-            value={value.maxTokens}
+            value={Math.min(value.maxTokens, maxTokensLimit)}
             onChange={(e) => set("maxTokens", Number(e.target.value))}
           />
         </label>

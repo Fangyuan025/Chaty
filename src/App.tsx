@@ -4,6 +4,7 @@ import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextMenu } from "./components/ContextMenu";
 import { HardwarePanel } from "./components/HardwarePanel";
 import { LiveMode } from "./components/LiveMode";
+import { ModelInfoPanel } from "./components/ModelInfoPanel";
 import { WindowControls } from "./components/WindowControls";
 import { useI18n, type Lang, type TKey } from "./lib/i18n";
 import {
@@ -153,6 +154,7 @@ export default function App() {
   const [settings, setSettings] = useState<GenSettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [showHardware, setShowHardware] = useState(false);
+  const [showModelInfo, setShowModelInfo] = useState(false);
   const [webEnabled, setWebEnabled] = useState(false);
   const [thinkEnabled, setThinkEnabled] = useState(() => {
     try {
@@ -868,6 +870,32 @@ export default function App() {
 
         <div className="settings-wrap">
           <button
+            className={`icon-btn ${showModelInfo ? "active" : ""}`}
+            onClick={() => setShowModelInfo((v) => !v)}
+            title={t("miTitleBtn")}
+            disabled={!model}
+          >
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5" strokeLinecap="round" />
+              <circle cx="12" cy="7.6" r="0.7" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+          {showModelInfo && (
+            <ModelInfoPanel model={model} onClose={() => setShowModelInfo(false)} />
+          )}
+        </div>
+
+        <div className="settings-wrap">
+          <button
             className={`icon-btn ${showHardware ? "active" : ""}`}
             onClick={() => setShowHardware((v) => !v)}
             title={t("hwTitleBtn")}
@@ -906,6 +934,7 @@ export default function App() {
               value={settings}
               onChange={setSettings}
               onClose={() => setShowSettings(false)}
+              maxTokensLimit={Math.max(1024, model?.nCtx ?? 4096)}
             />
           )}
         </div>
