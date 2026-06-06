@@ -1557,6 +1557,52 @@ body {
 .mi-cap.off {
   color: var(--text-dim);
 }
+
+/* Toast notice (load warnings / errors) */
+.toast {
+  position: fixed;
+  top: 46px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4000;
+  max-width: min(560px, 92vw);
+  padding: 11px 16px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  animation: toastin 0.18s ease-out;
+}
+@keyframes toastin {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+.toast-warn {
+  border-color: rgba(240, 178, 50, 0.5);
+  background: linear-gradient(var(--surface-2), var(--surface-2)) padding-box,
+    rgba(240, 178, 50, 0.06);
+}
+.toast-warn::before {
+  content: "⚠ ";
+  color: #f0b232;
+}
+.toast-error {
+  border-color: rgba(239, 68, 68, 0.5);
+}
+.toast-error::before {
+  content: "⚠ ";
+  color: var(--danger);
+}
 .hw-usage {
   padding: 8px 2px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);

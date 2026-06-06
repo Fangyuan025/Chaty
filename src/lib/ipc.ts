@@ -42,6 +42,8 @@ export interface ModelInfo {
   supportsThinking: boolean;
   supportsTools: boolean;
   multimodal: boolean;
+  /** Non-fatal load warning code (e.g. "gpu-oom"), or null. */
+  warning?: string | null;
 }
 
 export interface GpuInfo {

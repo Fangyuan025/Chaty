@@ -155,6 +155,8 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showHardware, setShowHardware] = useState(false);
   const [showModelInfo, setShowModelInfo] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "warn" | "error"; text: string } | null>(null);
+  const noticeTimer = useRef<number | null>(null);
   const [webEnabled, setWebEnabled] = useState(false);
   const [thinkEnabled, setThinkEnabled] = useState(() => {
     try {
@@ -207,8 +209,10 @@ export default function App() {
           const info = await loadModel(target, settings.gpuLayers);
           setModel(info);
           localStorage.setItem(LAST_MODEL_KEY, info.path);
-        } catch {
+          noticeForLoad(info);
+        } catch (e) {
           if (last) localStorage.removeItem(LAST_MODEL_KEY); // file moved/deleted
+          showLoadError(e);
         } finally {
           setLoadingModel(false);
         }
@@ -369,6 +373,37 @@ export default function App() {
     }
   }
 
+  function showNotice(kind: "warn" | "error", text: string) {
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+    setNotice({ kind, text });
+    noticeTimer.current = window.setTimeout(
+      () => setNotice(null),
+      kind === "error" ? 9000 : 6000,
+    );
+  }
+
+  /** Surface a non-fatal load warning (e.g. GPU offload reduced to fit memory). */
+  function noticeForLoad(info: ModelInfo) {
+    if (info.warning === "gpu-oom") {
+      showNotice(
+        "warn",
+        info.gpuLayers > 0
+          ? t("oomPartial", { a: info.gpuLayers, b: info.nLayer ?? "?" })
+          : t("oomCpu"),
+      );
+    }
+  }
+
+  /** Turn a model-load failure into a friendly toast (OOM gets a clear hint). */
+  function showLoadError(e: unknown) {
+    const msg = typeof e === "string" ? e : ((e as Error)?.message ?? String(e));
+    if (/out of memory|内存不足|allocate|insufficient memory/i.test(msg)) {
+      showNotice("error", t("oomFail"));
+    } else {
+      showNotice("error", msg.slice(0, 220));
+    }
+  }
+
   async function refreshModels() {
     try {
       setAvailableModels(await listModels());
@@ -386,8 +421,10 @@ export default function App() {
       const info = await loadModel(path, settings.gpuLayers);
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
+      noticeForLoad(info);
     } catch (e) {
       console.error(e);
+      showLoadError(e);
     } finally {
       setLoadingModel(false);
     }
@@ -402,9 +439,11 @@ export default function App() {
       const info = await loadModel(path, settings.gpuLayers);
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
+      noticeForLoad(info);
       void refreshModels();
     } catch (e) {
       console.error(e);
+      showLoadError(e);
     } finally {
       setLoadingModel(false);
     }
@@ -1283,6 +1322,15 @@ export default function App() {
         </div>
       </div>
       <ContextMenu />
+      {notice && (
+        <div
+          className={`toast toast-${notice.kind}`}
+          onClick={() => setNotice(null)}
+          title={t("toastDismiss")}
+        >
+          {notice.text}
+        </div>
+      )}
       {showLive && (
         <LiveMode
           onClose={() => setShowLive(false)}

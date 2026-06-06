@@ -112,40 +112,79 @@ impl LlamaEngine {
             },
         };
 
-        // Load, backing off if the GPU can't fit the requested layers, so an
-        // over-estimate degrades gracefully instead of crashing.
+        let n_threads = std::thread::available_parallelism()
+            .map(|n| n.get() as i32)
+            .unwrap_or(4);
+
+        // Load the weights AND allocate the inference context, backing off
+        // `n_gpu_layers` on any out-of-memory failure. This covers BOTH the
+        // weights and the KV-cache/compute buffers — the latter often OOMs a
+        // small GPU even when the weights fit. If even a pure-CPU load runs out
+        // of memory, return a clear error instead of a cryptic crash.
         let mut layers = requested.max(0);
-        let model = loop {
-            let params = LlamaModelParams::default().with_n_gpu_layers(layers as u32);
-            match LlamaModel::load_from_file(backend, path, &params) {
-                Ok(m) => break m,
+        let mut oom_fallback = false;
+        let (model, tx) = loop {
+            let params = LlamaModelParams::default().with_n_gpu_layers(layers.max(0) as u32);
+            let model = match LlamaModel::load_from_file(backend, path, &params) {
+                Ok(m) => Arc::new(m),
                 Err(e) => {
-                    if layers > 0 {
-                        let next = if layers > 8 { layers / 2 } else { 0 };
-                        eprintln!(
-                            "GPU load failed at {layers} layers ({e:#}); retrying with {next}"
-                        );
-                        layers = next;
+                    let msg = format!("{e:#}");
+                    if layers > 0 && is_oom(&msg) {
+                        oom_fallback = true;
+                        eprintln!("weight-load OOM at {layers} gpu layers; backing off");
+                        layers = backoff_layers(layers);
                         continue;
+                    }
+                    if is_oom(&msg) {
+                        bail!("out of memory while loading the model weights");
                     }
                     return Err(e).with_context(|| format!("failed to load GGUF model: {path}"));
                 }
+            };
+
+            // Create the context in the worker and wait for the result, so a
+            // KV/compute-buffer OOM is caught here and folded into the back-off.
+            let n_ctx = model.n_ctx_train().clamp(512, 8192);
+            let (tx, rx) = std::sync::mpsc::channel::<Job>();
+            let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+            let worker_model = model.clone();
+            std::thread::Builder::new()
+                .name("chaty-llama".into())
+                .spawn(move || worker(worker_model, n_ctx, n_threads, rx, init_tx))
+                .context("failed to start inference thread")?;
+
+            match init_rx.recv() {
+                Ok(Ok(())) => break (model, tx),
+                Ok(Err(msg)) => {
+                    drop(tx); // the worker already exited; release this attempt
+                    if layers > 0 && is_oom(&msg) {
+                        oom_fallback = true;
+                        eprintln!("context OOM at {layers} gpu layers; backing off");
+                        layers = backoff_layers(layers);
+                        continue;
+                    }
+                    if is_oom(&msg) {
+                        bail!("out of memory while allocating the model context");
+                    }
+                    bail!("failed to initialize inference context: {msg}");
+                }
+                Err(_) => bail!("inference thread exited during initialization"),
             }
         };
+
         // `layers` may be n_layer+1 (output layer) or 999 (offload-all); clamp
         // the reported count to the block count so the panel reads e.g. "28/28".
-        let gpu_layers = layers.min(model.n_layer() as i32);
+        let gpu_layers = layers.min(model.n_layer() as i32).max(0);
         let gpu_name = if gpu_layers > 0 {
             gpu.as_ref().map(|g| g.name.clone())
         } else {
             None
         };
+        // If we had to drop below the requested offload to fit memory, flag it.
+        let warning = oom_fallback.then(|| "gpu-oom".to_string());
 
         let n_ctx_train = model.n_ctx_train();
         let n_ctx = n_ctx_train.clamp(512, 8192);
-        let n_threads = std::thread::available_parallelism()
-            .map(|n| n.get() as i32)
-            .unwrap_or(4);
         let name = Path::new(path)
             .file_name()
             .and_then(|s| s.to_str())
@@ -210,16 +249,10 @@ impl LlamaEngine {
             supports_thinking,
             supports_tools,
             multimodal,
+            warning,
         };
 
-        let model = Arc::new(model);
-        let (tx, rx) = std::sync::mpsc::channel::<Job>();
-        let worker_model = model.clone();
-        std::thread::Builder::new()
-            .name("chaty-llama".into())
-            .spawn(move || worker(worker_model, n_ctx, n_threads, rx))
-            .context("failed to start inference thread")?;
-
+        // `tx` + the worker came from the load/back-off loop above.
         Ok((Self { tx }, info))
     }
 }
@@ -244,10 +277,19 @@ impl InferenceBackend for LlamaEngine {
 
 /// Owns the persistent context for one model and serves jobs until the engine
 /// (and its `Sender`) is dropped.
-fn worker(model: Arc<LlamaModel>, n_ctx: u32, n_threads: i32, rx: Receiver<Job>) {
+fn worker(
+    model: Arc<LlamaModel>,
+    n_ctx: u32,
+    n_threads: i32,
+    rx: Receiver<Job>,
+    init: Sender<Result<(), String>>,
+) {
     let backend = match llama_backend() {
         Ok(b) => b,
-        Err(_) => return,
+        Err(e) => {
+            let _ = init.send(Err(format!("{e:#}")));
+            return;
+        }
     };
     let ctx_params = LlamaContextParams::default()
         .with_n_ctx(NonZeroU32::new(n_ctx))
@@ -255,8 +297,14 @@ fn worker(model: Arc<LlamaModel>, n_ctx: u32, n_threads: i32, rx: Receiver<Job>)
         .with_n_threads_batch(n_threads);
     let mut ctx = match model.new_context(backend, ctx_params) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(e) => {
+            // Almost always a VRAM/RAM OOM allocating the KV cache + compute
+            // buffers; report it so `load()` can back off the GPU offload.
+            let _ = init.send(Err(format!("{e:#}")));
+            return;
+        }
     };
+    let _ = init.send(Ok(()));
 
     // Tokens currently resident in the KV cache for sequence 0 (positions 0..len).
     let mut cached: Vec<LlamaToken> = Vec::new();
@@ -435,6 +483,36 @@ fn piece_bytes(model: &LlamaModel, token: LlamaToken) -> Vec<u8> {
             .token_to_piece_bytes(token, (-i) as usize, false, None)
             .unwrap_or_default(),
         Err(_) => Vec::new(),
+    }
+}
+
+/// Heuristic: does this llama.cpp error look like an out-of-memory failure?
+fn is_oom(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    [
+        "out of memory",
+        "outofmemory",
+        "out of device memory",
+        "failed to allocate",
+        "cannot allocate",
+        "unable to allocate",
+        "insufficient memory",
+        "bad_alloc",
+        "vk_error_out_of",
+        "erroroutofdevicememory",
+        "ggml_vk_create_buffer",
+        "alloc_buffer",
+    ]
+    .iter()
+    .any(|k| m.contains(k))
+}
+
+/// Next-lower GPU layer count when an attempt OOMs (halve, then drop to CPU).
+fn backoff_layers(layers: i32) -> i32 {
+    if layers > 8 {
+        layers / 2
+    } else {
+        0
     }
 }
 

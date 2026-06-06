@@ -118,6 +118,9 @@ pub struct ModelInfo {
     pub supports_tools: bool,
     /// Best-effort: the model appears to be multimodal (vision).
     pub multimodal: bool,
+    /// Non-fatal load warning code for the UI (e.g. "gpu-oom" when the GPU
+    /// offload had to be reduced to fit memory). `None` on a clean load.
+    pub warning: Option<String>,
 }
 
 #[async_trait]

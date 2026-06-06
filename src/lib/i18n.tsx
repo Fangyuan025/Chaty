@@ -144,6 +144,17 @@ export const T = {
   miTools: { zh: "工具调用", en: "Tool calls" },
   miMultimodal: { zh: "多模态", en: "Multimodal" },
   miNoModel: { zh: "未加载模型", en: "No model loaded" },
+  // load notices / OOM
+  oomPartial: {
+    zh: "显存不足，已自动减少 GPU 层数（{a}/{b} 层在 GPU）",
+    en: "Low VRAM — GPU offload reduced to {a}/{b} layers",
+  },
+  oomCpu: { zh: "显存不足，已回退到 CPU 运行", en: "Low VRAM — fell back to CPU" },
+  oomFail: {
+    zh: "内存不足，无法加载该模型。试试更小 / 更高量化的模型，或关闭其他占用内存的程序。",
+    en: "Out of memory — couldn't load this model. Try a smaller / more-quantized model, or free up RAM.",
+  },
+  toastDismiss: { zh: "点击关闭", en: "Click to dismiss" },
   // greetings (time of day)
   greetMorning: { zh: "早上好", en: "Good morning" },
   greetNoon: { zh: "中午好", en: "Good afternoon" },
