@@ -1446,13 +1446,13 @@ body {
   color: var(--text-dim);
 }
 .live-caption {
-  width: min(680px, 88vw);
-  max-height: 26vh;
+  width: min(760px, 90vw);
+  max-height: 34vh;
   overflow-y: auto;
   padding: 0 24px;
   text-align: center;
-  font-size: 18px;
-  line-height: 1.5;
+  font-size: 26px;
+  line-height: 1.45;
   color: var(--text);
   font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
   scrollbar-width: thin;
@@ -1602,6 +1602,74 @@ body {
 .toast-error::before {
   content: "⚠ ";
   color: var(--danger);
+}
+
+/* Update banner */
+.update-banner {
+  position: fixed;
+  top: 46px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 16px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid rgba(25, 195, 125, 0.4);
+  border-radius: 999px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  animation: toastin 0.18s ease-out;
+}
+.update-text {
+  white-space: nowrap;
+}
+.update-btn {
+  padding: 6px 13px;
+  font-size: 12.5px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.update-btn:hover:not(:disabled) {
+  background: var(--surface);
+}
+.update-btn.primary {
+  color: #04130c;
+  background: var(--accent);
+  font-weight: 600;
+}
+.update-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.update-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Context-usage meter in the stats line */
+.ctx-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ctx-bar {
+  display: inline-block;
+  width: 54px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.ctx-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
 }
 .hw-usage {
   padding: 8px 2px;

@@ -53,6 +53,14 @@ export const T = {
   toolWeb: { zh: "联网搜索", en: "Web search" },
   toolThink: { zh: "思考模式", en: "Thinking mode" },
   toolDesign: { zh: "网页设计模式", en: "Web design mode" },
+  thinkUnsupported: { zh: "当前模型不支持思考模式", en: "This model doesn't support thinking" },
+  // update banner
+  updateAvailable: { zh: "发现新版本 v{v}", en: "Update available — v{v}" },
+  updateNow: { zh: "立即更新", en: "Update now" },
+  updateLater: { zh: "稍后", en: "Later" },
+  updateDownloading: { zh: "下载中…", en: "Downloading…" },
+  // context usage
+  ctxUsage: { zh: "上下文占用", en: "Context usage" },
   stopTitle: { zh: "停止生成", en: "Stop" },
   sendTitle: { zh: "发送", en: "Send" },
   micStart: { zh: "语音输入", en: "Voice input" },

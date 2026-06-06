@@ -35,11 +35,13 @@ export function LiveMode({
   preamble,
   initialHistory,
   onTurn,
+  appendNoThink,
 }: {
   onClose: () => void;
   preamble: string;
   initialHistory: ChatMessage[];
   onTurn: (userText: string, assistantText: string) => void;
+  appendNoThink: boolean;
 }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<Status>("listening");
@@ -222,18 +224,16 @@ export function LiveMode({
     let spokenLen = 0;
     let synthChain: Promise<void> = Promise.resolve();
     let started = false;
-    let revealed = "";
 
-    // Transcript is revealed sentence-by-sentence in sync with the audio:
-    // each clip reveals its text the moment it starts playing.
+    // Show only the sentence currently being spoken (big and centered); the
+    // full transcript is saved to the conversation for later review.
     const speech = new SpeechQueue((label) => {
       if (!activeRef.current) return;
       if (!started) {
         started = true;
         setBoth("speaking");
       }
-      revealed = `${revealed} ${label}`.trim();
-      setCaption(revealed);
+      setCaption(label);
     });
     speechRef.current = speech;
     analyserRef.current = speech.analyser;
@@ -269,11 +269,14 @@ export function LiveMode({
       { role: "system", content: preamble },
       ...messagesRef.current,
     ];
-    // Disable the model's reasoning in live mode for snappy spoken turns.
-    messages[messages.length - 1] = {
-      ...messages[messages.length - 1],
-      content: `${messages[messages.length - 1].content}\n/no_think`,
-    };
+    // Disable the model's reasoning in live mode for snappy spoken turns — but
+    // only if the model actually supports `/no_think` (else it's just noise).
+    if (appendNoThink) {
+      messages[messages.length - 1] = {
+        ...messages[messages.length - 1],
+        content: `${messages[messages.length - 1].content}\n/no_think`,
+      };
+    }
 
     try {
       await generate(

@@ -6,6 +6,7 @@ pub mod ocr;
 pub mod search;
 mod state;
 mod store;
+pub mod update;
 pub mod voice;
 
 use tauri::menu::{Menu, MenuItem};
@@ -125,6 +126,8 @@ pub fn run() {
             commands::get_model,
             commands::get_hardware_info,
             commands::get_gpu_usage,
+            update::check_update,
+            update::run_update,
             commands::list_models,
             commands::set_tray_language,
             commands::generate,

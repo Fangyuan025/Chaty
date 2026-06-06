@@ -19,6 +19,7 @@ import { SettingsPanel, type GenSettings, defaultSettings } from "./components/S
 import { answerOnly, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
 import {
   cancelGeneration,
+  checkUpdate,
   deleteConversation,
   fetchUrl,
   generate,
@@ -31,6 +32,7 @@ import {
   pickModelFile,
   readAttachment,
   renameConversation,
+  runUpdate,
   saveConversation,
   saveMessage,
   setTrayLanguage,
@@ -45,6 +47,7 @@ import {
   type ModelInfo,
   type SearchResult,
   type StreamEvent,
+  type UpdateInfo,
 } from "./lib/ipc";
 import "./App.css";
 
@@ -54,6 +57,7 @@ interface UiMessage extends ChatMessage {
 }
 
 const uid = () => Math.random().toString(36).slice(2);
+const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
 const SETTINGS_KEY = "chaty.settings";
 const LAST_MODEL_KEY = "chaty.lastModel";
 const convTitle = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 40) || "新对话";
@@ -157,6 +161,8 @@ export default function App() {
   const [showModelInfo, setShowModelInfo] = useState(false);
   const [notice, setNotice] = useState<{ kind: "warn" | "error"; text: string } | null>(null);
   const noticeTimer = useRef<number | null>(null);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updating, setUpdating] = useState(false);
   const [webEnabled, setWebEnabled] = useState(false);
   const [thinkEnabled, setThinkEnabled] = useState(() => {
     try {
@@ -227,6 +233,18 @@ export default function App() {
   useEffect(() => {
     setTrayLanguage(lang).catch(() => {});
   }, [lang]);
+
+  // Check GitHub for a newer release shortly after launch.
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      checkUpdate()
+        .then((u) => {
+          if (u.available) setUpdate(u);
+        })
+        .catch(() => {});
+    }, 3000);
+    return () => window.clearTimeout(id);
+  }, []);
 
   // Close the model picker when clicking outside it.
   useEffect(() => {
@@ -401,6 +419,17 @@ export default function App() {
       showNotice("error", t("oomFail"));
     } else {
       showNotice("error", msg.slice(0, 220));
+    }
+  }
+
+  async function applyUpdate() {
+    if (!update?.url || updating) return;
+    setUpdating(true);
+    try {
+      await runUpdate(update.url); // downloads + launches installer, then app exits
+    } catch (e) {
+      setUpdating(false);
+      showLoadError(e);
     }
   }
 
@@ -617,17 +646,32 @@ export default function App() {
       }
     }
 
-    // Thinking-mode control (Qwen3-style `/think` · `/no_think`): the user toggle
-    // is the default; web search forces no-think to keep web answers concise.
+    // Thinking-mode control (Qwen3-style `/think` · `/no_think`): only meaningful
+    // when the model actually supports reasoning — otherwise the tag is noise the
+    // model may echo. Web search also forces no-think to keep answers concise.
     const historyForModel = history.map(({ role, content }) => ({ role, content }));
-    if (historyForModel.length > 0 && (!thinkEnabled || webEnabled)) {
+    if (
+      historyForModel.length > 0 &&
+      model.supportsThinking &&
+      (!thinkEnabled || webEnabled)
+    ) {
       const last = historyForModel[historyForModel.length - 1];
       last.content = `${last.content}\n/no_think`;
     }
 
+    // Only tell the model today's date when the question is actually time-related,
+    // otherwise short prompts can trigger the model to recite the date.
+    const needsDate =
+      webEnabled ||
+      /\b(today|date|now|current|recent|yesterday|tomorrow|this (?:week|month|year)|what day|weekday)\b|今天|日期|现在|最近|几号|星期|今年|去年|明年|昨天|明天|当前|目前/i.test(
+        text,
+      );
+
     const sys = settings.systemPrompt.trim();
     const sent: ChatMessage[] = [
-      { role: "system", content: t("todayNote", { date: formatDate(lang) }) },
+      ...(needsDate
+        ? [{ role: "system" as const, content: t("todayNote", { date: formatDate(lang) }) }]
+        : []),
       ...(webDesign ? [{ role: "system" as const, content: WEBDESIGN_PROMPT }] : []),
       ...(sys ? [{ role: "system" as const, content: sys }] : []),
       ...(attachment
@@ -1104,6 +1148,23 @@ export default function App() {
             {stats && (
               <div className="stats">
                 {stats.completionTokens} tokens · {stats.tokensPerSecond.toFixed(1)} tok/s
+                {model?.nCtx ? (
+                  <span className="ctx-meter" title={t("ctxUsage")}>
+                    {" · ctx "}
+                    {fmtK(stats.promptTokens + stats.completionTokens)}/{fmtK(model.nCtx)}
+                    <span className="ctx-bar">
+                      <span
+                        className="ctx-bar-fill"
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            ((stats.promptTokens + stats.completionTokens) / model.nCtx) * 100,
+                          )}%`,
+                        }}
+                      />
+                    </span>
+                  </span>
+                ) : null}
               </div>
             )}
             {(attachment || attachError) && (
@@ -1181,7 +1242,11 @@ export default function App() {
                     </button>
                     <button
                       className={`tool-item ${webEnabled ? "on" : ""}`}
-                      onClick={() => setWebEnabled((v) => !v)}
+                      onClick={() => {
+                        const next = !webEnabled;
+                        setWebEnabled(next);
+                        if (next) setThinkEnabled(false); // web search ⇄ thinking are exclusive
+                      }}
                     >
                       <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
                         <circle cx="12" cy="12" r="9" />
@@ -1192,15 +1257,23 @@ export default function App() {
                       <span className="ti-check">{webEnabled ? "✓" : ""}</span>
                     </button>
                     <button
-                      className={`tool-item ${thinkEnabled ? "on" : ""}`}
-                      onClick={() => setThinkEnabled((v) => !v)}
+                      className={`tool-item ${thinkEnabled && model?.supportsThinking ? "on" : ""}`}
+                      onClick={() => {
+                        const next = !thinkEnabled;
+                        setThinkEnabled(next);
+                        if (next) setWebEnabled(false); // thinking ⇄ web search are exclusive
+                      }}
+                      disabled={!model?.supportsThinking}
+                      title={model && !model.supportsThinking ? t("thinkUnsupported") : undefined}
                     >
                       <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
                         <path d="M9.5 18h5M10.5 21h3" strokeLinecap="round" />
                         <path d="M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8v.3h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3z" strokeLinejoin="round" />
                       </svg>
                       <span className="ti-label">{t("toolThink")}</span>
-                      <span className="ti-check">{thinkEnabled ? "✓" : ""}</span>
+                      <span className="ti-check">
+                        {thinkEnabled && model?.supportsThinking ? "✓" : ""}
+                      </span>
                     </button>
                     <button
                       className={`tool-item ${webDesign ? "on" : ""}`}
@@ -1322,6 +1395,21 @@ export default function App() {
         </div>
       </div>
       <ContextMenu />
+      {update?.available && (
+        <div className="update-banner">
+          <span className="update-text">{t("updateAvailable", { v: update.latest })}</span>
+          <button className="update-btn primary" onClick={applyUpdate} disabled={updating}>
+            {updating ? t("updateDownloading") : t("updateNow")}
+          </button>
+          <button
+            className="update-btn"
+            onClick={() => setUpdate(null)}
+            disabled={updating}
+          >
+            {t("updateLater")}
+          </button>
+        </div>
+      )}
       {notice && (
         <div
           className={`toast toast-${notice.kind}`}
@@ -1348,6 +1436,7 @@ export default function App() {
               content: m.role === "assistant" ? stripThink(m.content) : m.content,
             }))}
           onTurn={recordLiveTurn}
+          appendNoThink={model?.supportsThinking ?? false}
         />
       )}
     </div>

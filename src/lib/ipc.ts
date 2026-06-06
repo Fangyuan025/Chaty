@@ -73,6 +73,24 @@ export async function getGpuUsage(): Promise<GpuUsage | null> {
   return await invoke<GpuUsage | null>("get_gpu_usage");
 }
 
+export interface UpdateInfo {
+  available: boolean;
+  current: string;
+  latest: string;
+  url?: string | null;
+  notes?: string | null;
+}
+
+/** Check GitHub Releases for a newer version (never throws). */
+export async function checkUpdate(): Promise<UpdateInfo> {
+  return await invoke<UpdateInfo>("check_update");
+}
+
+/** Download the installer and launch it (the app will exit). */
+export async function runUpdate(url: string): Promise<void> {
+  await invoke("run_update", { url });
+}
+
 export interface GenStats {
   promptTokens: number;
   completionTokens: number;

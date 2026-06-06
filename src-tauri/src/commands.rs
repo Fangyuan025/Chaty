@@ -23,6 +23,13 @@ pub async fn load_model(
     path: String,
     gpu_layers: Option<i32>,
 ) -> Result<ModelInfo, String> {
+    // Free the currently-loaded model first, so switching models doesn't briefly
+    // hold two of them in VRAM (which can OOM the new model's context).
+    {
+        *state.engine.write().await = None;
+        *state.model.write().await = None;
+    }
+
     let (engine, mut info) =
         tokio::task::spawn_blocking(move || LlamaEngine::load(&path, gpu_layers))
             .await

@@ -157,9 +157,12 @@ impl LlamaEngine {
                 Ok(Ok(())) => break (model, tx),
                 Ok(Err(msg)) => {
                     drop(tx); // the worker already exited; release this attempt
-                    if layers > 0 && is_oom(&msg) {
+                    // A failed context allocation (incl. a null return from
+                    // llama.cpp) is almost always memory pressure — back off the
+                    // GPU offload and retry rather than giving up.
+                    if layers > 0 {
                         oom_fallback = true;
-                        eprintln!("context OOM at {layers} gpu layers; backing off");
+                        eprintln!("context init failed at {layers} gpu layers ({msg}); backing off");
                         layers = backoff_layers(layers);
                         continue;
                     }
@@ -319,6 +322,29 @@ fn worker(
     }
 }
 
+/// Decode `tokens[from..]` into the context in `n_batch`-sized chunks, setting
+/// logits on the final token. `n_batch` must be ≥ 1.
+fn decode_prompt(
+    ctx: &mut LlamaContext,
+    batch: &mut LlamaBatch,
+    tokens: &[LlamaToken],
+    from: usize,
+    n_batch: usize,
+) -> Result<()> {
+    let n_prompt = tokens.len();
+    let mut pos = from;
+    while pos < n_prompt {
+        let end = (pos + n_batch).min(n_prompt);
+        batch.clear();
+        for (j, tok) in tokens[pos..end].iter().enumerate() {
+            batch.add(*tok, (pos + j) as i32, &[0], pos + j == n_prompt - 1)?;
+        }
+        ctx.decode(batch).context("decode failed")?;
+        pos = end;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_turn(
     model: &LlamaModel,
@@ -360,24 +386,27 @@ fn run_turn(
     }
     cached.truncate(prefix);
 
-    let n_batch = ctx.n_batch() as usize;
-    let mut batch = LlamaBatch::new(n_batch.max(1), 1);
-    let mut pos = prefix;
-    while pos < n_prompt {
-        if cancel.load(Ordering::Relaxed) {
-            // Reset to a clean state so the next turn re-decodes correctly.
+    if cancel.load(Ordering::Relaxed) {
+        ctx.clear_kv_cache();
+        cached.clear();
+        return done_event(sink, n_prompt as u32, 0, 0.0);
+    }
+
+    let n_batch = (ctx.n_batch() as usize).max(1);
+    let mut batch = LlamaBatch::new(n_batch, 1);
+
+    // Decode the new tail, reusing the cached KV prefix. Some models don't
+    // tolerate partial KV reuse (llama.cpp's decode returns an error); if so,
+    // clear the KV and decode the whole prompt fresh. If that still fails, reset
+    // state so the next turn / new chat starts clean instead of staying broken.
+    if let Err(e) = decode_prompt(ctx, &mut batch, &tokens, prefix, n_batch) {
+        eprintln!("prompt decode (reuse from {prefix}) failed: {e:#}; retrying from a clean KV");
+        ctx.clear_kv_cache();
+        if let Err(e2) = decode_prompt(ctx, &mut batch, &tokens, 0, n_batch) {
             ctx.clear_kv_cache();
             cached.clear();
-            return done_event(sink, n_prompt as u32, 0, 0.0);
+            return Err(e2).context("prompt decode failed");
         }
-        let end = (pos + n_batch).min(n_prompt);
-        batch.clear();
-        for (j, tok) in tokens[pos..end].iter().enumerate() {
-            let is_last = pos + j == n_prompt - 1;
-            batch.add(*tok, (pos + j) as i32, &[0], is_last)?;
-        }
-        ctx.decode(&mut batch).context("prompt decode failed")?;
-        pos = end;
     }
     *cached = tokens; // KV now holds the full prompt
     let mut idx = batch.n_tokens() - 1;
