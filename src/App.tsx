@@ -32,6 +32,7 @@ import {
   pickModelFile,
   readAttachment,
   renameConversation,
+  replaceMessages,
   runUpdate,
   saveConversation,
   saveMessage,
@@ -151,6 +152,8 @@ export default function App() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState("");
   const [busy, setBusy] = useState(false);
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [stats, setStats] = useState<GenStats | null>(null);
@@ -552,41 +555,19 @@ export default function App() {
     }
   }
 
-  async function handleSend(override?: string) {
-    const text = (override ?? input).trim();
-    if (!text || busy) return;
-    // Slash command: `/webdesign` toggles web-design mode (no message sent).
-    if (!override && /^\/webdesign\s*$/i.test(text)) {
-      setWebDesign((v) => !v);
-      setInput("");
-      return;
-    }
-    if (!model) {
-      await handleLoad();
-      return;
-    }
-
-    const freshConv = conversationId === null;
-    const convId = conversationId ?? uid();
-    const userMsg: UiMessage = { id: uid(), role: "user", content: text };
-    const asstMsg: UiMessage = { id: uid(), role: "assistant", content: "" };
-    const history = [...messages, userMsg];
-    setMessages([...history, asstMsg]);
-    setInput("");
+  /** Core generation turn: web search → build prompt → stream into `asstId`,
+   *  then persist. Reused by send, regenerate and edit. */
+  async function streamAssistant(
+    history: UiMessage[],
+    asstId: string,
+    convId: string,
+    opts: { freshConv: boolean },
+  ) {
+    const text = [...history].reverse().find((m) => m.role === "user")?.content ?? "";
+    const prior = history.slice(0, -1);
     setBusy(true);
-    setStreamingId(asstMsg.id);
+    setStreamingId(asstId);
     setStats(null);
-
-    try {
-      if (freshConv) {
-        setConversationId(convId);
-        await saveConversation(convId, convTitle(text), model.path);
-      }
-      await saveMessage(userMsg.id, convId, "user", text);
-      await refreshConversations();
-    } catch (e) {
-      console.error(e);
-    }
 
     let webContext = "";
     const urls = (text.match(URL_RE) ?? []).slice(0, 3);
@@ -610,7 +591,7 @@ export default function App() {
 
         // C — web search using a context-aware, rewritten query.
         if (webEnabled) {
-          const query = messages.length > 0 ? await rewriteQuery(messages, text) : text;
+          const query = prior.length > 0 ? await rewriteQuery(prior, text) : text;
           const research = await webResearch(query);
           let budget = 5400;
           let added = 0;
@@ -633,7 +614,7 @@ export default function App() {
 
         if (usedSources.length) {
           setMessages((cur) =>
-            cur.map((m) => (m.id === asstMsg.id ? { ...m, sources: usedSources } : m)),
+            cur.map((m) => (m.id === asstId ? { ...m, sources: usedSources } : m)),
           );
         }
         if (blocks.length) {
@@ -652,7 +633,7 @@ export default function App() {
     const historyForModel = history.map(({ role, content }) => ({ role, content }));
     if (
       historyForModel.length > 0 &&
-      model.supportsThinking &&
+      model?.supportsThinking &&
       (!thinkEnabled || webEnabled)
     ) {
       const last = historyForModel[historyForModel.length - 1];
@@ -744,9 +725,7 @@ export default function App() {
           if (ev.type === "token") {
             acc.text += ev.text;
             setMessages((cur) =>
-              cur.map((m) =>
-                m.id === asstMsg.id ? { ...m, content: m.content + ev.text } : m,
-              ),
+              cur.map((m) => (m.id === asstId ? { ...m, content: m.content + ev.text } : m)),
             );
             pumpSpeech(false);
           } else if (ev.type === "done") {
@@ -754,7 +733,7 @@ export default function App() {
           } else if (ev.type === "error") {
             setMessages((cur) =>
               cur.map((m) =>
-                m.id === asstMsg.id
+                m.id === asstId
                   ? { ...m, content: `${m.content}\n\n⚠️ ${ev.message}` }
                   : m,
               ),
@@ -768,13 +747,13 @@ export default function App() {
       setBusy(false);
       setStreamingId(null);
       try {
-        if (acc.text.trim()) await saveMessage(asstMsg.id, convId, "assistant", acc.text);
+        if (acc.text.trim()) await saveMessage(asstId, convId, "assistant", acc.text);
         await refreshConversations();
       } catch (e) {
         console.error(e);
       }
       // Let the model name a fresh conversation from its first question.
-      if (freshConv && acc.text.trim()) void makeTitle(convId, text);
+      if (opts.freshConv && acc.text.trim()) void makeTitle(convId, text);
       // Flush the trailing sentence and clear the speaking state once audio ends.
       if (useTTS && speech) {
         pumpSpeech(true);
@@ -789,6 +768,86 @@ export default function App() {
           });
       }
     }
+  }
+
+  async function handleSend(override?: string) {
+    const text = (override ?? input).trim();
+    if (!text || busy) return;
+    // Slash command: `/webdesign` toggles web-design mode (no message sent).
+    if (!override && /^\/webdesign\s*$/i.test(text)) {
+      setWebDesign((v) => !v);
+      setInput("");
+      return;
+    }
+    if (!model) {
+      await handleLoad();
+      return;
+    }
+
+    const freshConv = conversationId === null;
+    const convId = conversationId ?? uid();
+    const userMsg: UiMessage = { id: uid(), role: "user", content: text };
+    const asstMsg: UiMessage = { id: uid(), role: "assistant", content: "" };
+    const history = [...messages, userMsg];
+    setMessages([...history, asstMsg]);
+    setInput("");
+
+    try {
+      if (freshConv) {
+        setConversationId(convId);
+        await saveConversation(convId, convTitle(text), model.path);
+      }
+      await saveMessage(userMsg.id, convId, "user", text);
+      await refreshConversations();
+    } catch (e) {
+      console.error(e);
+    }
+
+    await streamAssistant(history, asstMsg.id, convId, { freshConv });
+  }
+
+  /** Re-run the assistant turn at `index` (drops anything after it). */
+  async function regenerate(index: number) {
+    if (busy || !model || !conversationId) return;
+    const target = messages[index];
+    if (!target || target.role !== "assistant") return;
+    const history = messages.slice(0, index);
+    if (!history.some((m) => m.role === "user")) return;
+    const newAsst: UiMessage = { id: target.id, role: "assistant", content: "" };
+    setMessages([...history, newAsst]);
+    try {
+      await replaceMessages(
+        conversationId,
+        history.map((m) => ({ id: m.id, role: m.role, content: m.content })),
+      );
+      await refreshConversations();
+    } catch (e) {
+      console.error(e);
+    }
+    await streamAssistant(history, newAsst.id, conversationId, { freshConv: false });
+  }
+
+  /** Edit a user message in place (drops anything after it) and regenerate. */
+  async function editUser(index: number, newText: string) {
+    const txt = newText.trim();
+    setEditingId(null);
+    if (busy || !model || !conversationId || !txt) return;
+    const target = messages[index];
+    if (!target || target.role !== "user") return;
+    const editedUser: UiMessage = { id: target.id, role: "user", content: txt };
+    const asstMsg: UiMessage = { id: uid(), role: "assistant", content: "" };
+    const history = [...messages.slice(0, index), editedUser];
+    setMessages([...history, asstMsg]);
+    try {
+      await replaceMessages(
+        conversationId,
+        history.map((m) => ({ id: m.id, role: m.role, content: m.content })),
+      );
+      await refreshConversations();
+    } catch (e) {
+      console.error(e);
+    }
+    await streamAssistant(history, asstMsg.id, conversationId, { freshConv: false });
   }
 
   async function handleStop() {
@@ -1116,6 +1175,14 @@ export default function App() {
                         </button>
                         <button
                           className="msg-action"
+                          title={t("regenTitle")}
+                          onClick={() => regenerate(i)}
+                          disabled={busy}
+                        >
+                          {t("regenerate")}
+                        </button>
+                        <button
+                          className="msg-action"
                           title={t("forkTitle")}
                           onClick={() => handleFork(i)}
                         >
@@ -1135,9 +1202,54 @@ export default function App() {
                   </div>
                 ) : (
                   <div key={m.id} className="msg user">
-                    <div className="bubble">
-                      <span className="user-text">{m.content}</span>
-                    </div>
+                    {editingId === m.id ? (
+                      <div className="edit-box">
+                        <textarea
+                          value={editingText}
+                          autoFocus
+                          rows={Math.min(8, editingText.split("\n").length + 1)}
+                          onChange={(e) => setEditingText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              editUser(i, editingText);
+                            } else if (e.key === "Escape") {
+                              setEditingId(null);
+                            }
+                          }}
+                        />
+                        <div className="edit-actions">
+                          <button className="msg-action" onClick={() => setEditingId(null)}>
+                            {t("cancel")}
+                          </button>
+                          <button
+                            className="msg-action primary"
+                            onClick={() => editUser(i, editingText)}
+                            disabled={busy || !editingText.trim()}
+                          >
+                            {t("saveEdit")}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="bubble">
+                        <span className="user-text">{m.content}</span>
+                        {!busy && (
+                          <button
+                            className="user-edit"
+                            title={t("editMsg")}
+                            onClick={() => {
+                              setEditingText(m.content);
+                              setEditingId(m.id);
+                            }}
+                          >
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                              <path d="M14.5 5.5l4 4M4 20l1-4L16 5a2 2 0 0 1 3 3L8 19l-4 1z" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ),
               )

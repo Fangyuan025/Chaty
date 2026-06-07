@@ -197,6 +197,14 @@ export async function getMessages(conversationId: string): Promise<StoredMessage
   return await invoke<StoredMessage[]>("get_messages", { conversationId });
 }
 
+/** Replace all messages of a conversation (for edit / regenerate truncation). */
+export async function replaceMessages(
+  conversationId: string,
+  messages: { id: string; role: Role; content: string }[],
+): Promise<void> {
+  await invoke("replace_messages", { conversationId, messages });
+}
+
 export async function deleteConversation(id: string): Promise<void> {
   await invoke("delete_conversation", { id });
 }

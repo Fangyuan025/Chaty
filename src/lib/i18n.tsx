@@ -93,6 +93,11 @@ export const T = {
   reread: { zh: "朗读", en: "Replay" },
   rereadStop: { zh: "停止", en: "Stop" },
   rereadTitle: { zh: "朗读这条回复", en: "Read this reply aloud" },
+  regenerate: { zh: "重新生成", en: "Regenerate" },
+  regenTitle: { zh: "重新生成这条回答（会丢弃其后的对话）", en: "Regenerate this reply (drops what follows)" },
+  editMsg: { zh: "编辑", en: "Edit" },
+  saveEdit: { zh: "保存并重发", en: "Save & resend" },
+  cancel: { zh: "取消", en: "Cancel" },
   // assistant message
   searching: { zh: "正在联网搜索…", en: "Searching the web…" },
   thinking: { zh: "正在思考", en: "Thinking" },

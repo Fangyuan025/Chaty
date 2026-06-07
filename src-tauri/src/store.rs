@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 /// Managed handle to the on-disk database.
@@ -156,6 +156,46 @@ pub fn get_messages(db: State<'_, Db>, conversation_id: String) -> Result<Vec<St
         .map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+pub struct MsgIn {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+}
+
+/// Replace ALL messages of a conversation with `messages` (in order). Used by
+/// edit / regenerate, which truncate the conversation. Runs in one transaction.
+#[tauri::command]
+pub fn replace_messages(
+    db: State<'_, Db>,
+    conversation_id: String,
+    messages: Vec<MsgIn>,
+) -> Result<(), String> {
+    let mut conn = lock(&db)?;
+    let base = now_ms();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM messages WHERE conversation_id = ?1",
+        params![conversation_id],
+    )
+    .map_err(|e| e.to_string())?;
+    for (i, m) in messages.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![m.id, conversation_id, m.role, m.content, base + i as i64],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.execute(
+        "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+        params![base, conversation_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]

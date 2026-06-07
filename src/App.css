@@ -1671,6 +1671,68 @@ body {
   border-radius: 3px;
   background: var(--accent);
 }
+
+/* Edit a user message in place + the hover edit button */
+.msg.user .bubble {
+  position: relative;
+}
+.user-edit {
+  position: absolute;
+  top: 50%;
+  left: -30px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.msg.user .bubble:hover .user-edit {
+  opacity: 1;
+}
+.user-edit:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.edit-box {
+  width: 100%;
+  max-width: 640px;
+  margin-left: auto;
+}
+.edit-box textarea {
+  width: 100%;
+  padding: 11px 14px;
+  font: inherit;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  resize: none;
+  outline: none;
+}
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.msg-action.primary {
+  color: #04130c;
+  background: var(--accent);
+  border-color: transparent;
+}
+.msg-action.primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 .hw-usage {
   padding: 8px 2px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);

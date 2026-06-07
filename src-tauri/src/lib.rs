@@ -136,6 +136,7 @@ pub fn run() {
             commands::synthesize,
             store::save_conversation,
             store::save_message,
+            store::replace_messages,
             store::list_conversations,
             store::get_messages,
             store::delete_conversation,
