@@ -36,12 +36,15 @@ export function LiveMode({
   initialHistory,
   onTurn,
   appendNoThink,
+  forceNoThink,
 }: {
   onClose: () => void;
   preamble: string;
   initialHistory: ChatMessage[];
   onTurn: (userText: string, assistantText: string) => void;
   appendNoThink: boolean;
+  /** Switch-less reasoning models (Qwen3.5+): disable thinking via the backend. */
+  forceNoThink: boolean;
 }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<Status>("listening");
@@ -280,7 +283,15 @@ export function LiveMode({
 
     try {
       await generate(
-        { messages, params: { temperature: 0.6, topP: 0.9, maxTokens: 400 } },
+        {
+          messages,
+          params: {
+            temperature: 0.6,
+            topP: 0.9,
+            maxTokens: 400,
+            think: forceNoThink ? false : undefined,
+          },
+        },
         (ev) => {
           if (ev.type === "token") {
             acc += ev.text;

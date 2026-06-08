@@ -350,6 +350,12 @@ export default function App() {
     }
   }
 
+  /** Backend reasoning flag forcing no-think on switch-less models (Qwen3.5+),
+   *  used by the title/query/summary helpers that should never spend time
+   *  reasoning. `undefined` for everything else (no effect). */
+  const noThinkFlag = (): boolean | undefined =>
+    model?.supportsThinking && !model.thinkSwitch ? false : undefined;
+
   /** Ask the model for a concise title for a freshly created conversation. */
   async function makeTitle(convId: string, firstMsg: string) {
     try {
@@ -366,7 +372,7 @@ export default function App() {
             },
             { role: "user", content: `${firstMsg}${model?.thinkSwitch ? "\n/no_think" : ""}` },
           ],
-          params: { temperature: 0.2, topP: 0.9, maxTokens: 48 },
+          params: { temperature: 0.2, topP: 0.9, maxTokens: 48, think: noThinkFlag() },
         },
         (ev) => {
           if (ev.type === "token") acc += ev.text;
@@ -405,7 +411,7 @@ export default function App() {
               content: `${recent}\n\n最新问题：${latest}${model?.thinkSwitch ? "\n/no_think" : ""}`,
             },
           ],
-          params: { temperature: 0.2, topP: 0.9, maxTokens: 64 },
+          params: { temperature: 0.2, topP: 0.9, maxTokens: 64, think: noThinkFlag() },
         },
         (ev) => {
           if (ev.type === "token") acc += ev.text;
@@ -631,7 +637,7 @@ export default function App() {
               content: `${transcript}${model?.thinkSwitch ? "\n/no_think" : ""}`,
             },
           ],
-          params: { temperature: 0.3, topP: 0.9, maxTokens: 400 },
+          params: { temperature: 0.3, topP: 0.9, maxTokens: 400, think: noThinkFlag() },
         },
         (ev) => {
           if (ev.type === "token") out += ev.text;
@@ -741,18 +747,19 @@ export default function App() {
       console.error(e);
     }
 
-    // Thinking-mode control: the `/no_think` soft switch is a Qwen3-era feature.
-    // Qwen3.5+ dropped it (it would leak into the prompt as literal text), so only
-    // inject it when the chat template actually honours the switch. Web search also
-    // forces no-think to keep answers concise.
-    if (
-      modelHistory.length > 0 &&
-      model?.thinkSwitch &&
-      (!thinkEnabled || webEnabled)
-    ) {
+    // Thinking-mode control. Two mechanisms, picked by what the model supports:
+    //  • Qwen3 (`thinkSwitch`): append the `/no_think` soft switch to the prompt.
+    //  • Qwen3.5+ (reasoning, but no soft switch): tell the backend to pre-fill an
+    //    empty <think></think> block via the `think` param below.
+    // Web search forces no-think either way to keep answers concise.
+    const wantNoThink = !thinkEnabled || webEnabled;
+    if (modelHistory.length > 0 && model?.thinkSwitch && wantNoThink) {
       const last = modelHistory[modelHistory.length - 1];
       last.content = `${last.content}\n/no_think`;
     }
+    // For switch-less reasoning models, drive thinking through the backend flag.
+    const thinkParam =
+      model?.supportsThinking && !model.thinkSwitch ? !wantNoThink : undefined;
 
     // Only tell the model today's date when the question is actually time-related,
     // otherwise short prompts can trigger the model to recite the date.
@@ -834,6 +841,7 @@ export default function App() {
             temperature: settings.temperature,
             topP: settings.topP,
             maxTokens: settings.maxTokens,
+            think: thinkParam,
           },
         },
         (ev: StreamEvent) => {
@@ -1486,20 +1494,14 @@ export default function App() {
                       <span className="ti-check">{webEnabled ? "✓" : ""}</span>
                     </button>
                     <button
-                      className={`tool-item ${thinkEnabled && model?.thinkSwitch ? "on" : ""}`}
+                      className={`tool-item ${thinkEnabled && model?.supportsThinking ? "on" : ""}`}
                       onClick={() => {
                         const next = !thinkEnabled;
                         setThinkEnabled(next);
                         if (next) setWebEnabled(false); // thinking ⇄ web search are exclusive
                       }}
-                      disabled={!model?.thinkSwitch}
-                      title={
-                        model && !model.thinkSwitch
-                          ? model.supportsThinking
-                            ? t("thinkAuto")
-                            : t("thinkUnsupported")
-                          : undefined
-                      }
+                      disabled={!model?.supportsThinking}
+                      title={model && !model.supportsThinking ? t("thinkUnsupported") : undefined}
                     >
                       <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
                         <path d="M9.5 18h5M10.5 21h3" strokeLinecap="round" />
@@ -1507,7 +1509,7 @@ export default function App() {
                       </svg>
                       <span className="ti-label">{t("toolThink")}</span>
                       <span className="ti-check">
-                        {thinkEnabled && model?.thinkSwitch ? "✓" : ""}
+                        {thinkEnabled && model?.supportsThinking ? "✓" : ""}
                       </span>
                     </button>
                     <button
@@ -1672,6 +1674,7 @@ export default function App() {
             }))}
           onTurn={recordLiveTurn}
           appendNoThink={model?.thinkSwitch ?? false}
+          forceNoThink={(model?.supportsThinking && !model.thinkSwitch) ?? false}
         />
       )}
     </div>

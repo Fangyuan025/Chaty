@@ -15,6 +15,9 @@ export interface GenParams {
   topP: number;
   maxTokens: number;
   seed?: number | null;
+  /** Reasoning control for switch-less models (Qwen3.5+): false force-disables
+   *  thinking, true/undefined leaves the model default. */
+  think?: boolean | null;
 }
 
 export interface GenRequest {

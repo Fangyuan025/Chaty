@@ -37,6 +37,10 @@ pub struct GenParams {
     pub top_p: f32,
     pub max_tokens: u32,
     pub seed: Option<u64>,
+    /// Reasoning control for models without the `/no_think` soft switch
+    /// (Qwen3.5+): `Some(false)` force-disables thinking by pre-filling an empty
+    /// `<think></think>` block; `Some(true)`/`None` leave the model default.
+    pub think: Option<bool>,
 }
 
 impl Default for GenParams {
@@ -46,6 +50,7 @@ impl Default for GenParams {
             top_p: 0.95,
             max_tokens: 512,
             seed: None,
+            think: None,
         }
     }
 }

@@ -363,7 +363,7 @@ fn run_turn(
 ) -> Result<()> {
     sink.send(StreamEvent::Started)?;
 
-    let prompt = build_prompt(model, &req.messages)?;
+    let prompt = build_prompt(model, &req.messages, req.params.think)?;
     let tokens = model
         .str_to_token(&prompt, AddBos::Always)
         .context("tokenization failed")?;
@@ -484,7 +484,7 @@ fn done_event(sink: &Channel<StreamEvent>, prompt_tokens: u32, completion_tokens
 
 /// Render messages into a prompt using the model's embedded chat template,
 /// falling back to ChatML if the GGUF doesn't carry one.
-fn build_prompt(model: &LlamaModel, messages: &[ChatMessage]) -> Result<String> {
+fn build_prompt(model: &LlamaModel, messages: &[ChatMessage], think: Option<bool>) -> Result<String> {
     let template = model
         .chat_template(None)
         .or_else(|_| LlamaChatTemplate::new("chatml"))
@@ -496,9 +496,34 @@ fn build_prompt(model: &LlamaModel, messages: &[ChatMessage]) -> Result<String> 
         .collect::<std::result::Result<_, _>>()
         .context("invalid message content")?;
 
-    model
+    let mut prompt = model
         .apply_chat_template(&template, &chat, true)
-        .context("failed to apply chat template")
+        .context("failed to apply chat template")?;
+
+    // Qwen3.5+ dropped the `/no_think` soft switch and default to reasoning. To
+    // honour a "thinking off" request we pre-fill an empty reasoning block right
+    // after the assistant header, the same way the Qwen template does when
+    // `enable_thinking=false` — the model then skips straight to the answer.
+    // The caller only sets `Some(false)` for reasoning models, so this is safe.
+    if think == Some(false) {
+        let tail = prompt.trim_end();
+        let already_closed = tail.ends_with("</think>");
+        let already_open = tail.ends_with("<think>");
+        if !already_closed {
+            let needs_newline = !prompt.ends_with('\n');
+            if needs_newline {
+                prompt.push('\n');
+            }
+            if already_open {
+                // The template already opened a reasoning block — just close it.
+                prompt.push_str("\n</think>\n\n");
+            } else {
+                prompt.push_str("<think>\n\n</think>\n\n");
+            }
+        }
+    }
+
+    Ok(prompt)
 }
 
 fn role_str(role: &Role) -> &'static str {

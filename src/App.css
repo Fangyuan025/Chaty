@@ -22,6 +22,17 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  /* Lock the document itself: only inner panes scroll. Without this the whole
+     webview rubber-bands / shifts when the wheel hits the top or bottom of a
+     list (especially under window scaling). */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+html,
+body {
+  position: fixed;
+  inset: 0;
 }
 
 body {
@@ -978,6 +989,12 @@ body {
   right: 0;
   z-index: 50;
   width: 320px;
+  /* Never spill past the window edges, even under scaling / a small window —
+     scroll the panel instead. */
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 16px;
   background: #262626;
   border: 1px solid var(--border);
@@ -1051,6 +1068,8 @@ body {
 
 .lang-switch button {
   flex: 1;
+  min-width: 0;
+  white-space: nowrap;
   padding: 7px 10px;
   font-size: 13px;
   color: var(--text-dim);
