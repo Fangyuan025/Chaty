@@ -10,39 +10,44 @@
   --accent: #19c37d;
   --danger: #ef4444;
   --panel: #262626;
+  --shadow: rgba(0, 0, 0, 0.5);
   font-synthesis: none;
   color-scheme: dark;
 }
 
-/* Light theme — applied explicitly, or under "system" when the OS prefers light. */
+/* Light theme — applied explicitly, or under "system" when the OS prefers light.
+   Tuned for a soft, low-glare look: off-white surfaces, a soft-black (not pure
+   black) text colour, and gentle hairline borders. */
 :root[data-theme="light"] {
-  --bg: #ffffff;
-  --bg-elev: #f7f7f8;
-  --surface: #f0f0f0;
-  --surface-2: #e6e6e6;
-  --border: rgba(0, 0, 0, 0.12);
-  --border-strong: rgba(0, 0, 0, 0.22);
-  --text: #1d1d1f;
-  --text-dim: #6b6b6b;
-  --accent: #109a63;
+  --bg: #f7f7f8;
+  --bg-elev: #efeff1;
+  --surface: #eaeaec;
+  --surface-2: #e1e1e4;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+  --text: #33333a;
+  --text-dim: #7c7c82;
+  --accent: #0f9a62;
   --danger: #dc2626;
   --panel: #ffffff;
+  --shadow: rgba(0, 0, 0, 0.14);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: light) {
   :root[data-theme="system"] {
-    --bg: #ffffff;
-    --bg-elev: #f7f7f8;
-    --surface: #f0f0f0;
-    --surface-2: #e6e6e6;
-    --border: rgba(0, 0, 0, 0.12);
-    --border-strong: rgba(0, 0, 0, 0.22);
-    --text: #1d1d1f;
-    --text-dim: #6b6b6b;
-    --accent: #109a63;
+    --bg: #f7f7f8;
+    --bg-elev: #efeff1;
+    --surface: #eaeaec;
+    --surface-2: #e1e1e4;
+    --border: rgba(0, 0, 0, 0.08);
+    --border-strong: rgba(0, 0, 0, 0.14);
+    --text: #33333a;
+    --text-dim: #7c7c82;
+    --accent: #0f9a62;
     --danger: #dc2626;
     --panel: #ffffff;
+    --shadow: rgba(0, 0, 0, 0.14);
     color-scheme: light;
   }
 }
@@ -165,7 +170,7 @@ body {
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 14px 36px var(--shadow);
   animation: ctxin 0.1s ease-out;
 }
 
@@ -808,7 +813,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--shadow);
   backdrop-filter: blur(2px);
   animation: ctxin 0.12s ease-out;
 }
@@ -821,7 +826,7 @@ body {
   border: 1px solid var(--border-strong);
   border-radius: 12px;
   overflow: hidden;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 24px 64px var(--shadow);
 }
 .preview-bar {
   display: flex;
@@ -1046,7 +1051,7 @@ body {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 16px 40px var(--shadow);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1120,7 +1125,7 @@ body {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 20px 50px var(--shadow);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -1341,7 +1346,7 @@ body {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 16px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 24px 64px var(--shadow);
 }
 
 .dl-head {
@@ -1388,7 +1393,7 @@ body {
 .dl-search button {
   padding: 9px 16px;
   font-size: 13px;
-  color: var(--text);
+  color: #04130c;
   background: var(--accent);
   border: none;
   border-radius: 9px;
@@ -1515,7 +1520,7 @@ body {
   background: var(--bg-elev);
   border: 2px dashed var(--accent);
   border-radius: 18px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 20px 60px var(--shadow);
 }
 
 .drop-card svg {
@@ -1774,7 +1779,7 @@ body {
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 34px var(--shadow);
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -1827,7 +1832,7 @@ body {
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 -10px 30px var(--shadow);
   animation: ctxin 0.1s ease-out;
 }
 .tools-sep {
@@ -2048,7 +2053,7 @@ body {
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 34px var(--shadow);
   cursor: pointer;
   animation: toastin 0.18s ease-out;
 }
@@ -2095,7 +2100,7 @@ body {
   background: var(--surface-2);
   border: 1px solid rgba(25, 195, 125, 0.4);
   border-radius: 999px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 34px var(--shadow);
   animation: toastin 0.18s ease-out;
 }
 .update-text {
