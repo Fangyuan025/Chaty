@@ -37,6 +37,15 @@ pub struct GenParams {
     pub top_p: f32,
     pub max_tokens: u32,
     pub seed: Option<u64>,
+    /// Top-k cutoff (0 = disabled).
+    pub top_k: u32,
+    /// Min-p cutoff (0 = disabled).
+    pub min_p: f32,
+    /// Repetition penalty (1.0 = off).
+    pub repeat_penalty: f32,
+    /// Stop sequences — generation halts (and the trailing match is trimmed) when
+    /// any of these appears in the output.
+    pub stop: Vec<String>,
     /// Reasoning control for models without the `/no_think` soft switch
     /// (Qwen3.5+): `Some(false)` force-disables thinking by pre-filling an empty
     /// `<think></think>` block; `Some(true)`/`None` leave the model default.
@@ -50,6 +59,10 @@ impl Default for GenParams {
             top_p: 0.95,
             max_tokens: 512,
             seed: None,
+            top_k: 40,
+            min_p: 0.05,
+            repeat_penalty: 1.1,
+            stop: Vec::new(),
             think: None,
         }
     }

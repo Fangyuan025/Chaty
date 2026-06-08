@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextMenu } from "./components/ContextMenu";
+import { DownloadModal } from "./components/DownloadModal";
 import { HardwarePanel } from "./components/HardwarePanel";
 import { LiveMode } from "./components/LiveMode";
 import { ModelInfoPanel } from "./components/ModelInfoPanel";
@@ -15,7 +17,7 @@ import {
   startRecording,
   type Recorder,
 } from "./lib/audio";
-import { SettingsPanel, type GenSettings, defaultSettings } from "./components/SettingsPanel";
+import { SettingsPanel, type GenSettings, defaultSettings, parseStops } from "./components/SettingsPanel";
 import { answerOnly, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
 import { copyToClipboard } from "./lib/clipboard";
 import {
@@ -35,6 +37,8 @@ import {
   renameConversation,
   replaceMessages,
   runUpdate,
+  searchConversations,
+  exportTextFile,
   saveConversation,
   saveMessage,
   setTrayLanguage,
@@ -181,6 +185,8 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showHardware, setShowHardware] = useState(false);
   const [showModelInfo, setShowModelInfo] = useState(false);
+  const [showExport, setShowExport] = useState(false);
+  const [showDownload, setShowDownload] = useState(false);
   const [notice, setNotice] = useState<{ kind: "warn" | "error"; text: string } | null>(null);
   const noticeTimer = useRef<number | null>(null);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -205,6 +211,9 @@ export default function App() {
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [attaching, setAttaching] = useState(false);
   const [attachError, setAttachError] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const [convQuery, setConvQuery] = useState("");
+  const [contentMatches, setContentMatches] = useState<Set<string>>(new Set());
   const [recorder, setRecorder] = useState<Recorder | null>(null);
   const recorderRef = useRef<Recorder | null>(null);
   const [transcribing, setTranscribing] = useState(false);
@@ -326,6 +335,32 @@ export default function App() {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
 
+  // Apply the colour theme to the document root (CSS keys off [data-theme]).
+  useEffect(() => {
+    document.documentElement.dataset.theme = settings.theme;
+  }, [settings.theme]);
+
+  // Debounced full-text search over message bodies (titles are matched locally).
+  useEffect(() => {
+    const q = convQuery.trim();
+    if (q.length < 2) {
+      setContentMatches(new Set());
+      return;
+    }
+    let cancelled = false;
+    const id = window.setTimeout(() => {
+      searchConversations(q)
+        .then((ids) => {
+          if (!cancelled) setContentMatches(new Set(ids));
+        })
+        .catch(() => {});
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(id);
+    };
+  }, [convQuery]);
+
   useEffect(() => {
     try {
       localStorage.setItem("chaty.think", thinkEnabled ? "1" : "0");
@@ -341,6 +376,36 @@ export default function App() {
       /* ignore */
     }
   }, [webDesign]);
+
+  // Native file drag-and-drop onto the window → load as an attachment. Tauri
+  // intercepts OS file drops and emits these events (HTML5 DnD is disabled).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === "enter" || p.type === "over") {
+          setDragging(true);
+        } else if (p.type === "leave") {
+          setDragging(false);
+        } else if (p.type === "drop") {
+          setDragging(false);
+          const path = p.paths?.[0];
+          if (path) void loadAttachmentPath(path);
+        }
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function refreshConversations() {
     try {
@@ -519,11 +584,43 @@ export default function App() {
     setAttachError("");
   }
 
-  async function handleAttach() {
+  function exportConversation(fmt: "md" | "json") {
+    setShowExport(false);
+    const list = messages.filter((m) => m.content.trim());
+    if (list.length === 0) return;
+    const conv = conversations.find((c) => c.id === conversationId);
+    const title = conv?.title ?? "chat";
+    const safe = title.replace(/[\\/:*?"<>|\n]+/g, "_").slice(0, 60) || "chat";
+    const userL = lang === "zh" ? "用户" : "You";
+    const asstL = lang === "zh" ? "助手" : "Assistant";
+    let content: string;
+    if (fmt === "json") {
+      content = JSON.stringify(
+        {
+          title,
+          model: model?.name ?? null,
+          exportedAt: new Date().toISOString(),
+          messages: list.map((m) => ({ role: m.role, content: m.content })),
+        },
+        null,
+        2,
+      );
+    } else {
+      const lines = [`# ${title}`, ""];
+      for (const m of list) {
+        lines.push(`## ${m.role === "user" ? userL : asstL}`, "", stripThink(m.content).trim(), "");
+      }
+      content = lines.join("\n");
+    }
+    void exportTextFile(`${safe}.${fmt}`, content, fmt).catch((e) => {
+      console.error(e);
+      showNotice("error", t("exportFailed"));
+    });
+  }
+
+  async function loadAttachmentPath(path: string) {
     setAttachError("");
     try {
-      const path = await pickAttachmentFile();
-      if (!path) return;
       setAttaching(true);
       setAttachment(await readAttachment(path));
     } catch (e) {
@@ -532,6 +629,12 @@ export default function App() {
     } finally {
       setAttaching(false);
     }
+  }
+
+  async function handleAttach() {
+    const path = await pickAttachmentFile();
+    if (!path) return;
+    await loadAttachmentPath(path);
   }
 
   async function openConversation(id: string) {
@@ -810,7 +913,7 @@ export default function App() {
       synthChain = synthChain.then(async () => {
         if (q.isStopped) return;
         try {
-          const { audio, sampleRate } = await synthesize(clean);
+          const { audio, sampleRate } = await synthesize(clean, settings.voiceSpeed, settings.voiceSid);
           if (!q.isStopped) q.enqueue(decodeAudio(audio), sampleRate);
         } catch (e) {
           console.error(e);
@@ -841,6 +944,10 @@ export default function App() {
             temperature: settings.temperature,
             topP: settings.topP,
             maxTokens: settings.maxTokens,
+            topK: settings.topK,
+            minP: settings.minP,
+            repeatPenalty: settings.repeatPenalty,
+            stop: parseStops(settings.stop),
             think: thinkParam,
           },
         },
@@ -1034,7 +1141,7 @@ export default function App() {
     stopSpeaking();
     try {
       setSpeaking(true);
-      const { audio, sampleRate } = await synthesize(clean);
+      const { audio, sampleRate } = await synthesize(clean, settings.voiceSpeed, settings.voiceSid);
       const pb = playAudio(decodeAudio(audio), sampleRate);
       playbackRef.current = pb;
       await pb.done;
@@ -1061,8 +1168,27 @@ export default function App() {
     }
   }
 
+  // Sidebar filter: instant title match, unioned with backend content matches.
+  const q = convQuery.trim().toLowerCase();
+  const visibleConvs = q
+    ? conversations.filter(
+        (c) => c.title.toLowerCase().includes(q) || contentMatches.has(c.id),
+      )
+    : conversations;
+
   return (
     <div className="app">
+      {dragging && (
+        <div className="drop-overlay">
+          <div className="drop-card">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+              <path d="M12 16V4M12 4l-4 4M12 4l4 4" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" strokeLinecap="round" />
+            </svg>
+            <span>{t("dropToAttach")}</span>
+          </div>
+        </div>
+      )}
       <header className="titlebar" data-tauri-drag-region>
         <div className="brand">
           <span className="brand-dot" />
@@ -1129,6 +1255,15 @@ export default function App() {
               <button className="model-menu-file" onClick={handleLoad}>
                 {t("loadFromFile")}
               </button>
+              <button
+                className="model-menu-file"
+                onClick={() => {
+                  setShowModelMenu(false);
+                  setShowDownload(true);
+                }}
+              >
+                {t("dlTitle")}
+              </button>
             </div>
           )}
         </div>
@@ -1158,6 +1293,30 @@ export default function App() {
             <ModelInfoPanel model={model} onClose={() => setShowModelInfo(false)} />
           )}
         </div>
+
+        {messages.length > 0 && (
+          <div className="settings-wrap">
+            <button
+              className={`icon-btn ${showExport ? "active" : ""}`}
+              onClick={() => setShowExport((v) => !v)}
+              title={t("exportTitle")}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                <path d="M12 3v12M12 15l-4-4M12 15l4-4" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" strokeLinecap="round" />
+              </svg>
+            </button>
+            {showExport && (
+              <>
+                <div className="popover-backdrop" onClick={() => setShowExport(false)} />
+                <div className="export-menu">
+                  <button onClick={() => exportConversation("md")}>{t("exportMd")}</button>
+                  <button onClick={() => exportConversation("json")}>{t("exportJson")}</button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         <div className="settings-wrap">
           <button
@@ -1213,11 +1372,32 @@ export default function App() {
           <button className="new-chat" onClick={handleNewChat} disabled={busy}>
             ＋ {t("newChat")}
           </button>
+          {conversations.length > 0 && (
+            <div className="conv-search">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="M21 21l-4.3-4.3" strokeLinecap="round" />
+              </svg>
+              <input
+                type="text"
+                placeholder={t("searchConv")}
+                value={convQuery}
+                onChange={(e) => setConvQuery(e.target.value)}
+              />
+              {convQuery && (
+                <button className="conv-search-clear" onClick={() => setConvQuery("")} title={t("cancel")}>
+                  ×
+                </button>
+              )}
+            </div>
+          )}
           <div className="conv-list">
-            {conversations.length === 0 ? (
-              <div className="conv-empty">{t("noConversations")}</div>
+            {visibleConvs.length === 0 ? (
+              <div className="conv-empty">
+                {conversations.length === 0 ? t("noConversations") : t("noMatches")}
+              </div>
             ) : (
-              conversations.map((c) => (
+              visibleConvs.map((c) => (
                 <div
                   key={c.id}
                   className={`conv-item ${c.id === conversationId ? "active" : ""}`}
@@ -1675,7 +1855,12 @@ export default function App() {
           onTurn={recordLiveTurn}
           appendNoThink={model?.thinkSwitch ?? false}
           forceNoThink={(model?.supportsThinking && !model.thinkSwitch) ?? false}
+          voiceSid={settings.voiceSid}
+          voiceSpeed={settings.voiceSpeed}
         />
+      )}
+      {showDownload && (
+        <DownloadModal onClose={() => setShowDownload(false)} onDownloaded={refreshModels} />
       )}
     </div>
   );

@@ -208,6 +208,33 @@ pub fn delete_conversation(db: State<'_, Db>, id: String) -> Result<(), String> 
     Ok(())
 }
 
+/// Conversation ids whose message bodies contain `query` (case-insensitive),
+/// ordered by most-recently-updated. Powers the sidebar full-text search.
+#[tauri::command]
+pub fn search_conversations(db: State<'_, Db>, query: String) -> Result<Vec<String>, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pattern = format!("%{}%", q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+    let conn = lock(&db)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT m.conversation_id
+             FROM messages m
+             JOIN conversations c ON c.id = m.conversation_id
+             WHERE m.content LIKE ?1 ESCAPE '\\'
+             ORDER BY c.updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let ids = stmt
+        .query_map(params![pattern], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(ids)
+}
+
 #[tauri::command]
 pub fn rename_conversation(db: State<'_, Db>, id: String, title: String) -> Result<(), String> {
     let conn = lock(&db)?;

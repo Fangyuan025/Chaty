@@ -37,6 +37,8 @@ export function LiveMode({
   onTurn,
   appendNoThink,
   forceNoThink,
+  voiceSid,
+  voiceSpeed,
 }: {
   onClose: () => void;
   preamble: string;
@@ -45,6 +47,8 @@ export function LiveMode({
   appendNoThink: boolean;
   /** Switch-less reasoning models (Qwen3.5+): disable thinking via the backend. */
   forceNoThink: boolean;
+  voiceSid: number;
+  voiceSpeed: number;
 }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<Status>("listening");
@@ -247,7 +251,7 @@ export function LiveMode({
       synthChain = synthChain.then(async () => {
         if (speech.isStopped) return;
         try {
-          const { audio, sampleRate } = await synthesize(clean);
+          const { audio, sampleRate } = await synthesize(clean, voiceSpeed, voiceSid);
           if (!speech.isStopped) speech.enqueue(decodeAudio(audio), sampleRate, clean);
         } catch (e) {
           setError(String(e));

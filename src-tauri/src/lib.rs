@@ -1,5 +1,6 @@
 pub mod attach;
 mod commands;
+pub mod download;
 pub mod gpu;
 mod inference;
 pub mod ocr;
@@ -127,6 +128,9 @@ pub fn run() {
             commands::get_model,
             commands::get_hardware_info,
             commands::get_gpu_usage,
+            commands::write_text_file,
+            download::list_hf_ggufs,
+            download::download_model,
             update::check_update,
             update::run_update,
             commands::list_models,
@@ -142,6 +146,7 @@ pub fn run() {
             store::get_messages,
             store::delete_conversation,
             store::rename_conversation,
+            store::search_conversations,
             search::web_search,
             search::web_research,
             search::fetch_url,

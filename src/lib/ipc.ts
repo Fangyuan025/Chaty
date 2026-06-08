@@ -1,7 +1,7 @@
 // Typed bridge to the Rust backend. Keep this the single source of truth for
 // the IPC contract so the UI never touches `invoke` string names directly.
 import { invoke, Channel } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 export type Role = "system" | "user" | "assistant";
 
@@ -15,6 +15,10 @@ export interface GenParams {
   topP: number;
   maxTokens: number;
   seed?: number | null;
+  topK?: number;
+  minP?: number;
+  repeatPenalty?: number;
+  stop?: string[];
   /** Reasoning control for switch-less models (Qwen3.5+): false force-disables
    *  thinking, true/undefined leaves the model default. */
   think?: boolean | null;
@@ -140,6 +144,33 @@ export interface ModelEntry {
   path: string;
 }
 
+export interface HfFile {
+  name: string;
+  size: number;
+  url: string;
+}
+
+/** List `.gguf` files in a HuggingFace repo (`owner/name` or a full URL). */
+export async function listHfGgufs(repo: string): Promise<HfFile[]> {
+  return await invoke<HfFile[]>("list_hf_ggufs", { repo });
+}
+
+export type DownloadProgress =
+  | { type: "progress"; downloaded: number; total: number }
+  | { type: "done"; path: string }
+  | { type: "error"; message: string };
+
+/** Download a GGUF into the models folder, streaming progress to `onProgress`. */
+export async function downloadModel(
+  url: string,
+  filename: string,
+  onProgress: (p: DownloadProgress) => void,
+): Promise<void> {
+  const channel = new Channel<DownloadProgress>();
+  channel.onmessage = onProgress;
+  await invoke("download_model", { url, filename, onProgress: channel });
+}
+
 /** List `.gguf` models found in the install/app-data `models/` folders. */
 export async function listModels(): Promise<ModelEntry[]> {
   return await invoke<ModelEntry[]>("list_models");
@@ -220,6 +251,26 @@ export async function replaceMessages(
 
 export async function deleteConversation(id: string): Promise<void> {
   await invoke("delete_conversation", { id });
+}
+
+/** Conversation ids whose message bodies match `query` (case-insensitive). */
+export async function searchConversations(query: string): Promise<string[]> {
+  return await invoke<string[]>("search_conversations", { query });
+}
+
+/** Show a save dialog and write `content`; returns true if the user saved. */
+export async function exportTextFile(
+  defaultName: string,
+  content: string,
+  ext: "md" | "json",
+): Promise<boolean> {
+  const path = await save({
+    defaultPath: defaultName,
+    filters: [{ name: ext === "md" ? "Markdown" : "JSON", extensions: [ext] }],
+  });
+  if (!path) return false;
+  await invoke("write_text_file", { path, content });
+  return true;
 }
 
 export async function renameConversation(id: string, title: string): Promise<void> {

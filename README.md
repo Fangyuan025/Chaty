@@ -22,14 +22,17 @@ Tauri 2 · React + TypeScript · Rust · llama.cpp · [**Releases**](../../relea
 - Fast multi‑turn via a persistent context with KV‑cache reuse.
 - **Adjustable context window** (up to the model's native length) with auto‑summary of older turns near the limit.
 - **Model hot‑swap** from a `models/` folder; the last model auto‑loads on launch.
+- **In‑app model downloader** — pull GGUF files straight from a HuggingFace repo with live progress.
+- Full **sampling controls** (Top‑K, Min‑P, repeat penalty, stop sequences) and saveable **prompt presets**.
 
 **Chat UI**
-- Streaming, foldable `<think>` panel + thinking toggle, KaTeX, tables, per‑block code copy.
+- Streaming, foldable `<think>` panel + thinking toggle (incl. Qwen3.5+), KaTeX, tables, **Mermaid** diagrams, per‑block code copy.
 - **In‑app HTML preview** (zoomable) and a **`/webdesign`** mode for polished single‑file UIs.
-- Compact **Tools** menu, plus **Model info** & **Hardware** panels (top‑right).
+- **Drag‑and‑drop** attachments, conversation **export** (Markdown/JSON) & **full‑text search**.
+- **Light / dark / system** themes; compact **Tools** menu, plus **Model info** & **Hardware** panels.
 
 **Voice** — English, runs on CPU so it never touches the LLM's VRAM
-- Voice in/out with silence auto‑send and sentence‑by‑sentence read‑aloud.
+- Voice in/out with silence auto‑send and sentence‑by‑sentence read‑aloud; **11 voices** + speed control.
 - **Live mode** — hands‑free continuous conversation with an animated orb.
 
 **More**

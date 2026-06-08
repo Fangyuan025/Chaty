@@ -427,6 +427,20 @@ fn run_turn(
     let mut n_decoded: u32 = 0;
     let mut n_past = n_prompt as i32;
 
+    // Stop sequences: hold back up to `max_stop-1` chars before emitting so a stop
+    // string straddling token boundaries is still caught, then trim at the match.
+    let stops: Vec<String> = req
+        .params
+        .stop
+        .iter()
+        .map(|s| s.replace("\\n", "\n"))
+        .filter(|s| !s.is_empty())
+        .collect();
+    let max_stop = stops.iter().map(|s| s.len()).max().unwrap_or(0);
+    let mut out = String::new(); // all decoded text so far
+    let mut emitted = 0usize; // bytes of `out` already streamed
+    let mut stopped = false;
+
     loop {
         if cancel.load(Ordering::Relaxed) {
             break;
@@ -444,10 +458,37 @@ fn run_turn(
         if valid > 0 {
             let text = String::from_utf8_lossy(&pending[..valid]).into_owned();
             pending.drain(..valid);
-            if !text.is_empty() {
-                sink.send(StreamEvent::Token { text })?;
+            out.push_str(&text);
+        }
+
+        // Emit the portion of `out` that is safe to send.
+        if max_stop == 0 {
+            if emitted < out.len() {
+                let chunk = out[emitted..].to_string();
+                emitted = out.len();
+                if !chunk.is_empty() {
+                    sink.send(StreamEvent::Token { text: chunk })?;
+                }
+            }
+        } else if let Some(rel) = stops.iter().filter_map(|s| out[emitted..].find(s)).min() {
+            let abs = emitted + rel;
+            if abs > emitted {
+                sink.send(StreamEvent::Token { text: out[emitted..abs].to_string() })?;
+            }
+            emitted = abs;
+            stopped = true;
+            break;
+        } else {
+            let mut safe = out.len().saturating_sub(max_stop - 1);
+            while safe > emitted && !out.is_char_boundary(safe) {
+                safe -= 1;
+            }
+            if safe > emitted {
+                sink.send(StreamEvent::Token { text: out[emitted..safe].to_string() })?;
+                emitted = safe;
             }
         }
+
         n_decoded += 1;
         if n_decoded >= req.params.max_tokens || n_past + 1 >= n_ctx as i32 {
             break;
@@ -459,11 +500,16 @@ fn run_turn(
         ctx.decode(&mut batch).context("decode failed")?;
         idx = batch.n_tokens() - 1;
     }
-    // Flush any trailing bytes left in the buffer at end of generation.
-    if !pending.is_empty() {
-        let text = String::from_utf8_lossy(&pending).into_owned();
-        if !text.is_empty() {
-            let _ = sink.send(StreamEvent::Token { text });
+    // Flush the unsent tail (unless we halted on a stop sequence).
+    if !stopped {
+        if emitted < out.len() {
+            let _ = sink.send(StreamEvent::Token { text: out[emitted..].to_string() });
+        }
+        if !pending.is_empty() {
+            let text = String::from_utf8_lossy(&pending).into_owned();
+            if !text.is_empty() {
+                let _ = sink.send(StreamEvent::Token { text });
+            }
         }
     }
 
@@ -628,12 +674,26 @@ fn quant_name(ft: u32) -> &'static str {
 
 fn build_sampler(params: &GenParams) -> LlamaSampler {
     let seed = params.seed.map_or(0xFFFF_FFFF, |s| s as u32);
-    if params.temperature <= 0.0 {
-        LlamaSampler::chain_simple([LlamaSampler::greedy()])
+    // Repetition penalty applies to greedy and sampled decoding alike.
+    let repeat = if params.repeat_penalty > 0.0 {
+        params.repeat_penalty
     } else {
+        1.0
+    };
+    let penalties = LlamaSampler::penalties(64, repeat, 0.0, 0.0);
+    if params.temperature <= 0.0 {
+        LlamaSampler::chain_simple([penalties, LlamaSampler::greedy()])
+    } else {
+        let top_k = if params.top_k == 0 {
+            -1
+        } else {
+            params.top_k as i32
+        };
         LlamaSampler::chain_simple([
-            LlamaSampler::top_k(40),
+            penalties,
+            LlamaSampler::top_k(top_k),
             LlamaSampler::top_p(params.top_p, 1),
+            LlamaSampler::min_p(params.min_p.max(0.0), 1),
             LlamaSampler::temp(params.temperature),
             LlamaSampler::dist(seed),
         ])

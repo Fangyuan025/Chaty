@@ -62,6 +62,12 @@ pub fn get_gpu_usage() -> Option<crate::gpu::GpuUsage> {
     crate::gpu::gpu_usage()
 }
 
+/// Write `content` to `path` (used by conversation export after a save dialog).
+#[tauri::command]
+pub fn write_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {e}"))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelEntry {

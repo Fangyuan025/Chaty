@@ -33,6 +33,65 @@ function codeLang(children: ReactNode): string {
   return m ? m[1].toLowerCase() : "";
 }
 
+/** Plain text of a fenced block's inner <code>. */
+function codeText(children: ReactNode): string {
+  const el = children as ReactElement<{ children?: ReactNode }>;
+  const inner = el?.props?.children;
+  if (typeof inner === "string") return inner;
+  if (Array.isArray(inner)) return inner.filter((c) => typeof c === "string").join("");
+  return "";
+}
+
+let mermaidReady: Promise<typeof import("mermaid").default> | null = null;
+let mermaidSeq = 0;
+
+/** Lazily-loaded Mermaid diagram. Falls back to the raw code on parse errors
+ *  (e.g. while the block is still streaming in). */
+function Mermaid({ code }: { code: string }) {
+  const [svg, setSvg] = useState("");
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const trimmed = code.trim();
+    if (!trimmed) return;
+    if (!mermaidReady) {
+      mermaidReady = import("mermaid").then((m) => {
+        m.default.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+        return m.default;
+      });
+    }
+    mermaidReady
+      .then(async (mermaid) => {
+        try {
+          await mermaid.parse(trimmed);
+          const { svg: out } = await mermaid.render(`mmd-${mermaidSeq++}`, trimmed);
+          if (alive) {
+            setSvg(out);
+            setFailed(false);
+          }
+        } catch {
+          if (alive) setFailed(true);
+        }
+      })
+      .catch(() => {
+        if (alive) setFailed(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [code]);
+
+  if (svg && !failed) {
+    return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
+  }
+  return (
+    <pre className="mermaid-src">
+      <code>{code}</code>
+    </pre>
+  );
+}
+
 /** A live, sandboxed preview of an HTML snippet rendered in an overlay. */
 function HtmlPreview({ html, onClose }: { html: string; onClose: () => void }) {
   const { t } = useI18n();
@@ -112,6 +171,11 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
     const sniff = text.startsWith("<!doctype") || text.startsWith("<html") || text.startsWith("<svg");
     setIsHtml(lang === "html" || lang === "htm" || (lang === "" && sniff));
   });
+
+  // Mermaid diagrams render in place of the code block.
+  if (lang === "mermaid") {
+    return <Mermaid code={codeText(children)} />;
+  }
 
   const copy = () => {
     const text = ref.current?.textContent ?? "";
