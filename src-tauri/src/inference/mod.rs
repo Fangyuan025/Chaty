@@ -114,6 +114,8 @@ pub struct ModelInfo {
     pub has_chat_template: bool,
     /// Best-effort: the model appears to support `<think>` reasoning.
     pub supports_thinking: bool,
+    /// The chat template honours the `/no_think` soft switch (Qwen3, not 3.5+).
+    pub think_switch: bool,
     /// Best-effort: the chat template supports tool / function calling.
     pub supports_tools: bool,
     /// Best-effort: the model appears to be multimodal (vision).

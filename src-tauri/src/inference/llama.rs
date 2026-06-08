@@ -90,7 +90,7 @@ impl LlamaEngine {
     ///
     /// `gpu_pref`: `None`/negative = auto‑tune by VRAM, `Some(0)` = force CPU,
     /// `Some(n>0)` = offload exactly `n` layers.
-    pub fn load(path: &str, gpu_pref: Option<i32>) -> Result<(Self, ModelInfo)> {
+    pub fn load(path: &str, gpu_pref: Option<i32>, n_ctx_pref: Option<u32>) -> Result<(Self, ModelInfo)> {
         let backend = llama_backend()?;
         if !Path::new(path).exists() {
             bail!("model file not found: {path}");
@@ -144,7 +144,7 @@ impl LlamaEngine {
 
             // Create the context in the worker and wait for the result, so a
             // KV/compute-buffer OOM is caught here and folded into the back-off.
-            let n_ctx = model.n_ctx_train().clamp(512, 8192);
+            let n_ctx = clamp_n_ctx(model.n_ctx_train(), n_ctx_pref);
             let (tx, rx) = std::sync::mpsc::channel::<Job>();
             let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
             let worker_model = model.clone();
@@ -187,7 +187,7 @@ impl LlamaEngine {
         let warning = oom_fallback.then(|| "gpu-oom".to_string());
 
         let n_ctx_train = model.n_ctx_train();
-        let n_ctx = n_ctx_train.clamp(512, 8192);
+        let n_ctx = clamp_n_ctx(n_ctx_train, n_ctx_pref);
         let name = Path::new(path)
             .file_name()
             .and_then(|s| s.to_str())
@@ -216,6 +216,11 @@ impl LlamaEngine {
             || ["qwen3", "qwq", "deepseek-r1", "-r1", "reasoning", "thinking", "magistral", "cogito"]
                 .iter()
                 .any(|k| name_lc.contains(k) || arch_lc.contains(k));
+        // The `/no_think` soft switch is a Qwen3-era convention. Qwen3.5+ dropped
+        // it for an `enable_thinking` template flag, so the toggle must NOT inject
+        // `/no_think` there (it would just leak into the prompt as noise). Detect
+        // the switch by the template actually mentioning it.
+        let think_switch = template_lc.contains("no_think") || template_lc.contains("/think");
         let multimodal = model
             .meta_val_str(&format!("{arch}.vision.block_count"))
             .is_ok()
@@ -250,6 +255,7 @@ impl LlamaEngine {
             n_embd: Some(model.n_embd() as u32),
             has_chat_template: template.is_some(),
             supports_thinking,
+            think_switch,
             supports_tools,
             multimodal,
             warning,
@@ -542,6 +548,17 @@ fn backoff_layers(layers: i32) -> i32 {
         layers / 2
     } else {
         0
+    }
+}
+
+/// Resolve the context window to load with. Honours a user preference (clamped to
+/// the model's trained length and never below 512); otherwise defaults to a
+/// memory-friendly 8192 cap even when the model was trained far longer.
+fn clamp_n_ctx(trained: u32, pref: Option<u32>) -> u32 {
+    let ceiling = trained.max(512);
+    match pref {
+        Some(n) if n > 0 => n.clamp(512, ceiling),
+        _ => trained.clamp(512, 8192),
     }
 }
 

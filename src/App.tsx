@@ -17,6 +17,7 @@ import {
 } from "./lib/audio";
 import { SettingsPanel, type GenSettings, defaultSettings } from "./components/SettingsPanel";
 import { answerOnly, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
+import { copyToClipboard } from "./lib/clipboard";
 import {
   cancelGeneration,
   checkUpdate,
@@ -46,6 +47,7 @@ import {
   type GenStats,
   type ModelEntry,
   type ModelInfo,
+  type Role,
   type SearchResult,
   type StreamEvent,
   type UpdateInfo,
@@ -64,7 +66,7 @@ const LAST_MODEL_KEY = "chaty.lastModel";
 const convTitle = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 40) || "新对话";
 
 const copyText = (t: string) => {
-  navigator.clipboard?.writeText(t).catch(() => {});
+  void copyToClipboard(t);
 };
 
 /** Strip a model's reasoning/quotes from a generated title and clamp length. */
@@ -133,6 +135,23 @@ function formatDate(lang: Lang): string {
   });
 }
 
+/** Rough token estimate: CJK ≈ 1 token/char, other text ≈ 1 token per ~3.6 chars. */
+function estimateTokens(text: string): number {
+  let cjk = 0;
+  for (const ch of text) {
+    const c = ch.codePointAt(0) ?? 0;
+    if (
+      (c >= 0x3000 && c <= 0x9fff) ||
+      (c >= 0xac00 && c <= 0xd7a3) ||
+      (c >= 0xf900 && c <= 0xfaff) ||
+      (c >= 0xff00 && c <= 0xffef)
+    ) {
+      cjk++;
+    }
+  }
+  return Math.ceil(cjk + (text.length - cjk) / 3.6);
+}
+
 function loadSettings(): GenSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -182,6 +201,7 @@ export default function App() {
     }
   });
   const [searching, setSearching] = useState(false);
+  const [composing, setComposing] = useState(false);
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [attaching, setAttaching] = useState(false);
   const [attachError, setAttachError] = useState("");
@@ -215,7 +235,7 @@ export default function App() {
         if (!target) return;
         setLoadingModel(true);
         try {
-          const info = await loadModel(target, settings.gpuLayers);
+          const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined);
           setModel(info);
           localStorage.setItem(LAST_MODEL_KEY, info.path);
           noticeForLoad(info);
@@ -344,7 +364,7 @@ export default function App() {
                   ? "请用一个不超过12个汉字的简短短语，概括下面这条消息的主题，作为对话标题。只输出标题本身，不要引号、标点、解释或思考过程。"
                   : "Summarize the topic of the following message as a short chat title (max ~5 words). Output only the title — no quotes, punctuation, explanation, or reasoning.",
             },
-            { role: "user", content: `${firstMsg}\n/no_think` },
+            { role: "user", content: `${firstMsg}${model?.thinkSwitch ? "\n/no_think" : ""}` },
           ],
           params: { temperature: 0.2, topP: 0.9, maxTokens: 48 },
         },
@@ -380,7 +400,10 @@ export default function App() {
                   ? "根据下面的对话历史，把用户最新的问题改写成一个用于网页搜索的查询词：补全省略的指代和主体，使其能独立用于搜索。只输出查询词本身，不要解释、引号或思考过程。"
                   : "Using the conversation history, rewrite the user's latest question into a standalone web search query (resolve pronouns / omitted subjects). Output only the query — no explanation, quotes, or reasoning.",
             },
-            { role: "user", content: `${recent}\n\n最新问题：${latest}\n/no_think` },
+            {
+              role: "user",
+              content: `${recent}\n\n最新问题：${latest}${model?.thinkSwitch ? "\n/no_think" : ""}`,
+            },
           ],
           params: { temperature: 0.2, topP: 0.9, maxTokens: 64 },
         },
@@ -450,7 +473,7 @@ export default function App() {
     if (busy || model?.path === path) return;
     setLoadingModel(true);
     try {
-      const info = await loadModel(path, settings.gpuLayers);
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined);
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
       noticeForLoad(info);
@@ -468,7 +491,7 @@ export default function App() {
       const path = await pickModelFile();
       if (!path) return;
       setLoadingModel(true);
-      const info = await loadModel(path, settings.gpuLayers);
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined);
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
       noticeForLoad(info);
@@ -555,6 +578,74 @@ export default function App() {
     }
   }
 
+  /** When a conversation nears the model's context window, summarise the older
+   *  turns into one note and keep only the recent tail verbatim. Returns `null`
+   *  when there's still plenty of room (the common case). Non-destructive: the
+   *  stored/displayed messages are never touched — only the prompt we send. */
+  async function composeContext(
+    msgs: { role: Role; content: string }[],
+  ): Promise<{ summary: string; tail: { role: Role; content: string }[] } | null> {
+    const nCtx = model?.nCtx ?? 0;
+    if (!nCtx || msgs.length < 6) return null;
+
+    const reserve = settings.maxTokens + 700; // room for the answer + chat markup
+    const budget = Math.max(1024, nCtx - reserve);
+    const cost = (m: { content: string }) => estimateTokens(m.content) + 8;
+    const total = msgs.reduce((s, m) => s + cost(m), 0);
+    if (total <= budget * 0.85) return null; // still comfortable
+
+    // Keep the most recent turns within ~half the budget; summarise the rest.
+    const tailCap = budget * 0.5;
+    let acc = 0;
+    let keep = 0;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      acc += cost(msgs[i]);
+      if (acc > tailCap && keep >= 2) break;
+      keep++;
+    }
+    const splitAt = Math.max(1, msgs.length - keep);
+    const head = msgs.slice(0, splitAt);
+    const tail = msgs.slice(splitAt);
+    if (head.length === 0) return null;
+
+    let transcript = head
+      .map((m) => `${m.role === "user" ? "用户" : "助手"}: ${m.content}`)
+      .join("\n");
+    if (transcript.length > 7000) transcript = transcript.slice(-7000);
+
+    setComposing(true);
+    let out = "";
+    try {
+      await generate(
+        {
+          messages: [
+            {
+              role: "system",
+              content:
+                lang === "zh"
+                  ? "请把下面这段较早的对话压缩成简洁的要点摘要，保留关键事实、结论、用户偏好和未决事项，省略寒暄。只输出摘要正文，不要解释或思考过程。"
+                  : "Condense the earlier conversation below into a concise summary of key facts, conclusions, user preferences, and open threads. Output only the summary — no preamble or reasoning.",
+            },
+            {
+              role: "user",
+              content: `${transcript}${model?.thinkSwitch ? "\n/no_think" : ""}`,
+            },
+          ],
+          params: { temperature: 0.3, topP: 0.9, maxTokens: 400 },
+        },
+        (ev) => {
+          if (ev.type === "token") out += ev.text;
+        },
+      );
+    } finally {
+      setComposing(false);
+    }
+
+    const summary = stripThink(out).trim();
+    if (!summary) return null;
+    return { summary: t("contextSummary") + summary, tail };
+  }
+
   /** Core generation turn: web search → build prompt → stream into `asstId`,
    *  then persist. Reused by send, regenerate and edit. */
   async function streamAssistant(
@@ -627,16 +718,39 @@ export default function App() {
       }
     }
 
-    // Thinking-mode control (Qwen3-style `/think` · `/no_think`): only meaningful
-    // when the model actually supports reasoning — otherwise the tag is noise the
-    // model may echo. Web search also forces no-think to keep answers concise.
-    const historyForModel = history.map(({ role, content }) => ({ role, content }));
+    // Never feed a prior turn's reasoning back to the model: Qwen's own guidance
+    // is that history should carry only the final answer, and stale <think> blocks
+    // just waste context and confuse newer (3.5+) reasoning parsers.
+    const historyForModel = history.map(({ role, content }) => ({
+      role,
+      content: role === "assistant" ? stripThink(content) : content,
+    }));
+
+    // Near the context limit: summarise the older turns so the user can keep the
+    // conversation going. This is non-destructive — the UI still shows every
+    // message; only the model-facing prompt is compacted into a summary + tail.
+    let summaryNote = "";
+    let modelHistory = historyForModel;
+    try {
+      const comp = await composeContext(historyForModel);
+      if (comp) {
+        summaryNote = comp.summary;
+        modelHistory = comp.tail;
+      }
+    } catch (e) {
+      console.error(e);
+    }
+
+    // Thinking-mode control: the `/no_think` soft switch is a Qwen3-era feature.
+    // Qwen3.5+ dropped it (it would leak into the prompt as literal text), so only
+    // inject it when the chat template actually honours the switch. Web search also
+    // forces no-think to keep answers concise.
     if (
-      historyForModel.length > 0 &&
-      model?.supportsThinking &&
+      modelHistory.length > 0 &&
+      model?.thinkSwitch &&
       (!thinkEnabled || webEnabled)
     ) {
-      const last = historyForModel[historyForModel.length - 1];
+      const last = modelHistory[modelHistory.length - 1];
       last.content = `${last.content}\n/no_think`;
     }
 
@@ -666,7 +780,8 @@ export default function App() {
           ]
         : []),
       ...(webContext ? [{ role: "system" as const, content: webContext }] : []),
-      ...historyForModel,
+      ...(summaryNote ? [{ role: "system" as const, content: summaryNote }] : []),
+      ...modelHistory,
     ];
 
     // Streaming text-to-speech: synthesize & play sentence-by-sentence as the
@@ -1077,6 +1192,7 @@ export default function App() {
               onChange={setSettings}
               onClose={() => setShowSettings(false)}
               maxTokensLimit={Math.max(1024, model?.nCtx ?? 4096)}
+              ctxTrainLimit={model?.nCtxTrain}
             />
           )}
         </div>
@@ -1144,6 +1260,7 @@ export default function App() {
                       content={m.content}
                       streaming={streamingId === m.id}
                       searching={streamingId === m.id && searching}
+                      composing={streamingId === m.id && composing}
                       hideThinking={!thinkEnabled}
                     />
                     {m.sources && m.sources.length > 0 && (
@@ -1369,14 +1486,20 @@ export default function App() {
                       <span className="ti-check">{webEnabled ? "✓" : ""}</span>
                     </button>
                     <button
-                      className={`tool-item ${thinkEnabled && model?.supportsThinking ? "on" : ""}`}
+                      className={`tool-item ${thinkEnabled && model?.thinkSwitch ? "on" : ""}`}
                       onClick={() => {
                         const next = !thinkEnabled;
                         setThinkEnabled(next);
                         if (next) setWebEnabled(false); // thinking ⇄ web search are exclusive
                       }}
-                      disabled={!model?.supportsThinking}
-                      title={model && !model.supportsThinking ? t("thinkUnsupported") : undefined}
+                      disabled={!model?.thinkSwitch}
+                      title={
+                        model && !model.thinkSwitch
+                          ? model.supportsThinking
+                            ? t("thinkAuto")
+                            : t("thinkUnsupported")
+                          : undefined
+                      }
                     >
                       <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
                         <path d="M9.5 18h5M10.5 21h3" strokeLinecap="round" />
@@ -1384,7 +1507,7 @@ export default function App() {
                       </svg>
                       <span className="ti-label">{t("toolThink")}</span>
                       <span className="ti-check">
-                        {thinkEnabled && model?.supportsThinking ? "✓" : ""}
+                        {thinkEnabled && model?.thinkSwitch ? "✓" : ""}
                       </span>
                     </button>
                     <button
@@ -1548,7 +1671,7 @@ export default function App() {
               content: m.role === "assistant" ? stripThink(m.content) : m.content,
             }))}
           onTurn={recordLiveTurn}
-          appendNoThink={model?.supportsThinking ?? false}
+          appendNoThink={model?.thinkSwitch ?? false}
         />
       )}
     </div>

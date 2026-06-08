@@ -30,6 +30,9 @@ export const T = {
   htmlPreviewTitle: { zh: "预览 HTML 渲染效果", en: "Preview rendered HTML" },
   openInBrowser: { zh: "在浏览器打开", en: "Open in browser" },
   closePreview: { zh: "关闭预览", en: "Close preview" },
+  zoomIn: { zh: "放大（Ctrl +）", en: "Zoom in (Ctrl +)" },
+  zoomOut: { zh: "缩小（Ctrl −）", en: "Zoom out (Ctrl −)" },
+  zoomReset: { zh: "重置缩放（Ctrl 0）", en: "Reset zoom (Ctrl 0)" },
   noConversations: { zh: "暂无历史会话", en: "No conversations yet" },
   deleteConv: { zh: "删除会话", en: "Delete conversation" },
   // empty state
@@ -54,6 +57,10 @@ export const T = {
   toolThink: { zh: "思考模式", en: "Thinking mode" },
   toolDesign: { zh: "网页设计模式", en: "Web design mode" },
   thinkUnsupported: { zh: "当前模型不支持思考模式", en: "This model doesn't support thinking" },
+  thinkAuto: {
+    zh: "该模型（Qwen3.5+）由架构自动管理思考，无需手动开关",
+    en: "Thinking is auto-managed by this model (Qwen3.5+); no manual switch",
+  },
   // update banner
   updateAvailable: { zh: "发现新版本 v{v}", en: "Update available — v{v}" },
   updateNow: { zh: "立即更新", en: "Update now" },
@@ -100,6 +107,11 @@ export const T = {
   cancel: { zh: "取消", en: "Cancel" },
   // assistant message
   searching: { zh: "正在联网搜索…", en: "Searching the web…" },
+  composing: { zh: "正在整理上文…", en: "Composing earlier context…" },
+  contextSummary: {
+    zh: "【早前对话摘要，供延续参考】\n",
+    en: "[Summary of earlier conversation, for continuity]\n",
+  },
   thinking: { zh: "正在思考", en: "Thinking" },
   thoughtExpand: { zh: "已深度思考 · 点击展开", en: "Reasoned · click to expand" },
   thoughtCollapse: { zh: "已深度思考 · 点击收起", en: "Reasoned · click to collapse" },
@@ -125,6 +137,14 @@ export const T = {
   gpuHint: {
     zh: "自动模式会按显存把尽量多的层放到 GPU。更改将在下次加载模型时生效。",
     en: "Auto fills the GPU with as many layers as VRAM allows. Changes apply on the next model load.",
+  },
+  // context length settings
+  ctxLength: { zh: "上下文长度", en: "Context length" },
+  ctxAuto: { zh: "自动", en: "Auto" },
+  ctxTokens: { zh: "上下文 Token", en: "Context tokens" },
+  ctxHint: {
+    zh: "自动按显存选择（上限约 8192）。调高可记住更长对话，但更耗显存/内存。更改将在下次加载模型时生效。",
+    en: "Auto picks a memory-friendly size (≤8192). Higher remembers longer chats but uses more VRAM/RAM. Changes apply on the next model load.",
   },
   // hardware panel
   hwTitleBtn: { zh: "硬件信息", en: "Hardware" },

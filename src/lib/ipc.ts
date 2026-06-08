@@ -40,6 +40,8 @@ export interface ModelInfo {
   nEmbd?: number | null;
   hasChatTemplate: boolean;
   supportsThinking: boolean;
+  /** The chat template honours the `/no_think` soft switch (Qwen3, not 3.5+). */
+  thinkSwitch: boolean;
   supportsTools: boolean;
   multimodal: boolean;
   /** Non-fatal load warning code (e.g. "gpu-oom"), or null. */
@@ -113,9 +115,17 @@ export async function pickModelFile(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-/** Load a GGUF. `gpuLayers`: omit/-1 = auto‑tune by VRAM, 0 = CPU, n = n layers. */
-export async function loadModel(path: string, gpuLayers?: number): Promise<ModelInfo> {
-  return await invoke<ModelInfo>("load_model", { path, gpuLayers });
+/**
+ * Load a GGUF. `gpuLayers`: omit/-1 = auto‑tune by VRAM, 0 = CPU, n = n layers.
+ * `nCtx`: omit = memory-friendly default (≤8192), n = desired context window
+ * (clamped to the model's trained length).
+ */
+export async function loadModel(
+  path: string,
+  gpuLayers?: number,
+  nCtx?: number,
+): Promise<ModelInfo> {
+  return await invoke<ModelInfo>("load_model", { path, gpuLayers, nCtx });
 }
 
 export async function getModel(): Promise<ModelInfo | null> {

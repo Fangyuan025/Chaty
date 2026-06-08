@@ -15,6 +15,7 @@ import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
 import { useI18n } from "../lib/i18n";
+import { copyToClipboard } from "../lib/clipboard";
 
 const remarkPlugins = [remarkGfm, remarkMath];
 // `throwOnError: false` keeps partial LaTeX from crashing mid-stream;
@@ -35,9 +36,22 @@ function codeLang(children: ReactNode): string {
 /** A live, sandboxed preview of an HTML snippet rendered in an overlay. */
 function HtmlPreview({ html, onClose }: { html: string; onClose: () => void }) {
   const { t } = useI18n();
+  const [zoom, setZoom] = useState(1);
+  const clampZoom = (z: number) => Math.min(2.5, Math.max(0.4, Math.round(z * 100) / 100));
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
+      else if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        setZoom((z) => clampZoom(z + 0.1));
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "-") {
+        e.preventDefault();
+        setZoom((z) => clampZoom(z - 0.1));
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "0") {
+        e.preventDefault();
+        setZoom(1);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -48,16 +62,35 @@ function HtmlPreview({ html, onClose }: { html: string; onClose: () => void }) {
       <div className="preview-modal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="preview-bar">
           <span className="preview-title">HTML</span>
+          <div className="preview-zoom">
+            <button onClick={() => setZoom((z) => clampZoom(z - 0.1))} title={t("zoomOut")}>
+              −
+            </button>
+            <button className="preview-zoom-val" onClick={() => setZoom(1)} title={t("zoomReset")}>
+              {Math.round(zoom * 100)}%
+            </button>
+            <button onClick={() => setZoom((z) => clampZoom(z + 0.1))} title={t("zoomIn")}>
+              +
+            </button>
+          </div>
           <button className="preview-close" onClick={onClose} title={t("closePreview")}>
             ×
           </button>
         </div>
-        <iframe
-          className="preview-frame"
-          title="HTML preview"
-          srcDoc={html}
-          sandbox="allow-scripts allow-modals allow-forms allow-popups allow-pointer-lock"
-        />
+        <div className="preview-body">
+          <iframe
+            className="preview-frame"
+            title="HTML preview"
+            srcDoc={html}
+            sandbox="allow-scripts allow-modals allow-forms allow-popups allow-pointer-lock"
+            style={{
+              width: `${100 / zoom}%`,
+              height: `${100 / zoom}%`,
+              transform: `scale(${zoom})`,
+              transformOrigin: "0 0",
+            }}
+          />
+        </div>
       </div>
     </div>,
     document.body,
@@ -82,13 +115,10 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
 
   const copy = () => {
     const text = ref.current?.textContent ?? "";
-    navigator.clipboard
-      ?.writeText(text)
-      .then(() => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1400);
-      })
-      .catch(() => {});
+    void copyToClipboard(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    });
   };
 
   return (

@@ -788,8 +788,39 @@ body {
   background: var(--surface);
   color: var(--text);
 }
-.preview-frame {
+.preview-zoom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  margin-right: 6px;
+}
+.preview-zoom button {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  font-size: 14px;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.preview-zoom button:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+.preview-zoom-val {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.preview-body {
   flex: 1;
+  overflow: hidden;
+  background: #fff;
+}
+.preview-frame {
+  display: block;
   border: none;
   background: #fff;
 }

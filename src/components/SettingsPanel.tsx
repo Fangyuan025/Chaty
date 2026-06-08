@@ -7,6 +7,9 @@ export interface GenSettings {
   maxTokens: number;
   /** GPU offload: -1 = auto‑tune by VRAM, 0 = CPU only, >0 = that many layers. */
   gpuLayers: number;
+  /** Context window to load the model with: 0 = memory-friendly default (≤8192),
+   *  >0 = that many tokens (clamped to the model's trained length). */
+  contextLength: number;
 }
 
 export const defaultSettings: GenSettings = {
@@ -15,6 +18,7 @@ export const defaultSettings: GenSettings = {
   topP: 0.95,
   maxTokens: 1024,
   gpuLayers: -1,
+  contextLength: 0,
 };
 
 export function SettingsPanel({
@@ -22,12 +26,15 @@ export function SettingsPanel({
   onChange,
   onClose,
   maxTokensLimit = 4096,
+  ctxTrainLimit,
 }: {
   value: GenSettings;
   onChange: (next: GenSettings) => void;
   onClose: () => void;
   /** Upper bound for the max-length slider — adapts to the loaded model's context. */
   maxTokensLimit?: number;
+  /** The loaded model's trained context length, used as the slider ceiling. */
+  ctxTrainLimit?: number | null;
 }) {
   const { t, lang, setLang } = useI18n();
   const set = <K extends keyof GenSettings>(key: K, v: GenSettings[K]) =>
@@ -153,6 +160,44 @@ export function SettingsPanel({
           </label>
         )}
         <div className="settings-hint">{t("gpuHint")}</div>
+
+        <label className="field">
+          <span>{t("ctxLength")}</span>
+          <div className="lang-switch">
+            <button
+              type="button"
+              className={value.contextLength <= 0 ? "active" : ""}
+              onClick={() => set("contextLength", 0)}
+            >
+              {t("ctxAuto")}
+            </button>
+            <button
+              type="button"
+              className={value.contextLength > 0 ? "active" : ""}
+              onClick={() =>
+                set("contextLength", value.contextLength > 0 ? value.contextLength : 8192)
+              }
+            >
+              {t("gpuCustom")}
+            </button>
+          </div>
+        </label>
+        {value.contextLength > 0 && (
+          <label className="field">
+            <span>
+              {t("ctxTokens")} <b>{value.contextLength}</b>
+            </span>
+            <input
+              type="range"
+              min={2048}
+              max={Math.max(8192, ctxTrainLimit ?? 32768)}
+              step={2048}
+              value={Math.min(value.contextLength, Math.max(8192, ctxTrainLimit ?? 32768))}
+              onChange={(e) => set("contextLength", Number(e.target.value))}
+            />
+          </label>
+        )}
+        <div className="settings-hint">{t("ctxHint")}</div>
 
         <button className="settings-reset" onClick={() => onChange(defaultSettings)}>
           {t("resetDefaults")}

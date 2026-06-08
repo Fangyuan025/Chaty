@@ -20,11 +20,12 @@ Tauri 2 · React + TypeScript · Rust · llama.cpp · [**Releases**](../../relea
 - Run any `.gguf` locally — tokenizer & chat template come straight from the file.
 - **GPU acceleration** — cross‑vendor **Vulkan**, auto‑tuned to your VRAM, graceful CPU fallback.
 - Fast multi‑turn via a persistent context with KV‑cache reuse.
+- **Adjustable context window** (up to the model's native length) with auto‑summary of older turns near the limit.
 - **Model hot‑swap** from a `models/` folder; the last model auto‑loads on launch.
 
 **Chat UI**
 - Streaming, foldable `<think>` panel + thinking toggle, KaTeX, tables, per‑block code copy.
-- **In‑app HTML preview** and a **`/webdesign`** mode for polished single‑file UIs.
+- **In‑app HTML preview** (zoomable) and a **`/webdesign`** mode for polished single‑file UIs.
 - Compact **Tools** menu, plus **Model info** & **Hardware** panels (top‑right).
 
 **Voice** — English, runs on CPU so it never touches the LLM's VRAM

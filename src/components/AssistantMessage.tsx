@@ -37,14 +37,17 @@ export function AssistantMessage({
   content,
   streaming,
   searching,
+  composing,
   hideThinking,
 }: {
   content: string;
   streaming: boolean;
   searching?: boolean;
+  composing?: boolean;
   hideThinking?: boolean;
 }) {
   const { t } = useI18n();
+  const busyHint = composing ? t("composing") : searching ? t("searching") : null;
 
   // Thinking off: never use the reasoning panel — strip the whole <think> block
   // and any stray tags so a buggy/empty panel can never appear.
@@ -61,10 +64,10 @@ export function AssistantMessage({
             <Markdown>{answer}</Markdown>
           </div>
         )}
-        {searching && !answer ? (
+        {busyHint && !answer ? (
           <span className="searching-hint">
             <span className="searching-spinner" />
-            {t("searching")}
+            {busyHint}
           </span>
         ) : streaming && !answer ? (
           <span className="cursor" />
@@ -120,10 +123,10 @@ export function AssistantMessage({
         </div>
       )}
 
-      {searching && !cleanAnswer && !thinking ? (
+      {busyHint && !cleanAnswer && !thinking ? (
         <span className="searching-hint">
           <span className="searching-spinner" />
-          {t("searching")}
+          {busyHint}
         </span>
       ) : streaming && !cleanAnswer && !thinking ? (
         <span className="cursor" />

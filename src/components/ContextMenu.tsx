@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useI18n } from "../lib/i18n";
+import { copyToClipboard, readFromClipboard } from "../lib/clipboard";
 
 interface MenuItem {
   label: string;
@@ -60,7 +61,7 @@ export function ContextMenu() {
           disabled: !hasSel,
           action: () => {
             const s = field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0);
-            navigator.clipboard?.writeText(s).catch(() => {});
+            void copyToClipboard(s);
             replaceSelection(field, "");
           },
         });
@@ -69,18 +70,14 @@ export function ContextMenu() {
           disabled: !hasSel,
           action: () => {
             const s = field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0);
-            navigator.clipboard?.writeText(s).catch(() => {});
+            void copyToClipboard(s);
           },
         });
         items.push({
           label: t("ctxPaste"),
           action: async () => {
-            try {
-              const text = await navigator.clipboard.readText();
-              replaceSelection(field, text);
-            } catch {
-              /* clipboard blocked */
-            }
+            const text = await readFromClipboard();
+            if (text) replaceSelection(field, text);
           },
         });
         items.push({
@@ -95,7 +92,7 @@ export function ContextMenu() {
         items.push({
           label: t("ctxCopy"),
           disabled: !selection,
-          action: () => navigator.clipboard?.writeText(selection).catch(() => {}),
+          action: () => void copyToClipboard(selection),
         });
         items.push({
           label: t("ctxSelectAll"),

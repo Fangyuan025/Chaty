@@ -9,6 +9,8 @@
     "opener:allow-open-url",
     "dialog:default",
     "dialog:allow-open",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text",
     "core:window:allow-minimize",
     "core:window:allow-unminimize",
     "core:window:allow-toggle-maximize",
