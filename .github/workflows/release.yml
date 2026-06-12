@@ -46,12 +46,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri }
       - run: npm ci
-      - name: Build .dmg (Metal)
-        run: npm run tauri build
+      - name: Build .app (Metal)
+        # Only the "app" bundle: Tauri's bundle_dmg.sh drives Finder via
+        # AppleScript, which fails on headless CI runners.
+        run: npm run tauri build -- --bundles app
+      - name: Package .dmg (headless hdiutil)
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          STAGE=$(mktemp -d)
+          cp -R src-tauri/target/release/bundle/macos/Chaty.app "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "Chaty" -srcfolder "$STAGE" -ov -format UDZO \
+            "Chaty_${VER}_aarch64.dmg"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          path: "*.dmg"
           if-no-files-found: error
 
   build-windows:
