@@ -2195,6 +2195,171 @@ body {
   white-space: pre-wrap;
 }
 
+/* Hover tooltips for parameter labels in settings. */
+.has-tip {
+  position: relative;
+  font-style: normal;
+  border-bottom: 1px dotted var(--text-dim);
+  cursor: help;
+}
+.has-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 0;
+  z-index: 90;
+  width: max-content;
+  max-width: 250px;
+  padding: 7px 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 8px 22px var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease 0.15s;
+}
+.has-tip:hover::after {
+  opacity: 1;
+}
+
+/* First-launch setup: hero CTA + recommendation modal. */
+.setup-cta {
+  margin-top: 18px;
+  padding: 11px 22px;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 11px;
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.1s;
+}
+.setup-cta:hover {
+  filter: brightness(1.08);
+}
+.setup-cta:active {
+  transform: scale(0.98);
+}
+.setup-modal {
+  width: 620px;
+  max-width: 92vw;
+  max-height: 84vh;
+  overflow-y: auto;
+  padding: 18px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px var(--shadow);
+}
+.setup-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.setup-title {
+  font-size: 16.5px;
+  font-weight: 700;
+}
+.setup-hw {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.setup-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.setup-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+}
+.setup-card-family {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 700;
+}
+.setup-card-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+.setup-card-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.setup-card-blurb {
+  flex: 1;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.setup-dl {
+  margin-top: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.setup-dl:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.setup-dl:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.setup-dl.ready {
+  color: #fff;
+  background: var(--accent);
+  border-color: transparent;
+}
+.setup-progress {
+  position: relative;
+  margin-top: 6px;
+  height: 32px;
+  background: var(--surface-2);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12.5px;
+}
+.setup-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--accent) 38%, transparent);
+  transition: width 0.25s ease;
+}
+.setup-progress span {
+  position: relative;
+}
+.setup-err {
+  font-size: 11.5px;
+  color: var(--danger);
+}
+.setup-foot {
+  margin-top: 13px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
 /* Focus-follows-generation: while reasoning streams, pin a small window to
    the newest text and fade the older lines out above (mask gradient). */
 .think-body.focus {

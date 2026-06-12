@@ -178,6 +178,55 @@ export const T = {
     en: "Auto = as much of the model's trained context as memory allows. Custom values are also capped to fit memory.",
   },
   reloadApply: { zh: "重新加载模型以生效", en: "Reload model to apply" },
+  // first-launch setup
+  setupBtn: { zh: "一键配置", en: "Set up for me" },
+  setupTitle: { zh: "为这台电脑挑选模型", en: "Models picked for this machine" },
+  setupBudget: { zh: "可用模型内存约", en: "model memory budget ≈" },
+  setupDownload: { zh: "下载", en: "Download" },
+  setupResolving: { zh: "正在查找…", en: "Resolving…" },
+  setupLoad: { zh: "加载此模型", en: "Load this model" },
+  setupNotFound: { zh: "未找到合适的 GGUF 文件", en: "No suitable GGUF file found" },
+  setupFoot: {
+    zh: "推荐按本机内存自动匹配规模与量化，下载自 HuggingFace，存入应用的 models 文件夹。",
+    en: "Sized & quantized for your memory, downloaded from HuggingFace into the app's models folder.",
+  },
+  // parameter tooltips
+  tipTemperature: {
+    zh: "随机性：越低回答越确定，越高越发散有创意（常用 0.7）",
+    en: "Randomness: lower = more deterministic, higher = more creative (0.7 is typical)",
+  },
+  tipTopP: {
+    zh: "核采样：只从累计概率前 P 的候选词中选择，与温度配合控制多样性",
+    en: "Nucleus sampling: choose only from tokens within the top-P cumulative probability",
+  },
+  tipTopK: {
+    zh: "只考虑概率最高的 K 个候选词；0 = 关闭此限制",
+    en: "Consider only the K most likely tokens; 0 disables the limit",
+  },
+  tipMinP: {
+    zh: "过滤相对概率低于最高候选 P 倍的词；0 = 关闭",
+    en: "Drop tokens whose probability is below P× the top token's; 0 disables",
+  },
+  tipRepeatPenalty: {
+    zh: "大于 1 时抑制重复用词；调得过高会伤害流畅度",
+    en: ">1 discourages repetition; too high hurts fluency",
+  },
+  tipMaxTokens: {
+    zh: "单次回复的最大 token 数；“不限制”时由上下文窗口决定",
+    en: "Max tokens per reply; with no limit, the context window is the bound",
+  },
+  tipStopSeqs: {
+    zh: "模型一旦输出这些字符串就立即停止生成",
+    en: "Generation stops immediately when the model emits any of these strings",
+  },
+  tipGpuAccel: {
+    zh: "放到 GPU 的网络层数；自动 = 按显存放尽量多的层",
+    en: "How many layers run on the GPU; Auto fills as many as memory allows",
+  },
+  tipCtxLength: {
+    zh: "模型能“记住”的对话长度（token）；越大越耗内存",
+    en: "How much conversation the model can hold (tokens); larger uses more memory",
+  },
   ejectingModel: { zh: "正在卸载旧模型…", en: "Ejecting old model…" },
   noLimit: { zh: "不限制", en: "No limit" },
   openModelsDir: { zh: "打开模型文件夹", en: "Open models folder" },

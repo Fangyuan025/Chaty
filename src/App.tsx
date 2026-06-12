@@ -19,6 +19,7 @@ import {
   type Recorder,
 } from "./lib/audio";
 import { SettingsPanel, type GenSettings, defaultSettings, parseStops } from "./components/SettingsPanel";
+import { SetupModal } from "./components/SetupModal";
 import { answerOnly, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
 import { copyToClipboard } from "./lib/clipboard";
 import {
@@ -205,6 +206,7 @@ export default function App() {
   const [showModelInfo, setShowModelInfo] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showDownload, setShowDownload] = useState(false);
+  const [showSetup, setShowSetup] = useState(false);
   const [notice, setNotice] = useState<{ kind: "warn" | "error"; text: string } | null>(null);
   const noticeTimer = useRef<number | null>(null);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -1510,6 +1512,11 @@ export default function App() {
                     {model ? t("readyMsg") : t("loadToStart")}
                   </div>
                 </div>
+                {!model && availableModels.length === 0 && (
+                  <button className="setup-cta" onClick={() => setShowSetup(true)}>
+                    ✨ {t("setupBtn")}
+                  </button>
+                )}
                 {model && (
                   <div className="suggestions">
                     {(lang === "zh" ? SUGGESTIONS_ZH : SUGGESTIONS_EN).map((s) => (
@@ -1974,6 +1981,16 @@ export default function App() {
       )}
       {showDownload && (
         <DownloadModal onClose={() => setShowDownload(false)} onDownloaded={refreshModels} />
+      )}
+      {showSetup && (
+        <SetupModal
+          onClose={() => setShowSetup(false)}
+          onLoad={(path) => {
+            setShowSetup(false);
+            void refreshModels();
+            void switchModel(path);
+          }}
+        />
       )}
     </div>
   );

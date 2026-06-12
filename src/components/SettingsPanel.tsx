@@ -221,7 +221,7 @@ export function SettingsPanel({
 
         <label className="field">
           <span>
-            {t("temperature")} <b>{value.temperature.toFixed(2)}</b>
+            <em className="has-tip" data-tip={t("tipTemperature")}>{t("temperature")}</em> <b>{value.temperature.toFixed(2)}</b>
           </span>
           <input
             type="range"
@@ -235,7 +235,7 @@ export function SettingsPanel({
 
         <label className="field">
           <span>
-            Top-P <b>{value.topP.toFixed(2)}</b>
+            <em className="has-tip" data-tip={t("tipTopP")}>Top-P</em> <b>{value.topP.toFixed(2)}</b>
           </span>
           <input
             type="range"
@@ -248,7 +248,7 @@ export function SettingsPanel({
         </label>
 
         <label className="field">
-          <span>{t("maxTokens")}</span>
+          <span><em className="has-tip" data-tip={t("tipMaxTokens")}>{t("maxTokens")}</em></span>
           <div className="lang-switch">
             <button
               type="button"
@@ -284,7 +284,7 @@ export function SettingsPanel({
 
         <label className="field">
           <span>
-            Top-K <b>{value.topK === 0 ? t("off") : value.topK}</b>
+            <em className="has-tip" data-tip={t("tipTopK")}>Top-K</em> <b>{value.topK === 0 ? t("off") : value.topK}</b>
           </span>
           <input
             type="range"
@@ -298,7 +298,7 @@ export function SettingsPanel({
 
         <label className="field">
           <span>
-            Min-P <b>{value.minP.toFixed(2)}</b>
+            <em className="has-tip" data-tip={t("tipMinP")}>Min-P</em> <b>{value.minP.toFixed(2)}</b>
           </span>
           <input
             type="range"
@@ -312,7 +312,7 @@ export function SettingsPanel({
 
         <label className="field">
           <span>
-            {t("repeatPenalty")} <b>{value.repeatPenalty.toFixed(2)}</b>
+            <em className="has-tip" data-tip={t("tipRepeatPenalty")}>{t("repeatPenalty")}</em> <b>{value.repeatPenalty.toFixed(2)}</b>
           </span>
           <input
             type="range"
@@ -325,7 +325,7 @@ export function SettingsPanel({
         </label>
 
         <label className="field">
-          <span>{t("stopSeqs")}</span>
+          <span><em className="has-tip" data-tip={t("tipStopSeqs")}>{t("stopSeqs")}</em></span>
           <textarea
             rows={2}
             placeholder={t("stopSeqsPh")}
@@ -368,7 +368,7 @@ export function SettingsPanel({
         )}
 
         <label className="field">
-          <span>{t("gpuAccel")}</span>
+          <span><em className="has-tip" data-tip={t("tipGpuAccel")}>{t("gpuAccel")}</em></span>
           <div className="lang-switch">
             <button
               type="button"
@@ -411,7 +411,7 @@ export function SettingsPanel({
         <div className="settings-hint">{t("gpuHint")}</div>
 
         <label className="field">
-          <span>{t("ctxLength")}</span>
+          <span><em className="has-tip" data-tip={t("tipCtxLength")}>{t("ctxLength")}</em></span>
           <div className="lang-switch">
             <button
               type="button"
