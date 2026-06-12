@@ -11,6 +11,7 @@
     "dialog:allow-open",
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text",
+    "os:allow-platform",
     "core:window:allow-minimize",
     "core:window:allow-unminimize",
     "core:window:allow-toggle-maximize",

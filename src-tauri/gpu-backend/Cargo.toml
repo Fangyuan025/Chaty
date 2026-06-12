@@ -1,0 +1,26 @@
+# Feature-multiplexer shim: an empty crate whose only job is to add the
+# platform-appropriate GPU backend feature to `llama-cpp-2`.
+#
+# Cargo features can't be target-conditional ("`gpu` means Vulkan on Windows
+# but Metal on macOS" is not expressible in one [features] table), and the same
+# crate can't be depended on twice under different names. Routing the backend
+# choice through this crate's target-specific dependency tables sidesteps both:
+# when the main crate's `gpu` feature activates this shim, feature unification
+# adds `vulkan` (Windows/Linux) or `metal` (macOS) to the single shared
+# `llama-cpp-2` dependency. With `--no-default-features` the shim is inactive
+# and llama.cpp builds CPU-only on every platform.
+[package]
+name = "chaty-gpu-backend"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+# Windows / Linux: cross-vendor Vulkan backend (needs the Vulkan SDK to build).
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+llama-cpp-2 = { version = "0.1.146", features = ["vulkan"] }
+
+# macOS: Metal backend (self-contained — no SDK; embeds default.metallib).
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "0.1.146", features = ["metal"] }

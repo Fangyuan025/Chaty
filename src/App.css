@@ -19,35 +19,35 @@
    Tuned for a soft, low-glare look: off-white surfaces, a soft-black (not pure
    black) text colour, and gentle hairline borders. */
 :root[data-theme="light"] {
-  --bg: #f7f7f8;
-  --bg-elev: #efeff1;
-  --surface: #eaeaec;
-  --surface-2: #e1e1e4;
-  --border: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.14);
-  --text: #33333a;
-  --text-dim: #7c7c82;
-  --accent: #0f9a62;
-  --danger: #dc2626;
+  --bg: #f6f6f7;
+  --bg-elev: #ececee;
+  --surface: #e6e6e9;
+  --surface-2: #dbdbdf;
+  --border: rgba(0, 0, 0, 0.14);
+  --border-strong: rgba(0, 0, 0, 0.24);
+  --text: #1d1d22;
+  --text-dim: #5c5c64;
+  --accent: #0c8a57;
+  --danger: #d11f1f;
   --panel: #ffffff;
-  --shadow: rgba(0, 0, 0, 0.14);
+  --shadow: rgba(0, 0, 0, 0.18);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: light) {
   :root[data-theme="system"] {
-    --bg: #f7f7f8;
-    --bg-elev: #efeff1;
-    --surface: #eaeaec;
-    --surface-2: #e1e1e4;
-    --border: rgba(0, 0, 0, 0.08);
-    --border-strong: rgba(0, 0, 0, 0.14);
-    --text: #33333a;
-    --text-dim: #7c7c82;
-    --accent: #0f9a62;
-    --danger: #dc2626;
+    --bg: #f6f6f7;
+    --bg-elev: #ececee;
+    --surface: #e6e6e9;
+    --surface-2: #dbdbdf;
+    --border: rgba(0, 0, 0, 0.14);
+    --border-strong: rgba(0, 0, 0, 0.24);
+    --text: #1d1d22;
+    --text-dim: #5c5c64;
+    --accent: #0c8a57;
+    --danger: #d11f1f;
     --panel: #ffffff;
-    --shadow: rgba(0, 0, 0, 0.14);
+    --shadow: rgba(0, 0, 0, 0.18);
     color-scheme: light;
   }
 }
@@ -95,6 +95,28 @@ body {
   min-height: 0;
 }
 
+/* Thin model-load progress bar pinned under the titlebar. */
+.load-bar {
+  position: relative;
+  height: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.load-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+.load-bar-fill.indeterminate {
+  width: 30%;
+  animation: loadbar-slide 1.1s ease-in-out infinite;
+}
+@keyframes loadbar-slide {
+  0% { margin-left: -30%; }
+  100% { margin-left: 100%; }
+}
+
 /* ---------- Titlebar ---------- */
 .titlebar {
   display: flex;
@@ -105,6 +127,16 @@ body {
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
   user-select: none;
+}
+
+/* macOS: leave room on the left for the native traffic-light buttons
+   (titleBarStyle: Overlay draws them over our title bar), and drop the brand
+   dot + wordmark — redundant chrome next to the traffic lights. */
+:root[data-os="macos"] .titlebar {
+  padding-left: 84px;
+}
+:root[data-os="macos"] .brand {
+  display: none;
 }
 
 .brand {
@@ -1278,6 +1310,25 @@ body {
   cursor: default;
 }
 
+.settings-reload {
+  width: 100%;
+  margin-top: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.settings-reload:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.settings-reload:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .settings-reset {
   align-self: flex-start;
   padding: 6px 11px;
@@ -2137,19 +2188,52 @@ body {
   align-items: center;
   gap: 6px;
 }
-.ctx-bar {
-  display: inline-block;
-  width: 54px;
-  height: 5px;
-  border-radius: 3px;
-  background: var(--surface-2);
-  overflow: hidden;
+.mermaid-err {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--danger);
+  white-space: pre-wrap;
 }
-.ctx-bar-fill {
-  display: block;
-  height: 100%;
-  border-radius: 3px;
-  background: var(--accent);
+
+/* Focus-follows-generation: while reasoning streams, pin a small window to
+   the newest text and fade the older lines out above (mask gradient). */
+.think-body.focus {
+  max-height: 140px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
+}
+.think-body.focus::-webkit-scrollbar {
+  display: none;
+}
+
+.ctx-ring {
+  width: 15px;
+  height: 15px;
+  vertical-align: -3px;
+  transform: rotate(-90deg); /* fill starts at 12 o'clock */
+}
+.ctx-ring circle {
+  fill: none;
+  stroke-width: 2.5;
+}
+.ctx-ring-track {
+  stroke: var(--surface-2);
+}
+.ctx-ring-fill {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.3s ease;
+}
+.ctx-ring.warn .ctx-ring-fill {
+  stroke: #e8a13c;
+}
+.ctx-ring.danger .ctx-ring-fill {
+  stroke: var(--danger);
+}
+.stop-reason.warn {
+  color: #e8a13c;
 }
 
 /* Edit a user message in place + the hover edit button */

@@ -2,9 +2,53 @@
 
 const SOURCE_RE = /[【[（(]\s*来源\s*[\d０-９,，、\s]+[】\])）]/g;
 
+const THINK = "\x00THINK\x00";
+const FINAL = "\x00FINAL\x00";
+const END = "\x00END\x00";
+
+/**
+ * Translate "channel"-style reasoning markup (Harmony-like:
+ * `<|channel|>thought<|message|>…<|channel|>final<|message|>…`, including
+ * partially-rendered spellings like `<|channel>` / `<channel|>`) into the
+ * `<think>…</think>` convention the rest of the app understands. Returns the
+ * input untouched when no channel markers are present.
+ */
+export function normalizeChannels(s: string): string {
+  if (!/<[|｜]?(channel|turn)\b|\bchannel[|｜]>|\bturn[|｜]>/i.test(s)) return s;
+  const t = s
+    // Gemma 4 control tokens that should never render: <|think|>, turn markers.
+    .replace(/<[|｜]?think[|｜]?>\n?/gi, "")
+    .replace(/<[|｜]?turn[|｜]?>\s*(model|assistant|user|system|tool)?\s*\n?/gi, "")
+    .replace(/<[|｜]?start[|｜]?>\s*(assistant)?/gi, "")
+    .replace(/<[|｜]?(end|return)[|｜]?>/gi, END)
+    // Reasoning channel opener: <|channel>thought\n (Gemma 4) / Harmony variants.
+    .replace(/<[|｜]?channel[|｜]?>\s*(analysis|thought|thinking)\w*[ \t]*\n?(<[|｜]?message[|｜]?>)?/gi, THINK)
+    .replace(/<[|｜]?channel[|｜]?>\s*final[ \t]*\n?(<[|｜]?message[|｜]?>)?/gi, FINAL)
+    .replace(/<[|｜]?message[|｜]?>/gi, "")
+    // Any remaining bare channel marker is a close: Gemma 4 ends thought with <channel|>.
+    .replace(/<[|｜]?channel[|｜]?>/gi, END);
+  const dropMarks = (x: string) => x.split(END).join("").split(FINAL).join("").split(THINK).join("");
+
+  const ti = t.indexOf(THINK);
+  if (ti === -1) return dropMarks(t);
+  const afterThink = ti + THINK.length;
+  const fi = t.indexOf(FINAL, afterThink);
+  const ei = t.indexOf(END, afterThink);
+  const closeAt = fi !== -1 ? fi : ei;
+  const pre = dropMarks(t.slice(0, ti));
+  if (closeAt === -1) {
+    // Still reasoning (streaming) — leave the think block open.
+    return `${pre}<think>${dropMarks(t.slice(afterThink))}`;
+  }
+  const answerStart = closeAt + (fi !== -1 ? FINAL.length : END.length);
+  const reasoning = dropMarks(t.slice(afterThink, closeAt));
+  const answer = dropMarks(t.slice(answerStart));
+  return `${pre}<think>${reasoning}</think>${answer}`;
+}
+
 /** Strip `<think>` reasoning and inline source markers; trim. */
 export function stripThink(s: string): string {
-  return s
+  return normalizeChannels(s)
     .replace(/<think>[\s\S]*?<\/think>/g, "")
     .replace(/<\/?think>/g, "")
     .replace(SOURCE_RE, "")
@@ -13,10 +57,11 @@ export function stripThink(s: string): string {
 
 /** The answer portion only — skip `<think>` reasoning so TTS never reads it. */
 export function answerOnly(text: string): string {
-  const ci = text.lastIndexOf("</think>");
-  if (ci !== -1) return text.slice(ci + "</think>".length);
-  if (text.includes("<think>")) return ""; // reasoning still open
-  return text;
+  const t = normalizeChannels(text);
+  const ci = t.lastIndexOf("</think>");
+  if (ci !== -1) return t.slice(ci + "</think>".length);
+  if (t.includes("<think>")) return ""; // reasoning still open
+  return t;
 }
 
 /** Split off the prefix ending at the last sentence boundary: [complete, rest]. */

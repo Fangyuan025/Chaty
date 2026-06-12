@@ -57,7 +57,7 @@ export function LiveMode({
 
   const activeRef = useRef(true);
   const statusRef = useRef<Status>("listening");
-  const analyserRef = useRef<AnalyserNode | null>(null);
+  const levelRef = useRef<(() => number) | null>(null);
   const recorderRef = useRef<Recorder | null>(null);
   const speechRef = useRef<SpeechQueue | null>(null);
   const cancelCaptureRef = useRef<(() => void) | null>(null);
@@ -93,18 +93,14 @@ export function LiveMode({
     canvas.height = size * dpr;
     ctx.scale(dpr, dpr);
 
-    const buf = new Uint8Array(1024);
     let raf = 0;
     let smooth = 0;
     const render = () => {
-      const a = analyserRef.current;
       let raw = 0;
-      if (a) {
-        try {
-          raw = readLevel(a, buf);
-        } catch {
-          raw = 0; // analyser's context may have just closed between turns
-        }
+      try {
+        raw = levelRef.current?.() ?? 0;
+      } catch {
+        raw = 0; // the source may have just closed between turns
       }
       smooth += (raw - smooth) * 0.2;
       const tNow = performance.now() / 1000;
@@ -190,7 +186,7 @@ export function LiveMode({
             return;
           }
           recorderRef.current = rec;
-          analyserRef.current = rec.analyser;
+          levelRef.current = rec.level;
           setBoth("listening");
         })
         .catch((e) => {
@@ -243,7 +239,8 @@ export function LiveMode({
       setCaption(label);
     });
     speechRef.current = speech;
-    analyserRef.current = speech.analyser;
+    const speechBuf = new Uint8Array(1024);
+    levelRef.current = () => readLevel(speech.analyser, speechBuf);
 
     const enqueue = (raw: string) => {
       const clean = forSpeech(raw);

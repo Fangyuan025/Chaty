@@ -96,6 +96,9 @@ pub struct GenStats {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub tokens_per_second: f32,
+    /// Why generation ended: "eos" (model finished), "length" (max_tokens hit),
+    /// "context" (context window full), "stop" (stop sequence), "cancelled".
+    pub stop_reason: String,
 }
 
 /// Metadata about the currently loaded model, surfaced to the UI.
@@ -145,6 +148,9 @@ pub struct ModelInfo {
 
 #[async_trait]
 pub trait InferenceBackend: Send + Sync {
+    /// Synchronously release the model's memory (block until freed). Called
+    /// before loading a replacement so two models never coexist in RAM.
+    fn unload(&self) {}
     /// Short identifier for telemetry / UI ("mock", "llama.cpp", …).
     fn name(&self) -> &str;
 

@@ -104,6 +104,13 @@ export interface GenStats {
   promptTokens: number;
   completionTokens: number;
   tokensPerSecond: number;
+  /** Why generation ended: "eos" | "length" | "context" | "stop" | "cancelled". */
+  stopReason: string;
+}
+
+/** Reveal the writable models folder in Finder/Explorer (creates it if needed). */
+export async function openModelsDir(): Promise<string> {
+  return invoke<string>("open_models_dir");
 }
 
 export type StreamEvent =
@@ -127,12 +134,21 @@ export async function pickModelFile(): Promise<string | null> {
  * `nCtx`: omit = memory-friendly default (≤8192), n = desired context window
  * (clamped to the model's trained length).
  */
+export interface LoadProgress {
+  /** "eject" (freeing the old model) | "weights" (loading) | "ready". */
+  phase: string;
+  frac: number;
+}
+
 export async function loadModel(
   path: string,
   gpuLayers?: number,
   nCtx?: number,
+  onProgress?: (p: LoadProgress) => void,
 ): Promise<ModelInfo> {
-  return await invoke<ModelInfo>("load_model", { path, gpuLayers, nCtx });
+  const channel = new Channel<LoadProgress>();
+  if (onProgress) channel.onmessage = onProgress;
+  return await invoke<ModelInfo>("load_model", { path, gpuLayers, nCtx, onProgress: channel });
 }
 
 export async function getModel(): Promise<ModelInfo | null> {

@@ -21,9 +21,48 @@ pub struct HardwareInfo {
     pub cpu_threads: usize,
     pub ram_mb: u64,
     pub gpu: Option<GpuInfo>,
-    /// Compiled GPU backend for the LLM: "Vulkan" when built with the `gpu`
-    /// feature, otherwise "CPU".
+    /// Compiled GPU backend for the LLM: "Metal" on macOS, "Vulkan" on
+    /// Windows/Linux (both when built with the `gpu` feature), otherwise "CPU".
     pub gpu_backend: String,
+}
+
+/// The compiled GPU backend name, gated on the `gpu` feature and the target.
+fn gpu_backend_name() -> String {
+    if cfg!(feature = "gpu") {
+        if cfg!(target_os = "macos") {
+            "Metal".to_string()
+        } else {
+            "Vulkan".to_string()
+        }
+    } else {
+        "CPU".to_string()
+    }
+}
+
+/// Number of worker threads for CPU-side work (tokenizer, sampling, any
+/// non-offloaded layers). On Apple Silicon (big.LITTLE) we use only the
+/// performance cores and leave one free for the UI; spawning onto efficiency
+/// cores hurts throughput. Elsewhere we use the logical CPU count.
+pub fn cpu_worker_threads() -> usize {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(p) = perf_core_count() {
+            return p.saturating_sub(1).max(1);
+        }
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
+/// Performance-core count on Apple Silicon via `hw.perflevel0.physicalcpu`.
+#[cfg(target_os = "macos")]
+fn perf_core_count() -> Option<usize> {
+    let out = std::process::Command::new("sysctl")
+        .args(["-n", "hw.perflevel0.physicalcpu"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse::<usize>().ok()
 }
 
 /// Snapshot of the machine's CPU / RAM / GPU and the compiled GPU backend.
@@ -45,11 +84,7 @@ pub fn hardware() -> HardwareInfo {
         cpu_threads,
         ram_mb: sys.total_memory() / (1024 * 1024),
         gpu: detect_gpu(),
-        gpu_backend: if cfg!(feature = "gpu") {
-            "Vulkan".to_string()
-        } else {
-            "CPU".to_string()
-        },
+        gpu_backend: gpu_backend_name(),
     }
 }
 
@@ -87,7 +122,36 @@ pub fn detect_gpu() -> Option<GpuInfo> {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS / Apple Silicon: there is no discrete VRAM. We report the Metal
+/// **recommended max working-set size** as the offload budget (the safe cap for
+/// GPU allocations) and the Metal device name (e.g. "Apple M3 Pro") as the GPU.
+#[cfg(target_os = "macos")]
+pub fn detect_gpu() -> Option<GpuInfo> {
+    let device = metal::Device::system_default()?;
+    let working_set = device.recommended_max_working_set_size();
+    let name = {
+        let n = device.name().trim().to_string();
+        if n.is_empty() { mac_chip_name() } else { n }
+    };
+    Some(GpuInfo {
+        name,
+        vram_mb: working_set / (1024 * 1024),
+    })
+}
+
+/// Chip brand string fallback (e.g. "Apple M3 Pro") via sysctl.
+#[cfg(target_os = "macos")]
+fn mac_chip_name() -> String {
+    std::process::Command::new("sysctl")
+        .args(["-n", "machdep.cpu.brand_string"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Apple GPU".to_string())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn detect_gpu() -> Option<GpuInfo> {
     None
 }
@@ -142,7 +206,27 @@ pub fn gpu_usage() -> Option<GpuUsage> {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS unified memory: report THIS process's physical footprint (the model
+/// weights + KV cache dominate it) against the working-set budget.
+/// `MTLDevice.currentAllocatedSize` is per device *instance*, so a freshly
+/// created device here always reads 0 — it can't see llama.cpp's allocations.
+#[cfg(target_os = "macos")]
+pub fn gpu_usage() -> Option<GpuUsage> {
+    let device = metal::Device::system_default()?;
+    let total_mb = device.recommended_max_working_set_size() / (1024 * 1024);
+
+    let pid = sysinfo::Pid::from_u32(std::process::id());
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+    let used_mb = sys.process(pid).map(|p| p.memory()).unwrap_or(0) / (1024 * 1024);
+
+    Some(GpuUsage {
+        used_mb: used_mb.min(total_mb),
+        total_mb,
+    })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn gpu_usage() -> Option<GpuUsage> {
     None
 }
@@ -161,6 +245,19 @@ pub fn auto_gpu_layers(path: &Path, n_layer: u32, vram_mb: u64) -> i32 {
     if file_bytes == 0 {
         return 0;
     }
+
+    // Apple Silicon: unified memory, no PCIe copy, no separate VRAM. If the
+    // weights comfortably fit in the working-set budget, offload EVERY layer —
+    // that's the big win here. The OOM back-off in llama.rs::load() protects us
+    // if this estimate is optimistic (it also has to hold the KV cache).
+    #[cfg(target_os = "macos")]
+    {
+        let budget = vram_mb as f64 * 1024.0 * 1024.0;
+        if (file_bytes as f64) < budget * 0.85 {
+            return n_layer as i32 + 1;
+        }
+    }
+
     // Weights are roughly evenly spread across blocks (+1 for embeddings/output).
     let per_layer = file_bytes as f64 / (n_layer as f64 + 1.0);
 

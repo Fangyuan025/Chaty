@@ -1,6 +1,6 @@
 [package]
 name = "chaty"
-version = "0.5.1"
+version = "0.6.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -15,10 +15,13 @@ name = "chaty_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-# GPU offload via the Vulkan backend (crossâ€‘vendor). On by default; build with
-# `--no-default-features` for a pureâ€‘CPU build that doesn't need the Vulkan SDK.
+# GPU offload. On by default; build with `--no-default-features` for a pureâ€‘CPU
+# build (no Vulkan SDK needed on Windows/Linux). The backend is target-
+# conditional â€” Vulkan on Windows/Linux, Metal on macOS â€” routed through the
+# `gpu-backend` shim crate, because a cargo feature can't map to different
+# dependency features per target. See gpu-backend/Cargo.toml.
 default = ["gpu"]
-gpu = ["llama-cpp-2/vulkan"]
+gpu = ["dep:chaty-gpu-backend"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -30,12 +33,16 @@ tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-os = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["time", "rt", "sync", "macros"] }
 async-trait = "0.1"
 anyhow = "1"
+# Base llama.cpp binding (CPU). The GPU backend feature (vulkan/metal) is added
+# per-target by the `gpu-backend` shim when the `gpu` feature is on.
 llama-cpp-2 = { version = "0.1.146", features = ["sampler"] }
+chaty-gpu-backend = { path = "gpu-backend", optional = true }
 sysinfo = "0.32"
 encoding_rs = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -50,6 +57,7 @@ sherpa-rs = "0.6.8"
 tar = "0.4"
 bzip2 = "0.4"
 base64 = "0.22"
+libc = "0.2"
 
 # GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers â€” cross-vendor on Windows.
 [target.'cfg(windows)'.dependencies]
@@ -57,5 +65,22 @@ windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+] }
+
+# macOS: Metal device query (recommendedMaxWorkingSetSize) for the offload
+# budget, AVFoundation for the app-level microphone consent prompt (TCC), and
+# cpal (CoreAudio) for native mic capture — WKWebView's getUserMedia never
+# exposes capture devices to embedded apps, so recording bypasses it entirely.
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.29"
+cpal = "0.15"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+block2 = "0.6"
+objc2-av-foundation = { version = "0.3", default-features = false, features = [
+    "AVCaptureDevice",
+    "AVMediaFormat",
+    "block2",
+    "std",
 ] }
 

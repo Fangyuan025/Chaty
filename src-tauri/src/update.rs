@@ -10,6 +10,13 @@ use serde::Serialize;
 const REPO: &str = "Fangyuan025/Chaty";
 const UA: &str = "Chaty-Updater";
 
+/// Release asset to look for: the Inno installer on Windows, the disk image on
+/// macOS (Tauri's `dmg` bundle target).
+#[cfg(target_os = "macos")]
+const ASSET_EXT: &str = ".dmg";
+#[cfg(not(target_os = "macos"))]
+const ASSET_EXT: &str = ".exe";
+
 #[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
@@ -57,7 +64,7 @@ async fn fetch_latest() -> anyhow::Result<UpdateInfo> {
             arr.iter().find(|a| {
                 a["name"]
                     .as_str()
-                    .is_some_and(|n| n.to_lowercase().ends_with(".exe"))
+                    .is_some_and(|n| n.to_lowercase().ends_with(ASSET_EXT))
             })
         })
         .and_then(|a| a["browser_download_url"].as_str())
@@ -108,12 +115,25 @@ pub async fn run_update(app: tauri::AppHandle, url: String) -> Result<(), String
         .await
         .map_err(|e| e.to_string())?;
 
-    let path = std::env::temp_dir().join("Chaty-update-setup.exe");
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-
-    std::process::Command::new(&path)
-        .spawn()
-        .map_err(|e| format!("无法启动安装程序: {e}"))?;
+    // Windows: run the Inno installer — it closes the app and replaces it.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let path = std::env::temp_dir().join("Chaty-update-setup.exe");
+        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+        std::process::Command::new(&path)
+            .spawn()
+            .map_err(|e| format!("无法启动安装程序 (failed to launch installer): {e}"))?;
+    }
+    // macOS: mount the .dmg in Finder; the user drags Chaty to Applications.
+    #[cfg(target_os = "macos")]
+    {
+        let path = std::env::temp_dir().join("Chaty-update.dmg");
+        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("无法打开磁盘映像 (failed to open disk image): {e}"))?;
+    }
     // Give the installer a beat to start, then exit so it can replace the binary.
     std::thread::sleep(std::time::Duration::from_millis(400));
     app.exit(0);

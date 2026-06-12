@@ -43,6 +43,43 @@ ISCC /DAppVersion=0.3.1 /DSrcDir=C:\ct\release src-tauri\installer\Chaty.iss
 The script is `src-tauri/installer/Chaty.iss`. (Tauri's built-in NSIS target is
 no longer used.)
 
+## Build (macOS / Apple Silicon)
+
+No Vulkan SDK, WebView2, or `MAX_PATH` workarounds — the Metal build of
+llama.cpp is self-contained and macOS uses the system WKWebView.
+
+```bash
+xcode-select --install            # clang, metal toolchain, codesign
+brew install cmake ninja
+rustup target add aarch64-apple-darwin   # native arm64, NOT x86_64/Rosetta
+npm install
+npm run tauri dev                 # Metal build of llama.cpp (~a few min first time)
+npm run tauri build               # → src-tauri/target/release/bundle/dmg/*.dmg
+```
+
+The GPU backend is selected **per target** via the `gpu-backend` shim crate
+(`src-tauri/gpu-backend/`): the `gpu` feature activates the shim, whose
+target-specific dependency tables add `metal` (macOS) or `vulkan`
+(Windows/Linux) to `llama-cpp-2`. `--no-default-features` still gives a
+pure-CPU build on either OS. Platform-specific Tauri config lives in
+`tauri.macos.conf.json` / `tauri.windows.conf.json`, auto-merged over
+`tauri.conf.json`.
+
+⚠️ Do **not** put `rustflags = ["-C", "target-cpu=apple-m1"]` in a
+`.cargo/config.toml` here: the `cc`/`cmake` build scripts translate it into
+`-march=apple-m1` for Apple clang, which is rejected and breaks the llama.cpp
+build. The Metal kernels do the heavy lifting anyway.
+
+⚠️ **Voice dylibs (one-time, needs the Mac toolchain):** on Windows the
+sherpa-onnx / ONNX Runtime libs are checked in under `src-tauri/libs/*.dll` and
+bundled as resources. On macOS `sherpa-rs` links the `.dylib` equivalents from
+its build output; `build.rs` adds the `@executable_path` / `../Frameworks`
+rpaths so they resolve from inside the `.app`. After the first `tauri build`,
+confirm `libonnxruntime*.dylib` and `libsherpa-onnx-*.dylib` are present next to
+the binary or in `Contents/Frameworks` of the `.app`; if not, add them to
+`bundle.macOS.frameworks` in `tauri.macos.conf.json` (or copy them in a bundling
+hook) and rebuild.
+
 ## Headless engine smoke test
 
 Verifies real inference without the GUI (load GGUF → chat template → stream):

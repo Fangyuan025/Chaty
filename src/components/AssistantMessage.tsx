@@ -1,18 +1,33 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Markdown } from "./Markdown";
 import { useI18n } from "../lib/i18n";
+import { normalizeChannels } from "../lib/voiceText";
 
 /** Split a streamed assistant message into its `<think>` reasoning and answer. */
-function parseThinking(content: string): {
+function parseThinking(raw: string): {
   reasoning: string;
   answer: string;
   thinking: boolean;
   hasThink: boolean;
 } {
+  // Channel-style reasoning markers (Gemma 4 / Harmony) → <think> convention.
+  const content = normalizeChannels(raw);
   const open = "<think>";
   const close = "</think>";
   const oi = content.indexOf(open);
   if (oi === -1) {
+    // Orphan close tag: reasoning streamed without an opening <think> (a
+    // pre-open-trained model whose prompt lost the tag). Everything before
+    // the close is reasoning.
+    const ci0 = content.indexOf(close);
+    if (ci0 !== -1) {
+      return {
+        reasoning: content.slice(0, ci0).trim(),
+        answer: content.slice(ci0 + close.length).replace(/^\s+/, ""),
+        thinking: false,
+        hasThink: true,
+      };
+    }
     return { reasoning: "", answer: content, thinking: false, hasThink: false };
   }
   const afterOpen = oi + open.length;
@@ -52,7 +67,7 @@ export function AssistantMessage({
   // Thinking off: never use the reasoning panel — strip the whole <think> block
   // and any stray tags so a buggy/empty panel can never appear.
   if (hideThinking) {
-    const answer = content
+    const answer = normalizeChannels(content)
       .replace(/<think>[\s\S]*?<\/think>/g, "")
       .replace(/<\/?think>/g, "")
       .replace(SOURCE_RE, "")
@@ -83,6 +98,16 @@ export function AssistantMessage({
   const [override, setOverride] = useState<boolean | null>(null);
   const expanded = override ?? thinking;
   const showThink = hasThink && (thinking || reasoning.length > 0);
+  // Focus-follows-generation: while reasoning streams (and the user hasn't
+  // manually expanded), show a small window pinned to the latest text with
+  // the older lines fading out above.
+  const focusMode = thinking && override === null;
+  const thinkBodyRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (focusMode && thinkBodyRef.current) {
+      thinkBodyRef.current.scrollTop = thinkBodyRef.current.scrollHeight;
+    }
+  }, [reasoning, focusMode]);
 
   return (
     <div className="bubble">
@@ -110,7 +135,7 @@ export function AssistantMessage({
             )}
           </button>
           {expanded && (
-            <div className="think-body">
+            <div ref={thinkBodyRef} className={`think-body ${focusMode ? "focus" : ""}`}>
               <Markdown>{reasoning}</Markdown>
             </div>
           )}

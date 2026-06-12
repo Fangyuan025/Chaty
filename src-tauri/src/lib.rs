@@ -1,4 +1,5 @@
 pub mod attach;
+pub mod mic;
 mod commands;
 pub mod download;
 pub mod gpu;
@@ -44,7 +45,10 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 pub fn run() {
     // Auto-grant microphone/camera (no WebView2 permission prompt) and allow
     // audio autoplay without a user gesture (for streaming TTS). Must be set
-    // before the webview is created.
+    // before the webview is created. Windows-only: macOS uses WKWebView, which
+    // honours the system mic permission (see NSMicrophoneUsageDescription in the
+    // bundle Info.plist) and prompts once.
+    #[cfg(windows)]
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
         "--use-fake-ui-for-media-stream --autoplay-policy=no-user-gesture-required",
@@ -58,6 +62,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_os::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -77,6 +82,32 @@ pub fn run() {
 
             // ---- models folder (drop-in GGUF hot-swap) ----
             commands::ensure_models_dir(app.handle());
+
+            // ---- macOS: unlock getUserMedia in WKWebView ----
+            // WebKit ships `navigator.mediaDevices` behind a preferences flag
+            // that's off for embedded webviews (Safari enables it for itself).
+            // Without this, getUserMedia is simply absent no matter what TCC /
+            // entitlements say. KVC onto WKPreferences flips it; the reload
+            // makes the already-created page re-evaluate its bindings.
+            #[cfg(target_os = "macos")]
+            if let Some(w) = app.get_webview_window("main") {
+                use objc2::msg_send;
+                use objc2::runtime::AnyObject;
+                use objc2_foundation::{NSNumber, NSString};
+                let _ = w.with_webview(|webview| unsafe {
+                    let wk: *mut AnyObject = webview.inner().cast();
+                    let config: *mut AnyObject = msg_send![wk, configuration];
+                    let prefs: *mut AnyObject = msg_send![config, preferences];
+                    let yes = NSNumber::new_bool(true);
+                    let key = NSString::from_str("mediaDevicesEnabled");
+                    let _: () = msg_send![
+                        prefs,
+                        setValue: &*yes as *const NSNumber as *const AnyObject,
+                        forKey: &*key
+                    ];
+                });
+                let _ = w.eval("location.reload()");
+            }
 
             // ---- system tray (labels default to English; the UI syncs the
             // language via `set_tray_language` on startup) ----
@@ -107,12 +138,16 @@ pub fn run() {
                     .build(app)?;
             }
 
-            // ---- global hotkey: Ctrl+Shift+Space summons/hides the window ----
+            // ---- global hotkey: summons/hides the window ----
+            // macOS: Cmd+Shift+Space (Cmd+Space is Spotlight). Else: Ctrl+Shift+Space.
             // Non-fatal: a conflict with another app must not block startup.
-            let _ = app.global_shortcut().register(Shortcut::new(
-                Some(Modifiers::CONTROL | Modifiers::SHIFT),
-                Code::Space,
-            ));
+            #[cfg(target_os = "macos")]
+            let mods = Modifiers::SUPER | Modifiers::SHIFT;
+            #[cfg(not(target_os = "macos"))]
+            let mods = Modifiers::CONTROL | Modifiers::SHIFT;
+            let _ = app
+                .global_shortcut()
+                .register(Shortcut::new(Some(mods), Code::Space));
 
             Ok(())
         })
@@ -134,11 +169,17 @@ pub fn run() {
             update::check_update,
             update::run_update,
             commands::list_models,
+            commands::open_models_dir,
             commands::set_tray_language,
             commands::generate,
             commands::cancel_generation,
             commands::transcribe,
             commands::synthesize,
+            voice::request_mic_permission,
+            mic::mic_start,
+            mic::mic_level,
+            mic::mic_stop,
+            mic::mic_cancel,
             store::save_conversation,
             store::save_message,
             store::replace_messages,
@@ -152,6 +193,35 @@ pub fn run() {
             search::fetch_url,
             attach::read_attachment,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            match event {
+                // Exit the process before Tauri's teardown runs. Dropping the
+                // live inference engine from the main thread races its worker
+                // thread (llama.cpp context / Metal buffers) and segfaults on
+                // quit, which macOS reports as "Chaty quit unexpectedly".
+                // `_exit` (not `exit`) — ONNX Runtime / ggml also register
+                // atexit handlers whose teardown crashes the same way; `_exit`
+                // skips those too. Safe: SQLite is WAL-journaled, models are
+                // read-only, and settings are persisted on change.
+                // ExitRequested covers app.exit() (tray Quit); Exit covers the
+                // Cocoa `terminate:` path (app-menu Quit / Cmd+Q / logout),
+                // which skips ExitRequested and was still reaching ggml's
+                // teardown (ggml_metal_rsets_free → ggml_abort → SIGABRT).
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    #[cfg(unix)]
+                    unsafe {
+                        libc::_exit(0)
+                    }
+                    #[cfg(not(unix))]
+                    std::process::exit(0)
+                }
+                // macOS: clicking the Dock icon while the window is hidden to
+                // the tray must bring it back (no window is ever re-created).
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => show_main_window(app),
+                _ => {}
+            }
+        });
 }

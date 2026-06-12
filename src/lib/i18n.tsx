@@ -174,9 +174,19 @@ export const T = {
   ctxAuto: { zh: "自动", en: "Auto" },
   ctxTokens: { zh: "上下文 Token", en: "Context tokens" },
   ctxHint: {
-    zh: "自动按显存选择（上限约 8192）。调高可记住更长对话，但更耗显存/内存。更改将在下次加载模型时生效。",
-    en: "Auto picks a memory-friendly size (≤8192). Higher remembers longer chats but uses more VRAM/RAM. Changes apply on the next model load.",
+    zh: "自动 = 在内存允许范围内尽量用满模型的训练上下文。自定义值也会按内存上限自动回落。",
+    en: "Auto = as much of the model's trained context as memory allows. Custom values are also capped to fit memory.",
   },
+  reloadApply: { zh: "重新加载模型以生效", en: "Reload model to apply" },
+  ejectingModel: { zh: "正在卸载旧模型…", en: "Ejecting old model…" },
+  noLimit: { zh: "不限制", en: "No limit" },
+  openModelsDir: { zh: "打开模型文件夹", en: "Open models folder" },
+  // stop reasons (shown in the stats line after generation)
+  stopEos: { zh: "自然结束", en: "finished" },
+  stopLength: { zh: "达到长度上限", en: "length limit" },
+  stopContext: { zh: "上下文已满", en: "context full" },
+  stopStop: { zh: "命中停止词", en: "stop sequence" },
+  stopCancelled: { zh: "已手动停止", en: "cancelled" },
   // hardware panel
   hwTitleBtn: { zh: "硬件信息", en: "Hardware" },
   hwTitle: { zh: "本机硬件", en: "Hardware" },
@@ -214,6 +224,10 @@ export const T = {
     en: "Low VRAM — GPU offload reduced to {a}/{b} layers",
   },
   oomCpu: { zh: "显存不足，已回退到 CPU 运行", en: "Low VRAM — fell back to CPU" },
+  ctxClamped: {
+    zh: "上下文已按内存自动调整为 {n}（模型权重 + KV 缓存需放入统一内存）",
+    en: "Context auto-fitted to {n} (weights + KV cache must fit in unified memory)",
+  },
   oomFail: {
     zh: "内存不足，无法加载该模型。试试更小 / 更高量化的模型，或关闭其他占用内存的程序。",
     en: "Out of memory — couldn't load this model. Try a smaller / more-quantized model, or free up RAM.",

@@ -1,0 +1,101 @@
+# Cross-platform release: one tag → one GitHub Release carrying BOTH the
+# Windows Inno installer (.exe) and the macOS disk image (.dmg).
+#
+# The in-app updater (src-tauri/src/update.rs) reads the *latest* release and
+# picks the asset by platform extension, so keeping both installers on the same
+# release is what keeps cross-platform versions in sync.
+#
+# Flow:
+#   1. bump versions with scripts/bump-version.sh <x.y.z>
+#   2. commit, tag v<x.y.z>, push the tag
+#   3. this workflow builds both installers and publishes the release
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  # Fail fast if the tag doesn't match the versions in the repo.
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches package.json / tauri.conf.json / Cargo.toml
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          CONF=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          CARGO=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          echo "tag=$TAG pkg=$PKG conf=$CONF cargo=$CARGO"
+          [ "$TAG" = "$PKG" ] && [ "$TAG" = "$CONF" ] && [ "$TAG" = "$CARGO" ] \
+            || { echo "::error::version mismatch — run scripts/bump-version.sh $TAG"; exit 1; }
+
+  build-macos:
+    needs: check-version
+    runs-on: macos-14 # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: aarch64-apple-darwin }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - run: npm ci
+      - name: Build .dmg (Metal)
+        run: npm run tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  build-windows:
+    needs: check-version
+    runs-on: windows-latest
+    env:
+      # Short target dir — the Vulkan build nests past MAX_PATH otherwise.
+      CARGO_TARGET_DIR: C:\ct
+      CMAKE_GENERATOR: Ninja
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with: { version: 1.3.290.0, cache: true }
+      - name: Install Ninja
+        run: choco install ninja -y
+      - run: npm ci
+      - name: Build chaty.exe (Vulkan, no bundler)
+        run: npm run tauri build -- --no-bundle
+      - name: Build Inno Setup installer
+        shell: pwsh
+        run: |
+          $ver = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            /DAppVersion=$ver /DSrcDir=C:\ct\release src-tauri\installer\Chaty.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: C:\ct\release\bundle\inno\*.exe
+          if-no-files-found: error
+
+  publish:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { merge-multiple: true, path: dist }
+      - name: Create GitHub Release with both installers
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

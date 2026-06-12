@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { platform } from "@tauri-apps/plugin-os";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextMenu } from "./components/ContextMenu";
@@ -31,6 +32,7 @@ import {
   listConversations,
   listModels,
   loadModel,
+  openModelsDir,
   pickAttachmentFile,
   pickModelFile,
   readAttachment,
@@ -49,6 +51,7 @@ import {
   type ChatMessage,
   type Conversation,
   type GenStats,
+  type LoadProgress,
   type ModelEntry,
   type ModelInfo,
   type Role,
@@ -63,6 +66,17 @@ interface UiMessage extends ChatMessage {
   sources?: SearchResult[];
 }
 
+// Host OS, resolved once at startup. Drives native window chrome on macOS
+// (traffic lights instead of our custom min/max/close buttons).
+const OS_PLATFORM = (() => {
+  try {
+    return platform();
+  } catch {
+    return "windows";
+  }
+})();
+const IS_MACOS = OS_PLATFORM === "macos";
+
 const uid = () => Math.random().toString(36).slice(2);
 const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
 const SETTINGS_KEY = "chaty.settings";
@@ -75,7 +89,10 @@ const copyText = (t: string) => {
 
 /** Strip a model's reasoning/quotes from a generated title and clamp length. */
 function cleanTitle(raw: string): string {
-  let t = raw.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, "");
+  // answerOnly normalizes channel-style reasoning (Gemma 4) into <think> and
+  // returns only the answer — empty if the model never left its reasoning,
+  // in which case we keep the default title rather than show thought text.
+  const t = answerOnly(raw);
   const firstLine = t.split("\n").map((s) => s.trim()).find(Boolean) ?? "";
   return firstLine
     .replace(/^["'「『《<[(]+|["'」』》>\])。.!！?？:：]+$/g, "")
@@ -85,7 +102,7 @@ function cleanTitle(raw: string): string {
 
 /** Clean a model-generated search query (strip reasoning/quotes, keep it short). */
 function cleanQuery(raw: string): string {
-  const t = raw.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, "");
+  const t = answerOnly(raw);
   const firstLine = t.split("\n").map((s) => s.trim()).find(Boolean) ?? "";
   return firstLine.replace(/^["'「『《]+|["'」』》]+$/g, "").trim().slice(0, 80);
 }
@@ -181,6 +198,7 @@ export default function App() {
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [stats, setStats] = useState<GenStats | null>(null);
   const [loadingModel, setLoadingModel] = useState(false);
+  const [loadProgress, setLoadProgress] = useState<LoadProgress | null>(null);
   const [settings, setSettings] = useState<GenSettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [showHardware, setShowHardware] = useState(false);
@@ -244,7 +262,7 @@ export default function App() {
         if (!target) return;
         setLoadingModel(true);
         try {
-          const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined);
+          const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, setLoadProgress);
           setModel(info);
           localStorage.setItem(LAST_MODEL_KEY, info.path);
           noticeForLoad(info);
@@ -253,6 +271,7 @@ export default function App() {
           showLoadError(e);
         } finally {
           setLoadingModel(false);
+      setLoadProgress(null);
         }
       } catch (e) {
         console.error(e);
@@ -339,6 +358,12 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
   }, [settings.theme]);
+
+  // Tag the document root with the host OS once, so CSS can adapt the title bar
+  // (e.g. macOS leaves room for the native traffic lights). CSS keys off [data-os].
+  useEffect(() => {
+    document.documentElement.dataset.os = OS_PLATFORM;
+  }, []);
 
   // Debounced full-text search over message bodies (titles are matched locally).
   useEffect(() => {
@@ -437,7 +462,10 @@ export default function App() {
             },
             { role: "user", content: `${firstMsg}${model?.thinkSwitch ? "\n/no_think" : ""}` },
           ],
-          params: { temperature: 0.2, topP: 0.9, maxTokens: 48, think: noThinkFlag() },
+          // Generous budget: thinking-specialised models (Qwen3.6) reason even
+          // with an empty <think/> pre-fill — give them room to finish and
+          // still emit the title after the block closes.
+          params: { temperature: 0.2, topP: 0.9, maxTokens: 512, think: noThinkFlag() },
         },
         (ev) => {
           if (ev.type === "token") acc += ev.text;
@@ -476,7 +504,7 @@ export default function App() {
               content: `${recent}\n\n最新问题：${latest}${model?.thinkSwitch ? "\n/no_think" : ""}`,
             },
           ],
-          params: { temperature: 0.2, topP: 0.9, maxTokens: 64, think: noThinkFlag() },
+          params: { temperature: 0.2, topP: 0.9, maxTokens: 512, think: noThinkFlag() },
         },
         (ev) => {
           if (ev.type === "token") acc += ev.text;
@@ -506,6 +534,8 @@ export default function App() {
           ? t("oomPartial", { a: info.gpuLayers, b: info.nLayer ?? "?" })
           : t("oomCpu"),
       );
+    } else if (info.warning === "ctx-clamped" && info.nCtx) {
+      showNotice("warn", t("ctxClamped", { n: info.nCtx }));
     }
   }
 
@@ -544,7 +574,7 @@ export default function App() {
     if (busy || model?.path === path) return;
     setLoadingModel(true);
     try {
-      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined);
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, setLoadProgress);
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
       noticeForLoad(info);
@@ -553,6 +583,24 @@ export default function App() {
       showLoadError(e);
     } finally {
       setLoadingModel(false);
+      setLoadProgress(null);
+    }
+  }
+
+  /** Reload the current model so settings (context length, GPU layers) take effect. */
+  async function reloadModel() {
+    if (!model || busy || loadingModel) return;
+    setLoadingModel(true);
+    try {
+      const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, setLoadProgress);
+      setModel(info);
+      noticeForLoad(info);
+    } catch (e) {
+      console.error(e);
+      showLoadError(e);
+    } finally {
+      setLoadingModel(false);
+      setLoadProgress(null);
     }
   }
 
@@ -562,7 +610,7 @@ export default function App() {
       const path = await pickModelFile();
       if (!path) return;
       setLoadingModel(true);
-      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined);
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, setLoadProgress);
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
       noticeForLoad(info);
@@ -572,6 +620,7 @@ export default function App() {
       showLoadError(e);
     } finally {
       setLoadingModel(false);
+      setLoadProgress(null);
     }
   }
 
@@ -697,7 +746,8 @@ export default function App() {
     const nCtx = model?.nCtx ?? 0;
     if (!nCtx || msgs.length < 6) return null;
 
-    const reserve = settings.maxTokens + 700; // room for the answer + chat markup
+    // Room for the answer + chat markup. With no reply cap, reserve a sane slice.
+    const reserve = (settings.limitTokens ? settings.maxTokens : 2048) + 700;
     const budget = Math.max(1024, nCtx - reserve);
     const cost = (m: { content: string }) => estimateTokens(m.content) + 8;
     const total = msgs.reduce((s, m) => s + cost(m), 0);
@@ -943,7 +993,8 @@ export default function App() {
           params: {
             temperature: settings.temperature,
             topP: settings.topP,
-            maxTokens: settings.maxTokens,
+            // 0 = no per-reply cap (backend treats it as unlimited within the context)
+            maxTokens: settings.limitTokens ? settings.maxTokens : 0,
             topK: settings.topK,
             minP: settings.minP,
             repeatPenalty: settings.repeatPenalty,
@@ -1216,7 +1267,11 @@ export default function App() {
                 <span className="chip-backend">{model.backend}</span>
               </>
             ) : loadingModel ? (
-              t("loadingModel")
+              loadProgress?.phase === "weights"
+                ? `${t("loadingModel")} ${Math.round(loadProgress.frac * 100)}%`
+                : loadProgress?.phase === "eject"
+                  ? t("ejectingModel")
+                  : t("loadingModel")
             ) : (
               t("noModel")
             )}
@@ -1263,6 +1318,15 @@ export default function App() {
                 }}
               >
                 {t("dlTitle")}
+              </button>
+              <button
+                className="model-menu-file"
+                onClick={() => {
+                  setShowModelMenu(false);
+                  openModelsDir().catch(console.error);
+                }}
+              >
+                {t("openModelsDir")}
               </button>
             </div>
           )}
@@ -1360,12 +1424,28 @@ export default function App() {
               onClose={() => setShowSettings(false)}
               maxTokensLimit={Math.max(1024, model?.nCtx ?? 4096)}
               ctxTrainLimit={model?.nCtxTrain}
+              onReloadModel={model ? () => void reloadModel() : undefined}
+              reloading={loadingModel}
             />
           )}
         </div>
 
-        <WindowControls />
+        {/* macOS uses native traffic lights (titleBarStyle: Overlay); our
+            custom controls are only for Windows/Linux. */}
+        {!IS_MACOS && <WindowControls />}
       </header>
+      {loadingModel && (
+        <div className="load-bar">
+          <div
+            className={`load-bar-fill ${loadProgress?.phase === "weights" ? "" : "indeterminate"}`}
+            style={
+              loadProgress?.phase === "weights"
+                ? { width: `${Math.max(2, Math.round(loadProgress.frac * 100))}%` }
+                : undefined
+            }
+          />
+        </div>
+      )}
 
       <div className="body">
         <aside className="sidebar">
@@ -1565,23 +1645,56 @@ export default function App() {
             {stats && (
               <div className="stats">
                 {stats.completionTokens} tokens · {stats.tokensPerSecond.toFixed(1)} tok/s
-                {model?.nCtx ? (
-                  <span className="ctx-meter" title={t("ctxUsage")}>
-                    {" · ctx "}
-                    {fmtK(stats.promptTokens + stats.completionTokens)}/{fmtK(model.nCtx)}
-                    <span className="ctx-bar">
-                      <span
-                        className="ctx-bar-fill"
-                        style={{
-                          width: `${Math.min(
-                            100,
-                            ((stats.promptTokens + stats.completionTokens) / model.nCtx) * 100,
-                          )}%`,
-                        }}
-                      />
-                    </span>
+                {stats.stopReason ? (
+                  <span
+                    className={`stop-reason ${
+                      stats.stopReason === "context" || stats.stopReason === "length"
+                        ? "warn"
+                        : ""
+                    }`}
+                  >
+                    {" · "}
+                    {stats.stopReason === "eos"
+                      ? t("stopEos")
+                      : stats.stopReason === "length"
+                        ? t("stopLength")
+                        : stats.stopReason === "context"
+                          ? t("stopContext")
+                          : stats.stopReason === "stop"
+                            ? t("stopStop")
+                            : stats.stopReason === "cancelled"
+                              ? t("stopCancelled")
+                              : stats.stopReason}
                   </span>
                 ) : null}
+                {model?.nCtx
+                  ? (() => {
+                      const used = stats.promptTokens + stats.completionTokens;
+                      const pct = Math.min(1, used / model.nCtx);
+                      const C = 2 * Math.PI * 7; // ring circumference (r=7)
+                      return (
+                        <span className="ctx-meter" title={t("ctxUsage")}>
+                          {" · ctx "}
+                          {fmtK(used)}/{fmtK(model.nCtx)}
+                          <svg
+                            className={`ctx-ring ${pct > 0.95 ? "danger" : pct > 0.8 ? "warn" : ""}`}
+                            viewBox="0 0 18 18"
+                            aria-hidden="true"
+                          >
+                            <circle className="ctx-ring-track" cx="9" cy="9" r="7" />
+                            <circle
+                              className="ctx-ring-fill"
+                              cx="9"
+                              cy="9"
+                              r="7"
+                              strokeDasharray={C}
+                              strokeDashoffset={C * (1 - pct)}
+                            />
+                          </svg>
+                        </span>
+                      );
+                    })()
+                  : null}
               </div>
             )}
             {(attachment || attachError) && (

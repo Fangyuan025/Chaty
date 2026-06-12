@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "title": "Chaty",
+        "width": 1040,
+        "height": 720,
+        "minWidth": 720,
+        "minHeight": 480,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-",
+      "entitlements": "entitlements.plist",
+      "frameworks": [
+        "target/release/libonnxruntime.1.17.1.dylib",
+        "target/release/libsherpa-onnx-c-api.dylib",
+        "target/release/libsherpa-onnx-cxx-api.dylib"
+      ]
+    }
+  }
+}

@@ -73,6 +73,7 @@ impl InferenceBackend for MockBackend {
                 prompt_tokens: 0,
                 completion_tokens,
                 tokens_per_second: completion_tokens as f32 / secs,
+                stop_reason: "eos".to_string(),
             },
         })?;
         Ok(())

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Microphone for voice/live mode (Whisper STT). -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+  <!-- Outbound network for the HF model downloader, web research, updates. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <!-- llama.cpp / ONNX Runtime allocate executable memory at runtime. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <!-- The bundled onnxruntime/sherpa dylibs carry their builders' signatures
+       (different Team ID). With hardened-runtime signing, library validation
+       would refuse to load them ("different Team IDs" dyld crash at launch). -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

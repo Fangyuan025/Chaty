@@ -22,14 +22,44 @@ const KOKORO_DIR: &str = "kokoro-en-v0_19";
 static STT: OnceLock<Mutex<WhisperRecognizer>> = OnceLock::new();
 static TTS: OnceLock<Mutex<KokoroTts>> = OnceLock::new();
 
+/// Trigger the macOS app-level microphone consent prompt (TCC) and wait for
+/// the user's answer. WKWebView's permission delegate auto-grants the webview
+/// layer, but the system dialog only appears once something in the process
+/// requests capture access — which nothing does unless we ask here. Returns
+/// whether access is (now) authorized; always true on other platforms.
+#[tauri::command]
+pub fn request_mic_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use block2::RcBlock;
+        use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
+
+        let Some(media) = AVMediaTypeAudio else { return false };
+        match AVCaptureDevice::authorizationStatusForMediaType(media) {
+            AVAuthorizationStatus::Authorized => return true,
+            AVAuthorizationStatus::Denied | AVAuthorizationStatus::Restricted => return false,
+            _ => {} // NotDetermined → ask
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
+        let block = RcBlock::new(move |granted: objc2::runtime::Bool| {
+            let _ = tx.send(granted.as_bool());
+        });
+        AVCaptureDevice::requestAccessForMediaType_completionHandler(media, &block);
+        // Wait for the dialog; commands run off the main thread, so blocking is fine.
+        rx.recv_timeout(std::time::Duration::from_secs(300)).unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
 /// Threads for the ONNX voice engines — use most cores for snappier STT/TTS,
 /// but leave one for the rest of the app and cap to avoid oversubscribing the
 /// CPU while the LLM is also generating.
 fn voice_threads() -> i32 {
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    cores.saturating_sub(1).clamp(2, 8) as i32
+    // On Apple Silicon this is the performance-core count (minus one for the
+    // UI, handled in the helper); elsewhere the logical CPU count. Clamp to a
+    // sane range so we don't oversubscribe while the LLM is also generating.
+    crate::gpu::cpu_worker_threads().clamp(2, 8) as i32
 }
 
 fn find_in(dir: &Path, suffix: &str) -> Option<PathBuf> {

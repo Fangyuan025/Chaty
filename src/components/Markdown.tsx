@@ -49,15 +49,23 @@ let mermaidSeq = 0;
  *  (e.g. while the block is still streaming in). */
 function Mermaid({ code }: { code: string }) {
   const [svg, setSvg] = useState("");
-  const [failed, setFailed] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let alive = true;
     const trimmed = code.trim();
     if (!trimmed) return;
     if (!mermaidReady) {
+      const dark = !document.documentElement.dataset.theme?.includes("light");
       mermaidReady = import("mermaid").then((m) => {
-        m.default.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+        // "loose" — strict rejects common model-generated labels (e.g. with
+        // HTML entities) and silently blanked the diagram. We render into our
+        // own sandboxed context, and the SVG is inert markup.
+        m.default.initialize({
+          startOnLoad: false,
+          theme: dark ? "dark" : "default",
+          securityLevel: "loose",
+        });
         return m.default;
       });
     }
@@ -68,35 +76,88 @@ function Mermaid({ code }: { code: string }) {
           const { svg: out } = await mermaid.render(`mmd-${mermaidSeq++}`, trimmed);
           if (alive) {
             setSvg(out);
-            setFailed(false);
+            setError("");
           }
-        } catch {
-          if (alive) setFailed(true);
+        } catch (e) {
+          // Expected while the block is still streaming in; the final code
+          // triggers another attempt. Keep the message for the fallback.
+          if (alive) setError((e as Error)?.message ?? String(e));
         }
       })
-      .catch(() => {
-        if (alive) setFailed(true);
+      .catch((e) => {
+        if (alive) setError(`mermaid failed to load: ${(e as Error)?.message ?? e}`);
       });
     return () => {
       alive = false;
     };
   }, [code]);
 
-  if (svg && !failed) {
+  if (svg && !error) {
     return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
   }
   return (
     <pre className="mermaid-src">
       <code>{code}</code>
+      {error ? <div className="mermaid-err">{error.slice(0, 300)}</div> : null}
     </pre>
   );
+}
+
+/**
+ * In-memory localStorage/sessionStorage shim, injected ahead of the snippet.
+ * Sandboxed (non-same-origin) iframes throw SecurityError on storage access,
+ * which crashes e.g. single-file games that save a highscore on boot.
+ */
+const STORAGE_SHIM = `<script>(function(){
+  try { localStorage.getItem(""); } catch (_) {
+    var m = new Map();
+    var shim = {
+      getItem: function(k){ k=String(k); return m.has(k) ? m.get(k) : null; },
+      setItem: function(k,v){ m.set(String(k), String(v)); },
+      removeItem: function(k){ m.delete(String(k)); },
+      clear: function(){ m.clear(); },
+      key: function(i){ return Array.from(m.keys())[i] ?? null; },
+    };
+    Object.defineProperty(shim, "length", { get: function(){ return m.size; } });
+    try { Object.defineProperty(window, "localStorage", { value: shim }); } catch (_) {}
+    try { Object.defineProperty(window, "sessionStorage", { value: shim }); } catch (_) {}
+  }
+})()</script>`;
+
+/** Inject the storage shim so it runs before any of the snippet's scripts. */
+function withStorageShim(html: string): string {
+  const head = html.match(/<head[^>]*>/i);
+  if (head && head.index !== undefined) {
+    const at = head.index + head[0].length;
+    return html.slice(0, at) + STORAGE_SHIM + html.slice(at);
+  }
+  const tag = html.match(/<html[^>]*>/i);
+  if (tag && tag.index !== undefined) {
+    const at = tag.index + tag[0].length;
+    return html.slice(0, at) + STORAGE_SHIM + html.slice(at);
+  }
+  return STORAGE_SHIM + html;
 }
 
 /** A live, sandboxed preview of an HTML snippet rendered in an overlay. */
 function HtmlPreview({ html, onClose }: { html: string; onClose: () => void }) {
   const { t } = useI18n();
   const [zoom, setZoom] = useState(1);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
   const clampZoom = (z: number) => Math.min(2.5, Math.max(0.4, Math.round(z * 100) / 100));
+  // Keyboard-driven games listen inside the iframe document — without focus,
+  // Space/arrows land on the host window instead. Focus on load and keep it
+  // through zoom-induced re-layouts.
+  const focusFrame = () => {
+    try {
+      frameRef.current?.contentWindow?.focus();
+    } catch {
+      frameRef.current?.focus();
+    }
+  };
+  useEffect(() => {
+    focusFrame();
+  }, [zoom]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -138,10 +199,12 @@ function HtmlPreview({ html, onClose }: { html: string; onClose: () => void }) {
         </div>
         <div className="preview-body">
           <iframe
+            ref={frameRef}
             className="preview-frame"
             title="HTML preview"
-            srcDoc={html}
+            srcDoc={withStorageShim(html)}
             sandbox="allow-scripts allow-modals allow-forms allow-popups allow-pointer-lock"
+            onLoad={focusFrame}
             style={{
               width: `${100 / zoom}%`,
               height: `${100 / zoom}%`,

@@ -1,5 +1,8 @@
 // Web Audio helpers for voice: capture, base64 (de)serialization, playback.
 
+import { invoke } from "@tauri-apps/api/core";
+import { platform } from "@tauri-apps/plugin-os";
+
 /** Encode Float32 PCM as base64 of its little-endian bytes. */
 export function encodeAudio(samples: Float32Array): string {
   const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
@@ -20,8 +23,8 @@ export function decodeAudio(b64: string): Float32Array {
 }
 
 export interface Recorder {
-  /** Live analyser of the mic input (for level meters / orb animation). */
-  analyser: AnalyserNode;
+  /** Current input level (~0..1 RMS-ish) for level meters / orb animation. */
+  level: () => number;
   /** Stop and return the captured mono PCM. */
   stop: () => Promise<{ samples: Float32Array; sampleRate: number }>;
   /** Stop and discard. */
@@ -37,9 +40,35 @@ export interface RecordOptions {
 
 /** Start capturing microphone audio as mono Float32 PCM. */
 export async function startRecording(opts?: RecordOptions): Promise<Recorder> {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-  });
+  // macOS: capture natively (CoreAudio via Rust). WKWebView never exposes
+  // capture devices to embedded apps — getUserMedia fails with "0 devices"
+  // regardless of TCC, entitlements, or WebKit preference flags.
+  let mac = false;
+  try {
+    mac = platform() === "macos";
+  } catch {
+    /* non-Tauri context */
+  }
+  if (mac) return startNativeRecording(opts);
+  // Plain `audio: true` — WKWebView (macOS) throws OverconstrainedError for
+  // audio-processing constraint keys (echoCancellation & co.), and engines
+  // apply sensible processing defaults anyway. Surface a readable error with
+  // device diagnostics if capture still fails.
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    const name = (e as { name?: string } | null)?.name ?? "";
+    const msg = (e as { message?: string } | null)?.message ?? String(e);
+    let inputs = -1;
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      inputs = devs.filter((d) => d.kind === "audioinput").length;
+    } catch {
+      /* diagnostics only */
+    }
+    throw new Error(`${name || "Error"}: ${msg} (audio inputs visible: ${inputs})`);
+  }
   const ctx = new AudioContext();
   const source = ctx.createMediaStreamSource(stream);
   const analyser = ctx.createAnalyser();
@@ -88,8 +117,15 @@ export async function startRecording(opts?: RecordOptions): Promise<Recorder> {
     ctx.close().catch(() => {});
   };
 
+  const levelBuf = new Uint8Array(analyser.fftSize);
   return {
-    analyser,
+    level: () => {
+      try {
+        return readLevel(analyser, levelBuf);
+      } catch {
+        return 0;
+      }
+    },
     cancel: teardown,
     stop: async () => {
       teardown();
@@ -101,6 +137,50 @@ export async function startRecording(opts?: RecordOptions): Promise<Recorder> {
         off += c.length;
       }
       return { samples: out, sampleRate };
+    },
+  };
+}
+
+/** macOS-native recorder: Rust/cpal capture, level polled over IPC. */
+async function startNativeRecording(opts?: RecordOptions): Promise<Recorder> {
+  const sampleRate = await invoke<number>("mic_start");
+  let last = 0;
+  let speechStarted = false;
+  let lastVoice = performance.now();
+  let fired = false;
+  let stopped = false;
+  const poll = window.setInterval(() => {
+    invoke<number>("mic_level")
+      .then((lv) => {
+        last = lv;
+        if (!opts?.onAutoStop || fired) return;
+        const now = performance.now();
+        if (lv > 0.04) {
+          speechStarted = true;
+          lastVoice = now;
+        }
+        if (speechStarted && now - lastVoice > (opts.silenceMs ?? 1100)) {
+          fired = true;
+          opts.onAutoStop?.();
+        }
+      })
+      .catch(() => {});
+  }, 100);
+  const teardown = () => window.clearInterval(poll);
+  return {
+    level: () => last,
+    cancel: () => {
+      if (stopped) return;
+      stopped = true;
+      teardown();
+      void invoke("mic_cancel").catch(() => {});
+    },
+    stop: async () => {
+      teardown();
+      if (stopped) return { samples: new Float32Array(0), sampleRate };
+      stopped = true;
+      const res = await invoke<{ samples: string; sampleRate: number }>("mic_stop");
+      return { samples: decodeAudio(res.samples), sampleRate: res.sampleRate };
     },
   };
 }

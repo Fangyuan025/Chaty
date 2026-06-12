@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["nsis"],
+    "resources": {
+      "libs/onnxruntime.dll": "onnxruntime.dll",
+      "libs/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll",
+      "libs/sherpa-onnx-c-api.dll": "sherpa-onnx-c-api.dll",
+      "libs/sherpa-onnx-cxx-api.dll": "sherpa-onnx-cxx-api.dll",
+      "libs/cargs.dll": "cargs.dll"
+    },
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp",
+        "installMode": "currentUser",
+        "languages": ["English"]
+      }
+    }
+  }
+}
