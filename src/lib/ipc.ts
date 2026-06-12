@@ -108,6 +108,66 @@ export interface GenStats {
   stopReason: string;
 }
 
+// ---------- Local RAG (knowledge base) ----------
+
+export interface RagStatus {
+  modelReady: boolean;
+  docs: number;
+  chunks: number;
+}
+
+export interface RagDoc {
+  id: number;
+  name: string;
+  chunks: number;
+}
+
+export interface RagHit {
+  docName: string;
+  seq: number;
+  text: string;
+  score: number;
+}
+
+export interface RagProgress {
+  /** "extract" | "embed" | "done" */
+  phase: string;
+  frac: number;
+}
+
+export async function ragStatus(): Promise<RagStatus> {
+  return invoke<RagStatus>("rag_status");
+}
+
+export async function ragListDocuments(): Promise<RagDoc[]> {
+  return invoke<RagDoc[]>("rag_list_documents");
+}
+
+export async function ragRemoveDocument(id: number): Promise<void> {
+  await invoke("rag_remove_document", { id });
+}
+
+export async function ragSearch(query: string, k?: number): Promise<RagHit[]> {
+  return invoke<RagHit[]>("rag_search", { query, k });
+}
+
+export async function ragAddDocument(
+  path: string,
+  onProgress: (p: RagProgress) => void,
+): Promise<void> {
+  const channel = new Channel<RagProgress>();
+  channel.onmessage = onProgress;
+  await invoke("rag_add_document", { path, onProgress: channel });
+}
+
+export async function ragDownloadModel(
+  onProgress: (p: DownloadProgress) => void,
+): Promise<void> {
+  const channel = new Channel<DownloadProgress>();
+  channel.onmessage = onProgress;
+  await invoke("rag_download_model", { onProgress: channel });
+}
+
 /** Reveal the writable models folder in Finder/Explorer (creates it if needed). */
 export async function openModelsDir(): Promise<string> {
   return invoke<string>("open_models_dir");

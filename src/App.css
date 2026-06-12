@@ -2360,6 +2360,63 @@ body {
   color: var(--text-dim);
 }
 
+/* Knowledge-base panel */
+.kb-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.kb-note {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+.kb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+}
+.kb-doc {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 13px;
+}
+.kb-doc-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kb-doc-meta {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+.kb-doc-del {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.kb-doc-del:hover {
+  background: var(--surface-2);
+  color: var(--danger);
+}
+
 /* Focus-follows-generation: while reasoning streams, pin a small window to
    the newest text and fade the older lines out above (mask gradient). */
 .think-body.focus {

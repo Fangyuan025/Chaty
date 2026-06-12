@@ -1,5 +1,6 @@
 pub mod attach;
 pub mod mic;
+pub mod rag;
 mod commands;
 pub mod download;
 pub mod gpu;
@@ -180,6 +181,12 @@ pub fn run() {
             mic::mic_level,
             mic::mic_stop,
             mic::mic_cancel,
+            rag::rag_status,
+            rag::rag_download_model,
+            rag::rag_add_document,
+            rag::rag_list_documents,
+            rag::rag_remove_document,
+            rag::rag_search,
             store::save_conversation,
             store::save_message,
             store::replace_messages,

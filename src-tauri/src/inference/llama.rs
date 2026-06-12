@@ -48,6 +48,12 @@ fn llama_backend() -> Result<&'static LlamaBackend> {
     Ok(LLAMA_BACKEND.get().unwrap())
 }
 
+/// Crate-public accessor so other engines (the RAG embedder) share the same
+/// process-wide llama.cpp backend.
+pub fn llama_backend_pub() -> Result<&'static LlamaBackend> {
+    llama_backend()
+}
+
 /// Quickly read a model's transformer-layer count via a vocab-only load (no
 /// weights), used to size the GPU offload before the real load.
 ///

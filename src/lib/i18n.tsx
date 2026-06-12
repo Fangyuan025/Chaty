@@ -178,6 +178,26 @@ export const T = {
     en: "Auto = as much of the model's trained context as memory allows. Custom values are also capped to fit memory.",
   },
   reloadApply: { zh: "重新加载模型以生效", en: "Reload model to apply" },
+  // knowledge base (local RAG)
+  kbTitle: { zh: "本地知识库", en: "Local knowledge base" },
+  kbDocs: { zh: "个文档", en: "docs" },
+  kbChunks: { zh: "个片段", en: "chunks" },
+  kbModelNote: {
+    zh: "首次使用需下载多语嵌入模型 bge-m3（约 730 MB，一次性，之后完全离线）。",
+    en: "First use downloads the multilingual bge-m3 embedding model (~730 MB, one-time; fully offline after).",
+  },
+  kbDownloadModel: { zh: "下载嵌入模型", en: "Download embedding model" },
+  kbEmpty: { zh: "还没有文档 — 添加 PDF / 文本开始", en: "No documents yet — add a PDF / text file" },
+  kbAdd: { zh: "添加文档", en: "Add documents" },
+  kbRemove: { zh: "移除", en: "Remove" },
+  kbIndexing: { zh: "索引中", en: "Indexing" },
+  kbFoot: {
+    zh: "混合检索：bge-m3 向量 + BM25 关键词，RRF 融合 + MMR 去冗 + 邻接扩展。全部本地完成。",
+    en: "Hybrid retrieval: bge-m3 vectors + BM25 keywords, RRF fusion + MMR + neighbor expansion. Fully local.",
+  },
+  toolKb: { zh: "知识库检索", en: "Knowledge base" },
+  toolKbManage: { zh: "管理知识库…", en: "Manage knowledge base…" },
+  kbNeedSetup: { zh: "请先在知识库面板下载嵌入模型并添加文档", en: "Download the embedding model and add documents first" },
   // first-launch setup
   setupBtn: { zh: "一键配置", en: "Set up for me" },
   setupTitle: { zh: "为这台电脑挑选模型", en: "Models picked for this machine" },

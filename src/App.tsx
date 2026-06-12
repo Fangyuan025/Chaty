@@ -20,6 +20,7 @@ import {
 } from "./lib/audio";
 import { SettingsPanel, type GenSettings, defaultSettings, parseStops } from "./components/SettingsPanel";
 import { SetupModal } from "./components/SetupModal";
+import { KnowledgePanel } from "./components/KnowledgePanel";
 import { answerOnly, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
 import { copyToClipboard } from "./lib/clipboard";
 import {
@@ -34,6 +35,8 @@ import {
   listModels,
   loadModel,
   openModelsDir,
+  ragSearch,
+  ragStatus,
   pickAttachmentFile,
   pickModelFile,
   readAttachment,
@@ -212,6 +215,8 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [updating, setUpdating] = useState(false);
   const [webEnabled, setWebEnabled] = useState(false);
+  const [ragEnabled, setRagEnabled] = useState(false);
+  const [showKb, setShowKb] = useState(false);
   const [thinkEnabled, setThinkEnabled] = useState(() => {
     try {
       return localStorage.getItem("chaty.think") !== "0";
@@ -823,7 +828,7 @@ export default function App() {
 
     let webContext = "";
     const urls = (text.match(URL_RE) ?? []).slice(0, 3);
-    if (webEnabled || urls.length > 0) {
+    if (webEnabled || ragEnabled || urls.length > 0) {
       setSearching(true);
       try {
         const blocks: string[] = [];
@@ -838,6 +843,28 @@ export default function App() {
             usedSources.push({ title: page.title, url: page.url, snippet: "" });
           } catch (e) {
             console.error(e);
+          }
+        }
+
+        // B2 — local knowledge base (hybrid retrieval over indexed documents).
+        if (ragEnabled) {
+          try {
+            const query = prior.length > 0 ? await rewriteQuery(prior, text) : text;
+            const hits = await ragSearch(query, 6);
+            for (const h of hits) {
+              blocks.push(
+                `${label}${blocks.length + 1}：${h.docName} · §${h.seq + 1}\n${h.text.slice(0, 2200)}`,
+              );
+              usedSources.push({
+                title: `📄 ${h.docName} · §${h.seq + 1}`,
+                url: "",
+                snippet: "",
+              });
+            }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (msg.includes("RAG_MODEL_MISSING")) showNotice("warn", t("kbNeedSetup"));
+            else console.error(e);
           }
         }
 
@@ -1778,6 +1805,46 @@ export default function App() {
                       <span className="ti-label">{t("toolAttach")}</span>
                     </button>
                     <button
+                      className={`tool-item ${ragEnabled ? "on" : ""}`}
+                      onClick={() => {
+                        const next = !ragEnabled;
+                        if (next) {
+                          ragStatus()
+                            .then((st) => {
+                              if (!st.modelReady || st.docs === 0) {
+                                setShowToolsMenu(false);
+                                setShowKb(true);
+                              } else {
+                                setRagEnabled(true);
+                              }
+                            })
+                            .catch(() => setShowKb(true));
+                        } else {
+                          setRagEnabled(false);
+                        }
+                      }}
+                    >
+                      <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" strokeLinecap="round" />
+                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" strokeLinejoin="round" />
+                      </svg>
+                      <span className="ti-label">{t("toolKb")}</span>
+                      <span className="ti-check">{ragEnabled ? "✓" : ""}</span>
+                    </button>
+                    <button
+                      className="tool-item"
+                      onClick={() => {
+                        setShowToolsMenu(false);
+                        setShowKb(true);
+                      }}
+                    >
+                      <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M19.4 15a7.97 7.97 0 0 0 .1-6l-2.1.6a6 6 0 0 0-1.5-1.5l.6-2.1a8 8 0 0 0-6 .1l.6 2a6 6 0 0 0-1.5 1.5l-2.1-.6a8 8 0 0 0 .1 6l2-.6a6 6 0 0 0 1.5 1.5l-.6 2.1a8 8 0 0 0 6-.1l-.6-2a6 6 0 0 0 1.5-1.5z" strokeLinejoin="round" />
+                      </svg>
+                      <span className="ti-label">{t("toolKbManage")}</span>
+                    </button>
+                    <button
                       className={`tool-item ${webEnabled ? "on" : ""}`}
                       onClick={() => {
                         const next = !webEnabled;
@@ -1982,6 +2049,7 @@ export default function App() {
       {showDownload && (
         <DownloadModal onClose={() => setShowDownload(false)} onDownloaded={refreshModels} />
       )}
+      {showKb && <KnowledgePanel onClose={() => setShowKb(false)} />}
       {showSetup && (
         <SetupModal
           onClose={() => setShowSetup(false)}

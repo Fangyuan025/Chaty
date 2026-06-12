@@ -5,6 +5,7 @@
 //! swapping or adding engines never touches the command/UI layer.
 
 pub mod llama;
+pub use llama::llama_backend_pub;
 pub mod mock;
 
 use std::sync::atomic::AtomicBool;
