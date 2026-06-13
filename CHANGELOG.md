@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.7.0 — Local knowledge base & deep-dive podcast (2026-06-12)
+
+A fully-offline RAG knowledge base, traceable citations, and a NotebookLM-style
+audio "deep dive" — plus quality-of-life fixes across downloads and macOS install.
+
+### Local knowledge base (RAG) — hushdoc-style, high precision, fully offline
+- **Index your documents** — PDF, text, Markdown, code, and **images** (via the same OCR engine as attachments) are chunked (paragraph-aware, ~800 chars / 120 overlap) and embedded locally.
+- **Multilingual embeddings** — bge-m3 (1024-d, zh+en) runs through llama.cpp on its own worker thread with a persistent embeddings context, GPU-accelerated and independent of the chat model. One-time ~0.7 GB download; **cancelable**.
+- **Hybrid retrieval** — dense cosine + BM25 (ASCII words + CJK uni/bigrams) → reciprocal-rank fusion → MMR diversification → neighbor-chunk expansion. All on-device.
+- **Strict grounding** — when the knowledge base is on, the model answers *only* from the retrieved passages and explicitly says "not covered by the current documents" instead of fabricating.
+- **Custom query scope** — enable/disable individual documents to control exactly what's searched.
+- **SQLite vector store** in app data (vectors as f32 blobs); add/remove/re-index documents from the knowledge-base panel with live indexing progress.
+
+### Citations & traceability
+- **Inline citation anchors** — the model marks each sourced sentence with a numbered superscript 【N】; hovering an anchor previews the cited passage. Works for both knowledge-base and web sources.
+- **Source chips** now carry a hover preview of the cited snippet (not just the title).
+- Knowledge-base retrieval shows its own "Searching the knowledge base…" status (no longer the web-search label); a combined label covers KB + web together.
+
+### Deep-dive podcast (NotebookLM-style)
+- Turn the enabled knowledge-base documents into an **English two-host conversation**, written by the chat model and grounded strictly in your sources.
+- **Alternating Kokoro voices** (one female, one male) read it aloud, synthesized line-by-line.
+- **Progress bar + estimated time remaining**; other LLM features are **locked** during generation for stability, and you can **cancel anytime**.
+- **Export the audio** as a `.wav` file. (Podcast output is English-only, but the feature is fully usable from the 简体中文 UI.)
+
+### Downloads
+- **Cancelable everywhere** — the first-launch "Set up for me" recommender, the HuggingFace repo downloader, and the embedding-model download all have a cancel button; partial `.part` files are cleaned up.
+
+### macOS install
+- **Documented first-launch path** — the release page and README now explain clearing Gatekeeper quarantine (`xattr -dr com.apple.quarantine /Applications/Chaty.app`) or using **System Settings → Privacy & Security → Open Anyway**. The app is ad-hoc signed with the right entitlements (mic, JIT, library validation for bundled ONNX dylibs) and a hardened runtime.
+
 ## v0.6.0 — macOS (Apple Silicon) port (2026-06-11)
 
 Chaty now runs natively on Apple Silicon Macs, alongside Windows.

@@ -109,3 +109,25 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          body: |
+            ## Install
+
+            | Platform | File |
+            |---|---|
+            | **Windows x64** | `Chaty_*_x64-setup.exe` — per-user installer, no admin |
+            | **macOS (Apple Silicon)** | `Chaty_*_aarch64.dmg` |
+
+            ### ⚠️ macOS first launch — "Apple could not verify…" / "damaged"
+
+            Chaty is **ad-hoc signed but not notarized** (no paid Apple Developer
+            account), so Gatekeeper flags it on first launch. The app is safe —
+            everything runs locally. Clear the download quarantine once, in Terminal:
+
+            ```sh
+            xattr -dr com.apple.quarantine /Applications/Chaty.app
+            ```
+
+            Then open Chaty normally. (Alternatively: try to open it once, then go to
+            **System Settings → Privacy & Security → Open Anyway**.)
+
+            ---
