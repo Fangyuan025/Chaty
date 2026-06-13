@@ -23,7 +23,7 @@ jobs:
   check-version:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Tag matches package.json / tauri.conf.json / Cargo.toml
         run: |
           TAG="${GITHUB_REF_NAME#v}"
@@ -38,8 +38,8 @@ jobs:
     needs: check-version
     runs-on: macos-14 # Apple Silicon
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 20, cache: npm }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: aarch64-apple-darwin }
@@ -58,7 +58,7 @@ jobs:
           ln -s /Applications "$STAGE/Applications"
           hdiutil create -volname "Chaty" -srcfolder "$STAGE" -ov -format UDZO \
             "Chaty_${VER}_aarch64.dmg"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: macos-dmg
           path: "*.dmg"
@@ -72,8 +72,8 @@ jobs:
       CARGO_TARGET_DIR: C:\ct
       CMAKE_GENERATOR: Ninja
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 20, cache: npm }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -92,7 +92,7 @@ jobs:
           $ver = "${env:GITHUB_REF_NAME}".TrimStart("v")
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
             /DAppVersion=$ver /DSrcDir=C:\ct\release src-tauri\installer\Chaty.iss
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: windows-installer
           path: C:\ct\release\bundle\inno\*.exe
@@ -102,7 +102,7 @@ jobs:
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with: { merge-multiple: true, path: dist }
       - name: Create GitHub Release with both installers
         uses: softprops/action-gh-release@v2
