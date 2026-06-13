@@ -107,6 +107,8 @@ export const T = {
   cancel: { zh: "取消", en: "Cancel" },
   // assistant message
   searching: { zh: "正在联网搜索…", en: "Searching the web…" },
+  searchingKb: { zh: "正在检索知识库…", en: "Searching the knowledge base…" },
+  searchingMix: { zh: "正在检索知识库与网络…", en: "Searching knowledge base & web…" },
   composing: { zh: "正在整理上文…", en: "Composing earlier context…" },
   contextSummary: {
     zh: "【早前对话摘要，供延续参考】\n",
@@ -187,13 +189,45 @@ export const T = {
     en: "First use downloads the multilingual bge-m3 embedding model (~730 MB, one-time; fully offline after).",
   },
   kbDownloadModel: { zh: "下载嵌入模型", en: "Download embedding model" },
-  kbEmpty: { zh: "还没有文档 — 添加 PDF / 文本开始", en: "No documents yet — add a PDF / text file" },
+  kbEmpty: { zh: "还没有文档 — 添加 PDF / 文本 / 图片开始", en: "No documents yet — add a PDF / text / image file" },
   kbAdd: { zh: "添加文档", en: "Add documents" },
+  kbScopeTip: { zh: "勾选 = 参与检索", en: "Checked = included in retrieval" },
+  kbScopeHint: {
+    zh: "勾选要检索的文档，未勾选的不参与回答。",
+    en: "Check the documents to search; unchecked ones are excluded from answers.",
+  },
   kbRemove: { zh: "移除", en: "Remove" },
   kbIndexing: { zh: "索引中", en: "Indexing" },
-  kbFoot: {
-    zh: "混合检索：bge-m3 向量 + BM25 关键词，RRF 融合 + MMR 去冗 + 邻接扩展。全部本地完成。",
-    en: "Hybrid retrieval: bge-m3 vectors + BM25 keywords, RRF fusion + MMR + neighbor expansion. Fully local.",
+  // deep-dive podcast (NotebookLM-style)
+  kbPodcast: { zh: "生成深度播客", en: "Generate deep-dive podcast" },
+  podcastTitle: { zh: "深度播客", en: "Deep-dive podcast" },
+  podcastSub: {
+    zh: "双主持人 · 英文 · 基于本地知识库",
+    en: "Two hosts · English · from your knowledge base",
+  },
+  podcastIntro: {
+    zh: "根据你启用的知识库文档，由模型撰写一段英文双人对话脚本，再用 Kokoro 一男一女两种音色交替朗读。生成期间其他 LLM 功能会暂时锁定，可随时取消，完成后可播放并导出音频。（仅生成英文播客）",
+    en: "From your enabled documents, the model writes a two-host English script, then Kokoro reads it aloud with alternating male/female voices. Other LLM features are locked while it runs; you can cancel anytime, then play and export the audio. (English podcast only.)",
+  },
+  podcastStart: { zh: "开始生成", en: "Generate" },
+  podcastWriting: { zh: "正在撰写脚本…", en: "Writing the script…" },
+  podcastVoicing: { zh: "正在合成语音…", en: "Synthesizing voices…" },
+  podcastEta: { zh: "预计剩余", en: "Time left" },
+  podcastCancel: { zh: "取消生成", en: "Cancel" },
+  podcastTurns: { zh: "段对话", en: "turns" },
+  podcastPlay: { zh: "播放", en: "Play" },
+  podcastStop: { zh: "停止", en: "Stop" },
+  podcastExport: { zh: "导出音频", en: "Export audio" },
+  podcastRegen: { zh: "重新生成", en: "Regenerate" },
+  podcastRetry: { zh: "重试", en: "Try again" },
+  podcastNeedModel: { zh: "请先加载一个聊天模型", en: "Load a chat model first" },
+  podcastNoScript: {
+    zh: "脚本生成失败，请重试或更换模型",
+    en: "Could not produce a usable script — try again or switch models",
+  },
+  podcastFootZh: {
+    zh: "提示：播客内容为英文，适合用于英语听力与学习。",
+    en: "",
   },
   toolKb: { zh: "知识库检索", en: "Knowledge base" },
   toolKbManage: { zh: "管理知识库…", en: "Manage knowledge base…" },
@@ -314,8 +348,12 @@ export const T = {
     en: 'Today is {date}. When the question refers to "today/recent/now", use this date.',
   },
   webInstruction: {
-    zh: "下面是联网检索到的资料。请综合它们，用自然连贯的语言直接回答用户的问题；不要在正文里插入“【来源N】”“(来源N)”之类的标注（来源会单独展示给用户）。若资料不足以回答，请直说。\n\n",
-    en: "Below is information retrieved from the web. Use it to answer the user's question in natural prose; do NOT insert inline citation markers like [N] or (source N) (sources are shown separately). If it is insufficient, say so.\n\n",
+    zh: "下面是联网检索到的资料，已按【1】【2】…编号。请综合它们，用自然连贯的语言直接回答用户的问题；在用到某条资料的句子末尾标注对应角标，如【1】或【1】【3】（不要写“来源”二字，只写数字角标）。若资料不足以回答，请直说。\n\n",
+    en: "Below is information retrieved from the web, numbered 【1】【2】…. Use it to answer the user's question in natural prose, and append the matching citation marker(s) — e.g. 【1】 or 【1】【3】 — at the end of each sentence that draws on a source. If the material is insufficient, say so.\n\n",
+  },
+  ragInstruction: {
+    zh: "下面是从用户本地知识库检索到的文档片段，已按【1】【2】…编号。严格依据这些片段回答：只陈述片段中明确支持的内容，绝不编造、不引入片段之外的事实或数字；若片段不足以回答，必须直接说明“当前文档未提及”。在用到某条片段的句子末尾标注对应角标，如【1】或【1】【3】（只写数字角标）。\n\n",
+    en: "Below are passages retrieved from the user's local knowledge base, numbered 【1】【2】…. Answer STRICTLY from these passages: state only what they explicitly support, never invent facts or numbers beyond them; if they do not contain the answer, you must say the current documents do not mention it. Append the matching citation marker(s) — e.g. 【1】 or 【1】【3】 — at the end of each sentence that draws on a passage.\n\n",
   },
   attachInstruction: {
     zh: "用户上传了文件《{name}》，其内容如下，回答时请优先依据它：\n\n",

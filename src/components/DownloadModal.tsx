@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { useI18n } from "../lib/i18n";
-import { listHfGgufs, downloadModel, type HfFile } from "../lib/ipc";
+import {
+  listHfGgufs,
+  downloadModel,
+  cancelDownload,
+  DOWNLOAD_CANCELLED,
+  type HfFile,
+} from "../lib/ipc";
 
 function fmtSize(n: number): string {
   if (!n) return "";
@@ -46,12 +52,13 @@ export function DownloadModal({
     try {
       await downloadModel(f.url, f.name, (p) => {
         if (p.type === "progress") setProgress({ done: p.downloaded, total: p.total || f.size });
-        else if (p.type === "error") setError(p.message);
+        else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) setError(p.message);
       });
       onDownloaded();
       onClose();
     } catch (e) {
-      setError(typeof e === "string" ? e : t("dlFailed"));
+      const msg = typeof e === "string" ? e : "";
+      if (msg !== DOWNLOAD_CANCELLED) setError(msg || t("dlFailed"));
       setActive(null);
     }
   };
@@ -106,6 +113,13 @@ export function DownloadModal({
                     {fmtSize(progress.done)}
                     {progress.total ? ` / ${fmtSize(progress.total)}` : ""}
                   </span>
+                  <button
+                    className="dl-cancel"
+                    title={t("cancel")}
+                    onClick={() => void cancelDownload(f.name).catch(() => {})}
+                  >
+                    ×
+                  </button>
                 </div>
               ) : (
                 <button className="dl-get" onClick={() => download(f)} disabled={!!active}>

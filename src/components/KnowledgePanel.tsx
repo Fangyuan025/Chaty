@@ -3,17 +3,26 @@ import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useI18n } from "../lib/i18n";
 import {
+  DOWNLOAD_CANCELLED,
   ragAddDocument,
+  ragCancelDownload,
   ragDownloadModel,
   ragListDocuments,
   ragRemoveDocument,
+  ragSetDocEnabled,
   ragStatus,
   type RagDoc,
   type RagStatus,
 } from "../lib/ipc";
 
 /** Local knowledge-base manager: embedding model, documents, indexing. */
-export function KnowledgePanel({ onClose }: { onClose: () => void }) {
+export function KnowledgePanel({
+  onClose,
+  onPodcast,
+}: {
+  onClose: () => void;
+  onPodcast?: () => void;
+}) {
   const { t } = useI18n();
   const [status, setStatus] = useState<RagStatus | null>(null);
   const [docs, setDocs] = useState<RagDoc[]>([]);
@@ -34,13 +43,16 @@ export function KnowledgePanel({ onClose }: { onClose: () => void }) {
       await ragDownloadModel((p) => {
         if (p.type === "progress" && p.total > 0) {
           setDl({ pct: Math.round((p.downloaded / p.total) * 100) });
+        } else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) {
+          setError(p.message);
         }
       });
       setDl(null);
       refresh();
     } catch (e) {
       setDl(null);
-      setError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg !== DOWNLOAD_CANCELLED) setError(msg);
     }
   }
 
@@ -50,8 +62,11 @@ export function KnowledgePanel({ onClose }: { onClose: () => void }) {
       multiple: true,
       filters: [
         {
-          name: "Documents",
-          extensions: ["pdf", "txt", "md", "markdown", "html", "csv", "json", "log"],
+          name: "Documents / Images",
+          extensions: [
+            "pdf", "txt", "md", "markdown", "html", "csv", "json", "log",
+            "png", "jpg", "jpeg", "webp", "bmp", "gif",
+          ],
         },
       ],
     });
@@ -94,9 +109,18 @@ export function KnowledgePanel({ onClose }: { onClose: () => void }) {
           <div className="kb-setup">
             <p className="kb-note">{t("kbModelNote")}</p>
             {dl ? (
-              <div className="setup-progress">
-                <div className="setup-progress-fill" style={{ width: `${dl.pct}%` }} />
-                <span>{dl.pct}%</span>
+              <div className="setup-progress-row">
+                <div className="setup-progress">
+                  <div className="setup-progress-fill" style={{ width: `${dl.pct}%` }} />
+                  <span>{dl.pct}%</span>
+                </div>
+                <button
+                  className="dl-cancel"
+                  title={t("cancel")}
+                  onClick={() => void ragCancelDownload().catch(() => {})}
+                >
+                  ×
+                </button>
               </div>
             ) : (
               <button className="setup-dl ready" onClick={() => void downloadModel()}>
@@ -111,8 +135,21 @@ export function KnowledgePanel({ onClose }: { onClose: () => void }) {
                 <div className="model-menu-empty">{t("kbEmpty")}</div>
               ) : (
                 docs.map((d) => (
-                  <div key={d.id} className="kb-doc">
-                    <span className="kb-doc-name">📄 {d.name}</span>
+                  <div key={d.id} className={`kb-doc ${d.enabled ? "" : "off"}`}>
+                    <label className="kb-doc-scope" title={t("kbScopeTip")}>
+                      <input
+                        type="checkbox"
+                        checked={d.enabled}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          setDocs((cur) =>
+                            cur.map((x) => (x.id === d.id ? { ...x, enabled } : x)),
+                          );
+                          void ragSetDocEnabled(d.id, enabled).catch(() => refresh());
+                        }}
+                      />
+                      <span className="kb-doc-name">📄 {d.name}</span>
+                    </label>
                     <span className="kb-doc-meta">
                       {d.chunks} {t("kbChunks")}
                     </span>
@@ -129,6 +166,7 @@ export function KnowledgePanel({ onClose }: { onClose: () => void }) {
                 ))
               )}
             </div>
+            {docs.length > 0 && <div className="kb-scope-hint">{t("kbScopeHint")}</div>}
             {indexing ? (
               <div className="setup-progress">
                 <div
@@ -144,11 +182,15 @@ export function KnowledgePanel({ onClose }: { onClose: () => void }) {
                 + {t("kbAdd")}
               </button>
             )}
+            {onPodcast && docs.length > 0 && !indexing && (
+              <button className="setup-dl kb-podcast" onClick={onPodcast}>
+                🎙️ {t("kbPodcast")}
+              </button>
+            )}
           </>
         )}
 
         {error && <div className="setup-err">{error.slice(0, 240)}</div>}
-        <div className="setup-foot">{t("kbFoot")}</div>
       </div>
     </div>,
     document.body,

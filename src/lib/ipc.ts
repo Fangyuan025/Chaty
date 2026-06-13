@@ -120,6 +120,8 @@ export interface RagDoc {
   id: number;
   name: string;
   chunks: number;
+  /** Whether this document participates in retrieval (custom query scope). */
+  enabled: boolean;
 }
 
 export interface RagHit {
@@ -145,6 +147,15 @@ export async function ragListDocuments(): Promise<RagDoc[]> {
 
 export async function ragRemoveDocument(id: number): Promise<void> {
   await invoke("rag_remove_document", { id });
+}
+
+export async function ragSetDocEnabled(id: number, enabled: boolean): Promise<void> {
+  await invoke("rag_set_doc_enabled", { id, enabled });
+}
+
+/** Concatenated text from the enabled KB documents (for podcast transcript). */
+export async function ragCorpus(maxChars?: number): Promise<string> {
+  return invoke<string>("rag_corpus", { maxChars });
 }
 
 export async function ragSearch(query: string, k?: number): Promise<RagHit[]> {
@@ -245,6 +256,19 @@ export async function downloadModel(
   const channel = new Channel<DownloadProgress>();
   channel.onmessage = onProgress;
   await invoke("download_model", { url, filename, onProgress: channel });
+}
+
+/** Sentinel rejection message of a user-cancelled download. */
+export const DOWNLOAD_CANCELLED = "DOWNLOAD_CANCELLED";
+
+/** Ask an in-flight `downloadModel(…, filename)` to stop (partial file removed). */
+export async function cancelDownload(filename: string): Promise<void> {
+  await invoke("cancel_download", { key: filename });
+}
+
+/** Ask the in-flight knowledge-base embedding-model download to stop. */
+export async function ragCancelDownload(): Promise<void> {
+  await invoke("cancel_download", { key: "rag-embed" });
 }
 
 /** List `.gguf` models found in the install/app-data `models/` folders. */
@@ -351,6 +375,21 @@ export async function exportTextFile(
 
 export async function renameConversation(id: string, title: string): Promise<void> {
   await invoke("rename_conversation", { id, title });
+}
+
+/** Save base64 f32 mono PCM as a .wav (16-bit) via a native save dialog. */
+export async function exportWavFile(
+  defaultName: string,
+  audioBase64: string,
+  sampleRate: number,
+): Promise<boolean> {
+  const path = await save({
+    defaultPath: defaultName,
+    filters: [{ name: "WAV audio", extensions: ["wav"] }],
+  });
+  if (!path) return false;
+  await invoke("write_wav_file", { path, audio: audioBase64, sampleRate });
+  return true;
 }
 
 // ---------- Web search ----------

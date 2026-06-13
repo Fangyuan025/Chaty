@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
 import {
+  cancelDownload,
   downloadModel,
+  DOWNLOAD_CANCELLED,
   getHardwareInfo,
   listHfGgufs,
   type DownloadProgress,
@@ -127,7 +129,7 @@ const QUANT_FALLBACK = ["Q4_K_M", "Q4_K_S", "Q5_K_M", "Q4_0", "Q8_0"];
 type CardState =
   | { kind: "idle" }
   | { kind: "resolving" }
-  | { kind: "downloading"; pct: number }
+  | { kind: "downloading"; pct: number; file: string }
   | { kind: "done"; path: string }
   | { kind: "error"; message: string };
 
@@ -193,24 +195,29 @@ export function SetupModal({
         });
         return;
       }
-      setCard(p.label, { kind: "downloading", pct: 0 });
-      await downloadModel(chosen.url, chosen.name, (ev: DownloadProgress) => {
+      const file = chosen.name;
+      setCard(p.label, { kind: "downloading", pct: 0, file });
+      await downloadModel(chosen.url, file, (ev: DownloadProgress) => {
         if (ev.type === "progress" && ev.total > 0) {
           setCard(p.label, {
             kind: "downloading",
             pct: Math.round((ev.downloaded / ev.total) * 100),
+            file,
           });
         } else if (ev.type === "done") {
           setCard(p.label, { kind: "done", path: ev.path });
-        } else if (ev.type === "error") {
+        } else if (ev.type === "error" && ev.message !== DOWNLOAD_CANCELLED) {
           setCard(p.label, { kind: "error", message: ev.message });
         }
       });
     } catch (e) {
-      setCard(p.label, {
-        kind: "error",
-        message: e instanceof Error ? e.message : String(e),
-      });
+      const message = e instanceof Error ? e.message : String(e);
+      setCard(
+        p.label,
+        message === DOWNLOAD_CANCELLED
+          ? { kind: "idle" }
+          : { kind: "error", message },
+      );
     }
   }
 
@@ -255,9 +262,18 @@ export function SetupModal({
                     {t("setupResolving")}
                   </button>
                 ) : st.kind === "downloading" ? (
-                  <div className="setup-progress">
-                    <div className="setup-progress-fill" style={{ width: `${st.pct}%` }} />
-                    <span>{st.pct}%</span>
+                  <div className="setup-progress-row">
+                    <div className="setup-progress">
+                      <div className="setup-progress-fill" style={{ width: `${st.pct}%` }} />
+                      <span>{st.pct}%</span>
+                    </div>
+                    <button
+                      className="dl-cancel"
+                      title={t("cancel")}
+                      onClick={() => void cancelDownload(st.file).catch(() => {})}
+                    >
+                      ×
+                    </button>
                   </div>
                 ) : (
                   <button className="setup-dl ready" onClick={() => onLoad(st.path)}>

@@ -234,6 +234,11 @@ fn with_db<T>(
              CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id, seq);",
         )
         .map_err(|e| e.to_string())?;
+        // Migration: per-doc search scope (errors = column already exists).
+        let _ = conn.execute(
+            "ALTER TABLE docs ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+            [],
+        );
         *guard = Some(conn);
     }
     f(guard.as_ref().unwrap())
@@ -451,7 +456,8 @@ pub fn rag_search(app: tauri::AppHandle, query: String, k: Option<usize>) -> Res
         let mut stmt = conn
             .prepare(
                 "SELECT c.id, c.doc_id, d.name, c.seq, c.text, c.embedding
-                 FROM chunks c JOIN docs d ON d.id = c.doc_id",
+                 FROM chunks c JOIN docs d ON d.id = c.doc_id
+                 WHERE d.enabled = 1",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -580,6 +586,29 @@ pub async fn rag_add_document(
     path: String,
     on_progress: Channel<RagProgress>,
 ) -> Result<(), String> {
+    // Images go through the same OCR engine as attachments (ocrs, Latin).
+    // It's async, so run it before entering the blocking section.
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let ocr_text = if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif") {
+        let _ = on_progress.send(RagProgress { phase: "extract", frac: 0.0 });
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("ocr-models");
+        Some(
+            crate::ocr::ocr_image(dir, path.clone())
+                .await
+                .map_err(|e| format!("OCR 失败 (OCR failed): {e:#}"))?,
+        )
+    } else {
+        None
+    };
+
     tokio::task::spawn_blocking(move || {
         let name = std::path::Path::new(&path)
             .file_name()
@@ -587,7 +616,10 @@ pub async fn rag_add_document(
             .unwrap_or("document")
             .to_string();
         let _ = on_progress.send(RagProgress { phase: "extract", frac: 0.0 });
-        let text = extract_text(&path)?;
+        let text = match ocr_text {
+            Some(t) => t,
+            None => extract_text(&path)?,
+        };
         let chunks = chunk_text(&text);
         if chunks.is_empty() {
             return Err("文档中没有可索引的文本 (no indexable text in document)".into());
@@ -654,13 +686,14 @@ pub struct RagDoc {
     pub id: i64,
     pub name: String,
     pub chunks: i64,
+    pub enabled: bool,
 }
 
 #[tauri::command]
 pub fn rag_list_documents(app: tauri::AppHandle) -> Result<Vec<RagDoc>, String> {
     with_db(&app, |conn| {
         let mut stmt = conn
-            .prepare("SELECT id, name, chunks FROM docs ORDER BY created_at DESC")
+            .prepare("SELECT id, name, chunks, enabled FROM docs ORDER BY created_at DESC")
             .map_err(|e| e.to_string())?;
         let docs = stmt
             .query_map([], |r| {
@@ -668,12 +701,68 @@ pub fn rag_list_documents(app: tauri::AppHandle) -> Result<Vec<RagDoc>, String> 
                     id: r.get(0)?,
                     name: r.get(1)?,
                     chunks: r.get(2)?,
+                    enabled: r.get::<_, i64>(3)? != 0,
                 })
             })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
         Ok(docs)
+    })
+}
+
+/// Concatenated text from the enabled documents, capped at `max_chars`.
+/// Used to feed the deep-dive podcast transcript generator. Chunks are pulled
+/// in document/sequence order and de-duplicated by their (doc, seq) overlap.
+#[tauri::command]
+pub fn rag_corpus(app: tauri::AppHandle, max_chars: Option<usize>) -> Result<String, String> {
+    let cap = max_chars.unwrap_or(12000).clamp(1000, 40000);
+    with_db(&app, |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT d.name, c.text
+                 FROM chunks c JOIN docs d ON d.id = c.doc_id
+                 WHERE d.enabled = 1
+                 ORDER BY c.doc_id, c.seq",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        let mut out = String::new();
+        let mut last_doc = String::new();
+        for (name, text) in rows {
+            if out.chars().count() >= cap {
+                break;
+            }
+            if name != last_doc {
+                out.push_str(&format!("\n\n# {name}\n\n"));
+                last_doc = name;
+            }
+            out.push_str(&text);
+            out.push_str("\n\n");
+        }
+        let trimmed: String = out.trim().chars().take(cap).collect();
+        if trimmed.is_empty() {
+            return Err("知识库为空或全部文档已禁用 (knowledge base is empty or all documents are disabled)".into());
+        }
+        Ok(trimmed)
+    })
+}
+
+/// Toggle whether a document participates in retrieval (custom query scope).
+#[tauri::command]
+pub fn rag_set_doc_enabled(app: tauri::AppHandle, id: i64, enabled: bool) -> Result<(), String> {
+    with_db(&app, |conn| {
+        conn.execute(
+            "UPDATE docs SET enabled = ?2 WHERE id = ?1",
+            params![id, enabled as i64],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     })
 }
 
@@ -732,6 +821,7 @@ pub async fn rag_download_model(
     }
     std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
     let tmp = dest.with_extension("part");
+    let cancel = crate::download::register_cancel("rag-embed");
 
     let client = reqwest::Client::builder()
         .user_agent("Chaty-RAG")
@@ -756,6 +846,12 @@ pub async fn rag_download_model(
         let mut downloaded: u64 = 0;
         let mut ok = true;
         loop {
+            if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                drop(file);
+                let _ = std::fs::remove_file(&tmp);
+                crate::download::clear_cancel("rag-embed");
+                return Err(crate::download::CANCELLED.into());
+            }
             match resp.chunk().await {
                 Ok(Some(bytes)) => {
                     if file.write_all(&bytes).is_err() {
@@ -776,10 +872,12 @@ pub async fn rag_download_model(
         if ok {
             drop(file);
             std::fs::rename(&tmp, &dest).map_err(|e| e.to_string())?;
+            crate::download::clear_cancel("rag-embed");
             let _ = on_progress.send(RagDlProgress::Done);
             return Ok(());
         }
     }
+    crate::download::clear_cancel("rag-embed");
     let _ = std::fs::remove_file(&tmp);
     let msg = format!("嵌入模型下载失败 (embedding model download failed): {last_err}");
     let _ = on_progress.send(RagDlProgress::Error { message: msg.clone() });

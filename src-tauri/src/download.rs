@@ -1,13 +1,49 @@
 //! In-app model downloader: list GGUF files in a HuggingFace repo and stream one
 //! into the writable `models/` folder with progress events.
 
+use std::collections::HashMap;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::Manager;
 
 const UA: &str = "Chaty model downloader";
+
+/// Sentinel error for a user-cancelled download (frontends match on it).
+pub const CANCELLED: &str = "DOWNLOAD_CANCELLED";
+
+static CANCELS: Mutex<Option<HashMap<String, Arc<AtomicBool>>>> = Mutex::new(None);
+
+/// Register a fresh cancel flag for `key` (one in-flight download per key).
+pub fn register_cancel(key: &str) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    CANCELS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(key.to_string(), flag.clone());
+    flag
+}
+
+pub fn clear_cancel(key: &str) {
+    if let Some(map) = CANCELS.lock().unwrap().as_mut() {
+        map.remove(key);
+    }
+}
+
+/// Ask an in-flight download to stop. `key` is the filename passed to
+/// `download_model`, or `"rag-embed"` for the knowledge-base model.
+#[tauri::command]
+pub fn cancel_download(key: String) {
+    if let Some(map) = CANCELS.lock().unwrap().as_ref() {
+        if let Some(flag) = map.get(&key) {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+}
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -89,7 +125,9 @@ pub async fn download_model(
     filename: String,
     on_progress: Channel<DownloadProgress>,
 ) -> Result<(), String> {
-    let result = download_inner(&app, &url, &filename, &on_progress).await;
+    let cancel = register_cancel(&filename);
+    let result = download_inner(&app, &url, &filename, &on_progress, &cancel).await;
+    clear_cancel(&filename);
     if let Err(ref e) = result {
         let _ = on_progress.send(DownloadProgress::Error { message: e.clone() });
     }
@@ -101,6 +139,7 @@ async fn download_inner(
     url: &str,
     filename: &str,
     on_progress: &Channel<DownloadProgress>,
+    cancel: &AtomicBool,
 ) -> Result<(), String> {
     let dir = app
         .path()
@@ -136,6 +175,11 @@ async fn download_inner(
         .send(DownloadProgress::Progress { downloaded, total })
         .ok();
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if cancel.load(Ordering::SeqCst) {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(CANCELLED.into());
+        }
         file.write_all(&chunk).map_err(|e| e.to_string())?;
         downloaded += chunk.len() as u64;
         if last.elapsed().as_millis() >= 200 {

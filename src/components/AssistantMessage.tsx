@@ -47,6 +47,24 @@ function parseThinking(raw: string): {
 }
 
 const SOURCE_RE = /[【[（(]\s*来源\s*[\d０-９,，、\s]+[】\])）]/g;
+/** Verbose citation forms (【来源1、2】 / (source 3)) → bare 【1】【2】 anchors. */
+const SOURCE_WORDY_RE = /[【[（(]\s*(?:来源|source)\s*([\d,，、\s]+)[】\])）]/gi;
+
+/** Prepare the answer text for citation rendering: with sources, normalise
+ *  wordy markers into 【N】 (picked up by Markdown's cite anchors); without,
+ *  strip them entirely as before. */
+function prepareCitations(answer: string, hasSources: boolean): string {
+  if (!hasSources) return answer.replace(SOURCE_RE, "");
+  return answer.replace(SOURCE_WORDY_RE, (_, nums: string) =>
+    nums
+      .split(/[,，、\s]+/)
+      .filter(Boolean)
+      .map((n) => `【${n}】`)
+      .join(""),
+  );
+}
+
+export type SearchKind = "" | "web" | "kb" | "mix";
 
 export function AssistantMessage({
   content,
@@ -54,29 +72,37 @@ export function AssistantMessage({
   searching,
   composing,
   hideThinking,
+  sources,
 }: {
   content: string;
   streaming: boolean;
-  searching?: boolean;
+  searching?: SearchKind;
   composing?: boolean;
   hideThinking?: boolean;
+  sources?: { title: string; url: string; snippet: string }[];
 }) {
   const { t } = useI18n();
-  const busyHint = composing ? t("composing") : searching ? t("searching") : null;
+  const busyHint = composing
+    ? t("composing")
+    : searching
+      ? t(searching === "kb" ? "searchingKb" : searching === "mix" ? "searchingMix" : "searching")
+      : null;
+  const hasSources = (sources?.length ?? 0) > 0;
 
   // Thinking off: never use the reasoning panel — strip the whole <think> block
   // and any stray tags so a buggy/empty panel can never appear.
   if (hideThinking) {
-    const answer = normalizeChannels(content)
-      .replace(/<think>[\s\S]*?<\/think>/g, "")
-      .replace(/<\/?think>/g, "")
-      .replace(SOURCE_RE, "")
-      .replace(/^\s+/, "");
+    const answer = prepareCitations(
+      normalizeChannels(content)
+        .replace(/<think>[\s\S]*?<\/think>/g, "")
+        .replace(/<\/?think>/g, ""),
+      hasSources,
+    ).replace(/^\s+/, "");
     return (
       <div className="bubble">
         {answer && (
           <div className="answer">
-            <Markdown>{answer}</Markdown>
+            <Markdown cites={sources}>{answer}</Markdown>
           </div>
         )}
         {busyHint && !answer ? (
@@ -92,7 +118,7 @@ export function AssistantMessage({
   }
 
   const { reasoning, answer, thinking, hasThink } = parseThinking(content);
-  const cleanAnswer = answer.replace(SOURCE_RE, "");
+  const cleanAnswer = prepareCitations(answer, hasSources);
   // Manual override of the panel; until the user clicks, follow the thinking state
   // (expanded while reasoning, auto-collapsed once the answer starts).
   const [override, setOverride] = useState<boolean | null>(null);
@@ -144,7 +170,7 @@ export function AssistantMessage({
 
       {cleanAnswer && (
         <div className="answer">
-          <Markdown>{cleanAnswer}</Markdown>
+          <Markdown cites={sources}>{cleanAnswer}</Markdown>
         </div>
       )}
 

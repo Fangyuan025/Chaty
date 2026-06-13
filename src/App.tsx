@@ -21,6 +21,7 @@ import {
 import { SettingsPanel, type GenSettings, defaultSettings, parseStops } from "./components/SettingsPanel";
 import { SetupModal } from "./components/SetupModal";
 import { KnowledgePanel } from "./components/KnowledgePanel";
+import { PodcastPanel } from "./components/PodcastPanel";
 import { answerOnly, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
 import { copyToClipboard } from "./lib/clipboard";
 import {
@@ -217,6 +218,7 @@ export default function App() {
   const [webEnabled, setWebEnabled] = useState(false);
   const [ragEnabled, setRagEnabled] = useState(false);
   const [showKb, setShowKb] = useState(false);
+  const [showPodcast, setShowPodcast] = useState(false);
   const [thinkEnabled, setThinkEnabled] = useState(() => {
     try {
       return localStorage.getItem("chaty.think") !== "0";
@@ -231,7 +233,7 @@ export default function App() {
       return false;
     }
   });
-  const [searching, setSearching] = useState(false);
+  const [searching, setSearching] = useState<"" | "web" | "kb" | "mix">("");
   const [composing, setComposing] = useState(false);
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [attaching, setAttaching] = useState(false);
@@ -829,18 +831,18 @@ export default function App() {
     let webContext = "";
     const urls = (text.match(URL_RE) ?? []).slice(0, 3);
     if (webEnabled || ragEnabled || urls.length > 0) {
-      setSearching(true);
+      const webish = webEnabled || urls.length > 0;
+      setSearching(ragEnabled && webish ? "mix" : ragEnabled ? "kb" : "web");
       try {
         const blocks: string[] = [];
         const usedSources: SearchResult[] = [];
-        const label = lang === "zh" ? "资料" : "Source";
 
         // D — fetch any URLs the user pasted (highest priority).
         for (const url of urls) {
           try {
             const page = await fetchUrl(url);
-            blocks.push(`${label}${blocks.length + 1}：${page.title}\n${page.text.slice(0, 5000)}`);
-            usedSources.push({ title: page.title, url: page.url, snippet: "" });
+            blocks.push(`【${blocks.length + 1}】 ${page.title}\n${page.text.slice(0, 5000)}`);
+            usedSources.push({ title: page.title, url: page.url, snippet: page.text.slice(0, 360) });
           } catch (e) {
             console.error(e);
           }
@@ -853,12 +855,12 @@ export default function App() {
             const hits = await ragSearch(query, 6);
             for (const h of hits) {
               blocks.push(
-                `${label}${blocks.length + 1}：${h.docName} · §${h.seq + 1}\n${h.text.slice(0, 2200)}`,
+                `【${blocks.length + 1}】 ${h.docName} · §${h.seq + 1}\n${h.text.slice(0, 2200)}`,
               );
               usedSources.push({
                 title: `📄 ${h.docName} · §${h.seq + 1}`,
                 url: "",
-                snippet: "",
+                snippet: h.text.slice(0, 600),
               });
             }
           } catch (e) {
@@ -878,15 +880,15 @@ export default function App() {
             if (budget <= 0) break;
             const txt = p.text.slice(0, budget);
             if (txt.length < 40) continue;
-            blocks.push(`${label}${blocks.length + 1}：${p.title}\n${txt}`);
-            usedSources.push({ title: p.title, url: p.url, snippet: "" });
+            blocks.push(`【${blocks.length + 1}】 ${p.title}\n${txt}`);
+            usedSources.push({ title: p.title, url: p.url, snippet: txt.slice(0, 360) });
             budget -= txt.length;
             added++;
           }
           if (added === 0 && research.results.length) {
             research.results.slice(0, 6).forEach((r) => {
-              blocks.push(`${label}${blocks.length + 1}：${r.title}\n${r.snippet}`);
-              usedSources.push({ title: r.title, url: r.url, snippet: "" });
+              blocks.push(`【${blocks.length + 1}】 ${r.title}\n${r.snippet}`);
+              usedSources.push({ title: r.title, url: r.url, snippet: r.snippet.slice(0, 360) });
             });
           }
         }
@@ -897,12 +899,14 @@ export default function App() {
           );
         }
         if (blocks.length) {
-          webContext = t("webInstruction") + blocks.join("\n\n---\n\n");
+          // KB mode gets the strict-grounding instruction: answer only from the
+          // retrieved passages, never invent, admit when they don't cover it.
+          webContext = (ragEnabled ? t("ragInstruction") : t("webInstruction")) + blocks.join("\n\n---\n\n");
         }
       } catch (e) {
         console.error(e);
       } finally {
-        setSearching(false);
+        setSearching("");
       }
     }
 
@@ -1561,9 +1565,10 @@ export default function App() {
                     <AssistantMessage
                       content={m.content}
                       streaming={streamingId === m.id}
-                      searching={streamingId === m.id && searching}
+                      searching={streamingId === m.id ? searching : ""}
                       composing={streamingId === m.id && composing}
                       hideThinking={!thinkEnabled}
+                      sources={m.sources}
                     />
                     {m.sources && m.sources.length > 0 && (
                       <div className="sources">
@@ -1573,11 +1578,19 @@ export default function App() {
                             <button
                               key={k}
                               className="source-chip"
-                              title={s.url}
-                              onClick={() => openUrl(s.url).catch(() => {})}
+                              title={s.url || undefined}
+                              onClick={() => {
+                                if (s.url) void openUrl(s.url).catch(() => {});
+                              }}
                             >
                               <span className="source-idx">{k + 1}</span>
                               <span className="source-title">{s.title}</span>
+                              {s.snippet && (
+                                <span className="cite-pop">
+                                  <span className="cite-pop-title">{s.title}</span>
+                                  <span className="cite-pop-text">{s.snippet}</span>
+                                </span>
+                              )}
                             </button>
                           ))}
                         </div>
@@ -2049,7 +2062,23 @@ export default function App() {
       {showDownload && (
         <DownloadModal onClose={() => setShowDownload(false)} onDownloaded={refreshModels} />
       )}
-      {showKb && <KnowledgePanel onClose={() => setShowKb(false)} />}
+      {showKb && (
+        <KnowledgePanel
+          onClose={() => setShowKb(false)}
+          onPodcast={() => {
+            setShowKb(false);
+            setShowPodcast(true);
+          }}
+        />
+      )}
+      {showPodcast && (
+        <PodcastPanel
+          model={model}
+          voiceSpeed={settings.voiceSpeed}
+          onClose={() => setShowPodcast(false)}
+          onLockChange={setBusy}
+        />
+      )}
       {showSetup && (
         <SetupModal
           onClose={() => setShowSetup(false)}

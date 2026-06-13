@@ -1,5 +1,8 @@
 import {
+  createContext,
+  useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ComponentPropsWithoutRef,
@@ -24,6 +27,89 @@ const rehypePlugins = [
   [rehypeKatex, { throwOnError: false }],
   [rehypeHighlight, { ignoreMissing: true }],
 ] as const;
+
+// ---------------------------------------------------------------------------
+// Inline citations: 【N】 tokens → hoverable superscript anchors
+// ---------------------------------------------------------------------------
+
+export interface CiteSource {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+const CitesContext = createContext<CiteSource[]>([]);
+
+const CITE_RE = /【(\d{1,2})】|\[(\d{1,2})\]/g;
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/** Rehype plugin: split text nodes on 【N】 / [N] into `<sup data-cite="N">`.
+ *  Skips code/pre and out-of-range numbers (left as plain text). */
+function rehypeCites({ count }: { count: number }) {
+  const walk = (node: any) => {
+    if (!node || node.type === "comment") return;
+    if (node.type === "element" && ["code", "pre", "sup", "a"].includes(node.tagName)) return;
+    const kids: any[] = node.children;
+    if (!kids) return;
+    for (let i = 0; i < kids.length; i++) {
+      const child = kids[i];
+      if (child.type !== "text") {
+        walk(child);
+        continue;
+      }
+      const value: string = child.value;
+      CITE_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      let last = 0;
+      let replaced = false;
+      const out: any[] = [];
+      while ((m = CITE_RE.exec(value))) {
+        const n = parseInt(m[1] ?? m[2], 10);
+        if (!(n >= 1 && n <= count)) continue;
+        if (m.index > last) out.push({ type: "text", value: value.slice(last, m.index) });
+        out.push({
+          type: "element",
+          tagName: "sup",
+          properties: { dataCite: String(n) },
+          children: [{ type: "text", value: String(n) }],
+        });
+        last = m.index + m[0].length;
+        replaced = true;
+      }
+      if (!replaced) continue;
+      if (last < value.length) out.push({ type: "text", value: value.slice(last) });
+      kids.splice(i, 1, ...out);
+      i += out.length - 1;
+    }
+  };
+  return (tree: any) => walk(tree);
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+/** Superscript citation anchor with a hover preview of the cited source. */
+function CiteMark({ n }: { n: number }) {
+  const cites = useContext(CitesContext);
+  const s = cites[n - 1];
+  if (!s) return <sup>{n}</sup>;
+  return (
+    <sup className="cite">
+      <span className="cite-n">{n}</span>
+      <span className="cite-pop">
+        <span className="cite-pop-title">{s.title}</span>
+        {s.snippet && <span className="cite-pop-text">{s.snippet}</span>}
+      </span>
+    </sup>
+  );
+}
+
+function SupRenderer(
+  props: ComponentPropsWithoutRef<"sup"> & { node?: unknown; "data-cite"?: string; dataCite?: string },
+) {
+  const { node: _node, ...rest } = props;
+  const dc = rest["data-cite"] ?? rest.dataCite;
+  if (dc) return <CiteMark n={Number(dc)} />;
+  return <sup {...rest} />;
+}
 
 /** Fenced language from the inner <code className="language-xxx">. */
 function codeLang(children: ReactNode): string {
@@ -320,17 +406,25 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   );
 }
 
-const components = { pre: CodeBlock } as const;
+const components = { pre: CodeBlock, sup: SupRenderer } as const;
 
-/** Markdown renderer with GFM tables, KaTeX math, and code highlighting. */
-export function Markdown({ children }: { children: string }) {
+/** Markdown renderer with GFM tables, KaTeX math, and code highlighting.
+ *  When `cites` is given, inline 【N】 markers become hoverable anchors. */
+export function Markdown({ children, cites }: { children: string; cites?: CiteSource[] }) {
+  const count = cites?.length ?? 0;
+  const plugins = useMemo(
+    () => (count > 0 ? [...rehypePlugins, [rehypeCites, { count }]] : rehypePlugins),
+    [count],
+  );
   return (
-    <ReactMarkdown
-      remarkPlugins={remarkPlugins}
-      rehypePlugins={rehypePlugins as never}
-      components={components}
-    >
-      {children}
-    </ReactMarkdown>
+    <CitesContext.Provider value={cites ?? []}>
+      <ReactMarkdown
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={plugins as never}
+        components={components}
+      >
+        {children}
+      </ReactMarkdown>
+    </CitesContext.Provider>
   );
 }
