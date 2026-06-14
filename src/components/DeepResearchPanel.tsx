@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
-import { exportTextFile, type ModelInfo } from "../lib/ipc";
+import { exportTextFile, openHtmlReport, type ModelInfo } from "../lib/ipc";
 import { Markdown } from "./Markdown";
 import {
   deepResearch,
@@ -44,6 +43,7 @@ export function DeepResearchPanel({
 
   const signalRef = useRef<DRSignal | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const printRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     onLockChange(running);
@@ -112,33 +112,44 @@ export function DeepResearchPanel({
     }
   }
 
-  function exportPdf() {
-    // Print the off-screen report container; macOS print panel → "Save as PDF".
-    document.body.classList.add("dr-printing");
-    const cleanup = () => {
-      document.body.classList.remove("dr-printing");
-      window.removeEventListener("afterprint", cleanup);
-    };
-    window.addEventListener("afterprint", cleanup);
-    setTimeout(() => window.print(), 60);
+  async function exportPdf() {
+    // WKWebView can't print itself, so render the report to a styled HTML file
+    // and open it in the system browser, which auto-fires the print dialog
+    // ("Save as PDF"). System fonts handle CJK, so Chinese reports render fine.
+    const node = printRef.current;
+    if (!node) return;
+    const css = `
+      @page { margin: 18mm 16mm; }
+      body { font: 15px/1.75 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; color: #111; max-width: 760px; margin: 0 auto; padding: 24px; }
+      h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 1.5em; } h3 { font-size: 16px; }
+      a { color: #1155cc; word-break: break-all; }
+      pre, code { font-family: ui-monospace, Menlo, monospace; background: #f4f4f5; }
+      pre { padding: 10px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      sup { font-size: 0.7em; }
+      img { max-width: 100%; }
+      @media print { .dr-print-hint { display: none; } }`;
+    const hint =
+      lang === "zh"
+        ? '<div class="dr-print-hint" style="background:#fffae6;border:1px solid #f0e0a0;padding:8px 12px;border-radius:8px;margin-bottom:16px;font-size:13px;">如果未自动弹出打印窗口，请按 ⌘P，然后在「目标」中选择「存储为 PDF」。</div>'
+        : '<div class="dr-print-hint" style="background:#fffae6;border:1px solid #f0e0a0;padding:8px 12px;border-radius:8px;margin-bottom:16px;font-size:13px;">If the print dialog didn\'t open, press ⌘P and choose "Save as PDF".</div>';
+    const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>${topic.trim()}</title><style>${css}</style></head><body>${hint}${node.innerHTML}<script>window.addEventListener("load",function(){setTimeout(function(){window.print();},400);});<\/script></body></html>`;
+    try {
+      await openHtmlReport(html);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   const phaseLabel = phase ? t(PHASE_KEY[phase.phase]) : "";
 
-  return createPortal(
-    <>
-      <div className="preview-overlay" onMouseDown={running ? undefined : onClose}>
-        <div className="setup-modal dr-modal" onMouseDown={(e) => e.stopPropagation()}>
-          <div className="setup-head">
-            <div>
-              <div className="setup-title">🔬 {t("drTitle")}</div>
-              <div className="setup-hw">{t("drSub")}</div>
-            </div>
-            {!running && (
-              <button className="preview-close" onClick={onClose}>
-                ×
-              </button>
-            )}
+  return (
+    <div className="dr-view">
+        <div className="dr-panel">
+          <div className="setup-head dr-head">
+            <div className="setup-title">🔬 {t("drTitle")}</div>
+            <button className="preview-close" onClick={onClose} disabled={running} title={t("drBackToChat")}>
+              ×
+            </button>
           </div>
 
           <div className="dr-input-row">
@@ -226,7 +237,7 @@ export function DeepResearchPanel({
               <span className="dr-export-meta">
                 {sources.length} {t("drSources")}
               </span>
-              <button className="setup-dl ready" onClick={exportPdf}>
+              <button className="setup-dl ready" onClick={() => void exportPdf()}>
                 ⬇ {t("drExportPdf")}
               </button>
               <button className="setup-dl" onClick={() => void exportMd()}>
@@ -235,16 +246,14 @@ export function DeepResearchPanel({
             </div>
           )}
         </div>
-      </div>
 
-      {/* Off-screen container printed to PDF (vector, full text). */}
-      {done && report && (
-        <div className="dr-print-root">
-          <h1>{topic.trim()}</h1>
-          <Markdown>{report}</Markdown>
-        </div>
-      )}
-    </>,
-    document.body,
+        {/* Off-screen container; its rendered HTML is what the PDF export prints. */}
+        {done && report && (
+          <div className="dr-print-root" ref={printRef}>
+            <h1>{topic.trim()}</h1>
+            <Markdown>{report}</Markdown>
+          </div>
+        )}
+    </div>
   );
 }

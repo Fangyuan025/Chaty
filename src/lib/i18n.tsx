@@ -261,6 +261,7 @@ export const T = {
   drSources: { zh: "个来源", en: "sources" },
   drExportPdf: { zh: "导出 PDF", en: "Export PDF" },
   drExportMd: { zh: "导出 Markdown", en: "Export Markdown" },
+  drBackToChat: { zh: "返回对话", en: "Back to chat" },
   drPhasePlanning: { zh: "正在规划检索方向…", en: "Planning the research…" },
   drPhaseSearching: { zh: "正在联网检索…", en: "Searching the web…" },
   drPhaseReasoning: { zh: "正在分析并寻找信息缺口…", en: "Analyzing and finding gaps…" },

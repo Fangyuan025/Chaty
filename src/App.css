@@ -491,6 +491,7 @@ body {
 
 /* ---------- Main / chat ---------- */
 .main {
+  position: relative; /* anchors the docked Deep Research view */
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -2834,15 +2835,29 @@ body {
   background: rgba(25, 195, 125, 0.2);
 }
 
-/* ---------- Deep Research ---------- */
-.dr-modal {
-  width: min(820px, 94vw);
-  max-width: none;
-  height: min(840px, 90vh);
-  max-height: 90vh;
+/* ---------- Deep Research (docked into the chat area) ---------- */
+.dr-view {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
   display: flex;
   flex-direction: column;
+  background: var(--bg);
   overflow: hidden;
+}
+.dr-panel {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 22px 14px;
+  box-sizing: border-box;
+}
+.dr-head {
+  margin-bottom: 10px;
 }
 .dr-input-row {
   display: flex;
@@ -2986,29 +3001,11 @@ body {
   animation: spin 0.7s linear infinite;
 }
 
-/* Off-screen report container, revealed only for printing → Save as PDF. */
+/* Off-screen container; its innerHTML is copied into a print iframe for PDF. */
 .dr-print-root {
   position: absolute;
   left: -10000px;
   top: 0;
   width: 720px;
-  color: #111;
-  background: #fff;
-  font-size: 13px;
-  line-height: 1.6;
-}
-@media print {
-  body.dr-printing > *:not(.dr-print-root) {
-    display: none !important;
-  }
-  body.dr-printing .dr-print-root {
-    position: static;
-    left: 0;
-    width: 100%;
-    padding: 12px 4px;
-  }
-  body.dr-printing .dr-print-root a {
-    color: #1155cc;
-    text-decoration: underline;
-  }
+  pointer-events: none;
 }

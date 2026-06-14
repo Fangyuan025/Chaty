@@ -263,6 +263,29 @@ pub fn open_models_dir(app: tauri::AppHandle) -> Result<String, String> {
     Ok(path)
 }
 
+/// Write an HTML document to app-data and open it in the default browser. Used
+/// by Deep Research to export a report as PDF: WKWebView's own `window.print()`
+/// is a no-op, but the system browser prints (and saves as PDF, CJK included)
+/// reliably. Returns the file path.
+#[tauri::command]
+pub fn open_html_report(app: tauri::AppHandle, html: String) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("reports");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = dir.join(format!("deep-research-{ts}.html"));
+    std::fs::write(&path, html).map_err(|e| format!("写入文件失败 (failed to write file): {e}"))?;
+    let p = path.to_string_lossy().to_string();
+    tauri_plugin_opener::open_path(&p, None::<&str>).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
 /// List `.gguf` models discovered in the scanned directories, for the in-app
 /// hot-swap picker.
 #[tauri::command]

@@ -11,6 +11,11 @@ use tokio::task::JoinSet;
 
 const PER_PAGE_CHARS: usize = 900;
 
+// A current browser UA. DuckDuckGo started returning an HTTP-202 anomaly /
+// verification page to the old Chrome/124 GET requests, which broke web search
+// for every Chaty user. A fresh UA + POST gets real results again.
+const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15";
+
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult {
@@ -36,7 +41,7 @@ pub struct WebResearch {
 
 fn build_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+        .user_agent(UA)
         .timeout(Duration::from_secs(12))
         .build()
         .map_err(|e| e.to_string())
@@ -77,16 +82,58 @@ pub async fn web_research(query: String) -> Result<WebResearch, String> {
     Ok(WebResearch { results, pages })
 }
 
+/// Search DuckDuckGo. Primary: the `html.` endpoint via **POST** (a GET now
+/// trips bot-detection → HTTP-202 verification page). Fallback: the `lite.`
+/// endpoint, which has a different markup but survives when `html.` is throttled.
 async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
-    let encoded = utf8_percent_encode(query.trim(), NON_ALPHANUMERIC).to_string();
-    let url = format!("https://html.duckduckgo.com/html/?q={encoded}");
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut last_err = String::new();
+    match ddg_endpoint(client, "https://html.duckduckgo.com/html/", query, parse_ddg).await {
+        Ok(r) if !r.is_empty() => return Ok(r),
+        Ok(_) => {}
+        Err(e) => last_err = e,
+    }
+    match ddg_endpoint(client, "https://lite.duckduckgo.com/lite/", query, parse_lite).await {
+        Ok(r) if !r.is_empty() => return Ok(r),
+        Ok(_) => {}
+        Err(e) => last_err = e,
+    }
+    if last_err.is_empty() {
+        Ok(Vec::new()) // reachable but no matches
+    } else {
+        Err(format!("搜索请求失败 (search request failed): {last_err}"))
+    }
+}
+
+/// POST `q=<query>` to a DDG endpoint and parse its HTML with `parser`.
+async fn ddg_endpoint(
+    client: &reqwest::Client,
+    endpoint: &str,
+    query: &str,
+    parser: fn(&str) -> Vec<SearchResult>,
+) -> Result<Vec<SearchResult>, String> {
+    let body = format!("q={}&kl=wt-wt", utf8_percent_encode(query, NON_ALPHANUMERIC));
     let resp = client
-        .get(&url)
+        .post(endpoint)
+        .header(reqwest::header::REFERER, endpoint)
+        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(body)
         .send()
         .await
-        .map_err(|e| format!("搜索请求失败: {e}"))?;
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
     let html = resp.text().await.map_err(|e| e.to_string())?;
-    Ok(parse_ddg(&html))
+    Ok(parser(&html))
+}
+
+/// DDG sponsored/ad links route through `duckduckgo.com/y.js` (or /ad/) — drop them.
+fn is_ad_url(url: &str) -> bool {
+    url.contains("duckduckgo.com/y.js") || url.contains("/y.js?") || url.contains(".ad_")
 }
 
 fn parse_ddg(html: &str) -> Vec<SearchResult> {
@@ -113,7 +160,7 @@ fn parse_ddg(html: &str) -> Vec<SearchResult> {
             .attr("href")
             .map(decode_ddg_url)
             .unwrap_or_default();
-        if url.is_empty() {
+        if url.is_empty() || is_ad_url(&url) || !url.starts_with("http") {
             continue;
         }
         let snippet = el
@@ -121,6 +168,37 @@ fn parse_ddg(html: &str) -> Vec<SearchResult> {
             .next()
             .map(|s| s.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
+        out.push(SearchResult { title, url, snippet });
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
+}
+
+/// Parse the `lite.duckduckgo.com` results page (a table of `a.result-link`
+/// rows, with snippets in adjacent `.result-snippet` cells; ads use
+/// `result-sponsored`, which we ignore).
+fn parse_lite(html: &str) -> Vec<SearchResult> {
+    let doc = Html::parse_document(html);
+    let (Ok(link_sel), Ok(snip_sel)) = (
+        Selector::parse("a.result-link"),
+        Selector::parse(".result-snippet"),
+    ) else {
+        return Vec::new();
+    };
+    let snippets: Vec<String> = doc
+        .select(&snip_sel)
+        .map(|s| s.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    let mut out = Vec::new();
+    for (i, a) in doc.select(&link_sel).enumerate() {
+        let title = a.text().collect::<String>().trim().to_string();
+        let url = a.value().attr("href").map(decode_ddg_url).unwrap_or_default();
+        if title.is_empty() || url.is_empty() || is_ad_url(&url) || !url.starts_with("http") {
+            continue;
+        }
+        let snippet = snippets.get(i).cloned().unwrap_or_default();
         out.push(SearchResult { title, url, snippet });
         if out.len() >= 8 {
             break;

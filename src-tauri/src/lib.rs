@@ -173,6 +173,7 @@ pub fn run() {
             update::run_update,
             commands::list_models,
             commands::open_models_dir,
+            commands::open_html_report,
             commands::set_tray_language,
             commands::generate,
             commands::cancel_generation,

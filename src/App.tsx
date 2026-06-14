@@ -1536,6 +1536,13 @@ export default function App() {
         </aside>
 
         <div className="main">
+          {showDeepResearch && (
+            <DeepResearchPanel
+              model={model}
+              onClose={() => setShowDeepResearch(false)}
+              onLockChange={setBusy}
+            />
+          )}
           <main className="chat" ref={scrollRef}>
             {messages.length === 0 ? (
               <div className="empty">
@@ -2107,13 +2114,6 @@ export default function App() {
           model={model}
           voiceSpeed={settings.voiceSpeed}
           onClose={() => setShowPodcast(false)}
-          onLockChange={setBusy}
-        />
-      )}
-      {showDeepResearch && (
-        <DeepResearchPanel
-          model={model}
-          onClose={() => setShowDeepResearch(false)}
           onLockChange={setBusy}
         />
       )}
