@@ -2003,6 +2003,47 @@ body {
   color: var(--accent);
 }
 
+/* ---- tools-menu hover submenus (groups) ---- */
+.tool-group {
+  position: relative;
+}
+.tool-parent {
+  cursor: default;
+}
+.tool-group:hover > .tool-parent {
+  background: var(--surface);
+}
+.ti-caret {
+  width: 12px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+.tool-submenu {
+  position: absolute;
+  left: calc(100% + 6px);
+  top: -5px;
+  display: none;
+  min-width: 196px;
+  padding: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px var(--shadow);
+}
+/* keep the flyout reachable: a hover bridge across the 6px gap */
+.tool-submenu::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -8px;
+  width: 8px;
+  height: 100%;
+}
+.tool-group:hover > .tool-submenu {
+  display: block;
+}
+
 /* Live voice mode (Gemini-style) */
 .live-overlay {
   position: fixed;
@@ -2791,4 +2832,183 @@ body {
 }
 .mode-chip-x:hover {
   background: rgba(25, 195, 125, 0.2);
+}
+
+/* ---------- Deep Research ---------- */
+.dr-modal {
+  width: min(820px, 94vw);
+  max-width: none;
+  height: min(840px, 90vh);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dr-input-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.dr-input {
+  width: 100%;
+  resize: vertical;
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-sizing: border-box;
+}
+.dr-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dr-depth {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.dr-depth select {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 6px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.dr-controls .setup-dl {
+  margin-left: auto;
+  width: auto;
+  padding: 8px 18px;
+}
+.dr-stop {
+  color: var(--danger) !important;
+  border-color: var(--danger) !important;
+}
+.dr-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 12px;
+  padding-right: 2px;
+}
+.dr-empty {
+  margin: 36px auto;
+  max-width: 460px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.dr-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  margin-bottom: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 12.5px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.dr-status-text {
+  font-weight: 600;
+  color: var(--text);
+}
+.dr-status-meta {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+.dr-queries {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.dr-query {
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dr-reasoning {
+  margin-bottom: 10px;
+  padding: 9px 11px;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.dr-report {
+  font-size: 14px;
+  line-height: 1.7;
+}
+.dr-export {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.dr-export-meta {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.dr-export .setup-dl {
+  width: auto;
+  padding: 8px 16px;
+}
+.dr-spin {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/* Off-screen report container, revealed only for printing → Save as PDF. */
+.dr-print-root {
+  position: absolute;
+  left: -10000px;
+  top: 0;
+  width: 720px;
+  color: #111;
+  background: #fff;
+  font-size: 13px;
+  line-height: 1.6;
+}
+@media print {
+  body.dr-printing > *:not(.dr-print-root) {
+    display: none !important;
+  }
+  body.dr-printing .dr-print-root {
+    position: static;
+    left: 0;
+    width: 100%;
+    padding: 12px 4px;
+  }
+  body.dr-printing .dr-print-root a {
+    color: #1155cc;
+    text-decoration: underline;
+  }
 }

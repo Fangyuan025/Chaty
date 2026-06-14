@@ -22,6 +22,7 @@ import { SettingsPanel, type GenSettings, defaultSettings, parseStops } from "./
 import { SetupModal } from "./components/SetupModal";
 import { KnowledgePanel } from "./components/KnowledgePanel";
 import { PodcastPanel } from "./components/PodcastPanel";
+import { DeepResearchPanel } from "./components/DeepResearchPanel";
 import { answerOnly, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
 import { copyToClipboard } from "./lib/clipboard";
 import {
@@ -219,6 +220,7 @@ export default function App() {
   const [ragEnabled, setRagEnabled] = useState(false);
   const [showKb, setShowKb] = useState(false);
   const [showPodcast, setShowPodcast] = useState(false);
+  const [showDeepResearch, setShowDeepResearch] = useState(false);
   const [thinkEnabled, setThinkEnabled] = useState(() => {
     try {
       return localStorage.getItem("chaty.think") !== "0";
@@ -1817,62 +1819,91 @@ export default function App() {
                       </svg>
                       <span className="ti-label">{t("toolAttach")}</span>
                     </button>
-                    <button
-                      className={`tool-item ${ragEnabled ? "on" : ""}`}
-                      onClick={() => {
-                        const next = !ragEnabled;
-                        if (next) {
-                          ragStatus()
-                            .then((st) => {
-                              if (!st.modelReady || st.docs === 0) {
-                                setShowToolsMenu(false);
-                                setShowKb(true);
-                              } else {
-                                setRagEnabled(true);
-                              }
-                            })
-                            .catch(() => setShowKb(true));
-                        } else {
-                          setRagEnabled(false);
-                        }
-                      }}
-                    >
-                      <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" strokeLinecap="round" />
-                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" strokeLinejoin="round" />
-                      </svg>
-                      <span className="ti-label">{t("toolKb")}</span>
-                      <span className="ti-check">{ragEnabled ? "✓" : ""}</span>
-                    </button>
-                    <button
-                      className="tool-item"
-                      onClick={() => {
-                        setShowToolsMenu(false);
-                        setShowKb(true);
-                      }}
-                    >
-                      <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                        <circle cx="12" cy="12" r="3" />
-                        <path d="M19.4 15a7.97 7.97 0 0 0 .1-6l-2.1.6a6 6 0 0 0-1.5-1.5l.6-2.1a8 8 0 0 0-6 .1l.6 2a6 6 0 0 0-1.5 1.5l-2.1-.6a8 8 0 0 0 .1 6l2-.6a6 6 0 0 0 1.5 1.5l-.6 2.1a8 8 0 0 0 6-.1l-.6-2a6 6 0 0 0 1.5-1.5z" strokeLinejoin="round" />
-                      </svg>
-                      <span className="ti-label">{t("toolKbManage")}</span>
-                    </button>
-                    <button
-                      className={`tool-item ${webEnabled ? "on" : ""}`}
-                      onClick={() => {
-                        const next = !webEnabled;
-                        setWebEnabled(next);
-                        if (next) setThinkEnabled(false); // web search ⇄ thinking are exclusive
-                      }}
-                    >
-                      <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                        <circle cx="12" cy="12" r="9" />
-                        <path d="M3 12h18" />
-                        <path d="M12 3c2.6 2.7 2.6 15.3 0 18M12 3c-2.6 2.7-2.6 15.3 0 18" />
-                      </svg>
-                      <span className="ti-label">{t("toolWeb")}</span>
-                      <span className="ti-check">{webEnabled ? "✓" : ""}</span>
-                    </button>
+                    {/* Knowledge base group — hover reveals retrieve / manage */}
+                    <div className="tool-group">
+                      <div className={`tool-item tool-parent ${ragEnabled ? "on" : ""}`}>
+                        <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" strokeLinecap="round" />
+                          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" strokeLinejoin="round" />
+                        </svg>
+                        <span className="ti-label">{t("toolKbGroup")}</span>
+                        <span className="ti-check">{ragEnabled ? "✓" : ""}</span>
+                        <span className="ti-caret">›</span>
+                      </div>
+                      <div className="tool-submenu">
+                        <button
+                          className={`tool-item ${ragEnabled ? "on" : ""}`}
+                          onClick={() => {
+                            const next = !ragEnabled;
+                            if (next) {
+                              ragStatus()
+                                .then((st) => {
+                                  if (!st.modelReady || st.docs === 0) {
+                                    setShowToolsMenu(false);
+                                    setShowKb(true);
+                                  } else {
+                                    setRagEnabled(true);
+                                  }
+                                })
+                                .catch(() => setShowKb(true));
+                            } else {
+                              setRagEnabled(false);
+                            }
+                          }}
+                        >
+                          <span className="ti-label">{t("toolKb")}</span>
+                          <span className="ti-check">{ragEnabled ? "✓" : ""}</span>
+                        </button>
+                        <button
+                          className="tool-item"
+                          onClick={() => {
+                            setShowToolsMenu(false);
+                            setShowKb(true);
+                          }}
+                        >
+                          <span className="ti-label">{t("toolKbManage")}</span>
+                        </button>
+                      </div>
+                    </div>
+                    {/* Web group — hover reveals Deep Research / web search */}
+                    <div className="tool-group">
+                      <div className={`tool-item tool-parent ${webEnabled ? "on" : ""}`}>
+                        <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M3 12h18" />
+                          <path d="M12 3c2.6 2.7 2.6 15.3 0 18M12 3c-2.6 2.7-2.6 15.3 0 18" />
+                        </svg>
+                        <span className="ti-label">{t("toolWebGroup")}</span>
+                        <span className="ti-check">{webEnabled ? "✓" : ""}</span>
+                        <span className="ti-caret">›</span>
+                      </div>
+                      <div className="tool-submenu">
+                        <button
+                          className="tool-item"
+                          onClick={() => {
+                            setShowToolsMenu(false);
+                            setShowDeepResearch(true);
+                          }}
+                        >
+                          <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                            <circle cx="11" cy="11" r="7" />
+                            <path d="M21 21l-4.3-4.3" strokeLinecap="round" />
+                          </svg>
+                          <span className="ti-label">{t("toolDeepResearch")}</span>
+                        </button>
+                        <button
+                          className={`tool-item ${webEnabled ? "on" : ""}`}
+                          onClick={() => {
+                            const next = !webEnabled;
+                            setWebEnabled(next);
+                            if (next) setThinkEnabled(false); // web search ⇄ thinking are exclusive
+                          }}
+                        >
+                          <span className="ti-label">{t("toolWeb")}</span>
+                          <span className="ti-check">{webEnabled ? "✓" : ""}</span>
+                        </button>
+                      </div>
+                    </div>
                     <button
                       className={`tool-item ${thinkEnabled && model?.supportsThinking ? "on" : ""}`}
                       onClick={() => {
@@ -2076,6 +2107,13 @@ export default function App() {
           model={model}
           voiceSpeed={settings.voiceSpeed}
           onClose={() => setShowPodcast(false)}
+          onLockChange={setBusy}
+        />
+      )}
+      {showDeepResearch && (
+        <DeepResearchPanel
+          model={model}
+          onClose={() => setShowDeepResearch(false)}
           onLockChange={setBusy}
         />
       )}
