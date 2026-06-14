@@ -97,14 +97,18 @@ export async function deepResearch(opts: DROptions, cb: DRCallbacks): Promise<vo
     const planMsg: ChatMessage[] = [
       sys(
         zh
-          ? "你是一名严谨的研究员。请把用户给出的主题拆解为 3-4 个高质量的网络搜索查询词，覆盖不同侧面。每行一个查询，不要编号、不要解释。"
-          : "You are a rigorous researcher. Break the user's topic into 3-4 high-quality web search queries covering different angles. One query per line, no numbering, no explanation.",
+          ? "你是一名严谨的研究员。请把用户给出的主题拆解为 3-4 个高质量的网络搜索查询词，覆盖不同侧面。每个查询都必须紧扣该主题本身，不要偏离到无关话题。每行一个查询，不要编号、不要解释。"
+          : "You are a rigorous researcher. Break the user's topic into 3-4 high-quality web search queries covering different angles. Every query MUST stay strictly on the given topic — do not drift to unrelated subjects. One query per line, no numbering, no explanation.",
       ),
       { role: "user", content: `${zh ? "主题" : "Topic"}: ${topic}${suffix}` },
     ];
-    let queries = parseQueries(await ask(planMsg, opts, 300), 4);
+    const modelQueries = parseQueries(await ask(planMsg, opts, 300), 4);
     if (opts.signal.cancelled) return;
-    if (queries.length === 0) queries = [topic];
+    // ALWAYS search the verbatim topic first. Some models (esp. uncensored
+    // finetunes on sensitive subjects) derail and propose unrelated queries;
+    // anchoring on the topic keeps the sources on-topic regardless.
+    const tl = topic.toLowerCase();
+    let queries = [topic, ...modelQueries.filter((q) => q.toLowerCase() !== tl)].slice(0, 4);
 
     // ---- 2. search rounds, interleaved with reasoning ----
     for (let round = 1; round <= rounds; round++) {
@@ -176,8 +180,8 @@ export async function deepResearch(opts: DROptions, cb: DRCallbacks): Promise<vo
     const writeMsg: ChatMessage[] = [
       sys(
         zh
-          ? "你是一名专业的深度报道作者。请基于下面带编号的资料，撰写一篇结构清晰、深入、客观的长篇中文报告。要求：使用 Markdown（含标题层级、要点列表）；在引用事实的句子后用 [n] 角标标注对应资料编号；包含引言、若干主体章节和结论；不要编造资料中没有的信息；不要自行编写参考文献列表（系统会自动附上）。"
-          : "You are a professional deep-dive writer. Using the numbered material below, write a clear, in-depth, objective long-form report in English. Requirements: use Markdown (heading levels, bullet lists); after sentences citing a fact, add a [n] marker for the source; include an introduction, several body sections, and a conclusion; do not invent anything not in the material; do not write a references list yourself (the system appends one).",
+          ? `你是一名专业的深度报道作者。请围绕主题《${topic}》，基于下面带编号的资料撰写一篇结构清晰、深入、客观的长篇中文报告。要求：使用 Markdown（含标题层级、要点列表）；在引用事实的句子后用 [n] 角标标注对应资料编号；包含引言、若干主体章节和结论；不要编造资料中没有的信息；不要自行编写参考文献列表（系统会自动附上）。重要：若某条资料与主题无关，请直接忽略它，绝不要把无关内容硬塞进报告或牵强地与主题关联；若与主题相关的资料严重不足，请如实说明。`
+          : `You are a professional deep-dive writer. Write a clear, in-depth, objective long-form English report ON THE TOPIC "${topic}", using the numbered material below. Requirements: Markdown (heading levels, bullet lists); after sentences citing a fact, add a [n] marker; include an introduction, several body sections, and a conclusion; do not invent anything not in the material; do not write a references list yourself (the system appends one). IMPORTANT: ignore any source that is not relevant to the topic — never force unrelated material into the report or contrive a connection to the topic; if there is little relevant material, say so honestly.`,
       ),
       {
         role: "user",
