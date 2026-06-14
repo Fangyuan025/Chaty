@@ -95,41 +95,7 @@ async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchR
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    let cjk = query
-        .chars()
-        .any(|c| matches!(c as u32, 0x3400..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x2a6df));
-
-    // Merge the two reliable providers (run concurrently) for relevance +
-    // breadth: Wikipedia is precise — essential for CJK cultural topics where
-    // Bing's scrape is broad/noisy — while Bing adds wider web coverage. The
-    // more-precise provider for the query's language goes first so its hits
-    // rank ahead after de-duplication.
-    let (r1, r2) = if cjk {
-        tokio::join!(wikipedia_search(client, query), bing_search(client, query))
-    } else {
-        tokio::join!(bing_search(client, query), wikipedia_search(client, query))
-    };
-    let mut merged: Vec<SearchResult> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
     let mut last_err = String::new();
-    for r in [r1, r2] {
-        match r {
-            Ok(rs) => {
-                for s in rs {
-                    if seen.insert(s.url.clone()) {
-                        merged.push(s);
-                    }
-                }
-            }
-            Err(e) => last_err = e,
-        }
-    }
-    merged.truncate(10);
-    if !merged.is_empty() {
-        return Ok(merged);
-    }
-
-    // Deeper fallbacks only if both primaries failed/empty.
     macro_rules! try_provider {
         ($call:expr) => {
             match $call.await {
@@ -139,8 +105,16 @@ async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchR
             }
         };
     }
+    // Brave is an independent index with genuine relevance for both Chinese and
+    // English and returns direct URLs — the best free, no-key SERP available.
+    // The rest are fallbacks; Wikipedia is full-text (noisy for common Chinese
+    // characters), so it sits near the end, and the DuckDuckGo Instant-Answer
+    // API is the never-blocked last resort.
+    try_provider!(brave_search(client, query));
+    try_provider!(bing_search(client, query));
     try_provider!(ddg_endpoint(client, "https://html.duckduckgo.com/html/", query, parse_ddg));
     try_provider!(ddg_endpoint(client, "https://lite.duckduckgo.com/lite/", query, parse_lite));
+    try_provider!(wikipedia_search(client, query));
     try_provider!(ddg_instant_answer(client, query));
 
     if last_err.is_empty() {
@@ -148,6 +122,78 @@ async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchR
     } else {
         Err(format!("搜索请求失败 (all search providers failed): {last_err}"))
     }
+}
+
+/// Brave Search HTML scrape (no key). Independent index, strong relevance for
+/// CJK + English, and result links are already direct URLs. Class names are
+/// build-hashed (svelte-*), so we key off the stable `data-type="web"`
+/// container, the `.title` element, and the first external link.
+async fn brave_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
+    let enc = utf8_percent_encode(query, NON_ALPHANUMERIC);
+    let url = format!("https://search.brave.com/search?q={enc}&source=web");
+    let resp = client
+        .get(&url)
+        .header(reqwest::header::REFERER, "https://search.brave.com/")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Brave HTTP {}", resp.status()));
+    }
+    let html = resp.text().await.map_err(|e| e.to_string())?;
+    Ok(parse_brave(&html))
+}
+
+fn parse_brave(html: &str) -> Vec<SearchResult> {
+    let doc = Html::parse_document(html);
+    let (Ok(item_sel), Ok(link_sel), Ok(title_sel), Ok(desc_sel)) = (
+        Selector::parse(r#"div[data-type="web"]"#),
+        Selector::parse("a[href]"),
+        Selector::parse(".title"),
+        Selector::parse(".snippet-description, .snippet-content"),
+    ) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for el in doc.select(&item_sel) {
+        let url = el
+            .select(&link_sel)
+            .filter_map(|a| a.value().attr("href"))
+            .find(|h| h.starts_with("http") && !h.contains("brave.com"))
+            .unwrap_or_default()
+            .to_string();
+        if url.is_empty() || is_ad_url(&url) {
+            continue;
+        }
+        // The `.title` element holds the full title in its `title=` attribute
+        // (the visible text is line-clamped).
+        let title = el
+            .select(&title_sel)
+            .next()
+            .map(|t| {
+                t.value()
+                    .attr("title")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| t.text().collect::<String>())
+            })
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let snippet = el
+            .select(&desc_sel)
+            .next()
+            .map(|s| s.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
+        out.push(SearchResult {
+            title: if title.is_empty() { url.clone() } else { title },
+            url,
+            snippet,
+        });
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
 }
 
 /// Bing HTML scrape (no key). Real result URLs are base64-wrapped in Bing's
