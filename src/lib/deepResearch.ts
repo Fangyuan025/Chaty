@@ -201,11 +201,28 @@ export async function deepResearch(opts: DROptions, cb: DRCallbacks): Promise<vo
     );
     if (opts.signal.cancelled) return;
 
+    const clean = stripThink(report).trim();
+    // Only list sources the report actually cited ([n] / 【n】) — the model is
+    // told to ignore off-topic material, so uncited sources (junk from a
+    // derailed query) must not pollute the references. Fall back to the first
+    // few collected sources (topic-anchored, so most relevant) if nothing was
+    // cited. Renumber so the list is contiguous and the markers still line up.
+    const cited = new Set<number>();
+    for (const m of clean.matchAll(/[[【](\d{1,3})[\]】]/g)) {
+      const n = parseInt(m[1], 10);
+      if (n >= 1 && n <= sources.length) cited.add(n);
+    }
+    const refSources = cited.size > 0 ? sources.filter((s) => cited.has(s.n)) : sources.slice(0, 8);
+    const remap = new Map(refSources.map((s, i) => [s.n, i + 1]));
+    const renumbered = clean.replace(/([[【])(\d{1,3})([\]】])/g, (whole, _l, d) => {
+      const nn = remap.get(parseInt(d, 10));
+      return nn ? `[${nn}]` : whole;
+    });
     const refsHead = zh ? "## 参考来源" : "## References";
-    const refs = sources.map((s) => `${s.n}. [${s.title}](${s.url})`).join("\n");
-    const full = `${stripThink(report).trim()}\n\n${refsHead}\n${refs}\n`;
+    const refs = refSources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join("\n");
+    const full = `${renumbered}\n\n${refsHead}\n${refs}\n`;
     cb.onPhase("done", rounds, rounds);
-    cb.onDone(full, sources);
+    cb.onDone(full, refSources);
   } catch (e) {
     if (!opts.signal.cancelled) cb.onError(e instanceof Error ? e.message : String(e));
   }
