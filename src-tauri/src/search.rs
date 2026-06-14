@@ -4,9 +4,11 @@
 
 use std::time::Duration;
 
+use base64::Engine;
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use scraper::{Html, Selector};
 use serde::Serialize;
+use serde_json::Value;
 use tokio::task::JoinSet;
 
 const PER_PAGE_CHARS: usize = 900;
@@ -82,30 +84,210 @@ pub async fn web_research(query: String) -> Result<WebResearch, String> {
     Ok(WebResearch { results, pages })
 }
 
-/// Search DuckDuckGo. Primary: the `html.` endpoint via **POST** (a GET now
-/// trips bot-detection → HTTP-202 verification page). Fallback: the `lite.`
-/// endpoint, which has a different markup but survives when `html.` is throttled.
+/// Free, no-key web search with a multi-provider fallback chain — search
+/// engines block scrapers aggressively (DDG now returns an HTTP-202 anomaly
+/// page), so we try several independent sources and return the first that
+/// yields results. Bing's HTML is the most scrape-tolerant major engine;
+/// Wikipedia and DuckDuckGo's Instant-Answer JSON API are never blocked, so
+/// the feature degrades gracefully instead of dying when SERPs are throttled.
 async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
     let query = query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
     }
     let mut last_err = String::new();
-    match ddg_endpoint(client, "https://html.duckduckgo.com/html/", query, parse_ddg).await {
-        Ok(r) if !r.is_empty() => return Ok(r),
-        Ok(_) => {}
-        Err(e) => last_err = e,
+    // (name, future) — tried in order.
+    macro_rules! try_provider {
+        ($call:expr) => {
+            match $call.await {
+                Ok(r) if !r.is_empty() => return Ok(r),
+                Ok(_) => {}
+                Err(e) => last_err = e,
+            }
+        };
     }
-    match ddg_endpoint(client, "https://lite.duckduckgo.com/lite/", query, parse_lite).await {
-        Ok(r) if !r.is_empty() => return Ok(r),
-        Ok(_) => {}
-        Err(e) => last_err = e,
-    }
+    try_provider!(bing_search(client, query));
+    try_provider!(ddg_endpoint(client, "https://html.duckduckgo.com/html/", query, parse_ddg));
+    try_provider!(ddg_endpoint(client, "https://lite.duckduckgo.com/lite/", query, parse_lite));
+    try_provider!(wikipedia_search(client, query));
+    try_provider!(ddg_instant_answer(client, query));
+
     if last_err.is_empty() {
-        Ok(Vec::new()) // reachable but no matches
+        Ok(Vec::new()) // every provider reachable but no matches
     } else {
-        Err(format!("搜索请求失败 (search request failed): {last_err}"))
+        Err(format!("搜索请求失败 (all search providers failed): {last_err}"))
     }
+}
+
+/// Bing HTML scrape (no key). Real result URLs are base64-wrapped in Bing's
+/// `/ck/a?…&u=a1<base64url>` click-tracker, so we decode them back.
+async fn bing_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
+    let enc = utf8_percent_encode(query, NON_ALPHANUMERIC);
+    let url = format!("https://www.bing.com/search?q={enc}&setlang=en&count=14");
+    let resp = client
+        .get(&url)
+        .header(reqwest::header::REFERER, "https://www.bing.com/")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Bing HTTP {}", resp.status()));
+    }
+    let html = resp.text().await.map_err(|e| e.to_string())?;
+    Ok(parse_bing(&html))
+}
+
+fn parse_bing(html: &str) -> Vec<SearchResult> {
+    let doc = Html::parse_document(html);
+    let (Ok(item_sel), Ok(link_sel), Ok(cap_sel)) = (
+        Selector::parse("li.b_algo"),
+        Selector::parse("h2 a"),
+        Selector::parse(".b_caption p, p.b_lineclamp2, p.b_lineclamp3"),
+    ) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for el in doc.select(&item_sel) {
+        let Some(a) = el.select(&link_sel).next() else { continue };
+        let title = a.text().collect::<String>().trim().to_string();
+        if title.is_empty() {
+            continue;
+        }
+        let url = decode_bing_url(a.value().attr("href").unwrap_or_default());
+        if url.is_empty() || !url.starts_with("http") || is_ad_url(&url) {
+            continue;
+        }
+        let snippet = el
+            .select(&cap_sel)
+            .next()
+            .map(|s| s.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
+        out.push(SearchResult { title, url, snippet });
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
+}
+
+/// Unwrap a Bing `/ck/a?…&u=a1<base64url>` redirect into the real URL.
+fn decode_bing_url(href: &str) -> String {
+    if !href.contains("/ck/a") {
+        return if href.starts_with("http") { href.to_string() } else { String::new() };
+    }
+    let Some(idx) = href.find("u=a1") else { return String::new() };
+    let enc = href[idx + 4..].split('&').next().unwrap_or_default();
+    for engine in [
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        &base64::engine::general_purpose::STANDARD_NO_PAD,
+    ] {
+        if let Ok(bytes) = engine.decode(enc) {
+            if let Ok(s) = String::from_utf8(bytes) {
+                if s.starts_with("http") {
+                    return s;
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// Wikipedia full-text search (official API, no key, never blocked). Used as a
+/// grounding fallback; picks the language edition by script (CJK → zh).
+async fn wikipedia_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
+    let cjk = query.chars().any(|c| matches!(c as u32, 0x3400..=0x9fff | 0xf900..=0xfaff));
+    let lang = if cjk { "zh" } else { "en" };
+    let enc = utf8_percent_encode(query, NON_ALPHANUMERIC);
+    let url = format!(
+        "https://{lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch={enc}&format=json&srlimit=6&srprop=snippet"
+    );
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    let json: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    if let Some(arr) = json["query"]["search"].as_array() {
+        for it in arr {
+            let title = it["title"].as_str().unwrap_or("").to_string();
+            if title.is_empty() {
+                continue;
+            }
+            let snippet = strip_tags(it["snippet"].as_str().unwrap_or(""));
+            let slug = title.replace(' ', "_");
+            let page = utf8_percent_encode(&slug, NON_ALPHANUMERIC).to_string();
+            out.push(SearchResult {
+                title,
+                url: format!("https://{lang}.wikipedia.org/wiki/{page}"),
+                snippet,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// DuckDuckGo Instant-Answer JSON API (official, no key, never blocked). Limited
+/// to an abstract + related topics — the last-resort grounding source.
+async fn ddg_instant_answer(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
+    let enc = utf8_percent_encode(query, NON_ALPHANUMERIC);
+    let url = format!("https://api.duckduckgo.com/?q={enc}&format=json&no_html=1&t=chaty");
+    let body = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    let json: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    let abs = json["AbstractText"].as_str().unwrap_or("");
+    let abs_url = json["AbstractURL"].as_str().unwrap_or("");
+    if !abs.is_empty() && abs_url.starts_with("http") {
+        out.push(SearchResult {
+            title: json["Heading"].as_str().unwrap_or(query).to_string(),
+            url: abs_url.to_string(),
+            snippet: abs.to_string(),
+        });
+    }
+    fn walk(v: &Value, out: &mut Vec<SearchResult>) {
+        if out.len() >= 8 {
+            return;
+        }
+        if let Some(arr) = v.as_array() {
+            for it in arr {
+                walk(it, out);
+            }
+        } else if let Some(topics) = v["Topics"].as_array() {
+            for it in topics {
+                walk(it, out);
+            }
+        } else if let (Some(url), Some(text)) = (v["FirstURL"].as_str(), v["Text"].as_str()) {
+            if url.starts_with("http") && !text.is_empty() {
+                out.push(SearchResult {
+                    title: text.chars().take(80).collect(),
+                    url: url.to_string(),
+                    snippet: text.to_string(),
+                });
+            }
+        }
+    }
+    walk(&json["RelatedTopics"], &mut out);
+    out.truncate(8);
+    Ok(out)
+}
+
+/// Strip HTML tags (Wikipedia snippets wrap matches in `<span>`).
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// POST `q=<query>` to a DDG endpoint and parse its HTML with `parser`.
