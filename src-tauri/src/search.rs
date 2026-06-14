@@ -95,8 +95,41 @@ async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchR
     if query.is_empty() {
         return Ok(Vec::new());
     }
+    let cjk = query
+        .chars()
+        .any(|c| matches!(c as u32, 0x3400..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x2a6df));
+
+    // Merge the two reliable providers (run concurrently) for relevance +
+    // breadth: Wikipedia is precise — essential for CJK cultural topics where
+    // Bing's scrape is broad/noisy — while Bing adds wider web coverage. The
+    // more-precise provider for the query's language goes first so its hits
+    // rank ahead after de-duplication.
+    let (r1, r2) = if cjk {
+        tokio::join!(wikipedia_search(client, query), bing_search(client, query))
+    } else {
+        tokio::join!(bing_search(client, query), wikipedia_search(client, query))
+    };
+    let mut merged: Vec<SearchResult> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     let mut last_err = String::new();
-    // (name, future) — tried in order.
+    for r in [r1, r2] {
+        match r {
+            Ok(rs) => {
+                for s in rs {
+                    if seen.insert(s.url.clone()) {
+                        merged.push(s);
+                    }
+                }
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    merged.truncate(10);
+    if !merged.is_empty() {
+        return Ok(merged);
+    }
+
+    // Deeper fallbacks only if both primaries failed/empty.
     macro_rules! try_provider {
         ($call:expr) => {
             match $call.await {
@@ -106,14 +139,12 @@ async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchR
             }
         };
     }
-    try_provider!(bing_search(client, query));
     try_provider!(ddg_endpoint(client, "https://html.duckduckgo.com/html/", query, parse_ddg));
     try_provider!(ddg_endpoint(client, "https://lite.duckduckgo.com/lite/", query, parse_lite));
-    try_provider!(wikipedia_search(client, query));
     try_provider!(ddg_instant_answer(client, query));
 
     if last_err.is_empty() {
-        Ok(Vec::new()) // every provider reachable but no matches
+        Ok(Vec::new())
     } else {
         Err(format!("搜索请求失败 (all search providers failed): {last_err}"))
     }
@@ -123,7 +154,14 @@ async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchR
 /// `/ck/a?…&u=a1<base64url>` click-tracker, so we decode them back.
 async fn bing_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
     let enc = utf8_percent_encode(query, NON_ALPHANUMERIC);
-    let url = format!("https://www.bing.com/search?q={enc}&setlang=en&count=14");
+    // The market MUST match the query's script. Forcing an English locale on a
+    // Chinese query makes Bing return total garbage (e.g. 刘华强 → baseball
+    // scores), so route CJK queries to the zh-CN market.
+    let cjk = query
+        .chars()
+        .any(|c| matches!(c as u32, 0x3400..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x2a6df));
+    let mkt = if cjk { "zh-CN" } else { "en-US" };
+    let url = format!("https://www.bing.com/search?q={enc}&mkt={mkt}&count=14");
     let resp = client
         .get(&url)
         .header(reqwest::header::REFERER, "https://www.bing.com/")
