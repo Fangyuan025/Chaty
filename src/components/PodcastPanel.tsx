@@ -11,10 +11,11 @@ import {
 } from "../lib/ipc";
 import { decodeAudio, encodeAudio, playAudio, type Playback } from "../lib/audio";
 
-// Two hosts with distinct Kokoro voices (sid order in voice.rs):
-// af_bella (female) ↔ am_adam (male). Alternating, NotebookLM-style.
-const VOICE_A = 1; // af_bella · female
-const VOICE_B = 5; // am_adam · male
+// Two hosts with the highest overall-grade voices in kokoro-en-v0_19
+// (per the Kokoro VOICES.md): af_bella (A-) ↔ am_michael (C+, the best male in
+// this voice pack; am_adam is F+). Alternating, NotebookLM-style.
+const VOICE_A = 1; // af_bella · female (A-)
+const VOICE_B = 6; // am_michael · male (C+)
 const HOST_A = "Maya";
 const HOST_B = "Leo";
 

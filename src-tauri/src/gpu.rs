@@ -206,20 +206,18 @@ pub fn gpu_usage() -> Option<GpuUsage> {
     }
 }
 
-/// macOS unified memory: report THIS process's physical footprint (the model
-/// weights + KV cache dominate it) against the working-set budget.
-/// `MTLDevice.currentAllocatedSize` is per device *instance*, so a freshly
-/// created device here always reads 0 — it can't see llama.cpp's allocations.
+/// macOS unified memory: "VRAM" is shared system memory, so report the WHOLE
+/// device's memory usage (every app, plus the OS), not just this process. That
+/// matches what users expect from a memory gauge and reflects real pressure.
 #[cfg(target_os = "macos")]
 pub fn gpu_usage() -> Option<GpuUsage> {
-    let device = metal::Device::system_default()?;
-    let total_mb = device.recommended_max_working_set_size() / (1024 * 1024);
-
-    let pid = sysinfo::Pid::from_u32(std::process::id());
     let mut sys = sysinfo::System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-    let used_mb = sys.process(pid).map(|p| p.memory()).unwrap_or(0) / (1024 * 1024);
-
+    sys.refresh_memory();
+    let total_mb = sys.total_memory() / (1024 * 1024);
+    let used_mb = sys.used_memory() / (1024 * 1024);
+    if total_mb == 0 {
+        return None;
+    }
     Some(GpuUsage {
         used_mb: used_mb.min(total_mb),
         total_mb,

@@ -52,19 +52,23 @@ export const defaultSettings: GenSettings = {
   contextLength: 0,
 };
 
-/** Kokoro-en-v0_19 speakers (sid order). */
+/** kokoro-en-v0_19 speakers, in sid order (the array index IS the speaker id,
+ *  so the order must not change). This pack ships exactly these 11 voices;
+ *  the larger Kokoro-82M set (af_heart, am_fenrir, …) needs a different model.
+ *  Labels carry the Kokoro VOICES.md overall grade so users can pick good ones;
+ *  ★ marks the best in each gender. */
 export const VOICES = [
-  "af · warm female",
-  "af_bella · female",
-  "af_nicole · female",
-  "af_sarah · female",
-  "af_sky · female",
-  "am_adam · male",
-  "am_michael · male",
-  "bf_emma · UK female",
-  "bf_isabella · UK female",
-  "bm_george · UK male",
-  "bm_lewis · UK male",
+  "af · warm female · C+",
+  "★ af_bella · female · A-",
+  "af_nicole · female · B-",
+  "af_sarah · female · C+",
+  "af_sky · female · C-",
+  "am_adam · male · F+",
+  "★ am_michael · male · C+",
+  "bf_emma · UK female · B-",
+  "bf_isabella · UK female · C",
+  "bm_george · UK male · C",
+  "bm_lewis · UK male · D+",
 ];
 
 /** Parse the stop-sequence textarea into a clean array for the backend. */
