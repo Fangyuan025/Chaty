@@ -95,13 +95,15 @@ async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchR
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    let mut last_err = String::new();
+    // Try each provider; the first with results wins. A provider error (block,
+    // timeout, bad body) is swallowed so the next one gets a turn — search must
+    // degrade to "no results" gracefully, never surface a raw parser error.
     macro_rules! try_provider {
         ($call:expr) => {
-            match $call.await {
-                Ok(r) if !r.is_empty() => return Ok(r),
-                Ok(_) => {}
-                Err(e) => last_err = e,
+            if let Ok(r) = $call.await {
+                if !r.is_empty() {
+                    return Ok(r);
+                }
             }
         };
     }
@@ -117,11 +119,7 @@ async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchR
     try_provider!(wikipedia_search(client, query));
     try_provider!(ddg_instant_answer(client, query));
 
-    if last_err.is_empty() {
-        Ok(Vec::new())
-    } else {
-        Err(format!("搜索请求失败 (all search providers failed): {last_err}"))
-    }
+    Ok(Vec::new())
 }
 
 /// Brave Search HTML scrape (no key). Independent index, strong relevance for
@@ -287,7 +285,11 @@ async fn wikipedia_search(client: &reqwest::Client, query: &str) -> Result<Vec<S
     );
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
     let body = resp.text().await.map_err(|e| e.to_string())?;
-    let json: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    // A throttled/truncated body must not abort the whole search — a fallback
+    // provider that can't parse simply yields no results.
+    let Ok(json) = serde_json::from_str::<Value>(&body) else {
+        return Ok(Vec::new());
+    };
     let mut out = Vec::new();
     if let Some(arr) = json["query"]["search"].as_array() {
         for it in arr {
@@ -321,7 +323,9 @@ async fn ddg_instant_answer(client: &reqwest::Client, query: &str) -> Result<Vec
         .text()
         .await
         .map_err(|e| e.to_string())?;
-    let json: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let Ok(json) = serde_json::from_str::<Value>(&body) else {
+        return Ok(Vec::new());
+    };
     let mut out = Vec::new();
     let abs = json["AbstractText"].as_str().unwrap_or("");
     let abs_url = json["AbstractURL"].as_str().unwrap_or("");

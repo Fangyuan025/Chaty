@@ -115,11 +115,16 @@ export async function deepResearch(opts: DROptions, cb: DRCallbacks): Promise<vo
       if (opts.signal.cancelled) return;
       cb.onPhase("searching", round, rounds);
 
+      let first = true;
       for (const q of queries) {
         if (opts.signal.cancelled) return;
         const key = q.toLowerCase();
         if (seenQueries.has(key)) continue;
         seenQueries.add(key);
+        // Space out requests a little so the search providers don't rate-limit
+        // us mid-run (which forced fragile fallbacks before).
+        if (!first) await new Promise((r) => setTimeout(r, 350));
+        first = false;
         cb.onQuery(q);
         try {
           const research = await webResearch(q);
