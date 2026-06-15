@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { platform } from "@tauri-apps/plugin-os";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AssistantMessage } from "./components/AssistantMessage";
@@ -36,6 +35,7 @@ import {
   listConversations,
   listModels,
   loadModel,
+  openExternal,
   openModelsDir,
   ragSearch,
   ragStatus,
@@ -1589,7 +1589,7 @@ export default function App() {
                               className="source-chip"
                               title={s.url || undefined}
                               onClick={() => {
-                                if (s.url) void openUrl(s.url).catch(() => {});
+                                if (s.url) void openExternal(s.url).catch(() => {});
                               }}
                             >
                               <span className="source-idx">{k + 1}</span>

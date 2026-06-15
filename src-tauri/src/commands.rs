@@ -247,6 +247,52 @@ pub fn ensure_models_dir(app: &tauri::AppHandle) {
     }
 }
 
+/// Open a file path or URL in the OS default app WITHOUT forking.
+///
+/// The `open` crate (which `tauri_plugin_opener` uses for its detached variant)
+/// does a manual `fork()` to detach the child. In this process — a multithreaded
+/// WebKit host — a `fork()` followed by any allocation in the child trips the
+/// libmalloc fork-child assertion on macOS, crashing the whole app
+/// (non-deterministically, hence "sometimes slow, often crashes"). A plain
+/// `Command::spawn` goes through `posix_spawn`, which is atomic and fork-free, so
+/// it's both safe and fast. A short reaper thread `wait()`s the launcher child
+/// (which exits in milliseconds) so we don't leak zombies.
+fn open_default(target: &str) -> Result<(), String> {
+    #[allow(unused_mut)]
+    let mut cmd;
+    #[cfg(target_os = "macos")]
+    {
+        cmd = std::process::Command::new("/usr/bin/open");
+        cmd.arg(target);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "start", "", target]);
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        cmd = std::process::Command::new("xdg-open");
+        cmd.arg(target);
+    }
+    match cmd.spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
+        }
+        Err(e) => Err(format!("无法打开 (failed to open): {e}")),
+    }
+}
+
+/// Open a URL (or local file) in the user's default browser/app. Used by the
+/// frontend for source links and previews; fork-free (see `open_default`).
+#[tauri::command]
+pub fn open_external(target: String) -> Result<(), String> {
+    open_default(&target)
+}
+
 /// Reveal the writable models folder in the file manager (Finder/Explorer),
 /// creating it first if needed — on macOS it lives under ~/Library, which
 /// users can't easily browse to by hand.
@@ -259,7 +305,7 @@ pub fn open_models_dir(app: tauri::AppHandle) -> Result<String, String> {
         .join("models");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.to_string_lossy().to_string();
-    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())?;
+    open_default(&path)?;
     Ok(path)
 }
 
@@ -282,7 +328,7 @@ pub fn open_html_report(app: tauri::AppHandle, html: String) -> Result<String, S
     let path = dir.join(format!("deep-research-{ts}.html"));
     std::fs::write(&path, html).map_err(|e| format!("写入文件失败 (failed to write file): {e}"))?;
     let p = path.to_string_lossy().to_string();
-    tauri_plugin_opener::open_path(&p, None::<&str>).map_err(|e| e.to_string())?;
+    open_default(&p)?;
     Ok(p)
 }
 

@@ -190,6 +190,13 @@ export async function openHtmlReport(html: string): Promise<string> {
   return invoke<string>("open_html_report", { html });
 }
 
+/** Open a URL/file in the default browser. Routed through Rust (fork-free
+ *  posix_spawn) instead of the opener plugin, which forks and crashes libmalloc
+ *  in this multithreaded WebKit process on macOS. */
+export async function openExternal(target: string): Promise<void> {
+  return invoke<void>("open_external", { target });
+}
+
 export type StreamEvent =
   | { type: "started" }
   | { type: "token"; text: string }
