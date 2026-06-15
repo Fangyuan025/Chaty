@@ -46,9 +46,13 @@ Tauri 2 · React + TypeScript · Rust · llama.cpp · [**Releases**](../../relea
 - **Inline citations** — numbered superscripts with hover‑preview of the cited passage; per‑document **query scope** (pick which files to search).
 - **Deep‑dive podcast** — turn your knowledge base into a NotebookLM‑style two‑host **English** audio show (alternating Kokoro voices), with progress + ETA, cancel anytime, and **WAV export**.
 
+**Web**
+- **Deep Research** — give a topic and the model runs **multiple rounds** of web search interleaved with reasoning, then writes a long, structured report with inline citations you can **export to PDF or Markdown**. Topic-anchored (stays on subject) and honest (references list only what it actually cited).
+- **Robust web search** — a free, key-less multi-provider chain (Brave → Bing → DuckDuckGo → Wikipedia) with correct Chinese/English locale handling, so one provider getting blocked never breaks search.
+- Web search + URL fetch carry **inline citations** with hover‑preview of the cited snippet.
+
 **More**
-- Web search + URL fetch (with inline citations) · PDF / code / image attachments · Latin OCR.
-- **Cancelable downloads** everywhere — model recommender, HuggingFace repos, and the embedding model.
+- PDF / code / image attachments · Latin OCR · **Cancelable downloads** everywhere (model recommender, HuggingFace repos, embedding model).
 - SQLite history with branching · system tray · global hotkey · EN / 简体中文.
 
 > Offline‑first. Network is used only for optional web search and one‑time model downloads (voice ~0.5 GB; the bge‑m3 embedding model ~0.7 GB, only if you use the knowledge base).
