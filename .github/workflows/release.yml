@@ -86,6 +86,10 @@ jobs:
       - run: npm ci
       - name: Build chaty.exe (Vulkan, no bundler)
         run: npm run tauri build -- --no-bundle
+        env:
+          # newer llama.cpp's Vulkan backend does find_package(SPIRV-Headers/-Tools);
+          # point CMake at the Vulkan SDK, which ships those config packages.
+          CMAKE_PREFIX_PATH: ${{ env.VULKAN_SDK }}
       - name: Build Inno Setup installer
         shell: pwsh
         run: |
