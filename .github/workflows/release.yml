@@ -87,12 +87,13 @@ jobs:
         with: { version: 1.3.290.0, cache: true }
       - name: Install Ninja
         run: choco install ninja -y
+      - uses: ilammy/msvc-dev-cmd@v1 # load MSVC env so CMake/Ninja can find cl.exe
       - name: Install SPIRV-Headers (newer llama.cpp Vulkan needs its CMake config package)
         shell: pwsh
         run: |
           git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git
-          cmake -S SPIRV-Headers -B SPIRV-Headers/build -G "Visual Studio 17 2022"
-          cmake --install SPIRV-Headers/build --config Release --prefix "$env:VULKAN_SDK"
+          cmake -S SPIRV-Headers -B SPIRV-Headers/build
+          cmake --install SPIRV-Headers/build --prefix "$env:VULKAN_SDK"
       - run: npm ci
       - name: Build chaty.exe (Vulkan, no bundler)
         run: npm run tauri build -- --no-bundle
