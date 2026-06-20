@@ -44,7 +44,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: aarch64-apple-darwin }
       - uses: Swatinem/rust-cache@v2
-        with: { workspaces: src-tauri }
+        # Don't cache target/: rust-cache prunes the ONNX Runtime dylib that
+        # sherpa-rs places in target/release/ while keeping its build script
+        # "fresh", so a cache-restored build fails with
+        # "Library not found: target/release/libonnxruntime.*.dylib".
+        with: { workspaces: src-tauri, cache-targets: false }
       - run: npm ci
       - name: Build .app (Metal)
         # Only the "app" bundle: Tauri's bundle_dmg.sh drives Finder via
@@ -83,6 +87,12 @@ jobs:
         with: { version: 1.3.290.0, cache: true }
       - name: Install Ninja
         run: choco install ninja -y
+      - name: Install SPIRV-Headers (newer llama.cpp Vulkan needs its CMake config package)
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git
+          cmake -S SPIRV-Headers -B SPIRV-Headers/build -G "Visual Studio 17 2022"
+          cmake --install SPIRV-Headers/build --config Release --prefix "$env:VULKAN_SDK"
       - run: npm ci
       - name: Build chaty.exe (Vulkan, no bundler)
         run: npm run tauri build -- --no-bundle
