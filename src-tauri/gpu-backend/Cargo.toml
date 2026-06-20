@@ -19,8 +19,8 @@ path = "src/lib.rs"
 
 # Windows / Linux: cross-vendor Vulkan backend (needs the Vulkan SDK to build).
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-llama-cpp-2 = { version = "0.1.146", features = ["vulkan"] }
+llama-cpp-2 = { version = "0.1.150", features = ["vulkan"] }
 
 # macOS: Metal backend (self-contained — no SDK; embeds default.metallib).
 [target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-2 = { version = "0.1.146", features = ["metal"] }
+llama-cpp-2 = { version = "0.1.150", features = ["metal"] }
