@@ -23,8 +23,25 @@ interface Pick {
 }
 
 /**
+ * Chaty's own fine-tune — offered in every tier (small + specialised for the
+ * on-device web-design workflow, with baked-in Chaty identity and grounding).
+ */
+const CHATY_PICK: Pick = {
+  family: "Chaty",
+  label: "Chaty Design 4B",
+  quant: "Q4_K_M",
+  approxGb: 2.7,
+  repos: ["stevenpr/chaty-qwen3.5-4b-design-GGUF"],
+  blurbZh:
+    "Chaty 专属微调（基于 Qwen3.5-4B）：单文件网页设计更强、输出更精简，并内置 Chaty 身份与引用规范，轻量设备也跑得动。",
+  blurbEn:
+    "Chaty's own fine-tune (Qwen3.5-4B): stronger, leaner single-file web design, with built-in Chaty identity & grounded citations — runs on light machines.",
+};
+
+/**
  * Curated picks per memory budget. Sizes are the Q4_K_M weights; the budget
  * additionally needs room for the KV cache, so tiers are conservative.
+ * Every tier also offers the Chaty fine-tune as a specialised option.
  */
 function recommend(budgetGb: number): Pick[] {
   if (budgetGb >= 30) {
@@ -55,6 +72,7 @@ function recommend(budgetGb: number): Pick[] {
         blurbZh: "Google 最新 MoE：综合素质均衡，思考模式表现好，多语言能力突出。",
         blurbEn: "Google's latest MoE: balanced quality, strong thinking mode and multilingual skills.",
       },
+      CHATY_PICK,
     ];
   }
   if (budgetGb >= 12) {
@@ -77,6 +95,7 @@ function recommend(budgetGb: number): Pick[] {
         blurbZh: "MatFormer 架构的高效 8B：有效 4B 计算量，速度与质量的甜点位。",
         blurbEn: "Efficient MatFormer 8B (≈4B effective compute) — a sweet spot of speed and quality.",
       },
+      CHATY_PICK,
     ];
   }
   if (budgetGb >= 7) {
@@ -99,6 +118,7 @@ function recommend(budgetGb: number): Pick[] {
         blurbZh: "高效 8B（有效 4B），在这档内存上运行流畅。",
         blurbEn: "Efficient 8B (≈4B effective) that runs comfortably in this memory class.",
       },
+      CHATY_PICK,
     ];
   }
   return [
@@ -120,6 +140,7 @@ function recommend(budgetGb: number): Pick[] {
       blurbZh: "Gemma 4 最小档：响应快、占用低。",
       blurbEn: "The smallest Gemma 4 — quick responses, low footprint.",
     },
+    CHATY_PICK,
   ];
 }
 

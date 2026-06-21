@@ -26,7 +26,7 @@ Tauri 2 · React + TypeScript · Rust · llama.cpp · [**Releases**](../../relea
 - **Adjustable context window** — auto‑fits the model's trained length to your memory (KV‑cache aware), with auto‑summary of older turns near the limit.
 - **Safe model switching** — the old model is fully ejected (and verified released) before the next loads; live load progress bar.
 - **Model hot‑swap** from a `models/` folder; the last model auto‑loads on launch.
-- **In‑app model downloader** — pull GGUF files straight from a HuggingFace repo with live progress.
+- **In‑app model downloader** & first‑launch **“Set up for me”** — hardware‑fitted picks (Qwen3.5, Gemma 4, and [**Chaty's own web‑design fine‑tune**](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)) pulled straight from a HuggingFace repo with live progress.
 - Full **sampling controls** (Top‑K, Min‑P, repeat penalty, stop sequences) and saveable **prompt presets**.
 
 **Chat UI**
