@@ -1,5 +1,7 @@
 <div align="center">
 
+**English** · [简体中文](README.zh-CN.md)
+
 <img src="icon.png" width="92" height="92" alt="Chaty" />
 
 # Chaty
@@ -18,10 +20,6 @@ Deep Research, and hands-free voice built right in.
 
 [**↓ Download**](../../releases) · [**Website**](https://chaty.ca) · [**Chaty model on Hugging Face**](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)
 
-<br />
-
-<img src="docs/screenshots/shot-research.jpg" width="840" alt="Deep Research running multiple rounds of web search and synthesizing a cited report" />
-
 </div>
 
 ---
@@ -38,10 +36,10 @@ Deep Research, and hands-free voice built right in.
 
 | | |
 |---|---|
-| <img src="docs/screenshots/shot-live.jpg" alt="Live voice mode" /> | <img src="docs/screenshots/shot-htmlpreview.jpg" alt="In-app HTML preview" /> |
-| **Live voice mode** — hands-free, continuous conversation. | **HTML preview** — render & play single-file web pages in-app. |
-| <img src="docs/screenshots/shot-podcast.jpg" alt="Deep-dive podcast" /> | <img src="docs/screenshots/shot-mermaid.jpg" alt="Mermaid diagrams" /> |
-| **Deep-dive podcast** — turn documents into a two-host audio show. | **Rich rendering** — Mermaid, KaTeX, and code, beautifully. |
+| <img src="docs/screenshots/shot-research.jpg" alt="Deep Research" /> | <img src="docs/screenshots/shot-live.jpg" alt="Live voice mode" /> |
+| **Deep Research** — multi-round web search → a cited report. | **Live voice mode** — hands-free, continuous conversation. |
+| <img src="docs/screenshots/shot-htmlpreview.jpg" alt="In-app HTML preview" /> | <img src="docs/screenshots/shot-podcast.jpg" alt="Deep-dive podcast" /> |
+| **HTML preview** — render & play single-file web pages in-app. | **Deep-dive podcast** — turn documents into a two-host audio show. |
 
 ## Capabilities
 
