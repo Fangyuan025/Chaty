@@ -1547,6 +1547,12 @@ export default function App() {
             {messages.length === 0 ? (
               <div className="empty">
                 <div className="empty-hero">
+                  <div className="empty-priv">
+                    <span className="dot" />
+                    {lang === "zh"
+                      ? "私密 · 数据不离开你的设备"
+                      : "Private · nothing leaves your machine"}
+                  </div>
                   <div className="empty-greeting">{t(greetingKey())}</div>
                   <div className="empty-sub">
                     {model ? t("readyMsg") : t("loadToStart")}

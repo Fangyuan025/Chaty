@@ -1,15 +1,18 @@
 :root {
-  --bg: #212121;
-  --bg-elev: #181818;
-  --surface: #2f2f2f;
-  --surface-2: #3b3b3b;
-  --border: rgba(255, 255, 255, 0.12);
-  --border-strong: rgba(255, 255, 255, 0.2);
-  --text: #ececec;
-  --text-dim: #9a9a9a;
+  --bg: #0e0f12;
+  --bg-elev: #0a0b0d;
+  --surface: #16181c;
+  --surface-2: #1d2025;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --text: #edeef0;
+  --text-dim: #8a9099;
+  --faint: #5d636b;
   --accent: #19c37d;
+  --accent-bright: #36e6a0;
+  --accent-soft: rgba(25, 195, 125, 0.13);
   --danger: #ef4444;
-  --panel: #262626;
+  --panel: #15171a;
   --shadow: rgba(0, 0, 0, 0.5);
   font-synthesis: none;
   color-scheme: dark;
@@ -507,47 +510,92 @@ body {
 }
 
 .empty {
-  max-width: 680px;
-  margin: 16vh auto 0;
+  max-width: 720px;
+  margin: 13vh auto 0;
   padding: 0 24px;
   text-align: center;
+  position: relative;
+}
+/* Ambient brand glow behind the hero — gives the void depth + identity. */
+.empty::before {
+  content: "";
+  position: absolute;
+  top: -56px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  height: 340px;
+  background: radial-gradient(ellipse at center, rgba(25, 195, 125, 0.09), transparent 70%);
+  filter: blur(8px);
+  pointer-events: none;
+  z-index: 0;
+}
+.empty-hero {
+  position: relative;
+  z-index: 1;
+}
+
+/* "Private · local" badge — turns the privacy story into a visible feature. */
+.empty-priv {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 18px;
+  padding: 5px 13px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-bright);
+  background: var(--accent-soft);
+  border: 1px solid rgba(25, 195, 125, 0.28);
+  border-radius: 20px;
+}
+.empty-priv .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--accent);
 }
 
 .empty-greeting {
-  font-size: 38px;
+  font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+  font-size: 46px;
   font-weight: 600;
-  letter-spacing: 0.3px;
-  background: linear-gradient(95deg, #f5f5f5 10%, #8a8a8a 90%);
+  letter-spacing: -0.3px;
+  line-height: 1.05;
+  background: linear-gradient(180deg, #ffffff 28%, #b7bdc4 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
 .empty-sub {
-  margin-top: 12px;
-  font-size: 15px;
+  margin-top: 14px;
+  font-size: 16px;
   color: var(--text-dim);
 }
 
 .suggestions {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-top: 34px;
+  gap: 12px;
+  margin-top: 40px;
   text-align: left;
+  position: relative;
+  z-index: 1;
 }
 
 .suggestion {
-  padding: 16px 18px;
+  padding: 15px 17px;
   font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
-  font-size: 16.5px;
-  line-height: 1.5;
+  font-size: 15.5px;
+  line-height: 1.45;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 14px;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: transform 0.16s ease, background 0.16s, border-color 0.16s, box-shadow 0.16s;
 }
 
 /* Anthropic-style reading serif for model output, slightly larger for comfort. */
@@ -565,6 +613,8 @@ body {
 .suggestion:hover {
   background: var(--surface-2);
   border-color: var(--border-strong);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
 }
 
 .msg {
