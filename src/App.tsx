@@ -1451,19 +1451,18 @@ export default function App() {
             title={t("settingsTitle")}
           >
             <svg
-              width="18"
-              height="18"
+              width="17"
+              height="17"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
               strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
               aria-hidden="true"
             >
-              <circle cx="12" cy="12" r="3.2" />
-              <path
-                d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4 5.3 5.3"
-                strokeLinecap="round"
-              />
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+              <circle cx="12" cy="12" r="3" />
             </svg>
           </button>
           {showSettings && (
@@ -1550,10 +1549,6 @@ export default function App() {
           {model && (
             <div className="side-status" title={model.name}>
               <span className="ss-dot" />
-              <span className="ss-meta">
-                {model.backend}
-                {model.paramsB ? ` · ${model.paramsB}B` : ""}
-              </span>
             </div>
           )}
         </aside>
@@ -1570,12 +1565,6 @@ export default function App() {
             {messages.length === 0 ? (
               <div className="empty">
                 <div className="empty-hero">
-                  <div className="empty-priv">
-                    <span className="dot" />
-                    {lang === "zh"
-                      ? "私密 · 数据不离开你的设备"
-                      : "Private · nothing leaves your machine"}
-                  </div>
                   <div className="empty-greeting">{t(greetingKey())}</div>
                   <div className="empty-sub">
                     {model ? t("readyMsg") : t("loadToStart")}

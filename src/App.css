@@ -132,7 +132,7 @@ body {
   align-items: center;
   gap: 10px;
   height: 44px;
-  padding: 0 0 0 16px;
+  padding: 0 14px 0 16px;
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
   user-select: none;
@@ -563,28 +563,6 @@ body {
 .empty-hero {
   position: relative;
   z-index: 1;
-}
-
-/* "Private · local" badge — turns the privacy story into a visible feature. */
-.empty-priv {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 18px;
-  padding: 5px 13px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--accent-bright);
-  background: var(--accent-soft);
-  border: 1px solid rgba(25, 195, 125, 0.28);
-  border-radius: 20px;
-}
-.empty-priv .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 7px var(--accent);
 }
 
 .empty-greeting {
@@ -2330,14 +2308,14 @@ body {
     rgba(240, 178, 50, 0.06);
 }
 .toast-warn::before {
-  content: "⚠ ";
+  content: "";
   color: #f0b232;
 }
 .toast-error {
   border-color: rgba(239, 68, 68, 0.5);
 }
 .toast-error::before {
-  content: "⚠ ";
+  content: "";
   color: var(--danger);
 }
 
@@ -3039,13 +3017,6 @@ body {
   font-size: 14px;
   line-height: 1.75;
   color: var(--text-dim);
-}
-.dr-empty::before {
-  content: "🔬";
-  display: block;
-  font-size: 42px;
-  margin-bottom: 16px;
-  opacity: 0.9;
 }
 /* progress pill */
 .dr-status {

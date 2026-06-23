@@ -192,7 +192,15 @@ export function DeepResearchPanel({
           </div>
 
           <div className="dr-body" ref={bodyRef}>
-            {!report && !running && !error && <div className="dr-empty">{t("drEmpty")}</div>}
+            {!report && !running && !error && (
+              <div className="dr-empty">
+                <IconResearch
+                  size={40}
+                  style={{ display: "block", margin: "0 auto 16px", color: "var(--accent)", opacity: 0.85 }}
+                />
+                {t("drEmpty")}
+              </div>
+            )}
 
             {phase && (
               <div className="dr-status">
