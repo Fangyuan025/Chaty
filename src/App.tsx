@@ -1546,11 +1546,10 @@ export default function App() {
               ))
             )}
           </div>
-          {model && (
-            <div className="side-status" title={model.name}>
-              <span className="ss-dot" />
-            </div>
-          )}
+          <div className="side-status" title={model ? model.name : ""}>
+            <span className="ss-dot" />
+            <span className="ss-meta">v{__APP_VERSION__}</span>
+          </div>
         </aside>
 
         <div className="main">
