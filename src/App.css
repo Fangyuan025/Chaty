@@ -30,7 +30,10 @@
   --border-strong: rgba(0, 0, 0, 0.24);
   --text: #1d1d22;
   --text-dim: #5c5c64;
+  --faint: #9a9aa2;
   --accent: #0c8a57;
+  --accent-bright: #0fa169;
+  --accent-soft: rgba(12, 138, 87, 0.12);
   --danger: #d11f1f;
   --panel: #ffffff;
   --shadow: rgba(0, 0, 0, 0.18);
@@ -47,7 +50,10 @@
     --border-strong: rgba(0, 0, 0, 0.24);
     --text: #1d1d22;
     --text-dim: #5c5c64;
+    --faint: #9a9aa2;
     --accent: #0c8a57;
+    --accent-bright: #0fa169;
+    --accent-soft: rgba(12, 138, 87, 0.12);
     --danger: #d11f1f;
     --panel: #ffffff;
     --shadow: rgba(0, 0, 0, 0.18);
@@ -588,7 +594,7 @@ body {
   letter-spacing: -0.3px;
   line-height: 1.18;
   padding-bottom: 6px;
-  background: linear-gradient(180deg, #ffffff 28%, #b7bdc4 100%);
+  background: linear-gradient(180deg, var(--text) 18%, var(--text-dim) 115%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -858,11 +864,12 @@ body {
   width: 100%;
 }
 
-/* User: subtle grey bubble */
+/* User: subtle raised bubble with a tail, defined against the deep canvas */
 .msg.user .bubble {
   max-width: 72%;
   padding: 10px 16px;
-  background: var(--surface);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-radius: 18px;
   border-bottom-right-radius: 6px;
 }
