@@ -428,6 +428,30 @@ body {
   padding: 6px 8px 12px;
 }
 
+/* Subtle "ready" status pinned to the bottom of the sidebar. */
+.side-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.side-status .ss-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 7px var(--accent);
+}
+.side-status .ss-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .conv-empty {
   padding: 18px 10px;
   font-size: 12.5px;
@@ -2438,6 +2462,9 @@ body {
   margin-bottom: 14px;
 }
 .setup-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 16.5px;
   font-weight: 700;
 }

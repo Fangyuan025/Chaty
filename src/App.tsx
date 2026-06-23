@@ -860,7 +860,7 @@ export default function App() {
                 `【${blocks.length + 1}】 ${h.docName} · §${h.seq + 1}\n${h.text.slice(0, 2200)}`,
               );
               usedSources.push({
-                title: `📄 ${h.docName} · §${h.seq + 1}`,
+                title: `${h.docName} · §${h.seq + 1}`,
                 url: "",
                 snippet: h.text.slice(0, 600),
               });
@@ -1050,7 +1050,7 @@ export default function App() {
             setMessages((cur) =>
               cur.map((m) =>
                 m.id === asstId
-                  ? { ...m, content: `${m.content}\n\n⚠️ ${ev.message}` }
+                  ? { ...m, content: `${m.content}\n\n**${ev.message}**` }
                   : m,
               ),
             );
@@ -1450,7 +1450,21 @@ export default function App() {
             onClick={() => setShowSettings((v) => !v)}
             title={t("settingsTitle")}
           >
-            ⚙
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="3.2" />
+              <path
+                d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4 5.3 5.3"
+                strokeLinecap="round"
+              />
+            </svg>
           </button>
           {showSettings && (
             <SettingsPanel
@@ -1533,6 +1547,15 @@ export default function App() {
               ))
             )}
           </div>
+          {model && (
+            <div className="side-status" title={model.name}>
+              <span className="ss-dot" />
+              <span className="ss-meta">
+                {model.backend}
+                {model.paramsB ? ` · ${model.paramsB}B` : ""}
+              </span>
+            </div>
+          )}
         </aside>
 
         <div className="main">
@@ -1560,7 +1583,17 @@ export default function App() {
                 </div>
                 {!model && availableModels.length === 0 && (
                   <button className="setup-cta" onClick={() => setShowSetup(true)}>
-                    ✨ {t("setupBtn")}
+                    <svg
+                      width="15"
+                      height="15"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      aria-hidden="true"
+                      style={{ verticalAlign: "-2px", marginRight: "7px" }}
+                    >
+                      <path d="M12 2.5l2.2 6.3L20.5 11l-6.3 2.2L12 19.5l-2.2-6.3L3.5 11l6.3-2.2z" />
+                    </svg>
+                    {t("setupBtn")}
                   </button>
                 )}
                 {model && (
@@ -1763,7 +1796,24 @@ export default function App() {
               <div className="attach-bar">
                 {attachment && (
                   <div className="attach-chip">
-                    <span className="attach-name">📄 {attachment.name}</span>
+                    <span className="attach-name">
+                      <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                        style={{ verticalAlign: "-2px", marginRight: "5px" }}
+                      >
+                        <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                        <path d="M14 3v5h5" />
+                      </svg>
+                      {attachment.name}
+                    </span>
                     <span className="attach-meta">
                       {t("charsLabel", { n: attachment.chars })}
                       {attachment.truncated ? t("truncatedSuffix") : ""}
@@ -2039,12 +2089,12 @@ export default function App() {
                   disabled={!input.trim()}
                   title={t("sendTitle")}
                 >
-                  <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                  <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
                     <path
-                      d="M12 19V6M6 12l6-6 6 6"
+                      d="M12 19.5V5.5M6 11l6-6 6 6"
                       fill="none"
                       stroke="currentColor"
-                      strokeWidth="2.2"
+                      strokeWidth="2.8"
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     />

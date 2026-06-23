@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useI18n } from "../lib/i18n";
+import { IconKb, IconDoc, IconMic } from "./icons";
 import {
   DOWNLOAD_CANCELLED,
   ragAddDocument,
@@ -93,7 +94,7 @@ export function KnowledgePanel({
       <div className="setup-modal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="setup-head">
           <div>
-            <div className="setup-title">📚 {t("kbTitle")}</div>
+            <div className="setup-title"><IconKb size={18} /> {t("kbTitle")}</div>
             <div className="setup-hw">
               {status
                 ? `${status.docs} ${t("kbDocs")} · ${status.chunks} ${t("kbChunks")}`
@@ -148,7 +149,10 @@ export function KnowledgePanel({
                           void ragSetDocEnabled(d.id, enabled).catch(() => refresh());
                         }}
                       />
-                      <span className="kb-doc-name">📄 {d.name}</span>
+                      <span className="kb-doc-name">
+                        <IconDoc size={13} style={{ marginRight: 5 }} />
+                        {d.name}
+                      </span>
                     </label>
                     <span className="kb-doc-meta">
                       {d.chunks} {t("kbChunks")}
@@ -184,7 +188,7 @@ export function KnowledgePanel({
             )}
             {onPodcast && docs.length > 0 && !indexing && (
               <button className="setup-dl kb-podcast" onClick={onPodcast}>
-                🎙️ {t("kbPodcast")}
+<IconMic size={15} style={{ marginRight: 6 }} /> {t("kbPodcast")}
               </button>
             )}
           </>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
+import { IconMic, IconDownload, IconRefresh, IconPlay, IconStop } from "./icons";
 import {
   cancelGeneration,
   exportWavFile,
@@ -276,7 +277,7 @@ export function PodcastPanel({
       <div className="setup-modal podcast-modal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="setup-head">
           <div>
-            <div className="setup-title">🎙️ {t("podcastTitle")}</div>
+            <div className="setup-title"><IconMic size={18} /> {t("podcastTitle")}</div>
             <div className="setup-hw">{t("podcastSub")}</div>
           </div>
           {!busy && (
@@ -331,13 +332,17 @@ export function PodcastPanel({
             </div>
             <div className="podcast-controls">
               <button className="setup-dl ready" onClick={togglePlay}>
-                {playing ? `⏹ ${t("podcastStop")}` : `▶ ${t("podcastPlay")}`}
+                {playing ? (
+                  <><IconStop size={13} style={{ marginRight: 6 }} /> {t("podcastStop")}</>
+                ) : (
+                  <><IconPlay size={13} style={{ marginRight: 6 }} /> {t("podcastPlay")}</>
+                )}
               </button>
               <button className="setup-dl" onClick={() => void exportAudio()}>
-                ⬇ {t("podcastExport")}
+                <IconDownload size={14} style={{ marginRight: 6 }} /> {t("podcastExport")}
               </button>
               <button className="setup-dl" onClick={() => void run()}>
-                ↻ {t("podcastRegen")}
+                <IconRefresh size={14} style={{ marginRight: 6 }} /> {t("podcastRegen")}
               </button>
             </div>
             <div className="podcast-script">

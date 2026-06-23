@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../lib/i18n";
 import { exportTextFile, openHtmlReport, type ModelInfo } from "../lib/ipc";
 import { Markdown } from "./Markdown";
+import { IconResearch, IconSearch, IconDownload } from "./icons";
 import {
   deepResearch,
   DRSignal,
@@ -146,7 +147,7 @@ export function DeepResearchPanel({
     <div className="dr-view">
         <div className="dr-panel">
           <div className="setup-head dr-head">
-            <div className="setup-title">🔬 {t("drTitle")}</div>
+            <div className="setup-title"><IconResearch size={18} /> {t("drTitle")}</div>
             <button className="preview-close" onClick={onClose} disabled={running} title={t("drBackToChat")}>
               ×
             </button>
@@ -212,7 +213,8 @@ export function DeepResearchPanel({
               <div className="dr-queries">
                 {queries.map((q, i) => (
                   <span key={i} className="dr-query">
-                    🔍 {q}
+                    <IconSearch size={12} style={{ marginRight: 5 }} />
+                    {q}
                   </span>
                 ))}
               </div>
@@ -238,10 +240,10 @@ export function DeepResearchPanel({
                 {sources.length} {t("drSources")}
               </span>
               <button className="setup-dl ready" onClick={() => void exportPdf()}>
-                ⬇ {t("drExportPdf")}
+                <IconDownload size={14} style={{ marginRight: 6 }} /> {t("drExportPdf")}
               </button>
               <button className="setup-dl" onClick={() => void exportMd()}>
-                ⬇ {t("drExportMd")}
+                <IconDownload size={14} style={{ marginRight: 6 }} /> {t("drExportMd")}
               </button>
             </div>
           )}
