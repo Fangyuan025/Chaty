@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.0 — A redesigned interface (2026-06-23)
+
+A major visual refresh that gives Chaty its own identity instead of the generic chat-app look.
+
+- **New look** — a deeper, cooler dark palette, with the brand green used deliberately (focus rings, the send button, status), an ambient brand glow on the home screen, and refined typography.
+- **Hand-drawn icon set** — every UI emoji is replaced with consistent stroke icons (settings, knowledge base, Deep Research, podcast, attachments, export, …) for a cleaner, more professional feel.
+- **Composer** — a bolder send button, a green focus ring, and a subtle lift so the input reads as the main surface.
+- **Sidebar** — a quiet status footer that shows the app version.
+- **Light theme** brought to parity for all of the new elements.
+
 ## v0.8.2 — Chaty's own model in “Set up for me” (2026-06-21)
 
 - **Built-in Chaty fine-tune** — the first-launch **“Set up for me”** recommender now offers **Chaty's own web-design model** alongside the Qwen3.5 and Gemma 4 picks: a Qwen3.5-4B fine-tune (Q4_K_M, ~2.7 GB) tuned for leaner, stronger single-file web/HTML design with built-in Chaty identity and grounded citations — pulled straight from [HuggingFace](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF) with live progress. It's small enough to run on light machines, so it's offered in every hardware tier. The recommender grid now flows responsively to fit the extra card.
