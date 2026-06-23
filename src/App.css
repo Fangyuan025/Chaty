@@ -562,7 +562,8 @@ body {
   font-size: 46px;
   font-weight: 600;
   letter-spacing: -0.3px;
-  line-height: 1.05;
+  line-height: 1.18;
+  padding-bottom: 6px;
   background: linear-gradient(180deg, #ffffff 28%, #b7bdc4 100%);
   -webkit-background-clip: text;
   background-clip: text;
@@ -1780,10 +1781,12 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 26px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.28);
 }
 
 .input-row:focus-within {
-  border-color: var(--border-strong);
+  border-color: rgba(25, 195, 125, 0.5);
+  box-shadow: 0 0 0 3px rgba(25, 195, 125, 0.12);
 }
 
 .input-row textarea {
@@ -1901,27 +1904,33 @@ body {
   align-items: center;
   justify-content: center;
   padding: 0;
-  color: #1a1a1a;
-  background: var(--text);
+  color: #06281b;
+  background: var(--accent);
   border: none;
   border-radius: 50%;
   cursor: pointer;
-  transition: background 0.15s, opacity 0.15s;
+  box-shadow: 0 0 14px rgba(25, 195, 125, 0.32);
+  transition: background 0.15s, box-shadow 0.15s, opacity 0.15s;
 }
 
 .send-btn:hover:not(:disabled) {
-  background: #fff;
+  background: var(--accent-bright);
+  box-shadow: 0 0 18px rgba(25, 195, 125, 0.45);
 }
 
 .send-btn:disabled {
-  background: #4a4a4a;
-  color: #2a2a2a;
+  background: var(--surface-2);
+  color: var(--faint);
+  box-shadow: none;
   cursor: default;
 }
 
+/* During generation the button becomes a neutral "stop" — visually distinct
+   from the green send so the two states never read the same. */
 .send-btn.stop {
-  background: var(--text);
-  color: #1a1a1a;
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: none;
 }
 
 /* ---------- Scrollbars ---------- */
