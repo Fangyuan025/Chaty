@@ -94,7 +94,7 @@ export const T = {
   // message actions
   sources: { zh: "来源", en: "Sources" },
   copy: { zh: "复制", en: "Copy" },
-  fork: { zh: "⑂ 分叉", en: "⑂ Branch" },
+  fork: { zh: "分叉", en: "Branch" },
   copyTitle: { zh: "复制回答", en: "Copy reply" },
   forkTitle: { zh: "从这里分叉为新对话", en: "Branch into a new chat from here" },
   reread: { zh: "朗读", en: "Replay" },

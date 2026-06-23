@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../lib/i18n";
 import { exportTextFile, openHtmlReport, type ModelInfo } from "../lib/ipc";
 import { Markdown } from "./Markdown";
-import { IconResearch, IconSearch, IconDownload } from "./icons";
+import { IconResearch, IconSearch, IconDownload, IconPlay, IconStop } from "./icons";
 import {
   deepResearch,
   DRSignal,
@@ -177,7 +177,7 @@ export function DeepResearchPanel({
               </label>
               {running ? (
                 <button className="setup-dl dr-stop" onClick={stop}>
-                  ⏹ {t("drStop")}
+                  <IconStop size={13} style={{ marginRight: 6 }} /> {t("drStop")}
                 </button>
               ) : (
                 <button
@@ -185,7 +185,7 @@ export function DeepResearchPanel({
                   onClick={() => void start()}
                   disabled={!topic.trim() || !model}
                 >
-                  ▶ {t("drRun")}
+                  <IconPlay size={13} style={{ marginRight: 6 }} /> {t("drRun")}
                 </button>
               )}
             </div>

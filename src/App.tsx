@@ -2091,12 +2091,8 @@ export default function App() {
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
                     <path
-                      d="M12 19.5V5.5M6 11l6-6 6 6"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
+                      d="M11 20a1 1 0 0 0 2 0V8.4l4.3 4.3a1 1 0 0 0 1.4-1.4l-6-6a1 1 0 0 0-1.4 0l-6 6a1 1 0 0 0 1.4 1.4L11 8.4z"
+                      fill="currentColor"
                     />
                   </svg>
                 </button>
