@@ -112,7 +112,7 @@ models folder lives in app data — use **Open models folder** in the model menu
 
 ## Build
 
-Full details in **[BUILD.md](BUILD.md)**; macOS porting notes in **[PORTING.md](PORTING.md)**.
+Full details in **[BUILD.md](BUILD.md)**.
 
 ```powershell
 # Windows

@@ -107,7 +107,7 @@ macOS 上可写的模型文件夹在应用数据目录里 —— 用模型菜单
 
 ## 构建
 
-详见 **[BUILD.md](BUILD.md)**;macOS 移植说明见 **[PORTING.md](PORTING.md)**。
+详见 **[BUILD.md](BUILD.md)**。
 
 ```powershell
 # Windows
