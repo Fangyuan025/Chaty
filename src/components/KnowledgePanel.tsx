@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useI18n } from "../lib/i18n";
+import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { IconKb, IconDoc, IconMic } from "./icons";
 import {
   DOWNLOAD_CANCELLED,
@@ -27,7 +28,8 @@ export function KnowledgePanel({
   const { t } = useI18n();
   const [status, setStatus] = useState<RagStatus | null>(null);
   const [docs, setDocs] = useState<RagDoc[]>([]);
-  const [dl, setDl] = useState<{ pct: number } | null>(null);
+  const [dl, setDl] = useState<{ pct: number; eta: number | null } | null>(null);
+  const dlEtaStore = useRef<EtaSample[]>([]);
   const [indexing, setIndexing] = useState<{ name: string; pct: number } | null>(null);
   const [error, setError] = useState("");
 
@@ -39,11 +41,15 @@ export function KnowledgePanel({
 
   async function downloadModel() {
     setError("");
-    setDl({ pct: 0 });
+    setDl({ pct: 0, eta: null });
+    dlEtaStore.current = [];
     try {
       await ragDownloadModel((p) => {
         if (p.type === "progress" && p.total > 0) {
-          setDl({ pct: Math.round((p.downloaded / p.total) * 100) });
+          setDl({
+            pct: Math.round((p.downloaded / p.total) * 100),
+            eta: etaSeconds(dlEtaStore.current, p.downloaded, p.total),
+          });
         } else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) {
           setError(p.message);
         }
@@ -113,7 +119,9 @@ export function KnowledgePanel({
               <div className="setup-progress-row">
                 <div className="setup-progress">
                   <div className="setup-progress-fill" style={{ width: `${dl.pct}%` }} />
-                  <span>{dl.pct}%</span>
+                  <span>
+                    {dl.pct}%{dl.eta !== null ? ` · ${t("etaLeft")} ~${fmtTime(dl.eta)}` : ""}
+                  </span>
                 </div>
                 <button
                   className="dl-cancel"
@@ -171,26 +179,28 @@ export function KnowledgePanel({
               )}
             </div>
             {docs.length > 0 && <div className="kb-scope-hint">{t("kbScopeHint")}</div>}
-            {indexing ? (
-              <div className="setup-progress">
-                <div
-                  className="setup-progress-fill"
-                  style={{ width: `${indexing.pct}%` }}
-                />
-                <span>
-                  {t("kbIndexing")} {indexing.name} · {indexing.pct}%
-                </span>
-              </div>
-            ) : (
-              <button className="setup-dl" onClick={() => void addDocuments()}>
-                + {t("kbAdd")}
-              </button>
-            )}
-            {onPodcast && docs.length > 0 && !indexing && (
-              <button className="setup-dl kb-podcast" onClick={onPodcast}>
-<IconMic size={15} style={{ marginRight: 6 }} /> {t("kbPodcast")}
-              </button>
-            )}
+            <div className="kb-foot-actions">
+              {indexing ? (
+                <div className="setup-progress">
+                  <div
+                    className="setup-progress-fill"
+                    style={{ width: `${indexing.pct}%` }}
+                  />
+                  <span>
+                    {t("kbIndexing")} {indexing.name} · {indexing.pct}%
+                  </span>
+                </div>
+              ) : (
+                <button className="setup-dl" onClick={() => void addDocuments()}>
+                  + {t("kbAdd")}
+                </button>
+              )}
+              {onPodcast && docs.length > 0 && !indexing && (
+                <button className="setup-dl kb-podcast" onClick={onPodcast}>
+                  <IconMic size={15} style={{ marginRight: 6 }} /> {t("kbPodcast")}
+                </button>
+              )}
+            </div>
           </>
         )}
 

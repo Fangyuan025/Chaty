@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useI18n } from "../lib/i18n";
+import { openDataDir, clearAllConversations } from "../lib/ipc";
+import { useConfirm } from "./ConfirmModal";
 
 export interface PromptPreset {
   name: string;
@@ -87,6 +89,7 @@ export function SettingsPanel({
   ctxTrainLimit,
   onReloadModel,
   reloading = false,
+  onDataCleared,
 }: {
   value: GenSettings;
   onChange: (next: GenSettings) => void;
@@ -98,8 +101,11 @@ export function SettingsPanel({
   /** Reload the current model so context/GPU changes take effect. Absent = no model. */
   onReloadModel?: () => void;
   reloading?: boolean;
+  /** Called after the user clears all conversations, so the app can reset. */
+  onDataCleared?: () => void;
 }) {
   const { t, lang, setLang } = useI18n();
+  const confirm = useConfirm();
   const [presetName, setPresetName] = useState("");
   const set = <K extends keyof GenSettings>(key: K, v: GenSettings[K]) =>
     onChange({ ...value, [key]: v });
@@ -466,6 +472,41 @@ export function SettingsPanel({
             {reloading ? "…" : t("reloadApply")}
           </button>
         )}
+
+        <div className="settings-data">
+          <span className="settings-data-label">{t("dataSection")}</span>
+          <div className="settings-data-row">
+            <button
+              type="button"
+              className="data-btn"
+              onClick={() => void openDataDir().catch(console.error)}
+            >
+              {t("openDataDir")}
+            </button>
+            <button
+              type="button"
+              className="data-btn danger"
+              onClick={async () => {
+                if (
+                  !(await confirm({
+                    message: t("confirmClearChats"),
+                    title: t("clearAllChats"),
+                    confirmLabel: t("clearAllChats"),
+                    danger: true,
+                  }))
+                ) {
+                  return;
+                }
+                clearAllConversations()
+                  .then(() => onDataCleared?.())
+                  .catch(console.error);
+              }}
+            >
+              {t("clearAllChats")}
+            </button>
+          </div>
+          <div className="settings-hint">{t("dataHint")}</div>
+        </div>
 
         <button className="settings-reset" onClick={() => onChange(defaultSettings)}>
           {t("resetDefaults")}

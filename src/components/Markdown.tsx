@@ -9,7 +9,6 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -39,6 +38,10 @@ export interface CiteSource {
 }
 
 const CitesContext = createContext<CiteSource[]>([]);
+
+/** When set by App, HTML code blocks gain an "open in Canvas" action that hands
+ *  the snippet to the design studio. Null = feature unavailable (no handler). */
+export const CanvasOpenContext = createContext<((html: string) => void) | null>(null);
 
 const CITE_RE = /【(\d{1,2})】|\[(\d{1,2})\]/g;
 
@@ -211,7 +214,7 @@ const STORAGE_SHIM = `<script>(function(){
 })()</script>`;
 
 /** Inject the storage shim so it runs before any of the snippet's scripts. */
-function withStorageShim(html: string): string {
+export function withStorageShim(html: string): string {
   const head = html.match(/<head[^>]*>/i);
   if (head && head.index !== undefined) {
     const at = head.index + head[0].length;
@@ -225,93 +228,14 @@ function withStorageShim(html: string): string {
   return STORAGE_SHIM + html;
 }
 
-/** A live, sandboxed preview of an HTML snippet rendered in an overlay. */
-function HtmlPreview({ html, onClose }: { html: string; onClose: () => void }) {
-  const { t } = useI18n();
-  const [zoom, setZoom] = useState(1);
-  const frameRef = useRef<HTMLIFrameElement | null>(null);
-  const clampZoom = (z: number) => Math.min(2.5, Math.max(0.4, Math.round(z * 100) / 100));
-  // Keyboard-driven games listen inside the iframe document — without focus,
-  // Space/arrows land on the host window instead. Focus on load and keep it
-  // through zoom-induced re-layouts.
-  const focusFrame = () => {
-    try {
-      frameRef.current?.contentWindow?.focus();
-    } catch {
-      frameRef.current?.focus();
-    }
-  };
-  useEffect(() => {
-    focusFrame();
-  }, [zoom]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-      else if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) {
-        e.preventDefault();
-        setZoom((z) => clampZoom(z + 0.1));
-      } else if ((e.ctrlKey || e.metaKey) && e.key === "-") {
-        e.preventDefault();
-        setZoom((z) => clampZoom(z - 0.1));
-      } else if ((e.ctrlKey || e.metaKey) && e.key === "0") {
-        e.preventDefault();
-        setZoom(1);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  return createPortal(
-    <div className="preview-overlay" onMouseDown={onClose}>
-      <div className="preview-modal" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="preview-bar">
-          <span className="preview-title">HTML</span>
-          <div className="preview-zoom">
-            <button onClick={() => setZoom((z) => clampZoom(z - 0.1))} title={t("zoomOut")}>
-              −
-            </button>
-            <button className="preview-zoom-val" onClick={() => setZoom(1)} title={t("zoomReset")}>
-              {Math.round(zoom * 100)}%
-            </button>
-            <button onClick={() => setZoom((z) => clampZoom(z + 0.1))} title={t("zoomIn")}>
-              +
-            </button>
-          </div>
-          <button className="preview-close" onClick={onClose} title={t("closePreview")}>
-            ×
-          </button>
-        </div>
-        <div className="preview-body">
-          <iframe
-            ref={frameRef}
-            className="preview-frame"
-            title="HTML preview"
-            srcDoc={withStorageShim(html)}
-            sandbox="allow-scripts allow-modals allow-forms allow-popups allow-pointer-lock"
-            onLoad={focusFrame}
-            style={{
-              width: `${100 / zoom}%`,
-              height: `${100 / zoom}%`,
-              transform: `scale(${zoom})`,
-              transformOrigin: "0 0",
-            }}
-          />
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
-}
 
 /** A fenced code block with copy + (for HTML) live-preview buttons. */
 function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   const ref = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
-  const [previewing, setPreviewing] = useState(false);
   const [isHtml, setIsHtml] = useState(false);
   const { t } = useI18n();
+  const openCanvas = useContext(CanvasOpenContext);
 
   const lang = codeLang(children);
 
@@ -337,23 +261,27 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   return (
     <div className="code-block">
       <div className="code-actions">
-        {isHtml && (
+        {isHtml && openCanvas && (
           <button
             className="code-btn"
-            onClick={() => setPreviewing(true)}
-            title={t("htmlPreviewTitle")}
+            onClick={() => openCanvas(ref.current?.textContent ?? "")}
+            title={t("openInCanvas")}
             type="button"
           >
             <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"
+              <rect
+                x="3"
+                y="4"
+                width="18"
+                height="16"
+                rx="2"
                 fill="none"
                 stroke="currentColor"
-                strokeWidth="1.8"
+                strokeWidth="1.7"
               />
-              <circle cx="12" cy="12" r="2.6" fill="currentColor" />
+              <path d="M3 9h18M8 4v5" fill="none" stroke="currentColor" strokeWidth="1.7" />
             </svg>
-            {t("htmlPreview")}
+            {t("canvas")}
           </button>
         )}
         <button
@@ -399,9 +327,6 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
       <pre ref={ref} {...props}>
         {children}
       </pre>
-      {previewing && (
-        <HtmlPreview html={ref.current?.textContent ?? ""} onClose={() => setPreviewing(false)} />
-      )}
     </div>
   );
 }

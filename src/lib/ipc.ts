@@ -184,6 +184,11 @@ export async function openModelsDir(): Promise<string> {
   return invoke<string>("open_models_dir");
 }
 
+/** Reveal the app data folder (DB, models, indexes) for manual backup. */
+export async function openDataDir(): Promise<string> {
+  return invoke<string>("open_data_dir");
+}
+
 /** Write an HTML doc and open it in the default browser (used to export a Deep
  *  Research report → print to PDF, since WKWebView can't print itself). */
 export async function openHtmlReport(html: string): Promise<string> {
@@ -239,9 +244,15 @@ export async function getModel(): Promise<ModelInfo | null> {
   return await invoke<ModelInfo | null>("get_model");
 }
 
+/** Unload the active model and return to the empty state (frees its memory). */
+export async function ejectModel(): Promise<void> {
+  await invoke("eject_model");
+}
+
 export interface ModelEntry {
   name: string;
   path: string;
+  sizeMb?: number;
 }
 
 export interface HfFile {
@@ -289,6 +300,11 @@ export async function listModels(): Promise<ModelEntry[]> {
   return await invoke<ModelEntry[]>("list_models");
 }
 
+/** Permanently delete a GGUF file from the models folder (not the active one). */
+export async function deleteModelFile(path: string): Promise<void> {
+  await invoke("delete_model_file", { path });
+}
+
 /** Re-label the system-tray menu to the given UI language. */
 export async function setTrayLanguage(lang: string): Promise<void> {
   await invoke("set_tray_language", { lang });
@@ -320,6 +336,7 @@ export interface Conversation {
   modelPath?: string | null;
   createdAt: number;
   updatedAt: number;
+  pinned: boolean;
 }
 
 export interface StoredMessage {
@@ -366,6 +383,11 @@ export async function deleteConversation(id: string): Promise<void> {
   await invoke("delete_conversation", { id });
 }
 
+/** Delete every conversation and message (Settings → clear all chats). */
+export async function clearAllConversations(): Promise<void> {
+  await invoke("clear_all_conversations");
+}
+
 /** Conversation ids whose message bodies match `query` (case-insensitive). */
 export async function searchConversations(query: string): Promise<string[]> {
   return await invoke<string[]>("search_conversations", { query });
@@ -386,8 +408,24 @@ export async function exportTextFile(
   return true;
 }
 
+/** Show a save dialog and write an HTML file (used by the Canvas studio). */
+export async function exportHtmlFile(defaultName: string, content: string): Promise<boolean> {
+  const path = await save({
+    defaultPath: defaultName,
+    filters: [{ name: "HTML", extensions: ["html"] }],
+  });
+  if (!path) return false;
+  await invoke("write_text_file", { path, content });
+  return true;
+}
+
 export async function renameConversation(id: string, title: string): Promise<void> {
   await invoke("rename_conversation", { id, title });
+}
+
+/** Pin/unpin a conversation (pinned ones sort to the top of the sidebar). */
+export async function setConversationPinned(id: string, pinned: boolean): Promise<void> {
+  await invoke("set_conversation_pinned", { id, pinned });
 }
 
 /** Save base64 f32 mono PCM as a .wav (16-bit) via a native save dialog. */

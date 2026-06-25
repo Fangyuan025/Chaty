@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { useI18n } from "../lib/i18n";
 import {
   listHfGgufs,
@@ -29,6 +30,8 @@ export function DownloadModal({
   const [error, setError] = useState("");
   const [active, setActive] = useState<string | null>(null); // file being downloaded
   const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
+  const [eta, setEta] = useState<number | null>(null);
+  const etaStore = useRef<EtaSample[]>([]);
 
   const search = async () => {
     if (!repo.trim() || loading) return;
@@ -49,10 +52,15 @@ export function DownloadModal({
     setError("");
     setActive(f.name);
     setProgress({ done: 0, total: f.size });
+    setEta(null);
+    etaStore.current = [];
     try {
       await downloadModel(f.url, f.name, (p) => {
-        if (p.type === "progress") setProgress({ done: p.downloaded, total: p.total || f.size });
-        else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) setError(p.message);
+        if (p.type === "progress") {
+          const total = p.total || f.size;
+          setProgress({ done: p.downloaded, total });
+          setEta(etaSeconds(etaStore.current, p.downloaded, total));
+        } else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) setError(p.message);
       });
       onDownloaded();
       onClose();
@@ -112,6 +120,7 @@ export function DownloadModal({
                   <span className="dl-pct">
                     {fmtSize(progress.done)}
                     {progress.total ? ` / ${fmtSize(progress.total)}` : ""}
+                    {eta !== null ? ` · ${t("etaLeft")} ~${fmtTime(eta)}` : ""}
                   </span>
                   <button
                     className="dl-cancel"

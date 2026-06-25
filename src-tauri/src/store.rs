@@ -18,6 +18,7 @@ pub struct Conversation {
     pub model_path: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub pinned: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -37,7 +38,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     title       TEXT NOT NULL,
     model_path  TEXT,
     created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL
+    updated_at  INTEGER NOT NULL,
+    pinned      INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
     id              TEXT PRIMARY KEY,
@@ -52,6 +54,12 @@ CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, create
 pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
     let conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
+    // Migration for DBs created before v0.9.2: add the `pinned` column. Fresh
+    // DBs already have it from SCHEMA, so the duplicate-column error is ignored.
+    let _ = conn.execute(
+        "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
     Ok(Db(Mutex::new(conn)))
 }
 
@@ -116,8 +124,8 @@ pub fn list_conversations(db: State<'_, Db>) -> Result<Vec<Conversation>, String
     let conn = lock(&db)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, model_path, created_at, updated_at
-             FROM conversations ORDER BY updated_at DESC",
+            "SELECT id, title, model_path, created_at, updated_at, pinned
+             FROM conversations ORDER BY pinned DESC, updated_at DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -128,6 +136,7 @@ pub fn list_conversations(db: State<'_, Db>) -> Result<Vec<Conversation>, String
                 model_path: r.get(2)?,
                 created_at: r.get(3)?,
                 updated_at: r.get(4)?,
+                pinned: r.get(5)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -208,6 +217,17 @@ pub fn delete_conversation(db: State<'_, Db>, id: String) -> Result<(), String> 
     Ok(())
 }
 
+/// Delete EVERY conversation and message. Powers Settings → "clear all chats".
+#[tauri::command]
+pub fn clear_all_conversations(db: State<'_, Db>) -> Result<(), String> {
+    let conn = lock(&db)?;
+    conn.execute("DELETE FROM messages", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM conversations", [])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Conversation ids whose message bodies contain `query` (case-insensitive),
 /// ordered by most-recently-updated. Powers the sidebar full-text search.
 #[tauri::command]
@@ -233,6 +253,18 @@ pub fn search_conversations(db: State<'_, Db>, query: String) -> Result<Vec<Stri
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     Ok(ids)
+}
+
+/// Pin or unpin a conversation (pinned ones sort to the top of the sidebar).
+#[tauri::command]
+pub fn set_conversation_pinned(db: State<'_, Db>, id: String, pinned: bool) -> Result<(), String> {
+    let conn = lock(&db)?;
+    conn.execute(
+        "UPDATE conversations SET pinned = ?1 WHERE id = ?2",
+        params![pinned as i64, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]

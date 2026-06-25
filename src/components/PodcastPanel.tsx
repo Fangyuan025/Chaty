@@ -11,6 +11,7 @@ import {
   type ModelInfo,
 } from "../lib/ipc";
 import { decodeAudio, encodeAudio, playAudio, type Playback } from "../lib/audio";
+import { fmtTime } from "../lib/eta";
 
 // Two hosts with the highest overall-grade voices in kokoro-en-v0_19
 // (per the Kokoro VOICES.md): af_bella (A-) ↔ am_michael (C+, the best male in
@@ -67,13 +68,6 @@ function parseTranscript(raw: string): Line[] {
     if (lines.length > 0) lines[lines.length - 1].text += " " + line;
   }
   return lines;
-}
-
-function fmtTime(sec: number): string {
-  if (!isFinite(sec) || sec < 0) sec = 0;
-  const m = Math.floor(sec / 60);
-  const s = Math.round(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 /** NotebookLM-style deep-dive podcast: KB → English transcript → 2-voice TTS. */

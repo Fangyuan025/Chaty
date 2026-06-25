@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
 import {
@@ -150,7 +151,7 @@ const QUANT_FALLBACK = ["Q4_K_M", "Q4_K_S", "Q5_K_M", "Q4_0", "Q8_0"];
 type CardState =
   | { kind: "idle" }
   | { kind: "resolving" }
-  | { kind: "downloading"; pct: number; file: string }
+  | { kind: "downloading"; pct: number; file: string; eta: number | null }
   | { kind: "done"; path: string }
   | { kind: "error"; message: string };
 
@@ -166,6 +167,8 @@ export function SetupModal({
   const [budgetGb, setBudgetGb] = useState<number | null>(null);
   const [hwLine, setHwLine] = useState("");
   const [states, setStates] = useState<Record<string, CardState>>({});
+  // Per-card download samples for the time-remaining estimate (keyed by label).
+  const etaStores = useRef<Record<string, EtaSample[]>>({});
 
   useEffect(() => {
     getHardwareInfo()
@@ -217,13 +220,15 @@ export function SetupModal({
         return;
       }
       const file = chosen.name;
-      setCard(p.label, { kind: "downloading", pct: 0, file });
+      etaStores.current[p.label] = [];
+      setCard(p.label, { kind: "downloading", pct: 0, file, eta: null });
       await downloadModel(chosen.url, file, (ev: DownloadProgress) => {
         if (ev.type === "progress" && ev.total > 0) {
           setCard(p.label, {
             kind: "downloading",
             pct: Math.round((ev.downloaded / ev.total) * 100),
             file,
+            eta: etaSeconds((etaStores.current[p.label] ??= []), ev.downloaded, ev.total),
           });
         } else if (ev.type === "done") {
           setCard(p.label, { kind: "done", path: ev.path });
@@ -286,7 +291,9 @@ export function SetupModal({
                   <div className="setup-progress-row">
                     <div className="setup-progress">
                       <div className="setup-progress-fill" style={{ width: `${st.pct}%` }} />
-                      <span>{st.pct}%</span>
+                      <span>
+                        {st.pct}%{st.eta !== null ? ` · ${t("etaLeft")} ~${fmtTime(st.eta)}` : ""}
+                      </span>
                     </div>
                     <button
                       className="dl-cancel"

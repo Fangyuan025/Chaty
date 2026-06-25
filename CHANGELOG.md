@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.0.0 — Design Canvas, command palette, and a 1.0 polish pass (2026-06-24)
+
+Chaty reaches 1.0: a new flagship **Design Canvas**, a command palette, conversation
+and data management, and a round of reliability, accessibility and testing work.
+
+### Design Canvas — a local, self-healing design studio
+- **Iterate on a live page** — open any single-file HTML the model produces into a split studio: a live preview on one side, an instruction box on the other. Ask for changes in plain language and Chaty regenerates the whole page — all on-device, using your loaded model (great with Chaty's own web-design fine-tune).
+- **Version history** — every generation is saved as a version you can switch between and revert to, labelled with what changed.
+- **Self-healing** — the preview watches for runtime errors (uncaught exceptions, failed resource loads, unhandled rejections) and, when one happens, offers to send it to the model to fix — with a one-click **Fix**. Every fix asks first (it never auto-sends), so there's no runaway loop, and you can mute the prompt for the session.
+- **Export** — save the current version as a standalone `.html` or open it in your browser.
+
+### Command palette
+- **⌘K / Ctrl+K** opens a fuzzy-searchable palette over actions, your loaded models, and recent conversations — new chat, switch/eject model, toggle the knowledge base or web search, open settings, jump to any conversation, and more.
+
+### Conversation & data management
+- **Pin, rename, and delete** conversations from the sidebar — pinned chats float to the top; renaming is inline; deleting now asks for confirmation.
+- **Model files** — the model menu shows each model's size and lets you **delete** one you no longer need (guarded so it can't touch the model in use or anything outside the models folder), plus a one-click **eject** to unload the current model and return to the empty state.
+- **Your data** — a new *Data* section in Settings to open the data folder for backup or clear all conversations.
+
+### Reliability
+- **No more white screens** — an error boundary catches any unexpected render error and shows a recovery screen (with a reload) instead of a blank window; your conversations are always safe on disk.
+
+### Downloads
+- **Time remaining** — the *Set up for me* recommender, the Hugging Face downloader, and the embedding-model download now all show an estimated time left alongside the progress bar.
+
+### Accessibility
+- Respects the OS **“reduce motion”** setting (animations and transitions are dropped), and adds a clear keyboard **focus ring** on controls.
+
+### Under the hood
+- A **unit-test baseline** (prompt/channel handling, search URL decoding, RAG chunking and ranking) plus a **CI workflow** that type-checks the frontend and runs the backend tests on every push.
+
 ## v0.9.0 — A redesigned interface (2026-06-23)
 
 A major visual refresh that gives Chaty its own identity instead of the generic chat-app look.

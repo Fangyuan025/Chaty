@@ -105,6 +105,38 @@ export const IconStop = ({ size = 16, style }: P) => (
   </svg>
 );
 
+/** Pin (outline) — for unpinned conversations. */
+export const IconPin = ({ size, style }: P) => (
+  <Svg size={size} style={style}>
+    <path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5zM12 14v6" />
+  </Svg>
+);
+
+/** Pin (filled) — for pinned conversations. */
+export const IconPinFilled = ({ size = 16, style }: P) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="currentColor"
+    stroke="currentColor"
+    strokeWidth={1.2}
+    strokeLinejoin="round"
+    aria-hidden="true"
+    style={{ flex: "none", verticalAlign: "-0.18em", ...style }}
+  >
+    <path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5z" />
+    <path d="M12 14v6" fill="none" />
+  </svg>
+);
+
+/** Edit / rename — a pencil. */
+export const IconEdit = ({ size, style }: P) => (
+  <Svg size={size} style={style}>
+    <path d="M14.5 5.5l4 4M4 20.5l1-4L16 5.5a1.8 1.8 0 0 1 2.5 0l.5.5a1.8 1.8 0 0 1 0 2.5L8 19.5l-4 1z" />
+  </Svg>
+);
+
 /** Deep research — a lab flask. */
 export const IconResearch = ({ size, style }: P) => (
   <Svg size={size} style={style}>

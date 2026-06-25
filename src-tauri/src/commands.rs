@@ -142,6 +142,25 @@ pub async fn load_model(
     Ok(info)
 }
 
+/// Eject the active model and return to the empty state, freeing its memory.
+/// Same synchronous teardown as a model switch, minus the next load — there is
+/// no second model going resident, so the post-eject memory verification (which
+/// only guards against stacking two models) isn't needed here.
+#[tauri::command]
+pub async fn eject_model(state: State<'_, AppState>) -> Result<(), String> {
+    // Ask any in-flight generation to stop, then drop the engine.
+    state.cancel.store(true, Ordering::SeqCst);
+    let old = state.engine.write().await.take();
+    *state.model.write().await = None;
+    if let Some(old) = old {
+        // Block until the worker's memory is actually released (synchronous
+        // teardown), mirroring the eject path in `load_model`.
+        let _ = tokio::task::spawn_blocking(move || old.unload()).await;
+    }
+    state.cancel.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
 /// Current model metadata, or `null` if nothing is loaded.
 #[tauri::command]
 pub async fn get_model(state: State<'_, AppState>) -> Result<Option<ModelInfo>, String> {
@@ -207,6 +226,8 @@ pub fn write_wav_file(path: String, audio: String, sample_rate: u32) -> Result<(
 pub struct ModelEntry {
     pub name: String,
     pub path: String,
+    /// On-disk size in MiB (for display + a hint at delete time).
+    pub size_mb: Option<u64>,
 }
 
 /// Directories scanned for `.gguf` files: a `models/` folder next to the
@@ -309,6 +330,17 @@ pub fn open_models_dir(app: tauri::AppHandle) -> Result<String, String> {
     Ok(path)
 }
 
+/// Reveal the app's data folder (conversation DB, models, KB indexes) in the
+/// file manager so users can back it up or inspect what's stored on disk.
+#[tauri::command]
+pub fn open_data_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.to_string_lossy().to_string();
+    open_default(&path)?;
+    Ok(path)
+}
+
 /// Write an HTML document to app-data and open it in the default browser. Used
 /// by Deep Research to export a report as PDF: WKWebView's own `window.print()`
 /// is a no-op, but the system browser prints (and saves as PDF, CJK included)
@@ -354,9 +386,11 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_default();
+                    let size_mb = std::fs::metadata(&path).ok().map(|m| m.len() / (1024 * 1024));
                     out.push(ModelEntry {
                         name,
                         path: path.to_string_lossy().to_string(),
+                        size_mb,
                     });
                 }
             }
@@ -364,6 +398,50 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
     }
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(out)
+}
+
+/// Permanently delete a GGUF file from the models folder. Guarded three ways:
+/// the path must end in `.gguf`, must resolve to a location inside a known
+/// models directory (no arbitrary file deletion), and must not be the model
+/// currently loaded (eject it first).
+#[tauri::command]
+pub async fn delete_model_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target
+        .extension()
+        .map_or(false, |x| x.eq_ignore_ascii_case("gguf"))
+    {
+        return Err("只能删除 .gguf 模型文件 (only .gguf model files can be deleted)".into());
+    }
+    let canon = target
+        .canonicalize()
+        .map_err(|e| format!("文件不存在 (file not found): {e}"))?;
+    let in_models = model_dirs(&app)
+        .iter()
+        .any(|d| d.canonicalize().map_or(false, |dc| canon.starts_with(&dc)));
+    if !in_models {
+        return Err(
+            "该文件不在模型文件夹内，已拒绝删除 (file is outside the models folder; refusing to delete)"
+                .into(),
+        );
+    }
+    if let Some(m) = state.model.read().await.as_ref() {
+        let loaded = PathBuf::from(&m.path)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(&m.path));
+        if loaded == canon {
+            return Err(
+                "无法删除正在使用的模型，请先卸载 (can't delete the model in use — eject it first)"
+                    .into(),
+            );
+        }
+    }
+    std::fs::remove_file(&canon).map_err(|e| format!("删除失败 (delete failed): {e}"))?;
+    Ok(())
 }
 
 /// Rebuild the system-tray menu in the given UI language (`"zh"` | `"en"`).

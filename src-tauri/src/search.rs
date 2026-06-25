@@ -574,3 +574,39 @@ fn decode_ddg_url(href: &str) -> String {
     }
     href.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ddg_url_is_percent_decoded() {
+        let href = "/l/?uddg=https%3A%2F%2Fexample.com%2Fa%20b&rut=zzz";
+        assert_eq!(decode_ddg_url(href), "https://example.com/a b");
+    }
+
+    #[test]
+    fn ddg_url_protocol_relative_and_plain() {
+        assert_eq!(decode_ddg_url("//cdn.example.com/x"), "https://cdn.example.com/x");
+        assert_eq!(decode_ddg_url("https://plain.example.com/"), "https://plain.example.com/");
+    }
+
+    #[test]
+    fn bing_redirect_is_base64_decoded() {
+        let target = "https://example.com/article?id=1";
+        let enc = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(target);
+        let href = format!("https://www.bing.com/ck/a?!&&p=1&u=a1{enc}&ntb=1");
+        assert_eq!(decode_bing_url(&href), target);
+    }
+
+    #[test]
+    fn bing_passthrough_and_reject() {
+        // A direct http(s) link (no /ck/a) is returned unchanged.
+        assert_eq!(
+            decode_bing_url("https://direct.example.com/x"),
+            "https://direct.example.com/x"
+        );
+        // A non-http, non-redirect href yields nothing usable.
+        assert_eq!(decode_bing_url("javascript:void(0)"), "");
+    }
+}

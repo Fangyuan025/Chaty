@@ -20,6 +20,11 @@ import {
 import { SettingsPanel, type GenSettings, defaultSettings, parseStops } from "./components/SettingsPanel";
 import { SetupModal } from "./components/SetupModal";
 import { KnowledgePanel } from "./components/KnowledgePanel";
+import { CommandPalette, type Command } from "./components/CommandPalette";
+import { CanvasPanel, type CanvasVersion } from "./components/CanvasPanel";
+import { CanvasOpenContext } from "./components/Markdown";
+import { useConfirm } from "./components/ConfirmModal";
+import { IconPin, IconPinFilled, IconEdit } from "./components/icons";
 import { PodcastPanel } from "./components/PodcastPanel";
 import { DeepResearchPanel } from "./components/DeepResearchPanel";
 import { answerOnly, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
@@ -35,18 +40,24 @@ import {
   listConversations,
   listModels,
   loadModel,
+  ejectModel,
+  deleteModelFile,
   openExternal,
   openModelsDir,
+  openDataDir,
   ragSearch,
   ragStatus,
   pickAttachmentFile,
   pickModelFile,
   readAttachment,
   renameConversation,
+  setConversationPinned,
   replaceMessages,
   runUpdate,
   searchConversations,
   exportTextFile,
+  exportHtmlFile,
+  openHtmlReport,
   saveConversation,
   saveMessage,
   setTrayLanguage,
@@ -191,6 +202,7 @@ function loadSettings(): GenSettings {
 
 export default function App() {
   const { t, lang } = useI18n();
+  const confirm = useConfirm();
   const [model, setModel] = useState<ModelInfo | null>(null);
   const [availableModels, setAvailableModels] = useState<ModelEntry[]>([]);
   const [showModelMenu, setShowModelMenu] = useState(false);
@@ -207,6 +219,11 @@ export default function App() {
   const [loadProgress, setLoadProgress] = useState<LoadProgress | null>(null);
   const [settings, setSettings] = useState<GenSettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
+  const [showCmdk, setShowCmdk] = useState(false);
+  const [canvasOpen, setCanvasOpen] = useState(false);
+  const [canvasVersions, setCanvasVersions] = useState<CanvasVersion[]>([]);
+  const [canvasIndex, setCanvasIndex] = useState(0);
+  const [canvasBusy, setCanvasBusy] = useState(false);
   const [showHardware, setShowHardware] = useState(false);
   const [showModelInfo, setShowModelInfo] = useState(false);
   const [showExport, setShowExport] = useState(false);
@@ -242,6 +259,8 @@ export default function App() {
   const [attachError, setAttachError] = useState("");
   const [dragging, setDragging] = useState(false);
   const [convQuery, setConvQuery] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   const [contentMatches, setContentMatches] = useState<Set<string>>(new Set());
   const [recorder, setRecorder] = useState<Recorder | null>(null);
   const recorderRef = useRef<Recorder | null>(null);
@@ -306,6 +325,19 @@ export default function App() {
         .catch(() => {});
     }, 3000);
     return () => window.clearTimeout(id);
+  }, []);
+
+  // Global ⌘K / Ctrl+K toggles the command palette. (DOM KeyboardEvent — the
+  // bare name is React's here, imported above for composer key handling.)
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setShowCmdk((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   // Close the model picker when clicking outside it.
@@ -492,6 +524,129 @@ export default function App() {
     }
   }
 
+  // ----- Canvas (design studio) -----
+
+  /** Pull a single-file HTML document out of model output (fenced or raw). */
+  function extractHtml(text: string): string {
+    const fences = [...text.matchAll(/```(?:html|htm)?\s*\n?([\s\S]*?)```/gi)].map((m) => m[1]);
+    const fromFence = fences.find((c) => /<!doctype|<html/i.test(c)) ?? fences[0];
+    let html = (fromFence ?? text).trim();
+    const start = html.search(/<!doctype html|<html/i);
+    if (start >= 0) {
+      const end = html.toLowerCase().lastIndexOf("</html>");
+      html = end >= 0 ? html.slice(start, end + 7) : html.slice(start);
+    }
+    return html.trim();
+  }
+
+  /** Open an HTML snippet (e.g. from a chat message) in the Canvas studio. */
+  function openInCanvas(raw: string) {
+    const html = extractHtml(raw) || raw.trim();
+    if (!html) return;
+    setCanvasVersions([{ html, note: t("canvasInitial") }]);
+    setCanvasIndex(0);
+    setCanvasOpen(true);
+  }
+
+  /** Parse `<<<<<<< SEARCH / ======= / >>>>>>> REPLACE` edit blocks. */
+  function parseEdits(text: string): { search: string; replace: string }[] {
+    const re =
+      /<{5,}\s*SEARCH[^\n]*\r?\n([\s\S]*?)\r?\n={3,}[^\n]*\r?\n([\s\S]*?)\r?\n>{5,}\s*REPLACE/g;
+    const out: { search: string; replace: string }[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) out.push({ search: m[1], replace: m[2] });
+    return out;
+  }
+
+  /** Apply search/replace edits to `base`. Returns null if any search misses. */
+  function applyEdits(base: string, edits: { search: string; replace: string }[]): string | null {
+    let html = base;
+    const norm = (s: string) => s.replace(/\r/g, "").replace(/[ \t]+$/gm, "");
+    for (const e of edits) {
+      if (!e.search) continue;
+      if (html.includes(e.search)) {
+        html = html.replace(e.search, e.replace);
+        continue;
+      }
+      // Lenient: ignore CRs and trailing whitespace.
+      const nHtml = norm(html);
+      const nSearch = norm(e.search);
+      if (nSearch && nHtml.includes(nSearch)) {
+        html = nHtml.replace(nSearch, norm(e.replace));
+        continue;
+      }
+      return null;
+    }
+    return html;
+  }
+
+  /** Generate a new Canvas version from the current one (an edit or a fix). */
+  async function generateCanvasVersion(kind: "edit" | "fix", payload: string) {
+    if (busy || canvasBusy) return;
+    if (!model) {
+      showNotice("error", t("canvasNeedsModel"));
+      return;
+    }
+    const base = canvasVersions[canvasIndex]?.html ?? "";
+    const newIndex = canvasVersions.length;
+    // Ask for a minimal search/replace patch (small output = fast) rather than a
+    // full re-render of the whole file — much quicker for fixes and edits.
+    const sys =
+      lang === "zh"
+        ? "你是一个网页设计助手，正在编辑一个单文件 HTML 文档。只用下面的「查找/替换」格式输出最小化修改，不要输出整个文件、不要任何解释或思考：\n<<<<<<< SEARCH\n（从当前 HTML 原样复制、需要被替换的片段）\n=======\n（替换后的新片段）\n>>>>>>> REPLACE\n每个 SEARCH 片段要尽量短且在文中唯一；可以输出多个这样的块。所有资源必须内联（禁止外部 CDN、字体或图片链接）。"
+        : "You are a web-design assistant editing a single-file HTML document. Output ONLY minimal edits in the search/replace format below — never the whole file, and no explanation or reasoning:\n<<<<<<< SEARCH\n(exact snippet copied verbatim from the current HTML to replace)\n=======\n(the new snippet)\n>>>>>>> REPLACE\nKeep each SEARCH snippet short and unique; you may output several blocks. Keep everything inline (no external CDNs, fonts or image URLs).";
+    const user =
+      kind === "edit"
+        ? lang === "zh"
+          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n请用最小「查找/替换」修改实现以下需求：${payload}`
+          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nUse minimal search/replace edit(s) to apply this change: ${payload}`
+        : lang === "zh"
+          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n它在浏览器中运行时报错：${payload}\n请给出修复该错误所需的最小「查找/替换」修改。`
+          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nIt throws this runtime error: ${payload}\nGive the minimal search/replace edit(s) to fix it.`;
+    const note =
+      (kind === "edit" ? `${t("canvasEdit")}：${payload}` : `${t("canvasFix")}：${payload}`).slice(
+        0,
+        48,
+      );
+    setCanvasBusy(true);
+    setBusy(true);
+    try {
+      let acc = "";
+      await generate(
+        {
+          messages: [
+            { role: "system", content: sys },
+            { role: "user", content: `${user}${model?.thinkSwitch ? "\n/no_think" : ""}` },
+          ],
+          params: { temperature: 0.4, topP: 0.9, maxTokens: 8192, think: noThinkFlag() },
+        },
+        (ev) => {
+          if (ev.type === "token") acc += ev.text;
+        },
+      );
+      // Prefer applying the patch; fall back to a full document if the model
+      // returned one instead (or the patch didn't apply cleanly).
+      const edits = parseEdits(acc);
+      let html = edits.length ? applyEdits(base, edits) : null;
+      if (!html) {
+        const full = extractHtml(acc);
+        if (full && /<!doctype|<html/i.test(full) && full !== base) html = full;
+      }
+      if (!html) {
+        showNotice("error", t("canvasNoHtml"));
+        return;
+      }
+      setCanvasVersions((vs) => [...vs, { html, note }]);
+      setCanvasIndex(newIndex);
+    } catch (e) {
+      console.error(e);
+      showLoadError(e);
+    } finally {
+      setCanvasBusy(false);
+      setBusy(false);
+    }
+  }
+
   /** Rewrite the latest question into a standalone search query using context. */
   async function rewriteQuery(prior: UiMessage[], latest: string): Promise<string> {
     try {
@@ -615,6 +770,46 @@ export default function App() {
     }
   }
 
+  /** Unload the active model and return Chaty to the empty state. */
+  async function handleEject() {
+    setShowModelMenu(false);
+    if (!model || busy || loadingModel) return;
+    setLoadingModel(true);
+    try {
+      await ejectModel();
+      setModel(null);
+      localStorage.removeItem(LAST_MODEL_KEY);
+    } catch (e) {
+      console.error(e);
+      showLoadError(e);
+    } finally {
+      setLoadingModel(false);
+      setLoadProgress(null);
+    }
+  }
+
+  /** Permanently delete a model file from disk (after a confirm). */
+  async function handleDeleteModel(m: ModelEntry) {
+    if (busy || loadingModel) return;
+    if (
+      !(await confirm({
+        message: t("confirmDeleteModel", { name: m.name }),
+        title: t("deleteModelFile"),
+        confirmLabel: t("confirmDelete"),
+        danger: true,
+      }))
+    ) {
+      return;
+    }
+    try {
+      await deleteModelFile(m.path);
+      await refreshModels();
+    } catch (e) {
+      console.error(e);
+      showNotice("error", typeof e === "string" ? e : ((e as Error)?.message ?? String(e)));
+    }
+  }
+
   async function handleLoad() {
     setShowModelMenu(false);
     try {
@@ -712,9 +907,47 @@ export default function App() {
   }
 
   async function handleDelete(id: string) {
+    if (
+      !(await confirm({
+        message: t("confirmDeleteConv"),
+        title: t("deleteConv"),
+        confirmLabel: t("confirmDelete"),
+        danger: true,
+      }))
+    ) {
+      return;
+    }
     try {
       await deleteConversation(id);
       if (id === conversationId) handleNewChat();
+      await refreshConversations();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  /** Toggle a conversation's pinned state (pinned ones float to the top). */
+  async function handleTogglePin(c: Conversation) {
+    try {
+      await setConversationPinned(c.id, !c.pinned);
+      await refreshConversations();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function startRename(c: Conversation) {
+    setRenamingId(c.id);
+    setRenameDraft(c.title);
+  }
+
+  async function commitRename() {
+    const id = renamingId;
+    const title = renameDraft.trim();
+    setRenamingId(null);
+    if (!id || !title) return;
+    try {
+      await renameConversation(id, title);
       await refreshConversations();
     } catch (e) {
       console.error(e);
@@ -1262,8 +1495,90 @@ export default function App() {
       )
     : conversations;
 
+  // Command-palette actions: static commands + load-model + jump-to-conversation.
+  const commands: Command[] = [
+    { id: "new", label: t("newChat"), keywords: "new chat 新对话", run: handleNewChat },
+    {
+      id: "settings",
+      label: t("settingsTitle"),
+      keywords: "settings 设置 偏好",
+      run: () => setShowSettings(true),
+    },
+    {
+      id: "download",
+      label: t("dlTitle"),
+      keywords: "download model 下载 模型",
+      run: () => setShowDownload(true),
+    },
+    { id: "live", label: t("cmdkLive"), keywords: "voice live 语音", run: () => setShowLive(true) },
+    {
+      id: "kb",
+      label: ragEnabled ? t("cmdkKbOff") : t("cmdkKbOn"),
+      keywords: "knowledge base rag 知识库",
+      run: () => setRagEnabled((v) => !v),
+    },
+    {
+      id: "web",
+      label: webEnabled ? t("cmdkWebOff") : t("cmdkWebOn"),
+      keywords: "web search 联网 搜索",
+      run: () => setWebEnabled((v) => !v),
+    },
+    {
+      id: "models-dir",
+      label: t("openModelsDir"),
+      keywords: "models folder 模型 文件夹",
+      run: () => void openModelsDir().catch(console.error),
+    },
+    {
+      id: "data-dir",
+      label: t("openDataDir"),
+      keywords: "data folder backup 数据 备份",
+      run: () => void openDataDir().catch(console.error),
+    },
+    ...(model
+      ? [
+          {
+            id: "eject",
+            label: t("ejectModel"),
+            keywords: "eject unload 卸载",
+            run: () => void handleEject(),
+          },
+        ]
+      : []),
+    ...availableModels
+      .filter((m) => m.path !== model?.path)
+      .map((m) => ({
+        id: `model:${m.path}`,
+        label: t("cmdkLoadModel", { name: m.name }),
+        hint: m.sizeMb ? `${(m.sizeMb / 1024).toFixed(1)} GB` : undefined,
+        keywords: `model 模型 ${m.name}`,
+        run: () => void switchModel(m.path),
+      })),
+    ...conversations.map((c) => ({
+      id: `conv:${c.id}`,
+      label: c.title,
+      hint: t("cmdkChatHint"),
+      keywords: `chat conversation 对话 ${c.title}`,
+      run: () => void openConversation(c.id),
+    })),
+  ];
+
   return (
+    <CanvasOpenContext.Provider value={openInCanvas}>
     <div className="app">
+      <CommandPalette open={showCmdk} onClose={() => setShowCmdk(false)} commands={commands} />
+      <CanvasPanel
+        open={canvasOpen}
+        versions={canvasVersions}
+        index={canvasIndex}
+        busy={canvasBusy}
+        onSelectVersion={setCanvasIndex}
+        onIterate={(instr) => void generateCanvasVersion("edit", instr)}
+        onFix={(err) => void generateCanvasVersion("fix", err)}
+        onExport={(html) => void exportHtmlFile("design.html", html).catch(console.error)}
+        onOpenExternal={(html) => void openHtmlReport(html).catch(console.error)}
+        onClose={() => setCanvasOpen(false)}
+      />
       {dragging && (
         <div className="drop-overlay">
           <div className="drop-card">
@@ -1328,18 +1643,42 @@ export default function App() {
                 {availableModels.length === 0 ? (
                   <div className="model-menu-empty">{t("noModelsFound")}</div>
                 ) : (
-                  availableModels.map((m) => (
-                    <button
-                      key={m.path}
-                      className={`model-menu-item ${model?.path === m.path ? "active" : ""}`}
-                      onClick={() => switchModel(m.path)}
-                      disabled={busy}
-                      title={m.path}
-                    >
-                      <span className="mm-name">{m.name}</span>
-                      {model?.path === m.path && <span className="mm-dot" />}
-                    </button>
-                  ))
+                  availableModels.map((m) => {
+                    const active = model?.path === m.path;
+                    return (
+                      <div
+                        key={m.path}
+                        className={`model-menu-item ${active ? "active" : ""}`}
+                      >
+                        <button
+                          className="mm-pick"
+                          onClick={() => switchModel(m.path)}
+                          disabled={busy}
+                          title={m.path}
+                        >
+                          <span className="mm-name">{m.name}</span>
+                          {m.sizeMb ? (
+                            <span className="mm-size">{(m.sizeMb / 1024).toFixed(1)} GB</span>
+                          ) : null}
+                        </button>
+                        <span className="mm-trail">
+                          {active ? (
+                            <span className="mm-dot" />
+                          ) : (
+                            <button
+                              className="mm-del"
+                              onClick={() => void handleDeleteModel(m)}
+                              disabled={busy}
+                              title={t("deleteModelFile")}
+                              aria-label={t("deleteModelFile")}
+                            >
+                              ×
+                            </button>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })
                 )}
               </div>
               <button className="model-menu-file" onClick={handleLoad}>
@@ -1363,6 +1702,16 @@ export default function App() {
               >
                 {t("openModelsDir")}
               </button>
+              {model && (
+                <button
+                  className="model-menu-file model-menu-eject"
+                  onClick={handleEject}
+                  disabled={busy || loadingModel}
+                  title={t("ejectModel")}
+                >
+                  {t("ejectModel")}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -1474,6 +1823,10 @@ export default function App() {
               ctxTrainLimit={model?.nCtxTrain}
               onReloadModel={model ? () => void reloadModel() : undefined}
               reloading={loadingModel}
+              onDataCleared={() => {
+                handleNewChat();
+                void refreshConversations();
+              }}
             />
           )}
         </div>
@@ -1528,20 +1881,66 @@ export default function App() {
               visibleConvs.map((c) => (
                 <div
                   key={c.id}
-                  className={`conv-item ${c.id === conversationId ? "active" : ""}`}
-                  onClick={() => openConversation(c.id)}
+                  className={`conv-item ${c.id === conversationId ? "active" : ""} ${
+                    c.pinned ? "pinned" : ""
+                  }`}
+                  onClick={() => renamingId !== c.id && openConversation(c.id)}
                 >
-                  <span className="conv-title">{c.title}</span>
-                  <button
-                    className="conv-del"
-                    title={t("deleteConv")}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(c.id);
-                    }}
-                  >
-                    ×
-                  </button>
+                  {renamingId === c.id ? (
+                    <input
+                      className="conv-rename"
+                      autoFocus
+                      value={renameDraft}
+                      onChange={(e) => setRenameDraft(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void commitRename();
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          setRenamingId(null);
+                        }
+                      }}
+                      onBlur={() => void commitRename()}
+                    />
+                  ) : (
+                    <>
+                      <span className="conv-title">{c.title}</span>
+                      <div className="conv-actions">
+                        <button
+                          className={`conv-act ${c.pinned ? "on" : ""}`}
+                          title={c.pinned ? t("unpinConv") : t("pinConv")}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleTogglePin(c);
+                          }}
+                        >
+                          {c.pinned ? <IconPinFilled size={13} /> : <IconPin size={13} />}
+                        </button>
+                        <button
+                          className="conv-act"
+                          title={t("renameConv")}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startRename(c);
+                          }}
+                        >
+                          <IconEdit size={13} />
+                        </button>
+                        <button
+                          className="conv-del"
+                          title={t("deleteConv")}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete(c.id);
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               ))
             )}
@@ -1569,7 +1968,7 @@ export default function App() {
                     {model ? t("readyMsg") : t("loadToStart")}
                   </div>
                 </div>
-                {!model && availableModels.length === 0 && (
+                {!model && (
                   <button className="setup-cta" onClick={() => setShowSetup(true)}>
                     <svg
                       width="15"
@@ -1593,6 +1992,15 @@ export default function App() {
                     ))}
                   </div>
                 )}
+                <button
+                  className="cmdk-hint-chip"
+                  onClick={() => setShowCmdk(true)}
+                  title={t("cmdkHint")}
+                >
+                  <kbd>{IS_MACOS ? "⌘" : "Ctrl"}</kbd>
+                  <kbd>K</kbd>
+                  <span>{t("cmdkHint")}</span>
+                </button>
               </div>
             ) : (
               messages.map((m, i) =>
@@ -2168,5 +2576,6 @@ export default function App() {
         />
       )}
     </div>
+    </CanvasOpenContext.Provider>
   );
 }

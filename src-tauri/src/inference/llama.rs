@@ -1098,3 +1098,32 @@ fn build_sampler(params: &GenParams) -> LlamaSampler {
         ])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_a_single_channel_span() {
+        assert_eq!(strip_thought_channels("a<|channel>secret<channel|>b"), "ab");
+    }
+
+    #[test]
+    fn strips_multiple_channel_spans() {
+        assert_eq!(
+            strip_thought_channels("x<|channel>1<channel|>y<|channel>2<channel|>z"),
+            "xyz"
+        );
+    }
+
+    #[test]
+    fn drops_unterminated_channel_tail() {
+        // No closing marker: everything from the open tag on is discarded.
+        assert_eq!(strip_thought_channels("answer<|channel>still thinking"), "answer");
+    }
+
+    #[test]
+    fn leaves_plain_text_untouched() {
+        assert_eq!(strip_thought_channels("  just a normal reply  "), "just a normal reply");
+    }
+}

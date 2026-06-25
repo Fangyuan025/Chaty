@@ -161,6 +161,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::load_model,
+            commands::eject_model,
             commands::get_model,
             commands::get_hardware_info,
             commands::get_gpu_usage,
@@ -172,7 +173,9 @@ pub fn run() {
             update::check_update,
             update::run_update,
             commands::list_models,
+            commands::delete_model_file,
             commands::open_models_dir,
+            commands::open_data_dir,
             commands::open_html_report,
             commands::open_external,
             commands::set_tray_language,
@@ -199,6 +202,8 @@ pub fn run() {
             store::list_conversations,
             store::get_messages,
             store::delete_conversation,
+            store::clear_all_conversations,
+            store::set_conversation_pinned,
             store::rename_conversation,
             store::search_conversations,
             search::web_search,
