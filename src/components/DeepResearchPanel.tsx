@@ -135,7 +135,7 @@ export function DeepResearchPanel({
         : '<div class="dr-print-hint" style="background:#fffae6;border:1px solid #f0e0a0;padding:8px 12px;border-radius:8px;margin-bottom:16px;font-size:13px;">If the print dialog didn\'t open, press ⌘P and choose "Save as PDF".</div>';
     const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>${topic.trim()}</title><style>${css}</style></head><body>${hint}${node.innerHTML}<script>window.addEventListener("load",function(){setTimeout(function(){window.print();},400);});<\/script></body></html>`;
     try {
-      await openHtmlReport(html);
+      await openHtmlReport(html, "deep-research");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

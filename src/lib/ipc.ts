@@ -191,8 +191,8 @@ export async function openDataDir(): Promise<string> {
 
 /** Write an HTML doc and open it in the default browser (used to export a Deep
  *  Research report → print to PDF, since WKWebView can't print itself). */
-export async function openHtmlReport(html: string): Promise<string> {
-  return invoke<string>("open_html_report", { html });
+export async function openHtmlReport(html: string, name?: string): Promise<string> {
+  return invoke<string>("open_html_report", { html, name });
 }
 
 /** Open a URL/file in the default browser. Routed through Rust (fork-free

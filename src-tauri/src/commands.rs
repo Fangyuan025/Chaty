@@ -346,7 +346,11 @@ pub fn open_data_dir(app: tauri::AppHandle) -> Result<String, String> {
 /// is a no-op, but the system browser prints (and saves as PDF, CJK included)
 /// reliably. Returns the file path.
 #[tauri::command]
-pub fn open_html_report(app: tauri::AppHandle, html: String) -> Result<String, String> {
+pub fn open_html_report(
+    app: tauri::AppHandle,
+    html: String,
+    name: Option<String>,
+) -> Result<String, String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -357,7 +361,10 @@ pub fn open_html_report(app: tauri::AppHandle, html: String) -> Result<String, S
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let path = dir.join(format!("deep-research-{ts}.html"));
+    // Filename stem differs by feature (deep-research report vs canvas page) so
+    // exported pages don't all look like deep-research output.
+    let stem = name.unwrap_or_else(|| "page".into());
+    let path = dir.join(format!("{stem}-{ts}.html"));
     std::fs::write(&path, html).map_err(|e| format!("写入文件失败 (failed to write file): {e}"))?;
     let p = path.to_string_lossy().to_string();
     open_default(&p)?;

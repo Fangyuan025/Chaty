@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.1 — Canvas fixes (2026-06-25)
+
+- **Canvas edit & fix reliability** — the *Fix* and edit actions could fail with “no HTML in the output” on smaller local models (they couldn't reproduce an exact in-place patch). Chaty now accepts either a fast patch *or* a full-file rewrite — whichever the model produces — so an edit always lands.
+- **Canvas export** — a page opened in the browser is now saved as `canvas-*.html` instead of being named like (and mixed in with) Deep Research reports.
+- **CI** — the backend test job now builds in release mode so the bundled ONNX Runtime links correctly.
+
 ## v1.0.0 — Design Canvas, command palette, and a 1.0 polish pass (2026-06-24)
 
 Chaty reaches 1.0: a new flagship **Design Canvas**, a command palette, conversation

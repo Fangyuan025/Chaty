@@ -28,7 +28,7 @@ Deep Research, and hands-free voice built right in.
 
 - 🔒 **Truly private** — every model, document, and conversation stays on your device. No sign-up, no server, nothing phoned home.
 - ⚡ **Native and fast** — a Rust + llama.cpp inference core with **Vulkan / Metal** GPU offload that auto-tunes to your hardware and falls back gracefully to CPU.
-- 🧰 **More than a chat box** — a local knowledge base (RAG), agentic Deep Research, hands-free voice, and a single-file web-design canvas — all offline.
+- 🧰 **More than a chat box** — a local knowledge base (RAG), agentic Deep Research, hands-free voice, and a self-healing **Design Canvas** — all offline.
 - 🧠 **Runs almost anything** — Llama 3, Gemma 3 / 4, Qwen 3 / 3.5 / 3.6, or *any* GGUF from Hugging Face — plus **Chaty's own fine-tuned model**.
 - 💻 **Friendly to modest hardware** — a first-launch *“Set up for me”* picks a model sized to your RAM, downloaded in one click.
 
@@ -68,10 +68,16 @@ Deep Research, and hands-free voice built right in.
 - **Deep-dive podcast** — turn your knowledge base into a NotebookLM-style two-host audio show, with WAV export.
 - All voice runs on the **CPU**, so it never competes with the LLM for VRAM.
 
+### Design Canvas
+- **Build a page by chatting** — open any single-file HTML Chaty generates into a split studio: a live preview on one side, an instruction box on the other. Ask for changes in plain language and Chaty edits the page **in place** (a fast search/replace patch, not a full re-render).
+- **Self-healing** — the preview watches for runtime errors and offers a one-click **Fix** that hands the error to the model; every fix asks first, so there's no runaway loop.
+- **Version history** with revert, plus export to a standalone `.html` or your browser. Pairs naturally with Chaty's own web-design fine-tune.
+
 ### Crafted chat experience
 - A streaming, foldable `<think>` panel that follows the reasoning as it generates.
-- KaTeX math, tables, **Mermaid** diagrams, per-block code copy, and a sandboxed **HTML preview that even runs single-file web games**.
-- Drag-and-drop attachments, conversation export (Markdown / JSON), full-text search, branching history, light / dark / system themes, system tray, a global hotkey, and an **English / 简体中文** UI.
+- KaTeX math, tables, **Mermaid** diagrams, per-block code copy, and in-app rendering of single-file HTML (including playable web games) through the Design Canvas.
+- A **⌘K command palette**, pinnable / renameable conversations, in-app confirmations, and a crash-safe error boundary so an unexpected error never blanks the window.
+- Drag-and-drop attachments, conversation export (Markdown / JSON), full-text search, branching history, light / dark / system themes, **reduced-motion** support, system tray, a global hotkey, and an **English / 简体中文** UI.
 
 > **Offline-first.** The network is used only for optional web search and one-time model downloads.
 

@@ -589,20 +589,21 @@ export default function App() {
     }
     const base = canvasVersions[canvasIndex]?.html ?? "";
     const newIndex = canvasVersions.length;
-    // Ask for a minimal search/replace patch (small output = fast) rather than a
-    // full re-render of the whole file — much quicker for fixes and edits.
+    // Prefer a minimal search/replace patch (small output = fast), but allow the
+    // model to return the full file instead — small local models rarely echo an
+    // exact SEARCH block, so the full-HTML path is the reliable fallback.
     const sys =
       lang === "zh"
-        ? "你是一个网页设计助手，正在编辑一个单文件 HTML 文档。只用下面的「查找/替换」格式输出最小化修改，不要输出整个文件、不要任何解释或思考：\n<<<<<<< SEARCH\n（从当前 HTML 原样复制、需要被替换的片段）\n=======\n（替换后的新片段）\n>>>>>>> REPLACE\n每个 SEARCH 片段要尽量短且在文中唯一；可以输出多个这样的块。所有资源必须内联（禁止外部 CDN、字体或图片链接）。"
-        : "You are a web-design assistant editing a single-file HTML document. Output ONLY minimal edits in the search/replace format below — never the whole file, and no explanation or reasoning:\n<<<<<<< SEARCH\n(exact snippet copied verbatim from the current HTML to replace)\n=======\n(the new snippet)\n>>>>>>> REPLACE\nKeep each SEARCH snippet short and unique; you may output several blocks. Keep everything inline (no external CDNs, fonts or image URLs).";
+        ? "你是一个网页设计助手，正在修改一个单文件 HTML 文档。\n优先用「查找/替换」补丁做最小改动（更快）：\n<<<<<<< SEARCH\n（从当前 HTML 原样复制、要被替换的片段）\n=======\n（替换后的新片段）\n>>>>>>> REPLACE\n可以输出多个这样的块，每个 SEARCH 必须与当前 HTML 完全一致。\n如果不方便用补丁，就直接在一个 ```html 代码块里返回**完整修正后**的单文件 HTML。\n所有资源必须内联（禁止外部 CDN、字体或图片链接）；不要输出任何解释或思考。"
+        : "You are a web-design assistant editing a single-file HTML document.\nPrefer minimal search/replace patches for speed:\n<<<<<<< SEARCH\n(exact snippet copied verbatim from the current HTML)\n=======\n(the new snippet)\n>>>>>>> REPLACE\nYou may output several blocks; each SEARCH must match the current HTML exactly.\nIf a patch is awkward, instead return the COMPLETE corrected single-file HTML in one ```html code block.\nKeep everything inline (no external CDNs, fonts or image URLs); output no explanation or reasoning.";
     const user =
       kind === "edit"
         ? lang === "zh"
-          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n请用最小「查找/替换」修改实现以下需求：${payload}`
-          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nUse minimal search/replace edit(s) to apply this change: ${payload}`
+          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n请实现以下修改（用查找/替换补丁，或返回完整 HTML）：${payload}`
+          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nApply this change (as a search/replace patch, or return the full HTML): ${payload}`
         : lang === "zh"
-          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n它在浏览器中运行时报错：${payload}\n请给出修复该错误所需的最小「查找/替换」修改。`
-          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nIt throws this runtime error: ${payload}\nGive the minimal search/replace edit(s) to fix it.`;
+          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n它在浏览器中运行时报错：${payload}\n请修复这个错误（用查找/替换补丁，或返回完整 HTML）。`
+          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nIt throws this runtime error: ${payload}\nFix this error (as a search/replace patch, or return the full HTML).`;
     const note =
       (kind === "edit" ? `${t("canvasEdit")}：${payload}` : `${t("canvasFix")}：${payload}`).slice(
         0,
@@ -629,8 +630,10 @@ export default function App() {
       const edits = parseEdits(acc);
       let html = edits.length ? applyEdits(base, edits) : null;
       if (!html) {
+        // The model returned a full document (or the patch didn't apply) —
+        // accept any complete single-file HTML.
         const full = extractHtml(acc);
-        if (full && /<!doctype|<html/i.test(full) && full !== base) html = full;
+        if (full && /<!doctype|<html/i.test(full)) html = full;
       }
       if (!html) {
         showNotice("error", t("canvasNoHtml"));
@@ -1576,7 +1579,7 @@ export default function App() {
         onIterate={(instr) => void generateCanvasVersion("edit", instr)}
         onFix={(err) => void generateCanvasVersion("fix", err)}
         onExport={(html) => void exportHtmlFile("design.html", html).catch(console.error)}
-        onOpenExternal={(html) => void openHtmlReport(html).catch(console.error)}
+        onOpenExternal={(html) => void openHtmlReport(html, "canvas").catch(console.error)}
         onClose={() => setCanvasOpen(false)}
       />
       {dragging && (

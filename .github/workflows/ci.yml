@@ -30,8 +30,13 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
+        # Don't cache target/: rust-cache prunes the ONNX Runtime dylib that
+        # sherpa-rs places in target/release/, breaking the link (same gotcha as
+        # release.yml).
+        with: { workspaces: src-tauri, cache-targets: false }
+      # Build in release so sherpa-rs lays down libonnxruntime in target/release/
+      # (its build script only populates the release dir, which the link step
+      # expects — a debug `cargo test` can't find it on a clean runner).
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --lib
+        run: cargo test --lib --release
