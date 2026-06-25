@@ -58,8 +58,12 @@ pub fn run() {
     tauri::Builder::default()
         // Single instance must be registered first; focus the window on relaunch.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // A `chaty://` deep link launched a second instance — the deep-link
+            // plugin forwards the URL to `on_open_url`; here we just surface the
+            // window.
             show_main_window(app);
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -83,6 +87,16 @@ pub fn run() {
 
             // ---- models folder (drop-in GGUF hot-swap) ----
             commands::ensure_models_dir(app.handle());
+
+            // ---- chaty:// deep link ----
+            // macOS registers the scheme via Info.plist (CFBundleURLTypes from
+            // the plugin config) and Windows via the installer; Linux + Windows
+            // dev need a runtime registration.
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let _ = app.deep_link().register_all();
+            }
 
             // ---- macOS: unlock getUserMedia in WKWebView ----
             // WebKit ships `navigator.mediaDevices` behind a preferences flag

@@ -12,6 +12,7 @@
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text",
     "os:allow-platform",
+    "deep-link:default",
     "core:window:allow-minimize",
     "core:window:allow-unminimize",
     "core:window:allow-toggle-maximize",

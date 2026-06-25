@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { platform } from "@tauri-apps/plugin-os";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrent as getDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextMenu } from "./components/ContextMenu";
 import { DownloadModal } from "./components/DownloadModal";
@@ -99,6 +101,19 @@ const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n)
 const SETTINGS_KEY = "chaty.settings";
 const LAST_MODEL_KEY = "chaty.lastModel";
 const convTitle = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 40) || "新对话";
+
+/** Parse `chaty://open_from_hf?model=<repo>&file=<file>` from a deep link. */
+function parseHfDeepLink(raw: string): { repo: string; file?: string } | null {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "chaty:") return null;
+    const repo = u.searchParams.get("model");
+    if (!repo) return null;
+    return { repo, file: u.searchParams.get("file") || undefined };
+  } catch {
+    return null;
+  }
+}
 
 const copyText = (t: string) => {
   void copyToClipboard(t);
@@ -228,6 +243,7 @@ export default function App() {
   const [showModelInfo, setShowModelInfo] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showDownload, setShowDownload] = useState(false);
+  const [deepLink, setDeepLink] = useState<{ repo: string; file?: string } | null>(null);
   const [showSetup, setShowSetup] = useState(false);
   const [notice, setNotice] = useState<{ kind: "warn" | "error"; text: string } | null>(null);
   const noticeTimer = useRef<number | null>(null);
@@ -338,6 +354,31 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Handle chaty:// deep links (HuggingFace "Use this model" → open the
+  // downloader pre-filled with the repo). Covers cold start + while running.
+  useEffect(() => {
+    const open = (raw: string) => {
+      const parsed = parseHfDeepLink(raw);
+      if (!parsed) return;
+      setDeepLink(parsed);
+      setShowDownload(true);
+      void getCurrentWindow().setFocus().catch(() => {});
+    };
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const cur = await getDeepLinks();
+        if (cur && cur.length) open(cur[0]);
+        unlisten = await onOpenUrl((urls) => {
+          if (urls.length) open(urls[0]);
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+    return () => unlisten?.();
   }, []);
 
   // Close the model picker when clicking outside it.
@@ -2549,7 +2590,15 @@ export default function App() {
         />
       )}
       {showDownload && (
-        <DownloadModal onClose={() => setShowDownload(false)} onDownloaded={refreshModels} />
+        <DownloadModal
+          onClose={() => {
+            setShowDownload(false);
+            setDeepLink(null);
+          }}
+          onDownloaded={refreshModels}
+          initialRepo={deepLink?.repo}
+          initialFile={deepLink?.file}
+        />
       )}
       {showKb && (
         <KnowledgePanel

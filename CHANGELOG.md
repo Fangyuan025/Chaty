@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.0 — Open from Hugging Face (2026-06-25)
+
+- **`chaty://` deep links** — Chaty now registers a URL scheme and handles `chaty://open_from_hf?model=<repo>&file=<file>`: it focuses the window and opens the downloader pre-filled with that Hugging Face repo (auto-starting the file if one is named). This is the groundwork for a one-click **“Use this model → Chaty”** entry on Hugging Face GGUF pages, with a launcher page that sends people without Chaty to the download instead.
+
 ## v1.0.1 — Canvas fixes (2026-06-25)
 
 - **Canvas edit & fix reliability** — the *Fix* and edit actions could fail with “no HTML in the output” on smaller local models (they couldn't reproduce an exact in-place patch). Chaty now accepts either a fast patch *or* a full-file rewrite — whichever the model produces — so an edit always lands.

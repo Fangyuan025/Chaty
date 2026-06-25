@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { useI18n } from "../lib/i18n";
 import {
@@ -19,9 +19,15 @@ function fmtSize(n: number): string {
 export function DownloadModal({
   onClose,
   onDownloaded,
+  initialRepo,
+  initialFile,
 }: {
   onClose: () => void;
   onDownloaded: () => void;
+  /** Pre-fill the repo (e.g. from a chaty:// deep link) and list its files. */
+  initialRepo?: string;
+  /** Auto-start this file's download once the repo's files are listed. */
+  initialFile?: string;
 }) {
   const { t } = useI18n();
   const [repo, setRepo] = useState("");
@@ -70,6 +76,31 @@ export function DownloadModal({
       setActive(null);
     }
   };
+
+  // Deep link (chaty://open_from_hf): pre-load the repo and, if a specific file
+  // was named, start it automatically.
+  useEffect(() => {
+    if (!initialRepo) return;
+    setRepo(initialRepo);
+    (async () => {
+      setError("");
+      setFiles([]);
+      setLoading(true);
+      try {
+        const found = await listHfGgufs(initialRepo);
+        setFiles(found);
+        if (initialFile) {
+          const f = found.find((x) => x.name === initialFile);
+          if (f) void download(f);
+        }
+      } catch (e) {
+        setError(typeof e === "string" ? e : t("dlSearchFailed"));
+      } finally {
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialRepo, initialFile]);
 
   const pct = progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : 0;
 
