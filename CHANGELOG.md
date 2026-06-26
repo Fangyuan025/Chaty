@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.1 — Links open in your browser (2026-06-26)
+
+- **Fixed a serious bug**: clicking a link in a model's reply (or anywhere — Deep Research reports, the knowledge base, etc.) navigated the in-app window to that page and left the app stuck/unusable. Links now open in your default system browser, as expected.
+
 ## v1.1.0 — Open from Hugging Face (2026-06-25)
 
 - **`chaty://` deep links** — Chaty now registers a URL scheme and handles `chaty://open_from_hf?model=<repo>&file=<file>`: it focuses the window and opens the downloader pre-filled with that Hugging Face repo (auto-starting the file if one is named). This is the groundwork for a one-click **“Use this model → Chaty”** entry on Hugging Face GGUF pages, with a launcher page that sends people without Chaty to the download instead.

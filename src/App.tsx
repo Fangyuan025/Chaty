@@ -381,6 +381,24 @@ export default function App() {
     return () => unlisten?.();
   }, []);
 
+  // Open external links (from model output, reports, anywhere) in the system
+  // browser. Without this, clicking a link navigates the webview itself and the
+  // app is gone. Capture phase so we beat the default navigation.
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented) return;
+      const a = (e.target as HTMLElement | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!a) return;
+      const href = a.getAttribute("href") || "";
+      if (/^(https?:|mailto:)/i.test(href)) {
+        e.preventDefault();
+        void openExternal(href).catch(console.error);
+      }
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, []);
+
   // Close the model picker when clicking outside it.
   useEffect(() => {
     if (!showModelMenu) return;
