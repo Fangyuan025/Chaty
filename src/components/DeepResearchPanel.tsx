@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../lib/i18n";
 import { exportTextFile, openHtmlReport, type ModelInfo } from "../lib/ipc";
 import { Markdown } from "./Markdown";
+import { Select } from "./Select";
 import { IconResearch, IconSearch, IconDownload, IconPlay, IconStop } from "./icons";
 import {
   deepResearch,
@@ -105,7 +106,9 @@ export function DeepResearchPanel({
 
   async function exportMd() {
     const safe = topic.trim().slice(0, 40).replace(/[/\\:*?"<>|]/g, "_") || "deep-research";
-    const md = `# ${topic.trim()}\n\n${report}`;
+    // Don't add a topic title if the report already opens with its own heading
+    // (otherwise the title shows up twice).
+    const md = /^\s*#{1,2}\s/.test(report) ? report : `# ${topic.trim()}\n\n${report}`;
     try {
       await exportTextFile(`${safe}.md`, md, "md");
     } catch (e) {
@@ -163,18 +166,21 @@ export function DeepResearchPanel({
               rows={2}
             />
             <div className="dr-controls">
-              <label className="dr-depth">
+              <span className="dr-depth">
                 {t("drDepth")}
-                <select
+                <Select
+                  className="dr-depth-select"
                   value={depth}
                   disabled={running}
-                  onChange={(e) => setDepth(Number(e.target.value))}
-                >
-                  <option value={2}>{t("drDepthQuick")}</option>
-                  <option value={3}>{t("drDepthStd")}</option>
-                  <option value={4}>{t("drDepthDeep")}</option>
-                </select>
-              </label>
+                  ariaLabel={t("drDepth")}
+                  onChange={(v) => setDepth(v)}
+                  options={[
+                    { value: 2, label: t("drDepthQuick") },
+                    { value: 3, label: t("drDepthStd") },
+                    { value: 4, label: t("drDepthDeep") },
+                  ]}
+                />
+              </span>
               {running ? (
                 <button className="setup-dl dr-stop" onClick={stop}>
                   <IconStop size={13} style={{ marginRight: 6 }} /> {t("drStop")}
@@ -260,7 +266,7 @@ export function DeepResearchPanel({
         {/* Off-screen container; its rendered HTML is what the PDF export prints. */}
         {done && report && (
           <div className="dr-print-root" ref={printRef}>
-            <h1>{topic.trim()}</h1>
+            {!/^\s*#{1,2}\s/.test(report) && <h1>{topic.trim()}</h1>}
             <Markdown>{report}</Markdown>
           </div>
         )}

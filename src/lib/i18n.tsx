@@ -17,6 +17,7 @@ type Entry = { zh: string; en: string };
 export const T = {
   // titlebar / sidebar
   newChat: { zh: "新对话", en: "New chat" },
+  resizeSidebar: { zh: "拖动调节宽度，双击复位", en: "Drag to resize · double-click to reset" },
   noModel: { zh: "未加载模型", en: "No model" },
   loadingModel: { zh: "加载中…", en: "Loading…" },
   changeModel: { zh: "更换模型", en: "Change model" },

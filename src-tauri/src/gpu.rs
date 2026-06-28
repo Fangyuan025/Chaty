@@ -211,7 +211,14 @@ pub fn gpu_usage() -> Option<GpuUsage> {
 /// matches what users expect from a memory gauge and reflects real pressure.
 #[cfg(target_os = "macos")]
 pub fn gpu_usage() -> Option<GpuUsage> {
-    let mut sys = sysinfo::System::new();
+    // Reuse one System across the panel's 1.5s polls instead of allocating a
+    // fresh one each call; just refresh the memory stats.
+    use std::sync::{Mutex, OnceLock};
+    static SYS: OnceLock<Mutex<sysinfo::System>> = OnceLock::new();
+    let mut sys = SYS
+        .get_or_init(|| Mutex::new(sysinfo::System::new()))
+        .lock()
+        .ok()?;
     sys.refresh_memory();
     let total_mb = sys.total_memory() / (1024 * 1024);
     let used_mb = sys.used_memory() / (1024 * 1024);

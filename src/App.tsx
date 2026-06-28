@@ -100,6 +100,9 @@ const uid = () => Math.random().toString(36).slice(2);
 const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
 const SETTINGS_KEY = "chaty.settings";
 const LAST_MODEL_KEY = "chaty.lastModel";
+const SIDEBAR_DEFAULT = 248;
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 440;
 const convTitle = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 40) || "新对话";
 
 /** Parse `chaty://open_from_hf?model=<repo>&file=<file>` from a deep link. */
@@ -289,6 +292,63 @@ export default function App() {
   const playbackRef = useRef<{ stop: () => void } | null>(null);
   const speechRef = useRef<SpeechQueue | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const prevMsgCount = useRef(0);
+  const prevConvId = useRef<string | null>(null);
+  const asideRef = useRef<HTMLElement>(null);
+  const [sidebarW, setSidebarW] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem("chaty.sidebarW"));
+      if (Number.isFinite(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX) return v;
+    } catch {
+      /* ignore */
+    }
+    return SIDEBAR_DEFAULT;
+  });
+
+  // Drag the sidebar's right edge to resize. The width is driven through state
+  // (rAF-throttled to one update per frame) so a concurrent re-render — e.g. a
+  // reply streaming in — can't fight the drag and snap the width back. The
+  // memoized message list doesn't re-render with it. Persists on release;
+  // double-click the handle resets to the default width.
+  function startSidebarResize(e: React.PointerEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = asideRef.current?.offsetWidth ?? sidebarW;
+    let frame: number | null = null;
+    let latest = startW;
+    document.body.classList.add("resizing-x");
+    const onMove = (ev: PointerEvent) => {
+      latest = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + (ev.clientX - startX)));
+      if (frame == null)
+        frame = requestAnimationFrame(() => {
+          frame = null;
+          setSidebarW(latest);
+        });
+    };
+    const onUp = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      if (frame != null) cancelAnimationFrame(frame);
+      document.body.classList.remove("resizing-x");
+      setSidebarW(latest);
+      try {
+        localStorage.setItem("chaty.sidebarW", String(latest));
+      } catch {
+        /* ignore */
+      }
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  }
+
+  function resetSidebarW() {
+    setSidebarW(SIDEBAR_DEFAULT);
+    try {
+      localStorage.setItem("chaty.sidebarW", String(SIDEBAR_DEFAULT));
+    } catch {
+      /* ignore */
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -449,8 +509,20 @@ export default function App() {
   }
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages]);
+    const el = scrollRef.current;
+    if (!el) return;
+    // Structural change (a message sent, a fresh assistant bubble, or switching
+    // conversations) → jump to the bottom. While a reply streams (same message
+    // count, content just growing) only stick to the bottom if the user is
+    // already near it — don't yank them up while they read earlier messages.
+    const structural =
+      messages.length !== prevMsgCount.current || conversationId !== prevConvId.current;
+    prevMsgCount.current = messages.length;
+    prevConvId.current = conversationId;
+    if (structural || el.scrollHeight - el.scrollTop - el.clientHeight < 140) {
+      el.scrollTo({ top: el.scrollHeight });
+    }
+  }, [messages, conversationId]);
 
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
@@ -980,8 +1052,34 @@ export default function App() {
       return;
     }
     try {
+      // Deleting the conversation you're viewing must also clear the chat area —
+      // even mid-generation. handleNewChat's busy-guard exists for the "+ New
+      // chat" button (don't silently abandon a running reply via the button); a
+      // destructive delete should always reset, so cancel any in-flight reply
+      // and reset the view inline rather than going through that guard.
+      const isCurrent = id === conversationId;
+      // Only a *chat* stream is ours to cancel here; busy from Deep Research /
+      // Podcast (streamingId is null) must not be force-unlocked by a delete.
+      const wasStreaming = isCurrent && streamingId != null;
+      if (wasStreaming) {
+        try {
+          await cancelGeneration();
+        } catch (err) {
+          console.error(err);
+        }
+      }
       await deleteConversation(id);
-      if (id === conversationId) handleNewChat();
+      if (isCurrent) {
+        setConversationId(null);
+        setMessages([]);
+        setStats(null);
+        setAttachment(null);
+        setAttachError("");
+        if (wasStreaming) {
+          setStreamingId(null);
+          setBusy(false);
+        }
+      }
       await refreshConversations();
     } catch (e) {
       console.error(e);
@@ -1316,6 +1414,18 @@ export default function App() {
     };
 
     const acc = { text: "" };
+    // Coalesce token → state into one re-render per animation frame (was: one
+    // setMessages per token = a full re-render of the list on every token).
+    let rafId: number | null = null;
+    const renderMsg = () =>
+      setMessages((cur) => cur.map((m) => (m.id === asstId ? { ...m, content: acc.text } : m)));
+    const scheduleRender = () => {
+      if (rafId == null)
+        rafId = requestAnimationFrame(() => {
+          rafId = null;
+          renderMsg();
+        });
+    };
     try {
       await generate(
         {
@@ -1335,26 +1445,35 @@ export default function App() {
         (ev: StreamEvent) => {
           if (ev.type === "token") {
             acc.text += ev.text;
-            setMessages((cur) =>
-              cur.map((m) => (m.id === asstId ? { ...m, content: m.content + ev.text } : m)),
-            );
+            scheduleRender();
             pumpSpeech(false);
           } else if (ev.type === "done") {
+            if (rafId != null) {
+              cancelAnimationFrame(rafId);
+              rafId = null;
+            }
+            renderMsg();
             setStats(ev.stats);
           } else if (ev.type === "error") {
-            setMessages((cur) =>
-              cur.map((m) =>
-                m.id === asstId
-                  ? { ...m, content: `${m.content}\n\n**${ev.message}**` }
-                  : m,
-              ),
-            );
+            acc.text += `\n\n**${ev.message}**`;
+            if (rafId != null) {
+              cancelAnimationFrame(rafId);
+              rafId = null;
+            }
+            renderMsg();
           }
         },
       );
     } catch (e) {
       console.error(e);
     } finally {
+      // Ensure the final text is rendered even if the stream ended without a
+      // clean "done" (cancel / error), and stop any pending frame.
+      if (rafId != null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      renderMsg();
       setBusy(false);
       setStreamingId(null);
       try {
@@ -1911,7 +2030,7 @@ export default function App() {
       )}
 
       <div className="body">
-        <aside className="sidebar">
+        <aside className="sidebar" ref={asideRef} style={{ width: sidebarW }}>
           <button className="new-chat" onClick={handleNewChat} disabled={busy}>
             ＋ {t("newChat")}
           </button>
@@ -2011,6 +2130,14 @@ export default function App() {
             <span className="ss-dot" />
             <span className="ss-meta">v{__APP_VERSION__}</span>
           </div>
+          <div
+            className="sidebar-resizer"
+            role="separator"
+            aria-orientation="vertical"
+            title={t("resizeSidebar")}
+            onPointerDown={startSidebarResize}
+            onDoubleClick={resetSidebarW}
+          />
         </aside>
 
         <div className="main">

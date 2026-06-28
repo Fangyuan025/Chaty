@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.1.2 — Smoother streaming + polish (2026-06-27)
+
+- **Much smoother streaming** — a reply no longer re-renders the whole conversation on every token: messages are memoized so only the one being written updates, and those updates are coalesced to one render per frame. Long answers — and typing while a long conversation is on screen — no longer stutter.
+- **Resizable sidebar** — drag the conversation sidebar's right edge to set its width (double-click the handle to reset); the width is remembered between launches.
+- **Native dropdowns** — the in-app option menus (Deep Research depth, voice picker) now use Chaty's own themed dropdown instead of the OS-native `<select>`, so they match the app on every platform and in both themes.
+- **Cleaner light theme** — removed the gray drop-shadow halo under menus and popovers in light mode; they now read as elevated via crisp borders.
+- **Small polish** — the model menu's refresh button is larger and easier to hit, and the composer's **＋** button now spins as its menu opens and closes.
+- **Fixed: deleting the conversation you're viewing now clears the chat area** even mid-reply (it previously left the old messages on screen until you clicked “New chat”).
+- **Fixed: Deep Research reports could show the title twice** when opened to print (the topic was prepended even when the report already started with its own heading).
+- **Canvas pages** opened in the browser now go to their own folder instead of the Deep Research `reports` folder.
+
 ## v1.1.1 — Links open in your browser (2026-06-26)
 
 - **Fixed a serious bug**: clicking a link in a model's reply (or anywhere — Deep Research reports, the knowledge base, etc.) navigated the in-app window to that page and left the app stuck/unusable. Links now open in your default system browser, as expected.

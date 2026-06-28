@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Markdown } from "./Markdown";
 import { useI18n } from "../lib/i18n";
 import { normalizeChannels } from "../lib/voiceText";
@@ -66,7 +66,7 @@ function prepareCitations(answer: string, hasSources: boolean): string {
 
 export type SearchKind = "" | "web" | "kb" | "mix";
 
-export function AssistantMessage({
+export const AssistantMessage = memo(function AssistantMessage({
   content,
   streaming,
   searching,
@@ -184,4 +184,4 @@ export function AssistantMessage({
       ) : null}
     </div>
   );
-}
+});

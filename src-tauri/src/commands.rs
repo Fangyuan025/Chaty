@@ -351,19 +351,23 @@ pub fn open_html_report(
     html: String,
     name: Option<String>,
 ) -> Result<String, String> {
+    let stem = name.unwrap_or_else(|| "page".into());
+    // Keep Canvas pages out of the deep-research `reports` folder — they're a
+    // different thing, so they get their own folder.
+    let subdir = match stem.as_str() {
+        "canvas" => "canvas",
+        _ => "reports",
+    };
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
-        .join("reports");
+        .join(subdir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // Filename stem differs by feature (deep-research report vs canvas page) so
-    // exported pages don't all look like deep-research output.
-    let stem = name.unwrap_or_else(|| "page".into());
     let path = dir.join(format!("{stem}-{ts}.html"));
     std::fs::write(&path, html).map_err(|e| format!("写入文件失败 (failed to write file): {e}"))?;
     let p = path.to_string_lossy().to_string();

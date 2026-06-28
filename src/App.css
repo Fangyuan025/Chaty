@@ -36,7 +36,9 @@
   --accent-soft: rgba(12, 138, 87, 0.12);
   --danger: #d11f1f;
   --panel: #ffffff;
-  --shadow: rgba(0, 0, 0, 0.18);
+  /* Flat light theme — menus/popovers read as elevated via their borders, not
+     a gray drop-shadow halo (which looked grimy on the light surfaces). */
+  --shadow: transparent;
   color-scheme: light;
 }
 
@@ -225,13 +227,17 @@ body {
   color: var(--text-dim);
 }
 .model-menu-refresh {
-  width: 22px;
-  height: 22px;
-  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  font-size: 17px;
+  line-height: 1;
   color: var(--text-dim);
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 7px;
   cursor: pointer;
 }
 .model-menu-refresh:hover {
@@ -510,12 +516,45 @@ body {
 
 /* ---------- Sidebar ---------- */
 .sidebar {
+  position: relative;
   width: 248px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg-elev);
   border-right: 1px solid var(--border);
+}
+
+/* Drag-to-resize handle straddling the sidebar's right edge. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  z-index: 30;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+}
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 3px;
+  width: 2px;
+  height: 100%;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.sidebar-resizer:hover::after,
+body.resizing-x .sidebar-resizer::after {
+  opacity: 0.55;
+}
+body.resizing-x {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .new-chat {
@@ -1519,7 +1558,17 @@ body {
   accent-color: var(--accent);
 }
 
-.field-select {
+/* ---------- Chaty-native dropdown (replaces OS <select>) ---------- */
+.csel {
+  position: relative;
+  display: inline-flex;
+}
+.csel-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
   padding: 8px 10px;
   font: inherit;
   font-size: 13px;
@@ -1529,10 +1578,79 @@ body {
   border-radius: 9px;
   outline: none;
   cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.csel-trigger:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+.csel.open .csel-trigger {
+  border-color: var(--accent);
+}
+.csel-trigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.csel-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.csel-chev {
+  flex-shrink: 0;
+  color: var(--faint);
+  transition: transform 0.14s ease;
+}
+.csel.open .csel-chev {
+  transform: rotate(180deg);
+}
+.csel-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  z-index: 70;
+  min-width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 11px;
+  box-shadow: 0 14px 36px var(--shadow);
+  animation: ctxin 0.1s ease-out;
+}
+.csel-opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.csel-opt:hover {
+  background: var(--surface);
+}
+.csel-opt.active {
+  color: var(--accent);
+  font-weight: 600;
+}
+.csel-opt svg {
+  flex-shrink: 0;
+  color: var(--accent);
 }
 
-.field-select:focus {
-  border-color: var(--border-strong);
+/* Full-width dropdown inside a settings .field column. */
+.field-select {
+  display: flex;
 }
 
 .preset-chips {
@@ -2506,6 +2624,15 @@ a:focus-visible,
 .tool-toggle.active {
   color: var(--accent);
   background: rgba(25, 195, 125, 0.14);
+}
+
+/* The + icon spins 90° clockwise as the menu opens, and unwinds (counter-
+   clockwise) as it closes. */
+.tool-toggle svg {
+  transition: transform 0.22s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+.tool-toggle.active svg {
+  transform: rotate(90deg);
 }
 
 .tool-toggle.speaking {
@@ -3664,15 +3791,11 @@ a:focus-visible,
   font-size: 12.5px;
   color: var(--text-dim);
 }
-.dr-depth select {
-  font: inherit;
+.dr-depth-select .csel-trigger {
   font-size: 12.5px;
   padding: 5px 8px;
-  color: var(--text);
   background: var(--surface-2);
-  border: 1px solid var(--border);
   border-radius: 8px;
-  cursor: pointer;
 }
 .dr-controls .setup-dl {
   margin-left: auto;

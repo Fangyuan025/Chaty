@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useI18n } from "../lib/i18n";
 import { openDataDir, clearAllConversations } from "../lib/ipc";
 import { useConfirm } from "./ConfirmModal";
+import { Select } from "./Select";
 
 export interface PromptPreset {
   name: string;
@@ -348,17 +349,13 @@ export function SettingsPanel({
           <>
             <label className="field">
               <span>{t("voice")}</span>
-              <select
+              <Select
                 className="field-select"
                 value={value.voiceSid}
-                onChange={(e) => set("voiceSid", Number(e.target.value))}
-              >
-                {VOICES.map((name, i) => (
-                  <option key={i} value={i}>
-                    {name}
-                  </option>
-                ))}
-              </select>
+                ariaLabel={t("voice")}
+                onChange={(v) => set("voiceSid", v)}
+                options={VOICES.map((name, i) => ({ value: i, label: name }))}
+              />
             </label>
 
             <label className="field">
