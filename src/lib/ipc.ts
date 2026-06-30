@@ -149,6 +149,11 @@ export async function ragRemoveDocument(id: number): Promise<void> {
   await invoke("rag_remove_document", { id });
 }
 
+/** Empty the whole knowledge base (all documents + chunks). */
+export async function ragClearAll(): Promise<void> {
+  await invoke("rag_clear_all");
+}
+
 export async function ragSetDocEnabled(id: number, enabled: boolean): Promise<void> {
   await invoke("rag_set_doc_enabled", { id, enabled });
 }
@@ -158,6 +163,17 @@ export async function ragCorpus(maxChars?: number): Promise<string> {
   return invoke<string>("rag_corpus", { maxChars });
 }
 
+export interface RagDocText {
+  name: string;
+  text: string;
+}
+
+/** Per-document text from the enabled KB (fair per-file budget) — for grounding
+ *  an overview report with one citation per file. */
+export async function ragCorpusDocs(maxChars?: number): Promise<RagDocText[]> {
+  return invoke<RagDocText[]>("rag_corpus_docs", { maxChars });
+}
+
 export async function ragSearch(query: string, k?: number): Promise<RagHit[]> {
   return invoke<RagHit[]>("rag_search", { query, k });
 }
@@ -165,10 +181,18 @@ export async function ragSearch(query: string, k?: number): Promise<RagHit[]> {
 export async function ragAddDocument(
   path: string,
   onProgress: (p: RagProgress) => void,
+  /** When ingesting from a folder, the selected folder path — the document is
+   *  then named by its path relative to that folder (preserving structure). */
+  root?: string,
 ): Promise<void> {
   const channel = new Channel<RagProgress>();
   channel.onmessage = onProgress;
-  await invoke("rag_add_document", { path, onProgress: channel });
+  await invoke("rag_add_document", { path, root: root ?? null, onProgress: channel });
+}
+
+/** Recursively list ingestable files under a folder (for folder import). */
+export async function ragListSupportedFiles(dir: string): Promise<string[]> {
+  return invoke<string[]>("rag_list_supported_files", { dir });
 }
 
 export async function ragDownloadModel(

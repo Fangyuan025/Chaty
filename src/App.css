@@ -1821,11 +1821,14 @@ body.resizing-x {
   border-color: rgba(255, 107, 107, 0.5);
 }
 
-/* In-app confirmation dialog (replaces the native OS dialog). */
+/* In-app confirmation dialog (replaces the native OS dialog). Must sit above
+   every other modal/overlay (.preview-overlay is z-index 2000) — a confirm
+   triggered from inside one (e.g. "Clear all" in the knowledge base) has to be
+   clickable, not buried underneath it. */
 .confirm-overlay {
   position: fixed;
   inset: 0;
-  z-index: 240;
+  z-index: 3000;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3444,27 +3447,61 @@ a:focus-visible,
   cursor: pointer;
 }
 .kb-scope-hint {
-  margin: -4px 0 10px;
   font-size: 11.5px;
   color: var(--text-dim);
 }
-/* Knowledge-base footer: Add documents + Generate podcast, balanced. */
-.kb-foot-actions {
+.kb-scope-row {
   display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -4px 0 10px;
+}
+.kb-scope-row .kb-scope-hint {
+  flex: 1;
+  margin: 0;
+}
+.kb-clear {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.kb-clear:hover {
+  background: var(--danger);
+  border-color: transparent;
+  color: #fff;
+}
+/* Knowledge-base footer: a tidy 2×2 grid (manage row + generate row) instead of
+   one overflowing flex row. */
+.kb-foot-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-top: 10px;
 }
 .kb-foot-actions > * {
-  flex: 1;
   margin-top: 0;
 }
 .kb-foot-actions .setup-dl {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  white-space: nowrap;
+  min-height: 40px;
+  text-align: center;
+  white-space: normal;
+  line-height: 1.25;
 }
-.kb-podcast {
+/* The indexing progress bar replaces the buttons and spans the full width. */
+.kb-foot-actions .setup-progress {
+  grid-column: 1 / -1;
+}
+.kb-podcast,
+.kb-report {
   margin-top: 0;
 }
 
@@ -3758,6 +3795,18 @@ a:focus-visible,
   border: 1px solid var(--border);
   border-radius: 14px;
   transition: border-color 0.15s;
+}
+/* KB report needs no topic box — a slim status line + the action button. */
+.dr-input-row.kb {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+.dr-kb-hint {
+  flex: 1;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
 }
 .dr-input-row:focus-within {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));

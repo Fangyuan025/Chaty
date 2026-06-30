@@ -1,6 +1,6 @@
 [package]
 name = "chaty"
-version = "1.1.2"
+version = "1.2.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -59,6 +59,10 @@ tar = "0.4"
 bzip2 = "0.4"
 base64 = "0.22"
 libc = "0.2"
+# .docx text extraction (OOXML is a zip of XML parts).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# .xlsx spreadsheet reading (handles shared strings, numbers, dates).
+calamine = "0.26"
 
 # GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers â€” cross-vendor on Windows.
 [target.'cfg(windows)'.dependencies]

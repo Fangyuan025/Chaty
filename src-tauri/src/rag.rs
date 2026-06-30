@@ -52,9 +52,23 @@ enum EmbedJob {
 
 struct Embedder {
     tx: Sender<EmbedJob>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 static EMBEDDER: Mutex<Option<Embedder>> = Mutex::new(None);
+
+/// Unload the cached embedding model (bge-m3, ~730 MB), freeing its memory. The
+/// worker drops the model + context when its channel closes; we join so the
+/// memory is actually back by the time this returns. Re-loads lazily on next use.
+pub fn embed_unload() {
+    if let Some(e) = EMBEDDER.lock().unwrap().take() {
+        let Embedder { tx, worker } = e;
+        drop(tx); // closes the channel → the worker exits and drops the model
+        if let Some(w) = worker {
+            let _ = w.join();
+        }
+    }
+}
 
 fn embed_model_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app
@@ -70,7 +84,7 @@ fn embedder_start(model_path: &PathBuf) -> Result<Embedder, String> {
     let (tx, rx) = std::sync::mpsc::channel::<EmbedJob>();
     let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
-    std::thread::Builder::new()
+    let worker = std::thread::Builder::new()
         .name("chaty-embed".into())
         .spawn(move || {
             let backend = match crate::inference::llama_backend_pub() {
@@ -80,7 +94,16 @@ fn embedder_start(model_path: &PathBuf) -> Result<Embedder, String> {
                     return;
                 }
             };
-            // Small model: offload everything; mmap is fine (kept resident).
+            // bge-m3 is ~730 MB. On macOS, offloading it to Metal pins ~730 MB of
+            // *wired* memory that never returns to the kernel after unload (the
+            // same mmap-on-Metal trap the chat model dodges) — so the embedder is
+            // loaded on the CPU here, via malloc (freeable), keeping it out of
+            // wired memory entirely. Other platforms keep the GPU offload.
+            #[cfg(target_os = "macos")]
+            let params = LlamaModelParams::default()
+                .with_n_gpu_layers(0)
+                .with_use_mmap(false);
+            #[cfg(not(target_os = "macos"))]
             let params = LlamaModelParams::default().with_n_gpu_layers(999);
             let model = match LlamaModel::load_from_file(backend, &path, &params) {
                 Ok(m) => m,
@@ -158,7 +181,7 @@ fn embedder_start(model_path: &PathBuf) -> Result<Embedder, String> {
         .map_err(|e| e.to_string())?;
 
     match init_rx.recv() {
-        Ok(Ok(())) => Ok(Embedder { tx }),
+        Ok(Ok(())) => Ok(Embedder { tx, worker: Some(worker) }),
         Ok(Err(e)) => Err(e),
         Err(_) => Err("嵌入线程启动失败 (embedder thread failed to start)".into()),
     }
@@ -271,8 +294,11 @@ fn extract_text(path: &str) -> Result<String, String> {
     match ext.as_str() {
         "pdf" => pdf_extract::extract_text(path)
             .map_err(|e| format!("PDF 解析失败 (PDF extraction failed): {e}")),
+        "docx" => extract_docx(path),
+        "xlsx" => extract_xlsx(path),
         _ => {
-            // Text-ish files: decode as UTF-8 with GBK fallback.
+            // Text-ish files (code, markup, config, …): decode as UTF-8 with a
+            // GBK fallback. Any text-based extension just works here.
             let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
             Ok(match String::from_utf8(bytes) {
                 Ok(s) => s,
@@ -283,6 +309,74 @@ fn extract_text(path: &str) -> Result<String, String> {
             })
         }
     }
+}
+
+/// Extract visible text from a .docx (OOXML: a zip whose `word/document.xml`
+/// holds the body). Paragraph/line/tab tags become whitespace; all other tags
+/// are stripped and the basic XML entities decoded.
+fn extract_docx(path: &str) -> Result<String, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file)
+        .map_err(|e| format!("DOCX 解析失败 (not a valid .docx): {e}"))?;
+    let mut xml = String::new();
+    zip.by_name("word/document.xml")
+        .map_err(|_| "DOCX 缺少 word/document.xml (corrupt .docx)".to_string())?
+        .read_to_string(&mut xml)
+        .map_err(|e| e.to_string())?;
+
+    // Turn structural tags into whitespace before stripping the rest.
+    let xml = xml
+        .replace("</w:p>", "\n\n")
+        .replace("<w:br/>", "\n")
+        .replace("<w:br />", "\n")
+        .replace("<w:tab/>", "\t")
+        .replace("<w:tab />", "\t");
+    let mut out = String::with_capacity(xml.len());
+    let mut in_tag = false;
+    for c in xml.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    Ok(out
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'"))
+}
+
+/// Extract a .xlsx workbook as tab-separated rows (one block per sheet). calamine
+/// resolves shared strings, numbers and dates, so the result reads like a CSV.
+fn extract_xlsx(path: &str) -> Result<String, String> {
+    use calamine::{open_workbook, Reader, Xlsx};
+    let mut wb: Xlsx<_> =
+        open_workbook(path).map_err(|e| format!("XLSX 解析失败 (failed to read .xlsx): {e}"))?;
+    let mut out = String::new();
+    for name in wb.sheet_names() {
+        let range = match wb.worksheet_range(&name) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if range.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("# {name}\n"));
+        for row in range.rows() {
+            let cells: Vec<String> = row.iter().map(|c| c.to_string()).collect();
+            if cells.iter().all(|s| s.trim().is_empty()) {
+                continue; // skip blank rows
+            }
+            out.push_str(&cells.join("\t"));
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 /// Paragraph-aware sliding-window chunking: split on blank lines, pack
@@ -584,6 +678,11 @@ pub struct RagProgress {
 pub async fn rag_add_document(
     app: tauri::AppHandle,
     path: String,
+    // When ingesting from a folder, the selected folder's path. The document is
+    // then named by its path relative to that folder's parent (e.g.
+    // `myproject/src/lib/ipc.ts`) so the knowledge base preserves — and the model
+    // can see — the project's file structure, not just bare file names.
+    root: Option<String>,
     on_progress: Channel<RagProgress>,
 ) -> Result<(), String> {
     // Images go through the same OCR engine as attachments (ocrs, Latin).
@@ -610,11 +709,24 @@ pub async fn rag_add_document(
     };
 
     tokio::task::spawn_blocking(move || {
-        let name = std::path::Path::new(&path)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("document")
-            .to_string();
+        let basename = || {
+            std::path::Path::new(&path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document")
+                .to_string()
+        };
+        // Folder import → name by path relative to the root folder's parent, so
+        // the project folder name and subdirectory layout are kept (and shown to
+        // the model). Single-file add (no root) keeps the bare file name.
+        let name = root
+            .as_deref()
+            .map(std::path::Path::new)
+            .map(|r| r.parent().unwrap_or(r))
+            .and_then(|base| std::path::Path::new(&path).strip_prefix(base).ok())
+            .and_then(|rel| rel.to_str())
+            .map(|s| s.replace('\\', "/"))
+            .unwrap_or_else(basename);
         let _ = on_progress.send(RagProgress { phase: "extract", frac: 0.0 });
         let text = match ocr_text {
             Some(t) => t,
@@ -678,6 +790,81 @@ pub async fn rag_add_document(
     })
     .await
     .map_err(|e| format!("索引任务异常 (indexing task panicked): {e}"))?
+}
+
+/// File extensions the knowledge base can ingest: documents (PDF/DOCX),
+/// OCR-able images, and a broad set of text/code/markup/config files (all read
+/// as UTF-8). Kept in sync with the file-picker filter in KnowledgePanel.tsx.
+const SUPPORTED_EXTS: &[&str] = &[
+    // documents + images
+    "pdf", "docx", "xlsx", "png", "jpg", "jpeg", "webp", "bmp", "gif",
+    // plain docs / data
+    "txt", "md", "markdown", "mdx", "rst", "org", "tex", "log", "csv", "tsv", "json", "jsonl",
+    "ndjson", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties", "env",
+    // markup / web
+    "html", "htm", "xml", "css", "scss", "sass", "less", "vue", "svelte", "astro",
+    // code
+    "js", "mjs", "cjs", "jsx", "ts", "tsx", "py", "pyi", "rs", "go", "java", "kt", "kts", "c", "h",
+    "cpp", "cc", "cxx", "hpp", "hh", "cs", "rb", "php", "swift", "scala", "sh", "bash", "zsh",
+    "fish", "ps1", "bat", "sql", "lua", "r", "jl", "pl", "pm", "dart", "ex", "exs", "erl", "hs",
+    "clj", "cljs", "elm", "ml", "fs", "vb", "gradle", "groovy", "m", "mm",
+];
+
+/// Recursively collect ingestable files under `dir` (walks subdirectories).
+/// Skips hidden entries (dotfiles/dot-dirs) and symlinks (avoids cycles), and
+/// caps the result so an accidental huge folder can't run away.
+#[tauri::command]
+pub fn rag_list_supported_files(dir: String) -> Result<Vec<String>, String> {
+    const MAX_FILES: usize = 5000;
+    let root = std::path::PathBuf::from(&dir);
+    if !root.is_dir() {
+        return Err("不是有效的文件夹 (not a directory)".into());
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut stack = vec![root];
+    while let Some(p) = stack.pop() {
+        let rd = match std::fs::read_dir(&p) {
+            Ok(rd) => rd,
+            Err(_) => continue, // unreadable dir → skip silently
+        };
+        for entry in rd.flatten() {
+            if entry
+                .file_name()
+                .to_str()
+                .map(|s| s.starts_with('.'))
+                .unwrap_or(false)
+            {
+                continue; // hidden entry
+            }
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if ft.is_dir() {
+                stack.push(path);
+            } else if ft.is_file()
+                && path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|e| SUPPORTED_EXTS.contains(&e.to_lowercase().as_str()))
+                    .unwrap_or(false)
+            {
+                if let Some(s) = path.to_str() {
+                    out.push(s.to_string());
+                    if out.len() >= MAX_FILES {
+                        out.sort();
+                        return Ok(out);
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 #[derive(Serialize)]
@@ -753,6 +940,78 @@ pub fn rag_corpus(app: tauri::AppHandle, max_chars: Option<usize>) -> Result<Str
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagDocText {
+    pub name: String,
+    pub text: String,
+}
+
+/// Per-document text from the enabled knowledge base, for grounding an overview
+/// report with one citation per file. Each document's text is capped to a fair
+/// share of `max_chars` (so a single big file can't crowd the others out), and
+/// the overall total is capped too.
+#[tauri::command]
+pub fn rag_corpus_docs(
+    app: tauri::AppHandle,
+    max_chars: Option<usize>,
+) -> Result<Vec<RagDocText>, String> {
+    let cap = max_chars.unwrap_or(16000).clamp(2000, 60000);
+    with_db(&app, |conn| {
+        let n_docs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM docs WHERE enabled = 1", [], |r| r.get(0))
+            .unwrap_or(0);
+        if n_docs == 0 {
+            return Err("知识库为空或全部文档已禁用 (knowledge base is empty or all documents are disabled)".into());
+        }
+        let per_doc = (cap / n_docs as usize).clamp(800, 8000);
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT d.name, c.text
+                 FROM chunks c JOIN docs d ON d.id = c.doc_id
+                 WHERE d.enabled = 1
+                 ORDER BY c.doc_id, c.seq",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        let mut out: Vec<RagDocText> = Vec::new();
+        let mut total = 0usize;
+        for (name, text) in rows {
+            if total >= cap {
+                break;
+            }
+            match out.last_mut() {
+                Some(last) if last.name == name => {
+                    if last.text.chars().count() < per_doc {
+                        last.text.push('\n');
+                        last.text.push_str(&text);
+                        total += text.chars().count();
+                    }
+                }
+                _ => {
+                    let t: String = text.chars().take(per_doc).collect();
+                    total += t.chars().count();
+                    out.push(RagDocText { name, text: t });
+                }
+            }
+        }
+        // Trim each doc to its fair share for a clean, predictable budget.
+        for d in &mut out {
+            if d.text.chars().count() > per_doc {
+                d.text = d.text.chars().take(per_doc).collect();
+            }
+            d.text = d.text.trim().to_string();
+        }
+        Ok(out)
+    })
+}
+
 /// Toggle whether a document participates in retrieval (custom query scope).
 #[tauri::command]
 pub fn rag_set_doc_enabled(app: tauri::AppHandle, id: i64, enabled: bool) -> Result<(), String> {
@@ -772,6 +1031,19 @@ pub fn rag_remove_document(app: tauri::AppHandle, id: i64) -> Result<(), String>
         conn.execute("DELETE FROM chunks WHERE doc_id = ?1", params![id])
             .map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM docs WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+}
+
+/// Empty the whole knowledge base — drop every document and its chunks. The
+/// embedding model is left as-is (downloaded once); only indexed content goes.
+#[tauri::command]
+pub fn rag_clear_all(app: tauri::AppHandle) -> Result<(), String> {
+    with_db(&app, |conn| {
+        conn.execute("DELETE FROM chunks", [])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM docs", [])
             .map_err(|e| e.to_string())?;
         Ok(())
     })

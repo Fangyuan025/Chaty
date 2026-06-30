@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.0 — Knowledge base, leveled up (2026-06-30)
+
+- **Import a folder** — alongside picking individual files, you can now choose a folder and Chaty ingests every supported file inside it *and its subfolders*. Hidden files and symlinks are skipped, unreadable/empty files are silently passed over; for large folders it asks for confirmation first and shows per-file progress (3/20). Files keep their **path relative to the folder** (e.g. `myproject/src/lib/ipc.ts`), so the knowledge base — and the model — can see the project's structure, not just bare file names.
+- **Per-file citations** — when a knowledge-base answer draws several passages from the same document, you now see *one* citation for that file instead of one per chunk (e.g. `report.pdf` rather than `report.pdf · §3`, `report.pdf · §5`).
+- **One-click knowledge-base report** — a new “Generate report” action immediately writes a cited overview of your whole knowledge base (NotebookLM-style — no topic to type). It reads your *local documents only* (fully offline), grounds on per-file content plus the folder structure, cites one reference per file, and exports to PDF or Markdown.
+- **Tidier knowledge-base actions** — the footer buttons (Add documents / Import folder / Generate report / Generate podcast) are now a clean 2×2 grid instead of an overflowing row. A **Clear all** action empties the whole knowledge base in one step.
+- **KB report wording** — the report view no longer borrows Deep Research's web-search labels (no “Searching the web…”, no “0 searches” counter); it shows the document count and knowledge-base-appropriate status instead.
+- **Many more knowledge-base file types** — added **.docx** (Word) and **.xlsx** (Excel, read as tab-separated rows) plus a broad set of text/code/markup/config formats: `js/ts/jsx/tsx`, `css/scss/less`, `py/rs/go/java/c/cpp/cs/rb/php/swift/kt/scala/sql/sh`, `vue/svelte`, `xml/yaml/toml/ini`, `tex/rst/mdx`, and more — on top of the existing PDF, text/markdown/HTML/CSV/JSON and images (OCR).
+- **Fixed: knowledge base pinned a large chunk of memory (macOS)** — the embedding model (bge-m3, ~730 MB) was offloaded to the GPU, which on macOS left it stuck in *wired* memory that never came back, even after ejecting the chat model. It now runs on the CPU on macOS (no wired memory), and a full **Eject** frees it as well. Other platforms are unaffected.
+- **Fixed: confirmation dialogs opened from a panel** (e.g. *Clear all*) could appear *behind* that panel and be unclickable — they now always sit on top.
+
 ## v1.1.2 — Smoother streaming + polish (2026-06-27)
 
 - **Much smoother streaming** — a reply no longer re-renders the whole conversation on every token: messages are memoized so only the one being written updates, and those updates are coalesced to one render per frame. Long answers — and typing while a long conversation is on screen — no longer stutter.

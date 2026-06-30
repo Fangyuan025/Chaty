@@ -248,6 +248,16 @@ export const T = {
   kbDownloadModel: { zh: "下载嵌入模型", en: "Download embedding model" },
   kbEmpty: { zh: "还没有文档 — 添加 PDF / 文本 / 图片开始", en: "No documents yet — add a PDF / text / image file" },
   kbAdd: { zh: "添加文档", en: "Add documents" },
+  kbAddFolder: { zh: "导入文件夹", en: "Import folder" },
+  kbFolderEmpty: {
+    zh: "该文件夹（含子目录）里没有可导入的文件。",
+    en: "No importable files were found in that folder (or its subfolders).",
+  },
+  kbFolderConfirm: {
+    zh: "在该文件夹及子目录中找到 {n} 个文件，全部导入知识库？",
+    en: "Found {n} files in that folder and its subfolders. Import all of them?",
+  },
+  kbFolderConfirmGo: { zh: "全部导入", en: "Import all" },
   kbScopeTip: { zh: "勾选 = 参与检索", en: "Checked = included in retrieval" },
   kbScopeHint: {
     zh: "勾选要检索的文档，未勾选的不参与回答。",
@@ -257,6 +267,33 @@ export const T = {
   kbIndexing: { zh: "索引中", en: "Indexing" },
   // deep-dive podcast (NotebookLM-style)
   kbPodcast: { zh: "生成深度播客", en: "Generate deep-dive podcast" },
+  kbReport: { zh: "生成报告", en: "Generate report" },
+  kbClear: { zh: "清空知识库", en: "Clear all" },
+  kbClearConfirm: {
+    zh: "确定要清空整个知识库吗？所有已索引的文档都会被移除（嵌入模型保留）。此操作无法撤销。",
+    en: "Clear the entire knowledge base? All indexed documents will be removed (the embedding model is kept). This can't be undone.",
+  },
+  kbReportTitle: { zh: "知识库报告", en: "Knowledge-base report" },
+  kbReportPh: {
+    zh: "输入报告主题或问题，模型只依据你的知识库文档作答，例如：总结这批合同的关键条款与风险",
+    en: "Enter a report topic or question — grounded only in your KB docs, e.g. summarize the key terms and risks across these contracts",
+  },
+  kbReportEmpty: {
+    zh: "正在根据你的知识库内容生成概览报告……",
+    en: "Generating an overview report from your knowledge base…",
+  },
+  kbReportRunning: {
+    zh: "正在根据知识库内容智能生成报告（按文件引用，全程不联网）",
+    en: "Generating a report from your knowledge base (cited per file, fully offline)",
+  },
+  kbReportRegen: { zh: "重新生成", en: "Regenerate" },
+  kbReportFiles: { zh: "个文件", en: "files" },
+  kbReportPhasePlan: { zh: "正在梳理知识库…", en: "Reviewing the knowledge base…" },
+  kbReportPhaseRead: { zh: "正在读取文档内容…", en: "Reading the documents…" },
+  kbReportNeedModel: {
+    zh: "请先加载一个对话模型，再生成知识库报告。",
+    en: "Load a chat model first, then generate the knowledge-base report.",
+  },
   podcastTitle: { zh: "深度播客", en: "Deep-dive podcast" },
   podcastSub: {
     zh: "双主持人 · 英文 · 基于本地知识库",

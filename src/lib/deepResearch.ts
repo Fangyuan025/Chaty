@@ -4,7 +4,14 @@
 // so the model only ever has to do two natural things — propose search queries
 // and write prose — which any instruct model handles reliably.
 
-import { cancelGeneration, generate, webResearch, type ChatMessage } from "./ipc";
+import {
+  cancelGeneration,
+  generate,
+  ragCorpusDocs,
+  ragListDocuments,
+  webResearch,
+  type ChatMessage,
+} from "./ipc";
 
 export interface DRSource {
   n: number;
@@ -63,7 +70,11 @@ function parseQueries(raw: string, max: number): string[] {
 }
 
 /** One non-streaming completion → text. */
-async function ask(messages: ChatMessage[], opts: DROptions, maxTokens: number): Promise<string> {
+async function ask(
+  messages: ChatMessage[],
+  opts: { think?: boolean | null },
+  maxTokens: number,
+): Promise<string> {
   let out = "";
   await generate(
     { messages, params: { temperature: 0.4, topP: 0.9, maxTokens, think: opts.think } },
@@ -75,6 +86,96 @@ async function ask(messages: ChatMessage[], opts: DROptions, maxTokens: number):
 }
 
 const sys = (body: string): ChatMessage => ({ role: "system", content: body });
+
+/** Shared writer for both web Deep Research and the knowledge-base report:
+ *  feed the numbered sources (budgeted to the context window) to the model, then
+ *  renumber [n] markers to a contiguous, cited-only reference list. `kb` switches
+ *  the grounding wording, drops the URL line, and renders refs as plain titles
+ *  (knowledge-base sources have no URL). */
+async function writeReport(
+  sources: DRSource[],
+  opts: { lang: "zh" | "en"; think?: boolean | null; thinkSwitch?: boolean; nCtx?: number; signal: DRSignal },
+  cb: DRCallbacks,
+  phaseTotal: number,
+  kind: { kb: boolean; topic?: string; tree?: string },
+): Promise<void> {
+  const zh = opts.lang === "zh";
+  const suffix = opts.thinkSwitch ? "\n/no_think" : "";
+  const kb = kind.kb;
+  const topic = kind.topic?.trim() ?? "";
+  // No topic on a KB report → NotebookLM-style overview of the whole knowledge base.
+  const overview = kb && !topic;
+
+  cb.onPhase("writing", phaseTotal, phaseTotal);
+  // Budget the source text fed to the writer to the context window.
+  const budgetChars = Math.max(6000, Math.min(24000, ((opts.nCtx ?? 8192) - 2400) * 3));
+  let used = 0;
+  const corpus: string[] = [];
+  for (const s of sources) {
+    const block = kb
+      ? `[${s.n}] ${s.title}\n${s.snippet}`
+      : `[${s.n}] ${s.title}\nURL: ${s.url}\n${s.snippet}`;
+    if (used + block.length > budgetChars) break;
+    corpus.push(block);
+    used += block.length;
+  }
+
+  const sysPrompt = overview
+    ? zh
+      ? `你是一名严谨的分析师。下面是来自用户本地知识库的带编号资料（每条对应一个文件）。请仅依据这些资料，生成一篇结构清晰、客观的中文综述报告，帮助读者快速把握整个知识库的内容。要求：以一个能概括主题的一级标题（# 标题）开头；使用 Markdown（标题层级、要点列表）；涵盖整体概览、关键主题/要点、文件之间的关联，以及一个简短结论；在引用事实的句子后用 [n] 角标标注对应文件编号；若提供了文件结构，可据此说明项目/资料的组织方式；严格基于资料、绝不编造；不要自行编写参考来源列表（系统会自动附上）。`
+      : `You are a rigorous analyst. Below is numbered material from the user's local knowledge base (each entry is one file). Using ONLY this material, generate a clear, objective overview report that helps a reader quickly grasp the whole knowledge base. Requirements: begin with a single top-level title heading (# Title) that captures the subject; use Markdown (heading levels, bullet lists); cover an overall summary, the key themes/points, how the files relate, and a short conclusion; after sentences citing a fact, add a [n] marker for the file; if a file structure is provided, use it to explain how the project/material is organized; stay strictly grounded and never invent; do not write a references list yourself (the system appends one).`
+    : kb
+      ? zh
+        ? `你是一名严谨的分析师。请仅依据下面这份来自用户本地知识库的带编号资料，围绕主题《${topic}》撰写一篇结构清晰、客观的中文报告。要求：使用 Markdown（含标题层级、要点列表）；在引用事实的句子后用 [n] 角标标注对应资料编号；包含引言、若干主体章节和结论；严格基于资料、绝不编造资料中没有的信息；若资料不足以支撑该主题，请如实说明；不要自行编写参考来源列表（系统会自动附上）。`
+        : `You are a rigorous analyst. Using ONLY the numbered material below — drawn from the user's local knowledge base — write a clear, objective English report on the topic "${topic}". Requirements: Markdown (heading levels, bullet lists); after sentences citing a fact, add a [n] marker; include an introduction, several body sections, and a conclusion; stay strictly grounded in the material and never invent anything not present; if the material is insufficient to support the topic, say so honestly; do not write a references list yourself (the system appends one).`
+      : zh
+        ? `你是一名专业的深度报道作者。请围绕主题《${topic}》，基于下面带编号的资料撰写一篇结构清晰、深入、客观的长篇中文报告。要求：使用 Markdown（含标题层级、要点列表）；在引用事实的句子后用 [n] 角标标注对应资料编号；包含引言、若干主体章节和结论；不要编造资料中没有的信息；不要自行编写参考文献列表（系统会自动附上）。重要：若某条资料与主题无关，请直接忽略它，绝不要把无关内容硬塞进报告或牵强地与主题关联；若与主题相关的资料严重不足，请如实说明。`
+        : `You are a professional deep-dive writer. Write a clear, in-depth, objective long-form English report ON THE TOPIC "${topic}", using the numbered material below. Requirements: Markdown (heading levels, bullet lists); after sentences citing a fact, add a [n] marker; include an introduction, several body sections, and a conclusion; do not invent anything not in the material; do not write a references list yourself (the system appends one). IMPORTANT: ignore any source that is not relevant to the topic — never force unrelated material into the report or contrive a connection to the topic; if there is little relevant material, say so honestly.`;
+
+  const treeBlock = kind.tree
+    ? `${zh ? "文件结构" : "File structure"}:\n${kind.tree}\n\n`
+    : "";
+  const userContent = overview
+    ? `${treeBlock}${zh ? "资料" : "Material"}:\n${corpus.join("\n\n")}${suffix}`
+    : `${zh ? "主题" : "Topic"}: ${topic}\n\n${treeBlock}${zh ? "资料" : "Material"}:\n${corpus.join("\n\n")}${suffix}`;
+  const writeMsg: ChatMessage[] = [sys(sysPrompt), { role: "user", content: userContent }];
+
+  let report = "";
+  await generate(
+    { messages: writeMsg, params: { temperature: 0.6, topP: 0.95, maxTokens: 4096, think: opts.think } },
+    (ev) => {
+      if (ev.type === "token") {
+        report += ev.text;
+        cb.onReportToken(stripThink(report));
+      }
+    },
+  );
+  if (opts.signal.cancelled) return;
+
+  const clean = stripThink(report).trim();
+  // Only list sources the report actually cited ([n] / 【n】) — the model is told
+  // to ignore irrelevant material, so uncited sources must not pollute the
+  // references. Fall back to the first few collected sources if nothing was
+  // cited. Renumber so the list is contiguous and the markers still line up.
+  const cited = new Set<number>();
+  for (const m of clean.matchAll(/[[【](\d{1,3})[\]】]/g)) {
+    const n = parseInt(m[1], 10);
+    if (n >= 1 && n <= sources.length) cited.add(n);
+  }
+  const refSources = cited.size > 0 ? sources.filter((s) => cited.has(s.n)) : sources.slice(0, 8);
+  const remap = new Map(refSources.map((s, i) => [s.n, i + 1]));
+  const renumbered = clean.replace(/([[【])(\d{1,3})([\]】])/g, (whole, _l, d) => {
+    const nn = remap.get(parseInt(d, 10));
+    return nn ? `[${nn}]` : whole;
+  });
+  const refsHead = zh ? "## 参考来源" : "## References";
+  const refs = refSources
+    .map((s, i) => (kb || !s.url ? `${i + 1}. ${s.title}` : `${i + 1}. [${s.title}](${s.url})`))
+    .join("\n");
+  const full = `${renumbered}\n\n${refsHead}\n${refs}\n`;
+  cb.onPhase("done", phaseTotal, phaseTotal);
+  cb.onDone(full, refSources);
+}
 
 export async function deepResearch(opts: DROptions, cb: DRCallbacks): Promise<void> {
   const rounds = Math.max(1, Math.min(5, opts.rounds ?? 3));
@@ -171,63 +272,102 @@ export async function deepResearch(opts: DROptions, cb: DRCallbacks): Promise<vo
     }
 
     // ---- 3. synthesize the report ----
-    cb.onPhase("writing", rounds, rounds);
-    // Budget the source text fed to the writer to the context window.
-    const budgetChars = Math.max(6000, Math.min(24000, ((opts.nCtx ?? 8192) - 2400) * 3));
-    let used = 0;
-    const corpus: string[] = [];
-    for (const s of sources) {
-      const block = `[${s.n}] ${s.title}\nURL: ${s.url}\n${s.snippet}`;
-      if (used + block.length > budgetChars) break;
-      corpus.push(block);
-      used += block.length;
-    }
-    const writeMsg: ChatMessage[] = [
-      sys(
-        zh
-          ? `你是一名专业的深度报道作者。请围绕主题《${topic}》，基于下面带编号的资料撰写一篇结构清晰、深入、客观的长篇中文报告。要求：使用 Markdown（含标题层级、要点列表）；在引用事实的句子后用 [n] 角标标注对应资料编号；包含引言、若干主体章节和结论；不要编造资料中没有的信息；不要自行编写参考文献列表（系统会自动附上）。重要：若某条资料与主题无关，请直接忽略它，绝不要把无关内容硬塞进报告或牵强地与主题关联；若与主题相关的资料严重不足，请如实说明。`
-          : `You are a professional deep-dive writer. Write a clear, in-depth, objective long-form English report ON THE TOPIC "${topic}", using the numbered material below. Requirements: Markdown (heading levels, bullet lists); after sentences citing a fact, add a [n] marker; include an introduction, several body sections, and a conclusion; do not invent anything not in the material; do not write a references list yourself (the system appends one). IMPORTANT: ignore any source that is not relevant to the topic — never force unrelated material into the report or contrive a connection to the topic; if there is little relevant material, say so honestly.`,
-      ),
-      {
-        role: "user",
-        content: `${zh ? "主题" : "Topic"}: ${topic}\n\n${zh ? "资料" : "Material"}:\n${corpus.join("\n\n")}${suffix}`,
-      },
-    ];
+    await writeReport(sources, opts, cb, rounds, { kb: false, topic });
+  } catch (e) {
+    if (!opts.signal.cancelled) cb.onError(e instanceof Error ? e.message : String(e));
+  }
+}
 
-    let report = "";
-    await generate(
-      { messages: writeMsg, params: { temperature: 0.6, topP: 0.95, maxTokens: 4096, think: opts.think } },
-      (ev) => {
-        if (ev.type === "token") {
-          report += ev.text;
-          cb.onReportToken(stripThink(report));
-        }
-      },
-    );
+export interface KBReportOptions {
+  lang: "zh" | "en";
+  think?: boolean | null;
+  thinkSwitch?: boolean;
+  /** Loaded context window, to size how much source text we feed the writer. */
+  nCtx?: number;
+  signal: DRSignal;
+}
+
+/** Render an indented file tree from relative-path document names (folder import
+ *  stores e.g. `myproject/src/lib/ipc.ts`), so the writer can describe how the
+ *  project/material is organized. Returns "" when names carry no structure. */
+function buildFileTree(names: string[]): string {
+  interface Node {
+    children: Map<string, Node>;
+    file: boolean;
+  }
+  const root: Node = { children: new Map(), file: false };
+  for (const name of names) {
+    const parts = name.split("/").filter(Boolean);
+    let cur = root;
+    parts.forEach((p, i) => {
+      let next = cur.children.get(p);
+      if (!next) {
+        next = { children: new Map(), file: false };
+        cur.children.set(p, next);
+      }
+      if (i === parts.length - 1) next.file = true;
+      cur = next;
+    });
+  }
+  const lines: string[] = [];
+  const walk = (node: Node, depth: number) => {
+    const entries = [...node.children.entries()].sort((a, b) => {
+      const ad = a[1].children.size > 0;
+      const bd = b[1].children.size > 0;
+      if (ad !== bd) return ad ? -1 : 1; // directories first
+      return a[0].localeCompare(b[0]);
+    });
+    for (const [seg, child] of entries) {
+      const isDir = child.children.size > 0;
+      lines.push(`${"  ".repeat(depth)}${isDir ? `${seg}/` : seg}`);
+      if (isDir) walk(child, depth + 1);
+    }
+  };
+  walk(root, 0);
+  return lines.join("\n").slice(0, 2000);
+}
+
+/** Knowledge-base report (NotebookLM-style): no topic needed — clicking generate
+ *  immediately synthesizes a cited overview of the whole knowledge base. Reuses
+ *  the Deep Research writer; grounds on per-file document text (one citation per
+ *  file) plus the folder structure, entirely offline. */
+export async function knowledgeReport(opts: KBReportOptions, cb: DRCallbacks): Promise<void> {
+  const zh = opts.lang === "zh";
+  try {
+    // ---- 1. read the knowledge base (file tree for structure context) ----
+    cb.onPhase("planning", 0, 1);
+    let tree = "";
+    try {
+      const docs = await ragListDocuments();
+      const names = docs.filter((d) => d.enabled).map((d) => d.name);
+      if (names.some((n) => n.includes("/"))) tree = buildFileTree(names);
+    } catch {
+      /* tree is optional context */
+    }
     if (opts.signal.cancelled) return;
 
-    const clean = stripThink(report).trim();
-    // Only list sources the report actually cited ([n] / 【n】) — the model is
-    // told to ignore off-topic material, so uncited sources (junk from a
-    // derailed query) must not pollute the references. Fall back to the first
-    // few collected sources (topic-anchored, so most relevant) if nothing was
-    // cited. Renumber so the list is contiguous and the markers still line up.
-    const cited = new Set<number>();
-    for (const m of clean.matchAll(/[[【](\d{1,3})[\]】]/g)) {
-      const n = parseInt(m[1], 10);
-      if (n >= 1 && n <= sources.length) cited.add(n);
+    // ---- 2. gather per-file content (fair budget per document) ----
+    cb.onPhase("searching", 1, 1);
+    const budget = Math.max(8000, Math.min(40000, ((opts.nCtx ?? 8192) - 2400) * 3));
+    let docTexts;
+    try {
+      docTexts = await ragCorpusDocs(budget);
+    } catch (e) {
+      cb.onError(e instanceof Error ? e.message : String(e));
+      return;
     }
-    const refSources = cited.size > 0 ? sources.filter((s) => cited.has(s.n)) : sources.slice(0, 8);
-    const remap = new Map(refSources.map((s, i) => [s.n, i + 1]));
-    const renumbered = clean.replace(/([[【])(\d{1,3})([\]】])/g, (whole, _l, d) => {
-      const nn = remap.get(parseInt(d, 10));
-      return nn ? `[${nn}]` : whole;
-    });
-    const refsHead = zh ? "## 参考来源" : "## References";
-    const refs = refSources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join("\n");
-    const full = `${renumbered}\n\n${refsHead}\n${refs}\n`;
-    cb.onPhase("done", rounds, rounds);
-    cb.onDone(full, refSources);
+    if (opts.signal.cancelled) return;
+    const sources: DRSource[] = docTexts
+      .filter((d) => d.text.trim())
+      .map((d, i) => ({ n: i + 1, title: d.name, url: "", snippet: d.text }));
+    if (sources.length === 0) {
+      cb.onError(zh ? "知识库为空。" : "The knowledge base is empty.");
+      return;
+    }
+    cb.onSources([...sources]);
+
+    // ---- 3. synthesize the overview report (shared writer) ----
+    await writeReport(sources, opts, cb, 1, { kb: true, tree });
   } catch (e) {
     if (!opts.signal.cancelled) cb.onError(e instanceof Error ? e.message : String(e));
   }

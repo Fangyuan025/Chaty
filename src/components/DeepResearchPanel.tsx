@@ -6,10 +6,12 @@ import { Select } from "./Select";
 import { IconResearch, IconSearch, IconDownload, IconPlay, IconStop } from "./icons";
 import {
   deepResearch,
+  knowledgeReport,
   DRSignal,
   type DRPhase,
   type DROptions,
   type DRSource,
+  type KBReportOptions,
 } from "../lib/deepResearch";
 
 const PHASE_KEY = {
@@ -20,18 +22,32 @@ const PHASE_KEY = {
   done: "drPhaseDone",
 } as const satisfies Record<DRPhase, string>;
 
+// KB report reads local documents — never the web — so it gets its own phase
+// wording (no "searching the web", no search-round counters).
+const KB_PHASE_KEY = {
+  planning: "kbReportPhasePlan",
+  searching: "kbReportPhaseRead",
+  reasoning: "drPhaseReasoning",
+  writing: "drPhaseWriting",
+  done: "drPhaseDone",
+} as const satisfies Record<DRPhase, string>;
+
 /** Deep Research: multi-round web search + reasoning → a long cited report,
- *  exportable to PDF / Markdown. */
+ *  exportable to PDF / Markdown. In `kb` mode the same panel instead grounds the
+ *  report in the local knowledge base (retrieval over indexed docs, no web). */
 export function DeepResearchPanel({
   model,
   onClose,
   onLockChange,
+  mode = "web",
 }: {
   model: ModelInfo | null;
   onClose: () => void;
   onLockChange: (locked: boolean) => void;
+  mode?: "web" | "kb";
 }) {
   const { t, lang } = useI18n();
+  const kb = mode === "kb";
   const [topic, setTopic] = useState("");
   const [depth, setDepth] = useState(3);
   const [running, setRunning] = useState(false);
@@ -56,8 +72,21 @@ export function DeepResearchPanel({
     if (running) bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
   }, [report, sources, reasoning, phase, running]);
 
+  // KB report is NotebookLM-style: generate immediately on open, no topic prompt.
+  const startedRef = useRef(false);
+  useEffect(() => {
+    if (kb && !startedRef.current) {
+      startedRef.current = true;
+      if (model) void start();
+      else setError(t("kbReportNeedModel"));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function start() {
-    if (!model || !topic.trim() || running) return;
+    // The KB report is topic-free (NotebookLM-style overview); web Deep Research
+    // needs a topic.
+    if (!model || running || (!kb && !topic.trim())) return;
     setQueries([]);
     setSources([]);
     setReasoning("");
@@ -68,33 +97,47 @@ export function DeepResearchPanel({
     const signal = new DRSignal();
     signalRef.current = signal;
 
-    const opts: DROptions = {
-      topic: topic.trim(),
-      rounds: depth,
-      lang,
-      think: model.supportsThinking && !model.thinkSwitch ? false : undefined,
-      thinkSwitch: model.thinkSwitch,
-      nCtx: model.nCtx ?? undefined,
-      signal,
-    };
-    await deepResearch(opts, {
-      onPhase: (phase, round, rounds) => setPhase({ phase, round, rounds }),
-      onQuery: (q) => setQueries((cur) => [...cur, q]),
-      onSources: (s) => setSources(s),
-      onReasoning: (r) => setReasoning(r),
-      onReportToken: (full) => setReport(full),
-      onDone: (full) => {
+    const think = model.supportsThinking && !model.thinkSwitch ? false : undefined;
+    const callbacks = {
+      onPhase: (phase: DRPhase, round: number, rounds: number) => setPhase({ phase, round, rounds }),
+      onQuery: (q: string) => setQueries((cur) => [...cur, q]),
+      onSources: (s: DRSource[]) => setSources(s),
+      onReasoning: (r: string) => setReasoning(r),
+      onReportToken: (full: string) => setReport(full),
+      onDone: (full: string) => {
         setReport(full);
         setDone(true);
         setRunning(false);
         setPhase(null);
       },
-      onError: (msg) => {
+      onError: (msg: string) => {
         setError(msg);
         setRunning(false);
         setPhase(null);
       },
-    });
+    };
+
+    if (kb) {
+      const opts: KBReportOptions = {
+        lang,
+        think,
+        thinkSwitch: model.thinkSwitch,
+        nCtx: model.nCtx ?? undefined,
+        signal,
+      };
+      await knowledgeReport(opts, callbacks);
+    } else {
+      const opts: DROptions = {
+        topic: topic.trim(),
+        rounds: depth,
+        lang,
+        think,
+        thinkSwitch: model.thinkSwitch,
+        nCtx: model.nCtx ?? undefined,
+        signal,
+      };
+      await deepResearch(opts, callbacks);
+    }
     setRunning(false);
   }
 
@@ -105,7 +148,9 @@ export function DeepResearchPanel({
   }
 
   async function exportMd() {
-    const safe = topic.trim().slice(0, 40).replace(/[/\\:*?"<>|]/g, "_") || "deep-research";
+    const safe =
+      (topic.trim() || (kb ? t("kbReportTitle") : "")).slice(0, 40).replace(/[/\\:*?"<>|]/g, "_") ||
+      (kb ? "knowledge-base-report" : "deep-research");
     // Don't add a topic title if the report already opens with its own heading
     // (otherwise the title shows up twice).
     const md = /^\s*#{1,2}\s/.test(report) ? report : `# ${topic.trim()}\n\n${report}`;
@@ -136,7 +181,7 @@ export function DeepResearchPanel({
       lang === "zh"
         ? '<div class="dr-print-hint" style="background:#fffae6;border:1px solid #f0e0a0;padding:8px 12px;border-radius:8px;margin-bottom:16px;font-size:13px;">如果未自动弹出打印窗口，请按 ⌘P，然后在「目标」中选择「存储为 PDF」。</div>'
         : '<div class="dr-print-hint" style="background:#fffae6;border:1px solid #f0e0a0;padding:8px 12px;border-radius:8px;margin-bottom:16px;font-size:13px;">If the print dialog didn\'t open, press ⌘P and choose "Save as PDF".</div>';
-    const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>${topic.trim()}</title><style>${css}</style></head><body>${hint}${node.innerHTML}<script>window.addEventListener("load",function(){setTimeout(function(){window.print();},400);});<\/script></body></html>`;
+    const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>${topic.trim() || (kb ? t("kbReportTitle") : "")}</title><style>${css}</style></head><body>${hint}${node.innerHTML}<script>window.addEventListener("load",function(){setTimeout(function(){window.print();},400);});<\/script></body></html>`;
     try {
       await openHtmlReport(html, "deep-research");
     } catch (e) {
@@ -144,43 +189,48 @@ export function DeepResearchPanel({
     }
   }
 
-  const phaseLabel = phase ? t(PHASE_KEY[phase.phase]) : "";
+  const phaseLabel = phase ? t((kb ? KB_PHASE_KEY : PHASE_KEY)[phase.phase]) : "";
 
   return (
     <div className="dr-view">
         <div className="dr-panel">
           <div className="setup-head dr-head">
-            <div className="setup-title"><IconResearch size={18} /> {t("drTitle")}</div>
+            <div className="setup-title"><IconResearch size={18} /> {kb ? t("kbReportTitle") : t("drTitle")}</div>
             <button className="preview-close" onClick={onClose} disabled={running} title={t("drBackToChat")}>
               ×
             </button>
           </div>
 
-          <div className="dr-input-row">
-            <textarea
-              className="dr-input"
-              placeholder={t("drTopicPh")}
-              value={topic}
-              disabled={running}
-              onChange={(e) => setTopic(e.target.value)}
-              rows={2}
-            />
+          <div className={`dr-input-row${kb ? " kb" : ""}`}>
+            {!kb && (
+              <textarea
+                className="dr-input"
+                placeholder={t("drTopicPh")}
+                value={topic}
+                disabled={running}
+                onChange={(e) => setTopic(e.target.value)}
+                rows={2}
+              />
+            )}
+            {kb && <span className="dr-kb-hint">{t("kbReportRunning")}</span>}
             <div className="dr-controls">
-              <span className="dr-depth">
-                {t("drDepth")}
-                <Select
-                  className="dr-depth-select"
-                  value={depth}
-                  disabled={running}
-                  ariaLabel={t("drDepth")}
-                  onChange={(v) => setDepth(v)}
-                  options={[
-                    { value: 2, label: t("drDepthQuick") },
-                    { value: 3, label: t("drDepthStd") },
-                    { value: 4, label: t("drDepthDeep") },
-                  ]}
-                />
-              </span>
+              {!kb && (
+                <span className="dr-depth">
+                  {t("drDepth")}
+                  <Select
+                    className="dr-depth-select"
+                    value={depth}
+                    disabled={running}
+                    ariaLabel={t("drDepth")}
+                    onChange={(v) => setDepth(v)}
+                    options={[
+                      { value: 2, label: t("drDepthQuick") },
+                      { value: 3, label: t("drDepthStd") },
+                      { value: 4, label: t("drDepthDeep") },
+                    ]}
+                  />
+                </span>
+              )}
               {running ? (
                 <button className="setup-dl dr-stop" onClick={stop}>
                   <IconStop size={13} style={{ marginRight: 6 }} /> {t("drStop")}
@@ -189,9 +239,9 @@ export function DeepResearchPanel({
                 <button
                   className="setup-dl ready"
                   onClick={() => void start()}
-                  disabled={!topic.trim() || !model}
+                  disabled={(!kb && !topic.trim()) || !model}
                 >
-                  <IconPlay size={13} style={{ marginRight: 6 }} /> {t("drRun")}
+                  <IconPlay size={13} style={{ marginRight: 6 }} /> {kb ? t("kbReportRegen") : t("drRun")}
                 </button>
               )}
             </div>
@@ -204,7 +254,7 @@ export function DeepResearchPanel({
                   size={40}
                   style={{ display: "block", margin: "0 auto 16px", color: "var(--accent)", opacity: 0.85 }}
                 />
-                {t("drEmpty")}
+                {kb ? t("kbReportEmpty") : t("drEmpty")}
               </div>
             )}
 
@@ -213,12 +263,14 @@ export function DeepResearchPanel({
                 <span className="dr-spin" />
                 <span className="dr-status-text">
                   {phaseLabel}
-                  {phase.phase === "searching" || phase.phase === "reasoning"
+                  {!kb && (phase.phase === "searching" || phase.phase === "reasoning")
                     ? ` · ${t("drRound")} ${phase.round}/${phase.rounds}`
                     : ""}
                 </span>
                 <span className="dr-status-meta">
-                  {queries.length} {t("drQueries")} · {sources.length} {t("drSources")}
+                  {kb
+                    ? `${sources.length} ${t("kbReportFiles")}`
+                    : `${queries.length} ${t("drQueries")} · ${sources.length} ${t("drSources")}`}
                 </span>
               </div>
             )}

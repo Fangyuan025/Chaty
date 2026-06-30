@@ -157,6 +157,9 @@ pub async fn eject_model(state: State<'_, AppState>) -> Result<(), String> {
         // teardown), mirroring the eject path in `load_model`.
         let _ = tokio::task::spawn_blocking(move || old.unload()).await;
     }
+    // A full eject means "free everything" — also drop the cached embedding
+    // model (bge-m3, ~730 MB) so the knowledge base doesn't keep it resident.
+    let _ = tokio::task::spawn_blocking(crate::rag::embed_unload).await;
     state.cancel.store(false, Ordering::SeqCst);
     Ok(())
 }

@@ -3,13 +3,16 @@ import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useI18n } from "../lib/i18n";
 import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
-import { IconKb, IconDoc, IconMic } from "./icons";
+import { IconKb, IconDoc, IconMic, IconResearch } from "./icons";
+import { useConfirm } from "./ConfirmModal";
 import {
   DOWNLOAD_CANCELLED,
   ragAddDocument,
   ragCancelDownload,
+  ragClearAll,
   ragDownloadModel,
   ragListDocuments,
+  ragListSupportedFiles,
   ragRemoveDocument,
   ragSetDocEnabled,
   ragStatus,
@@ -17,15 +20,31 @@ import {
   type RagStatus,
 } from "../lib/ipc";
 
+// Mirrors SUPPORTED_EXTS in src-tauri/src/rag.rs — documents, images, and a
+// broad set of text/code/markup/config files.
+const KB_EXTS = [
+  "pdf", "docx", "xlsx", "png", "jpg", "jpeg", "webp", "bmp", "gif",
+  "txt", "md", "markdown", "mdx", "rst", "org", "tex", "log", "csv", "tsv", "json", "jsonl",
+  "ndjson", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties", "env",
+  "html", "htm", "xml", "css", "scss", "sass", "less", "vue", "svelte", "astro",
+  "js", "mjs", "cjs", "jsx", "ts", "tsx", "py", "pyi", "rs", "go", "java", "kt", "kts", "c", "h",
+  "cpp", "cc", "cxx", "hpp", "hh", "cs", "rb", "php", "swift", "scala", "sh", "bash", "zsh",
+  "fish", "ps1", "bat", "sql", "lua", "r", "jl", "pl", "pm", "dart", "ex", "exs", "erl", "hs",
+  "clj", "cljs", "elm", "ml", "fs", "vb", "gradle", "groovy", "m", "mm",
+];
+
 /** Local knowledge-base manager: embedding model, documents, indexing. */
 export function KnowledgePanel({
   onClose,
   onPodcast,
+  onReport,
 }: {
   onClose: () => void;
   onPodcast?: () => void;
+  onReport?: () => void;
 }) {
   const { t } = useI18n();
+  const confirm = useConfirm();
   const [status, setStatus] = useState<RagStatus | null>(null);
   const [docs, setDocs] = useState<RagDoc[]>([]);
   const [dl, setDl] = useState<{ pct: number; eta: number | null } | null>(null);
@@ -63,33 +82,92 @@ export function KnowledgePanel({
     }
   }
 
+  /** Ingest a list of file paths one by one, streaming per-file progress.
+   *  When more than one file is queued the label shows its position (3/20).
+   *  `root` (folder import) preserves each file's path relative to the folder. */
+  async function ingestPaths(paths: string[], root?: string) {
+    const total = paths.length;
+    for (let i = 0; i < total; i++) {
+      const path = paths[i];
+      const base = path.split(/[/\\]/).pop() ?? path;
+      const name = total > 1 ? `${base} · ${i + 1}/${total}` : base;
+      setIndexing({ name, pct: 0 });
+      try {
+        await ragAddDocument(
+          path,
+          (p) => {
+            setIndexing({ name, pct: Math.round(p.frac * 100) });
+          },
+          root,
+        );
+      } catch (e) {
+        // Folder import (root set): a file with no extractable text — or that's
+        // otherwise unreadable — is silently skipped, like a single-file add
+        // would just be ignored. Manual file picks still surface the error.
+        if (root) console.warn("KB: skipped", path, e);
+        else setError(e instanceof Error ? e.message : String(e));
+      }
+    }
+    setIndexing(null);
+    refresh();
+  }
+
   async function addDocuments() {
     setError("");
     const picked = await open({
       multiple: true,
-      filters: [
-        {
-          name: "Documents / Images",
-          extensions: [
-            "pdf", "txt", "md", "markdown", "html", "csv", "json", "log",
-            "png", "jpg", "jpeg", "webp", "bmp", "gif",
-          ],
-        },
-      ],
+      filters: [{ name: "Documents / Images", extensions: KB_EXTS }],
     });
     const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
-    for (const path of paths) {
-      const name = path.split(/[/\\]/).pop() ?? path;
-      setIndexing({ name, pct: 0 });
-      try {
-        await ragAddDocument(path, (p) => {
-          setIndexing({ name, pct: Math.round(p.frac * 100) });
-        });
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
+    if (paths.length) await ingestPaths(paths);
+  }
+
+  /** Pick a folder and ingest every supported file inside it (and its
+   *  subdirectories). Confirms first when a lot of files are found. */
+  async function addFolder() {
+    setError("");
+    const dir = await open({ directory: true });
+    if (!dir || Array.isArray(dir)) return;
+    let files: string[];
+    try {
+      files = await ragListSupportedFiles(dir);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return;
     }
-    setIndexing(null);
+    if (files.length === 0) {
+      setError(t("kbFolderEmpty"));
+      return;
+    }
+    if (
+      files.length > 20 &&
+      !(await confirm({
+        title: t("kbAddFolder"),
+        message: t("kbFolderConfirm", { n: files.length }),
+        confirmLabel: t("kbFolderConfirmGo"),
+      }))
+    ) {
+      return;
+    }
+    await ingestPaths(files, dir);
+  }
+
+  async function clearAll() {
+    if (
+      !(await confirm({
+        title: t("kbClear"),
+        message: t("kbClearConfirm"),
+        confirmLabel: t("kbClear"),
+        danger: true,
+      }))
+    ) {
+      return;
+    }
+    try {
+      await ragClearAll();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
     refresh();
   }
 
@@ -178,7 +256,16 @@ export function KnowledgePanel({
                 ))
               )}
             </div>
-            {docs.length > 0 && <div className="kb-scope-hint">{t("kbScopeHint")}</div>}
+            {docs.length > 0 && (
+              <div className="kb-scope-row">
+                <span className="kb-scope-hint">{t("kbScopeHint")}</span>
+                {!indexing && (
+                  <button className="kb-clear" onClick={() => void clearAll()}>
+                    {t("kbClear")}
+                  </button>
+                )}
+              </div>
+            )}
             <div className="kb-foot-actions">
               {indexing ? (
                 <div className="setup-progress">
@@ -191,8 +278,18 @@ export function KnowledgePanel({
                   </span>
                 </div>
               ) : (
-                <button className="setup-dl" onClick={() => void addDocuments()}>
-                  + {t("kbAdd")}
+                <>
+                  <button className="setup-dl" onClick={() => void addDocuments()}>
+                    + {t("kbAdd")}
+                  </button>
+                  <button className="setup-dl" onClick={() => void addFolder()}>
+                    {t("kbAddFolder")}
+                  </button>
+                </>
+              )}
+              {onReport && docs.length > 0 && !indexing && (
+                <button className="setup-dl kb-report" onClick={onReport}>
+                  <IconResearch size={15} style={{ marginRight: 6 }} /> {t("kbReport")}
                 </button>
               )}
               {onPodcast && docs.length > 0 && !indexing && (

@@ -52,10 +52,11 @@ Deep Research, and hands-free voice built right in.
 - **One-click model setup** — a hardware-fitted recommender and in-app Hugging Face downloader with live, cancelable progress.
 
 ### Knowledge base (RAG)
-- Index **PDF, text, Markdown, code, and images** (with OCR) into a private, on-device store.
+- Index **PDF, Word (.docx), Excel (.xlsx), Markdown, ~90 text/code/config formats, and images** (with OCR) into a private, on-device store — one file at a time or a **whole folder** (subdirectories included, with the project's structure preserved).
 - **Hybrid retrieval**: bge-m3 multilingual vectors + BM25 keywords, fused with RRF, de-duplicated with MMR, and expanded with neighbor chunks.
 - **Strict grounding** — answers come only from your documents; Chaty says when something isn't covered instead of guessing.
-- **Inline citations** with hover-preview of the source passage, and per-document query scope.
+- **Per-file citations** with hover-preview of the source passage, and per-document query scope.
+- **One-click report** — generate a cited, NotebookLM-style overview of your whole knowledge base (no topic needed), exportable to PDF or Markdown — fully offline.
 
 ### Deep Research & web
 - Give a topic and Chaty plans queries, runs **multiple rounds** of web search interleaved with reasoning, and writes a structured, cited long-form report — **exportable to PDF or Markdown**.

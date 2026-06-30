@@ -257,6 +257,7 @@ export default function App() {
   const [showKb, setShowKb] = useState(false);
   const [showPodcast, setShowPodcast] = useState(false);
   const [showDeepResearch, setShowDeepResearch] = useState(false);
+  const [showKbReport, setShowKbReport] = useState(false);
   const [thinkEnabled, setThinkEnabled] = useState(() => {
     try {
       return localStorage.getItem("chaty.think") !== "0";
@@ -1248,14 +1249,24 @@ export default function App() {
           try {
             const query = prior.length > 0 ? await rewriteQuery(prior, text) : text;
             const hits = await ragSearch(query, 6);
+            // Group retrieved chunks by their source file so the user sees one
+            // citation per document, not one per chunk. First-seen order keeps
+            // the best-scoring file first; chunks within a file go in document
+            // order. Block ↔ source stay paired so 【N】 numbering lines up.
+            const byDoc = new Map<string, typeof hits>();
             for (const h of hits) {
-              blocks.push(
-                `【${blocks.length + 1}】 ${h.docName} · §${h.seq + 1}\n${h.text.slice(0, 2200)}`,
-              );
+              const g = byDoc.get(h.docName);
+              if (g) g.push(h);
+              else byDoc.set(h.docName, [h]);
+            }
+            for (const [docName, group] of byDoc) {
+              const ordered = [...group].sort((a, b) => a.seq - b.seq);
+              const body = ordered.map((h) => h.text.slice(0, 2200)).join("\n\n…\n\n");
+              blocks.push(`【${blocks.length + 1}】 ${docName}\n${body}`);
               usedSources.push({
-                title: `${h.docName} · §${h.seq + 1}`,
+                title: docName,
                 url: "",
-                snippet: h.text.slice(0, 600),
+                snippet: ordered.map((h) => h.text).join("\n\n").slice(0, 600),
               });
             }
           } catch (e) {
@@ -2148,6 +2159,14 @@ export default function App() {
               onLockChange={setBusy}
             />
           )}
+          {showKbReport && (
+            <DeepResearchPanel
+              mode="kb"
+              model={model}
+              onClose={() => setShowKbReport(false)}
+              onLockChange={setBusy}
+            />
+          )}
           <main className="chat" ref={scrollRef}>
             {messages.length === 0 ? (
               <div className="empty">
@@ -2751,6 +2770,10 @@ export default function App() {
           onPodcast={() => {
             setShowKb(false);
             setShowPodcast(true);
+          }}
+          onReport={() => {
+            setShowKb(false);
+            setShowKbReport(true);
           }}
         />
       )}
