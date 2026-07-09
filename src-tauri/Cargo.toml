@@ -1,6 +1,6 @@
 [package]
 name = "chaty"
-version = "1.2.0"
+version = "1.3.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -63,6 +63,10 @@ libc = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # .xlsx spreadsheet reading (handles shared strings, numbers, dates).
 calamine = "0.26"
+# Agentic coding tools: file glob + content grep over the workspace.
+glob = "0.3"
+regex = "1"
+walkdir = "2"
 
 # GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers â€” cross-vendor on Windows.
 [target.'cfg(windows)'.dependencies]

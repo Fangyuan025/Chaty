@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod attach;
 pub mod mic;
 pub mod rag;
@@ -213,6 +214,16 @@ pub fn run() {
             rag::rag_corpus,
             rag::rag_corpus_docs,
             rag::rag_clear_all,
+            agent::agent_set_workspace,
+            agent::agent_get_workspace,
+            agent::agent_read_file,
+            agent::agent_write_file,
+            agent::agent_edit_file,
+            agent::agent_list_dir,
+            agent::agent_glob,
+            agent::agent_grep,
+            agent::agent_list_files,
+            agent::agent_bash,
             store::save_conversation,
             store::save_message,
             store::replace_messages,
@@ -222,6 +233,10 @@ pub fn run() {
             store::clear_all_conversations,
             store::set_conversation_pinned,
             store::rename_conversation,
+            store::code_session_save,
+            store::code_session_list,
+            store::code_session_load,
+            store::code_session_delete,
             store::search_conversations,
             search::web_search,
             search::web_research,

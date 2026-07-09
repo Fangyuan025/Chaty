@@ -441,6 +441,19 @@ fn decode_prompt(
     Ok(())
 }
 
+/// Where generated events go. Production streams them over a Tauri IPC channel;
+/// tests collect them in-process, which lets `run_turn` (the real decode loop)
+/// be driven headless against a live model.
+pub trait EventSink {
+    fn emit(&self, ev: StreamEvent) -> Result<()>;
+}
+impl EventSink for Channel<StreamEvent> {
+    fn emit(&self, ev: StreamEvent) -> Result<()> {
+        self.send(ev)?;
+        Ok(())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_turn(
     model: &LlamaModel,
@@ -448,10 +461,10 @@ fn run_turn(
     cached: &mut Vec<LlamaToken>,
     n_ctx: u32,
     req: &GenRequest,
-    sink: &Channel<StreamEvent>,
+    sink: &dyn EventSink,
     cancel: &AtomicBool,
 ) -> Result<()> {
-    sink.send(StreamEvent::Started)?;
+    sink.emit(StreamEvent::Started)?;
 
     let prompt = build_prompt(model, &req.messages, req.params.think)?;
     // Qwen3.5/3.6-style templates PRE-OPEN the reasoning block: the prompt
@@ -459,7 +472,7 @@ fn run_turn(
     // would never see an opening tag. Emit a synthetic one so the stream is
     // well-formed for the frontend's think-panel parser.
     if req.params.think != Some(false) && prompt.trim_end().ends_with("<think>") {
-        sink.send(StreamEvent::Token { text: "<think>\n".to_string() })?;
+        sink.emit(StreamEvent::Token { text: "<think>\n".to_string() })?;
     }
     let tokens = model
         .str_to_token(&prompt, AddBos::Always)
@@ -574,7 +587,7 @@ fn run_turn(
                 let chunk = out[emitted..].to_string();
                 emitted = out.len();
                 if !chunk.is_empty() {
-                    sink.send(StreamEvent::Token { text: chunk })?;
+                    sink.emit(StreamEvent::Token { text: chunk })?;
                 }
             }
         } else if let Some((si, rel)) = stops
@@ -585,7 +598,7 @@ fn run_turn(
         {
             let abs = emitted + rel;
             if abs > emitted {
-                sink.send(StreamEvent::Token { text: out[emitted..abs].to_string() })?;
+                sink.emit(StreamEvent::Token { text: out[emitted..abs].to_string() })?;
             }
             emitted = abs;
             stopped = true;
@@ -598,7 +611,7 @@ fn run_turn(
                 safe -= 1;
             }
             if safe > emitted {
-                sink.send(StreamEvent::Token { text: out[emitted..safe].to_string() })?;
+                sink.emit(StreamEvent::Token { text: out[emitted..safe].to_string() })?;
                 emitted = safe;
             }
         }
@@ -623,12 +636,12 @@ fn run_turn(
     // Flush the unsent tail (unless we halted on a stop sequence).
     if !stopped {
         if emitted < out.len() {
-            let _ = sink.send(StreamEvent::Token { text: out[emitted..].to_string() });
+            let _ = sink.emit(StreamEvent::Token { text: out[emitted..].to_string() });
         }
         if !pending.is_empty() {
             let text = String::from_utf8_lossy(&pending).into_owned();
             if !text.is_empty() {
-                let _ = sink.send(StreamEvent::Token { text });
+                let _ = sink.emit(StreamEvent::Token { text });
             }
         }
     }
@@ -638,13 +651,13 @@ fn run_turn(
 }
 
 fn done_event(
-    sink: &Channel<StreamEvent>,
+    sink: &dyn EventSink,
     prompt_tokens: u32,
     completion_tokens: u32,
     tps: f32,
     stop_reason: &str,
 ) -> Result<()> {
-    sink.send(StreamEvent::Done {
+    sink.emit(StreamEvent::Done {
         stats: GenStats {
             prompt_tokens,
             completion_tokens,
@@ -1125,5 +1138,406 @@ mod tests {
     #[test]
     fn leaves_plain_text_untouched() {
         assert_eq!(strip_thought_channels("  just a normal reply  "), "just a normal reply");
+    }
+}
+
+/// End-to-end agent-loop test against a REAL model. Ignored by default (needs a
+/// GGUF). Run with:
+///   CHATY_TEST_MODEL=/path/to/model.gguf cargo test --release -p chaty --lib \
+///     agent_e2e -- --ignored --nocapture
+#[cfg(test)]
+mod agent_e2e {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// Collects streamed tokens in-process (the headless analogue of the IPC channel).
+    struct Collector {
+        buf: RefCell<String>,
+    }
+    impl EventSink for Collector {
+        fn emit(&self, ev: StreamEvent) -> Result<()> {
+            if let StreamEvent::Token { text } = ev {
+                self.buf.borrow_mut().push_str(&text);
+            }
+            Ok(())
+        }
+    }
+
+    fn strip_think(s: &str) -> String {
+        let mut out = String::new();
+        let mut rest = s;
+        while let Some(i) = rest.find("<think>") {
+            out.push_str(&rest[..i]);
+            if let Some(j) = rest[i..].find("</think>") {
+                rest = &rest[i + j + "</think>".len()..];
+            } else {
+                rest = "";
+            }
+        }
+        out.push_str(rest);
+        out.replace("<think>", "").replace("</think>", "").trim().to_string()
+    }
+
+    fn parse_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
+        let open = text.find("<tool_call>")?;
+        let mut body = &text[open + "<tool_call>".len()..];
+        if let Some(c) = body.find("</tool_call>") {
+            body = &body[..c];
+        }
+        let body = body.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        let s = body.find('{')?;
+        let e = body.rfind('}')?;
+        let json: serde_json::Value = serde_json::from_str(&body[s..=e]).ok()?;
+        let name = json.get("name")?.as_str()?.to_string();
+        // Accept "arguments" or "parameters"; else treat the remaining fields as args.
+        let args = json
+            .get("arguments")
+            .or_else(|| json.get("parameters"))
+            .cloned()
+            .unwrap_or_else(|| {
+                let mut m = json.clone();
+                if let Some(o) = m.as_object_mut() {
+                    o.remove("name");
+                }
+                m
+            });
+        Some((name, args))
+    }
+
+    fn exec_tool(name: &str, args: &serde_json::Value) -> String {
+        let get = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        match name {
+            "read_file" => crate::agent::agent_read_file(get("path"), None, None)
+                .unwrap_or_else(|e| format!("ERROR: {e}")),
+            "list_dir" => {
+                let p = get("path");
+                match crate::agent::agent_list_dir(if p.is_empty() { None } else { Some(p) }) {
+                    Ok(es) => es
+                        .iter()
+                        .map(|e| format!("{}{}", e.name, if e.is_dir { "/" } else { "" }))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    Err(e) => format!("ERROR: {e}"),
+                }
+            }
+            "write_file" => crate::agent::agent_write_file(get("path"), get("content"))
+                .unwrap_or_else(|e| format!("ERROR: {e}")),
+            "edit_file" => crate::agent::agent_edit_file(
+                get("path"),
+                get("old_string"),
+                get("new_string"),
+                args.get("replace_all").and_then(|v| v.as_bool()),
+            )
+            .unwrap_or_else(|e| format!("ERROR: {e}")),
+            "glob" => crate::agent::agent_glob(get("pattern"))
+                .map(|h| h.join("\n"))
+                .unwrap_or_else(|e| format!("ERROR: {e}")),
+            "grep" => crate::agent::agent_grep(get("pattern"), None, None)
+                .unwrap_or_else(|e| format!("ERROR: {e}")),
+            "bash" => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(crate::agent::agent_bash(get("command"), Some(60))) {
+                    Ok(r) => format!("{}\n{}\n[exit {}]", r.stdout, r.stderr, r.code),
+                    Err(e) => format!("ERROR: {e}"),
+                }
+            }
+            _ => format!("unknown tool: {name}"),
+        }
+    }
+
+    const SYS: &str = r#"你是 Chaty 的编程智能体,在工作区目录中完成编码任务。工作区根目录:{WS}
+
+可用工具(路径相对工作区,越界会被拒绝):
+- read_file: {"path": string}
+- write_file: {"path": string, "content": string}
+- edit_file: {"path": string, "old_string": string, "new_string": string}
+- list_dir: {"path"?: string}
+- glob: {"pattern": string}
+- grep: {"pattern": string}
+- bash: {"command": string}
+
+规则(严格遵守):
+- 每次只调用一个工具。调用时只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要有其它内容。
+- 系统会用 <tool_result>...</tool_result> 返回结果,你再继续。
+- 任务完成后不要再调用工具,直接用一两句话总结你做了什么。"#;
+
+    /// Richer prompt that documents the two meta-tools (update_plan / ask_user),
+    /// mirroring src/lib/agentLoop.ts. Used to verify the real model emits them
+    /// as valid JSON that the parser + loop handle correctly.
+    const SYS_META: &str = r#"你是 Chaty 的编程智能体,在工作区目录中完成编码任务。工作区根目录:{WS}
+
+可用工具(路径相对工作区,越界会被拒绝):
+- read_file: {"path": string}
+- write_file: {"path": string, "content": string}
+- edit_file: {"path": string, "old_string": string, "new_string": string}
+- list_dir: {"path"?: string}
+- glob: {"pattern": string}
+- grep: {"pattern": string}
+- bash: {"command": string}
+- update_plan: 制定或更新任务计划(待办清单)。args: {"todos": [{"content": string, "status": "pending"|"in_progress"|"done"}]}
+- ask_user: 需要用户拍板时提一个选择题。args: {"question": string, "options": string[]}
+
+规则(严格遵守):
+- 每次只调用一个工具。调用时只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要有其它内容。
+- 系统会用 <tool_result>...</tool_result> 返回结果,你再继续。
+- 开始复杂任务时先用 update_plan 列出步骤,完成一步就更新状态。
+- 遇到需要用户决定的事(如命名、格式)用 ask_user 提问,不要自己乱猜。
+- 任务完成后不要再调用工具,直接用一两句话总结你做了什么。"#;
+
+    #[test]
+    #[ignore]
+    fn agent_runs_real_task() {
+        let model_path = match std::env::var("CHATY_TEST_MODEL") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_MODEL=/path/to/model.gguf");
+                return;
+            }
+        };
+        let backend = llama_backend().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        eprintln!("loading model: {model_path}");
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load model");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+
+        // A realistic mini-project with a FAILING test the agent must fix:
+        // calc.py is missing `subtract`, which test_calc.py exercises.
+        let ws = std::env::temp_dir().join(format!("chaty-agent-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("calc.py"), "def add(a, b):\n    return a + b\n").unwrap();
+        std::fs::write(
+            ws.join("test_calc.py"),
+            "from calc import add, subtract\n\nassert add(2, 3) == 5\nassert subtract(5, 2) == 3\nprint('ALL TESTS PASSED')\n",
+        )
+        .unwrap();
+        crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
+
+        let mut messages = vec![
+            ChatMessage { role: Role::System, content: SYS.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage {
+                role: Role::User,
+                content: "这个项目有一个失败的测试。请运行 `python3 test_calc.py`,找出失败原因并修复代码,直到测试全部通过(输出 ALL TESTS PASSED)。".into(),
+            },
+        ];
+        // Simulate the app's thinking config: default forces no-think (Some(false)),
+        // but CHATY_TEST_THINK=none reproduces the "model may think" path.
+        let think = match std::env::var("CHATY_TEST_THINK").as_deref() {
+            Ok("none") => None,
+            Ok("true") => Some(true),
+            _ => Some(false),
+        };
+        eprintln!("think = {think:?}");
+        let cancel = AtomicBool::new(false);
+        let mut finished = false;
+        let mut transcript = String::new(); // what the user would see, in order
+
+        // Persist the KV cache across steps (mirrors the app's worker), so the
+        // prompt-reuse path is exercised the same way it is in production.
+        let mut cached: Vec<LlamaToken> = Vec::new();
+
+        for step in 0..20 {
+            let req = GenRequest {
+                messages: messages.clone(),
+                params: GenParams {
+                    temperature: 0.2,
+                    top_p: 0.9,
+                    max_tokens: 2048,
+                    repeat_penalty: 1.05,
+                    stop: vec!["</tool_call>".to_string()],
+                    think,
+                    ..Default::default()
+                },
+            };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            // The app resets its KV between our direct calls differently; keep it
+            // simple and correct by re-decoding each step from the cache we hold.
+            let raw = sink.buf.into_inner();
+            eprintln!("\n──────── STEP {step} · RAW MODEL OUTPUT ────────\n{}", raw.trim());
+
+            match parse_tool_call(&raw) {
+                Some((name, args)) => {
+                    let prose = strip_think(&raw);
+                    let prose = prose.split("<tool_call>").next().unwrap_or("").trim();
+                    if !prose.is_empty() {
+                        transcript.push_str(&format!("💬 {prose}\n"));
+                    }
+                    transcript.push_str(&format!("🔧 {name}({args})\n"));
+                    eprintln!("  ▶ TOOL  {name}  {args}");
+                    let result = exec_tool(&name, &args);
+                    eprintln!("  ◀ RESULT\n{}", result.chars().take(800).collect::<String>());
+                    transcript.push_str(&format!(
+                        "   → {}\n",
+                        result.lines().take(3).collect::<Vec<_>>().join(" | ")
+                    ));
+                    let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
+                    messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage {
+                        role: Role::User,
+                        content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
+                    });
+                }
+                None => {
+                    let final_text = strip_think(&raw);
+                    eprintln!("  ✔ FINAL\n{final_text}");
+                    transcript.push_str(&format!("✅ {final_text}\n"));
+                    finished = true;
+                    break;
+                }
+            }
+        }
+
+        // Independently verify the fix actually works.
+        let final_run = std::process::Command::new("python3")
+            .arg("test_calc.py")
+            .current_dir(&ws)
+            .output();
+        let passed = final_run
+            .as_ref()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("ALL TESTS PASSED"))
+            .unwrap_or(false);
+        let calc_src = std::fs::read_to_string(ws.join("calc.py")).unwrap_or_default();
+
+        eprintln!("\n════════ USER-VISIBLE TRANSCRIPT ════════\n{transcript}");
+        eprintln!("════════ VERDICT: finished={finished} · tests_pass={passed} ════════");
+        eprintln!("---- final calc.py ----\n{calc_src}");
+        std::fs::remove_dir_all(&ws).ok();
+
+        assert!(finished, "agent never produced a final answer");
+        assert!(calc_src.contains("subtract"), "agent should have added subtract()");
+        assert!(passed, "the test suite should pass after the agent's fix");
+    }
+
+    /// Verifies the real model actually EMITS update_plan and ask_user as valid
+    /// tool calls our parser + loop handle, and that answering ask_user steers it.
+    /// Run: CHATY_TEST_MODEL=/path/to/model.gguf cargo test -p chaty agent_plans_and_asks -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn agent_plans_and_asks() {
+        let model_path = match std::env::var("CHATY_TEST_MODEL") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_MODEL=/path/to/model.gguf");
+                return;
+            }
+        };
+        let backend = llama_backend().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load model");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+
+        let ws = std::env::temp_dir().join(format!("chaty-agent-meta-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
+
+        let mut messages = vec![
+            ChatMessage { role: Role::System, content: SYS_META.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage {
+                role: Role::User,
+                content: "请在工作区创建一个 Python 模块 greet.py,实现 greet(name) 函数,再写 test_greet.py 并用 bash 运行确认通过。开始前先用 update_plan 列出步骤。问候语的语言(中文还是英文)由我决定,请用 ask_user 问我。".into(),
+            },
+        ];
+        let cancel = AtomicBool::new(false);
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut plan_used = false;
+        let mut ask_used = false;
+        let mut finished = false;
+        let mut last_plan: Vec<serde_json::Value> = vec![];
+
+        for step in 0..24 {
+            let req = GenRequest {
+                messages: messages.clone(),
+                params: GenParams {
+                    temperature: 0.2,
+                    top_p: 0.9,
+                    max_tokens: 2048,
+                    repeat_penalty: 1.05,
+                    stop: vec!["</tool_call>".to_string()],
+                    think: Some(false),
+                    ..Default::default()
+                },
+            };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            eprintln!("\n──────── STEP {step} ────────\n{}", raw.trim());
+
+            let Some((name, args)) = parse_tool_call(&raw) else {
+                eprintln!("  ✔ FINAL\n{}", strip_think(&raw));
+                finished = true;
+                break;
+            };
+            let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
+            messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
+
+            let result = match name.as_str() {
+                "update_plan" => {
+                    plan_used = true;
+                    if let Some(todos) = args.get("todos").and_then(|v| v.as_array()) {
+                        last_plan = todos.clone();
+                        eprintln!("  📋 PLAN ({} items)", todos.len());
+                        for t in todos {
+                            let c = t.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                            let s = t.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                            eprintln!("     [{s}] {c}");
+                        }
+                    }
+                    "计划已更新。".to_string()
+                }
+                "ask_user" => {
+                    ask_used = true;
+                    let q = args.get("question").and_then(|v| v.as_str()).unwrap_or("");
+                    let opts: Vec<String> = args
+                        .get("options")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|o| o.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    // Pick the option that looks like English, else the first.
+                    let choice = opts
+                        .iter()
+                        .find(|o| o.to_lowercase().contains("英") || o.to_lowercase().contains("english") || o.to_lowercase().contains("en"))
+                        .cloned()
+                        .or_else(|| opts.first().cloned())
+                        .unwrap_or_else(|| "English".to_string());
+                    eprintln!("  ❓ ASK: {q}\n     options={opts:?} → chose {choice}");
+                    format!("用户的选择是:{choice}")
+                }
+                _ => {
+                    eprintln!("  ▶ {name}({args})");
+                    let r = exec_tool(&name, &args);
+                    eprintln!("  ◀ {}", r.chars().take(400).collect::<String>());
+                    r
+                }
+            };
+            messages.push(ChatMessage {
+                role: Role::User,
+                content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
+            });
+        }
+
+        let greet_src = std::fs::read_to_string(ws.join("greet.py")).unwrap_or_default();
+        eprintln!(
+            "\n════════ VERDICT: finished={finished} · plan_used={plan_used} · ask_used={ask_used} · plan_items={} ════════",
+            last_plan.len()
+        );
+        eprintln!("---- greet.py ----\n{greet_src}");
+        std::fs::remove_dir_all(&ws).ok();
+
+        assert!(plan_used, "model should have called update_plan");
+        assert!(ask_used, "model should have called ask_user");
+        assert!(finished, "agent never produced a final answer");
+        assert!(greet_src.contains("greet"), "greet.py should define greet()");
     }
 }

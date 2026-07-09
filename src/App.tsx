@@ -29,6 +29,7 @@ import { useConfirm } from "./components/ConfirmModal";
 import { IconPin, IconPinFilled, IconEdit } from "./components/icons";
 import { PodcastPanel } from "./components/PodcastPanel";
 import { DeepResearchPanel } from "./components/DeepResearchPanel";
+import { CodeMode } from "./components/CodeMode";
 import { answerOnly, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
 import { copyToClipboard } from "./lib/clipboard";
 import {
@@ -258,6 +259,7 @@ export default function App() {
   const [showPodcast, setShowPodcast] = useState(false);
   const [showDeepResearch, setShowDeepResearch] = useState(false);
   const [showKbReport, setShowKbReport] = useState(false);
+  const [appMode, setAppMode] = useState<"chat" | "code">("chat");
   const [thinkEnabled, setThinkEnabled] = useState(() => {
     try {
       return localStorage.getItem("chaty.think") !== "0";
@@ -1691,6 +1693,12 @@ export default function App() {
   const commands: Command[] = [
     { id: "new", label: t("newChat"), keywords: "new chat 新对话", run: handleNewChat },
     {
+      id: "mode",
+      label: appMode === "code" ? t("cmdkGoChat") : t("cmdkGoCode"),
+      keywords: "code chat mode agent 切换 模式 编码",
+      run: () => setAppMode((m) => (m === "code" ? "chat" : "code")),
+    },
+    {
       id: "settings",
       label: t("settingsTitle"),
       keywords: "settings 设置 偏好",
@@ -1786,6 +1794,21 @@ export default function App() {
         <div className="brand">
           <span className="brand-dot" />
           Chaty
+        </div>
+
+        <div className="mode-switch" role="tablist" aria-label="Mode">
+          <button
+            className={`mode-tab ${appMode === "chat" ? "active" : ""}`}
+            onClick={() => setAppMode("chat")}
+          >
+            {t("modeChat")}
+          </button>
+          <button
+            className={`mode-tab ${appMode === "code" ? "active" : ""}`}
+            onClick={() => setAppMode("code")}
+          >
+            {t("modeCode")}
+          </button>
         </div>
 
         <div className="model-wrap">
@@ -2040,7 +2063,16 @@ export default function App() {
         </div>
       )}
 
-      <div className="body">
+      <CodeMode
+        model={model}
+        active={appMode === "code"}
+        maxSteps={settings.codeMaxSteps}
+        bashTimeout={settings.codeBashTimeout}
+        skills={settings.codeSkills}
+        disabledSkills={settings.codeDisabledSkills}
+      />
+
+      <div className="body" style={appMode === "code" ? { display: "none" } : undefined}>
         <aside className="sidebar" ref={asideRef} style={{ width: sidebarW }}>
           <button className="new-chat" onClick={handleNewChat} disabled={busy}>
             ＋ {t("newChat")}

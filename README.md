@@ -51,6 +51,12 @@ Deep Research, and hands-free voice built right in.
 - **Safe model switching** (the previous model is fully released first), hot-swap from a `models/` folder, and full sampling controls with saveable presets.
 - **One-click model setup** — a hardware-fitted recommender and in-app Hugging Face downloader with live, cancelable progress.
 
+### Code mode (agentic coding)
+- A top-level **Chat | Code** switch turns Chaty into a **local coding agent**: point it at a folder, describe the task, and it explores, edits, and verifies the project by itself — file read/write, exact-string edits, glob/grep, and shell commands, every step shown live.
+- **Confined & sandboxed** — file access never leaves the workspace you picked, and on macOS shell commands run in a Seatbelt sandbox that can only write inside it.
+- **You stay in control** — per-action approval with a real diff preview (or flip on **Bypass** for autonomy), a live task-plan checklist, and choice dialogs when a decision is yours to make.
+- **Built for local models** — visible reasoning with an Off / Normal / Deep depth switch, a context-usage ring with automatic compaction, tolerant tool-call parsing so smaller models self-correct, plus persistent sessions, custom `/skills`, and slash commands.
+
 ### Knowledge base (RAG)
 - Index **PDF, Word (.docx), Excel (.xlsx), Markdown, ~90 text/code/config formats, and images** (with OCR) into a private, on-device store — one file at a time or a **whole folder** (subdirectories included, with the project's structure preserved).
 - **Hybrid retrieval**: bge-m3 multilingual vectors + BM25 keywords, fused with RRF, de-duplicated with MMR, and expanded with neighbor chunks.

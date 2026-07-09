@@ -60,7 +60,7 @@ export function HardwarePanel({
   return (
     <>
       <div className="popover-backdrop" onClick={onClose} />
-      <div className="settings-panel hw-panel" onClick={(e) => e.stopPropagation()}>
+      <div className="titlebar-pop hw-panel" onClick={(e) => e.stopPropagation()}>
         <div className="settings-title">{t("hwTitle")}</div>
         {hw ? (
           <div className="hw-list">

@@ -17,7 +17,7 @@ export function ModelInfoPanel({
   return (
     <>
       <div className="popover-backdrop" onClick={onClose} />
-      <div className="settings-panel hw-panel" onClick={(e) => e.stopPropagation()}>
+      <div className="titlebar-pop hw-panel" onClick={(e) => e.stopPropagation()}>
         <div className="settings-title">{t("miTitle")}</div>
         {!model ? (
           <div className="hw-loading">{t("miNoModel")}</div>

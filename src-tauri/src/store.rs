@@ -49,6 +49,14 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
+CREATE TABLE IF NOT EXISTS code_sessions (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    workspace   TEXT,
+    data        TEXT NOT NULL DEFAULT '[]',
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
 ";
 
 pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
@@ -275,5 +283,81 @@ pub fn rename_conversation(db: State<'_, Db>, id: String, title: String) -> Resu
         params![title, id],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Code-mode sessions (agentic coding). Stored as one JSON blob per session —
+// the frontend owns the shape (messages + tool steps); we just persist it.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeSessionMeta {
+    pub id: String,
+    pub title: String,
+    pub workspace: Option<String>,
+    pub updated_at: i64,
+}
+
+#[tauri::command]
+pub fn code_session_save(
+    db: State<'_, Db>,
+    id: String,
+    title: String,
+    workspace: Option<String>,
+    data: String,
+) -> Result<(), String> {
+    let conn = lock(&db)?;
+    let now = now_ms();
+    conn.execute(
+        "INSERT INTO code_sessions (id, title, workspace, data, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+         ON CONFLICT(id) DO UPDATE SET title = ?2, workspace = ?3, data = ?4, updated_at = ?5",
+        params![id, title, workspace, data, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn code_session_list(db: State<'_, Db>) -> Result<Vec<CodeSessionMeta>, String> {
+    let conn = lock(&db)?;
+    let mut stmt = conn
+        .prepare("SELECT id, title, workspace, updated_at FROM code_sessions ORDER BY updated_at DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(CodeSessionMeta {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                workspace: r.get(2)?,
+                updated_at: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn code_session_load(db: State<'_, Db>, id: String) -> Result<Option<String>, String> {
+    let conn = lock(&db)?;
+    conn.query_row("SELECT data FROM code_sessions WHERE id = ?1", params![id], |r| {
+        r.get::<_, String>(0)
+    })
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other.to_string()),
+    })
+}
+
+#[tauri::command]
+pub fn code_session_delete(db: State<'_, Db>, id: String) -> Result<(), String> {
+    let conn = lock(&db)?;
+    conn.execute("DELETE FROM code_sessions WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }

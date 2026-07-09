@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.3.0 — Code mode: a local coding agent (2026-07-08)
+
+- **Code mode** — a new top-level **Chat | Code** switch turns Chaty into an agentic coding tool that runs entirely on your local model. Point it at a folder, describe a task, and the agent explores, edits, and verifies the project by itself: reading and writing files, exact-string edits, glob/grep search, and shell commands — every step shown live as it happens.
+- **Sandboxed & confined** — all file access is locked to the workspace folder you picked (path traversal and symlink escapes are rejected), and on macOS shell commands run inside a Seatbelt sandbox that can only write within the workspace.
+- **Approve or bypass** — file changes and commands ask for permission first, with a real diff/content preview in the approval dialog (`Enter` allows, `Esc` denies); flip on **Bypass** to let the agent run autonomously.
+- **Task plan** — for non-trivial tasks the agent lays out a live todo checklist and keeps it updated as it progresses (with a done-count), so you always know where it is.
+- **It asks *you*** — when a decision is genuinely yours (naming, language, approach), the agent raises a choice dialog: pick with a click or number key, or type a custom answer.
+- **Visible reasoning, adjustable depth** — thinking streams into a collapsible panel per step, and an **Off / Normal / Deep** switch controls how much the model reasons before each action.
+- **Skills** — six built-in task templates (`/init`, `/review`, `/test`, `/fix`, `/explain`, `/commit`), each toggleable in Settings → Code, plus your own custom skills invoked the same way — alongside built-in slash commands (`/clear`, `/think`, `/bypass`, `/help`).
+- **@-mention files** — type `@` in the composer to fuzzy-pick any workspace file and drop its path into the task.
+- **One-click continue** — when a turn pauses at the step limit, a **Continue** button resumes from the actual progress (the agent remembers which tools it already ran); `Shift+Tab` toggles auto-approve, mirroring Claude Code.
+- **Context under control** — a live context-usage ring, real-time token count and speed, and automatic compaction: older tool results and conversation are elided as the window fills, marked by a small "context auto-compacted" chip.
+- **Persistent sessions** — Code conversations (including plans, steps, and diffs) are saved to the local database with their workspace, separate from your chats.
+- **Tolerant of imperfect models** — argument aliases (`file_path`, `filename`, `old_str`, …), malformed-tool-call retries, and clear self-correction hints mean smaller models recover in one step instead of stalling.
+- **Settings, rebuilt** — settings now open as a floating window with categories (General / Chat / Sampling / Model / Code / Voice / Data / About), including new Code options (max steps per turn, command timeout, skills) and an About page with the logo, version, and an update check.
+
 ## v1.2.0 — Knowledge base, leveled up (2026-06-30)
 
 - **Import a folder** — alongside picking individual files, you can now choose a folder and Chaty ingests every supported file inside it *and its subfolders*. Hidden files and symlinks are skipped, unreadable/empty files are silently passed over; for large folders it asks for confirmation first and shows per-file progress (3/20). Files keep their **path relative to the folder** (e.g. `myproject/src/lib/ipc.ts`), so the knowledge base — and the model — can see the project's structure, not just bare file names.

@@ -195,6 +195,88 @@ export async function ragListSupportedFiles(dir: string): Promise<string[]> {
   return invoke<string[]>("rag_list_supported_files", { dir });
 }
 
+// ---------- Agentic coding (Code mode) ----------
+// All file/bash ops are confined to the workspace on the Rust side; paths that
+// escape it are rejected. Bash is sandboxed (seatbelt) on macOS.
+
+export interface AgentDirEntry {
+  name: string;
+  isDir: boolean;
+  size: number;
+}
+
+export interface AgentBashResult {
+  stdout: string;
+  stderr: string;
+  code: number;
+  timedOut: boolean;
+}
+
+export async function agentSetWorkspace(path: string): Promise<string> {
+  return invoke<string>("agent_set_workspace", { path });
+}
+export async function agentGetWorkspace(): Promise<string | null> {
+  return invoke<string | null>("agent_get_workspace");
+}
+export async function agentReadFile(path: string, offset?: number, limit?: number): Promise<string> {
+  return invoke<string>("agent_read_file", { path, offset, limit });
+}
+export async function agentWriteFile(path: string, content: string): Promise<string> {
+  return invoke<string>("agent_write_file", { path, content });
+}
+export async function agentEditFile(
+  path: string,
+  oldString: string,
+  newString: string,
+  replaceAll?: boolean,
+): Promise<string> {
+  return invoke<string>("agent_edit_file", { path, oldString, newString, replaceAll });
+}
+export async function agentListDir(path?: string): Promise<AgentDirEntry[]> {
+  return invoke<AgentDirEntry[]>("agent_list_dir", { path });
+}
+export async function agentGlob(pattern: string): Promise<string[]> {
+  return invoke<string[]>("agent_glob", { pattern });
+}
+/** Filename search for the @-mention picker (substring, capped, skips VCS/build dirs). */
+export async function agentListFiles(query?: string, limit?: number): Promise<string[]> {
+  return invoke<string[]>("agent_list_files", { query, limit });
+}
+export async function agentGrep(pattern: string, path?: string, glob?: string): Promise<string> {
+  return invoke<string>("agent_grep", { pattern, path, glob });
+}
+export async function agentBash(command: string, timeoutSecs?: number): Promise<AgentBashResult> {
+  return invoke<AgentBashResult>("agent_bash", { command, timeoutSecs });
+}
+
+// ---------- Code-mode session persistence ----------
+
+export interface CodeSessionMeta {
+  id: string;
+  title: string;
+  workspace: string | null;
+  updatedAt: number;
+}
+
+/** Persist a whole coding session as a JSON blob (frontend owns the shape). */
+export async function codeSessionSave(
+  id: string,
+  title: string,
+  workspace: string | null,
+  data: string,
+): Promise<void> {
+  await invoke("code_session_save", { id, title, workspace, data });
+}
+export async function codeSessionList(): Promise<CodeSessionMeta[]> {
+  return invoke<CodeSessionMeta[]>("code_session_list");
+}
+export async function codeSessionLoad(id: string): Promise<string | null> {
+  return invoke<string | null>("code_session_load", { id });
+}
+export async function codeSessionDelete(id: string): Promise<void> {
+  await invoke("code_session_delete", { id });
+}
+
 export async function ragDownloadModel(
   onProgress: (p: DownloadProgress) => void,
 ): Promise<void> {
