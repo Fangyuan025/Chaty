@@ -83,6 +83,11 @@ const TOOL_ICON: Record<string, string> = {
   glob: "M3 6h18M3 12h18M3 18h18",
   grep: "M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-4-4",
   bash: "M4 5l6 7-6 7M13 19h7",
+  bash_bg: "M4 5l6 7-6 7M13 5h7M13 12h7M13 19h7",
+  bg_output: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 7v5l3 3",
+  bg_kill: "M12 3a9 9 0 100 18 9 9 0 000-18zM9 9l6 6M15 9l-6 6",
+  web_search: "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c2.5 2.5 3.8 5.6 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.6-3.8-9S9.5 5.5 12 3z",
+  web_fetch: "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c2.5 2.5 3.8 5.6 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.6-3.8-9S9.5 5.5 12 3z",
   ask_user: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 8v5M12 16h.01",
 };
 
@@ -103,6 +108,16 @@ function toolSummary(call: ToolCall): string {
       return `grep ${a.pattern ?? ""}`;
     case "bash":
       return `$ ${a.command ?? ""}`;
+    case "bash_bg":
+      return `bg $ ${a.command ?? ""}`;
+    case "bg_output":
+      return `bg output #${a.id ?? "?"}`;
+    case "bg_kill":
+      return `bg kill #${a.id ?? "?"}`;
+    case "web_search":
+      return `search ${a.query ?? ""}`;
+    case "web_fetch":
+      return `fetch ${a.url ?? ""}`;
     case "ask_user":
       return a.question ?? "ask user";
     default:
@@ -272,6 +287,22 @@ export function CodeMode({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef({ msgs, workspace, sid });
   bodyRef.current = { msgs, workspace, sid };
+  // The approve callback closes over send()-time state — read bypass through a
+  // ref so flipping the toggle MID-RUN takes effect immediately.
+  const bypassRef = useRef(bypass);
+  bypassRef.current = bypass;
+
+  /** Toggle bypass; turning it ON also releases any approval that's waiting. */
+  const toggleBypass = useCallback(() => {
+    setBypass((b) => !b);
+    if (!bypassRef.current) {
+      // was off → now on: release the pending approval, if any
+      setApproval((cur) => {
+        cur?.resolve(true);
+        return null;
+      });
+    }
+  }, []);
 
   const refreshSessions = useCallback(() => {
     codeSessionList().then(setSessions).catch(() => {});
@@ -508,7 +539,7 @@ export function CodeMode({
         localStorage.setItem("chaty.code.think", arg);
       }
     } else if (cmd === "/bypass") {
-      setBypass((b) => !b);
+      toggleBypass();
     } else if (cmd === "/help") {
       const allSkills = [
         ...activeBuiltins.map((b) => ({ name: b.name, d: lang === "zh" ? b.desc.zh : b.desc.en })),
@@ -565,12 +596,16 @@ export function CodeMode({
 
     await runAgentTurn(text, history, workspace, lang, {
       thinkMode,
+      supportsThinking: model.supportsThinking,
+      thinkSwitch: model.thinkSwitch,
       nCtx: model.nCtx ?? undefined,
       maxSteps,
       bashTimeout,
       signal,
       approve: (call: ToolCall) =>
-        bypass ? Promise.resolve(true) : new Promise<boolean>((resolve) => setApproval({ call, resolve })),
+        bypassRef.current
+          ? Promise.resolve(true)
+          : new Promise<boolean>((resolve) => setApproval({ call, resolve })),
     }, {
       onThinking: (t) => update((m) => ({ ...m, liveThinking: t })),
       onStats: (tokens, tps) => setStats({ tokens, tps }),
@@ -697,7 +732,7 @@ export function CodeMode({
           </div>
           <button
             className={`cm-bypass ${bypass ? "on" : ""}`}
-            onClick={() => setBypass((b) => !b)}
+            onClick={toggleBypass}
             title={t("cmBypassHint")}
           >
             <span className="cm-bypass-dot" /> {t("cmBypass")}
@@ -831,7 +866,7 @@ export function CodeMode({
                 // Shift+Tab toggles auto-approve, mirroring Claude Code.
                 if (e.key === "Tab" && e.shiftKey) {
                   e.preventDefault();
-                  setBypass((b) => !b);
+                  toggleBypass();
                   return;
                 }
                 if (atMenu.length > 0) {
@@ -875,10 +910,12 @@ export function CodeMode({
         <div className="cm-approve-backdrop" onMouseDown={() => { approval.resolve(false); setApproval(null); }}>
           <div className="cm-approve" onMouseDown={(e) => e.stopPropagation()}>
             <div className="cm-approve-title">
-              {approval.call.name === "bash" ? t("cmApproveBash") : t("cmApproveWrite")}
+              {approval.call.name === "bash" || approval.call.name === "bash_bg"
+                ? t("cmApproveBash")
+                : t("cmApproveWrite")}
             </div>
             <pre className="cm-approve-cmd">{toolSummary(approval.call)}</pre>
-            {approval.call.name === "bash" && (
+            {(approval.call.name === "bash" || approval.call.name === "bash_bg") && (
               <div className="cm-approve-detail">{String(approval.call.args.command ?? "")}</div>
             )}
             {approval.call.name === "edit_file" && (

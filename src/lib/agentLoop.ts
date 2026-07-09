@@ -7,6 +7,10 @@
 
 import {
   agentBash,
+  agentBashBg,
+  agentBgKill,
+  agentBgOutput,
+  agentBgReap,
   agentEditFile,
   agentGlob,
   agentGrep,
@@ -14,9 +18,12 @@ import {
   agentReadFile,
   agentWriteFile,
   cancelGeneration,
+  fetchUrl,
   generate,
+  webSearch,
   type ChatMessage,
 } from "./ipc";
+import { normalizeChannels } from "./voiceText";
 
 export type AgentToolName =
   | "read_file"
@@ -26,11 +33,16 @@ export type AgentToolName =
   | "glob"
   | "grep"
   | "bash"
+  | "bash_bg"
+  | "bg_output"
+  | "bg_kill"
+  | "web_search"
+  | "web_fetch"
   | "ask_user"
   | "update_plan";
 
 /** Tools that change the world (or run code) → need approval unless bypassed. */
-export const MUTATING_TOOLS = new Set<AgentToolName>(["write_file", "edit_file", "bash"]);
+export const MUTATING_TOOLS = new Set<AgentToolName>(["write_file", "edit_file", "bash", "bash_bg"]);
 
 export interface ToolCall {
   name: AgentToolName;
@@ -95,6 +107,11 @@ export interface AgentCallbacks {
 export interface AgentOptions {
   /** Reasoning depth: off = no thinking, normal = default, deep = thorough. */
   thinkMode: ThinkMode;
+  /** From ModelInfo — picks the right no-think mechanism per model family
+   *  (Qwen3 soft switch vs. Qwen3.5+/Gemma think-flag), mirroring chat mode. */
+  supportsThinking?: boolean;
+  /** Model uses the `/no_think` soft switch (Qwen3) instead of the think flag. */
+  thinkSwitch?: boolean;
   nCtx?: number;
   maxSteps?: number;
   /** Default timeout for bash commands (seconds) when the model doesn't set one. */
@@ -107,22 +124,36 @@ export interface AgentOptions {
 
 const uid = () => Math.random().toString(36).slice(2);
 
-function stripThink(s: string): string {
+function stripThink(raw: string): string {
+  // Channel-style reasoning markers (Gemma 4 / Harmony) → <think> convention,
+  // same normalization chat mode applies before parsing.
+  const s = normalizeChannels(raw);
+  const o = s.indexOf("<think>");
+  if (o === -1) {
+    // Orphan close: reasoning streamed without an opening tag (pre-open-trained
+    // models) — everything before the close is reasoning.
+    const c = s.indexOf("</think>");
+    if (c !== -1) return s.slice(c + "</think>".length);
+  }
   return s.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, "");
 }
 
 /** The reasoning inside `<think>…</think>` (or after `<think>` if not yet closed). */
-function thinkPart(s: string): string {
+function thinkPart(raw: string): string {
+  const s = normalizeChannels(raw);
   const o = s.indexOf("<think>");
-  if (o === -1) return "";
+  if (o === -1) {
+    const c = s.indexOf("</think>");
+    return c === -1 ? "" : s.slice(0, c).trim(); // orphan close
+  }
   const after = s.slice(o + "<think>".length);
   const c = after.indexOf("</think>");
   return (c === -1 ? after : after.slice(0, c)).trim();
 }
 
 /** Prose after any think block and before any tool call. */
-function proseAfter(s: string): string {
-  let t = s;
+function proseAfter(raw: string): string {
+  let t = normalizeChannels(raw);
   const c = t.indexOf("</think>");
   if (c !== -1) t = t.slice(c + "</think>".length);
   else if (t.includes("<think>")) return ""; // still thinking → no prose yet
@@ -137,7 +168,12 @@ const TOOLS_DOC = `
 - list_dir: 列出目录一层内容。args: { "path"?: string }
 - glob: 按通配符找文件(如 "src/**/*.ts")。args: { "pattern": string }
 - grep: 用正则搜索文件内容。args: { "pattern": string, "path"?: string, "glob"?: string }
-- bash: 在工作区里执行 shell 命令(macOS 沙箱,写限工作区)。args: { "command": string, "timeout_secs"?: number }
+- bash: 在工作区里执行 shell 命令(macOS 沙箱,写限工作区)。会等命令结束;不要用它启动 dev server 等不会退出的进程。args: { "command": string, "timeout_secs"?: number }
+- bash_bg: 在后台启动长时间运行的命令(dev server、慢构建、长测试),立即返回一个 id,期间你可以继续做别的;它结束时系统会自动把结果告诉你。args: { "command": string }
+- bg_output: 查看某个后台命令的当前状态和最近输出(比如确认 server 已启动)。args: { "id": number }
+- bg_kill: 终止某个后台命令(整棵进程树)。args: { "id": number }
+- web_search: 联网搜索(标题+链接+摘要)。查资料、找文档、查报错时用。args: { "query": string }
+- web_fetch: 抓取网页正文。args: { "url": string }
 - update_plan: 制定或更新任务计划(待办清单),让用户看到你的推进步骤。开始复杂任务时先列计划,完成一步就把它标为 done、把下一步标为 in_progress。args: { "todos": [{ "content": string, "status": "pending"|"in_progress"|"done" }] }
 - ask_user: 当遇到需要用户拍板的决策(方案分歧、需求不明、破坏性操作确认)时,向用户提一个选择题;不要自己乱猜。args: { "question": string, "options": string[] }`;
 
@@ -163,6 +199,8 @@ ${TOOLS_DOC}
 - 系统会把结果以 <tool_result>...</tool_result> 返回给你,你再继续。
 - 修改代码前,先用 read_file / grep / list_dir 了解现状;改完可用 bash 跑测试/构建验证。
 - 步数宝贵:新建文件用 write_file 一次写入完整内容;同一文件的多处修改合并成一次 edit_file,或直接用 write_file 重写整个文件。不要把一个改动拆成许多细碎小步。
+- dev server、npm run dev、长构建等不会很快退出的命令必须用 bash_bg 后台运行,再用 bg_output 确认启动成功;用完记得 bg_kill。
+- 遇到不认识的报错、需要查库/API 文档时,用 web_search / web_fetch 联网查证,不要凭空猜测。
 - 任务较复杂时,先用 update_plan 列出待办步骤,推进中及时更新状态;需要用户拍板时用 ask_user 提问。
 - 任务完成后,不要再调用工具,直接用简洁的中文总结你做了什么。
 - 谨慎对待 write_file / edit_file / bash(它们会真实改动文件或执行命令)。${think}`;
@@ -177,6 +215,8 @@ Rules (follow strictly):
 - You'll get the result as <tool_result>...</tool_result>, then continue.
 - Before editing, understand the code with read_file / grep / list_dir; after editing, you can run tests/builds with bash.
 - Steps are precious: create new files with ONE write_file containing the complete content; merge multiple changes to the same file into one edit_file, or rewrite the whole file with write_file. Never split one change into many tiny steps.
+- Commands that don't exit quickly (dev servers, npm run dev, long builds) MUST run via bash_bg; check they started with bg_output, and bg_kill them when done.
+- For unfamiliar errors or library/API docs, verify with web_search / web_fetch instead of guessing.
 - For non-trivial tasks, lay out a todo list with update_plan first and keep its statuses current as you go; use ask_user when a decision is the user's to make.
 - When done, DON'T call a tool — just give a concise summary of what you did.
 - Be careful with write_file / edit_file / bash (they really change files / run commands).${think}`;
@@ -344,6 +384,39 @@ async function execTool(
       parts.push(`[exit ${r.code}${r.timedOut ? " · 超时/timed out" : ""}]`);
       return { result: parts.join("\n") };
     }
+    case "bash_bg": {
+      const id = await agentBashBg(asStr(a.command));
+      return {
+        result: `后台命令已启动 (background job started): #${id}。结束时会自动通知你;可用 bg_output 查看进度。`,
+      };
+    }
+    case "bg_output": {
+      const info = await agentBgOutput(Number(a.id));
+      const head = info.running
+        ? `#${info.id} 运行中 (running, ${info.elapsedSecs}s): ${info.command}`
+        : `#${info.id} 已结束 (finished, exit ${info.code}): ${info.command}`;
+      return { result: `${head}\n--- 最近输出 (recent output) ---\n${info.tail || "(无输出 / no output yet)"}` };
+    }
+    case "bg_kill":
+      return { result: await agentBgKill(Number(a.id)) };
+    case "web_search": {
+      const q = asStr(a.query);
+      if (!q) return { result: 'ERROR: 缺少 "query" 参数 (missing "query")' };
+      const hits = await webSearch(q);
+      if (!hits.length) return { result: "(没有搜索结果 / no results)" };
+      return {
+        result: hits
+          .slice(0, 8)
+          .map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}\n   ${h.snippet}`)
+          .join("\n"),
+      };
+    }
+    case "web_fetch": {
+      const url = asStr(a.url);
+      if (!url) return { result: 'ERROR: 缺少 "url" 参数 (missing "url")' };
+      const page = await fetchUrl(url);
+      return { result: `${page.title}\n${page.url}\n\n${page.text}` };
+    }
     default:
       return { result: `未知工具 (unknown tool): ${call.name}` };
   }
@@ -417,10 +490,23 @@ export async function runAgentTurn(
   cb: AgentCallbacks,
 ): Promise<void> {
   const maxSteps = opts.maxSteps ?? 32;
-  // off → no-think (prefill empty <think>); normal/deep → let the model reason.
+  // Thinking control mirrors chat mode's per-model mechanisms:
+  //  • Qwen3 (`thinkSwitch`): append the `/no_think` soft switch to user turns.
+  //  • Switch-less reasoning models (Qwen3.5+ / Gemma): drive the think flag
+  //    (true = reason, false = pre-fill an empty think block).
+  //  • Models without model info fall back to the old flag-only behavior.
+  const wantNoThink = opts.thinkMode === "off";
+  const think =
+    opts.supportsThinking === undefined
+      ? wantNoThink
+        ? false
+        : undefined
+      : opts.supportsThinking && !opts.thinkSwitch
+        ? !wantNoThink
+        : undefined;
+  const noThinkSuffix = wantNoThink && opts.thinkSwitch ? "\n/no_think" : "";
   // A generous token budget so a long reasoning block can't bury the tool call,
   // but never so large that generation crowds the prompt out of the window.
-  const think = opts.thinkMode === "off" ? false : undefined;
   const nCtx = opts.nCtx ?? 8192;
   const budget = opts.thinkMode === "deep" ? 8192 : opts.thinkMode === "normal" ? 6144 : 4096;
   const maxTokens = Math.min(budget, Math.max(1024, Math.floor(nCtx * 0.75)));
@@ -428,8 +514,13 @@ export async function runAgentTurn(
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt(workspace, lang === "zh", opts.thinkMode) },
     ...keptHistory,
-    { role: "user", content: userInput },
+    { role: "user", content: userInput + noThinkSuffix },
   ];
+
+  // Every user-role turn (tool results, nudges) carries the soft switch too,
+  // since the model reads the LAST user message when deciding to think.
+  const pushUser = (content: string) =>
+    messages.push({ role: "user", content: content + noThinkSuffix });
 
   let baseTokens = 0; // tokens from completed steps this turn
   let lastTps = 0; // last trustworthy tokens/sec (engine-reported or warmed-up live)
@@ -445,6 +536,27 @@ export async function runAgentTurn(
   try {
     for (let step = 0; step < maxSteps; step++) {
       if (opts.signal.cancelled) return;
+
+      // Background commands that finished since the last step → tell the model
+      // (and show a completion card), then it can react on this very step.
+      try {
+        for (const j of await agentBgReap()) {
+          const head =
+            lang === "zh"
+              ? `后台命令 #${j.id} 已结束 (exit ${j.code}): ${j.command}`
+              : `Background job #${j.id} finished (exit ${j.code}): ${j.command}`;
+          cb.onStep({
+            id: uid(),
+            call: { name: "bash_bg", args: { command: j.command, id: j.id } },
+            status: j.code === 0 ? "done" : "error",
+            result: `${head}\n${j.tail}`,
+          });
+          pushUser(toolResultMsg("bash_bg", `${head}\n--- 输出 (output tail) ---\n${j.tail}`));
+        }
+      } catch {
+        /* no workspace yet — nothing to reap */
+      }
+
       // keep the running transcript inside the context window
       if (compactMessages(messages, nCtx)) noteCompacted();
 
@@ -494,13 +606,11 @@ export async function runAgentTurn(
         // (Bounded by maxSteps.) Otherwise it's a genuine final answer.
         if (raw.includes("<tool_call>") && step < maxSteps - 1) {
           messages.push({ role: "assistant", content: proseOnly(raw) });
-          messages.push({
-            role: "user",
-            content:
-              lang === "zh"
-                ? '你上一个工具调用的格式无效。请严格用一行 <tool_call>{"name":"...","arguments":{...}}</tool_call> 重新调用。'
-                : 'Your last tool call was not valid. Re-issue it as exactly one line: <tool_call>{"name":"...","arguments":{...}}</tool_call>.',
-          });
+          pushUser(
+            lang === "zh"
+              ? '你上一个工具调用的格式无效。请严格用一行 <tool_call>{"name":"...","arguments":{...}}</tool_call> 重新调用。'
+              : 'Your last tool call was not valid. Re-issue it as exactly one line: <tool_call>{"name":"...","arguments":{...}}</tool_call>.',
+          );
           continue;
         }
         cb.onFinal(proseAfter(raw) || stripThink(raw).trim(), thinking);
@@ -518,10 +628,7 @@ export async function runAgentTurn(
       if (call.name === "update_plan") {
         const todos = parsePlan(call.args);
         cb.onPlan?.(todos);
-        messages.push({
-          role: "user",
-          content: toolResultMsg("update_plan", lang === "zh" ? "计划已更新。" : "Plan updated."),
-        });
+        pushUser(toolResultMsg("update_plan", lang === "zh" ? "计划已更新。" : "Plan updated."));
         continue;
       }
       if (call.name === "ask_user") {
@@ -537,13 +644,9 @@ export async function runAgentTurn(
         stepObj.status = "done";
         stepObj.result = (lang === "zh" ? "用户选择:" : "User chose: ") + choice;
         cb.onStep(stepObj);
-        messages.push({
-          role: "user",
-          content: toolResultMsg(
-            "ask_user",
-            (lang === "zh" ? "用户的选择是:" : "The user chose: ") + choice,
-          ),
-        });
+        pushUser(
+          toolResultMsg("ask_user", (lang === "zh" ? "用户的选择是:" : "The user chose: ") + choice),
+        );
         continue;
       }
 
@@ -555,15 +658,14 @@ export async function runAgentTurn(
           stepObj.status = "denied";
           stepObj.result = lang === "zh" ? "已被用户拒绝" : "denied by the user";
           cb.onStep(stepObj);
-          messages.push({
-            role: "user",
-            content: toolResultMsg(
+          pushUser(
+            toolResultMsg(
               call.name,
               lang === "zh"
                 ? "用户拒绝了此操作。请调整方案或询问用户。"
                 : "The user denied this action. Adjust the plan or ask the user.",
             ),
-          });
+          );
           continue;
         }
       }
@@ -583,7 +685,7 @@ export async function runAgentTurn(
       }
       if (opts.signal.cancelled) return;
       cb.onStep(stepObj);
-      messages.push({ role: "user", content: toolResultMsg(call.name, resultText) });
+      pushUser(toolResultMsg(call.name, resultText));
     }
     cb.onFinal(
       lang === "zh"

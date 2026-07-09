@@ -6,10 +6,12 @@
 //! workspace (+ temp) — a real kernel sandbox. Approval/bypass is enforced by
 //! the frontend before these commands are ever invoked.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -91,7 +93,11 @@ pub fn agent_set_workspace(path: String) -> Result<String, String> {
     }
     let canon = p.canonicalize().map_err(|e| e.to_string())?;
     let shown = canon.to_string_lossy().to_string();
-    *WORKSPACE.lock().unwrap() = Some(canon);
+    let changed = WORKSPACE.lock().unwrap().replace(canon.clone()) != Some(canon);
+    if changed {
+        // Background jobs belong to the workspace they were started in.
+        bg_kill_all();
+    }
     Ok(shown)
 }
 
@@ -369,6 +375,43 @@ fn seatbelt_profile(root: &Path) -> String {
     )
 }
 
+/// A Finder-launched GUI app inherits a minimal PATH (`/usr/bin:/bin:…`) that
+/// misses Homebrew, cargo, nvm, … — so `npm`, `node`, `python3` from user
+/// installs "don't exist" inside agent shells. Build a PATH that prepends the
+/// common tool locations (only those that exist) to whatever we inherited.
+#[cfg(unix)]
+fn augmented_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut dirs: Vec<String> = vec![
+        "/opt/homebrew/bin".into(),
+        "/opt/homebrew/sbin".into(),
+        "/usr/local/bin".into(),
+        format!("{home}/.cargo/bin"),
+        format!("{home}/.local/bin"),
+        format!("{home}/.bun/bin"),
+        format!("{home}/.deno/bin"),
+        format!("{home}/go/bin"),
+    ];
+    // nvm keeps node under versioned dirs — add the newest one if present.
+    let nvm = PathBuf::from(format!("{home}/.nvm/versions/node"));
+    if let Ok(entries) = std::fs::read_dir(&nvm) {
+        let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        versions.sort();
+        if let Some(latest) = versions.last() {
+            dirs.push(latest.join("bin").to_string_lossy().to_string());
+        }
+    }
+    let mut path: Vec<String> = dirs.into_iter().filter(|d| Path::new(d).is_dir()).collect();
+    if let Ok(cur) = std::env::var("PATH") {
+        for p in cur.split(':') {
+            if !path.iter().any(|x| x == p) {
+                path.push(p.to_string());
+            }
+        }
+    }
+    path.join(":")
+}
+
 fn read_capped(mut r: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
@@ -422,6 +465,7 @@ fn run_bash(root: &Path, command: &str, timeout: Duration) -> Result<BashResult,
 fn build_command(root: &Path, command: &str) -> Command {
     let mut cmd = Command::new("/usr/bin/sandbox-exec");
     cmd.arg("-p").arg(seatbelt_profile(root)).arg("/bin/sh").arg("-c").arg(command);
+    cmd.env("PATH", augmented_path());
     cmd
 }
 
@@ -430,6 +474,7 @@ fn build_command(_root: &Path, command: &str) -> Command {
     // No seatbelt off macOS — confinement is the working directory + approval.
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c").arg(command);
+    cmd.env("PATH", augmented_path());
     cmd
 }
 
@@ -450,6 +495,199 @@ pub async fn agent_bash(command: String, timeout_secs: Option<u64>) -> Result<Ba
     tokio::task::spawn_blocking(move || run_bash(&root, &command, timeout))
         .await
         .map_err(|e| format!("命令任务异常 (task panicked): {e}"))?
+}
+
+// ---------------------------------------------------------------------------
+// Background commands (dev servers, long builds): start now, get told later.
+// ---------------------------------------------------------------------------
+
+struct BgJob {
+    command: String,
+    started: Instant,
+    /// Live, capped, merged stdout+stderr.
+    output: Arc<Mutex<Vec<u8>>>,
+    /// Exit code once the process ends (`None` while running).
+    code: Option<i32>,
+    /// The finished result was already handed to the agent loop.
+    reported: bool,
+    /// For `bg_kill`: the child's pid (the sandbox wrapper's process group).
+    pid: u32,
+}
+
+static BG_JOBS: Mutex<Option<HashMap<u64, BgJob>>> = Mutex::new(None);
+static BG_NEXT_ID: AtomicU64 = AtomicU64::new(1);
+const BG_MAX_JOBS: usize = 8;
+const BG_TAIL_BYTES: usize = 8 * 1024;
+
+fn bg_tail(buf: &Arc<Mutex<Vec<u8>>>) -> String {
+    let b = buf.lock().unwrap();
+    let start = b.len().saturating_sub(BG_TAIL_BYTES);
+    String::from_utf8_lossy(&b[start..]).into_owned()
+}
+
+fn bg_append(buf: &Arc<Mutex<Vec<u8>>>, chunk: &[u8]) {
+    let mut b = buf.lock().unwrap();
+    b.extend_from_slice(chunk);
+    // Keep memory bounded: retain only the most recent window.
+    let cap = MAX_OUTPUT_BYTES;
+    if b.len() > cap {
+        let cut = b.len() - cap;
+        b.drain(..cut);
+    }
+}
+
+fn bg_stream(mut r: impl Read + Send + 'static, buf: Arc<Mutex<Vec<u8>>>) {
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = r.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            bg_append(&buf, &chunk[..n]);
+        }
+    });
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BgInfo {
+    pub id: u64,
+    pub command: String,
+    pub running: bool,
+    pub code: Option<i32>,
+    pub elapsed_secs: u64,
+    pub tail: String,
+}
+
+/// Start a background command (same sandbox/PATH as `agent_bash`). Returns an
+/// id immediately; the frontend loop polls `agent_bg_reap` and tells the model
+/// when it finishes.
+#[tauri::command]
+pub fn agent_bash_bg(command: String) -> Result<u64, String> {
+    let root = workspace()?;
+    let mut reg = BG_JOBS.lock().unwrap();
+    let jobs = reg.get_or_insert_with(HashMap::new);
+    let running = jobs.values().filter(|j| j.code.is_none()).count();
+    if running >= BG_MAX_JOBS {
+        return Err(format!(
+            "后台命令过多（{running} 个在跑），请先用 bg_kill 结束一些 (too many background jobs)"
+        ));
+    }
+
+    let mut cmd = build_command(&root, &command);
+    cmd.current_dir(&root).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Own process group so bg_kill can take down the whole tree (npm → node …).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("启动命令失败 (spawn failed): {e}"))?;
+    let pid = child.id();
+    let output: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    bg_stream(child.stdout.take().unwrap(), output.clone());
+    bg_stream(child.stderr.take().unwrap(), output.clone());
+
+    let id = BG_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    jobs.insert(
+        id,
+        BgJob { command, started: Instant::now(), output, code: None, reported: false, pid },
+    );
+    drop(reg);
+
+    // Monitor thread: record the exit code when the process ends.
+    std::thread::spawn(move || {
+        let status = child.wait();
+        let code = status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
+            if let Some(job) = jobs.get_mut(&id) {
+                job.code = Some(code);
+            }
+        }
+    });
+    Ok(id)
+}
+
+/// Snapshot of one background job (running or finished).
+#[tauri::command]
+pub fn agent_bg_output(id: u64) -> Result<BgInfo, String> {
+    let reg = BG_JOBS.lock().unwrap();
+    let job = reg
+        .as_ref()
+        .and_then(|j| j.get(&id))
+        .ok_or_else(|| format!("没有这个后台命令 (no such background job): #{id}"))?;
+    Ok(BgInfo {
+        id,
+        command: job.command.clone(),
+        running: job.code.is_none(),
+        code: job.code,
+        elapsed_secs: job.started.elapsed().as_secs(),
+        tail: bg_tail(&job.output),
+    })
+}
+
+/// Kill a background job (SIGKILL to its process group on unix).
+#[tauri::command]
+pub fn agent_bg_kill(id: u64) -> Result<String, String> {
+    let mut reg = BG_JOBS.lock().unwrap();
+    let job = reg
+        .as_mut()
+        .and_then(|j| j.get_mut(&id))
+        .ok_or_else(|| format!("没有这个后台命令 (no such background job): #{id}"))?;
+    if job.code.is_none() {
+        bg_kill_pid(job.pid);
+        job.reported = true; // killed on request → no completion notice needed
+        return Ok(format!("已终止后台命令 #{id} (killed)"));
+    }
+    Ok(format!("后台命令 #{id} 已经结束 (already finished)"))
+}
+
+/// Kill a job's whole process group (unix) / tree (windows).
+fn bg_kill_pid(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
+    }
+}
+
+/// Finished-but-unreported jobs → hand them to the agent loop exactly once.
+#[tauri::command]
+pub fn agent_bg_reap() -> Vec<BgInfo> {
+    let mut out = Vec::new();
+    if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
+        for (id, job) in jobs.iter_mut() {
+            if job.code.is_some() && !job.reported {
+                job.reported = true;
+                out.push(BgInfo {
+                    id: *id,
+                    command: job.command.clone(),
+                    running: false,
+                    code: job.code,
+                    elapsed_secs: job.started.elapsed().as_secs(),
+                    tail: bg_tail(&job.output),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Kill every background job (workspace switch / app teardown).
+pub fn bg_kill_all() {
+    if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
+        for job in jobs.values() {
+            if job.code.is_none() {
+                bg_kill_pid(job.pid);
+            }
+        }
+        jobs.clear();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -512,6 +750,48 @@ mod tests {
         // non-existent old_string errors
         assert!(agent_edit_file("sub/hi.txt".into(), "nope".into(), "x".into(), None).is_err());
 
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn bg_job_roundtrip() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-bg-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+
+        // The agent shell PATH must include the common tool dirs the GUI app
+        // doesn't inherit (this was why npm/node "didn't exist").
+        #[cfg(unix)]
+        assert!(augmented_path().contains("/usr/bin"));
+
+        let id = agent_bash_bg("echo started; sleep 0.2; echo done-marker".into()).unwrap();
+        // Running immediately after spawn.
+        let info = agent_bg_output(id).unwrap();
+        assert!(info.running || info.code == Some(0));
+
+        // Wait for it to finish, then reap exactly once.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let reaped = agent_bg_reap();
+            if let Some(job) = reaped.iter().find(|j| j.id == id) {
+                assert_eq!(job.code, Some(0));
+                assert!(job.tail.contains("done-marker"));
+                break;
+            }
+            assert!(Instant::now() < deadline, "bg job never finished");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // Second reap must not report it again.
+        assert!(agent_bg_reap().iter().all(|j| j.id != id));
+
+        // Kill path: a long sleeper dies on request and never gets reported.
+        let id2 = agent_bash_bg("sleep 30".into()).unwrap();
+        agent_bg_kill(id2).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(agent_bg_reap().iter().all(|j| j.id != id2));
+
+        bg_kill_all();
         std::fs::remove_dir_all(&tmp).ok();
     }
 }

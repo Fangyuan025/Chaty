@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.1 — Code mode: background commands, web access & fixes (2026-07-09)
+
+- **Background commands** — the agent can now start long-running commands (dev servers, big builds) in the background: it gets an id back immediately and keeps working on other steps, can check progress or stop the job, and is **told automatically the moment a job finishes** (exit code + output tail, shown as a step card). Background jobs are cleaned up when you switch workspaces.
+- **Web access for the agent** — new `web_search` / `web_fetch` tools reuse the chat's key-less multi-provider search chain, so the agent can look up unfamiliar errors and library docs instead of guessing.
+- **Fixed: `npm` / `node` "command not found"** — the agent shell now includes the common tool locations (Homebrew, cargo, nvm, bun, …) that Finder-launched apps don't inherit, so project tooling just works.
+- **Fixed: thinking across model families** — Code mode now uses the same per-model reasoning control as chat (Qwen3's `/no_think` soft switch, the think flag for Qwen3.5+, Gemma 4's channel-marker normalization), so switching models no longer breaks the reasoning panel.
+- **Fixed: Bypass mid-run** — flipping Bypass (or pressing `Shift+Tab`) while a task is running now takes effect immediately, releasing any approval dialog that was already waiting.
+- The agent is now explicitly guided to run servers in the background (never through the blocking shell) and to verify unfamiliar errors on the web.
+
 ## v1.3.0 — Code mode: a local coding agent (2026-07-08)
 
 - **Code mode** — a new top-level **Chat | Code** switch turns Chaty into an agentic coding tool that runs entirely on your local model. Point it at a folder, describe a task, and the agent explores, edits, and verifies the project by itself: reading and writing files, exact-string edits, glob/grep search, and shell commands — every step shown live as it happens.

@@ -242,6 +242,34 @@ export async function agentGlob(pattern: string): Promise<string[]> {
 export async function agentListFiles(query?: string, limit?: number): Promise<string[]> {
   return invoke<string[]>("agent_list_files", { query, limit });
 }
+
+// ---------- Background commands (Code mode) ----------
+
+export interface AgentBgInfo {
+  id: number;
+  command: string;
+  running: boolean;
+  code?: number | null;
+  elapsedSecs: number;
+  tail: string;
+}
+
+/** Start a background command; returns its id immediately. */
+export async function agentBashBg(command: string): Promise<number> {
+  return invoke<number>("agent_bash_bg", { command });
+}
+/** Current status + output tail of one background command. */
+export async function agentBgOutput(id: number): Promise<AgentBgInfo> {
+  return invoke<AgentBgInfo>("agent_bg_output", { id });
+}
+/** Kill a background command (whole process tree). */
+export async function agentBgKill(id: number): Promise<string> {
+  return invoke<string>("agent_bg_kill", { id });
+}
+/** Finished-but-unreported background commands (each returned exactly once). */
+export async function agentBgReap(): Promise<AgentBgInfo[]> {
+  return invoke<AgentBgInfo[]>("agent_bg_reap");
+}
 export async function agentGrep(pattern: string, path?: string, glob?: string): Promise<string> {
   return invoke<string>("agent_grep", { pattern, path, glob });
 }
