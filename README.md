@@ -54,8 +54,8 @@ Deep Research, and hands-free voice built right in.
 ### Code mode (agentic coding)
 - A top-level **Chat | Code** switch turns Chaty into a **local coding agent**: point it at a folder, describe the task, and it explores, edits, and verifies the project by itself — file read/write, exact-string edits, glob/grep, shell commands (with **background jobs** for dev servers and long builds), and **web search** for unfamiliar errors — every step shown live.
 - **Confined & sandboxed** — file access never leaves the workspace you picked, and on macOS shell commands run in a Seatbelt sandbox that can only write inside it.
-- **You stay in control** — per-action approval with a real diff preview (or flip on **Bypass** for autonomy), a live task-plan checklist, and choice dialogs when a decision is yours to make.
-- **Built for local models** — visible reasoning with an Off / Normal / Deep depth switch, a context-usage ring with automatic compaction, tolerant tool-call parsing so smaller models self-correct, plus persistent sessions, custom `/skills`, and slash commands.
+- **You stay in control** — per-action approval with a real diff preview, "always allow" grants and a command allowlist, **checkpoints with one-click rewind** (files restored, conversation rolled back), a live task-plan checklist, and choice dialogs when a decision is yours to make.
+- **Built for local models** — visible reasoning with an Off / Normal / Deep depth switch, a context-usage ring with automatic compaction, whole-file single reads sized to your context window, ranked `search_code` + knowledge-base `search_docs`, loop-breaking for repetitive small models, plus persistent sessions, project memory (AGENTS.md), custom `/skills`, and slash commands.
 
 ### Knowledge base (RAG)
 - Index **PDF, Word (.docx), Excel (.xlsx), Markdown, ~90 text/code/config formats, and images** (with OCR) into a private, on-device store — one file at a time or a **whole folder** (subdirectories included, with the project's structure preserved).

@@ -4431,6 +4431,36 @@ a:focus-visible,
   border-color: var(--accent);
   background: var(--surface-2);
 }
+.cm-user-row {
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 82%;
+}
+.cm-rewind {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+.cm-user-row:hover .cm-rewind {
+  opacity: 1;
+}
+.cm-rewind:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
 .cm-user {
   align-self: flex-end;
   max-width: 82%;
@@ -4760,10 +4790,6 @@ a:focus-visible,
   font-size: 12px;
   color: var(--text-dim);
 }
-.cm-think-ico {
-  font-size: 11px;
-  opacity: 0.8;
-}
 .cm-think-caret {
   font-size: 9px;
   transition: transform 0.14s;
@@ -4915,6 +4941,98 @@ a:focus-visible,
 .cm-welcome-eg:hover {
   border-color: var(--accent);
   color: var(--text);
+}
+
+/* ---- queued messages (typed while the agent was running) ---- */
+.cm-queue {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 860px;
+  margin: 0 auto 8px;
+}
+.cm-queue-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  padding: 4px 6px 4px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+}
+.cm-queue-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cm-queue-del {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.cm-queue-del:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* ---- running background-jobs badge (header) ---- */
+.cm-bgjobs {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.cm-bgjobs:hover {
+  color: var(--danger, #e5484d);
+  border-color: var(--danger, #e5484d);
+}
+
+/* ---- copy button on the final answer ---- */
+.cm-asst-text {
+  position: relative;
+}
+.cm-copy {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s;
+}
+.cm-asst-text:hover .cm-copy {
+  opacity: 1;
+}
+.cm-copy:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
 }
 
 /* ---- auto-compaction notice ---- */
@@ -5069,6 +5187,30 @@ a:focus-visible,
   justify-content: flex-end;
   gap: 10px;
   margin-top: 16px;
+}
+.cm-allow-session {
+  margin-right: auto;
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: 9px;
+  cursor: pointer;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cm-allow-session:hover {
+  color: var(--text);
+  border-style: solid;
+  border-color: var(--accent);
+}
+.allow-chip {
+  cursor: default;
+  font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace;
+  font-size: 11.5px;
 }
 .cm-deny,
 .cm-allow {

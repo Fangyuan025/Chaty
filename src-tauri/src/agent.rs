@@ -95,8 +95,9 @@ pub fn agent_set_workspace(path: String) -> Result<String, String> {
     let shown = canon.to_string_lossy().to_string();
     let changed = WORKSPACE.lock().unwrap().replace(canon.clone()) != Some(canon);
     if changed {
-        // Background jobs belong to the workspace they were started in.
+        // Background jobs and checkpoints belong to the previous workspace.
         bg_kill_all();
+        cp_clear();
     }
     Ok(shown)
 }
@@ -110,35 +111,76 @@ pub fn agent_get_workspace() -> Option<String> {
 // File tools
 // ---------------------------------------------------------------------------
 
-/// Read a text file. Optional 1-based `offset` line and `limit` line count.
+/// Read a text file with line-window paging. Optional 1-based `offset` line
+/// and `limit` line count; long files get an actionable footer telling the
+/// model exactly which offset continues the read (instead of a blind cut that
+/// forced it to guess its way through page after page).
 #[tauri::command]
 pub fn agent_read_file(
     path: String,
     offset: Option<usize>,
     limit: Option<usize>,
+    max_chars: Option<usize>,
 ) -> Result<String, String> {
+    const MAX_READ_LINES: usize = 8000; // hard per-call line ceiling
+    const MAX_LINE_CHARS: usize = 4000; // pathological single lines (minified JS)
+
+    // The caller (frontend) sizes the budget from the model's ACTUAL context
+    // window, so a normal source file fits in ONE call; the default only
+    // applies to callers that don't say (tests, older paths).
+    let budget = max_chars.unwrap_or(24_000).clamp(4_000, 300_000);
+
     let abs = resolve(&path)?;
     let meta = std::fs::metadata(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
     if meta.is_dir() {
         return Err("这是一个目录，请用 list_dir (that's a directory)".to_string());
     }
     let bytes = std::fs::read(&abs).map_err(|e| e.to_string())?;
-    let truncated_bytes = bytes.len() > MAX_READ_BYTES;
     let slice = &bytes[..bytes.len().min(MAX_READ_BYTES)];
     let text = String::from_utf8_lossy(slice);
 
-    let out = if offset.is_some() || limit.is_some() {
-        let start = offset.unwrap_or(1).max(1) - 1;
-        let take = limit.unwrap_or(usize::MAX);
-        text.lines().skip(start).take(take).collect::<Vec<_>>().join("\n")
-    } else {
-        text.into_owned()
-    };
-    Ok(if truncated_bytes {
-        format!("{out}\n\n… (文件已截断 / file truncated at {MAX_READ_BYTES} bytes)")
-    } else {
-        out
-    })
+    let all: Vec<&str> = text.lines().collect();
+    let total = all.len();
+    let start = offset.unwrap_or(1).max(1) - 1;
+    if start >= total && total > 0 {
+        return Ok(format!(
+            "(offset 超出范围:文件共 {total} 行 / offset beyond EOF: file has {total} lines)"
+        ));
+    }
+    let want = limit.unwrap_or(MAX_READ_LINES).clamp(1, MAX_READ_LINES);
+
+    let mut out = String::new();
+    let mut end = start; // exclusive
+    for (i, line) in all.iter().enumerate().skip(start).take(want) {
+        let line: &str = if line.len() > MAX_LINE_CHARS {
+            let mut cut = MAX_LINE_CHARS;
+            while !line.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            &line[..cut]
+        } else {
+            line
+        };
+        if !out.is_empty() && out.len() + line.len() + 1 > budget {
+            break;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+        end = i + 1;
+    }
+
+    if end < total {
+        out.push_str(&format!(
+            "\n\n[文件共 {total} 行,本次显示第 {}-{end} 行;继续阅读请用 offset={} (file has {total} lines, shown {}-{end}; continue with offset={})]",
+            start + 1,
+            end + 1,
+            start + 1,
+            end + 1,
+        ));
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -149,6 +191,7 @@ pub fn agent_write_file(path: String, content: String) -> Result<String, String>
             "目标是一个目录，不能写入；请提供文件路径 (target is a directory, give a file path): {path}"
         ));
     }
+    cp_record(&abs);
     if let Some(parent) = abs.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -171,6 +214,7 @@ pub fn agent_edit_file(
     }
     let abs = resolve(&path)?;
     let text = std::fs::read_to_string(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
+    cp_record(&abs);
     let count = text.matches(&old_string).count();
     if count == 0 {
         return Err("未找到 old_string（需与文件内容逐字匹配）(old_string not found — must match exactly)".to_string());
@@ -277,6 +321,255 @@ pub fn agent_list_files(query: Option<String>, limit: Option<usize>) -> Result<V
     }
     hits.sort_by_key(|p| (p.len(), p.clone()));
     Ok(hits)
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoints: a per-turn journal of every file's FIRST-touch original state
+// (written by the agent's write/edit tools). Reverting restores the originals
+// newest-turn-first, so "rewind to before turn N" is safe. Session-scoped,
+// bash side effects are not journaled (same trade-off as Claude Code rewind).
+// ---------------------------------------------------------------------------
+
+struct CpEntry {
+    path: PathBuf,
+    /// The file's bytes before the first agent touch this turn; `None` = the
+    /// file did not exist (revert deletes it).
+    original: Option<Vec<u8>>,
+}
+struct Checkpoint {
+    id: u64,
+    entries: Vec<CpEntry>,
+}
+static CHECKPOINTS: Mutex<Vec<Checkpoint>> = Mutex::new(Vec::new());
+static CP_NEXT_ID: AtomicU64 = AtomicU64::new(1);
+const CP_MAX: usize = 40;
+const CP_MAX_FILE: u64 = 8 * 1024 * 1024; // don't journal giant files
+
+/// Record `abs`'s current state into the active checkpoint (first touch only).
+fn cp_record(abs: &Path) {
+    let mut cps = CHECKPOINTS.lock().unwrap();
+    let Some(cp) = cps.last_mut() else { return };
+    if cp.entries.iter().any(|e| e.path == abs) {
+        return;
+    }
+    if std::fs::metadata(abs).map(|m| m.len() > CP_MAX_FILE).unwrap_or(false) {
+        return;
+    }
+    let original = std::fs::read(abs).ok();
+    cp.entries.push(CpEntry { path: abs.to_path_buf(), original });
+}
+
+/// Open a new checkpoint for the coming turn; returns its id.
+#[tauri::command]
+pub fn agent_checkpoint_begin() -> u64 {
+    let mut cps = CHECKPOINTS.lock().unwrap();
+    let id = CP_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    cps.push(Checkpoint { id, entries: Vec::new() });
+    if cps.len() > CP_MAX {
+        cps.remove(0);
+    }
+    id
+}
+
+/// Restore the workspace to the state BEFORE checkpoint `id`: every checkpoint
+/// with id >= `id` is reverted, newest first.
+#[tauri::command]
+pub fn agent_checkpoint_revert_to(id: u64) -> Result<String, String> {
+    let mut cps = CHECKPOINTS.lock().unwrap();
+    let mut restored = 0usize;
+    let mut removed = 0usize;
+    while cps.last().map(|c| c.id >= id).unwrap_or(false) {
+        let cp = cps.pop().unwrap();
+        for e in cp.entries.iter().rev() {
+            match &e.original {
+                Some(bytes) => {
+                    if let Some(parent) = e.path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if std::fs::write(&e.path, bytes).is_ok() {
+                        restored += 1;
+                    }
+                }
+                None => {
+                    if std::fs::remove_file(&e.path).is_ok() {
+                        removed += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(format!(
+        "已回滚：恢复 {restored} 个文件，删除 {removed} 个新建文件 (reverted: {restored} restored, {removed} removed)"
+    ))
+}
+
+fn cp_clear() {
+    CHECKPOINTS.lock().unwrap().clear();
+}
+
+// ---------------------------------------------------------------------------
+// Ranked code search (BM25 over line-window chunks) — a "which file handles X?"
+// tool that beats grep for the model: multi-term, ranked, typo-tolerant-ish.
+// ---------------------------------------------------------------------------
+
+const SEARCH_MAX_FILE: u64 = 200 * 1024; // skip huge files
+const SEARCH_MAX_TOTAL: usize = 24 * 1024 * 1024; // stop scanning past this much text
+const SEARCH_CHUNK_LINES: usize = 30;
+const SEARCH_CHUNK_OVERLAP: usize = 8;
+
+/// Lowercased alphanumeric tokens, with camelCase / snake_case split so
+/// `getUserName` matches "user name".
+fn code_tokens(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in s.split(|c: char| !c.is_alphanumeric()) {
+        if raw.is_empty() {
+            continue;
+        }
+        // split camelCase boundaries
+        let mut word = String::new();
+        let chars: Vec<char> = raw.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
+            if i > 0 && c.is_uppercase() && chars[i - 1].is_lowercase() {
+                if word.len() > 1 {
+                    out.push(word.to_lowercase());
+                }
+                word.clear();
+            }
+            word.push(c);
+        }
+        if word.len() > 1 {
+            out.push(word.to_lowercase());
+        }
+    }
+    out
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeHit {
+    pub path: String,
+    pub line: usize,
+    pub snippet: String,
+    pub score: f32,
+}
+
+/// BM25-ranked search over the workspace. Chunks are overlapping line windows;
+/// results carry the path + start line + snippet.
+#[tauri::command]
+pub fn agent_search_code(query: String, k: Option<usize>) -> Result<Vec<CodeHit>, String> {
+    let root = workspace()?;
+    let q_tokens = code_tokens(&query);
+    if q_tokens.is_empty() {
+        return Err("查询为空 (empty query)".to_string());
+    }
+    let top_k = k.unwrap_or(8).clamp(1, 30);
+
+    struct Chunk {
+        path: String,
+        line: usize,
+        text: String,
+        tf: HashMap<String, u32>,
+        len: u32,
+    }
+    let mut chunks: Vec<Chunk> = Vec::new();
+    let mut df: HashMap<String, u32> = HashMap::new();
+    let mut scanned = 0usize;
+
+    'walk: for entry in walkdir::WalkDir::new(&root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !(name.starts_with('.') && e.depth() > 0)
+                && !(e.file_type().is_dir() && SKIP_DIRS.contains(&name.as_ref()))
+        })
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry.metadata().map(|m| m.len() > SEARCH_MAX_FILE).unwrap_or(true) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(entry.path()) else { continue };
+        if bytes.iter().take(512).any(|&b| b == 0) {
+            continue; // binary
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        scanned += text.len();
+        let rel = rel_display(&root, entry.path());
+        let lines: Vec<&str> = text.lines().collect();
+        let mut start = 0usize;
+        while start < lines.len() {
+            let end = (start + SEARCH_CHUNK_LINES).min(lines.len());
+            let body = lines[start..end].join("\n");
+            let toks = code_tokens(&body);
+            if !toks.is_empty() {
+                let mut tf: HashMap<String, u32> = HashMap::new();
+                for t in &toks {
+                    *tf.entry(t.clone()).or_insert(0) += 1;
+                }
+                for t in tf.keys() {
+                    *df.entry(t.clone()).or_insert(0) += 1;
+                }
+                chunks.push(Chunk {
+                    path: rel.clone(),
+                    line: start + 1,
+                    text: body,
+                    len: toks.len() as u32,
+                    tf,
+                });
+            }
+            if end == lines.len() {
+                break;
+            }
+            start = end - SEARCH_CHUNK_OVERLAP;
+        }
+        if scanned > SEARCH_MAX_TOTAL {
+            break 'walk;
+        }
+    }
+
+    if chunks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let n = chunks.len() as f32;
+    let avg_len: f32 = chunks.iter().map(|c| c.len as f32).sum::<f32>() / n;
+    let (k1, b) = (1.4f32, 0.75f32);
+    let mut hits: Vec<CodeHit> = chunks
+        .iter()
+        .filter_map(|c| {
+            let mut score = 0f32;
+            for t in &q_tokens {
+                let Some(&tf) = c.tf.get(t) else { continue };
+                let dfi = *df.get(t).unwrap_or(&1) as f32;
+                let idf = ((n - dfi + 0.5) / (dfi + 0.5) + 1.0).ln();
+                let tf = tf as f32;
+                score += idf * (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * c.len as f32 / avg_len));
+            }
+            (score > 0.0).then(|| CodeHit {
+                path: c.path.clone(),
+                line: c.line,
+                snippet: c.text.chars().take(700).collect(),
+                score,
+            })
+        })
+        .collect();
+    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    // At most 2 hits per file so one file can't monopolize the results.
+    let mut per_file: HashMap<&str, usize> = HashMap::new();
+    let mut out = Vec::new();
+    for h in &hits {
+        let c = per_file.entry(h.path.as_str()).or_insert(0);
+        if *c < 2 {
+            *c += 1;
+            out.push(h.clone());
+            if out.len() >= top_k {
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Regex content search over the workspace (skips VCS/build/binary dirs).
@@ -656,6 +949,27 @@ fn bg_kill_pid(pid: u32) {
     }
 }
 
+/// All currently RUNNING background jobs (for the UI's indicator).
+#[tauri::command]
+pub fn agent_bg_list() -> Vec<BgInfo> {
+    let reg = BG_JOBS.lock().unwrap();
+    let Some(jobs) = reg.as_ref() else { return Vec::new() };
+    let mut out: Vec<BgInfo> = jobs
+        .iter()
+        .filter(|(_, j)| j.code.is_none())
+        .map(|(id, j)| BgInfo {
+            id: *id,
+            command: j.command.clone(),
+            running: true,
+            code: None,
+            elapsed_secs: j.started.elapsed().as_secs(),
+            tail: String::new(), // the indicator doesn't need output
+        })
+        .collect();
+    out.sort_by_key(|j| j.id);
+    out
+}
+
 /// Finished-but-unreported jobs → hand them to the agent loop exactly once.
 #[tauri::command]
 pub fn agent_bg_reap() -> Vec<BgInfo> {
@@ -740,15 +1054,108 @@ mod tests {
         set_ws(&tmp);
 
         agent_write_file("sub/hi.txt".into(), "hello world\nsecond".into()).unwrap();
-        let read = agent_read_file("sub/hi.txt".into(), None, None).unwrap();
+        let read = agent_read_file("sub/hi.txt".into(), None, None, None).unwrap();
         assert!(read.contains("hello world"));
 
         // unique edit
         agent_edit_file("sub/hi.txt".into(), "hello".into(), "hi".into(), None).unwrap();
-        assert!(agent_read_file("sub/hi.txt".into(), None, None).unwrap().starts_with("hi world"));
+        assert!(agent_read_file("sub/hi.txt".into(), None, None, None).unwrap().starts_with("hi world"));
 
         // non-existent old_string errors
         assert!(agent_edit_file("sub/hi.txt".into(), "nope".into(), "x".into(), None).is_err());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn read_file_pages_with_actionable_footer() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-page-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+
+        let body: String = (1..=1000).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(tmp.join("big.txt"), &body).unwrap();
+
+        // The headline behavior: a 1000-line source file is ONE read — no paging.
+        let full = agent_read_file("big.txt".into(), None, None, None).unwrap();
+        assert!(full.contains("line 1000"));
+        assert!(!full.contains("offset="));
+
+        // Only when the char budget genuinely can't hold the file does it page,
+        // and the footer must carry a FOLLOWABLE offset.
+        let page1 = agent_read_file("big.txt".into(), None, None, Some(4000)).unwrap();
+        assert!(page1.contains("offset="));
+        let tail = page1.rsplit("offset=").next().unwrap();
+        let next: usize =
+            tail.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap();
+        let page2 = agent_read_file("big.txt".into(), Some(next), None, Some(60_000)).unwrap();
+        assert!(page2.starts_with(&format!("line {next}")));
+        assert!(page2.contains("line 1000"));
+        assert!(!page2.contains("offset="));
+
+        // Small file: no footer at all.
+        std::fs::write(tmp.join("small.txt"), "hello\nworld\n").unwrap();
+        let small = agent_read_file("small.txt".into(), None, None, None).unwrap();
+        assert!(!small.contains("offset="));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn checkpoint_rewind_restores_files() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-cp-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        cp_clear();
+
+        std::fs::write(tmp.join("a.txt"), "v1").unwrap();
+
+        // Turn 1: edit a.txt + create b.txt.
+        let cp1 = agent_checkpoint_begin();
+        agent_write_file("a.txt".into(), "v2".into()).unwrap();
+        agent_write_file("b.txt".into(), "new".into()).unwrap();
+        // Turn 2: edit a.txt again via edit_file.
+        let _cp2 = agent_checkpoint_begin();
+        agent_edit_file("a.txt".into(), "v2".into(), "v3".into(), None).unwrap();
+        assert_eq!(std::fs::read_to_string(tmp.join("a.txt")).unwrap(), "v3");
+
+        // Rewind to before turn 1: a.txt back to v1, b.txt gone.
+        agent_checkpoint_revert_to(cp1).unwrap();
+        assert_eq!(std::fs::read_to_string(tmp.join("a.txt")).unwrap(), "v1");
+        assert!(!tmp.join("b.txt").exists());
+
+        cp_clear();
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn search_code_ranks_and_splits_camel_case() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-search-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+
+        std::fs::write(
+            tmp.join("auth.ts"),
+            "export function getUserName(token: string) {\n  // validate the login session\n  return decode(token).name;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("db.ts"),
+            "export function createPool() {\n  // database connection pool\n  return new Pool();\n}\n",
+        )
+        .unwrap();
+
+        // Multi-term + camelCase splitting: "user name login" should hit auth.ts.
+        let hits = agent_search_code("user name login".into(), Some(5)).unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].path, "auth.ts");
+        assert!(hits[0].snippet.contains("getUserName"));
+        // Off-topic query prefers the other file.
+        let hits2 = agent_search_code("database pool".into(), Some(5)).unwrap();
+        assert_eq!(hits2[0].path, "db.ts");
 
         std::fs::remove_dir_all(&tmp).ok();
     }

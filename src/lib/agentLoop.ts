@@ -16,10 +16,12 @@ import {
   agentGrep,
   agentListDir,
   agentReadFile,
+  agentSearchCode,
   agentWriteFile,
   cancelGeneration,
   fetchUrl,
   generate,
+  ragSearch,
   webSearch,
   type ChatMessage,
 } from "./ipc";
@@ -32,6 +34,8 @@ export type AgentToolName =
   | "list_dir"
   | "glob"
   | "grep"
+  | "search_code"
+  | "search_docs"
   | "bash"
   | "bash_bg"
   | "bg_output"
@@ -116,6 +120,9 @@ export interface AgentOptions {
   maxSteps?: number;
   /** Default timeout for bash commands (seconds) when the model doesn't set one. */
   bashTimeout?: number;
+  /** Project guide (AGENTS.md / PROJECT.md / CLAUDE.md) injected into the
+   *  system prompt — the /init loop's other half. */
+  projectDoc?: { name: string; text: string };
   signal: AgentSignal;
   /** Gate a mutating tool call. Return true to run, false to deny. Bypass mode
    *  passes a function that always resolves true. */
@@ -162,12 +169,14 @@ function proseAfter(raw: string): string {
 }
 
 const TOOLS_DOC = `
-- read_file: 读取文件。args: { "path": string, "offset"?: number, "limit"?: number }
+- read_file: 读取文件,一般一次调用即可读完整个文件;只有超出上下文预算的超大文件才分页,此时结果末尾会直接给出下一页的 offset,照着传即可。args: { "path": string, "offset"?: number(起始行,从1开始), "limit"?: number(行数) }
 - write_file: 新建或覆盖文件。args: { "path": string, "content": string }
 - edit_file: 精确替换文件中的一段文本(old_string 必须与文件内容逐字匹配且唯一,除非 replace_all=true)。args: { "path": string, "old_string": string, "new_string": string, "replace_all"?: boolean }
-- list_dir: 列出目录一层内容。args: { "path"?: string }
+- list_dir: 列出目录一层内容(不传 path = 工作区根;看子目录请传相对路径,如 {"path":"src"})。args: { "path"?: string }
 - glob: 按通配符找文件(如 "src/**/*.ts")。args: { "pattern": string }
-- grep: 用正则搜索文件内容。args: { "pattern": string, "path"?: string, "glob"?: string }
+- grep: 用正则搜索文件内容(找确切字符串时用)。args: { "pattern": string, "path"?: string, "glob"?: string }
+- search_code: 按含义搜索代码("哪里处理登录鉴权"),返回排序过的相关代码块(文件+行号)。探索陌生代码库优先用它。args: { "query": string, "k"?: number }
+- search_docs: 检索用户的知识库文档(需求文档、设计稿、笔记)。当任务涉及用户自己的资料时用。args: { "query": string }
 - bash: 在工作区里执行 shell 命令(macOS 沙箱,写限工作区)。会等命令结束;不要用它启动 dev server 等不会退出的进程。args: { "command": string, "timeout_secs"?: number }
 - bash_bg: 在后台启动长时间运行的命令(dev server、慢构建、长测试),立即返回一个 id,期间你可以继续做别的;它结束时系统会自动把结果告诉你。args: { "command": string }
 - bg_output: 查看某个后台命令的当前状态和最近输出(比如确认 server 已启动)。args: { "id": number }
@@ -177,7 +186,17 @@ const TOOLS_DOC = `
 - update_plan: 制定或更新任务计划(待办清单),让用户看到你的推进步骤。开始复杂任务时先列计划,完成一步就把它标为 done、把下一步标为 in_progress。args: { "todos": [{ "content": string, "status": "pending"|"in_progress"|"done" }] }
 - ask_user: 当遇到需要用户拍板的决策(方案分歧、需求不明、破坏性操作确认)时,向用户提一个选择题;不要自己乱猜。args: { "question": string, "options": string[] }`;
 
-function systemPrompt(workspace: string, zh: boolean, mode: ThinkMode): string {
+function systemPrompt(
+  workspace: string,
+  zh: boolean,
+  mode: ThinkMode,
+  projectDoc?: { name: string; text: string },
+): string {
+  const doc = projectDoc
+    ? zh
+      ? `\n\n项目说明(来自工作区的 ${projectDoc.name},请遵循其中的约定):\n${projectDoc.text}`
+      : `\n\nProject guide (from ${projectDoc.name} in the workspace — follow its conventions):\n${projectDoc.text}`
+    : "";
   const think =
     mode === "deep"
       ? zh
@@ -197,13 +216,15 @@ ${TOOLS_DOC}
 调用规则(务必严格遵守):
 - 每次只调用一个工具。要调用时,只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要在同一条消息里写其它内容。
 - 系统会把结果以 <tool_result>...</tool_result> 返回给你,你再继续。
+- 没有"当前目录"的概念:每条 bash 都是从工作区根目录启动的全新 shell,单独的 cd 不会保留到下一条命令。访问子目录请直接用相对路径(ls src、read_file "src/app.ts"),或在同一条命令内组合(cd src && npm test)。
 - 修改代码前,先用 read_file / grep / list_dir 了解现状;改完可用 bash 跑测试/构建验证。
+- 读大文件别从头翻到尾:先用 search_code / grep 定位到相关位置,再用 read_file 带 offset/limit 只读需要的区段。
 - 步数宝贵:新建文件用 write_file 一次写入完整内容;同一文件的多处修改合并成一次 edit_file,或直接用 write_file 重写整个文件。不要把一个改动拆成许多细碎小步。
 - dev server、npm run dev、长构建等不会很快退出的命令必须用 bash_bg 后台运行,再用 bg_output 确认启动成功;用完记得 bg_kill。
 - 遇到不认识的报错、需要查库/API 文档时,用 web_search / web_fetch 联网查证,不要凭空猜测。
 - 任务较复杂时,先用 update_plan 列出待办步骤,推进中及时更新状态;需要用户拍板时用 ask_user 提问。
 - 任务完成后,不要再调用工具,直接用简洁的中文总结你做了什么。
-- 谨慎对待 write_file / edit_file / bash(它们会真实改动文件或执行命令)。${think}`;
+- 谨慎对待 write_file / edit_file / bash(它们会真实改动文件或执行命令)。${think}${doc}`;
   }
   return `You are Chaty's coding agent, working inside a workspace directory. Workspace root: ${workspace}
 
@@ -213,13 +234,14 @@ ${TOOLS_DOC}
 Rules (follow strictly):
 - Call ONE tool at a time. To call it, output a single line <tool_call>{"name":"tool","arguments":{...}}</tool_call> and STOP immediately — nothing else in that message.
 - You'll get the result as <tool_result>...</tool_result>, then continue.
+- There is NO persistent working directory: every bash command starts a fresh shell at the workspace root, so a lone cd does NOT carry over. Use relative paths directly (ls src, read_file "src/app.ts") or combine in one command (cd src && npm test).
 - Before editing, understand the code with read_file / grep / list_dir; after editing, you can run tests/builds with bash.
 - Steps are precious: create new files with ONE write_file containing the complete content; merge multiple changes to the same file into one edit_file, or rewrite the whole file with write_file. Never split one change into many tiny steps.
 - Commands that don't exit quickly (dev servers, npm run dev, long builds) MUST run via bash_bg; check they started with bg_output, and bg_kill them when done.
 - For unfamiliar errors or library/API docs, verify with web_search / web_fetch instead of guessing.
 - For non-trivial tasks, lay out a todo list with update_plan first and keep its statuses current as you go; use ask_user when a decision is the user's to make.
 - When done, DON'T call a tool — just give a concise summary of what you did.
-- Be careful with write_file / edit_file / bash (they really change files / run commands).${think}`;
+- Be careful with write_file / edit_file / bash (they really change files / run commands).${think}${doc}`;
 }
 
 /** Pull the first tool call out of model output. Tolerant of the closing tag
@@ -313,13 +335,14 @@ const asNum = (v: unknown): number | undefined =>
 async function execTool(
   call: ToolCall,
   bashTimeout?: number,
+  readChars?: number,
 ): Promise<{ result: string; diff?: ToolStep["diff"] }> {
   const a = call.args;
   switch (call.name) {
     case "read_file": {
       const path = argPath(a);
       if (!path) return { result: MISSING_PATH };
-      return { result: await agentReadFile(path, asNum(a.offset), asNum(a.limit)) };
+      return { result: await agentReadFile(path, asNum(a.offset), asNum(a.limit), readChars) };
     }
     case "list_dir": {
       const entries = await agentListDir(a.path ? asStr(a.path) : undefined);
@@ -340,6 +363,30 @@ async function execTool(
           a.glob ? asStr(a.glob) : undefined,
         ),
       };
+    case "search_code": {
+      const q = asStr(a.query);
+      if (!q) return { result: 'ERROR: 缺少 "query" 参数 (missing "query")' };
+      const hits = await agentSearchCode(q, asNum(a.k));
+      if (!hits.length) return { result: "(没有匹配的代码 / no matches)" };
+      return {
+        result: hits
+          .map((h) => `── ${h.path}:${h.line} ──\n${h.snippet}`)
+          .join("\n\n"),
+      };
+    }
+    case "search_docs": {
+      const q = asStr(a.query);
+      if (!q) return { result: 'ERROR: 缺少 "query" 参数 (missing "query")' };
+      try {
+        const hits = await ragSearch(q, 6);
+        if (!hits.length) return { result: "(知识库中没有相关内容 / nothing relevant in the knowledge base)" };
+        return {
+          result: hits.map((h) => `── ${h.docName} ──\n${h.text}`).join("\n\n"),
+        };
+      } catch (e) {
+        return { result: `知识库不可用 (knowledge base unavailable): ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
     case "write_file": {
       const path = argPath(a);
       if (!path) return { result: MISSING_PATH };
@@ -377,7 +424,16 @@ async function execTool(
       return { result, diff: { path, before, after } };
     }
     case "bash": {
-      const r = await agentBash(asStr(a.command), asNum(a.timeout_secs) ?? bashTimeout);
+      const cmd = asStr(a.command).trim();
+      // A lone `cd` can't work — there is no persistent shell. Catch it before
+      // wasting a real execution and tell the model what to do instead.
+      if (/^cd\s+[^;&|()<>]+$/.test(cmd)) {
+        return {
+          result:
+            "提示:没有持久的工作目录,单独的 cd 不会保留到下一条命令。请直接用相对路径(如 ls src、read_file \"src/app.ts\"),或在同一条命令内组合:cd 子目录 && 你的命令。(No persistent cwd — combine `cd dir && cmd` in one command, or just use relative paths.)",
+        };
+      }
+      const r = await agentBash(cmd, asNum(a.timeout_secs) ?? bashTimeout);
       const parts: string[] = [];
       if (r.stdout) parts.push(r.stdout);
       if (r.stderr) parts.push(`[stderr]\n${r.stderr}`);
@@ -423,7 +479,10 @@ async function execTool(
 }
 
 function toolResultMsg(name: string, content: string): string {
-  const capped = content.length > 12000 ? content.slice(0, 12000) + "\n… (截断/truncated)" : content;
+  // read_file sizes itself in Rust from the model's real context window (plus
+  // an actionable next-offset footer) — never chop that off with a blind cap.
+  const cap = name === "read_file" ? 320000 : 12000;
+  const capped = content.length > cap ? content.slice(0, cap) + "\n… (截断/truncated)" : content;
   return `<tool_result name="${name}">\n${capped}\n</tool_result>`;
 }
 
@@ -510,9 +569,13 @@ export async function runAgentTurn(
   const nCtx = opts.nCtx ?? 8192;
   const budget = opts.thinkMode === "deep" ? 8192 : opts.thinkMode === "normal" ? 6144 : 4096;
   const maxTokens = Math.min(budget, Math.max(1024, Math.floor(nCtx * 0.75)));
+  // read_file budget scales with the REAL context window (≈0.6·nCtx tokens ×
+  // ~3 chars/token) so a normal source file is a single read; compaction
+  // reclaims the space on later steps.
+  const readChars = Math.min(300000, Math.max(12000, Math.floor(nCtx * 1.8)));
   const { history: keptHistory, trimmed } = trimHistory(history, nCtx);
   const messages: ChatMessage[] = [
-    { role: "system", content: systemPrompt(workspace, lang === "zh", opts.thinkMode) },
+    { role: "system", content: systemPrompt(workspace, lang === "zh", opts.thinkMode, opts.projectDoc) },
     ...keptHistory,
     { role: "user", content: userInput + noThinkSuffix },
   ];
@@ -524,6 +587,13 @@ export async function runAgentTurn(
 
   let baseTokens = 0; // tokens from completed steps this turn
   let lastTps = 0; // last trustworthy tokens/sec (engine-reported or warmed-up live)
+  // Loop breaker: fingerprint of the last tool call, to catch a model repeating
+  // the exact same call (e.g. `ls .` forever). Escalation: 2nd identical call
+  // is intercepted (not executed) + the next step samples hotter to break the
+  // pattern attractor; 3rd pauses the turn for the user.
+  let lastCallKey = "";
+  let repeatCount = 0;
+  let hotNext = false;
   let compactNotified = false;
   const noteCompacted = () => {
     if (!compactNotified) {
@@ -563,11 +633,14 @@ export async function runAgentTurn(
       let raw = "";
       let liveTokens = 0;
       const t0 = performance.now();
+      // After an intercepted repeat, sample hotter once to escape the pattern.
+      const stepTemp = hotNext ? 0.7 : 0.3;
+      hotNext = false;
       await generate(
         {
           messages,
           params: {
-            temperature: 0.3,
+            temperature: stepTemp,
             topP: 0.9,
             maxTokens,
             repeatPenalty: 1.05,
@@ -623,6 +696,40 @@ export async function runAgentTurn(
 
       const stepObj: ToolStep = { id: uid(), call, status: "running", thinking };
 
+      // ── Loop breaker: identical call to the previous one? ──
+      const callKey = `${call.name}:${JSON.stringify(call.args)}`;
+      if (callKey === lastCallKey) {
+        repeatCount++;
+      } else {
+        lastCallKey = callKey;
+        repeatCount = 0;
+      }
+      if (repeatCount >= 2) {
+        // Third identical call — pause instead of spinning to the step limit.
+        cb.onFinal(
+          lang === "zh"
+            ? `检测到模型连续 ${repeatCount + 1} 次发出完全相同的调用,已暂停以免空转。可点「继续」重试,或换一种说法明确指出要看的子目录/文件。`
+            : `The model issued the exact same call ${repeatCount + 1} times in a row — paused to avoid spinning. Hit "Continue" to retry, or rephrase with the specific subdirectory/file to look at.`,
+          undefined,
+          "steps",
+        );
+        return;
+      }
+      if (repeatCount === 1) {
+        // Second identical call — intercept without executing, teach, and let
+        // the next generation sample hotter to break the attractor.
+        hotNext = true;
+        const note =
+          lang === "zh"
+            ? "调用被拦截:这和上一步完全相同,结果不会变化。请换一种做法——传入具体的子目录/文件路径(如 list_dir {\"path\":\"src\"}、read_file \"src/app.ts\")、换个工具,或用 update_plan 重新梳理。提醒:没有持久的工作目录,cd 不会保留。"
+            : 'Intercepted: this call is identical to the previous one — the result cannot change. Do something different: pass a concrete subdirectory/file path (list_dir {"path":"src"}, read_file "src/app.ts"), use another tool, or re-plan with update_plan. Reminder: there is no persistent cwd.';
+        stepObj.status = "error";
+        stepObj.result = note;
+        cb.onStep(stepObj);
+        pushUser(toolResultMsg(call.name, note));
+        continue;
+      }
+
       // ── Meta-tools handled in the loop (no backend call, no approval) ──
       // update_plan renders as a dedicated live plan panel, not a step card.
       if (call.name === "update_plan") {
@@ -673,7 +780,7 @@ export async function runAgentTurn(
       cb.onStep(stepObj);
       let resultText: string;
       try {
-        const out = await execTool(call, opts.bashTimeout);
+        const out = await execTool(call, opts.bashTimeout, readChars);
         resultText = out.result;
         stepObj.status = "done";
         stepObj.result = out.result;

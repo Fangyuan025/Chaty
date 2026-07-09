@@ -3,11 +3,18 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useI18n } from "../lib/i18n";
 import { useConfirm } from "./ConfirmModal";
 import { BUILTIN_SKILLS } from "../lib/skills";
+import { copyToClipboard } from "../lib/clipboard";
 import { Markdown } from "./Markdown";
 import {
+  agentBgKill,
+  agentBgList,
+  agentCheckpointBegin,
+  agentCheckpointRevertTo,
   agentGetWorkspace,
   agentListFiles,
+  agentReadFile,
   agentSetWorkspace,
+  type AgentBgInfo,
   codeSessionDelete,
   codeSessionList,
   codeSessionLoad,
@@ -44,6 +51,8 @@ interface CodeMsg {
   compacted?: boolean;
   /** The turn paused at the step limit (offer a Continue button). */
   paused?: boolean;
+  /** Checkpoint opened before this user message's turn — enables rewind. */
+  checkpointId?: number;
 }
 
 const THINK_MODES: ThinkMode[] = ["off", "normal", "deep"];
@@ -77,11 +86,13 @@ function lineDiff(before: string, after: string): { kind: "ctx" | "add" | "del";
 
 const TOOL_ICON: Record<string, string> = {
   read_file: "M9 2h6l4 4v14a0 0 0 0 1 0 0H5V2z",
-  write_file: "M4 4h16v16H4z",
-  edit_file: "M4 4h16v16H4z",
+  write_file: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M12 12v6M9 15h6",
+  edit_file: "M17 3a2.85 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5z",
   list_dir: "M3 6h18M3 12h18M3 18h18",
   glob: "M3 6h18M3 12h18M3 18h18",
   grep: "M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-4-4",
+  search_code: "M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-4-4M8.5 9.5L7 11l1.5 1.5M13.5 9.5L15 11l-1.5 1.5",
+  search_docs: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M11 11a3 3 0 102.2 5.1L16 19",
   bash: "M4 5l6 7-6 7M13 19h7",
   bash_bg: "M4 5l6 7-6 7M13 5h7M13 12h7M13 19h7",
   bg_output: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 7v5l3 3",
@@ -106,6 +117,10 @@ function toolSummary(call: ToolCall): string {
       return `glob ${a.pattern ?? ""}`;
     case "grep":
       return `grep ${a.pattern ?? ""}`;
+    case "search_code":
+      return `code? ${a.query ?? ""}`;
+    case "search_docs":
+      return `docs? ${a.query ?? ""}`;
     case "bash":
       return `$ ${a.command ?? ""}`;
     case "bash_bg":
@@ -123,6 +138,16 @@ function toolSummary(call: ToolCall): string {
     default:
       return call.name;
   }
+}
+
+/** "Always allow" grant key for a call: a two-token command prefix for shells
+ *  (`npm test`, `cargo build`), the tool name for file edits. */
+function allowKeyFor(call: ToolCall): string {
+  if (call.name === "bash" || call.name === "bash_bg") {
+    const cmd = String((call.args as Record<string, unknown>).command ?? "").trim();
+    return `cmd:${cmd.split(/\s+/).slice(0, 2).join(" ")}`;
+  }
+  return `tool:${call.name}`;
 }
 
 /** A short result badge for a finished step (exit code, line count).
@@ -199,7 +224,7 @@ function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label
   return (
     <div className={`cm-think ${live ? "live" : ""}`}>
       <button className="cm-think-head" onClick={() => setOpen((o) => !o)}>
-        {live ? <span className="cm-spin" /> : <span className="cm-think-ico">💭</span>}
+        {live && <span className="cm-spin" />}
         <span className="cm-think-label">{label}</span>
         <span className={`cm-think-caret ${open || live ? "open" : ""}`}>▸</span>
       </button>
@@ -240,6 +265,7 @@ export function CodeMode({
   bashTimeout,
   skills = [],
   disabledSkills = [],
+  allowedCommands = [],
 }: {
   model: ModelInfo | null;
   active: boolean;
@@ -251,6 +277,8 @@ export function CodeMode({
   skills?: { name: string; prompt: string }[];
   /** Names of built-in skills the user turned off (Settings → Code). */
   disabledSkills?: string[];
+  /** Persistent command prefixes that never need approval (Settings → Code). */
+  allowedCommands?: string[];
 }) {
   const { t, lang } = useI18n();
   const confirm = useConfirm();
@@ -283,6 +311,13 @@ export function CodeMode({
   });
   const [stats, setStats] = useState<{ tokens: number; tps: number } | null>(null);
   const [ctxUsed, setCtxUsed] = useState(0);
+  /** Messages typed while the agent was running — auto-sent one by one after. */
+  const [queue, setQueue] = useState<string[]>([]);
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
+  /** Running background jobs (dev servers …) — header indicator. */
+  const [bgJobs, setBgJobs] = useState<AgentBgInfo[]>([]);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const signalRef = useRef<AgentSignal | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef({ msgs, workspace, sid });
@@ -291,6 +326,12 @@ export function CodeMode({
   // ref so flipping the toggle MID-RUN takes effect immediately.
   const bypassRef = useRef(bypass);
   bypassRef.current = bypass;
+
+  // Session-scoped "always allow" grants (from the approval dialog's third
+  // button). Keyed "cmd:<two-token prefix>" or "tool:<name>"; reset per session.
+  const sessionAllowsRef = useRef<Set<string>>(new Set());
+  const allowedCommandsRef = useRef(allowedCommands);
+  allowedCommandsRef.current = allowedCommands;
 
   /** Toggle bypass; turning it ON also releases any approval that's waiting. */
   const toggleBypass = useCallback(() => {
@@ -314,6 +355,16 @@ export function CodeMode({
       agentGetWorkspace().then((w) => setWorkspace((cur) => cur ?? w)).catch(() => {});
     }
   }, [active, refreshSessions]);
+
+  // Keep the background-jobs indicator fresh (a dev server the agent started
+  // keeps running after the turn — the user needs to see and stop it).
+  useEffect(() => {
+    if (!active || !workspace) return;
+    const tick = () => agentBgList().then(setBgJobs).catch(() => {});
+    tick();
+    const timer = setInterval(tick, 5000);
+    return () => clearInterval(timer);
+  }, [active, workspace, running]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -418,6 +469,7 @@ export function CodeMode({
     setMsgs([]);
     setInput("");
     setCtxUsed(0);
+    sessionAllowsRef.current = new Set();
   }
 
   async function openSession(id: string) {
@@ -430,6 +482,7 @@ export function CodeMode({
       setMsgs(parsed);
       setCtxUsed(0);
       setStats(null);
+      sessionAllowsRef.current = new Set();
       const meta = sessions.find((s) => s.id === id);
       if (meta?.workspace) {
         setWorkspace(meta.workspace);
@@ -452,12 +505,38 @@ export function CodeMode({
     if (id === sid) newSession();
   }
 
+  /** Rewind to before `m`: restore journaled files and drop later messages.
+   *  The message text lands back in the composer for editing & re-sending. */
+  async function rewindTo(m: CodeMsg) {
+    if (running || m.checkpointId == null) return;
+    const ok = await confirm({
+      message: t("cmRewindConfirm"),
+      confirmLabel: t("cmRewind"),
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await agentCheckpointRevertTo(m.checkpointId);
+    } catch (e) {
+      void confirm({ message: e instanceof Error ? e.message : String(e), confirmLabel: t("confirm") });
+      return;
+    }
+    setMsgs((cur) => {
+      const i = cur.findIndex((x) => x.id === m.id);
+      const next = i === -1 ? cur : cur.slice(0, i);
+      persist(next, bodyRef.current.workspace, bodyRef.current.sid);
+      return next;
+    });
+    setInput(m.text);
+  }
+
   function stop() {
     signalRef.current?.cancel();
     approval?.resolve(false);
     setApproval(null);
     ask?.resolve("");
     setAsk(null);
+    setQueue([]);
     setRunning(false);
   }
 
@@ -562,6 +641,21 @@ export function CodeMode({
     }
   }
 
+  /** Project guide auto-load: AGENTS.md (the emerging standard) > PROJECT.md
+   *  (what /init writes) > CLAUDE.md. Re-read each turn — /init may have just
+   *  written it. Capped so it can't crowd the context window. */
+  async function loadProjectDoc(): Promise<{ name: string; text: string } | undefined> {
+    for (const name of ["AGENTS.md", "PROJECT.md", "CLAUDE.md"]) {
+      try {
+        const text = await agentReadFile(name);
+        if (text.trim()) return { name, text: text.slice(0, 6000) };
+      } catch {
+        /* try the next candidate */
+      }
+    }
+    return undefined;
+  }
+
   async function send(textArg?: string) {
     const text = (textArg ?? input).trim();
     if (!textArg && text.startsWith("/") && slashMenu.some((e) => e.cmd === text)) {
@@ -570,7 +664,11 @@ export function CodeMode({
     }
     if (!text || running || !model || !workspace) return;
     if (!textArg) setInput("");
-    const userMsg: CodeMsg = { id: uid(), role: "user", text, steps: [] };
+    // Snapshot point: everything the agent writes/edits this turn is journaled
+    // so the user can rewind to "before this message".
+    const checkpointId = await agentCheckpointBegin().catch(() => undefined);
+    const projectDoc = await loadProjectDoc();
+    const userMsg: CodeMsg = { id: uid(), role: "user", text, steps: [], checkpointId };
     const asst: CodeMsg = { id: uid(), role: "assistant", text: "", steps: [] };
     // Cross-turn history keeps only the text, but assistant turns carry a
     // compact record of the tools they ran — so "continue" resumes from the
@@ -601,11 +699,19 @@ export function CodeMode({
       nCtx: model.nCtx ?? undefined,
       maxSteps,
       bashTimeout,
+      projectDoc,
       signal,
-      approve: (call: ToolCall) =>
-        bypassRef.current
-          ? Promise.resolve(true)
-          : new Promise<boolean>((resolve) => setApproval({ call, resolve })),
+      approve: (call: ToolCall) => {
+        if (bypassRef.current) return Promise.resolve(true);
+        if (sessionAllowsRef.current.has(allowKeyFor(call))) return Promise.resolve(true);
+        if (call.name === "bash" || call.name === "bash_bg") {
+          const cmd = String(call.args.command ?? "").trim();
+          if (allowedCommandsRef.current.some((p) => cmd === p || cmd.startsWith(p + " "))) {
+            return Promise.resolve(true);
+          }
+        }
+        return new Promise<boolean>((resolve) => setApproval({ call, resolve }));
+      },
     }, {
       onThinking: (t) => update((m) => ({ ...m, liveThinking: t })),
       onStats: (tokens, tps) => setStats({ tokens, tps }),
@@ -644,6 +750,13 @@ export function CodeMode({
       persist(cur, bodyRef.current.workspace, bodyRef.current.sid);
       return cur;
     });
+
+    // Messages queued while the agent was working → run them in order.
+    const next = queueRef.current[0];
+    if (next !== undefined && !signal.cancelled) {
+      setQueue((q) => q.slice(1));
+      void send(next);
+    }
   }
 
   const wsName = workspace ? workspace.split("/").filter(Boolean).pop() : null;
@@ -695,6 +808,24 @@ export function CodeMode({
             {wsName ? <span className="cm-ws-name">{wsName}</span> : <span className="cm-ws-pick">{t("cmOpenFolder")}</span>}
           </button>
           <span className="cm-head-spacer" />
+          {bgJobs.length > 0 && (
+            <button
+              className="cm-bgjobs"
+              title={bgJobs.map((j) => `#${j.id} · ${j.command}`).join("\n") + "\n" + t("cmBgKillHint")}
+              onClick={async () => {
+                const ok = await confirm({
+                  message: t("cmBgKillConfirm", { n: String(bgJobs.length) }),
+                  confirmLabel: t("cmBgKill"),
+                  danger: true,
+                });
+                if (!ok) return;
+                await Promise.all(bgJobs.map((j) => agentBgKill(j.id).catch(() => {})));
+                agentBgList().then(setBgJobs).catch(() => {});
+              }}
+            >
+              <span className="cm-spin" /> {bgJobs.length} {t("cmBgJobs")}
+            </button>
+          )}
           {ctxUsed > 0 && (model?.nCtx ?? 0) > 0 && (() => {
             const nCtx = model!.nCtx!;
             const pct = Math.min(100, Math.round((ctxUsed / nCtx) * 100));
@@ -766,7 +897,18 @@ export function CodeMode({
             <div className="cm-thread">
             {msgs.map((m) =>
               m.role === "user" ? (
-                <div key={m.id} className="cm-user">{m.text}</div>
+                <div key={m.id} className="cm-user-row">
+                  {m.checkpointId != null && !running && (
+                    <button
+                      className="cm-rewind"
+                      title={t("cmRewindHint")}
+                      onClick={() => void rewindTo(m)}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
+                    </button>
+                  )}
+                  <div className="cm-user">{m.text}</div>
+                </div>
               ) : (
                 <div key={m.id} className="cm-asst">
                   {m.compacted && (
@@ -787,6 +929,23 @@ export function CodeMode({
                   {m.text && (
                     <div className="cm-asst-text answer">
                       <Markdown>{m.text}</Markdown>
+                      {!running && (
+                        <button
+                          className="cm-copy"
+                          title={t("copy")}
+                          onClick={() => {
+                            void copyToClipboard(m.text);
+                            setCopiedId(m.id);
+                            setTimeout(() => setCopiedId((c) => (c === m.id ? null : c)), 1200);
+                          }}
+                        >
+                          {copiedId === m.id ? (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                          ) : (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 012-2h10" /></svg>
+                          )}
+                        </button>
+                      )}
                     </div>
                   )}
                   {m.paused && !running && m === msgs[msgs.length - 1] && (
@@ -825,6 +984,19 @@ export function CodeMode({
           );
         })()}
         <div className="code-composer">
+          {queue.length > 0 && (
+            <div className="cm-queue">
+              {queue.map((q, i) => (
+                <span key={i} className="cm-queue-chip" title={q}>
+                  <span className="cm-queue-text">{q}</span>
+                  <button
+                    className="cm-queue-del"
+                    onClick={() => setQueue((cur) => cur.filter((_, j) => j !== i))}
+                  >×</button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="cm-input-row">
             {slashMenu.length > 0 && (
               <div className="cm-slash">
@@ -858,9 +1030,17 @@ export function CodeMode({
             )}
             <textarea
               className="cm-input"
-              placeholder={!model ? t("cmPlaceholderNoModel") : workspace ? t("cmPlaceholder") : t("cmPlaceholderNoWs")}
+              placeholder={
+                !model
+                  ? t("cmPlaceholderNoModel")
+                  : !workspace
+                    ? t("cmPlaceholderNoWs")
+                    : running
+                      ? t("cmQueuePlaceholder")
+                      : t("cmPlaceholder")
+              }
               value={input}
-              disabled={running || !model || !workspace}
+              disabled={!model || !workspace}
               onChange={(e) => { setInput(e.target.value); setSlashSel(0); setAtHidden(false); }}
               onKeyDown={(e) => {
                 // Shift+Tab toggles auto-approve, mirroring Claude Code.
@@ -889,7 +1069,19 @@ export function CodeMode({
                   }
                   if (e.key === "Escape") { setInput(""); return; }
                 }
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (running) {
+                    // Queue it — sent automatically once the current turn ends.
+                    const q = input.trim();
+                    if (q) {
+                      setQueue((cur) => [...cur, q]);
+                      setInput("");
+                    }
+                    return;
+                  }
+                  void send();
+                }
               }}
               rows={1}
             />
@@ -939,6 +1131,18 @@ export function CodeMode({
               </pre>
             )}
             <div className="cm-approve-actions">
+              <button
+                className="cm-allow-session"
+                onClick={() => {
+                  sessionAllowsRef.current.add(allowKeyFor(approval.call));
+                  approval.resolve(true);
+                  setApproval(null);
+                }}
+              >
+                {approval.call.name === "bash" || approval.call.name === "bash_bg"
+                  ? t("cmAllowAlwaysCmd", { cmd: allowKeyFor(approval.call).slice(4) })
+                  : t("cmAllowAlwaysEdits")}
+              </button>
               <button className="cm-deny" onClick={() => { approval.resolve(false); setApproval(null); }}>{t("cmDeny")}</button>
               <button className="cm-allow" onClick={() => { approval.resolve(true); setApproval(null); }}>{t("cmAllow")}</button>
             </div>

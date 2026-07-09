@@ -218,8 +218,13 @@ export async function agentSetWorkspace(path: string): Promise<string> {
 export async function agentGetWorkspace(): Promise<string | null> {
   return invoke<string | null>("agent_get_workspace");
 }
-export async function agentReadFile(path: string, offset?: number, limit?: number): Promise<string> {
-  return invoke<string>("agent_read_file", { path, offset, limit });
+export async function agentReadFile(
+  path: string,
+  offset?: number,
+  limit?: number,
+  maxChars?: number,
+): Promise<string> {
+  return invoke<string>("agent_read_file", { path, offset, limit, maxChars });
 }
 export async function agentWriteFile(path: string, content: string): Promise<string> {
   return invoke<string>("agent_write_file", { path, content });
@@ -241,6 +246,17 @@ export async function agentGlob(pattern: string): Promise<string[]> {
 /** Filename search for the @-mention picker (substring, capped, skips VCS/build dirs). */
 export async function agentListFiles(query?: string, limit?: number): Promise<string[]> {
   return invoke<string[]>("agent_list_files", { query, limit });
+}
+
+export interface AgentCodeHit {
+  path: string;
+  line: number;
+  snippet: string;
+  score: number;
+}
+/** BM25-ranked code search over the workspace ("which file handles X?"). */
+export async function agentSearchCode(query: string, k?: number): Promise<AgentCodeHit[]> {
+  return invoke<AgentCodeHit[]>("agent_search_code", { query, k });
 }
 
 // ---------- Background commands (Code mode) ----------
@@ -269,6 +285,21 @@ export async function agentBgKill(id: number): Promise<string> {
 /** Finished-but-unreported background commands (each returned exactly once). */
 export async function agentBgReap(): Promise<AgentBgInfo[]> {
   return invoke<AgentBgInfo[]>("agent_bg_reap");
+}
+/** All currently running background commands (UI indicator). */
+export async function agentBgList(): Promise<AgentBgInfo[]> {
+  return invoke<AgentBgInfo[]>("agent_bg_list");
+}
+
+// ---------- Checkpoints (Code mode rewind) ----------
+
+/** Open a checkpoint for the coming turn; agent writes/edits journal into it. */
+export async function agentCheckpointBegin(): Promise<number> {
+  return invoke<number>("agent_checkpoint_begin");
+}
+/** Restore the workspace to the state before checkpoint `id` (reverts newer turns too). */
+export async function agentCheckpointRevertTo(id: number): Promise<string> {
+  return invoke<string>("agent_checkpoint_revert_to", { id });
 }
 export async function agentGrep(pattern: string, path?: string, glob?: string): Promise<string> {
   return invoke<string>("agent_grep", { pattern, path, glob });

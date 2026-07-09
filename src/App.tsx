@@ -2070,6 +2070,7 @@ export default function App() {
         bashTimeout={settings.codeBashTimeout}
         skills={settings.codeSkills}
         disabledSkills={settings.codeDisabledSkills}
+        allowedCommands={settings.codeAllowedCommands}
       />
 
       <div className="body" style={appMode === "code" ? { display: "none" } : undefined}>

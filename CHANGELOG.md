@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.4.0 — Code mode: rewind, trust controls & a smarter loop (2026-07-09)
+
+- **Checkpoints & rewind** — every turn journals the original state of each file the agent touches. Hover any of your messages and hit **↩** to rewind: edited files are restored, created files removed, later messages dropped, and your message lands back in the composer to refine and re-send. (bash side effects aren't journaled — same trade-off as the majors.)
+- **Fine-grained permissions** — the approval dialog gains **"Always allow …"**: a two-word command prefix (`npm test`, `cargo build`) or all file edits, remembered for the session. A permanent **command allowlist** lives in Settings → Code. Priority: Bypass → allowlist → session grants → ask.
+- **Project memory** — `AGENTS.md` / `PROJECT.md` / `CLAUDE.md` from the workspace is auto-injected into the agent's system prompt each turn, so `/init` pays off on every future task and your conventions are always followed.
+- **`search_code`** — ranked, meaning-aware code search ("where is login handled?") over the workspace: BM25 with camelCase/snake_case splitting, line-window chunks, per-file result caps. **`search_docs`** lets the agent consult your knowledge base (requirements PDFs, design notes) while coding — fully offline.
+- **Whole files in one read** — the read budget now scales with the model's actual context window instead of a tiny fixed cap, so a 1,500-line source file is a single `read` call; only files that genuinely exceed the window page, with a footer stating the exact next offset. Pathological single-line files (minified JS) are truncated safely.
+- **Loop breaker** — a model repeating the exact same call is intercepted (not executed) with a corrective hint and one hotter-sampled step to escape the pattern; a third repeat pauses cleanly with a Continue button. Lone `cd` commands are caught with an explanation (there is no persistent cwd), and the prompt now teaches path-based navigation.
+- **Message queue** — type while the agent works: Enter queues your messages (removable chips) and they auto-run in order after the turn.
+- **Background-jobs badge** — running background commands (dev servers) show in the header with one-click **kill all**, so nothing the agent started is ever orphaned invisibly.
+- **Polish** — reasoning panel finishes as a clean "Reasoned" (no emoji); write/edit steps have distinct icons; a copy button on the final answer; the sampling **Reset** moved from Data into Sampling and now resets only sampling parameters (theme, skills, and GPU settings are no longer wiped).
+
 ## v1.3.1 — Code mode: background commands, web access & fixes (2026-07-09)
 
 - **Background commands** — the agent can now start long-running commands (dev servers, big builds) in the background: it gets an id back immediately and keeps working on other steps, can check progress or stop the job, and is **told automatically the moment a job finishes** (exit code + output tail, shown as a step card). Background jobs are cleaned up when you switch workspaces.

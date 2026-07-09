@@ -46,6 +46,8 @@ export interface GenSettings {
   codeSkills: PromptPreset[];
   /** Code mode: names of built-in skills the user turned off. */
   codeDisabledSkills: string[];
+  /** Code mode: command prefixes that never need approval (e.g. "npm test"). */
+  codeAllowedCommands: string[];
 }
 
 export const defaultSettings: GenSettings = {
@@ -68,6 +70,7 @@ export const defaultSettings: GenSettings = {
   codeBashTimeout: 60,
   codeSkills: [],
   codeDisabledSkills: [],
+  codeAllowedCommands: [],
 };
 
 /** kokoro-en-v0_19 speakers, in sid order (the array index IS the speaker id,
@@ -175,6 +178,16 @@ export function SettingsPanel({
   };
   const deleteSkill = (name: string) =>
     onChange({ ...value, codeSkills: value.codeSkills.filter((s) => s.name !== name) });
+
+  const [allowInput, setAllowInput] = useState("");
+  const addAllow = () => {
+    const p = allowInput.trim();
+    if (!p) return;
+    if (!value.codeAllowedCommands.includes(p)) {
+      set("codeAllowedCommands", [...value.codeAllowedCommands, p]);
+    }
+    setAllowInput("");
+  };
 
   const cats: { id: CatId; label: string }[] = [
     { id: "general", label: t("setCatGeneral") },
@@ -337,6 +350,24 @@ export function SettingsPanel({
                 <span><em className="has-tip" data-tip={t("tipStopSeqs")}>{t("stopSeqs")}</em></span>
                 <textarea rows={2} placeholder={t("stopSeqsPh")} value={value.stop} onChange={(e) => set("stop", e.target.value)} />
               </label>
+              <button
+                className="settings-reset"
+                onClick={() =>
+                  onChange({
+                    ...value,
+                    temperature: defaultSettings.temperature,
+                    topP: defaultSettings.topP,
+                    limitTokens: defaultSettings.limitTokens,
+                    maxTokens: defaultSettings.maxTokens,
+                    topK: defaultSettings.topK,
+                    minP: defaultSettings.minP,
+                    repeatPenalty: defaultSettings.repeatPenalty,
+                    stop: defaultSettings.stop,
+                  })
+                }
+              >
+                {t("resetDefaults")}
+              </button>
             </>
           )}
 
@@ -442,6 +473,45 @@ export function SettingsPanel({
                 />
               </label>
               <div className="settings-hint">{t("cmBashTimeoutHint")}</div>
+
+              <div className="field">
+                <span>{t("cmAllowlist")}</span>
+                {value.codeAllowedCommands.length > 0 && (
+                  <div className="preset-chips">
+                    {value.codeAllowedCommands.map((p) => (
+                      <span key={p} className="preset-chip">
+                        <span className="preset-apply allow-chip">{p}</span>
+                        <button
+                          type="button"
+                          className="preset-del"
+                          title={t("cancel")}
+                          onClick={() =>
+                            set("codeAllowedCommands", value.codeAllowedCommands.filter((x) => x !== p))
+                          }
+                        >×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="preset-add">
+                  <input
+                    type="text"
+                    placeholder={t("cmAllowlistPh")}
+                    value={allowInput}
+                    onChange={(e) => setAllowInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addAllow();
+                      }
+                    }}
+                  />
+                  <button type="button" onClick={addAllow} disabled={!allowInput.trim()}>
+                    {t("presetSave")}
+                  </button>
+                </div>
+              </div>
+              <div className="settings-hint">{t("cmAllowlistHint")}</div>
 
               <div className="field">
                 <span>{t("cmBuiltinSkills")}</span>
@@ -569,9 +639,6 @@ export function SettingsPanel({
                 </button>
               </div>
               <div className="settings-hint">{t("dataHint")}</div>
-              <button className="settings-reset" onClick={() => onChange(defaultSettings)}>
-                {t("resetDefaults")}
-              </button>
             </>
           )}
 
