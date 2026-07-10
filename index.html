@@ -9,6 +9,17 @@
 
   <body>
     <div id="root"></div>
+    <script>
+      // Capture module-evaluation errors that fire before React's own handlers
+      // are installed (invaluable when debugging a blank window).
+      window.__boot_errs = [];
+      window.addEventListener("error", function (e) {
+        window.__boot_errs.push(String((e.error && e.error.stack) || e.message));
+      });
+      window.addEventListener("unhandledrejection", function (e) {
+        window.__boot_errs.push("rejection: " + String((e.reason && e.reason.stack) || e.reason));
+      });
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { applyCodeTheme } from "./lib/codeTheme";
 import { platform } from "@tauri-apps/plugin-os";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -23,6 +24,7 @@ import { SettingsPanel, type GenSettings, defaultSettings, parseStops } from "./
 import { SetupModal } from "./components/SetupModal";
 import { KnowledgePanel } from "./components/KnowledgePanel";
 import { CommandPalette, type Command } from "./components/CommandPalette";
+import { Icon } from "./components/Icon";
 import { CanvasPanel, type CanvasVersion } from "./components/CanvasPanel";
 import { CanvasOpenContext } from "./components/Markdown";
 import { useConfirm } from "./components/ConfirmModal";
@@ -46,6 +48,7 @@ import {
   ejectModel,
   deleteModelFile,
   openExternal,
+  setUiZoom,
   openModelsDir,
   openDataDir,
   ragSearch,
@@ -366,6 +369,7 @@ export default function App() {
         }
         // Otherwise auto-load: last session's model, else the first GGUF found
         // in the models/ folder.
+        if (!settings.autoLoadLast) return;
         const last = localStorage.getItem(LAST_MODEL_KEY);
         const target = last ?? models[0]?.path ?? null;
         if (!target) return;
@@ -531,10 +535,29 @@ export default function App() {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
 
-  // Apply the colour theme to the document root (CSS keys off [data-theme]).
+  // Apply the colour theme to the document root (CSS keys off [data-theme],
+  // plus per-appearance palettes on [data-dark] / [data-light]).
   useEffect(() => {
-    document.documentElement.dataset.theme = settings.theme;
-  }, [settings.theme]);
+    const el = document.documentElement;
+    el.dataset.theme = settings.theme;
+    el.dataset.dark = settings.darkScheme;
+    el.dataset.light = settings.lightScheme;
+  }, [settings.theme, settings.darkScheme, settings.lightScheme]);
+
+  // Chat code-block highlight palette.
+  useEffect(() => {
+    applyCodeTheme(settings.codeTheme);
+  }, [settings.codeTheme]);
+
+  // Display preferences: UI zoom, motion kill-switch, answer reading size.
+  // Zoom is the native webview page zoom — CSS `zoom` reflows the document
+  // without the viewport, so fixed/vw elements overflow and the backdrop
+  // shows through when shrinking.
+  useEffect(() => {
+    void setUiZoom(settings.uiScale).catch(console.error);
+    document.documentElement.dataset.motion = settings.reduceMotion ? "reduce" : "";
+    document.documentElement.dataset.answer = settings.answerSize;
+  }, [settings.uiScale, settings.reduceMotion, settings.answerSize]);
 
   // Tag the document root with the host OS once, so CSS can adapt the title bar
   // (e.g. macOS leaves room for the native traffic lights). CSS keys off [data-os].
@@ -625,6 +648,7 @@ export default function App() {
 
   /** Ask the model for a concise title for a freshly created conversation. */
   async function makeTitle(convId: string, firstMsg: string) {
+    if (!settings.autoTitle) return;
     try {
       let acc = "";
       await generate(
@@ -1675,7 +1699,14 @@ export default function App() {
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key !== "Enter") return;
+    if (settings.sendKey === "modEnter") {
+      // Combo sends; plain Enter falls through and inserts a newline.
+      if (e.metaKey || e.ctrlKey) {
+        e.preventDefault();
+        handleSend();
+      }
+    } else if (!e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
@@ -1822,14 +1853,13 @@ export default function App() {
           >
             {model ? (
               <>
-                <span className="chip-name">{model.name}</span>
+                <span className="chip-name">{model.name.replace(/\.gguf$/i, "")}</span>
                 {model.paramsB ? (
                   <span className="chip-meta">{model.paramsB.toFixed(1)}B</span>
                 ) : null}
                 {model.sizeMb ? (
                   <span className="chip-meta">{(model.sizeMb / 1024).toFixed(1)} GB</span>
                 ) : null}
-                <span className="chip-backend">{model.backend}</span>
               </>
             ) : loadingModel ? (
               loadProgress?.phase === "weights"
@@ -1840,7 +1870,7 @@ export default function App() {
             ) : (
               t("noModel")
             )}
-            <span className={`chip-caret ${showModelMenu ? "open" : ""}`}>▾</span>
+            <span className={`chip-caret ${showModelMenu ? "open" : ""}`}><Icon name="chevron-down" size={11} strokeWidth={2} /></span>
           </button>
           {showModelMenu && (
             <div className="model-menu">
@@ -1887,7 +1917,7 @@ export default function App() {
                               title={t("deleteModelFile")}
                               aria-label={t("deleteModelFile")}
                             >
-                              ×
+                              <Icon name="x" size={11} strokeWidth={2.2} />
                             </button>
                           )}
                         </span>
@@ -2029,21 +2059,20 @@ export default function App() {
               <circle cx="12" cy="12" r="3" />
             </svg>
           </button>
-          {showSettings && (
-            <SettingsPanel
-              value={settings}
-              onChange={setSettings}
-              onClose={() => setShowSettings(false)}
-              maxTokensLimit={Math.max(1024, model?.nCtx ?? 4096)}
-              ctxTrainLimit={model?.nCtxTrain}
-              onReloadModel={model ? () => void reloadModel() : undefined}
-              reloading={loadingModel}
-              onDataCleared={() => {
-                handleNewChat();
-                void refreshConversations();
-              }}
-            />
-          )}
+          <SettingsPanel
+            open={showSettings}
+            value={settings}
+            onChange={setSettings}
+            onClose={() => setShowSettings(false)}
+            maxTokensLimit={Math.max(1024, model?.nCtx ?? 4096)}
+            ctxTrainLimit={model?.nCtxTrain}
+            onReloadModel={model ? () => void reloadModel() : undefined}
+            reloading={loadingModel}
+            onDataCleared={() => {
+              handleNewChat();
+              void refreshConversations();
+            }}
+          />
         </div>
 
         {/* macOS uses native traffic lights (titleBarStyle: Overlay); our
@@ -2071,12 +2100,13 @@ export default function App() {
         skills={settings.codeSkills}
         disabledSkills={settings.codeDisabledSkills}
         allowedCommands={settings.codeAllowedCommands}
+        sendKey={settings.sendKey}
       />
 
       <div className="body" style={appMode === "code" ? { display: "none" } : undefined}>
         <aside className="sidebar" ref={asideRef} style={{ width: sidebarW }}>
           <button className="new-chat" onClick={handleNewChat} disabled={busy}>
-            ＋ {t("newChat")}
+            <Icon name="plus" size={13} strokeWidth={2} /> {t("newChat")}
           </button>
           {conversations.length > 0 && (
             <div className="conv-search">
@@ -2092,7 +2122,7 @@ export default function App() {
               />
               {convQuery && (
                 <button className="conv-search-clear" onClick={() => setConvQuery("")} title={t("cancel")}>
-                  ×
+                  <Icon name="x" size={11} strokeWidth={2.2} />
                 </button>
               )}
             </div>
@@ -2161,7 +2191,7 @@ export default function App() {
                             handleDelete(c.id);
                           }}
                         >
-                          ×
+                          <Icon name="x" size={11} strokeWidth={2.2} />
                         </button>
                       </div>
                     </>
@@ -2460,7 +2490,7 @@ export default function App() {
                       title={t("removeAttach")}
                       onClick={() => setAttachment(null)}
                     >
-                      ×
+                      <Icon name="x" size={11} strokeWidth={2.2} />
                     </button>
                   </div>
                 )}
@@ -2480,7 +2510,7 @@ export default function App() {
                     onClick={() => setWebDesign(false)}
                     title={t("webDesignOff")}
                   >
-                    ×
+                    <Icon name="x" size={11} strokeWidth={2.2} />
                   </button>
                 </span>
               </div>
@@ -2527,7 +2557,7 @@ export default function App() {
                           <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" strokeLinejoin="round" />
                         </svg>
                         <span className="ti-label">{t("toolKbGroup")}</span>
-                        <span className="ti-check">{ragEnabled ? "✓" : ""}</span>
+                        <span className="ti-check">{ragEnabled ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
                         <span className="ti-caret">›</span>
                       </div>
                       <div className="tool-submenu">
@@ -2552,7 +2582,7 @@ export default function App() {
                           }}
                         >
                           <span className="ti-label">{t("toolKb")}</span>
-                          <span className="ti-check">{ragEnabled ? "✓" : ""}</span>
+                          <span className="ti-check">{ragEnabled ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
                         </button>
                         <button
                           className="tool-item"
@@ -2574,7 +2604,7 @@ export default function App() {
                           <path d="M12 3c2.6 2.7 2.6 15.3 0 18M12 3c-2.6 2.7-2.6 15.3 0 18" />
                         </svg>
                         <span className="ti-label">{t("toolWebGroup")}</span>
-                        <span className="ti-check">{webEnabled ? "✓" : ""}</span>
+                        <span className="ti-check">{webEnabled ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
                         <span className="ti-caret">›</span>
                       </div>
                       <div className="tool-submenu">
@@ -2600,7 +2630,7 @@ export default function App() {
                           }}
                         >
                           <span className="ti-label">{t("toolWeb")}</span>
-                          <span className="ti-check">{webEnabled ? "✓" : ""}</span>
+                          <span className="ti-check">{webEnabled ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
                         </button>
                       </div>
                     </div>
@@ -2620,7 +2650,7 @@ export default function App() {
                       </svg>
                       <span className="ti-label">{t("toolThink")}</span>
                       <span className="ti-check">
-                        {thinkEnabled && model?.supportsThinking ? "✓" : ""}
+                        {thinkEnabled && model?.supportsThinking ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}
                       </span>
                     </button>
                     <button
@@ -2633,7 +2663,7 @@ export default function App() {
                         <path d="M6 6.7h.01M8.4 6.7h.01" strokeLinecap="round" />
                       </svg>
                       <span className="ti-label">{t("toolDesign")}</span>
-                      <span className="ti-check">{webDesign ? "✓" : ""}</span>
+                      <span className="ti-check">{webDesign ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
                     </button>
                     {lang === "en" && (
                       <>
@@ -2651,7 +2681,7 @@ export default function App() {
                             <path d="M15.5 8.5a4.2 4.2 0 0 1 0 7" strokeLinecap="round" />
                           </svg>
                           <span className="ti-label">{t("speakAloud")}</span>
-                          <span className="ti-check">{speakReplies ? "✓" : ""}</span>
+                          <span className="ti-check">{speakReplies ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
                         </button>
                         <button
                           className="tool-item"
@@ -2680,7 +2710,9 @@ export default function App() {
                       ? t("inputPhDesign")
                       : webEnabled
                         ? t("inputPhWeb")
-                        : t("inputPh")
+                        : settings.sendKey === "modEnter"
+                          ? t("inputPhMod")
+                          : t("inputPh")
                 }
                 rows={1}
               />

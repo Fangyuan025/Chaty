@@ -4,6 +4,7 @@ import { useI18n } from "../lib/i18n";
 import { useConfirm } from "./ConfirmModal";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { copyToClipboard } from "../lib/clipboard";
+import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 import {
   agentBgKill,
@@ -192,9 +193,9 @@ function StepCard({ step }: { step: ToolStep }) {
         {meta && <span className={`cm-step-meta ${meta.tone}`}>{meta.text}</span>}
         <span className="cm-step-status">
           {step.status === "running" ? <span className="cm-spin" /> : null}
-          {step.status === "done" ? "✓" : null}
-          {step.status === "error" ? "✕" : null}
-          {step.status === "denied" ? "⊘" : null}
+          {step.status === "done" ? <Icon name="check" size={12} strokeWidth={2.2} /> : null}
+          {step.status === "error" ? <Icon name="x" size={12} strokeWidth={2.2} /> : null}
+          {step.status === "denied" ? <Icon name="ban" size={12} strokeWidth={2} /> : null}
         </span>
       </button>
       {open && hasBody && (
@@ -226,7 +227,9 @@ function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label
       <button className="cm-think-head" onClick={() => setOpen((o) => !o)}>
         {live && <span className="cm-spin" />}
         <span className="cm-think-label">{label}</span>
-        <span className={`cm-think-caret ${open || live ? "open" : ""}`}>▸</span>
+        <span className={`cm-think-caret ${open || live ? "open" : ""}`}>
+          <Icon name="chevron-right" size={11} strokeWidth={2} />
+        </span>
       </button>
       {(open || live) && <div className="cm-think-body">{text}</div>}
     </div>
@@ -248,7 +251,13 @@ function PlanPanel({ plan, label }: { plan: PlanItem[]; label: string }) {
         {plan.map((p, i) => (
           <li key={i} className={`cm-plan-item ${p.status}`}>
             <span className="cm-plan-box">
-              {p.status === "done" ? "✓" : p.status === "in_progress" ? <span className="cm-spin" /> : ""}
+              {p.status === "done" ? (
+                <Icon name="check" size={11} strokeWidth={2.6} />
+              ) : p.status === "in_progress" ? (
+                <span className="cm-spin" />
+              ) : (
+                ""
+              )}
             </span>
             <span className="cm-plan-text">{p.content}</span>
           </li>
@@ -266,6 +275,7 @@ export function CodeMode({
   skills = [],
   disabledSkills = [],
   allowedCommands = [],
+  sendKey = "enter",
 }: {
   model: ModelInfo | null;
   active: boolean;
@@ -279,6 +289,8 @@ export function CodeMode({
   disabledSkills?: string[];
   /** Persistent command prefixes that never need approval (Settings → Code). */
   allowedCommands?: string[];
+  /** Composer send shortcut (Settings → General). */
+  sendKey?: "enter" | "modEnter";
 }) {
   const { t, lang } = useI18n();
   const confirm = useConfirm();
@@ -366,11 +378,37 @@ export function CodeMode({
     return () => clearInterval(timer);
   }, [active, workspace, running]);
 
+  // Follow-the-stream is an *intent*, not a position: any upward wheel motion
+  // releases it immediately (a distance check alone loses to the next stream
+  // frame re-pinning the bottom before the user escapes the threshold), and
+  // parking back at the bottom re-arms it.
+  const followRef = useRef(true);
   useEffect(() => {
     const el = scrollRef.current;
-    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
-      el.scrollTo({ top: el.scrollHeight });
-    }
+    if (!el) return;
+    const dist = () => el.scrollHeight - el.scrollTop - el.clientHeight;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) followRef.current = false;
+      else if (dist() < 40) followRef.current = true;
+    };
+    const onScroll = () => {
+      // Covers scrollbar drags and keyboard scrolling; programmatic pins land
+      // at the bottom, so they only ever re-arm.
+      const d = dist();
+      if (d < 4) followRef.current = true;
+      else if (d > 240) followRef.current = false;
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && followRef.current) el.scrollTo({ top: el.scrollHeight });
   }, [msgs]);
 
   // Keyboard shortcuts: approval Enter/Esc, ask-user number keys, Esc to stop.
@@ -664,6 +702,8 @@ export function CodeMode({
     }
     if (!text || running || !model || !workspace) return;
     if (!textArg) setInput("");
+    // Sending expresses interest in the newest output — re-arm the follow.
+    followRef.current = true;
     // Snapshot point: everything the agent writes/edits this turn is journaled
     // so the user can rewind to "before this message".
     const checkpointId = await agentCheckpointBegin().catch(() => undefined);
@@ -764,7 +804,9 @@ export function CodeMode({
   return (
     <div className="code-mode" style={active ? undefined : { display: "none" }}>
       <aside className="code-rail" style={{ width: railW }}>
-        <button className="cm-new" onClick={newSession} disabled={running}>＋ {t("cmNewSession")}</button>
+        <button className="cm-new" onClick={newSession} disabled={running}>
+          <Icon name="plus" size={13} strokeWidth={2} /> {t("cmNewSession")}
+        </button>
         <div className="cm-sessions">
           {sessions.length === 0 ? (
             <div className="cm-empty-list">{t("cmNoSessions")}</div>
@@ -992,7 +1034,9 @@ export function CodeMode({
                   <button
                     className="cm-queue-del"
                     onClick={() => setQueue((cur) => cur.filter((_, j) => j !== i))}
-                  >×</button>
+                  >
+                    <Icon name="x" size={10} strokeWidth={2.2} />
+                  </button>
                 </span>
               ))}
             </div>
@@ -1037,7 +1081,9 @@ export function CodeMode({
                     ? t("cmPlaceholderNoWs")
                     : running
                       ? t("cmQueuePlaceholder")
-                      : t("cmPlaceholder")
+                      : sendKey === "modEnter"
+                        ? t("cmPlaceholderMod")
+                        : t("cmPlaceholder")
               }
               value={input}
               disabled={!model || !workspace}
@@ -1069,7 +1115,12 @@ export function CodeMode({
                   }
                   if (e.key === "Escape") { setInput(""); return; }
                 }
-                if (e.key === "Enter" && !e.shiftKey) {
+                // Send combo per Settings → General; with ⌘/Ctrl+Enter chosen,
+                // plain Enter falls through and inserts a newline.
+                const sends =
+                  e.key === "Enter" &&
+                  (sendKey === "modEnter" ? e.metaKey || e.ctrlKey : !e.shiftKey);
+                if (sends) {
                   e.preventDefault();
                   if (running) {
                     // Queue it — sent automatically once the current turn ends.

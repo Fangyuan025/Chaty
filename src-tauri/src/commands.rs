@@ -317,6 +317,17 @@ pub fn open_external(target: String) -> Result<(), String> {
     open_default(&target)
 }
 
+/// Native webview page zoom (Settings → UI scale). CSS `zoom` reflows the
+/// document but not the viewport, so fixed/vw elements overflow and the
+/// backdrop shows through when shrinking; the platform zoom (WKWebView
+/// pageZoom / WebView2 zoom factor) scales everything coherently instead.
+#[tauri::command]
+pub fn set_ui_zoom(window: tauri::WebviewWindow, factor: f64) -> Result<(), String> {
+    window
+        .set_zoom(factor.clamp(0.5, 2.0))
+        .map_err(|e| e.to_string())
+}
+
 /// Reveal the writable models folder in the file manager (Finder/Explorer),
 /// creating it first if needed — on macOS it lives under ~/Library, which
 /// users can't easily browse to by hand.

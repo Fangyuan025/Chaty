@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
+import { Icon } from "./Icon";
 import { withStorageShim } from "./Markdown";
 import { IconDownload, IconEdit } from "./icons";
 
@@ -172,7 +173,7 @@ export function CanvasPanel({
               {t("canvasExport")}
             </button>
             <button className="canvas-close" title={t("closePreview")} onClick={onClose}>
-              ×
+              <Icon name="x" size={12} strokeWidth={2.2} />
             </button>
           </div>
         </div>

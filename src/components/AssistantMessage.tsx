@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { Markdown } from "./Markdown";
 import { useI18n } from "../lib/i18n";
+import { Icon } from "./Icon";
 import { normalizeChannels } from "../lib/voiceText";
 
 /** Split a streamed assistant message into its `<think>` reasoning and answer. */
@@ -144,7 +145,7 @@ export const AssistantMessage = memo(function AssistantMessage({
             type="button"
             onClick={() => setOverride(!expanded)}
           >
-            <span className={`think-caret ${expanded ? "open" : ""}`}>▶</span>
+            <span className={`think-caret ${expanded ? "open" : ""}`}><Icon name="chevron-right" size={11} strokeWidth={2} /></span>
             {thinking ? (
               <span className="think-label is-thinking">
                 {t("thinking")}

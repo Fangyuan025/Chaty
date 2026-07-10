@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
+import { useExitTransition } from "../lib/useExit";
 
 export interface ConfirmOptions {
   message: string;
@@ -40,10 +41,16 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const close = useCallback((value: boolean) => {
+    // Resolve immediately — only the unmount is delayed for the exit animation.
     resolver.current?.(value);
     resolver.current = null;
     setOpts(null);
   }, []);
+
+  const { mounted, closing } = useExitTransition(opts != null);
+  const lastOpts = useRef<ConfirmOptions | null>(null);
+  if (opts) lastOpts.current = opts;
+  const shown = opts ?? lastOpts.current;
 
   useEffect(() => {
     if (!opts) return;
@@ -58,22 +65,26 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   return (
     <ConfirmContext.Provider value={confirm}>
       {children}
-      {opts &&
+      {mounted &&
+        shown &&
         createPortal(
-          <div className="confirm-overlay" onMouseDown={() => close(false)}>
+          <div
+            className={`confirm-overlay ${closing ? "closing" : ""}`}
+            onMouseDown={() => close(false)}
+          >
             <div className="confirm-modal" onMouseDown={(e) => e.stopPropagation()}>
-              {opts.title && <div className="confirm-title">{opts.title}</div>}
-              <div className="confirm-msg">{opts.message}</div>
+              {shown.title && <div className="confirm-title">{shown.title}</div>}
+              <div className="confirm-msg">{shown.message}</div>
               <div className="confirm-actions">
                 <button className="confirm-cancel" onClick={() => close(false)}>
-                  {opts.cancelLabel ?? t("cancel")}
+                  {shown.cancelLabel ?? t("cancel")}
                 </button>
                 <button
-                  className={`confirm-ok ${opts.danger ? "danger" : ""}`}
+                  className={`confirm-ok ${shown.danger ? "danger" : ""}`}
                   onClick={() => close(true)}
                   autoFocus
                 >
-                  {opts.confirmLabel ?? t("confirm")}
+                  {shown.confirmLabel ?? t("confirm")}
                 </button>
               </div>
             </div>

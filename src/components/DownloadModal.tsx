@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { useI18n } from "../lib/i18n";
+import { Icon } from "./Icon";
 import {
   listHfGgufs,
   downloadModel,
@@ -112,7 +113,7 @@ export function DownloadModal({
           <span className="dl-title">{t("dlTitle")}</span>
           {!active && (
             <button className="dl-close" onClick={onClose} title={t("cancel")}>
-              ×
+              <Icon name="x" size={12} strokeWidth={2.2} />
             </button>
           )}
         </div>
@@ -158,7 +159,7 @@ export function DownloadModal({
                     title={t("cancel")}
                     onClick={() => void cancelDownload(f.name).catch(() => {})}
                   >
-                    ×
+                    <Icon name="x" size={12} strokeWidth={2.2} />
                   </button>
                 </div>
               ) : (

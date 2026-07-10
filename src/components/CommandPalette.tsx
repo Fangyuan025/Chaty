@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
+import { useExitTransition } from "../lib/useExit";
 
 export interface Command {
   id: string;
@@ -56,7 +57,9 @@ export function CommandPalette({
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
-  if (!open) return null;
+  // Stay mounted briefly after close so the exit animation can play.
+  const { mounted, closing } = useExitTransition(open);
+  if (!mounted) return null;
 
   const run = (c?: Command) => {
     if (!c) return;
@@ -81,7 +84,7 @@ export function CommandPalette({
   };
 
   return createPortal(
-    <div className="cmdk-overlay" onMouseDown={onClose}>
+    <div className={`cmdk-overlay ${closing ? "closing" : ""}`} onMouseDown={onClose}>
       <div className="cmdk" onMouseDown={(e) => e.stopPropagation()}>
         <input
           ref={inputRef}

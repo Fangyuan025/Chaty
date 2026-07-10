@@ -1,7 +1,24 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
-import { openDataDir, clearAllConversations, checkUpdate, runUpdate, type UpdateInfo } from "../lib/ipc";
+import { useExitTransition } from "../lib/useExit";
+import { Icon } from "./Icon";
+import {
+  openDataDir,
+  clearAllConversations,
+  checkUpdate,
+  runUpdate,
+  dataStats,
+  listModels,
+  ragStatus,
+  ragClearAll,
+  openModelsDir,
+  openExternal,
+  synthesize,
+  type UpdateInfo,
+} from "../lib/ipc";
+import { decodeAudio, playAudio } from "../lib/audio";
+import { CODE_THEMES, type CodeTheme } from "../lib/codeTheme";
 import { useConfirm } from "./ConfirmModal";
 import { Select } from "./Select";
 import { BUILTIN_SKILLS } from "../lib/skills";
@@ -48,6 +65,24 @@ export interface GenSettings {
   codeDisabledSkills: string[];
   /** Code mode: command prefixes that never need approval (e.g. "npm test"). */
   codeAllowedCommands: string[];
+  /** Dark palette: warm charcoal (v1.5) or the cooler pre-v1.5 charcoal. */
+  darkScheme: "warm" | "cool";
+  /** Light palette: paper white or the softer warm cream. */
+  lightScheme: "paper" | "cream";
+  /** Code-block highlight palette (chat markdown). */
+  codeTheme: "github-dark" | "atom-one-dark" | "monokai" | "nord";
+  /** UI zoom (0.9–1.2). Applied via the native webview page zoom. */
+  uiScale: number;
+  /** Composer send key: plain Enter, or ⌘/Ctrl+Enter (Enter = newline). */
+  sendKey: "enter" | "modEnter";
+  /** Disable in-app animations regardless of the OS setting. */
+  reduceMotion: boolean;
+  /** Reading size for model answers. */
+  answerSize: "sm" | "md" | "lg";
+  /** Auto-generate conversation titles after the first reply. */
+  autoTitle: boolean;
+  /** Load the last-used model automatically on startup. */
+  autoLoadLast: boolean;
 }
 
 export const defaultSettings: GenSettings = {
@@ -71,6 +106,15 @@ export const defaultSettings: GenSettings = {
   codeSkills: [],
   codeDisabledSkills: [],
   codeAllowedCommands: [],
+  darkScheme: "warm",
+  lightScheme: "paper",
+  codeTheme: "github-dark",
+  uiScale: 1,
+  sendKey: "enter",
+  reduceMotion: false,
+  answerSize: "md",
+  autoTitle: true,
+  autoLoadLast: true,
 };
 
 /** kokoro-en-v0_19 speakers, in sid order (the array index IS the speaker id,
@@ -113,7 +157,51 @@ const CAT_ICONS: Record<CatId, string> = {
   about: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 8h.01M12 12v5",
 };
 
+/** Modifier-key glyph for the current platform (send-shortcut labels). */
+const MOD_KEY = /mac/i.test(navigator.platform ?? navigator.userAgent) ? "⌘" : "Ctrl +";
+
+function fmtBytes(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)} KB`;
+  return `${n} B`;
+}
+
+/** Aggregated numbers behind the Data-category statistics tiles. */
+interface StatsView {
+  convs: number;
+  msgs: number;
+  code: number;
+  db: number;
+  models: number;
+  modelBytes: number;
+  kbDocs: number;
+  kbChunks: number;
+}
+
+/** LM-Studio-style row: label (+hint) left, control right. */
+function SetRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="field field-row">
+      <div className="field-row-text">
+        <span>{label}</span>
+        {hint && <span className="field-row-hint">{hint}</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Switch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <button type="button" role="switch" aria-checked={on} className={`set-switch ${on ? "on" : ""}`} onClick={onToggle}>
+      <span className="set-knob" />
+    </button>
+  );
+}
+
 export function SettingsPanel({
+  open,
   value,
   onChange,
   onClose,
@@ -123,6 +211,7 @@ export function SettingsPanel({
   reloading = false,
   onDataCleared,
 }: {
+  open: boolean;
   value: GenSettings;
   onChange: (next: GenSettings) => void;
   onClose: () => void;
@@ -146,12 +235,54 @@ export function SettingsPanel({
     onChange({ ...value, [key]: v });
 
   useEffect(() => {
+    if (!open) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [open, onClose]);
+
+  // Mounted through the exit animation; fully unmounted after.
+  const { mounted, closing } = useExitTransition(open);
+
+  // ---- Data-category statistics ----
+  const [stats, setStats] = useState<StatsView | null>(null);
+  const refreshStats = () => {
+    Promise.all([
+      dataStats(),
+      listModels().catch(() => []),
+      ragStatus().catch(() => null),
+    ])
+      .then(([ds, models, rs]) =>
+        setStats({
+          convs: ds.conversations,
+          msgs: ds.messages,
+          code: ds.codeSessions,
+          db: ds.dbBytes,
+          models: models.length,
+          modelBytes: models.reduce((a, m) => a + (m.sizeMb ?? 0) * 1e6, 0),
+          kbDocs: rs?.docs ?? 0,
+          kbChunks: rs?.chunks ?? 0,
+        }),
+      )
+      .catch(console.error);
+  };
+  useEffect(() => {
+    if (open && cat === "data") refreshStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, cat]);
+
+  // ---- Voice preview ----
+  const [voiceTesting, setVoiceTesting] = useState(false);
+  const testVoice = () => {
+    if (voiceTesting) return;
+    setVoiceTesting(true);
+    synthesize("Hi! This is how I sound. Nice to meet you.", value.voiceSpeed, value.voiceSid)
+      .then((a) => playAudio(decodeAudio(a.audio), a.sampleRate).done)
+      .catch(console.error)
+      .finally(() => setVoiceTesting(false));
+  };
 
   const savePreset = () => {
     const name = presetName.trim();
@@ -201,8 +332,10 @@ export function SettingsPanel({
     { id: "about", label: t("setCatAbout") },
   ];
 
+  if (!mounted) return null;
+
   return createPortal(
-    <div className="settings-overlay" onMouseDown={onClose}>
+    <div className={`settings-overlay ${closing ? "closing" : ""}`} onMouseDown={onClose}>
       <div className="settings-modal" onMouseDown={(e) => e.stopPropagation()}>
         <aside className="settings-nav">
           <div className="settings-nav-title">{t("settingsTitle")}</div>
@@ -212,7 +345,7 @@ export function SettingsPanel({
               className={`settings-nav-item ${cat === c.id ? "active" : ""}`}
               onClick={() => setCat(c.id)}
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
                 <path d={CAT_ICONS[c.id]} />
               </svg>
               {c.label}
@@ -221,32 +354,77 @@ export function SettingsPanel({
         </aside>
 
         <div className="settings-pane">
-          <button className="settings-close" onClick={onClose} aria-label={t("cancel")}>×</button>
+          {/* Fixed pane header: category title + close. Only the body scrolls. */}
+          <div className="settings-pane-head">
+            <span className="settings-pane-title">{cats.find((c) => c.id === cat)?.label}</span>
+            <button className="settings-close" onClick={onClose} aria-label={t("cancel")}>
+              <Icon name="x" size={11} strokeWidth={2.2} />
+            </button>
+          </div>
 
+          <div className="settings-pane-body">
           {cat === "general" && (
             <>
-              <div className="settings-sec">{t("setCatGeneral")}</div>
-              <label className="field">
-                <span>{t("language")}</span>
+              <SetRow label={t("language")}>
                 <div className="lang-switch">
                   <button type="button" className={lang === "zh" ? "active" : ""} onClick={() => setLang("zh")}>中文</button>
                   <button type="button" className={lang === "en" ? "active" : ""} onClick={() => setLang("en")}>English</button>
                 </div>
-              </label>
-              <label className="field">
-                <span>{t("theme")}</span>
+              </SetRow>
+              <SetRow label={t("theme")}>
                 <div className="lang-switch">
                   <button type="button" className={value.theme === "system" ? "active" : ""} onClick={() => set("theme", "system")}>{t("themeSystem")}</button>
                   <button type="button" className={value.theme === "light" ? "active" : ""} onClick={() => set("theme", "light")}>{t("themeLight")}</button>
                   <button type="button" className={value.theme === "dark" ? "active" : ""} onClick={() => set("theme", "dark")}>{t("themeDark")}</button>
                 </div>
-              </label>
+              </SetRow>
+              <SetRow label={t("setDarkScheme")} hint={t("setDarkSchemeHint")}>
+                <div className="lang-switch">
+                  <button type="button" className={value.darkScheme === "warm" ? "active" : ""} onClick={() => set("darkScheme", "warm")}>
+                    <span className="scheme-dot" style={{ background: "#201f1d" }} />
+                    {t("schemeWarmCharcoal")}
+                  </button>
+                  <button type="button" className={value.darkScheme === "cool" ? "active" : ""} onClick={() => set("darkScheme", "cool")}>
+                    <span className="scheme-dot" style={{ background: "#0e0f12" }} />
+                    {t("schemeCoolCharcoal")}
+                  </button>
+                </div>
+              </SetRow>
+              <SetRow label={t("setLightScheme")} hint={t("setLightSchemeHint")}>
+                <div className="lang-switch">
+                  <button type="button" className={value.lightScheme === "paper" ? "active" : ""} onClick={() => set("lightScheme", "paper")}>
+                    <span className="scheme-dot" style={{ background: "#faf9f7" }} />
+                    {t("schemePaper")}
+                  </button>
+                  <button type="button" className={value.lightScheme === "cream" ? "active" : ""} onClick={() => set("lightScheme", "cream")}>
+                    <span className="scheme-dot" style={{ background: "#f3eee4" }} />
+                    {t("schemeCream")}
+                  </button>
+                </div>
+              </SetRow>
+              <SetRow label={t("setUiScale")} hint={t("setUiScaleHint")}>
+                <div className="lang-switch">
+                  {[0.9, 1, 1.1, 1.2].map((s) => (
+                    <button key={s} type="button" className={Math.abs(value.uiScale - s) < 0.01 ? "active" : ""} onClick={() => set("uiScale", s)}>
+                      {Math.round(s * 100)}%
+                    </button>
+                  ))}
+                </div>
+              </SetRow>
+              <SetRow label={t("setSendKey")} hint={t("setSendKeyHint")}>
+                <div className="lang-switch">
+                  <button type="button" className={value.sendKey === "enter" ? "active" : ""} onClick={() => set("sendKey", "enter")}>Enter</button>
+                  <button type="button" className={value.sendKey === "modEnter" ? "active" : ""} onClick={() => set("sendKey", "modEnter")}>{MOD_KEY} Enter</button>
+                </div>
+              </SetRow>
+              <SetRow label={t("setReduceMotion")} hint={t("setReduceMotionHint")}>
+                <Switch on={value.reduceMotion} onToggle={() => set("reduceMotion", !value.reduceMotion)} />
+              </SetRow>
             </>
           )}
 
           {cat === "chat" && (
             <>
-              <div className="settings-sec">{t("setCatChat")}</div>
               <label className="field">
                 <span>{t("systemPrompt")}</span>
                 <textarea
@@ -265,7 +443,7 @@ export function SettingsPanel({
                         <button type="button" className="preset-apply" title={p.prompt} onClick={() => set("systemPrompt", p.prompt)}>
                           {p.name}
                         </button>
-                        <button type="button" className="preset-del" title={t("cancel")} onClick={() => deletePreset(p.name)}>×</button>
+                        <button type="button" className="preset-del" title={t("cancel")} onClick={() => deletePreset(p.name)}><Icon name="x" size={11} strokeWidth={2.2} /></button>
                       </span>
                     ))}
                   </div>
@@ -288,12 +466,30 @@ export function SettingsPanel({
                   </button>
                 </div>
               </div>
+              <SetRow label={t("setCodeTheme")} hint={t("setCodeThemeHint")}>
+                <div className="lang-switch">
+                  {(Object.keys(CODE_THEMES) as CodeTheme[]).map((k) => (
+                    <button key={k} type="button" className={value.codeTheme === k ? "active" : ""} onClick={() => set("codeTheme", k)}>
+                      {CODE_THEMES[k].label}
+                    </button>
+                  ))}
+                </div>
+              </SetRow>
+              <SetRow label={t("setAnswerSize")} hint={t("setAnswerSizeHint")}>
+                <div className="lang-switch">
+                  <button type="button" className={value.answerSize === "sm" ? "active" : ""} onClick={() => set("answerSize", "sm")}>{t("sizeSm")}</button>
+                  <button type="button" className={value.answerSize === "md" ? "active" : ""} onClick={() => set("answerSize", "md")}>{t("sizeMd")}</button>
+                  <button type="button" className={value.answerSize === "lg" ? "active" : ""} onClick={() => set("answerSize", "lg")}>{t("sizeLg")}</button>
+                </div>
+              </SetRow>
+              <SetRow label={t("setAutoTitle")} hint={t("setAutoTitleHint")}>
+                <Switch on={value.autoTitle} onToggle={() => set("autoTitle", !value.autoTitle)} />
+              </SetRow>
             </>
           )}
 
           {cat === "sampling" && (
             <>
-              <div className="settings-sec">{t("setCatSampling")}</div>
               <label className="field">
                 <span>
                   <em className="has-tip" data-tip={t("tipTemperature")}>{t("temperature")}</em> <b>{value.temperature.toFixed(2)}</b>
@@ -373,7 +569,6 @@ export function SettingsPanel({
 
           {cat === "model" && (
             <>
-              <div className="settings-sec">{t("setCatModel")}</div>
               <label className="field">
                 <span><em className="has-tip" data-tip={t("tipGpuAccel")}>{t("gpuAccel")}</em></span>
                 <div className="lang-switch">
@@ -438,12 +633,19 @@ export function SettingsPanel({
                   {reloading ? "…" : t("reloadApply")}
                 </button>
               )}
+              <SetRow label={t("setAutoLoadLast")} hint={t("setAutoLoadLastHint")}>
+                <Switch on={value.autoLoadLast} onToggle={() => set("autoLoadLast", !value.autoLoadLast)} />
+              </SetRow>
+              <SetRow label={t("modelsFolder")} hint={t("modelsFolderHint")}>
+                <button type="button" className="data-btn" onClick={() => void openModelsDir().catch(console.error)}>
+                  {t("openModelsDir")}
+                </button>
+              </SetRow>
             </>
           )}
 
           {cat === "code" && (
             <>
-              <div className="settings-sec">Code</div>
               <label className="field">
                 <span>
                   {t("cmMaxSteps")} <b>{value.codeMaxSteps}</b>
@@ -488,7 +690,7 @@ export function SettingsPanel({
                           onClick={() =>
                             set("codeAllowedCommands", value.codeAllowedCommands.filter((x) => x !== p))
                           }
-                        >×</button>
+                        ><Icon name="x" size={11} strokeWidth={2.2} /></button>
                       </span>
                     ))}
                   </div>
@@ -560,7 +762,7 @@ export function SettingsPanel({
                         >
                           /{s.name}
                         </button>
-                        <button type="button" className="preset-del" title={t("cancel")} onClick={() => deleteSkill(s.name)}>×</button>
+                        <button type="button" className="preset-del" title={t("cancel")} onClick={() => deleteSkill(s.name)}><Icon name="x" size={11} strokeWidth={2.2} /></button>
                       </span>
                     ))}
                   </div>
@@ -589,7 +791,6 @@ export function SettingsPanel({
 
           {cat === "voice" && lang === "en" && (
             <>
-              <div className="settings-sec">{t("setCatVoice")}</div>
               <label className="field">
                 <span>{t("voice")}</span>
                 <Select
@@ -606,16 +807,55 @@ export function SettingsPanel({
                 </span>
                 <input type="range" min={0.5} max={2} step={0.05} value={value.voiceSpeed} onChange={(e) => set("voiceSpeed", Number(e.target.value))} />
               </label>
+              <SetRow label={t("voicePreview")} hint={t("voicePreviewHint")}>
+                <button type="button" className="data-btn" disabled={voiceTesting} onClick={testVoice}>
+                  {voiceTesting ? "…" : t("voicePreviewBtn")}
+                </button>
+              </SetRow>
+              <div className="settings-hint">{t("voiceEngineHint")}</div>
             </>
           )}
 
           {cat === "data" && (
             <>
-              <div className="settings-sec">{t("setCatData")}</div>
-              <div className="settings-data-row">
+              <div className="stats-grid">
+                <div className="stat-tile">
+                  <span className="stat-num">{stats ? stats.convs : "–"}</span>
+                  <span className="stat-label">{t("statConvs")}</span>
+                </div>
+                <div className="stat-tile">
+                  <span className="stat-num">{stats ? stats.msgs : "–"}</span>
+                  <span className="stat-label">{t("statMsgs")}</span>
+                </div>
+                <div className="stat-tile">
+                  <span className="stat-num">{stats ? stats.code : "–"}</span>
+                  <span className="stat-label">{t("statCodeSessions")}</span>
+                </div>
+                <div className="stat-tile">
+                  <span className="stat-num">
+                    {stats ? stats.models : "–"}
+                    {stats && stats.modelBytes > 0 && <em className="stat-sub">{fmtBytes(stats.modelBytes)}</em>}
+                  </span>
+                  <span className="stat-label">{t("statModels")}</span>
+                </div>
+                <div className="stat-tile">
+                  <span className="stat-num">{stats ? stats.kbDocs : "–"}</span>
+                  <span className="stat-label">{t("statKbDocs")}</span>
+                </div>
+                <div className="stat-tile">
+                  <span className="stat-num">{stats ? stats.kbChunks : "–"}</span>
+                  <span className="stat-label">{t("statKbChunks")}</span>
+                </div>
+              </div>
+              <div className="settings-hint stats-db-line">
+                {t("statDbSize")}: {stats ? fmtBytes(stats.db) : "–"}
+              </div>
+              <SetRow label={t("dataFolder")} hint={t("dataHint")}>
                 <button type="button" className="data-btn" onClick={() => void openDataDir().catch(console.error)}>
                   {t("openDataDir")}
                 </button>
+              </SetRow>
+              <SetRow label={t("clearAllChats")} hint={t("clearChatsHint")}>
                 <button
                   type="button"
                   className="data-btn danger"
@@ -631,14 +871,37 @@ export function SettingsPanel({
                       return;
                     }
                     clearAllConversations()
-                      .then(() => onDataCleared?.())
+                      .then(() => {
+                        onDataCleared?.();
+                        refreshStats();
+                      })
                       .catch(console.error);
                   }}
                 >
                   {t("clearAllChats")}
                 </button>
-              </div>
-              <div className="settings-hint">{t("dataHint")}</div>
+              </SetRow>
+              <SetRow label={t("clearKb")} hint={t("clearKbHint")}>
+                <button
+                  type="button"
+                  className="data-btn danger"
+                  onClick={async () => {
+                    if (
+                      !(await confirm({
+                        message: t("clearKbConfirm"),
+                        title: t("clearKb"),
+                        confirmLabel: t("clearKb"),
+                        danger: true,
+                      }))
+                    ) {
+                      return;
+                    }
+                    ragClearAll().then(refreshStats).catch(console.error);
+                  }}
+                >
+                  {t("clearKb")}
+                </button>
+              </SetRow>
             </>
           )}
 
@@ -681,8 +944,18 @@ export function SettingsPanel({
                     : t("aboutUpToDate")}
                 </div>
               )}
+              <div className="about-links">
+                <button type="button" onClick={() => void openExternal("https://chaty.ca").catch(console.error)}>
+                  chaty.ca
+                </button>
+                <span aria-hidden="true">·</span>
+                <button type="button" onClick={() => void openExternal("https://github.com/Fangyuan025/Chaty").catch(console.error)}>
+                  GitHub
+                </button>
+              </div>
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>,

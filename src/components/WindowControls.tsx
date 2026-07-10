@@ -1,14 +1,23 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useI18n } from "../lib/i18n";
-
-const appWindow = getCurrentWindow();
 
 export function WindowControls() {
   const { t } = useI18n();
   const [maximized, setMaximized] = useState(false);
+  // Resolved lazily inside the component: at module scope this reads Tauri
+  // internals that don't exist in a plain-browser preview and crashes the
+  // whole module graph before anything renders.
+  const appWindow = useMemo(() => {
+    try {
+      return getCurrentWindow();
+    } catch {
+      return null;
+    }
+  }, []);
 
   useEffect(() => {
+    if (!appWindow) return;
     let unlisten: (() => void) | undefined;
     const sync = () => appWindow.isMaximized().then(setMaximized).catch(() => {});
     sync();
@@ -19,11 +28,11 @@ export function WindowControls() {
       })
       .catch(() => {});
     return () => unlisten?.();
-  }, []);
+  }, [appWindow]);
 
   return (
     <div className="win-controls">
-      <button className="win-btn" title={t("minimize")} onClick={() => appWindow.minimize()}>
+      <button className="win-btn" title={t("minimize")} onClick={() => appWindow?.minimize()}>
         <svg width="15" height="15" viewBox="0 0 12 12" aria-hidden="true">
           <path d="M2.5 6h7" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
         </svg>
@@ -31,7 +40,7 @@ export function WindowControls() {
       <button
         className="win-btn"
         title={maximized ? t("restore") : t("maximize")}
-        onClick={() => appWindow.toggleMaximize()}
+        onClick={() => appWindow?.toggleMaximize()}
       >
         {maximized ? (
           <svg
@@ -60,7 +69,7 @@ export function WindowControls() {
           </svg>
         )}
       </button>
-      <button className="win-btn close" title={t("close")} onClick={() => appWindow.close()}>
+      <button className="win-btn close" title={t("close")} onClick={() => appWindow?.close()}>
         <svg width="15" height="15" viewBox="0 0 12 12" aria-hidden="true">
           <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
         </svg>

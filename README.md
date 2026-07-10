@@ -84,7 +84,7 @@ Deep Research, and hands-free voice built right in.
 - A streaming, foldable `<think>` panel that follows the reasoning as it generates.
 - KaTeX math, tables, **Mermaid** diagrams, per-block code copy, and in-app rendering of single-file HTML (including playable web games) through the Design Canvas.
 - A **⌘K command palette**, pinnable / renameable conversations, in-app confirmations, and a crash-safe error boundary so an unexpected error never blanks the window.
-- Drag-and-drop attachments, conversation export (Markdown / JSON), full-text search, branching history, light / dark / system themes, **reduced-motion** support, system tray, a global hotkey, and an **English / 简体中文** UI.
+- Drag-and-drop attachments, conversation export (Markdown / JSON), full-text search, branching history, four colour palettes (two dark, two light) with system-theme following, switchable code-highlight styles, native UI zoom, **reduced-motion** support, system tray, a global hotkey, and an **English / 简体中文** UI.
 
 > **Offline-first.** The network is used only for optional web search and one-time model downloads.
 

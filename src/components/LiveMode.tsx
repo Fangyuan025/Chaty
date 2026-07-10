@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
+import { Icon } from "./Icon";
 import {
   cancelGeneration,
   generate,
@@ -328,7 +329,7 @@ export function LiveMode({
   return createPortal(
     <div className="live-overlay">
       <button className="live-close" onClick={onClose} title={t("liveExit")}>
-        ×
+        <Icon name="x" size={12} strokeWidth={2.2} />
       </button>
       <div className="live-stage">
         <canvas ref={canvasRef} className="live-orb" style={{ width: 260, height: 260 }} />

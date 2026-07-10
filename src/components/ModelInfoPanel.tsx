@@ -1,4 +1,5 @@
 import { useI18n } from "../lib/i18n";
+import { Icon } from "./Icon";
 import type { ModelInfo } from "../lib/ipc";
 
 /** Top-right popover with the probed GGUF metadata for the loaded model. */
@@ -12,7 +13,7 @@ export function ModelInfoPanel({
   const { t } = useI18n();
 
   const cap = (on: boolean) =>
-    on ? <span className="mi-cap on">✓</span> : <span className="mi-cap off">—</span>;
+    on ? <span className="mi-cap on"><Icon name="check" size={12} strokeWidth={2.4} /></span> : <span className="mi-cap off">—</span>;
 
   return (
     <>
@@ -70,6 +71,12 @@ export function ModelInfoPanel({
               <div className="hw-row">
                 <span className="hw-k">{t("miEmbed")}</span>
                 <span className="hw-v">{model.nEmbd}</span>
+              </div>
+            )}
+            {model.backend && (
+              <div className="hw-row">
+                <span className="hw-k">{t("miEngine")}</span>
+                <span className="hw-v">{model.backend}</span>
               </div>
             )}
             <div className="hw-divider" />

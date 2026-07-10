@@ -361,3 +361,33 @@ pub fn code_session_delete(db: State<'_, Db>, id: String) -> Result<(), String> 
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// Aggregate counters for the Settings → Data statistics panel.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataStats {
+    pub conversations: i64,
+    pub messages: i64,
+    pub code_sessions: i64,
+    pub db_bytes: u64,
+}
+
+#[tauri::command]
+pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats, String> {
+    let conn = lock(&db)?;
+    let count = |sql: &str| -> Result<i64, String> {
+        conn.query_row(sql, [], |r| r.get(0)).map_err(|e| e.to_string())
+    };
+    let conversations = count("SELECT COUNT(*) FROM conversations")?;
+    let messages = count("SELECT COUNT(*) FROM messages")?;
+    let code_sessions = count("SELECT COUNT(*) FROM code_sessions").unwrap_or(0);
+    drop(conn);
+    let db_bytes = tauri::Manager::path(&app)
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("chaty.db"))
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .unwrap_or(0);
+    Ok(DataStats { conversations, messages, code_sessions, db_bytes })
+}

@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.0 — The design release (2026-07-10)
+
+A full production-level visual overhaul — every surface, both themes, zero feature regressions.
+
+- **New design system** — the entire UI was rebuilt on a single token system: a warm charcoal dark theme and a paper-white light theme, a recalibrated juniper accent, four fixed elevation levels, a unified radius/motion scale, and one icon language (every text-glyph button replaced with stroke icons). Consistent buttons, close buttons, focus rings, and semantic colours everywhere.
+- **Four palettes** — Settings → General now offers two dark schemes (**Warm charcoal** / **Cool charcoal**, the pre-1.5 look) and two light schemes (**Paper** / **Cream**, a softer low-glare tone). Following the system theme picks your chosen scheme for each appearance; switching cross-fades instead of snapping.
+- **Reading typography** — answers, suggestion cards, the greeting, and About share a reading serif (Source Serif 4) for Latin text while Chinese stays in the system sans; code and UI chrome keep their own faces.
+- **Code highlighting, your pick** — four switchable palettes for chat code blocks (GitHub, Atom One, Monokai, Nord); the block canvas follows the palette, which also fixes code readability in the light themes.
+- **Settings, enriched** — LM-Studio-style layout with a fixed header per category and much more control: UI scale, send shortcut (Enter or ⌘/Ctrl+Enter, wired into both composers), reduce motion, answer text size, auto-titling, auto-load last model, a voice preview button, and a **Data dashboard** with live statistics tiles (conversations, messages, Code sessions, models with total size, KB documents/chunks, database size) plus one-click clear for chats and the knowledge base.
+- **Native UI zoom** — interface scaling now uses the webview's real page zoom instead of CSS zoom, so 90–120 % scales cleanly with no white edges or overflowing panels.
+- **Micro-motion** — one motion language across the app: segmented controls pop to their new selection, toggles overshoot playfully, settings categories cascade in, messages fade-rise on load, each Code-mode step card enters as the agent works, and menus/modals share the same enter/exit curves. Everything respects Reduce motion (in-app or OS-level).
+- **Code mode scrolling, unpinned** — while the agent streams, scrolling up now releases the auto-follow instantly (no more being dragged back to the bottom); returning to the bottom re-engages it, and opening a session lands on the latest progress.
+- **Fixes** — the model chip lost its `.gguf` suffix and redundant engine badge (now in Model info); the download dialog is properly centered; scrollbars follow the theme; a font-stack bug that rendered UI text in Times on macOS is gone.
+
 ## v1.4.0 — Code mode: rewind, trust controls & a smarter loop (2026-07-09)
 
 - **Checkpoints & rewind** — every turn journals the original state of each file the agent touches. Hover any of your messages and hit **↩** to rewind: edited files are restored, created files removed, later messages dropped, and your message lands back in the composer to refine and re-send. (bash side effects aren't journaled — same trade-off as the majors.)

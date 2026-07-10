@@ -367,6 +367,12 @@ export async function openExternal(target: string): Promise<void> {
   return invoke<void>("open_external", { target });
 }
 
+/** Native webview page zoom (Settings → UI scale). CSS `zoom` breaks fixed/vw
+ *  layout, so the platform zoom does the scaling instead. */
+export async function setUiZoom(factor: number): Promise<void> {
+  return invoke<void>("set_ui_zoom", { factor });
+}
+
 export type StreamEvent =
   | { type: "started" }
   | { type: "token"; text: string }
@@ -549,6 +555,17 @@ export async function deleteConversation(id: string): Promise<void> {
 }
 
 /** Delete every conversation and message (Settings → clear all chats). */
+export interface DataStats {
+  conversations: number;
+  messages: number;
+  codeSessions: number;
+  dbBytes: number;
+}
+/** Aggregate counters for the Settings → Data statistics panel. */
+export async function dataStats(): Promise<DataStats> {
+  return await invoke<DataStats>("data_stats");
+}
+
 export async function clearAllConversations(): Promise<void> {
   await invoke("clear_all_conversations");
 }

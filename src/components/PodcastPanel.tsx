@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
+import { Icon } from "./Icon";
 import { IconMic, IconDownload, IconRefresh, IconPlay, IconStop } from "./icons";
 import {
   cancelGeneration,
@@ -276,7 +277,7 @@ export function PodcastPanel({
           </div>
           {!busy && (
             <button className="preview-close" onClick={onClose}>
-              ×
+              <Icon name="x" size={12} strokeWidth={2.2} />
             </button>
           )}
         </div>
