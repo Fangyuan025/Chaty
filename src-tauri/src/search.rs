@@ -56,6 +56,13 @@ pub async fn web_search(query: String) -> Result<Vec<SearchResult>, String> {
     ddg_search(&client, &query).await
 }
 
+/// The same key-less engine chain, callable from other modules (webx's
+/// site-scoped search builds `site:` queries on top of it).
+pub(crate) async fn engine_search(query: &str) -> Result<Vec<SearchResult>, String> {
+    let client = build_client()?;
+    ddg_search(&client, query).await
+}
+
 /// Result list **plus** the fetched main text of the top pages, for grounding.
 #[tauri::command]
 pub async fn web_research(query: String) -> Result<WebResearch, String> {

@@ -12,6 +12,9 @@ import {
   agentBgOutput,
   agentBgReap,
   agentEditFile,
+  agentMultiEdit,
+  agentOutline,
+  type EditOp,
   agentGlob,
   agentGrep,
   agentListDir,
@@ -19,7 +22,9 @@ import {
   agentSearchCode,
   agentWriteFile,
   cancelGeneration,
-  fetchUrl,
+  fetchPageEx,
+  siteSearch,
+  agentWebDownload,
   generate,
   ragSearch,
   webSearch,
@@ -31,6 +36,8 @@ export type AgentToolName =
   | "read_file"
   | "write_file"
   | "edit_file"
+  | "multi_edit"
+  | "outline"
   | "list_dir"
   | "glob"
   | "grep"
@@ -42,11 +49,19 @@ export type AgentToolName =
   | "bg_kill"
   | "web_search"
   | "web_fetch"
+  | "web_download"
   | "ask_user"
   | "update_plan";
 
 /** Tools that change the world (or run code) → need approval unless bypassed. */
-export const MUTATING_TOOLS = new Set<AgentToolName>(["write_file", "edit_file", "bash", "bash_bg"]);
+export const MUTATING_TOOLS = new Set<AgentToolName>([
+  "write_file",
+  "edit_file",
+  "multi_edit",
+  "bash",
+  "bash_bg",
+  "web_download",
+]);
 
 export interface ToolCall {
   name: AgentToolName;
@@ -171,7 +186,9 @@ function proseAfter(raw: string): string {
 const TOOLS_DOC = `
 - read_file: 读取文件,一般一次调用即可读完整个文件;只有超出上下文预算的超大文件才分页,此时结果末尾会直接给出下一页的 offset,照着传即可。args: { "path": string, "offset"?: number(起始行,从1开始), "limit"?: number(行数) }
 - write_file: 新建或覆盖文件。args: { "path": string, "content": string }
-- edit_file: 精确替换文件中的一段文本(old_string 必须与文件内容逐字匹配且唯一,除非 replace_all=true)。args: { "path": string, "old_string": string, "new_string": string, "replace_all"?: boolean }
+- edit_file: 精确替换文件中的一段文本(old_string 必须与文件内容逐字匹配且唯一,除非 replace_all=true)。匹配失败时会提示文件中最相似的位置。args: { "path": string, "old_string": string, "new_string": string, "replace_all"?: boolean }
+- multi_edit: 对同一个文件一次提交多处精确替换,原子生效(任何一条失败则整体不改动)。同一文件要改多处时必须用它,不要拆成多次 edit_file。args: { "path": string, "edits": [{ "old_string": string, "new_string": string, "replace_all"?: boolean }] }
+- outline: 列出文件的定义大纲(函数/类/结构体等 + 行号),不读全文即可掌握文件结构;之后用 read_file 带 offset 精确读需要的区段。args: { "path": string }
 - list_dir: 列出目录一层内容(不传 path = 工作区根;看子目录请传相对路径,如 {"path":"src"})。args: { "path"?: string }
 - glob: 按通配符找文件(如 "src/**/*.ts")。args: { "pattern": string }
 - grep: 用正则搜索文件内容(找确切字符串时用)。args: { "pattern": string, "path"?: string, "glob"?: string }
@@ -181,8 +198,9 @@ const TOOLS_DOC = `
 - bash_bg: 在后台启动长时间运行的命令(dev server、慢构建、长测试),立即返回一个 id,期间你可以继续做别的;它结束时系统会自动把结果告诉你。args: { "command": string }
 - bg_output: 查看某个后台命令的当前状态和最近输出(比如确认 server 已启动)。args: { "id": number }
 - bg_kill: 终止某个后台命令(整棵进程树)。args: { "id": number }
-- web_search: 联网搜索(标题+链接+摘要)。查资料、找文档、查报错时用。args: { "query": string }
-- web_fetch: 抓取网页正文。args: { "url": string }
+- web_search: 联网搜索(标题+链接+摘要)。查资料、找文档、查报错时用。加 site 参数可做站内搜索:site="github.com" 返回结构化的仓库/issue/代码匹配;site="reddit.com"(或 "reddit.com/r/某版块")搜帖子;site="youtube.com" 返回视频(标题/时长/频道/播放量);其他任意域名(docs.python.org、stackoverflow.com、x.com 等)都会限定在该站内搜。args: { "query": string, "site"?: string }
+- web_fetch: 抓取任意 URL,按内容类型自动处理:文章页→干净的 Markdown 正文;代码/JSON/配置文件→原文;GitHub 文件页自动取 raw 源文件;Reddit 帖子→正文+评论;YouTube 视频→元信息+完整字幕转写(带时间标,可直接理解视频内容);PDF→提取文本;图片等二进制→返回元信息(用 web_download 保存)。结果还会列出页面上的链接和图片 URL——想深入子页面就继续 fetch 那些链接。要 HTML 源码时传 raw=true。args: { "url": string, "raw"?: boolean }
+- web_download: 把 URL 指向的文件(图片、压缩包、任意资源)下载到工作区指定路径。args: { "url": string, "path": string }
 - update_plan: 制定或更新任务计划(待办清单),让用户看到你的推进步骤。开始复杂任务时先列计划,完成一步就把它标为 done、把下一步标为 in_progress。args: { "todos": [{ "content": string, "status": "pending"|"in_progress"|"done" }] }
 - ask_user: 当遇到需要用户拍板的决策(方案分歧、需求不明、破坏性操作确认)时,向用户提一个选择题;不要自己乱猜。args: { "question": string, "options": string[] }`;
 
@@ -217,9 +235,9 @@ ${TOOLS_DOC}
 - 每次只调用一个工具。要调用时,只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要在同一条消息里写其它内容。
 - 系统会把结果以 <tool_result>...</tool_result> 返回给你,你再继续。
 - 没有"当前目录"的概念:每条 bash 都是从工作区根目录启动的全新 shell,单独的 cd 不会保留到下一条命令。访问子目录请直接用相对路径(ls src、read_file "src/app.ts"),或在同一条命令内组合(cd src && npm test)。
-- 修改代码前,先用 read_file / grep / list_dir 了解现状;改完可用 bash 跑测试/构建验证。
+- 修改代码前,先用 outline 看文件结构、read_file / grep / list_dir 了解现状;改完可用 bash 跑测试/构建验证。
 - 读大文件别从头翻到尾:先用 search_code / grep 定位到相关位置,再用 read_file 带 offset/limit 只读需要的区段。
-- 步数宝贵:新建文件用 write_file 一次写入完整内容;同一文件的多处修改合并成一次 edit_file,或直接用 write_file 重写整个文件。不要把一个改动拆成许多细碎小步。
+- 步数宝贵:新建文件用 write_file 一次写入完整内容;同一文件的多处修改用一次 multi_edit 原子提交(不要拆成多次 edit_file);大改动可直接 write_file 重写整个文件。不要把一个改动拆成许多细碎小步。
 - dev server、npm run dev、长构建等不会很快退出的命令必须用 bash_bg 后台运行,再用 bg_output 确认启动成功;用完记得 bg_kill。
 - 遇到不认识的报错、需要查库/API 文档时,用 web_search / web_fetch 联网查证,不要凭空猜测。
 - 任务较复杂时,先用 update_plan 列出待办步骤,推进中及时更新状态;需要用户拍板时用 ask_user 提问。
@@ -236,7 +254,7 @@ Rules (follow strictly):
 - You'll get the result as <tool_result>...</tool_result>, then continue.
 - There is NO persistent working directory: every bash command starts a fresh shell at the workspace root, so a lone cd does NOT carry over. Use relative paths directly (ls src, read_file "src/app.ts") or combine in one command (cd src && npm test).
 - Before editing, understand the code with read_file / grep / list_dir; after editing, you can run tests/builds with bash.
-- Steps are precious: create new files with ONE write_file containing the complete content; merge multiple changes to the same file into one edit_file, or rewrite the whole file with write_file. Never split one change into many tiny steps.
+- Steps are precious: create new files with ONE write_file containing the complete content; apply multiple changes to one file with a single atomic multi_edit (never a chain of edit_file calls), or rewrite the whole file with write_file. Never split one change into many tiny steps.
 - Commands that don't exit quickly (dev servers, npm run dev, long builds) MUST run via bash_bg; check they started with bg_output, and bg_kill them when done.
 - For unfamiliar errors or library/API docs, verify with web_search / web_fetch instead of guessing.
 - For non-trivial tasks, lay out a todo list with update_plan first and keep its statuses current as you go; use ask_user when a decision is the user's to make.
@@ -293,6 +311,18 @@ export const argOld = (a: Record<string, unknown>): string =>
   asStr(a.old_string ?? a.old_str ?? a.old ?? a.search ?? a.from);
 export const argNew = (a: Record<string, unknown>): string =>
   asStr(a.new_string ?? a.new_str ?? a.new ?? a.replace ?? a.to);
+/** multi_edit's edits array, with per-item aliases normalized. */
+export const argEdits = (a: Record<string, unknown>): EditOp[] => {
+  const raw = a.edits ?? a.changes ?? a.replacements;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
+    .map((e) => ({
+      old_string: argOld(e),
+      new_string: argNew(e),
+      replace_all: e.replace_all === true,
+    }));
+};
 
 const MISSING_PATH =
   'ERROR: 缺少 "path" 参数(文件路径)。请重新调用并在 arguments 中带上 "path"。(Missing "path" — re-issue the tool call with a "path" argument.)';
@@ -423,6 +453,31 @@ async function execTool(
       }
       return { result, diff: { path, before, after } };
     }
+    case "multi_edit": {
+      const path = argPath(a);
+      if (!path) return { result: MISSING_PATH };
+      const edits = argEdits(a);
+      if (!edits.length) return { result: 'ERROR: 缺少 "edits" 数组 (missing "edits" array)' };
+      let before = "";
+      try {
+        before = await agentReadFile(path);
+      } catch {
+        /* edit will re-fail with a clear message */
+      }
+      const result = await agentMultiEdit(path, edits);
+      let after = before;
+      try {
+        after = await agentReadFile(path);
+      } catch {
+        /* ignore */
+      }
+      return { result, diff: { path, before, after } };
+    }
+    case "outline": {
+      const path = argPath(a);
+      if (!path) return { result: MISSING_PATH };
+      return { result: await agentOutline(path) };
+    }
     case "bash": {
       const cmd = asStr(a.command).trim();
       // A lone `cd` can't work — there is no persistent shell. Catch it before
@@ -458,6 +513,17 @@ async function execTool(
     case "web_search": {
       const q = asStr(a.query);
       if (!q) return { result: 'ERROR: 缺少 "query" 参数 (missing "query")' };
+      const site = asStr(a.site);
+      if (site) {
+        const hits = await siteSearch(site, q);
+        if (!hits.length) return { result: "(没有搜索结果 / no results)" };
+        return {
+          result: hits
+            .slice(0, 16)
+            .map((h, i) => `${i + 1}. [${h.kind}] ${h.title}\n   ${h.url}\n   ${h.snippet}`)
+            .join("\n"),
+        };
+      }
       const hits = await webSearch(q);
       if (!hits.length) return { result: "(没有搜索结果 / no results)" };
       return {
@@ -470,8 +536,30 @@ async function execTool(
     case "web_fetch": {
       const url = asStr(a.url);
       if (!url) return { result: 'ERROR: 缺少 "url" 参数 (missing "url")' };
-      const page = await fetchUrl(url);
-      return { result: `${page.title}\n${page.url}\n\n${page.text}` };
+      const raw = a.raw === true || a.raw === "true";
+      const p = await fetchPageEx(url, raw);
+      const parts: string[] = [];
+      parts.push(`${p.title ? p.title + "\n" : ""}${p.url} [${p.kind}${p.truncated ? ", 已截断/truncated" : ""}]`);
+      parts.push("");
+      parts.push(p.text);
+      if (p.links.length) {
+        parts.push("");
+        parts.push("— 页面链接 (links on this page, fetch to go deeper) —");
+        parts.push(p.links.map((l) => `- ${l.text ? l.text + " — " : ""}${l.url}`).join("\n"));
+      }
+      if (p.images.length) {
+        parts.push("");
+        parts.push("— 图片 (images, save with web_download) —");
+        parts.push(p.images.map((u) => `- ${u}`).join("\n"));
+      }
+      return { result: parts.join("\n") };
+    }
+    case "web_download": {
+      const url = asStr(a.url);
+      const path = asStr(a.path) || asStr(a.file_path) || asStr(a.dest);
+      if (!url) return { result: 'ERROR: 缺少 "url" 参数 (missing "url")' };
+      if (!path) return { result: 'ERROR: 缺少 "path" 参数 (missing "path")' };
+      return { result: await agentWebDownload(url, path) };
     }
     default:
       return { result: `未知工具 (unknown tool): ${call.name}` };
@@ -481,8 +569,19 @@ async function execTool(
 function toolResultMsg(name: string, content: string): string {
   // read_file sizes itself in Rust from the model's real context window (plus
   // an actionable next-offset footer) — never chop that off with a blind cap.
-  const cap = name === "read_file" ? 320000 : 12000;
-  const capped = content.length > cap ? content.slice(0, cap) + "\n… (截断/truncated)" : content;
+  const cap = name === "read_file" ? 320000 : name === "web_fetch" ? 48000 : 12000;
+  let capped: string;
+  if (content.length <= cap) {
+    capped = content;
+  } else if (name === "bash" || name === "bash_bg" || name === "bg_output") {
+    // Command output: the failure is almost always at the END (panics, test
+    // summaries, exit codes) — keep head AND tail instead of chopping the tail.
+    const head = content.slice(0, Math.floor(cap * 0.3));
+    const tail = content.slice(-Math.floor(cap * 0.7));
+    capped = `${head}\n… (中间省略 ${content.length - head.length - tail.length} 字符 / middle omitted) …\n${tail}`;
+  } else {
+    capped = content.slice(0, cap) + "\n… (截断/truncated)";
+  }
   return `<tool_result name="${name}">\n${capped}\n</tool_result>`;
 }
 

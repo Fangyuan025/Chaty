@@ -12,6 +12,7 @@ mod state;
 mod store;
 pub mod update;
 pub mod voice;
+pub mod webx;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -220,6 +221,8 @@ pub fn run() {
             agent::agent_read_file,
             agent::agent_write_file,
             agent::agent_edit_file,
+            agent::agent_multi_edit,
+            agent::agent_outline,
             agent::agent_list_dir,
             agent::agent_glob,
             agent::agent_grep,
@@ -251,6 +254,9 @@ pub fn run() {
             search::web_search,
             search::web_research,
             search::fetch_url,
+            webx::site_search,
+            webx::fetch_page_ex,
+            agent::agent_web_download,
             attach::read_attachment,
         ])
         .build(tauri::generate_context!())

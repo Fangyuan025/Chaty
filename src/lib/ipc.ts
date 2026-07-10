@@ -656,6 +656,67 @@ export async function fetchUrl(url: string): Promise<PageContent> {
   return await invoke<PageContent>("fetch_url", { url });
 }
 
+// ---- extended web tools (coding agent) ----
+
+export interface SiteResult {
+  /** repo | issue | code | post | web */
+  kind: string;
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export interface LinkRef {
+  url: string;
+  text: string;
+}
+
+export interface PageEx {
+  url: string;
+  /** markdown | source | text | pdf | binary */
+  kind: string;
+  contentType: string;
+  title: string;
+  text: string;
+  truncated: boolean;
+  links: LinkRef[];
+  images: string[];
+  bytes?: number | null;
+}
+
+/** Structured in-site search: GitHub API + code search, Reddit RSS, or an
+ *  engine `site:` query for any other domain. */
+export async function siteSearch(site: string, query: string): Promise<SiteResult[]> {
+  return await invoke<SiteResult[]>("site_search", { site, query });
+}
+
+/** Content-type-aware fetch: markdown for articles, raw source on demand,
+ *  text passthrough for code/JSON, PDF extraction, metadata for binaries. */
+export async function fetchPageEx(url: string, raw?: boolean): Promise<PageEx> {
+  return await invoke<PageEx>("fetch_page_ex", { url, raw });
+}
+
+/** Download a URL into the agent workspace (sandboxed + rewind-journaled). */
+export async function agentWebDownload(url: string, path: string): Promise<string> {
+  return await invoke<string>("agent_web_download", { url, path });
+}
+
+export interface EditOp {
+  old_string: string;
+  new_string: string;
+  replace_all?: boolean;
+}
+
+/** Several exact-match edits to one file, applied atomically. */
+export async function agentMultiEdit(path: string, edits: EditOp[]): Promise<string> {
+  return await invoke<string>("agent_multi_edit", { path, edits });
+}
+
+/** Definition lines (functions/classes/…) of a file, with line numbers. */
+export async function agentOutline(path: string): Promise<string> {
+  return await invoke<string>("agent_outline", { path });
+}
+
 // ---------- Voice (STT / TTS) ----------
 
 export interface SynthAudio {

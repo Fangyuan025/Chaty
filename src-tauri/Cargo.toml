@@ -1,6 +1,6 @@
 [package]
 name = "chaty"
-version = "1.5.0"
+version = "1.6.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -67,6 +67,9 @@ calamine = "0.26"
 glob = "0.3"
 regex = "1"
 walkdir = "2"
+htmd = "0.5.4"
+dom_smoothie = "0.18.0"
+url = "2.5.8"
 
 # GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers â€” cross-vendor on Windows.
 [target.'cfg(windows)'.dependencies]

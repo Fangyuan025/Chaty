@@ -27,6 +27,7 @@ import {
 import {
   AgentSignal,
   argContent,
+  argEdits,
   argNew,
   argOld,
   argPath,
@@ -89,6 +90,8 @@ const TOOL_ICON: Record<string, string> = {
   read_file: "M9 2h6l4 4v14a0 0 0 0 1 0 0H5V2z",
   write_file: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M12 12v6M9 15h6",
   edit_file: "M17 3a2.85 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5z",
+  multi_edit: "M17 3a2.85 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5zM14 8l2 2",
+  outline: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
   list_dir: "M3 6h18M3 12h18M3 18h18",
   glob: "M3 6h18M3 12h18M3 18h18",
   grep: "M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-4-4",
@@ -100,6 +103,7 @@ const TOOL_ICON: Record<string, string> = {
   bg_kill: "M12 3a9 9 0 100 18 9 9 0 000-18zM9 9l6 6M15 9l-6 6",
   web_search: "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c2.5 2.5 3.8 5.6 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.6-3.8-9S9.5 5.5 12 3z",
   web_fetch: "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c2.5 2.5 3.8 5.6 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.6-3.8-9S9.5 5.5 12 3z",
+  web_download: "M12 3v12M6 9l6 6 6-6M4 21h16",
   ask_user: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 8v5M12 16h.01",
 };
 
@@ -112,6 +116,10 @@ function toolSummary(call: ToolCall): string {
       return `write ${argPath(call.args) || "?"}`;
     case "edit_file":
       return `edit ${argPath(call.args) || "?"}`;
+    case "multi_edit":
+      return `edit ×${argEdits(call.args).length} ${argPath(call.args) || "?"}`;
+    case "outline":
+      return `outline ${argPath(call.args) || "?"}`;
     case "list_dir":
       return `ls ${a.path ?? "."}`;
     case "glob":
@@ -131,9 +139,11 @@ function toolSummary(call: ToolCall): string {
     case "bg_kill":
       return `bg kill #${a.id ?? "?"}`;
     case "web_search":
-      return `search ${a.query ?? ""}`;
+      return a.site ? `search ${a.site}: ${a.query ?? ""}` : `search ${a.query ?? ""}`;
     case "web_fetch":
       return `fetch ${a.url ?? ""}`;
+    case "web_download":
+      return `download → ${argPath(call.args) || a.path || "?"}`;
     case "ask_user":
       return a.question ?? "ask user";
     default:
@@ -1161,6 +1171,9 @@ export function CodeMode({
             {(approval.call.name === "bash" || approval.call.name === "bash_bg") && (
               <div className="cm-approve-detail">{String(approval.call.args.command ?? "")}</div>
             )}
+            {approval.call.name === "web_download" && (
+              <div className="cm-approve-detail">{String(approval.call.args.url ?? "")}</div>
+            )}
             {approval.call.name === "edit_file" && (
               <pre className="cm-diff cm-approve-diff">
                 {lineDiff(argOld(approval.call.args), argNew(approval.call.args)).map((l, i) => (
@@ -1169,6 +1182,22 @@ export function CodeMode({
                     {l.text}
                   </div>
                 ))}
+              </pre>
+            )}
+            {approval.call.name === "multi_edit" && (
+              <pre className="cm-diff cm-approve-diff">
+                {argEdits(approval.call.args).flatMap((e, ei) => [
+                  <div key={`h${ei}`} className="cm-dl ctx">
+                    <span className="cm-dl-mark"> </span>
+                    {`— 修改 ${ei + 1} —`}
+                  </div>,
+                  ...lineDiff(e.old_string, e.new_string).map((l, i) => (
+                    <div key={`${ei}-${i}`} className={`cm-dl ${l.kind}`}>
+                      <span className="cm-dl-mark">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}</span>
+                      {l.text}
+                    </div>
+                  )),
+                ])}
               </pre>
             )}
             {approval.call.name === "write_file" && (

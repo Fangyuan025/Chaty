@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.6.0 — The agent levels up (2026-07-10)
+
+Code mode grew in two directions at once: a no-blind-spots web research layer, and a set of editing power tools that make the agent faster and far harder to derail. All key-less, talking to sites directly, nothing routed through third-party services.
+
+### Sharper coding
+
+- **`multi_edit`** — several exact-match edits to one file in a single atomic call: every edit is validated (later ones against the result of earlier ones) and the file is written only when all of them land — a failure changes nothing. Multi-site changes that used to burn five steps now take one.
+- **"Did you mean" edits** — when an exact-match edit misses, the error now shows the most similar line in the file with numbered context, so the next attempt copies the real text instead of re-reading the whole file. Successful edits echo the modified neighborhood back for free verification.
+- **`outline`** — the definition lines of a file (functions/classes/structs/… with line numbers) across Rust/TS/JS/Python/Go and friends, so the agent grasps a big file's structure without reading it whole, then jumps straight to the right region with a ranged read.
+- **Failures stay visible** — long command output used to be tail-chopped exactly where the panic/test summary lives; bash results now keep the head *and* the tail, eliding the middle instead.
+
+### Everywhere online
+
+- **In-site search** — `web_search` gained a `site` parameter: **GitHub** returns structured repositories (stars/language), issues/PRs, *and code matches* (via Sourcegraph's public index, since GitHub's own code search requires auth); **Reddit** searches posts through its still-open RSS endpoints (scope to a subreddit with `reddit.com/r/xxx`); **YouTube** returns structured videos (title/length/channel/views); **any other domain** — docs sites, Stack Overflow, **x.com** — is searched via a `site:` query over the multi-engine chain (for X, the engines' snapshot index is the only key-less view that exists).
+- **Video understanding** — fetch any YouTube link and the agent gets the video's metadata plus its **full caption transcript** with periodic timestamps (auto-generated captions included, any language; manual tracks preferred, Chinese/English first). Search YouTube in-site, pick a video, and the agent can reason over what is actually *said* in it — no API key, no external transcription service.
+- **Fetch anything** — `web_fetch` is now content-type aware: articles become clean Markdown (Readability extraction + HTML→MD), code/JSON/config files pass through as source, **GitHub file pages auto-rewrite to the raw file**, Reddit posts return the thread with comments, PDFs are text-extracted, and binaries report their metadata. `raw=true` returns the page's HTML source.
+- **Walk into sub-pages** — every fetched page returns its harvested links (same-host first) and image URLs, so the agent can navigate a docs site or repository page by page.
+- **`web_download`** — a new tool that saves any URL (images, archives, assets) into the workspace: sandboxed by the same path resolver as every write, approval-gated, and journaled so rewind removes downloaded files too.
+- **Proven against the live internet** — 8 real-network integration tests (GitHub/Reddit/X search, article extraction, raw source, blob rewrite, binary metadata) plus a real-model end-to-end run where the agent researched an obscure Rust crate it couldn't know the URL of: searched GitHub, found the right repo, wrote up its findings, and downloaded an image from the page — all verified against live data.
+
 ## v1.5.0 — The design release (2026-07-10)
 
 A full production-level visual overhaul — every surface, both themes, zero feature regressions.

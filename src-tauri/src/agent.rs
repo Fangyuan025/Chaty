@@ -183,6 +183,51 @@ pub fn agent_read_file(
     Ok(out)
 }
 
+/// Download a URL into the workspace (images, archives, any file). Sandboxed
+/// through the same `resolve` as every other write, and journaled so rewind
+/// removes it like any file the agent created.
+#[tauri::command]
+pub async fn agent_web_download(url: String, path: String) -> Result<String, String> {
+    const CAP: usize = 100 * 1024 * 1024;
+    let abs = resolve(&path)?;
+    if abs.is_dir() {
+        return Err(format!("目标是一个目录 (target is a directory): {path}"));
+    }
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15")
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(url.trim()).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let ctype = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("?")
+        .split(';')
+        .next()
+        .unwrap_or("?")
+        .to_string();
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.len() > CAP {
+        return Err(format!("文件过大 ({} MB),上限 100 MB", bytes.len() / 1024 / 1024));
+    }
+    cp_record(&abs);
+    if let Some(parent) = abs.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&abs, &bytes).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    let root = workspace()?;
+    Ok(format!(
+        "已下载 {} ({} 字节, {ctype})",
+        rel_display(&root, &abs),
+        bytes.len()
+    ))
+}
+
 #[tauri::command]
 pub fn agent_write_file(path: String, content: String) -> Result<String, String> {
     let abs = resolve(&path)?;
@@ -217,7 +262,7 @@ pub fn agent_edit_file(
     cp_record(&abs);
     let count = text.matches(&old_string).count();
     if count == 0 {
-        return Err("未找到 old_string（需与文件内容逐字匹配）(old_string not found — must match exactly)".to_string());
+        return Err(not_found_error(&text, &old_string));
     }
     let all = replace_all.unwrap_or(false);
     if count > 1 && !all {
@@ -225,6 +270,8 @@ pub fn agent_edit_file(
             "old_string 出现 {count} 次，不唯一；请提供更多上下文或用 replace_all (not unique: {count} matches)"
         ));
     }
+    let pos = text.find(&old_string).unwrap_or(0);
+    let start_line = text[..pos].matches('\n').count();
     let updated = if all {
         text.replace(&old_string, &new_string)
     } else {
@@ -232,11 +279,180 @@ pub fn agent_edit_file(
     };
     std::fs::write(&abs, updated.as_bytes()).map_err(|e| format!("写入失败 (write failed): {e}"))?;
     let root = workspace()?;
+    // Echo the edited neighborhood back so the model can confirm the result
+    // without spending another read_file step.
+    let span = new_string.matches('\n').count() + 1;
     Ok(format!(
-        "已编辑 {}（替换 {} 处）",
+        "已编辑 {}（替换 {} 处）。修改后该处内容:\n{}",
         rel_display(&root, &abs),
-        if all { count } else { 1 }
+        if all { count } else { 1 },
+        numbered_context(&updated, start_line, span)
     ))
+}
+
+/// A few numbered lines around [line0, line0+span) — edit confirmations and
+/// mismatch hints both use this.
+fn numbered_context(text: &str, line0: usize, span: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let s = line0.saturating_sub(3);
+    let e = (line0 + span + 3).min(lines.len());
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate().take(e).skip(s) {
+        let l: String = line.chars().take(200).collect();
+        out.push_str(&format!("{:>5}  {}\n", i + 1, l));
+    }
+    out
+}
+
+/// "Did you mean": when an exact-match edit misses, locate the line most
+/// similar to the needle's first meaningful line and show its neighborhood —
+/// one glance instead of a full re-read to fix the next attempt.
+fn closest_snippet(text: &str, needle: &str) -> Option<String> {
+    let target = needle.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let t_tokens: std::collections::HashSet<&str> = target.split_whitespace().collect();
+    if t_tokens.is_empty() {
+        return None;
+    }
+    let mut best_line = 0usize;
+    let mut best_score = 0.0f32;
+    for (i, line) in text.lines().enumerate() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        let score = if l == target {
+            1.0
+        } else if l.contains(target) || target.contains(l) {
+            0.9
+        } else {
+            let l_tokens: std::collections::HashSet<&str> = l.split_whitespace().collect();
+            let inter = t_tokens.intersection(&l_tokens).count() as f32;
+            let union = t_tokens.union(&l_tokens).count() as f32;
+            inter / union.max(1.0)
+        };
+        if score > best_score {
+            best_score = score;
+            best_line = i;
+        }
+    }
+    if best_score < 0.34 {
+        return None;
+    }
+    Some(numbered_context(text, best_line, 1))
+}
+
+fn not_found_error(text: &str, old_string: &str) -> String {
+    let hint = closest_snippet(text, old_string)
+        .map(|s| {
+            format!("\n文件中最相似的位置 (closest match — copy old_string verbatim from here):\n{s}")
+        })
+        .unwrap_or_default();
+    format!("未找到 old_string（需与文件内容逐字匹配）(old_string not found — must match exactly){hint}")
+}
+
+#[derive(serde::Deserialize)]
+pub struct EditOp {
+    pub old_string: String,
+    pub new_string: String,
+    #[serde(default)]
+    pub replace_all: bool,
+}
+
+/// Several exact-match edits to ONE file, applied atomically: every edit is
+/// validated against the in-memory result of the previous ones, and the file
+/// is only written when all of them land — a failure changes nothing.
+#[tauri::command]
+pub fn agent_multi_edit(path: String, edits: Vec<EditOp>) -> Result<String, String> {
+    if edits.is_empty() {
+        return Err("edits 为空 (no edits given)".to_string());
+    }
+    let abs = resolve(&path)?;
+    let text = std::fs::read_to_string(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
+    let mut cur = text;
+    let total = edits.len();
+    for (i, e) in edits.iter().enumerate() {
+        let n = i + 1;
+        if e.old_string.is_empty() {
+            return Err(format!("第 {n}/{total} 条 old_string 为空;未应用任何修改 (edit {n} empty — nothing changed)"));
+        }
+        if e.old_string == e.new_string {
+            return Err(format!("第 {n}/{total} 条 old_string 与 new_string 相同;未应用任何修改 (edit {n} is a no-op — nothing changed)"));
+        }
+        let count = cur.matches(&e.old_string).count();
+        if count == 0 {
+            return Err(format!(
+                "第 {n}/{total} 条编辑失败,整个 multi_edit 原子回退、文件未改动 (edit {n} failed — atomic, nothing changed):\n{}",
+                not_found_error(&cur, &e.old_string)
+            ));
+        }
+        if count > 1 && !e.replace_all {
+            return Err(format!(
+                "第 {n}/{total} 条 old_string 出现 {count} 次,不唯一;文件未改动 (edit {n} not unique: {count} matches — nothing changed)"
+            ));
+        }
+        cur = if e.replace_all {
+            cur.replace(&e.old_string, &e.new_string)
+        } else {
+            cur.replacen(&e.old_string, &e.new_string, 1)
+        };
+    }
+    cp_record(&abs);
+    std::fs::write(&abs, cur.as_bytes()).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    let root = workspace()?;
+    Ok(format!("已编辑 {}(应用全部 {total} 处修改)", rel_display(&root, &abs)))
+}
+
+/// File outline: the definition lines (functions/classes/structs/…) with line
+/// numbers, so the model can navigate a big file without reading it whole.
+/// Regex-free keyword heuristics that cover Rust/TS/JS/Python/Go/Swift/etc.
+#[tauri::command]
+pub fn agent_outline(path: String) -> Result<String, String> {
+    let abs = resolve(&path)?;
+    let text = std::fs::read_to_string(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
+    let mut out = String::new();
+    let mut n = 0;
+    for (i, line) in text.lines().enumerate() {
+        if !is_symbol_line(line.trim_start()) {
+            continue;
+        }
+        let sig: String = line.trim_end().chars().take(160).collect();
+        out.push_str(&format!("{:>5}  {sig}\n", i + 1));
+        n += 1;
+        if n >= 300 {
+            out.push_str("… (更多定义已省略 / more omitted)\n");
+            break;
+        }
+    }
+    if out.is_empty() {
+        return Ok("(未识别到符号定义 — 用 read_file 直接查看 / no definitions recognized)".to_string());
+    }
+    Ok(out)
+}
+
+fn is_symbol_line(t: &str) -> bool {
+    let t = t
+        .trim_start_matches("export ")
+        .trim_start_matches("default ")
+        .trim_start_matches("declare ")
+        .trim_start_matches("pub(crate) ")
+        .trim_start_matches("pub ")
+        .trim_start_matches("unsafe ")
+        .trim_start_matches("async ")
+        .trim_start_matches("static ")
+        .trim_start_matches("abstract ")
+        .trim_start_matches("public ")
+        .trim_start_matches("private ")
+        .trim_start_matches("protected ");
+    const KEYWORDS: [&str; 13] = [
+        "fn ", "def ", "class ", "struct ", "enum ", "trait ", "impl ", "interface ", "type ",
+        "function ", "func ", "mod ", "macro_rules!",
+    ];
+    if KEYWORDS.iter().any(|k| t.starts_with(k)) {
+        return true;
+    }
+    // JS/TS arrow-function or function-expression bindings.
+    (t.starts_with("const ") || t.starts_with("let ") || t.starts_with("var "))
+        && (t.contains("=>") || t.contains("function"))
 }
 
 #[derive(Serialize)]
@@ -1020,6 +1236,100 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     fn serial() -> std::sync::MutexGuard<'static, ()> {
         TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn multi_edit_is_atomic() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-me-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        std::fs::write(tmp.join("f.txt"), "alpha\nbeta\ngamma\n").unwrap();
+
+        // Second edit misses → nothing at all changes.
+        let err = agent_multi_edit(
+            "f.txt".into(),
+            vec![
+                EditOp { old_string: "alpha".into(), new_string: "ALPHA".into(), replace_all: false },
+                EditOp { old_string: "nope".into(), new_string: "x".into(), replace_all: false },
+            ],
+        )
+        .unwrap_err();
+        assert!(err.contains("2/2"), "err should name the failing edit: {err}");
+        assert_eq!(std::fs::read_to_string(tmp.join("f.txt")).unwrap(), "alpha\nbeta\ngamma\n");
+
+        // All match → all applied, in order, later edits see earlier results.
+        let ok = agent_multi_edit(
+            "f.txt".into(),
+            vec![
+                EditOp { old_string: "alpha".into(), new_string: "one".into(), replace_all: false },
+                EditOp { old_string: "one\nbeta".into(), new_string: "one\nTWO".into(), replace_all: false },
+            ],
+        )
+        .unwrap();
+        assert!(ok.contains("2"), "{ok}");
+        assert_eq!(std::fs::read_to_string(tmp.join("f.txt")).unwrap(), "one\nTWO\ngamma\n");
+    }
+
+    #[test]
+    fn edit_miss_suggests_closest_line() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-cs-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        std::fs::write(
+            tmp.join("g.py"),
+            "def add(a, b):\n    return a + b\n\ndef total(items, tax_rate):\n    return sum(items) * (1 + tax_rate)\n",
+        )
+        .unwrap();
+        // Model misremembered the signature — the error should point at the
+        // real line so the next attempt can copy it verbatim.
+        let err = agent_edit_file(
+            "g.py".into(),
+            "def total(items, tax):".into(),
+            "def total(items, tax, discount):".into(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("def total(items, tax_rate):"), "hint missing: {err}");
+        assert!(err.contains("4  "), "line number missing: {err}");
+    }
+
+    #[test]
+    fn edit_success_echoes_context() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-ec-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        std::fs::write(tmp.join("h.txt"), "l1\nl2\nl3\nl4\nl5\nl6\nl7\n").unwrap();
+        let ok = agent_edit_file("h.txt".into(), "l4".into(), "L4-new".into(), None).unwrap();
+        assert!(ok.contains("L4-new"), "{ok}");
+        assert!(ok.contains("l2") && ok.contains("l7"), "context window wrong: {ok}");
+    }
+
+    #[test]
+    fn outline_finds_definitions() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-ol-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        std::fs::write(
+            tmp.join("mix.ts"),
+            "import x from 'y';\n\nexport function parse(s: string) {}\nconst helper = (a: number) => a * 2;\nclass Lexer {\n  private pos = 0;\n  advance() {}\n}\nexport const RE = /x/;\n",
+        )
+        .unwrap();
+        let o = agent_outline("mix.ts".into()).unwrap();
+        assert!(o.contains("export function parse"), "{o}");
+        assert!(o.contains("const helper"), "{o}");
+        assert!(o.contains("class Lexer"), "{o}");
+        assert!(!o.contains("import x"), "imports are not symbols: {o}");
+        assert!(!o.contains("export const RE"), "non-function const is not a symbol: {o}");
+        // rust-ish
+        std::fs::write(tmp.join("m.rs"), "use std::fmt;\n\npub(crate) async fn run() {}\nstruct Cfg;\nimpl Cfg {\n    fn new() -> Self { Cfg }\n}\n").unwrap();
+        let o = agent_outline("m.rs".into()).unwrap();
+        assert!(o.contains("pub(crate) async fn run"), "{o}");
+        assert!(o.contains("struct Cfg"), "{o}");
+        assert!(o.contains("fn new"), "{o}");
     }
 
     #[test]

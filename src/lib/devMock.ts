@@ -192,6 +192,35 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "data_stats":
       return { conversations: 5, messages: 48, codeSessions: 2, dbBytes: 2_400_000 };
 
+    // ---- extended web tools (Code mode) ----
+    case "site_search":
+      return [
+        { kind: "repo", title: "fastapi/fastapi (★85000, Python)", url: "https://github.com/fastapi/fastapi", snippet: "FastAPI framework, high performance, easy to learn" },
+        { kind: "code", title: "github.com/fastapi/fastapi/fastapi/main.py", url: "https://github.com/fastapi/fastapi/blob/HEAD/fastapi/main.py#L1", snippet: "from fastapi import FastAPI" },
+      ];
+    case "fetch_page_ex": {
+      const u = String(args?.url ?? "");
+      if (/youtube\.com|youtu\.be/.test(u)) {
+        return {
+          url: u, kind: "video", contentType: "video/youtube",
+          title: "示例视频", truncated: false,
+          text: "视频 (video): 示例视频\n频道: Demo · 时长: 3:21\n\n—— 字幕转写 (transcript, en) ——\n[0:01] mock transcript for the preview environment",
+          links: [], images: [], bytes: null,
+        };
+      }
+      return {
+        url: u, kind: "markdown", contentType: "text/html",
+        title: "示例页面", text: "# 示例\n\n预览环境的模拟页面内容。", truncated: false,
+        links: [{ url: "https://example.com/sub", text: "子页面" }], images: [], bytes: null,
+      };
+    }
+    case "agent_web_download":
+      return `已下载 ${String(args?.path ?? "file")} (12345 字节, image/png)`;
+    case "agent_multi_edit":
+      return `已编辑 ${String(args?.path ?? "?")}(应用全部 ${Array.isArray(args?.edits) ? (args.edits as unknown[]).length : 0} 处修改)`;
+    case "agent_outline":
+      return "    3  export function parse(s: string) {\n   12  class Lexer {\n   18    advance() {";
+
     // ---- knowledge base ----
     case "rag_status":
       return { modelReady: true, docs: 12, chunks: 486 };

@@ -1229,6 +1229,16 @@ mod agent_e2e {
                 args.get("replace_all").and_then(|v| v.as_bool()),
             )
             .unwrap_or_else(|e| format!("ERROR: {e}")),
+            "multi_edit" => {
+                let edits: Vec<crate::agent::EditOp> = args
+                    .get("edits")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                crate::agent::agent_multi_edit(get("path"), edits)
+                    .unwrap_or_else(|e| format!("ERROR: {e}"))
+            }
+            "outline" => crate::agent::agent_outline(get("path"))
+                .unwrap_or_else(|e| format!("ERROR: {e}")),
             "glob" => crate::agent::agent_glob(get("pattern"))
                 .map(|h| h.join("\n"))
                 .unwrap_or_else(|e| format!("ERROR: {e}")),
@@ -1240,6 +1250,61 @@ mod agent_e2e {
                     Ok(r) => format!("{}\n{}\n[exit {}]", r.stdout, r.stderr, r.code),
                     Err(e) => format!("ERROR: {e}"),
                 }
+            }
+            "web_search" => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                let site = get("site");
+                if site.is_empty() {
+                    match rt.block_on(crate::search::web_search(get("query"))) {
+                        Ok(hits) => hits
+                            .iter()
+                            .take(8)
+                            .map(|h| format!("{} — {}\n{}", h.title, h.url, h.snippet))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        Err(e) => format!("ERROR: {e}"),
+                    }
+                } else {
+                    match rt.block_on(crate::webx::site_search(site, get("query"))) {
+                        Ok(hits) => hits
+                            .iter()
+                            .take(10)
+                            .map(|h| format!("[{}] {} — {}\n{}", h.kind, h.title, h.url, h.snippet))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        Err(e) => format!("ERROR: {e}"),
+                    }
+                }
+            }
+            "web_fetch" => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(crate::webx::fetch_page_ex(
+                    get("url"),
+                    args.get("raw").and_then(|v| v.as_bool()),
+                )) {
+                    Ok(p) => {
+                        let mut s = format!("{} [{}]\n{}\n", p.url, p.kind, p.text.chars().take(8000).collect::<String>());
+                        if !p.links.is_empty() {
+                            s.push_str("— links —\n");
+                            for l in p.links.iter().take(12) {
+                                s.push_str(&format!("- {} {}\n", l.text, l.url));
+                            }
+                        }
+                        if !p.images.is_empty() {
+                            s.push_str("— images —\n");
+                            for i in p.images.iter().take(8) {
+                                s.push_str(&format!("- {i}\n"));
+                            }
+                        }
+                        s
+                    }
+                    Err(e) => format!("ERROR: {e}"),
+                }
+            }
+            "web_download" => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(crate::agent::agent_web_download(get("url"), get("path")))
+                    .unwrap_or_else(|e| format!("ERROR: {e}"))
             }
             _ => format!("unknown tool: {name}"),
         }
@@ -1283,6 +1348,357 @@ mod agent_e2e {
 - 开始复杂任务时先用 update_plan 列出步骤,完成一步就更新状态。
 - 遇到需要用户决定的事(如命名、格式)用 ask_user 提问,不要自己乱猜。
 - 任务完成后不要再调用工具,直接用一两句话总结你做了什么。"#;
+
+    /// Prompt documenting the code-editing power tools (multi_edit / outline),
+    /// mirroring src/lib/agentLoop.ts.
+    const SYS_CODE: &str = r#"你是 Chaty 的编程智能体,在工作区目录中完成编码任务。工作区根目录:{WS}
+
+可用工具(路径相对工作区,越界会被拒绝):
+- read_file: {"path": string, "offset"?: number, "limit"?: number}
+- write_file: {"path": string, "content": string}
+- edit_file: 精确替换一段文本(old_string 需逐字匹配且唯一)。匹配失败会提示文件中最相似的位置。args: {"path": string, "old_string": string, "new_string": string, "replace_all"?: boolean}
+- multi_edit: 对同一文件一次提交多处精确替换,原子生效(任何一条失败则整体不改动)。同一文件改多处必须用它。args: {"path": string, "edits": [{"old_string": string, "new_string": string, "replace_all"?: boolean}]}
+- outline: 列出文件的定义大纲(函数/类 + 行号),不读全文即可掌握结构。args: {"path": string}
+- list_dir: {"path"?: string}
+- grep: {"pattern": string}
+- bash: {"command": string}
+
+规则(严格遵守):
+- 每次只调用一个工具。调用时只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要有其它内容。
+- 系统会用 <tool_result>...</tool_result> 返回结果,你再继续。
+- 修改前先用 outline / read_file 了解结构;同一文件多处修改用一次 multi_edit。
+- 任务完成后不要再调用工具,直接用一两句话总结你做了什么。"#;
+
+    /// Refactor e2e: rename a function + update all call sites across the
+    /// file — the natural shape for outline + one atomic multi_edit — then
+    /// prove the behaviour is unchanged by running the script.
+    /// Run: CHATY_TEST_MODEL=… cargo test -p chaty agent_refactors_with_multi_edit -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn agent_refactors_with_multi_edit() {
+        let model_path = match std::env::var("CHATY_TEST_MODEL") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_MODEL=/path/to/model.gguf");
+                return;
+            }
+        };
+        let backend = llama_backend().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        eprintln!("loading model: {model_path}");
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load model");
+        let n_ctx = 16384u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+
+        let ws = std::env::temp_dir().join(format!("chaty-agent-refactor-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("shop.py"),
+            r#"def calc_total(items, tax_rate):
+    return sum(items) * (1 + tax_rate)
+
+def receipt(items, tax_rate):
+    total = calc_total(items, tax_rate)
+    return f"TOTAL: {total:.2f}"
+
+def audit(items):
+    # audits use zero tax
+    return calc_total(items, 0)
+
+if __name__ == "__main__":
+    print(receipt([10, 20], 0.1))
+    print(f"AUDIT: {audit([10, 20]):.2f}")
+"#,
+        )
+        .unwrap();
+        crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
+
+        let mut messages = vec![
+            ChatMessage { role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage {
+                role: Role::User,
+                content: "把 shop.py 里的函数 calc_total 重命名为 compute_total,并更新文件里所有调用它的地方(先用 outline 看结构,同一文件的多处修改用一次 multi_edit 完成)。改完运行 python3 shop.py 确认输出仍然是 TOTAL: 33.00 和 AUDIT: 30.00。".into(),
+            },
+        ];
+        let think = Some(false);
+        let cancel = AtomicBool::new(false);
+        let mut finished = false;
+        let mut used_multi_edit = false;
+        let mut used_outline = false;
+        let mut cached: Vec<LlamaToken> = Vec::new();
+
+        for step in 0..16 {
+            let req = GenRequest {
+                messages: messages.clone(),
+                params: GenParams {
+                    temperature: 0.2,
+                    top_p: 0.9,
+                    max_tokens: 2048,
+                    repeat_penalty: 1.05,
+                    stop: vec!["</tool_call>".to_string()],
+                    think,
+                    ..Default::default()
+                },
+            };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            eprintln!("\n──────── STEP {step} · RAW ────────\n{}", raw.trim().chars().take(500).collect::<String>());
+
+            match parse_tool_call(&raw) {
+                Some((name, args)) => {
+                    used_multi_edit |= name == "multi_edit";
+                    used_outline |= name == "outline";
+                    eprintln!("  ▶ TOOL  {name}  {}", args.to_string().chars().take(300).collect::<String>());
+                    let result = exec_tool(&name, &args);
+                    eprintln!("  ◀ RESULT\n{}", result.chars().take(600).collect::<String>());
+                    let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
+                    messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage {
+                        role: Role::User,
+                        content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
+                    });
+                }
+                None => {
+                    eprintln!("  ✔ FINAL\n{}", strip_think(&raw));
+                    finished = true;
+                    break;
+                }
+            }
+        }
+
+        // Independent behaviour check.
+        let out = std::process::Command::new("python3")
+            .arg("shop.py")
+            .current_dir(&ws)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        let src = std::fs::read_to_string(ws.join("shop.py")).unwrap_or_default();
+        eprintln!("\n════════ VERDICT: finished={finished} · multi_edit={used_multi_edit} · outline={used_outline} ════════");
+        eprintln!("---- run output ----\n{out}");
+        std::fs::remove_dir_all(&ws).ok();
+
+        assert!(finished, "agent never produced a final answer");
+        assert!(used_multi_edit, "agent should have used multi_edit for the multi-site rename");
+        assert!(src.contains("compute_total") && !src.contains("calc_total"), "rename incomplete:\n{src}");
+        assert!(out.contains("TOTAL: 33.00") && out.contains("AUDIT: 30.00"), "behaviour changed: {out}");
+    }
+
+    /// Prompt documenting the web tools, mirroring src/lib/agentLoop.ts.
+    const SYS_WEB: &str = r#"你是 Chaty 的编程智能体,在工作区目录中完成任务。工作区根目录:{WS}
+
+可用工具(路径相对工作区,越界会被拒绝):
+- read_file: {"path": string}
+- write_file: {"path": string, "content": string}
+- list_dir: {"path"?: string}
+- web_search: 联网搜索。加 site 参数做站内搜索:site="github.com" 返回仓库/issue/代码匹配;site="reddit.com" 搜帖子;site="youtube.com" 返回视频;其他域名限定站内。args: {"query": string, "site"?: string}
+- web_fetch: 抓取 URL:文章→Markdown;代码/JSON→原文;GitHub 文件页自动取 raw 源码;YouTube 视频→元信息+完整字幕转写;结果附页面链接和图片 URL,可继续 fetch 深入。args: {"url": string, "raw"?: boolean}
+- web_download: 把 URL 文件下载到工作区路径。args: {"url": string, "path": string}
+
+规则(严格遵守):
+- 每次只调用一个工具。调用时只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要有其它内容。
+- 系统会用 <tool_result>...</tool_result> 返回结果,你再继续。
+- 任务完成后不要再调用工具,直接用一两句话总结你做了什么。"#;
+
+    /// Video-understanding e2e: the real model must find a video via in-site
+    /// search, pull its caption transcript through web_fetch, and act on the
+    /// CONTENT of the video (not its title) — proving the pipeline delivers
+    /// understanding, not just links.
+    /// Run: CHATY_TEST_MODEL=… cargo test -p chaty agent_understands_video -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn agent_understands_video() {
+        let model_path = match std::env::var("CHATY_TEST_MODEL") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_MODEL=/path/to/model.gguf");
+                return;
+            }
+        };
+        let backend = llama_backend().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        eprintln!("loading model: {model_path}");
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load model");
+        let n_ctx = 16384u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+
+        let ws = std::env::temp_dir().join(format!("chaty-agent-video-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
+
+        let mut messages = vec![
+            ChatMessage { role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage {
+                role: Role::User,
+                content: "在 YouTube 上搜索 \"me at the zoo\",找到 YouTube 历史上的第一条视频,用 web_fetch 获取它的字幕转写,然后把视频中拍摄者实际谈论的动物和他说的重点写进 NOTES.md(必须依据字幕内容,不要凭标题猜)。".into(),
+            },
+        ];
+        let think = Some(false);
+        let cancel = AtomicBool::new(false);
+        let mut finished = false;
+        let mut cached: Vec<LlamaToken> = Vec::new();
+
+        for step in 0..14 {
+            let req = GenRequest {
+                messages: messages.clone(),
+                params: GenParams {
+                    temperature: 0.2,
+                    top_p: 0.9,
+                    max_tokens: 2048,
+                    repeat_penalty: 1.05,
+                    stop: vec!["</tool_call>".to_string()],
+                    think,
+                    ..Default::default()
+                },
+            };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            eprintln!("\n──────── STEP {step} · RAW ────────\n{}", raw.trim().chars().take(400).collect::<String>());
+            match parse_tool_call(&raw) {
+                Some((name, args)) => {
+                    eprintln!("  ▶ TOOL  {name}  {}", args.to_string().chars().take(200).collect::<String>());
+                    let result = exec_tool(&name, &args);
+                    eprintln!("  ◀ RESULT\n{}", result.chars().take(500).collect::<String>());
+                    let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
+                    messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage {
+                        role: Role::User,
+                        content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
+                    });
+                }
+                None => {
+                    eprintln!("  ✔ FINAL\n{}", strip_think(&raw));
+                    finished = true;
+                    break;
+                }
+            }
+        }
+
+        let notes = std::fs::read_to_string(ws.join("NOTES.md")).unwrap_or_default();
+        eprintln!("\n════════ VERDICT: finished={finished} · notes={} chars ════════\n{notes}", notes.len());
+        std::fs::remove_dir_all(&ws).ok();
+
+        assert!(finished, "agent never produced a final answer");
+        let lower = notes.to_lowercase();
+        // "front of the elephants … really long trunks" — only knowable from
+        // the transcript, never from the title.
+        assert!(
+            lower.contains("elephant") || notes.contains("大象"),
+            "NOTES.md must mention the elephants from the transcript:\n{notes}"
+        );
+        assert!(
+            lower.contains("trunk") || notes.contains("象鼻") || notes.contains("鼻子"),
+            "NOTES.md should capture the point about trunks:\n{notes}"
+        );
+    }
+
+    /// Full-stack online research e2e: the real model must use site-scoped
+    /// GitHub search, fetch a page, write findings, and download a binary —
+    /// exercising every new web tool against the live internet.
+    /// Run: CHATY_TEST_MODEL=… cargo test -p chaty agent_researches_online -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn agent_researches_online() {
+        let model_path = match std::env::var("CHATY_TEST_MODEL") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_MODEL=/path/to/model.gguf");
+                return;
+            }
+        };
+        let backend = llama_backend().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        eprintln!("loading model: {model_path}");
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load model");
+        let n_ctx = 16384u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+
+        let ws = std::env::temp_dir().join(format!("chaty-agent-web-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
+
+        let mut messages = vec![
+            ChatMessage { role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage {
+                role: Role::User,
+                content: "帮我调研一个小众 Rust 库:在 GitHub 上搜索 \"dom_smoothie readability\",找到那个把 Mozilla Readability 移植到 Rust 的仓库;用 web_fetch 打开它的仓库页面,把仓库全名和一句话简介写入 RESEARCH.md;最后用 web_download 把页面上列出的任意一张图片保存为 logo.png。全部完成后总结。".into(),
+            },
+        ];
+        let think = Some(false);
+        let cancel = AtomicBool::new(false);
+        let mut finished = false;
+        let mut web_calls = 0u32;
+        let mut cached: Vec<LlamaToken> = Vec::new();
+
+        for step in 0..20 {
+            let req = GenRequest {
+                messages: messages.clone(),
+                params: GenParams {
+                    temperature: 0.2,
+                    top_p: 0.9,
+                    max_tokens: 2048,
+                    repeat_penalty: 1.05,
+                    stop: vec!["</tool_call>".to_string()],
+                    think,
+                    ..Default::default()
+                },
+            };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            eprintln!("\n──────── STEP {step} · RAW ────────\n{}", raw.trim().chars().take(600).collect::<String>());
+
+            match parse_tool_call(&raw) {
+                Some((name, args)) => {
+                    if name.starts_with("web_") {
+                        web_calls += 1;
+                    }
+                    eprintln!("  ▶ TOOL  {name}  {args}");
+                    let result = exec_tool(&name, &args);
+                    eprintln!("  ◀ RESULT\n{}", result.chars().take(700).collect::<String>());
+                    let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
+                    messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage {
+                        role: Role::User,
+                        content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
+                    });
+                }
+                None => {
+                    eprintln!("  ✔ FINAL\n{}", strip_think(&raw));
+                    finished = true;
+                    break;
+                }
+            }
+        }
+
+        let research = std::fs::read_to_string(ws.join("RESEARCH.md")).unwrap_or_default();
+        let logo_bytes = std::fs::metadata(ws.join("logo.png")).map(|m| m.len()).unwrap_or(0);
+        eprintln!("\n════════ VERDICT: finished={finished} · web_calls={web_calls} · research={} chars · logo={} bytes ════════", research.len(), logo_bytes);
+        eprintln!("---- RESEARCH.md ----\n{research}");
+        std::fs::remove_dir_all(&ws).ok();
+
+        assert!(finished, "agent never produced a final answer");
+        assert!(web_calls >= 3, "agent should have searched, fetched, and downloaded");
+        assert!(research.to_lowercase().contains("dom_smoothie"), "RESEARCH.md should name the repo");
+        assert!(logo_bytes > 500, "logo.png should have been downloaded");
+    }
 
     #[test]
     #[ignore]
