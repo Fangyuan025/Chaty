@@ -198,8 +198,8 @@ const TOOLS_DOC = `
 - bash_bg: 在后台启动长时间运行的命令(dev server、慢构建、长测试),立即返回一个 id,期间你可以继续做别的;它结束时系统会自动把结果告诉你。args: { "command": string }
 - bg_output: 查看某个后台命令的当前状态和最近输出(比如确认 server 已启动)。args: { "id": number }
 - bg_kill: 终止某个后台命令(整棵进程树)。args: { "id": number }
-- web_search: 联网搜索(标题+链接+摘要)。查资料、找文档、查报错时用。加 site 参数可做站内搜索:site="github.com" 返回结构化的仓库/issue/代码匹配;site="reddit.com"(或 "reddit.com/r/某版块")搜帖子;site="youtube.com" 返回视频(标题/时长/频道/播放量);其他任意域名(docs.python.org、stackoverflow.com、x.com 等)都会限定在该站内搜。args: { "query": string, "site"?: string }
-- web_fetch: 抓取任意 URL,按内容类型自动处理:文章页→干净的 Markdown 正文;代码/JSON/配置文件→原文;GitHub 文件页自动取 raw 源文件;Reddit 帖子→正文+评论;YouTube 视频→元信息+完整字幕转写(带时间标,可直接理解视频内容);PDF→提取文本;图片等二进制→返回元信息(用 web_download 保存)。结果还会列出页面上的链接和图片 URL——想深入子页面就继续 fetch 那些链接。要 HTML 源码时传 raw=true。args: { "url": string, "raw"?: boolean }
+- web_search: 联网搜索(标题+链接+摘要)。查资料、找文档、查报错时用。加 site 参数可做站内搜索:site="github.com" 返回结构化的仓库/issue/代码匹配;site="reddit.com"(或 "reddit.com/r/某版块")搜帖子;site="youtube.com" / "bilibili.com" 返回视频(标题/时长/UP主/播放量);其他任意域名(docs.python.org、stackoverflow.com、x.com、weibo.com 等)都会限定在该站内搜(登录墙站点只能拿到搜索引擎快照级的标题/摘要)。args: { "query": string, "site"?: string }
+- web_fetch: 抓取任意 URL,按内容类型自动处理:文章页→干净的 Markdown 正文;代码/JSON/配置文件→原文;GitHub 文件页自动取 raw 源文件;Reddit 帖子→正文+评论;YouTube 视频→元信息+完整字幕转写;B站视频→公开元信息+简介(播放/点赞/弹幕);PDF→提取文本;图片等二进制→返回元信息(用 web_download 保存)。结果还会列出页面上的链接和图片 URL——想深入子页面就继续 fetch 那些链接。要 HTML 源码时传 raw=true。args: { "url": string, "raw"?: boolean }
 - web_download: 把 URL 指向的文件(图片、压缩包、任意资源)下载到工作区指定路径。args: { "url": string, "path": string }
 - update_plan: 制定或更新任务计划(待办清单),让用户看到你的推进步骤。开始复杂任务时先列计划,完成一步就把它标为 done、把下一步标为 in_progress。args: { "todos": [{ "content": string, "status": "pending"|"in_progress"|"done" }] }
 - ask_user: 当遇到需要用户拍板的决策(方案分歧、需求不明、破坏性操作确认)时,向用户提一个选择题;不要自己乱猜。args: { "question": string, "options": string[] }`;
@@ -297,6 +297,21 @@ function proseOnly(text: string): string {
   const open = text.indexOf("<tool_call>");
   const visible = open === -1 ? text : text.slice(0, open);
   return stripThink(visible).trim();
+}
+
+/** Runaway-reasoning check: so far the output is *only* reasoning — no tool
+ *  call and no real answer yet. Small models fall into this and keep thinking
+ *  forever; gated behind a token budget so normal reasoning isn't cut short. */
+function isThinkOnly(raw: string): boolean {
+  if (raw.includes("<tool_call>")) return false;
+  return proseAfter(raw).trim() === "";
+}
+
+/** Degenerate looping: a short chunk repeated ≥3× back-to-back at the tail
+ *  ("I need to check… I need to check… I need to check…"). Very unlikely in
+ *  legitimate prose or code, so a positive is a reliable stuck signal. */
+function isDegenerateRepeat(raw: string): boolean {
+  return /([\s\S]{16,90}?)\1\1/.test(raw.slice(-320));
 }
 
 const asStr = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
@@ -668,6 +683,10 @@ export async function runAgentTurn(
   const nCtx = opts.nCtx ?? 8192;
   const budget = opts.thinkMode === "deep" ? 8192 : opts.thinkMode === "normal" ? 6144 : 4096;
   const maxTokens = Math.min(budget, Math.max(1024, Math.floor(nCtx * 0.75)));
+  // Think gate: uninterrupted reasoning past this many tokens with no tool call
+  // and no answer = the model is looping in its own head. Deep mode gets more
+  // headroom; still far below maxTokens so a genuine long reason isn't cut.
+  const thinkCap = opts.thinkMode === "deep" ? 5000 : 3000;
   // read_file budget scales with the REAL context window (≈0.6·nCtx tokens ×
   // ~3 chars/token) so a normal source file is a single read; compaction
   // reclaims the space on later steps.
@@ -693,6 +712,10 @@ export async function runAgentTurn(
   let lastCallKey = "";
   let repeatCount = 0;
   let hotNext = false;
+  // Think gate state: consecutive stuck-thinking steps, and a one-shot flag to
+  // physically disable reasoning on the recovery step.
+  let stuckThinkCount = 0;
+  let forceNoThinkNext = false;
   let compactNotified = false;
   const noteCompacted = () => {
     if (!compactNotified) {
@@ -731,10 +754,14 @@ export async function runAgentTurn(
 
       let raw = "";
       let liveTokens = 0;
+      let thinkGateTripped = false;
       const t0 = performance.now();
       // After an intercepted repeat, sample hotter once to escape the pattern.
       const stepTemp = hotNext ? 0.7 : 0.3;
       hotNext = false;
+      // Recovery step after the think gate: reasoning off so the model MUST act.
+      const stepThink = forceNoThinkNext ? false : think;
+      forceNoThinkNext = false;
       await generate(
         {
           messages,
@@ -744,7 +771,7 @@ export async function runAgentTurn(
             maxTokens,
             repeatPenalty: 1.05,
             stop: ["</tool_call>"],
-            think,
+            think: stepThink,
           },
         },
         (ev) => {
@@ -759,6 +786,17 @@ export async function runAgentTurn(
             cb.onStats?.(baseTokens + liveTokens, lastTps);
             cb.onThinking(thinkPart(raw));
             cb.onAssistantText(proseAfter(raw));
+            // ── Think gate (mid-stream) ── stop a runaway before it fills the
+            // whole budget: too much uninterrupted reasoning with no output, or
+            // degenerate looping. Checked periodically to stay cheap.
+            if (!thinkGateTripped && liveTokens % 48 === 0) {
+              const runaway = liveTokens > thinkCap && isThinkOnly(raw);
+              const looping = liveTokens > 400 && isThinkOnly(raw) && isDegenerateRepeat(raw);
+              if (runaway || looping) {
+                thinkGateTripped = true;
+                void cancelGeneration().catch(() => {});
+              }
+            }
           } else if (ev.type === "done") {
             baseTokens += ev.stats.completionTokens;
             lastTps = ev.stats.tokensPerSecond;
@@ -773,6 +811,45 @@ export async function runAgentTurn(
 
       const call = parseToolCall(raw);
       if (!call) {
+        const answer = proseAfter(raw).trim() || stripThink(raw).trim();
+        // ── Think gate (post-generation) ── the step produced only reasoning:
+        // either we cut a runaway mid-stream, or it finished with no tool call
+        // and an empty answer despite thinking. Don't accept that as "done" —
+        // force reasoning off, sample hotter, and demand an action. Bounded so
+        // the recovery itself can't spin: a 3rd stuck step pauses for the user.
+        const stuckThinking = thinkGateTripped || (answer === "" && thinking.trim() !== "");
+        if (stuckThinking && step < maxSteps - 1) {
+          stuckThinkCount++;
+          if (stuckThinkCount >= 3) {
+            cb.onFinal(
+              lang === "zh"
+                ? "模型连续陷入思考循环、迟迟没有产出结果,已暂停以免空转。点「继续」重试,或把任务拆得更具体一些。"
+                : 'The model kept looping in its own reasoning without producing anything — paused to avoid spinning. Hit "Continue" to retry, or break the task into more concrete steps.',
+              undefined,
+              "steps",
+            );
+            return;
+          }
+          // Break the attractor on the next step: reasoning physically off
+          // (empty think prefill for flag models + /no_think for switch models),
+          // hotter sampling, and a firm instruction to act now. Don't feed the
+          // runaway reasoning back into context — just a short marker.
+          forceNoThinkNext = true;
+          hotNext = true;
+          messages.push({ role: "assistant", content: proseOnly(raw).slice(0, 300) });
+          const stopSuffix = opts.thinkSwitch ? "\n/no_think" : "";
+          messages.push({
+            role: "user",
+            content:
+              (lang === "zh"
+                ? "停止思考。你已经反复推理却没有产出任何结果。现在立刻二选一:要么输出一行 <tool_call>{\"name\":\"...\",\"arguments\":{...}}</tool_call> 执行一个具体动作,要么直接给出简短的最终答案。不要再写任何思考过程。"
+                : "Stop thinking. You have been reasoning in circles without producing anything. Right now, do ONE of two things: output a single line <tool_call>{\"name\":\"...\",\"arguments\":{...}}</tool_call> to take a concrete action, or give a short final answer directly. Do not write any more reasoning.") +
+              stopSuffix,
+          });
+          cb.onThinking("");
+          cb.onAssistantText("");
+          continue;
+        }
         // A `<tool_call>` was attempted but couldn't be parsed → don't leak the
         // raw markup into the answer; nudge the model to re-emit valid JSON.
         // (Bounded by maxSteps.) Otherwise it's a genuine final answer.
@@ -785,9 +862,11 @@ export async function runAgentTurn(
           );
           continue;
         }
-        cb.onFinal(proseAfter(raw) || stripThink(raw).trim(), thinking);
+        cb.onFinal(answer, thinking);
         return;
       }
+      // A valid tool call = real progress; clear the stuck-thinking streak.
+      stuckThinkCount = 0;
 
       // Record the assistant turn (its reasoning + the tool call, tag restored).
       const withClose = raw.includes("</tool_call>") ? raw : `${raw}</tool_call>`;

@@ -91,40 +91,135 @@ pub async fn web_research(query: String) -> Result<WebResearch, String> {
     Ok(WebResearch { results, pages })
 }
 
-/// Free, no-key web search with a multi-provider fallback chain — search
-/// engines block scrapers aggressively (DDG now returns an HTTP-202 anomaly
-/// page), so we try several independent sources and return the first that
-/// yields results. Bing's HTML is the most scrape-tolerant major engine;
-/// Wikipedia and DuckDuckGo's Instant-Answer JSON API are never blocked, so
-/// the feature degrades gracefully instead of dying when SERPs are throttled.
+// ---------------------------------------------------------------- robustness
+
+/// Provider order, most-reliable-first (verified live 2026-07). DuckDuckGo's
+/// POST endpoints are currently the most scrape-tolerant; Brave is demoted
+/// (it now 429s hard); Wikipedia + Instant-Answer are the never-blocked
+/// last resorts. The circuit breaker skips whichever ones are currently
+/// blocked so a single search never re-hits a dead source.
+const PROVIDERS: &[&str] = &["ddg-html", "ddg-lite", "bing", "brave", "wikipedia", "ddg-ia"];
+
+/// Cooldown after a hard block (429 / 202 anomaly / 403 / timeout) — long
+/// enough that the agent stops hammering a source that just rejected it.
+const HARD_COOLDOWN: Duration = Duration::from_secs(90);
+/// Cooldown after a 200 that yielded no usable results (softer — could be a
+/// transient consent page or a genuinely empty query).
+const SOFT_COOLDOWN: Duration = Duration::from_secs(25);
+/// Repeat queries (agents loop over the same terms constantly) are served
+/// from cache — the single biggest lever against high-frequency load.
+const CACHE_TTL: Duration = Duration::from_secs(600);
+const CACHE_CAP: usize = 64;
+
+struct SearchState {
+    /// (normalized query, results, inserted-at) — small, linear-scanned.
+    cache: Vec<(String, Vec<SearchResult>, std::time::Instant)>,
+    /// provider name → "blocked until" instant.
+    cooldown: std::collections::HashMap<&'static str, std::time::Instant>,
+}
+
+static STATE: std::sync::LazyLock<std::sync::Mutex<SearchState>> = std::sync::LazyLock::new(|| {
+    std::sync::Mutex::new(SearchState { cache: Vec::new(), cooldown: std::collections::HashMap::new() })
+});
+
+fn normalize_key(query: &str) -> String {
+    query.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Keep only results a model can actually use: a real title, an external
+/// http(s) URL, no ad redirects, de-duplicated, capped.
+fn sanitize(mut v: Vec<SearchResult>) -> Vec<SearchResult> {
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|r| {
+        if r.title.trim().is_empty() {
+            return false;
+        }
+        if !(r.url.starts_with("http://") || r.url.starts_with("https://")) {
+            return false;
+        }
+        if is_ad_url(&r.url) {
+            return false;
+        }
+        let key = r.url.split(['?', '#']).next().unwrap_or(&r.url).to_string();
+        seen.insert(key)
+    });
+    v.truncate(8);
+    v
+}
+
+/// Dispatch by provider name so the chain can be data-driven (cooldown-aware).
+async fn run_provider(
+    name: &str,
+    client: &reqwest::Client,
+    query: &str,
+) -> Result<Vec<SearchResult>, String> {
+    match name {
+        "ddg-html" => ddg_endpoint(client, "https://html.duckduckgo.com/html/", query, parse_ddg).await,
+        "ddg-lite" => ddg_endpoint(client, "https://lite.duckduckgo.com/lite/", query, parse_lite).await,
+        "bing" => bing_search(client, query).await,
+        "brave" => brave_search(client, query).await,
+        "wikipedia" => wikipedia_search(client, query).await,
+        "ddg-ia" => ddg_instant_answer(client, query).await,
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Free, no-key web search, hardened for agent use. A per-provider circuit
+/// breaker skips sources that just blocked us (so high-frequency calls don't
+/// keep re-hitting a dead engine), an LRU cache serves repeat queries, and
+/// results are validated so a challenge/consent page can't short-circuit the
+/// chain with junk. Degrades to "no results" gracefully, never an error.
 async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
     let query = query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    // Try each provider; the first with results wins. A provider error (block,
-    // timeout, bad body) is swallowed so the next one gets a turn — search must
-    // degrade to "no results" gracefully, never surface a raw parser error.
-    macro_rules! try_provider {
-        ($call:expr) => {
-            if let Ok(r) = $call.await {
+    let key = normalize_key(query);
+    let now = std::time::Instant::now();
+
+    // Cache hit → done, zero network.
+    if let Some(hit) = {
+        let st = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        st.cache
+            .iter()
+            .find(|(k, _, t)| *k == key && now.duration_since(*t) < CACHE_TTL)
+            .map(|(_, v, _)| v.clone())
+    } {
+        return Ok(hit);
+    }
+
+    for &name in PROVIDERS {
+        // Skip a source that's still cooling down from a recent block.
+        let cooling = {
+            let st = STATE.lock().unwrap_or_else(|e| e.into_inner());
+            st.cooldown.get(name).is_some_and(|until| *until > now)
+        };
+        if cooling {
+            continue;
+        }
+        match run_provider(name, client, query).await {
+            Ok(r) => {
+                let r = sanitize(r);
                 if !r.is_empty() {
+                    let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    st.cache.retain(|(k, _, _)| *k != key);
+                    st.cache.push((key.clone(), r.clone(), std::time::Instant::now()));
+                    if st.cache.len() > CACHE_CAP {
+                        st.cache.remove(0);
+                    }
                     return Ok(r);
                 }
+                // 200 but nothing usable — brief cooldown, try the next source.
+                let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
+                st.cooldown.insert(name, std::time::Instant::now() + SOFT_COOLDOWN);
             }
-        };
+            Err(_) => {
+                // Hard failure (block / timeout) — sit this source out for a while.
+                let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
+                st.cooldown.insert(name, std::time::Instant::now() + HARD_COOLDOWN);
+            }
+        }
     }
-    // Brave is an independent index with genuine relevance for both Chinese and
-    // English and returns direct URLs — the best free, no-key SERP available.
-    // The rest are fallbacks; Wikipedia is full-text (noisy for common Chinese
-    // characters), so it sits near the end, and the DuckDuckGo Instant-Answer
-    // API is the never-blocked last resort.
-    try_provider!(brave_search(client, query));
-    try_provider!(bing_search(client, query));
-    try_provider!(ddg_endpoint(client, "https://html.duckduckgo.com/html/", query, parse_ddg));
-    try_provider!(ddg_endpoint(client, "https://lite.duckduckgo.com/lite/", query, parse_lite));
-    try_provider!(wikipedia_search(client, query));
-    try_provider!(ddg_instant_answer(client, query));
 
     Ok(Vec::new())
 }
@@ -615,5 +710,86 @@ mod tests {
         );
         // A non-http, non-redirect href yields nothing usable.
         assert_eq!(decode_bing_url("javascript:void(0)"), "");
+    }
+
+    #[test]
+    fn sanitize_drops_junk_and_dedups() {
+        let raw = vec![
+            SearchResult { title: "".into(), url: "https://a.com".into(), snippet: "".into() },
+            SearchResult { title: "ok".into(), url: "ftp://b.com".into(), snippet: "".into() },
+            SearchResult { title: "good".into(), url: "https://x.com/p".into(), snippet: "".into() },
+            SearchResult { title: "dup".into(), url: "https://x.com/p?utm=1".into(), snippet: "".into() },
+            SearchResult { title: "good2".into(), url: "https://y.com/q".into(), snippet: "".into() },
+        ];
+        let out = sanitize(raw);
+        // empty-title dropped, non-http dropped, ?query dup of x.com/p dropped.
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].url, "https://x.com/p");
+        assert_eq!(out[1].url, "https://y.com/q");
+    }
+
+    #[test]
+    fn normalize_key_is_case_and_space_insensitive() {
+        assert_eq!(normalize_key("  Rust   Async "), normalize_key("rust async"));
+    }
+
+    #[test]
+    fn circuit_breaker_skips_cooling_provider_and_cache_serves_repeat() {
+        // Pure state-machine check of the breaker + cache, no network.
+        let now = std::time::Instant::now();
+        let mut st = SearchState { cache: Vec::new(), cooldown: std::collections::HashMap::new() };
+        // A hard-blocked provider is skipped until its cooldown elapses.
+        st.cooldown.insert("brave", now + HARD_COOLDOWN);
+        assert!(st.cooldown.get("brave").is_some_and(|u| *u > now));
+        assert!(st.cooldown.get("bing").is_none());
+        // Cache round-trip.
+        let res = vec![SearchResult { title: "t".into(), url: "https://e.com".into(), snippet: "s".into() }];
+        st.cache.push(("q".into(), res.clone(), now));
+        let hit = st
+            .cache
+            .iter()
+            .find(|(k, _, t)| *k == "q" && now.duration_since(*t) < CACHE_TTL)
+            .map(|(_, v, _)| v.clone());
+        assert_eq!(hit.as_deref().map(|v| v.len()), Some(1));
+    }
+
+    // Live end-to-end: cargo test -p chaty search -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn real_search_chain_returns_usable_results() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let client = build_client().unwrap();
+        let r = rt.block_on(ddg_search(&client, "rust async await tutorial")).unwrap();
+        println!("results: {}", r.len());
+        for x in r.iter().take(5) {
+            println!("  {} — {}", x.title, x.url);
+        }
+        assert!(!r.is_empty(), "search chain returned nothing");
+        assert!(r.iter().all(|x| x.url.starts_with("http")), "non-http url leaked");
+        // Second identical call must be served from cache (instant).
+        let t = std::time::Instant::now();
+        let r2 = rt.block_on(ddg_search(&client, "Rust  Async  Await  Tutorial")).unwrap();
+        let ms = t.elapsed().as_millis();
+        println!("cache hit in {ms}ms, {} results", r2.len());
+        assert_eq!(r2.len(), r.len(), "cache should return the same set");
+        assert!(ms < 50, "second call should be a cache hit, took {ms}ms");
+    }
+
+    #[test]
+    #[ignore]
+    fn real_bing_parses() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let client = build_client().unwrap();
+        match rt.block_on(bing_search(&client, "rust programming language")) {
+            Ok(r) => {
+                println!("bing: {} results", r.len());
+                for x in r.iter().take(3) {
+                    println!("  {} — {}", x.title, x.url);
+                }
+                // Bing may be rate-limiting; only assert structure when it answered.
+                assert!(r.iter().all(|x| !x.title.is_empty() && x.url.starts_with("http")));
+            }
+            Err(e) => println!("bing blocked (expected under load): {e}"),
+        }
     }
 }

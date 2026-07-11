@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.1 — Bilibili in-site & a think-loop gate (2026-07-10)
+
+- **Bilibili** joins the in-site search family: `web_search` with `site="bilibili.com"` returns structured videos (title / UP / duration / views), and fetching any `bilibili.com/video/BV…` link returns the video's public metadata and description — all through Bilibili's own key-less public API, no cookie or login. Weibo / Xiaohongshu / X keep the search-engine snapshot fallback, since their public read endpoints are now login-walled and Chaty won't circumvent authentication.
+- **Think-loop gate (Code mode)** — small models sometimes get stuck reasoning forever, never emitting a tool call or an answer. Chaty now cuts a runaway mid-stream once reasoning runs long past a budget with no output (or falls into degenerate repetition), then recovers by forcing reasoning **off** for one step, sampling hotter, and demanding a concrete action — instead of burning the whole token budget or returning a blank reply. A persistent loop pauses cleanly with a **Continue** button rather than spinning to the step limit.
+- **Web search, hardened for agents** — the search chain was reworked so it stays alive under heavy, repeated use. A per-provider **circuit breaker** sits a source out for a while the moment it blocks us (so rapid-fire searches stop re-hitting a dead engine), an in-memory **cache** serves repeat queries instantly (agents loop over the same terms constantly), results are **validated** so a challenge/consent page can't short-circuit the chain with junk, and the providers were reordered to the ones currently answering (DuckDuckGo first; Brave, which now hard-blocks, demoted). Net effect: real results instead of the noisy last-resort fallback, and no more collapse when the agent searches in a tight loop.
+
 ## v1.6.0 — The agent levels up (2026-07-10)
 
 Code mode grew in two directions at once: a no-blind-spots web research layer, and a set of editing power tools that make the agent faster and far harder to derail. All key-less, talking to sites directly, nothing routed through third-party services.

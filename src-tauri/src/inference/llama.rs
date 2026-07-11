@@ -1497,8 +1497,8 @@ if __name__ == "__main__":
 - read_file: {"path": string}
 - write_file: {"path": string, "content": string}
 - list_dir: {"path"?: string}
-- web_search: 联网搜索。加 site 参数做站内搜索:site="github.com" 返回仓库/issue/代码匹配;site="reddit.com" 搜帖子;site="youtube.com" 返回视频;其他域名限定站内。args: {"query": string, "site"?: string}
-- web_fetch: 抓取 URL:文章→Markdown;代码/JSON→原文;GitHub 文件页自动取 raw 源码;YouTube 视频→元信息+完整字幕转写;结果附页面链接和图片 URL,可继续 fetch 深入。args: {"url": string, "raw"?: boolean}
+- web_search: 联网搜索。加 site 参数做站内搜索:site="github.com" 返回仓库/issue/代码匹配;site="reddit.com" 搜帖子;site="youtube.com"/"bilibili.com" 返回视频;其他域名限定站内。args: {"query": string, "site"?: string}
+- web_fetch: 抓取 URL:文章→Markdown;代码/JSON→原文;GitHub 文件页自动取 raw 源码;YouTube 视频→元信息+完整字幕转写;B站视频→公开元信息+简介;结果附页面链接和图片 URL,可继续 fetch 深入。args: {"url": string, "raw"?: boolean}
 - web_download: 把 URL 文件下载到工作区路径。args: {"url": string, "path": string}
 
 规则(严格遵守):

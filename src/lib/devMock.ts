@@ -193,11 +193,18 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return { conversations: 5, messages: 48, codeSessions: 2, dbBytes: 2_400_000 };
 
     // ---- extended web tools (Code mode) ----
-    case "site_search":
+    case "site_search": {
+      const site = String(args?.site ?? "");
+      if (/bilibili/.test(site)) {
+        return [
+          { kind: "video", title: "Rust 编程语言入门教程（已完结）(729:37, 软件工艺师, 1672594 播放)", url: "https://www.bilibili.com/video/BV1hp4y1k7SV", snippet: "Rust 权威指南配套视频教程" },
+        ];
+      }
       return [
         { kind: "repo", title: "fastapi/fastapi (★85000, Python)", url: "https://github.com/fastapi/fastapi", snippet: "FastAPI framework, high performance, easy to learn" },
         { kind: "code", title: "github.com/fastapi/fastapi/fastapi/main.py", url: "https://github.com/fastapi/fastapi/blob/HEAD/fastapi/main.py#L1", snippet: "from fastapi import FastAPI" },
       ];
+    }
     case "fetch_page_ex": {
       const u = String(args?.url ?? "");
       if (/youtube\.com|youtu\.be/.test(u)) {

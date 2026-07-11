@@ -100,6 +100,7 @@ pub async fn site_search(site: String, query: String) -> Result<Vec<SiteResult>,
         "github.com" | "github" => github_search(&query).await,
         "reddit.com" | "reddit" => reddit_search(&query, None).await,
         "youtube.com" | "youtube" | "youtu.be" => youtube_search(&query).await,
+        "bilibili.com" | "bilibili" | "b23.tv" => bilibili_search(&query).await,
         // r/rust style scoping: site "reddit.com/r/rust"
         _ if s.starts_with("reddit.com/r/") => {
             let sub = s.trim_start_matches("reddit.com/r/").to_string();
@@ -480,6 +481,144 @@ async fn fetch_youtube(video_id: &str) -> Result<PageEx, String> {
     })
 }
 
+// ---------------------------------------------------------------- bilibili
+
+const BILI_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15";
+
+/// Bilibili in-site video search via the public web-interface API (no key,
+/// no cookie — a Referer header is all it wants). Returns structured videos
+/// with title / author / duration / view count.
+async fn bilibili_search(query: &str) -> Result<Vec<SiteResult>, String> {
+    let c = reqwest::Client::builder()
+        .user_agent(BILI_UA)
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!(
+        "https://api.bilibili.com/x/web-interface/wbi/search/type?search_type=video&keyword={}&page=1",
+        urlencoding(query)
+    );
+    let body = c
+        .get(&url)
+        .header(reqwest::header::REFERER, "https://www.bilibili.com/")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    if v["code"].as_i64() != Some(0) {
+        // Anti-crawl / rate limit → engine snapshot fallback.
+        return engine_site_search("bilibili.com", query).await;
+    }
+    let mut out = Vec::new();
+    for r in v["data"]["result"].as_array().unwrap_or(&Vec::new()) {
+        let bvid = r["bvid"].as_str().unwrap_or("");
+        if bvid.is_empty() {
+            continue;
+        }
+        // Titles come with <em class="keyword"> highlight tags — strip them.
+        let title = strip_tags(r["title"].as_str().unwrap_or(""));
+        let author = r["author"].as_str().unwrap_or("");
+        let dur = r["duration"].as_str().unwrap_or("");
+        let plays = r["play"].as_i64().unwrap_or(0);
+        let desc = strip_tags(r["description"].as_str().unwrap_or(""));
+        let mut meta = Vec::new();
+        if !dur.is_empty() {
+            meta.push(dur.to_string());
+        }
+        if !author.is_empty() {
+            meta.push(author.to_string());
+        }
+        if plays > 0 {
+            meta.push(format!("{plays} 播放"));
+        }
+        out.push(SiteResult {
+            kind: "video".into(),
+            title: if meta.is_empty() { title } else { format!("{title} ({})", meta.join(", ")) },
+            url: format!("https://www.bilibili.com/video/{bvid}"),
+            snippet: desc.chars().take(200).collect(),
+        });
+        if out.len() >= 12 {
+            break;
+        }
+    }
+    if out.is_empty() {
+        return engine_site_search("bilibili.com", query).await;
+    }
+    Ok(out)
+}
+
+/// The BVxxxx id from any Bilibili video URL (bilibili.com/video/BV…, or a
+/// b23.tv short link path). None for non-video Bilibili links.
+fn bilibili_bvid(url: &str) -> Option<String> {
+    let u = Url::parse(url).ok()?;
+    let host = u.host_str()?.trim_start_matches("www.").trim_start_matches("m.");
+    if host != "bilibili.com" {
+        return None;
+    }
+    for seg in u.path().trim_matches('/').split('/') {
+        if (seg.starts_with("BV") || seg.starts_with("bv")) && seg.len() >= 10 {
+            return Some(seg.to_string());
+        }
+    }
+    None
+}
+
+/// Bilibili video metadata (title / UP / views / likes / description) via the
+/// public web-interface/view API.
+async fn fetch_bilibili(bvid: &str) -> Result<PageEx, String> {
+    let c = reqwest::Client::builder()
+        .user_agent(BILI_UA)
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let url = format!("https://api.bilibili.com/x/web-interface/view?bvid={bvid}");
+    let body = c
+        .get(&url)
+        .header(reqwest::header::REFERER, "https://www.bilibili.com/")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    if v["code"].as_i64() != Some(0) {
+        return Err(format!(
+            "B站视频不可用 (unavailable): {}",
+            v["message"].as_str().unwrap_or("?")
+        ));
+    }
+    let d = &v["data"];
+    let title = d["title"].as_str().unwrap_or("").to_string();
+    let author = d["owner"]["name"].as_str().unwrap_or("");
+    let secs = d["duration"].as_i64().unwrap_or(0);
+    let stat = &d["stat"];
+    let views = stat["view"].as_i64().unwrap_or(0);
+    let likes = stat["like"].as_i64().unwrap_or(0);
+    let danmaku = stat["danmaku"].as_i64().unwrap_or(0);
+    let desc: String = d["desc"].as_str().unwrap_or("").chars().take(800).collect();
+    let text = format!(
+        "视频 (video): {title}\nUP 主 (uploader): {author} · 时长 (length): {}:{:02} · 播放 (views): {views} · 点赞 (likes): {likes} · 弹幕 (danmaku): {danmaku}\n\n简介 (description):\n{desc}\n\n（B站视频正文以弹幕/字幕形式存在,需登录才能取字幕;此处提供公开元信息与简介 / public metadata only — captions require login）",
+        secs / 60,
+        secs % 60
+    );
+    let (text, truncated) = cap(text.trim(), TEXT_CAP);
+    Ok(PageEx {
+        url: format!("https://www.bilibili.com/video/{bvid}"),
+        kind: "video".into(),
+        content_type: "video/bilibili".into(),
+        title,
+        text,
+        truncated,
+        links: Vec::new(),
+        images: Vec::new(),
+        bytes: None,
+    })
+}
+
 /// Manual captions beat auto-generated; within each class prefer Chinese,
 /// then English, then whatever is first.
 fn pick_caption_track(tracks: &[Value]) -> Option<&Value> {
@@ -655,6 +794,12 @@ pub async fn fetch_page_ex(url: String, raw: Option<bool>) -> Result<PageEx, Str
     // Reddit URLs answer 403 to plain HTTP clients but happily serve RSS.
     if let Some(rss_url) = reddit_rss_url(&url) {
         return fetch_reddit(&rss_url).await;
+    }
+
+    // Bilibili video pages hide the content in a JS payload; the public
+    // web-interface API returns clean metadata (title / UP / views / desc).
+    if let Some(bvid) = bilibili_bvid(&url) {
+        return fetch_bilibili(&bvid).await;
     }
 
     let c = client(20)?;
@@ -1016,6 +1161,20 @@ mod tests {
     }
 
     #[test]
+    fn bilibili_bvid_parses() {
+        assert_eq!(
+            bilibili_bvid("https://www.bilibili.com/video/BV1xx411c7mD").as_deref(),
+            Some("BV1xx411c7mD")
+        );
+        assert_eq!(
+            bilibili_bvid("https://www.bilibili.com/video/BV1xx411c7mD?p=2&t=30").as_deref(),
+            Some("BV1xx411c7mD")
+        );
+        assert_eq!(bilibili_bvid("https://www.bilibili.com/"), None);
+        assert_eq!(bilibili_bvid("https://example.com/video/BV1xx411c7mD"), None);
+    }
+
+    #[test]
     fn timedtext_xml_becomes_marked_transcript() {
         let xml = r#"<?xml version="1.0"?><timedtext format="3"><body>
 <p t="1200" d="2000">hello
@@ -1067,6 +1226,32 @@ world</p>
             println!("  {} — {}", x.title, x.url);
         }
         assert!(!r.is_empty(), "x.com snapshot search returned nothing");
+    }
+
+    #[test]
+    #[ignore]
+    fn real_bilibili_site_search() {
+        let r = rt().block_on(site_search("bilibili.com".into(), "rust 教程".into())).unwrap();
+        assert!(!r.is_empty(), "bilibili search returned nothing");
+        println!("bilibili: {} results", r.len());
+        for x in r.iter().take(4) {
+            println!("  [{}] {} — {}", x.kind, x.title, x.url);
+        }
+        assert!(r.iter().any(|x| x.url.contains("/video/BV")), "no BV video results");
+    }
+
+    #[test]
+    #[ignore]
+    fn real_fetch_bilibili_video() {
+        // "字幕君交流场所" — a stable, high-view public video.
+        let p = rt()
+            .block_on(fetch_page_ex("https://www.bilibili.com/video/BV1xx411c7mD".into(), None))
+            .unwrap();
+        println!("bili kind={} title={} len={}", p.kind, p.title, p.text.len());
+        println!("{}", p.text.chars().take(400).collect::<String>());
+        assert_eq!(p.kind, "video");
+        assert!(!p.title.is_empty());
+        assert!(p.text.contains("播放") && p.text.contains("UP 主"), "metadata missing: {}", p.text);
     }
 
     #[test]
