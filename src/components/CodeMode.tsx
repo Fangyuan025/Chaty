@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useI18n } from "../lib/i18n";
+import { diffLines } from "../lib/diff";
 import { useConfirm } from "./ConfirmModal";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { copyToClipboard } from "../lib/clipboard";
@@ -65,26 +66,6 @@ const RAIL_MAX = 420;
 
 const uid = () => Math.random().toString(36).slice(2);
 
-/** Minimal line diff: trim the common prefix/suffix, show the changed middle as
- *  removals + additions with a couple of context lines. */
-function lineDiff(before: string, after: string): { kind: "ctx" | "add" | "del"; text: string }[] {
-  const a = before.split("\n");
-  const b = after.split("\n");
-  let s = 0;
-  while (s < a.length && s < b.length && a[s] === b[s]) s++;
-  let ea = a.length;
-  let eb = b.length;
-  while (ea > s && eb > s && a[ea - 1] === b[eb - 1]) {
-    ea--;
-    eb--;
-  }
-  const out: { kind: "ctx" | "add" | "del"; text: string }[] = [];
-  for (let i = Math.max(0, s - 2); i < s; i++) out.push({ kind: "ctx", text: a[i] });
-  for (let i = s; i < ea; i++) out.push({ kind: "del", text: a[i] });
-  for (let i = s; i < eb; i++) out.push({ kind: "add", text: b[i] });
-  for (let i = ea; i < Math.min(a.length, ea + 2); i++) out.push({ kind: "ctx", text: a[i] });
-  return out.slice(0, 60);
-}
 
 const TOOL_ICON: Record<string, string> = {
   read_file: "M9 2h6l4 4v14a0 0 0 0 1 0 0H5V2z",
@@ -95,6 +76,7 @@ const TOOL_ICON: Record<string, string> = {
   list_dir: "M3 6h18M3 12h18M3 18h18",
   glob: "M3 6h18M3 12h18M3 18h18",
   grep: "M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-4-4",
+  search_files: "M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-4-4M8 8h6M8 11h4",
   search_code: "M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-4-4M8.5 9.5L7 11l1.5 1.5M13.5 9.5L15 11l-1.5 1.5",
   search_docs: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M11 11a3 3 0 102.2 5.1L16 19",
   bash: "M4 5l6 7-6 7M13 19h7",
@@ -115,9 +97,11 @@ function toolSummary(call: ToolCall): string {
     case "write_file":
       return `write ${argPath(call.args) || "?"}`;
     case "edit_file":
-      return `edit ${argPath(call.args) || "?"}`;
-    case "multi_edit":
-      return `edit ×${argEdits(call.args).length} ${argPath(call.args) || "?"}`;
+    case "multi_edit": {
+      const n = argEdits(call.args).length;
+      const p = argPath(call.args) || "?";
+      return n > 1 ? `edit ×${n} ${p}` : `edit ${p}`;
+    }
     case "outline":
       return `outline ${argPath(call.args) || "?"}`;
     case "list_dir":
@@ -126,6 +110,8 @@ function toolSummary(call: ToolCall): string {
       return `glob ${a.pattern ?? ""}`;
     case "grep":
       return `grep ${a.pattern ?? ""}`;
+    case "search_files":
+      return `find ${a.query ?? ""}`;
     case "search_code":
       return `code? ${a.query ?? ""}`;
     case "search_docs":
@@ -182,6 +168,9 @@ function StepCard({ step }: { step: ToolStep }) {
   const diff = step.diff;
   const hasBody = !!(step.result || diff);
   const meta = stepMeta(step, t("cmLines"));
+  // Compute the diff once; the +N/−M badge uses the EXACT totals, never the
+  // render-capped rows, so big edits are counted correctly.
+  const d = useMemo(() => (diff ? diffLines(diff.before, diff.after) : null), [diff]);
   return (
     <div className={`cm-step ${step.status}`}>
       <button className="cm-step-head" onClick={() => hasBody && setOpen((o) => !o)}>
@@ -189,17 +178,12 @@ function StepCard({ step }: { step: ToolStep }) {
           <path d={TOOL_ICON[step.call.name] ?? "M4 6h16M4 12h16M4 18h16"} />
         </svg>
         <span className="cm-step-sum">{toolSummary(step.call)}</span>
-        {diff && step.status === "done" && (() => {
-          const d = lineDiff(diff.before, diff.after);
-          const add = d.filter((l) => l.kind === "add").length;
-          const del = d.filter((l) => l.kind === "del").length;
-          return (
-            <span className="cm-step-diffstat">
-              <em className="plus">+{add}</em>
-              <em className="minus">-{del}</em>
-            </span>
-          );
-        })()}
+        {d && step.status === "done" && (
+          <span className="cm-step-diffstat">
+            <em className="plus">+{d.added}</em>
+            <em className="minus">-{d.removed}</em>
+          </span>
+        )}
         {meta && <span className={`cm-step-meta ${meta.tone}`}>{meta.text}</span>}
         <span className="cm-step-status">
           {step.status === "running" ? <span className="cm-spin" /> : null}
@@ -210,14 +194,19 @@ function StepCard({ step }: { step: ToolStep }) {
       </button>
       {open && hasBody && (
         <div className="cm-step-body">
-          {diff ? (
+          {d ? (
             <pre className="cm-diff">
-              {lineDiff(diff.before, diff.after).map((l, i) => (
+              {d.rows.map((l, i) => (
                 <div key={i} className={`cm-dl ${l.kind}`}>
                   <span className="cm-dl-mark">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}</span>
                   {l.text}
                 </div>
               ))}
+              {d.truncated && (
+                <div className="cm-dl ctx cm-dl-more">
+                  {t("cmDiffMore").replace("{n}", String(d.added + d.removed))}
+                </div>
+              )}
             </pre>
           ) : (
             <pre className="cm-out">{(step.result ?? "").slice(0, 6000)}</pre>
@@ -1174,32 +1163,34 @@ export function CodeMode({
             {approval.call.name === "web_download" && (
               <div className="cm-approve-detail">{String(approval.call.args.url ?? "")}</div>
             )}
-            {approval.call.name === "edit_file" && (
-              <pre className="cm-diff cm-approve-diff">
-                {lineDiff(argOld(approval.call.args), argNew(approval.call.args)).map((l, i) => (
-                  <div key={i} className={`cm-dl ${l.kind}`}>
-                    <span className="cm-dl-mark">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}</span>
-                    {l.text}
-                  </div>
-                ))}
-              </pre>
-            )}
-            {approval.call.name === "multi_edit" && (
-              <pre className="cm-diff cm-approve-diff">
-                {argEdits(approval.call.args).flatMap((e, ei) => [
-                  <div key={`h${ei}`} className="cm-dl ctx">
-                    <span className="cm-dl-mark"> </span>
-                    {`— 修改 ${ei + 1} —`}
-                  </div>,
-                  ...lineDiff(e.old_string, e.new_string).map((l, i) => (
-                    <div key={`${ei}-${i}`} className={`cm-dl ${l.kind}`}>
-                      <span className="cm-dl-mark">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}</span>
-                      {l.text}
-                    </div>
-                  )),
-                ])}
-              </pre>
-            )}
+            {(approval.call.name === "edit_file" || approval.call.name === "multi_edit") && (() => {
+              const edits = argEdits(approval.call.args);
+              // Multi-spot edit → group each change; single edit → one diff.
+              const groups =
+                edits.length > 0
+                  ? edits.map((e) => ({ old: e.old_string, new: e.new_string }))
+                  : [{ old: argOld(approval.call.args), new: argNew(approval.call.args) }];
+              return (
+                <pre className="cm-diff cm-approve-diff">
+                  {groups.flatMap((g, ei) => [
+                    ...(groups.length > 1
+                      ? [
+                          <div key={`h${ei}`} className="cm-dl ctx">
+                            <span className="cm-dl-mark"> </span>
+                            {`— ${t("cmEditN").replace("{n}", String(ei + 1))} —`}
+                          </div>,
+                        ]
+                      : []),
+                    ...diffLines(g.old, g.new).rows.map((l, i) => (
+                      <div key={`${ei}-${i}`} className={`cm-dl ${l.kind}`}>
+                        <span className="cm-dl-mark">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}</span>
+                        {l.text}
+                      </div>
+                    )),
+                  ])}
+                </pre>
+              );
+            })()}
             {approval.call.name === "write_file" && (
               <pre className="cm-diff cm-approve-diff">
                 {argContent(approval.call.args).split("\n").slice(0, 40).map((text, i) => (

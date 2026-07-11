@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.6.2 — Accurate diffs & whole-file reads (2026-07-10)
+
+- **Code-mode diffs are now exact.** Edit previews were computed with a rough prefix/suffix heuristic and hard-capped at 60 lines — so the +N/−M badge silently under-counted big edits, scattered changes mislabeled untouched lines as changed, and large diffs were cut off. Chaty now runs a real line-level (LCS) diff: the +/− counts are exact over the whole change, only genuinely changed lines are marked, and the rendered hunk shows more with a clear "… N changed lines total" note when it's very long. The before/after snapshots are also read in full, so a big file's diff is no longer polluted by pagination text or truncated.
+- **Long files read in one call.** The per-read budget now uses most of the model's real context window (leaving headroom for the system prompt and room to act), so files up to ~100 KB come back in a single `read_file` instead of paging — the agent stops re-reading the same file in pieces. Genuinely huge files still paginate with a followable offset.
+- **New `search_files` tool.** A single literal-keyword search across both file **names** and file **contents** — "find anything to do with X" in one call, filling the gap between `glob` (name patterns) and `grep` (content regex). Pass `names_only` to search paths alone.
+- **One edit tool.** `edit_file` and `multi_edit` were merged into a single `edit_file`: pass `old_string`/`new_string` for one change, or an `edits` array to apply several atomically — one fewer near-identical tool for the model to pick wrong. (`multi_edit` still works as an alias.)
+- **Edits go through edit, not rewrite.** The agent used to sometimes reach for `write_file` to change an existing file — regenerating the whole thing to tweak a few lines, which risks dropping content it didn't retype. The prompt now scopes `write_file` to new files and true full rewrites, and a guardrail intercepts a small change delivered as a full rewrite of a sizable file, steering it to `edit_file` instead.
+
 ## v1.6.1 — Bilibili in-site & a think-loop gate (2026-07-10)
 
 - **Bilibili** joins the in-site search family: `web_search` with `site="bilibili.com"` returns structured videos (title / UP / duration / views), and fetching any `bilibili.com/video/BV…` link returns the video's public metadata and description — all through Bilibili's own key-less public API, no cookie or login. Weibo / Xiaohongshu / X keep the search-engine snapshot fallback, since their public read endpoints are now login-walled and Chaty won't circumvent authentication.

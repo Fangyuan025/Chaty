@@ -69,6 +69,8 @@ export const T = {
   cmSlashBypass: { zh: "切换自动批准", en: "Toggle auto-approve" },
   cmSlashHelp: { zh: "显示可用命令", en: "Show commands" },
   cmLines: { zh: "行", en: "lines" },
+  cmDiffMore: { zh: "… 共 {n} 处改动,已折叠余下部分", en: "… {n} changed lines total, rest collapsed" },
+  cmEditN: { zh: "修改 {n}", en: "edit {n}" },
   cmMaxSteps: { zh: "单轮最大步数", en: "Max steps per turn" },
   cmMaxStepsHint: {
     zh: "Code 模式一轮任务最多执行的工具步数。达到上限会暂停,回复「继续」可接着做。复杂任务可调高。",

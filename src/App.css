@@ -5017,6 +5017,13 @@ a:focus-visible,
 .cm-dl.ctx {
   color: var(--faint);
 }
+.cm-dl-more {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  color: var(--text-faint);
+  font-style: italic;
+}
 
 /* ---- composer (matches the chat composer: rounded pill + circular send) ---- */
 .code-composer {

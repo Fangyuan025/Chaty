@@ -122,13 +122,14 @@ pub fn agent_read_file(
     limit: Option<usize>,
     max_chars: Option<usize>,
 ) -> Result<String, String> {
-    const MAX_READ_LINES: usize = 8000; // hard per-call line ceiling
+    const MAX_READ_LINES: usize = 12000; // hard per-call line ceiling
     const MAX_LINE_CHARS: usize = 4000; // pathological single lines (minified JS)
 
     // The caller (frontend) sizes the budget from the model's ACTUAL context
     // window, so a normal source file fits in ONE call; the default only
-    // applies to callers that don't say (tests, older paths).
-    let budget = max_chars.unwrap_or(24_000).clamp(4_000, 300_000);
+    // applies to callers that don't say (tests, older paths). The ceiling
+    // matches MAX_READ_BYTES so a full-file diff snapshot never paginates.
+    let budget = max_chars.unwrap_or(24_000).clamp(4_000, 400_000);
 
     let abs = resolve(&path)?;
     let meta = std::fs::metadata(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
@@ -856,6 +857,104 @@ pub fn agent_grep(
     Ok(out)
 }
 
+/// Quick locate: find files whose PATH contains `query`, and (unless
+/// `names_only`) lines whose CONTENT contains `query` — literal, case-
+/// insensitive, no regex. Fills the gap between `glob` (name PATTERNS) and
+/// `grep` (content REGEX): "find anything to do with X" in one call.
+#[tauri::command]
+pub fn agent_search_files(
+    query: String,
+    path: Option<String>,
+    names_only: Option<bool>,
+) -> Result<String, String> {
+    const MAX_NAME_HITS: usize = 60;
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Err("query 为空 (empty query)".to_string());
+    }
+    let root = workspace()?;
+    let start = match path {
+        Some(p) if !p.trim().is_empty() && p != "." => resolve(&p)?,
+        _ => root.clone(),
+    };
+    let contents = !names_only.unwrap_or(false);
+
+    let mut name_hits: Vec<String> = Vec::new();
+    let mut content_out = String::new();
+    let mut content_n = 0usize;
+    let mut name_capped = false;
+
+    'walk: for entry in walkdir::WalkDir::new(&start)
+        .into_iter()
+        .filter_entry(|e| {
+            !(e.file_type().is_dir()
+                && e.file_name().to_str().map(|s| SKIP_DIRS.contains(&s)).unwrap_or(false))
+        })
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let p = entry.path();
+        let rel = rel_display(&root, p);
+
+        // Name match on the workspace-relative path.
+        if name_hits.len() < MAX_NAME_HITS {
+            if rel.to_lowercase().contains(&needle) {
+                name_hits.push(rel.clone());
+            }
+        } else {
+            name_capped = true;
+        }
+
+        if !contents || content_n >= MAX_GREP_MATCHES {
+            continue;
+        }
+        let bytes = match std::fs::read(p) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if bytes.iter().take(8000).any(|&b| b == 0) {
+            continue; // binary
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        for (i, line) in text.lines().enumerate() {
+            if line.to_lowercase().contains(&needle) {
+                let shown: String = line.chars().take(300).collect();
+                content_out.push_str(&format!("{rel}:{}: {}\n", i + 1, shown.trim_end()));
+                content_n += 1;
+                if content_n >= MAX_GREP_MATCHES {
+                    content_out.push_str("… (更多结果已省略 / more matches omitted)\n");
+                    break 'walk;
+                }
+            }
+        }
+    }
+
+    if name_hits.is_empty() && content_n == 0 {
+        return Ok("(无匹配 / no matches)".to_string());
+    }
+
+    let mut out = String::new();
+    if !name_hits.is_empty() {
+        out.push_str(&format!("文件名匹配 (file names, {} 个):\n", name_hits.len()));
+        for h in &name_hits {
+            out.push_str(&format!("  {h}\n"));
+        }
+        if name_capped {
+            out.push_str("  … (更多文件名已省略 / more names omitted)\n");
+        }
+    }
+    if contents {
+        out.push_str(&format!(
+            "\n内容匹配 (file contents{}):\n{}",
+            if content_n == 0 { ", 无 / none" } else { "" },
+            content_out
+        ));
+    }
+    Ok(out.trim_end().to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Sandboxed bash
 // ---------------------------------------------------------------------------
@@ -1239,6 +1338,36 @@ mod tests {
     }
 
     #[test]
+    fn search_files_matches_names_and_contents() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-sf-{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        set_ws(&tmp);
+        std::fs::write(tmp.join("src/auth_service.ts"), "export function login() {}\n").unwrap();
+        std::fs::write(tmp.join("src/util.ts"), "// handles AUTH token refresh\nconst x = 1;\n").unwrap();
+        std::fs::write(tmp.join("readme.md"), "no match here\n").unwrap();
+
+        // Case-insensitive, matches BOTH the filename and the content line.
+        let out = agent_search_files("auth".into(), None, None).unwrap();
+        assert!(out.contains("src/auth_service.ts"), "name hit missing: {out}");
+        assert!(out.contains("src/util.ts:1:"), "content hit missing: {out}");
+        assert!(out.contains("AUTH token"), "content line missing: {out}");
+        assert!(!out.contains("readme.md"), "non-match leaked: {out}");
+
+        // names_only skips the content scan.
+        let names = agent_search_files("auth".into(), Some(".".into()), Some(true)).unwrap();
+        assert!(names.contains("src/auth_service.ts"));
+        assert!(!names.contains("src/util.ts:1:"), "names_only should not scan content: {names}");
+
+        // No match → clear message.
+        assert!(agent_search_files("zzznope".into(), None, None).unwrap().contains("无匹配"));
+        // Empty query → error.
+        assert!(agent_search_files("  ".into(), None, None).is_err());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
     fn multi_edit_is_atomic() {
         let _g = serial();
         let tmp = std::env::temp_dir().join(format!("chaty-agent-me-{}", std::process::id()));
@@ -1408,6 +1537,16 @@ mod tests {
         std::fs::write(tmp.join("small.txt"), "hello\nworld\n").unwrap();
         let small = agent_read_file("small.txt".into(), None, None, None).unwrap();
         assert!(!small.contains("offset="));
+
+        // A full-file diff snapshot (max_chars = 400_000) reads a large file
+        // WHOLE with no footer — so the diff isn't polluted by pagination text
+        // and its line counts are correct. ~100 KB / 2500 lines.
+        let big: String = (1..=2500).map(|i| format!("content line number {i}\n")).collect();
+        std::fs::write(tmp.join("huge.txt"), &big).unwrap();
+        let full_snapshot = agent_read_file("huge.txt".into(), None, None, Some(400_000)).unwrap();
+        assert!(full_snapshot.contains("content line number 1\n"));
+        assert!(full_snapshot.contains("content line number 2500"));
+        assert!(!full_snapshot.contains("offset="), "full-read snapshot must not paginate");
 
         std::fs::remove_dir_all(&tmp).ok();
     }

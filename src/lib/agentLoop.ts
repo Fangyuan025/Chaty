@@ -17,6 +17,7 @@ import {
   type EditOp,
   agentGlob,
   agentGrep,
+  agentSearchFiles,
   agentListDir,
   agentReadFile,
   agentSearchCode,
@@ -31,6 +32,7 @@ import {
   type ChatMessage,
 } from "./ipc";
 import { normalizeChannels } from "./voiceText";
+import { diffLines } from "./diff";
 
 export type AgentToolName =
   | "read_file"
@@ -41,6 +43,7 @@ export type AgentToolName =
   | "list_dir"
   | "glob"
   | "grep"
+  | "search_files"
   | "search_code"
   | "search_docs"
   | "bash"
@@ -185,13 +188,13 @@ function proseAfter(raw: string): string {
 
 const TOOLS_DOC = `
 - read_file: 读取文件,一般一次调用即可读完整个文件;只有超出上下文预算的超大文件才分页,此时结果末尾会直接给出下一页的 offset,照着传即可。args: { "path": string, "offset"?: number(起始行,从1开始), "limit"?: number(行数) }
-- write_file: 新建或覆盖文件。args: { "path": string, "content": string }
-- edit_file: 精确替换文件中的一段文本(old_string 必须与文件内容逐字匹配且唯一,除非 replace_all=true)。匹配失败时会提示文件中最相似的位置。args: { "path": string, "old_string": string, "new_string": string, "replace_all"?: boolean }
-- multi_edit: 对同一个文件一次提交多处精确替换,原子生效(任何一条失败则整体不改动)。同一文件要改多处时必须用它,不要拆成多次 edit_file。args: { "path": string, "edits": [{ "old_string": string, "new_string": string, "replace_all"?: boolean }] }
+- write_file: 新建文件,或对一个文件做整体重写(会覆盖全部内容)。**修改已有文件请优先用 edit_file / multi_edit**,不要用 write_file 重写整个文件来做局部改动。args: { "path": string, "content": string }
+- edit_file: 精确替换文件内容(old_string 必须与文件逐字匹配且唯一,除非 replace_all=true);匹配失败会提示文件中最相似的位置。改一处直接给 old_string/new_string;同一文件要改多处时给 edits 数组,一次原子提交(任何一条失败则整体不改动),不要拆成多次调用。args: 单处 { "path": string, "old_string": string, "new_string": string, "replace_all"?: boolean } 或 多处 { "path": string, "edits": [{ "old_string": string, "new_string": string, "replace_all"?: boolean }] }
 - outline: 列出文件的定义大纲(函数/类/结构体等 + 行号),不读全文即可掌握文件结构;之后用 read_file 带 offset 精确读需要的区段。args: { "path": string }
 - list_dir: 列出目录一层内容(不传 path = 工作区根;看子目录请传相对路径,如 {"path":"src"})。args: { "path"?: string }
 - glob: 按通配符找文件(如 "src/**/*.ts")。args: { "pattern": string }
-- grep: 用正则搜索文件内容(找确切字符串时用)。args: { "pattern": string, "path"?: string, "glob"?: string }
+- grep: 用正则搜索文件内容(需要正则或精确匹配时用)。args: { "pattern": string, "path"?: string, "glob"?: string }
+- search_files: 按关键词(字面,不是正则)一次性搜文件名和文件内容 —— "跟 X 有关的东西在哪"最快用它。传 names_only=true 只搜文件名。args: { "query": string, "path"?: string, "names_only"?: boolean }
 - search_code: 按含义搜索代码("哪里处理登录鉴权"),返回排序过的相关代码块(文件+行号)。探索陌生代码库优先用它。args: { "query": string, "k"?: number }
 - search_docs: 检索用户的知识库文档(需求文档、设计稿、笔记)。当任务涉及用户自己的资料时用。args: { "query": string }
 - bash: 在工作区里执行 shell 命令(macOS 沙箱,写限工作区)。会等命令结束;不要用它启动 dev server 等不会退出的进程。args: { "command": string, "timeout_secs"?: number }
@@ -237,7 +240,7 @@ ${TOOLS_DOC}
 - 没有"当前目录"的概念:每条 bash 都是从工作区根目录启动的全新 shell,单独的 cd 不会保留到下一条命令。访问子目录请直接用相对路径(ls src、read_file "src/app.ts"),或在同一条命令内组合(cd src && npm test)。
 - 修改代码前,先用 outline 看文件结构、read_file / grep / list_dir 了解现状;改完可用 bash 跑测试/构建验证。
 - 读大文件别从头翻到尾:先用 search_code / grep 定位到相关位置,再用 read_file 带 offset/limit 只读需要的区段。
-- 步数宝贵:新建文件用 write_file 一次写入完整内容;同一文件的多处修改用一次 multi_edit 原子提交(不要拆成多次 edit_file);大改动可直接 write_file 重写整个文件。不要把一个改动拆成许多细碎小步。
+- 工具选择:**新建文件**用 write_file 一次写完;**修改已有文件**用 edit_file(改一处给 old_string/new_string,改多处给 edits 数组一次原子提交)——不要用 write_file 整体重写已有文件来做局部改动,那会覆盖全文、极易丢失你没重写的内容。只有确实要把整个文件推倒重来时才用 write_file。不要把一个改动拆成许多细碎小步。
 - dev server、npm run dev、长构建等不会很快退出的命令必须用 bash_bg 后台运行,再用 bg_output 确认启动成功;用完记得 bg_kill。
 - 遇到不认识的报错、需要查库/API 文档时,用 web_search / web_fetch 联网查证,不要凭空猜测。
 - 任务较复杂时,先用 update_plan 列出待办步骤,推进中及时更新状态;需要用户拍板时用 ask_user 提问。
@@ -254,7 +257,7 @@ Rules (follow strictly):
 - You'll get the result as <tool_result>...</tool_result>, then continue.
 - There is NO persistent working directory: every bash command starts a fresh shell at the workspace root, so a lone cd does NOT carry over. Use relative paths directly (ls src, read_file "src/app.ts") or combine in one command (cd src && npm test).
 - Before editing, understand the code with read_file / grep / list_dir; after editing, you can run tests/builds with bash.
-- Steps are precious: create new files with ONE write_file containing the complete content; apply multiple changes to one file with a single atomic multi_edit (never a chain of edit_file calls), or rewrite the whole file with write_file. Never split one change into many tiny steps.
+- Tool choice: create **new** files with ONE write_file; **modify existing** files with edit_file (one spot via old_string/new_string, or several at once via an atomic edits array) — do NOT rewrite an existing file wholesale with write_file to make a local change, that overwrites everything and easily drops content you didn't retype. Use write_file on an existing file only when you truly mean to replace the entire thing. Never split one change into many tiny steps.
 - Commands that don't exit quickly (dev servers, npm run dev, long builds) MUST run via bash_bg; check they started with bg_output, and bg_kill them when done.
 - For unfamiliar errors or library/API docs, verify with web_search / web_fetch instead of guessing.
 - For non-trivial tasks, lay out a todo list with update_plan first and keep its statuses current as you go; use ask_user when a decision is the user's to make.
@@ -376,6 +379,14 @@ function parsePlan(args: Record<string, unknown>): PlanItem[] {
 const asNum = (v: unknown): number | undefined =>
   typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : undefined;
 
+/** Read a file's FULL content for a diff snapshot — no pagination footer, no
+ *  truncation (up to the Rust byte cap). The model-facing read is budgeted for
+ *  context; diffs need the whole file so the +N/−M count and the rendered hunks
+ *  are correct even for large files. */
+function readFull(path: string): Promise<string> {
+  return agentReadFile(path, undefined, undefined, 400_000);
+}
+
 /** Execute a tool call → a text result for the model, plus optional diff data. */
 async function execTool(
   call: ToolCall,
@@ -408,6 +419,17 @@ async function execTool(
           a.glob ? asStr(a.glob) : undefined,
         ),
       };
+    case "search_files": {
+      const q = asStr(a.query);
+      if (!q) return { result: 'ERROR: 缺少 "query" 参数 (missing "query")' };
+      return {
+        result: await agentSearchFiles(
+          q,
+          a.path ? asStr(a.path) : undefined,
+          a.names_only === true || a.namesOnly === true,
+        ),
+      };
+    }
     case "search_code": {
       const q = asStr(a.query);
       if (!q) return { result: 'ERROR: 缺少 "query" 参数 (missing "query")' };
@@ -437,52 +459,52 @@ async function execTool(
       if (!path) return { result: MISSING_PATH };
       let before = "";
       try {
-        before = await agentReadFile(path);
+        before = await readFull(path);
       } catch {
         /* new file */
       }
       const after = argContent(a);
+      // Guardrail: a small change to an existing sizable file should be an
+      // edit, not a full rewrite. write_file overwrites everything, so when the
+      // model regenerates a big file just to tweak a few lines it risks dropping
+      // content it didn't retype. Intercept the clear cases and steer to edit.
+      if (before) {
+        const oldLines = before.split("\n").length;
+        const { added, removed } = diffLines(before, after);
+        const changed = added + removed;
+        if (oldLines >= 40 && changed > 0 && changed < oldLines * 0.5) {
+          return {
+            result:
+              `未写入 (not written)。这是对已有文件的局部改动(约 ${changed} 行,文件共 ${oldLines} 行)——请改用 edit_file(改一处给 old_string/new_string,改多处给 edits 数组)精确替换。` +
+              `不要用 write_file 整体重写来做小改动:它会覆盖全文,容易丢失你没重写的内容。` +
+              ` (This is a partial change to an existing file — use edit_file instead of a full write_file rewrite, which can drop content you didn't retype.)`,
+          };
+        }
+      }
       const result = await agentWriteFile(path, after);
       return { result, diff: { path, before, after } };
     }
-    case "edit_file": {
-      const path = argPath(a);
-      if (!path) return { result: MISSING_PATH };
-      let before = "";
-      try {
-        before = await agentReadFile(path);
-      } catch {
-        /* read will re-fail in edit with a clear message */
-      }
-      const result = await agentEditFile(
-        path,
-        argOld(a),
-        argNew(a),
-        a.replace_all === true,
-      );
-      let after = before;
-      try {
-        after = await agentReadFile(path);
-      } catch {
-        /* ignore */
-      }
-      return { result, diff: { path, before, after } };
-    }
+    // One edit tool: a single replacement (old_string/new_string) OR several
+    // at once (edits array) — both applied atomically. `multi_edit` is kept as
+    // a tolerated alias for models that still emit it.
+    case "edit_file":
     case "multi_edit": {
       const path = argPath(a);
       if (!path) return { result: MISSING_PATH };
       const edits = argEdits(a);
-      if (!edits.length) return { result: 'ERROR: 缺少 "edits" 数组 (missing "edits" array)' };
       let before = "";
       try {
-        before = await agentReadFile(path);
+        before = await readFull(path);
       } catch {
         /* edit will re-fail with a clear message */
       }
-      const result = await agentMultiEdit(path, edits);
+      const result =
+        edits.length > 0
+          ? await agentMultiEdit(path, edits)
+          : await agentEditFile(path, argOld(a), argNew(a), a.replace_all === true);
       let after = before;
       try {
-        after = await agentReadFile(path);
+        after = await readFull(path);
       } catch {
         /* ignore */
       }
@@ -584,7 +606,7 @@ async function execTool(
 function toolResultMsg(name: string, content: string): string {
   // read_file sizes itself in Rust from the model's real context window (plus
   // an actionable next-offset footer) — never chop that off with a blind cap.
-  const cap = name === "read_file" ? 320000 : name === "web_fetch" ? 48000 : 12000;
+  const cap = name === "read_file" ? 400000 : name === "web_fetch" ? 48000 : 12000;
   let capped: string;
   if (content.length <= cap) {
     capped = content;
@@ -687,10 +709,12 @@ export async function runAgentTurn(
   // and no answer = the model is looping in its own head. Deep mode gets more
   // headroom; still far below maxTokens so a genuine long reason isn't cut.
   const thinkCap = opts.thinkMode === "deep" ? 5000 : 3000;
-  // read_file budget scales with the REAL context window (≈0.6·nCtx tokens ×
-  // ~3 chars/token) so a normal source file is a single read; compaction
-  // reclaims the space on later steps.
-  const readChars = Math.min(300000, Math.max(12000, Math.floor(nCtx * 1.8)));
+  // read_file budget: use most of the real context window for one read so even
+  // long files come back in a single call (the #1 agent frustration). We leave
+  // ~5k tokens of headroom for the system prompt + room to act, then ~3 chars/
+  // token; compaction reclaims the space on later steps. Small-context models
+  // get a proportionally smaller (safe) budget; big ones read up to ~384 KB.
+  const readChars = Math.min(384000, Math.max(8000, Math.floor((nCtx - 5000) * 3)));
   const { history: keptHistory, trimmed } = trimHistory(history, nCtx);
   const messages: ChatMessage[] = [
     { role: "system", content: systemPrompt(workspace, lang === "zh", opts.thinkMode, opts.projectDoc) },

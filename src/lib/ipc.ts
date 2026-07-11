@@ -301,6 +301,11 @@ export async function agentCheckpointBegin(): Promise<number> {
 export async function agentCheckpointRevertTo(id: number): Promise<string> {
   return invoke<string>("agent_checkpoint_revert_to", { id });
 }
+/** Literal keyword search across file names AND contents (no regex). */
+export async function agentSearchFiles(query: string, path?: string, namesOnly?: boolean): Promise<string> {
+  return invoke<string>("agent_search_files", { query, path, namesOnly });
+}
+
 export async function agentGrep(pattern: string, path?: string, glob?: string): Promise<string> {
   return invoke<string>("agent_grep", { pattern, path, glob });
 }

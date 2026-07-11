@@ -226,6 +226,7 @@ pub fn run() {
             agent::agent_list_dir,
             agent::agent_glob,
             agent::agent_grep,
+            agent::agent_search_files,
             agent::agent_list_files,
             agent::agent_search_code,
             agent::agent_bash,

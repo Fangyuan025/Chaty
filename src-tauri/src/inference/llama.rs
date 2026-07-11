@@ -1222,20 +1222,26 @@ mod agent_e2e {
             }
             "write_file" => crate::agent::agent_write_file(get("path"), get("content"))
                 .unwrap_or_else(|e| format!("ERROR: {e}")),
-            "edit_file" => crate::agent::agent_edit_file(
-                get("path"),
-                get("old_string"),
-                get("new_string"),
-                args.get("replace_all").and_then(|v| v.as_bool()),
-            )
-            .unwrap_or_else(|e| format!("ERROR: {e}")),
-            "multi_edit" => {
+            // One merged edit tool: an `edits` array applies several atomically,
+            // otherwise it's a single old_string/new_string replacement.
+            // `multi_edit` stays a tolerated alias.
+            "edit_file" | "multi_edit" => {
                 let edits: Vec<crate::agent::EditOp> = args
                     .get("edits")
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
                     .unwrap_or_default();
-                crate::agent::agent_multi_edit(get("path"), edits)
+                if edits.is_empty() {
+                    crate::agent::agent_edit_file(
+                        get("path"),
+                        get("old_string"),
+                        get("new_string"),
+                        args.get("replace_all").and_then(|v| v.as_bool()),
+                    )
                     .unwrap_or_else(|e| format!("ERROR: {e}"))
+                } else {
+                    crate::agent::agent_multi_edit(get("path"), edits)
+                        .unwrap_or_else(|e| format!("ERROR: {e}"))
+                }
             }
             "outline" => crate::agent::agent_outline(get("path"))
                 .unwrap_or_else(|e| format!("ERROR: {e}")),
@@ -1244,6 +1250,12 @@ mod agent_e2e {
                 .unwrap_or_else(|e| format!("ERROR: {e}")),
             "grep" => crate::agent::agent_grep(get("pattern"), None, None)
                 .unwrap_or_else(|e| format!("ERROR: {e}")),
+            "search_files" => crate::agent::agent_search_files(
+                get("query"),
+                None,
+                args.get("names_only").and_then(|v| v.as_bool()),
+            )
+            .unwrap_or_else(|e| format!("ERROR: {e}")),
             "bash" => {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 match rt.block_on(crate::agent::agent_bash(get("command"), Some(60))) {
@@ -1349,30 +1361,117 @@ mod agent_e2e {
 - 遇到需要用户决定的事(如命名、格式)用 ask_user 提问,不要自己乱猜。
 - 任务完成后不要再调用工具,直接用一两句话总结你做了什么。"#;
 
-    /// Prompt documenting the code-editing power tools (multi_edit / outline),
+    /// Prompt documenting the code-editing tools (merged edit_file / outline),
     /// mirroring src/lib/agentLoop.ts.
     const SYS_CODE: &str = r#"你是 Chaty 的编程智能体,在工作区目录中完成编码任务。工作区根目录:{WS}
 
 可用工具(路径相对工作区,越界会被拒绝):
 - read_file: {"path": string, "offset"?: number, "limit"?: number}
-- write_file: {"path": string, "content": string}
-- edit_file: 精确替换一段文本(old_string 需逐字匹配且唯一)。匹配失败会提示文件中最相似的位置。args: {"path": string, "old_string": string, "new_string": string, "replace_all"?: boolean}
-- multi_edit: 对同一文件一次提交多处精确替换,原子生效(任何一条失败则整体不改动)。同一文件改多处必须用它。args: {"path": string, "edits": [{"old_string": string, "new_string": string, "replace_all"?: boolean}]}
+- write_file: 新建或整体重写文件。修改已有文件请用 edit_file。args: {"path": string, "content": string}
+- edit_file: 精确替换文件内容(old_string 需逐字匹配且唯一)。改一处给 old_string/new_string;同一文件改多处给 edits 数组一次原子提交(任何一条失败则整体不改动)。args: 单处 {"path": string, "old_string": string, "new_string": string, "replace_all"?: boolean} 或 多处 {"path": string, "edits": [{"old_string": string, "new_string": string, "replace_all"?: boolean}]}
 - outline: 列出文件的定义大纲(函数/类 + 行号),不读全文即可掌握结构。args: {"path": string}
 - list_dir: {"path"?: string}
 - grep: {"pattern": string}
+- search_files: 按关键词(字面)一次搜文件名和内容。args: {"query": string, "names_only"?: boolean}
 - bash: {"command": string}
 
 规则(严格遵守):
 - 每次只调用一个工具。调用时只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要有其它内容。
 - 系统会用 <tool_result>...</tool_result> 返回结果,你再继续。
-- 修改前先用 outline / read_file 了解结构;同一文件多处修改用一次 multi_edit。
+- 修改前先用 outline / read_file 了解结构;同一文件多处修改用一次 edit_file(给 edits 数组)。
 - 任务完成后不要再调用工具,直接用一两句话总结你做了什么。"#;
 
     /// Refactor e2e: rename a function + update all call sites across the
     /// file — the natural shape for outline + one atomic multi_edit — then
     /// prove the behaviour is unchanged by running the script.
     /// Run: CHATY_TEST_MODEL=… cargo test -p chaty agent_refactors_with_multi_edit -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn agent_locates_with_search_files() {
+        let model_path = match std::env::var("CHATY_TEST_MODEL") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_MODEL=/path/to/model.gguf");
+                return;
+            }
+        };
+        let backend = llama_backend().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load model");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+
+        let ws = std::env::temp_dir().join(format!("chaty-agent-sf-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::write(ws.join("src/token_store.py"), "SECRET = 'refresh the token here'\n").unwrap();
+        std::fs::write(ws.join("src/api.py"), "def call():\n    # attach the auth token\n    pass\n").unwrap();
+        std::fs::write(ws.join("src/unrelated.py"), "x = 42\n").unwrap();
+        crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
+
+        let mut messages = vec![
+            ChatMessage { role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage {
+                role: Role::User,
+                content: "用 search_files 找出这个项目里所有和 \"token\" 有关的文件和代码,把命中的文件路径列出来。".into(),
+            },
+        ];
+        let think = Some(false);
+        let cancel = AtomicBool::new(false);
+        let mut used_search_files = false;
+        let mut finished = false;
+        let mut final_text = String::new();
+        let mut cached: Vec<LlamaToken> = Vec::new();
+
+        for step in 0..10 {
+            let req = GenRequest {
+                messages: messages.clone(),
+                params: GenParams {
+                    temperature: 0.2,
+                    top_p: 0.9,
+                    max_tokens: 1024,
+                    repeat_penalty: 1.05,
+                    stop: vec!["</tool_call>".to_string()],
+                    think,
+                    ..Default::default()
+                },
+            };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            eprintln!("\n──────── STEP {step} ────────\n{}", raw.trim().chars().take(400).collect::<String>());
+            match parse_tool_call(&raw) {
+                Some((name, args)) => {
+                    used_search_files |= name == "search_files";
+                    eprintln!("  ▶ TOOL  {name}  {}", args.to_string().chars().take(200).collect::<String>());
+                    let result = exec_tool(&name, &args);
+                    eprintln!("  ◀ RESULT\n{}", result.chars().take(500).collect::<String>());
+                    let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
+                    messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage {
+                        role: Role::User,
+                        content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
+                    });
+                }
+                None => {
+                    final_text = strip_think(&raw);
+                    eprintln!("  ✔ FINAL\n{final_text}");
+                    finished = true;
+                    break;
+                }
+            }
+        }
+        std::fs::remove_dir_all(&ws).ok();
+        eprintln!("\n════ VERDICT: finished={finished} · used_search_files={used_search_files} ════");
+        assert!(finished, "agent never finished");
+        assert!(used_search_files, "agent should have used search_files");
+        assert!(final_text.contains("token_store.py"), "should have located token_store.py:\n{final_text}");
+    }
+
     #[test]
     #[ignore]
     fn agent_refactors_with_multi_edit() {
@@ -1422,7 +1521,7 @@ if __name__ == "__main__":
             ChatMessage { role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()) },
             ChatMessage {
                 role: Role::User,
-                content: "把 shop.py 里的函数 calc_total 重命名为 compute_total,并更新文件里所有调用它的地方(先用 outline 看结构,同一文件的多处修改用一次 multi_edit 完成)。改完运行 python3 shop.py 确认输出仍然是 TOTAL: 33.00 和 AUDIT: 30.00。".into(),
+                content: "把 shop.py 里的函数 calc_total 重命名为 compute_total,并更新文件里所有调用它的地方(先用 outline 看结构,同一文件的多处修改用一次 edit_file 的 edits 数组一次完成)。改完运行 python3 shop.py 确认输出仍然是 TOTAL: 33.00 和 AUDIT: 30.00。".into(),
             },
         ];
         let think = Some(false);
@@ -1452,7 +1551,10 @@ if __name__ == "__main__":
 
             match parse_tool_call(&raw) {
                 Some((name, args)) => {
-                    used_multi_edit |= name == "multi_edit";
+                    // Multi-spot edit via the merged edit_file (edits array) or
+                    // the multi_edit alias — either counts.
+                    used_multi_edit |= (name == "multi_edit" || name == "edit_file")
+                        && args.get("edits").and_then(|v| v.as_array()).is_some_and(|a| a.len() >= 2);
                     used_outline |= name == "outline";
                     eprintln!("  ▶ TOOL  {name}  {}", args.to_string().chars().take(300).collect::<String>());
                     let result = exec_tool(&name, &args);
@@ -1485,7 +1587,7 @@ if __name__ == "__main__":
         std::fs::remove_dir_all(&ws).ok();
 
         assert!(finished, "agent never produced a final answer");
-        assert!(used_multi_edit, "agent should have used multi_edit for the multi-site rename");
+        assert!(used_multi_edit, "agent should have used one edit_file with an edits array for the multi-site rename");
         assert!(src.contains("compute_total") && !src.contains("calc_total"), "rename incomplete:\n{src}");
         assert!(out.contains("TOTAL: 33.00") && out.contains("AUDIT: 30.00"), "behaviour changed: {out}");
     }
