@@ -30,19 +30,19 @@ const MODEL = {
 };
 
 const CONVERSATIONS = [
-  { id: "c1", title: "Rust 生命周期怎么理解", modelPath: MODEL.path, createdAt: now - 86400e3, updatedAt: now - 3600e3, pinned: true },
-  { id: "c2", title: "周末旅行计划:蒙特利尔周边", modelPath: MODEL.path, createdAt: now - 2 * 86400e3, updatedAt: now - 7200e3, pinned: false },
-  { id: "c3", title: "SQL 窗口函数示例", modelPath: MODEL.path, createdAt: now - 3 * 86400e3, updatedAt: now - 86400e3, pinned: false },
-  { id: "c4", title: "读书笔记:置身事内", modelPath: MODEL.path, createdAt: now - 4 * 86400e3, updatedAt: now - 2 * 86400e3, pinned: false },
-  { id: "c5", title: "KaTeX 与表格渲染测试", modelPath: MODEL.path, createdAt: now - 5 * 86400e3, updatedAt: now - 3 * 86400e3, pinned: false },
+  { id: "c1", title: "Explain Rust lifetimes", modelPath: MODEL.path, createdAt: now - 86400e3, updatedAt: now - 3600e3, pinned: true },
+  { id: "c2", title: "Weekend trip around Montréal", modelPath: MODEL.path, createdAt: now - 2 * 86400e3, updatedAt: now - 7200e3, pinned: false },
+  { id: "c3", title: "SQL window function examples", modelPath: MODEL.path, createdAt: now - 3 * 86400e3, updatedAt: now - 86400e3, pinned: false },
+  { id: "c4", title: "Notes on the Q3 roadmap PDF", modelPath: MODEL.path, createdAt: now - 4 * 86400e3, updatedAt: now - 2 * 86400e3, pinned: false },
+  { id: "c5", title: "KaTeX & table rendering", modelPath: MODEL.path, createdAt: now - 5 * 86400e3, updatedAt: now - 3 * 86400e3, pinned: false },
 ];
 
 const SHOWCASE_MESSAGES = [
-  { id: "m1", role: "user", content: "用一段代码和一张表格解释 Rust 的生命周期,顺便写个公式。" },
+  { id: "m1", role: "user", content: "Explain Rust lifetimes with a code example and a comparison table, and throw in a formula." },
   {
     id: "m2",
     role: "assistant",
-    content: `<think>用户想要代码 + 表格 + 公式的组合示例。我用一个借用检查的经典场景,配一张对比表,再放一个无关紧要但能展示 KaTeX 的公式。</think>生命周期本质上是**引用有效范围的名字**。看这个例子:
+    content: `<think>They want code + a table + a formula. I'll use the classic borrow-checker example, a comparison table, and a KaTeX formula for the borrowing rule.</think>A lifetime is essentially **a name for the region a reference is valid**. Here's the classic example:
 
 \`\`\`rust
 fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
@@ -55,78 +55,89 @@ fn main() {
     {
         let s2 = String::from("xyz");
         result = longest(s1.as_str(), s2.as_str());
-        println!("最长的是 {result}");
-    } // s2 在这里被 drop
+        println!("the longest is {result}");
+    } // s2 is dropped here
 }
 \`\`\`
 
-关键点对比:
+The key ideas at a glance:
 
-| 概念 | 含义 | 编译器行为 |
+| Concept | Meaning | Compiler behavior |
 | --- | --- | --- |
-| \`'a\` | 泛型生命周期参数 | 取两个输入中**较短**的那个 |
-| 悬垂引用 | 引用超过了值的存活期 | 直接拒绝编译 |
-| NLL | 非词法生命周期 | 引用最后一次使用后即失效 |
+| \`'a\` | Generic lifetime parameter | Takes the **shorter** of the two inputs |
+| Dangling ref | Reference outlives its value | Rejected at compile time |
+| NLL | Non-lexical lifetimes | A reference ends at its last use |
 
-顺带一个公式,借用规则可以概括为:在任意时刻,要么有 $n \\ge 0$ 个不可变借用,要么恰有 $1$ 个可变借用:
+The borrowing rule can be summarized as: at any instant there are either $n \\ge 0$ shared borrows, or exactly $1$ mutable borrow:
 
 $$\\text{borrows}(t) \\in \\{\\,(n, 0) : n \\ge 0\\,\\} \\cup \\{(0, 1)\\}$$
 
-> 一句话:**生命周期不改变任何运行时行为,它只是给编译器的证明。**
+> In one line: **lifetimes change nothing at runtime — they're a proof handed to the compiler.**
 
-想深入的话可以从 \`std::mem::drop\` 和 NLL 的 RFC 读起。`,
+If you want to go deeper, start with \`std::mem::drop\` and the NLL RFC.`,
   },
-  { id: "m3", role: "user", content: "不错。那 'static 是什么意思?" },
+  { id: "m3", role: "user", content: "Nice. So what does 'static actually mean?" },
   {
     id: "m4",
     role: "assistant",
-    content: `<think>简短回答 'static 的两种含义:字面量的生命周期和 trait bound 中的含义。</think>\`'static\` 有两个常被混淆的用法:
+    content: `<think>Two senses of 'static: the lifetime of literals, and the trait-bound meaning.</think>\`'static\` has two commonly-confused uses:
 
-1. **引用活得和程序一样久** —— 比如字符串字面量 \`&'static str\`,它存在二进制的只读段里;
-2. **类型不含任何非 'static 引用**(trait bound 里的 \`T: 'static\`)—— 表示"T 拥有它的一切",比如 \`String\`、\`Vec<u8>\` 都满足。
+1. **A reference that lives as long as the program** — e.g. a string literal \`&'static str\`, which lives in the binary's read-only section;
+2. **A type that holds no non-'static references** (the \`T: 'static\` bound) — meaning "T owns everything it contains", which \`String\` and \`Vec<u8>\` both satisfy.
 
-第二种和"活得久"无关,只是**所有权完整**的意思——这也是 \`thread::spawn\` 要求 \`'static\` 的原因:线程可能比创建它的栈帧活得久。`,
+The second has nothing to do with "living forever" — it just means **fully owned**. That's why \`thread::spawn\` requires \`'static\`: the thread may outlive the stack frame that created it.`,
   },
 ];
 
-/** A rich Code-mode session: plan, steps of every kind, diff, final answer. */
+/** A rich Code-mode session: plan, web tools, code tools, diff, final answer. */
 const CODE_SESSION_MSGS = [
   {
     id: "u1",
     role: "user",
-    text: "跑一下测试,把失败的修了",
+    text: "Match the upstream fix for the tokenizer overflow — check their repo, then patch ours and run the tests.",
     steps: [],
     checkpointId: 3,
   },
   {
     id: "a1",
     role: "assistant",
-    text: "已修复 `parser.ts` 的边界情况:空输入会在 `tokenize` 里提前返回,不再触发越界读取。全部 42 个测试通过。",
-    thinking: "测试失败在 tokenize 的空字符串分支,补一个 guard 即可。改动很小,直接修。",
+    text: "Matched the upstream fix in `lexer.rs`: empty input now returns early in `tokenize` instead of reading past the end. Both call sites updated atomically, and all 96 tests pass.",
+    thinking: "First find the upstream fix on GitHub, read the exact change, then locate and patch our tokenizer to match. Small, contained edit.",
     plan: [
-      { content: "运行测试套件,定位失败用例", status: "done" },
-      { content: "修复 parser.ts 空输入越界", status: "done" },
-      { content: "重跑测试确认全绿", status: "done" },
+      { content: "Find the upstream fix on GitHub", status: "done" },
+      { content: "Locate our tokenizer and apply it", status: "done" },
+      { content: "Re-run the test suite", status: "done" },
     ],
     steps: [
       {
         id: "s1",
-        call: { name: "bash", args: { command: "npm test" } },
+        call: { name: "web_search", args: { query: "tokenizer overflow fix", site: "github.com" } },
         status: "done",
-        result: "FAIL src/parser.test.ts\n  ✕ tokenize handles empty input (3 ms)\n\nTests: 1 failed, 41 passed, 42 total\n[exit 1]",
-        thinking: "先看失败的是哪个用例。",
+        result: "[repo] parser-labs/lexer (★2.4k, Rust) — a fast incremental lexer\n[issue] Panic on empty input in tokenize() [closed, 6 comments]\n[code] parser-labs/lexer/src/lexer.rs — fn tokenize(src)",
       },
       {
         id: "s2",
-        call: { name: "search_code", args: { query: "tokenize empty input" } },
+        call: { name: "web_fetch", args: { url: "https://github.com/parser-labs/lexer/blob/main/src/lexer.rs" } },
         status: "done",
-        result: "── src/parser.ts:41 ──\nexport function tokenize(src: string) {\n  let pos = 0;\n  // BUG: no empty check before charAt\n  ...",
+        result: "https://raw.githubusercontent.com/parser-labs/lexer/main/src/lexer.rs [text]\npub fn tokenize(src: &str) -> Vec<Token> {\n    if src.is_empty() { return Vec::new(); }  // guard added in #214\n    …",
       },
       {
         id: "s3",
-        call: { name: "edit_file", args: { path: "src/parser.ts" } },
+        call: { name: "search_files", args: { query: "tokenize" } },
         status: "done",
-        result: "已编辑 src/parser.ts(替换 1 处)",
+        result: "file names (1):\n  src/parser.ts\n\nfile contents:\nsrc/parser.ts:41: export function tokenize(src: string) {",
+      },
+      {
+        id: "s4",
+        call: { name: "outline", args: { path: "src/parser.ts" } },
+        status: "done",
+        result: "   12  export interface Token\n   41  export function tokenize(src: string)\n   88  function scanIdent(src: string, pos: number)",
+      },
+      {
+        id: "s5",
+        call: { name: "edit_file", args: { path: "src/parser.ts", edits: [{}, {}] } },
+        status: "done",
+        result: "Edited src/parser.ts (applied all 2 edits)",
         diff: {
           path: "src/parser.ts",
           before: "export function tokenize(src: string) {\n  let pos = 0;\n  const first = src.charAt(pos);",
@@ -134,24 +145,18 @@ const CODE_SESSION_MSGS = [
         },
       },
       {
-        id: "s4",
+        id: "s6",
         call: { name: "bash", args: { command: "npm test" } },
         status: "done",
-        result: "Tests: 42 passed, 42 total\nTime: 3.4s\n[exit 0]",
-      },
-      {
-        id: "s5",
-        call: { name: "bash", args: { command: "npm run lint" } },
-        status: "error",
-        result: "ERROR: 命令超时 (timed out)\n[exit -1]",
+        result: "Tests: 96 passed, 96 total\nTime: 4.1s\n[exit 0]",
       },
     ],
   },
 ];
 
 const CODE_SESSIONS = [
-  { id: "cs1", title: "跑一下测试,把失败的修了", workspace: "/Users/dev/projects/parser-kit", updatedAt: now - 1800e3 },
-  { id: "cs2", title: "给项目补一个 README", workspace: "/Users/dev/projects/parser-kit", updatedAt: now - 86400e3 },
+  { id: "cs1", title: "Match the upstream tokenizer fix", workspace: "/Users/dev/projects/parser-kit", updatedAt: now - 1800e3 },
+  { id: "cs2", title: "Add a README to the project", workspace: "/Users/dev/projects/parser-kit", updatedAt: now - 86400e3 },
 ];
 
 /** Command → canned response. Anything unlisted returns a benign default. */
@@ -235,9 +240,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return null;
     case "rag_list_documents":
       return [
-        { id: 1, name: "产品需求文档 v3.pdf", chunks: 84, enabled: true },
-        { id: 2, name: "架构设计.md", chunks: 42, enabled: true },
-        { id: 3, name: "季度财务摘要.xlsx", chunks: 18, enabled: false },
+        { id: 1, name: "Product requirements v3.pdf", chunks: 84, enabled: true },
+        { id: 2, name: "architecture-notes.md", chunks: 42, enabled: true },
+        { id: 3, name: "Q2 financials.xlsx", chunks: 18, enabled: false },
       ];
 
     // ---- code mode ----
