@@ -24,6 +24,9 @@ use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
+use llama_cpp_2::mtmd::{
+    mtmd_default_marker, MtmdBitmap, MtmdContext, MtmdContextParams, MtmdInputText,
+};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 use tauri::ipc::Channel;
@@ -74,6 +77,103 @@ fn probe_n_layer(backend: &LlamaBackend, path: &str) -> Option<u32> {
         })
 }
 
+/// Find the vision encoder (mmproj) GGUF paired with a model file.
+///
+/// Convention: a vision model lives in its own folder together with its
+/// `mmproj*.gguf` (that's the layout the in-app downloader creates). To avoid
+/// mispairing in a flat `models/` folder holding many models, a same-dir
+/// mmproj is only paired when the model is the *only* main GGUF there, or the
+/// mmproj filename mentions the model's stem.
+pub fn find_mmproj(model_path: &str) -> Option<std::path::PathBuf> {
+    let path = Path::new(model_path);
+    let dir = path.parent()?;
+    let is_mmproj = |n: &str| n.to_lowercase().contains("mmproj");
+    let name = path.file_name()?.to_str()?;
+    if is_mmproj(name) {
+        return None; // the mmproj itself is not a chat model
+    }
+
+    let mut mains = 0usize;
+    let mut projs: Vec<std::path::PathBuf> = Vec::new();
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        let p = e.path();
+        let Some(n) = p.file_name().and_then(|s| s.to_str()) else { continue };
+        if !n.to_lowercase().ends_with(".gguf") {
+            continue;
+        }
+        if is_mmproj(n) {
+            projs.push(p);
+        } else {
+            mains += 1;
+        }
+    }
+    if projs.is_empty() {
+        return None;
+    }
+    // Prefer smaller-precision projections (F16 over F32) — visually
+    // indistinguishable, half the memory.
+    projs.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(u64::MAX));
+    if mains <= 1 {
+        return projs.into_iter().next();
+    }
+    // Crowded folder: require a filename affinity (first stem token).
+    let stem = name.trim_end_matches(".gguf").to_lowercase();
+    let token = stem.split(['-', '_', '.']).next().unwrap_or(&stem).to_string();
+    projs
+        .into_iter()
+        .find(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| token.len() >= 3 && n.to_lowercase().contains(&token))
+                .unwrap_or(false)
+        })
+}
+
+/// KV-cache state of the *media* (mtmd) prefill regime — the multimodal
+/// analogue of the token-prefix cache. Stores the rendered prompt string and
+/// image identities as of the last prefill, so the next turn of the same
+/// conversation only evaluates the appended tail (old images are NOT
+/// re-encoded).
+struct MediaCache {
+    /// Rendered prompt (with media markers) that is resident in the KV.
+    prompt: String,
+    /// Identity keys of the images already encoded into the KV, in order.
+    image_keys: Vec<String>,
+    /// Number of positions resident right after that prefill.
+    n_past: i32,
+}
+
+/// Cheap identity for an image file (path + size + mtime).
+fn image_cache_key(p: &str) -> String {
+    match std::fs::metadata(p) {
+        Ok(m) => format!("{p}|{}|{:?}", m.len(), m.modified().ok()),
+        Err(_) => format!("{p}|missing"),
+    }
+}
+
+/// Clone messages, prepending one media marker per attached image to the
+/// message text — mtmd's tokenizer replaces each marker with that image's
+/// embedding chunks.
+fn inject_media_markers(messages: &[ChatMessage]) -> Vec<ChatMessage> {
+    messages
+        .iter()
+        .map(|m| {
+            if m.images.is_empty() {
+                m.clone()
+            } else {
+                let mut content =
+                    String::with_capacity(m.content.len() + m.images.len() * 16);
+                for _ in &m.images {
+                    content.push_str(mtmd_default_marker());
+                    content.push('\n');
+                }
+                content.push_str(&m.content);
+                ChatMessage { role: m.role.clone(), content, images: m.images.clone() }
+            }
+        })
+        .collect()
+}
+
 /// A unit of work sent to a model's worker thread.
 enum Job {
     Generate {
@@ -82,6 +182,28 @@ enum Job {
         cancel: Arc<AtomicBool>,
         done: tokio::sync::oneshot::Sender<Result<()>>,
     },
+    /// One-shot generation collected in-process (no streaming) — the substrate
+    /// for vision analysis by Code mode / KB / Canvas. Runs on the same worker
+    /// so it never races the persistent context.
+    Collect {
+        req: GenRequest,
+        cancel: Arc<AtomicBool>,
+        done: tokio::sync::oneshot::Sender<Result<String>>,
+    },
+}
+
+/// In-process sink that concatenates streamed token text (the non-IPC analogue
+/// of the Tauri `Channel`). Lives entirely on the worker thread.
+struct StringSink {
+    buf: std::cell::RefCell<String>,
+}
+impl EventSink for StringSink {
+    fn emit(&self, ev: StreamEvent) -> Result<()> {
+        if let StreamEvent::Token { text } = ev {
+            self.buf.borrow_mut().push_str(&text);
+        }
+        Ok(())
+    }
 }
 
 /// Handle to a loaded model. Generation is funneled to the worker thread, which
@@ -148,6 +270,9 @@ impl LlamaEngine {
         // count (efficiency cores hurt throughput); elsewhere the logical CPUs.
         let n_threads = crate::gpu::cpu_worker_threads() as i32;
 
+        // Vision: pair a sibling mmproj GGUF (folder layout) when one exists.
+        let mmproj = find_mmproj(path).map(|p| p.to_string_lossy().to_string());
+
         // Load the weights AND allocate the inference context, backing off
         // `n_gpu_layers` on any out-of-memory failure. This covers BOTH the
         // weights and the KV-cache/compute buffers — the latter often OOMs a
@@ -155,7 +280,7 @@ impl LlamaEngine {
         // of memory, return a clear error instead of a cryptic crash.
         let mut layers = requested.max(0);
         let mut oom_fallback = false;
-        let (model, tx, handle) = loop {
+        let (model, tx, handle, mtmd_err) = loop {
             let params = LlamaModelParams::default().with_n_gpu_layers(layers.max(0) as u32);
             // macOS: load via malloc instead of mmap. Freeing malloc'd weights
             // is synchronous, whereas the Metal-wired pages of an mmap'd MoE
@@ -184,15 +309,21 @@ impl LlamaEngine {
             // KV/compute-buffer OOM is caught here and folded into the back-off.
             let n_ctx = mem_safe_n_ctx(&model, clamp_n_ctx(model.n_ctx_train(), n_ctx_pref));
             let (tx, rx) = std::sync::mpsc::channel::<Job>();
-            let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+            // Init result: Err = fatal context failure; Ok(Some(msg)) = context
+            // fine but the mmproj failed to load (vision off, non-fatal).
+            let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<Option<String>, String>>();
             let worker_model = model.clone();
+            let worker_mmproj = mmproj.clone();
+            let worker_gpu = layers > 0;
             let handle = std::thread::Builder::new()
                 .name("chaty-llama".into())
-                .spawn(move || worker(worker_model, n_ctx, n_threads, rx, init_tx))
+                .spawn(move || {
+                    worker(worker_model, n_ctx, n_threads, worker_mmproj, worker_gpu, rx, init_tx)
+                })
                 .context("failed to start inference thread")?;
 
             match init_rx.recv() {
-                Ok(Ok(())) => break (model, tx, handle),
+                Ok(Ok(mtmd_err)) => break (model, tx, handle, mtmd_err),
                 Ok(Err(msg)) => {
                     drop(tx); // the worker already exited; release this attempt
                     // A failed context allocation (incl. a null return from
@@ -226,8 +357,17 @@ impl LlamaEngine {
         let n_ctx = mem_safe_n_ctx(&model, n_ctx_wanted);
         // If we had to drop below the requested offload to fit memory, flag it;
         // a context window clamped to fit unified memory is worth a note too.
+        // A paired mmproj that failed to load degrades to text-only — surfaced
+        // so the UI can say "vision unavailable" instead of silently ignoring
+        // images.
+        let vision_ready = mmproj.is_some() && mtmd_err.is_none();
+        if let Some(err) = &mtmd_err {
+            eprintln!("mmproj load failed (vision disabled): {err}");
+        }
         let warning = if oom_fallback {
             Some("gpu-oom".to_string())
+        } else if mtmd_err.is_some() {
+            Some("mmproj-failed".to_string())
         } else if n_ctx < n_ctx_wanted {
             Some("ctx-clamped".to_string())
         } else {
@@ -286,9 +426,10 @@ impl LlamaEngine {
         let think_switch = !is_qwen35plus
             && template_usable
             && (template_lc.contains("no_think") || template_lc.contains("/think"));
-        let multimodal = model
-            .meta_val_str(&format!("{arch}.vision.block_count"))
-            .is_ok()
+        let multimodal = mmproj.is_some()
+            || model
+                .meta_val_str(&format!("{arch}.vision.block_count"))
+                .is_ok()
             || model.meta_val_str("clip.has_vision_encoder").is_ok()
             || [
                 "-vl", " vl", "vision", "llava", "mllama", "qwen2vl", "qwen2.5-vl",
@@ -323,6 +464,8 @@ impl LlamaEngine {
             think_switch,
             supports_tools,
             multimodal,
+            vision_ready,
+            mmproj,
             warning,
         };
 
@@ -368,6 +511,22 @@ impl InferenceBackend for LlamaEngine {
             Err(_) => Err(anyhow::anyhow!("推理线程在生成过程中断开 (inference thread disconnected mid-generation)")),
         }
     }
+
+    async fn generate_collect(&self, req: GenRequest, cancel: Arc<AtomicBool>) -> Result<String> {
+        let tx = self
+            .tx
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("模型已卸载 (model unloaded)"))?;
+        let (done, done_rx) = tokio::sync::oneshot::channel();
+        tx.send(Job::Collect { req, cancel, done })
+            .map_err(|_| anyhow::anyhow!("推理线程已退出 (inference thread exited)"))?;
+        match done_rx.await {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!("推理线程在生成过程中断开 (inference thread disconnected)")),
+        }
+    }
 }
 
 /// Owns the persistent context for one model and serves jobs until the engine
@@ -376,8 +535,10 @@ fn worker(
     model: Arc<LlamaModel>,
     n_ctx: u32,
     n_threads: i32,
+    mmproj: Option<String>,
+    use_gpu: bool,
     rx: Receiver<Job>,
-    init: Sender<Result<(), String>>,
+    init: Sender<Result<Option<String>, String>>,
 ) {
     let backend = match llama_backend() {
         Ok(b) => b,
@@ -403,15 +564,67 @@ fn worker(
             return;
         }
     };
-    let _ = init.send(Ok(()));
+    // Vision encoder (mmproj), when the model ships one. A failure here is
+    // non-fatal: the model still chats, images are just unavailable.
+    let mut mtmd_err: Option<String> = None;
+    let mtmd = mmproj.as_deref().and_then(|p| {
+        let params = MtmdContextParams {
+            use_gpu,
+            n_threads,
+            ..MtmdContextParams::default()
+        };
+        match MtmdContext::init_from_file(p, &model, &params) {
+            Ok(c) => {
+                if c.support_vision() {
+                    Some(c)
+                } else {
+                    mtmd_err = Some("mmproj has no vision encoder".to_string());
+                    None
+                }
+            }
+            Err(e) => {
+                mtmd_err = Some(format!("{e}"));
+                None
+            }
+        }
+    });
+    let _ = init.send(Ok(mtmd_err));
 
     // Tokens currently resident in the KV cache for sequence 0 (positions 0..len).
     let mut cached: Vec<LlamaToken> = Vec::new();
+    // Multimodal analogue of `cached` (see `MediaCache`).
+    let mut media_cache: Option<MediaCache> = None;
 
     while let Ok(job) = rx.recv() {
         match job {
             Job::Generate { req, sink, cancel, done } => {
-                let result = run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel);
+                let result = run_turn(
+                    &model,
+                    &mut ctx,
+                    &mut cached,
+                    mtmd.as_ref(),
+                    &mut media_cache,
+                    n_ctx,
+                    &req,
+                    &sink,
+                    &cancel,
+                );
+                let _ = done.send(result);
+            }
+            Job::Collect { req, cancel, done } => {
+                let sink = StringSink { buf: std::cell::RefCell::new(String::new()) };
+                let result = run_turn(
+                    &model,
+                    &mut ctx,
+                    &mut cached,
+                    mtmd.as_ref(),
+                    &mut media_cache,
+                    n_ctx,
+                    &req,
+                    &sink,
+                    &cancel,
+                )
+                .map(|()| sink.buf.into_inner());
                 let _ = done.send(result);
             }
         }
@@ -426,9 +639,11 @@ fn decode_prompt(
     tokens: &[LlamaToken],
     from: usize,
     n_batch: usize,
+    mut on_batch: impl FnMut(usize, usize),
 ) -> Result<()> {
     let n_prompt = tokens.len();
     let mut pos = from;
+    on_batch(pos, n_prompt); // initial position (KV-reused prefix counts as done)
     while pos < n_prompt {
         let end = (pos + n_batch).min(n_prompt);
         batch.clear();
@@ -437,6 +652,7 @@ fn decode_prompt(
         }
         ctx.decode(batch).context("decode failed")?;
         pos = end;
+        on_batch(pos, n_prompt);
     }
     Ok(())
 }
@@ -459,6 +675,8 @@ fn run_turn(
     model: &LlamaModel,
     ctx: &mut LlamaContext,
     cached: &mut Vec<LlamaToken>,
+    mtmd: Option<&MtmdContext>,
+    media_cache: &mut Option<MediaCache>,
     n_ctx: u32,
     req: &GenRequest,
     sink: &dyn EventSink,
@@ -466,7 +684,18 @@ fn run_turn(
 ) -> Result<()> {
     sink.emit(StreamEvent::Started)?;
 
-    let prompt = build_prompt(model, &req.messages, req.params.think)?;
+    let has_images = req.messages.iter().any(|m| !m.images.is_empty());
+    let media_turn = has_images && mtmd.is_some();
+    if has_images && mtmd.is_none() {
+        // Defensive: the frontend only sends images to vision-ready models.
+        eprintln!("images attached but no mmproj is loaded — ignoring them");
+    }
+
+    let prompt = if media_turn {
+        build_prompt(model, &inject_media_markers(&req.messages), req.params.think)?
+    } else {
+        build_prompt(model, &req.messages, req.params.think)?
+    };
     // Qwen3.5/3.6-style templates PRE-OPEN the reasoning block: the prompt
     // ends with "<think>\n" and the model starts mid-reasoning, so the UI
     // would never see an opening tag. Emit a synthetic one so the stream is
@@ -474,58 +703,107 @@ fn run_turn(
     if req.params.think != Some(false) && prompt.trim_end().ends_with("<think>") {
         sink.emit(StreamEvent::Token { text: "<think>\n".to_string() })?;
     }
-    let tokens = model
-        .str_to_token(&prompt, AddBos::Always)
-        .context("tokenization failed")?;
-    let n_prompt = tokens.len();
-
-    if n_prompt + 4 >= n_ctx as usize {
-        ctx.clear_kv_cache();
-        cached.clear();
-        bail!("提示词 {n_prompt} tokens 超出上下文窗口 {n_ctx}，请新建对话或缩短输入。(Prompt exceeds the {n_ctx}-token context window — start a new chat or shorten the input.)");
-    }
-
-    // Longest common prefix with the cached sequence → reuse that part of the KV.
-    let mut prefix = 0usize;
-    let max_match = cached.len().min(n_prompt);
-    while prefix < max_match && cached[prefix] == tokens[prefix] {
-        prefix += 1;
-    }
-    // Always leave at least one token to decode so we have fresh logits to sample.
-    if prefix == n_prompt {
-        prefix = n_prompt - 1;
-    }
-
-    // Drop everything in the KV at/after `prefix`, then decode only the new tail.
-    if prefix < cached.len() {
-        let _ = ctx.clear_kv_cache_seq(Some(0), Some(prefix as u32), None);
-    }
-    cached.truncate(prefix);
-
-    if cancel.load(Ordering::Relaxed) {
-        ctx.clear_kv_cache();
-        cached.clear();
-        return done_event(sink, n_prompt as u32, 0, 0.0, "cancelled");
-    }
 
     let n_batch = (ctx.n_batch() as usize).max(1);
     let mut batch = LlamaBatch::new(n_batch, 1);
 
-    // Decode the new tail, reusing the cached KV prefix. Some models don't
-    // tolerate partial KV reuse (llama.cpp's decode returns an error); if so,
-    // clear the KV and decode the whole prompt fresh. If that still fails, reset
-    // state so the next turn / new chat starts clean instead of staying broken.
-    if let Err(e) = decode_prompt(ctx, &mut batch, &tokens, prefix, n_batch) {
-        eprintln!("prompt decode (reuse from {prefix}) failed: {e:#}; retrying from a clean KV");
-        ctx.clear_kv_cache();
-        if let Err(e2) = decode_prompt(ctx, &mut batch, &tokens, 0, n_batch) {
+    // ---- prefill: two regimes sharing one generation loop below ----
+    // `n_prompt_pos` = positions resident after prefill; `idx` = where to
+    // sample the first token (-1 = "last logits" after an mtmd prefill).
+    let (n_prompt_pos, mut idx): (i32, i32);
+
+    if media_turn {
+        let mtmd = mtmd.expect("media_turn implies mtmd");
+        // The token-prefix cache can't describe media chunks; it is empty
+        // while a conversation is in the media regime (and vice versa).
+        cached.clear();
+
+        n_prompt_pos = prefill_media(
+            ctx,
+            mtmd,
+            media_cache,
+            &prompt,
+            &req.messages,
+            n_ctx,
+            n_batch as i32,
+            cancel,
+        )?;
+        if cancel.load(Ordering::Relaxed) {
+            return done_event(sink, n_prompt_pos as u32, 0, 0.0, "cancelled");
+        }
+        idx = -1;
+    } else {
+        // Leaving the media regime: the KV holds media embeddings the token
+        // cache can't account for — start clean.
+        if media_cache.take().is_some() {
             ctx.clear_kv_cache();
             cached.clear();
-            return Err(e2).context("prompt decode failed");
         }
+
+        let tokens = model
+            .str_to_token(&prompt, AddBos::Always)
+            .context("tokenization failed")?;
+        let n_prompt = tokens.len();
+
+        if n_prompt + 4 >= n_ctx as usize {
+            ctx.clear_kv_cache();
+            cached.clear();
+            bail!("提示词 {n_prompt} tokens 超出上下文窗口 {n_ctx}，请新建对话或缩短输入。(Prompt exceeds the {n_ctx}-token context window — start a new chat or shorten the input.)");
+        }
+
+        // Longest common prefix with the cached sequence → reuse that part of the KV.
+        let mut prefix = 0usize;
+        let max_match = cached.len().min(n_prompt);
+        while prefix < max_match && cached[prefix] == tokens[prefix] {
+            prefix += 1;
+        }
+        // Always leave at least one token to decode so we have fresh logits to sample.
+        if prefix == n_prompt {
+            prefix = n_prompt - 1;
+        }
+
+        // Drop everything in the KV at/after `prefix`, then decode only the new tail.
+        if prefix < cached.len() {
+            let _ = ctx.clear_kv_cache_seq(Some(0), Some(prefix as u32), None);
+        }
+        cached.truncate(prefix);
+
+        if cancel.load(Ordering::Relaxed) {
+            ctx.clear_kv_cache();
+            cached.clear();
+            return done_event(sink, n_prompt as u32, 0, 0.0, "cancelled");
+        }
+
+        // Report prompt-processing progress, but only when the new tail spans
+        // more than one batch — short prefills would just flash a ring.
+        let progress = |from: usize| {
+            move |done: usize, total: usize| {
+                if total.saturating_sub(from) > n_batch {
+                    let _ = sink.emit(StreamEvent::Prefill {
+                        processed: done as u32,
+                        total: total as u32,
+                    });
+                }
+            }
+        };
+
+        // Decode the new tail, reusing the cached KV prefix. Some models don't
+        // tolerate partial KV reuse (llama.cpp's decode returns an error); if so,
+        // clear the KV and decode the whole prompt fresh. If that still fails, reset
+        // state so the next turn / new chat starts clean instead of staying broken.
+        if let Err(e) = decode_prompt(ctx, &mut batch, &tokens, prefix, n_batch, progress(prefix)) {
+            eprintln!("prompt decode (reuse from {prefix}) failed: {e:#}; retrying from a clean KV");
+            ctx.clear_kv_cache();
+            if let Err(e2) = decode_prompt(ctx, &mut batch, &tokens, 0, n_batch, progress(0)) {
+                ctx.clear_kv_cache();
+                cached.clear();
+                return Err(e2).context("prompt decode failed");
+            }
+        }
+        *cached = tokens; // KV now holds the full prompt
+        n_prompt_pos = n_prompt as i32;
+        idx = batch.n_tokens() - 1;
     }
-    *cached = tokens; // KV now holds the full prompt
-    let mut idx = batch.n_tokens() - 1;
 
     let mut sampler = build_sampler(&req.params);
     // Robust incremental UTF-8 assembly: accumulate raw token bytes and only
@@ -535,7 +813,7 @@ fn run_turn(
     let mut pending: Vec<u8> = Vec::new();
     let start = Instant::now();
     let mut n_decoded: u32 = 0;
-    let mut n_past = n_prompt as i32;
+    let mut n_past = n_prompt_pos;
 
     // Stop sequences: hold back up to `max_stop-1` chars before emitting so a stop
     // string straddling token boundaries is still caught, then trim at the match.
@@ -628,7 +906,12 @@ fn run_turn(
         }
         batch.clear();
         batch.add(token, n_past, &[0], true)?;
-        cached.push(token);
+        // The token cache only describes text-regime KV contents; generated
+        // tokens in a media conversation live beyond `media_cache.n_past` and
+        // are truncated away by the next incremental media prefill.
+        if !media_turn {
+            cached.push(token);
+        }
         n_past += 1;
         ctx.decode(&mut batch).context("decode failed")?;
         idx = batch.n_tokens() - 1;
@@ -647,7 +930,116 @@ fn run_turn(
     }
 
     let secs = start.elapsed().as_secs_f32().max(1e-3);
-    done_event(sink, n_prompt as u32, n_decoded, n_decoded as f32 / secs, stop_reason)
+    done_event(sink, n_prompt_pos as u32, n_decoded, n_decoded as f32 / secs, stop_reason)
+}
+
+/// Prefill a multimodal prompt through mtmd, reusing the media KV cache
+/// incrementally when the conversation merely grew (the common case): only the
+/// appended tail — and only the *new* images — are evaluated. Returns the
+/// number of positions resident after the prefill.
+#[allow(clippy::too_many_arguments)]
+fn prefill_media(
+    ctx: &mut LlamaContext,
+    mtmd: &MtmdContext,
+    media_cache: &mut Option<MediaCache>,
+    prompt: &str,
+    messages: &[ChatMessage],
+    n_ctx: u32,
+    n_batch: i32,
+    cancel: &AtomicBool,
+) -> Result<i32> {
+    let images: Vec<&String> = messages.iter().flat_map(|m| m.images.iter()).collect();
+    let image_keys: Vec<String> = images.iter().map(|p| image_cache_key(p)).collect();
+
+    // Incremental reuse: prior prefill must be a string-prefix of the new
+    // prompt with an identical image prefix. Generated tokens beyond the
+    // cached prefill are dropped (mirrors the text path, which re-renders the
+    // assistant turn from the template rather than trusting raw output).
+    let reuse = media_cache.as_ref().and_then(|c| {
+        // Strict extension: an identical prompt (e.g. regenerate) must re-eval —
+        // an empty tail would leave the sampler without fresh logits.
+        (prompt.len() > c.prompt.len()
+            && prompt.starts_with(c.prompt.as_str())
+            && image_keys.len() >= c.image_keys.len()
+            && image_keys[..c.image_keys.len()] == c.image_keys[..])
+            .then(|| (c.n_past, c.prompt.len(), c.image_keys.len()))
+    });
+    let (start_past, tail, new_images) = match reuse {
+        Some((n_past, prompt_len, n_imgs)) => {
+            let _ = ctx.clear_kv_cache_seq(Some(0), Some(n_past as u32), None);
+            (n_past, &prompt[prompt_len..], &images[n_imgs..])
+        }
+        None => {
+            ctx.clear_kv_cache();
+            *media_cache = None;
+            (0, prompt, &images[..])
+        }
+    };
+
+    let clear_all = |ctx: &mut LlamaContext, cache: &mut Option<MediaCache>| {
+        ctx.clear_kv_cache();
+        *cache = None;
+    };
+
+    let mut bitmaps: Vec<MtmdBitmap> = Vec::with_capacity(new_images.len());
+    for p in new_images {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(start_past.max(0));
+        }
+        // `placeholder: false` → decode the actual pixels.
+        match MtmdBitmap::from_file(mtmd, p, false) {
+            Ok(b) => bitmaps.push(b),
+            Err(e) => {
+                clear_all(ctx, media_cache);
+                bail!("无法读取图片 (failed to read image) {p}: {e}");
+            }
+        }
+    }
+    let bitmap_refs: Vec<&MtmdBitmap> = bitmaps.iter().collect();
+
+    let input = MtmdInputText {
+        text: tail.to_string(),
+        // BOS/EOS only at the very start of the sequence; a tail continues it.
+        add_special: start_past == 0,
+        parse_special: true,
+    };
+    let chunks = match mtmd.tokenize(input, &bitmap_refs) {
+        Ok(c) => c,
+        Err(e) => {
+            clear_all(ctx, media_cache);
+            bail!("多模态分词失败 (multimodal tokenization failed): {e}");
+        }
+    };
+
+    let total_pos = chunks.total_positions();
+    if start_past + total_pos + 4 >= n_ctx as i32 {
+        clear_all(ctx, media_cache);
+        bail!(
+            "图文提示共 {} 个位置，超出上下文窗口 {n_ctx}，请新建对话、缩短输入或减少图片。(The multimodal prompt needs {} positions — over the {n_ctx} context window; start a new chat, shorten the input or drop images.)",
+            start_past + total_pos,
+            start_past + total_pos
+        );
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(start_past.max(0));
+    }
+
+    // Encode image chunks + decode text chunks; llama.cpp's helper handles
+    // non-causal attention and M-RoPE position bookkeeping per model.
+    let n_past = match chunks.eval_chunks(mtmd, ctx, start_past, 0, n_batch, true) {
+        Ok(p) => p,
+        Err(e) => {
+            clear_all(ctx, media_cache);
+            bail!("图文预填充失败 (multimodal prefill failed): {e}");
+        }
+    };
+
+    *media_cache = Some(MediaCache {
+        prompt: prompt.to_string(),
+        image_keys,
+        n_past,
+    });
+    Ok(n_past)
 }
 
 fn done_event(
@@ -889,7 +1281,7 @@ fn fold_system(messages: &[ChatMessage]) -> Vec<ChatMessage> {
             Role::System => {}
             Role::User if !injected => {
                 injected = true;
-                out.push(ChatMessage {
+                out.push(ChatMessage { images: Vec::new(),
                     role: Role::User,
                     content: format!("{sys_text}\n\n{}", m.content),
                 });
@@ -898,7 +1290,7 @@ fn fold_system(messages: &[ChatMessage]) -> Vec<ChatMessage> {
         }
     }
     if !injected {
-        out.insert(0, ChatMessage { role: Role::User, content: sys_text });
+        out.insert(0, ChatMessage { images: Vec::new(), role: Role::User, content: sys_text });
     }
     out
 }
@@ -1139,6 +1531,61 @@ mod tests {
     fn leaves_plain_text_untouched() {
         assert_eq!(strip_thought_channels("  just a normal reply  "), "just a normal reply");
     }
+
+    // ---- find_mmproj: the vision folder-layout pairing rules ----
+
+    fn mk(dir: &std::path::Path, name: &str) {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("chaty-mmproj-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn pairs_mmproj_in_dedicated_folder() {
+        let d = tmp("folder");
+        mk(&d, "Qwen3.5-4B-Q4_K_M.gguf");
+        mk(&d, "mmproj-F16.gguf");
+        let got = find_mmproj(&d.join("Qwen3.5-4B-Q4_K_M.gguf").to_string_lossy());
+        assert_eq!(got, Some(d.join("mmproj-F16.gguf")));
+    }
+
+    #[test]
+    fn prefers_smaller_mmproj() {
+        let d = tmp("smaller");
+        mk(&d, "model.gguf");
+        std::fs::write(d.join("mmproj-F32.gguf"), vec![0u8; 64]).unwrap();
+        std::fs::write(d.join("mmproj-F16.gguf"), vec![0u8; 8]).unwrap();
+        let got = find_mmproj(&d.join("model.gguf").to_string_lossy());
+        assert_eq!(got, Some(d.join("mmproj-F16.gguf")));
+    }
+
+    #[test]
+    fn crowded_folder_requires_name_affinity() {
+        let d = tmp("crowded");
+        mk(&d, "gemma-4-E4B-it-Q4.gguf");
+        mk(&d, "OtherModel-Q4.gguf");
+        mk(&d, "mmproj-gemma-4-E4B-F16.gguf");
+        // gemma main ↔ gemma mmproj pair by shared stem token
+        let got = find_mmproj(&d.join("gemma-4-E4B-it-Q4.gguf").to_string_lossy());
+        assert_eq!(got, Some(d.join("mmproj-gemma-4-E4B-F16.gguf")));
+        // the unrelated model must NOT pair with it
+        let other = find_mmproj(&d.join("OtherModel-Q4.gguf").to_string_lossy());
+        assert_eq!(other, None);
+    }
+
+    #[test]
+    fn no_mmproj_means_none_and_mmproj_is_not_a_model() {
+        let d = tmp("none");
+        mk(&d, "model.gguf");
+        assert_eq!(find_mmproj(&d.join("model.gguf").to_string_lossy()), None);
+        mk(&d, "mmproj-F16.gguf");
+        // asking for the mmproj itself never pairs
+        assert_eq!(find_mmproj(&d.join("mmproj-F16.gguf").to_string_lossy()), None);
+    }
 }
 
 /// End-to-end agent-loop test against a REAL model. Ignored by default (needs a
@@ -1177,7 +1624,6 @@ mod agent_e2e {
         out.push_str(rest);
         out.replace("<think>", "").replace("</think>", "").trim().to_string()
     }
-
     fn parse_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
         let open = text.find("<tool_call>")?;
         let mut body = &text[open + "<tool_call>".len()..];
@@ -1414,8 +1860,8 @@ mod agent_e2e {
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()) },
-            ChatMessage {
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "用 search_files 找出这个项目里所有和 \"token\" 有关的文件和代码,把命中的文件路径列出来。".into(),
             },
@@ -1441,7 +1887,7 @@ mod agent_e2e {
                 },
             };
             let sink = Collector { buf: RefCell::new(String::new()) };
-            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            run_turn(&model, &mut ctx, &mut cached, None, &mut None, n_ctx, &req, &sink, &cancel).expect("run_turn");
             let raw = sink.buf.into_inner();
             eprintln!("\n──────── STEP {step} ────────\n{}", raw.trim().chars().take(400).collect::<String>());
             match parse_tool_call(&raw) {
@@ -1451,8 +1897,8 @@ mod agent_e2e {
                     let result = exec_tool(&name, &args);
                     eprintln!("  ◀ RESULT\n{}", result.chars().take(500).collect::<String>());
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
-                    messages.push(ChatMessage {
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
                     });
@@ -1518,8 +1964,8 @@ if __name__ == "__main__":
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()) },
-            ChatMessage {
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "把 shop.py 里的函数 calc_total 重命名为 compute_total,并更新文件里所有调用它的地方(先用 outline 看结构,同一文件的多处修改用一次 edit_file 的 edits 数组一次完成)。改完运行 python3 shop.py 确认输出仍然是 TOTAL: 33.00 和 AUDIT: 30.00。".into(),
             },
@@ -1545,7 +1991,7 @@ if __name__ == "__main__":
                 },
             };
             let sink = Collector { buf: RefCell::new(String::new()) };
-            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            run_turn(&model, &mut ctx, &mut cached, None, &mut None, n_ctx, &req, &sink, &cancel).expect("run_turn");
             let raw = sink.buf.into_inner();
             eprintln!("\n──────── STEP {step} · RAW ────────\n{}", raw.trim().chars().take(500).collect::<String>());
 
@@ -1560,8 +2006,8 @@ if __name__ == "__main__":
                     let result = exec_tool(&name, &args);
                     eprintln!("  ◀ RESULT\n{}", result.chars().take(600).collect::<String>());
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
-                    messages.push(ChatMessage {
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
                     });
@@ -1640,8 +2086,8 @@ if __name__ == "__main__":
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()) },
-            ChatMessage {
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "在 YouTube 上搜索 \"me at the zoo\",找到 YouTube 历史上的第一条视频,用 web_fetch 获取它的字幕转写,然后把视频中拍摄者实际谈论的动物和他说的重点写进 NOTES.md(必须依据字幕内容,不要凭标题猜)。".into(),
             },
@@ -1665,7 +2111,7 @@ if __name__ == "__main__":
                 },
             };
             let sink = Collector { buf: RefCell::new(String::new()) };
-            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            run_turn(&model, &mut ctx, &mut cached, None, &mut None, n_ctx, &req, &sink, &cancel).expect("run_turn");
             let raw = sink.buf.into_inner();
             eprintln!("\n──────── STEP {step} · RAW ────────\n{}", raw.trim().chars().take(400).collect::<String>());
             match parse_tool_call(&raw) {
@@ -1674,8 +2120,8 @@ if __name__ == "__main__":
                     let result = exec_tool(&name, &args);
                     eprintln!("  ◀ RESULT\n{}", result.chars().take(500).collect::<String>());
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
-                    messages.push(ChatMessage {
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
                     });
@@ -1737,8 +2183,8 @@ if __name__ == "__main__":
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()) },
-            ChatMessage {
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "帮我调研一个小众 Rust 库:在 GitHub 上搜索 \"dom_smoothie readability\",找到那个把 Mozilla Readability 移植到 Rust 的仓库;用 web_fetch 打开它的仓库页面,把仓库全名和一句话简介写入 RESEARCH.md;最后用 web_download 把页面上列出的任意一张图片保存为 logo.png。全部完成后总结。".into(),
             },
@@ -1763,7 +2209,7 @@ if __name__ == "__main__":
                 },
             };
             let sink = Collector { buf: RefCell::new(String::new()) };
-            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            run_turn(&model, &mut ctx, &mut cached, None, &mut None, n_ctx, &req, &sink, &cancel).expect("run_turn");
             let raw = sink.buf.into_inner();
             eprintln!("\n──────── STEP {step} · RAW ────────\n{}", raw.trim().chars().take(600).collect::<String>());
 
@@ -1776,8 +2222,8 @@ if __name__ == "__main__":
                     let result = exec_tool(&name, &args);
                     eprintln!("  ◀ RESULT\n{}", result.chars().take(700).collect::<String>());
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
-                    messages.push(ChatMessage {
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
                     });
@@ -1837,8 +2283,8 @@ if __name__ == "__main__":
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { role: Role::System, content: SYS.replace("{WS}", &ws.to_string_lossy()) },
-            ChatMessage {
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "这个项目有一个失败的测试。请运行 `python3 test_calc.py`,找出失败原因并修复代码,直到测试全部通过(输出 ALL TESTS PASSED)。".into(),
             },
@@ -1873,7 +2319,7 @@ if __name__ == "__main__":
                 },
             };
             let sink = Collector { buf: RefCell::new(String::new()) };
-            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            run_turn(&model, &mut ctx, &mut cached, None, &mut None, n_ctx, &req, &sink, &cancel).expect("run_turn");
             // The app resets its KV between our direct calls differently; keep it
             // simple and correct by re-decoding each step from the cache we hold.
             let raw = sink.buf.into_inner();
@@ -1895,8 +2341,8 @@ if __name__ == "__main__":
                         result.lines().take(3).collect::<Vec<_>>().join(" | ")
                     ));
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
-                    messages.push(ChatMessage {
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
                     });
@@ -1961,8 +2407,8 @@ if __name__ == "__main__":
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { role: Role::System, content: SYS_META.replace("{WS}", &ws.to_string_lossy()) },
-            ChatMessage {
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_META.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "请在工作区创建一个 Python 模块 greet.py,实现 greet(name) 函数,再写 test_greet.py 并用 bash 运行确认通过。开始前先用 update_plan 列出步骤。问候语的语言(中文还是英文)由我决定,请用 ask_user 问我。".into(),
             },
@@ -1988,7 +2434,7 @@ if __name__ == "__main__":
                 },
             };
             let sink = Collector { buf: RefCell::new(String::new()) };
-            run_turn(&model, &mut ctx, &mut cached, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            run_turn(&model, &mut ctx, &mut cached, None, &mut None, n_ctx, &req, &sink, &cancel).expect("run_turn");
             let raw = sink.buf.into_inner();
             eprintln!("\n──────── STEP {step} ────────\n{}", raw.trim());
 
@@ -1998,7 +2444,7 @@ if __name__ == "__main__":
                 break;
             };
             let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-            messages.push(ChatMessage { role: Role::Assistant, content: strip_think(&with_close) });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
 
             let result = match name.as_str() {
                 "update_plan" => {
@@ -2039,7 +2485,7 @@ if __name__ == "__main__":
                     r
                 }
             };
-            messages.push(ChatMessage {
+            messages.push(ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
             });
@@ -2057,5 +2503,973 @@ if __name__ == "__main__":
         assert!(ask_used, "model should have called ask_user");
         assert!(finished, "agent never produced a final answer");
         assert!(greet_src.contains("greet"), "greet.py should define greet()");
+    }
+}
+
+/// Vision e2e against a REAL vision model (main GGUF + mmproj side by side in
+/// one folder — the layout the downloader creates). Ignored by default. Run:
+///   CHATY_TEST_VLM=/path/to/Folder/model.gguf cargo test -p chaty vision_e2e -- --ignored --nocapture
+#[cfg(test)]
+mod vision_e2e {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Collector {
+        buf: RefCell<String>,
+    }
+    impl EventSink for Collector {
+        fn emit(&self, ev: StreamEvent) -> Result<()> {
+            if let StreamEvent::Token { text } = ev {
+                self.buf.borrow_mut().push_str(&text);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn vision_sees_image_and_reuses_media_cache() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_VLM=/path/to/vlm.gguf (mmproj beside it)");
+                return;
+            }
+        };
+        // The folder-layout pairing is part of what's under test.
+        let mmproj = find_mmproj(&model_path).expect("no mmproj found next to the test VLM");
+        eprintln!("paired mmproj: {}", mmproj.display());
+
+        let backend = llama_backend().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load model");
+        let n_ctx = 4096u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+
+        let mtmd_params = MtmdContextParams {
+            use_gpu: true,
+            n_threads: nt,
+            ..MtmdContextParams::default()
+        };
+        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params)
+            .expect("mtmd init");
+        assert!(mtmd.support_vision(), "mmproj must provide a vision encoder");
+
+        // A solid red image — unambiguous even for a 500M model.
+        let img_path = std::env::temp_dir().join(format!("chaty-vision-e2e-{}.png", std::process::id()));
+        image::RgbImage::from_pixel(224, 224, image::Rgb([214, 30, 30]))
+            .save(&img_path)
+            .expect("write test image");
+
+        let ask = |messages: Vec<ChatMessage>,
+                   ctx: &mut LlamaContext,
+                   cached: &mut Vec<LlamaToken>,
+                   media_cache: &mut Option<MediaCache>|
+         -> String {
+            let req = GenRequest {
+                messages,
+                params: GenParams {
+                    temperature: 0.1,
+                    max_tokens: 64,
+                    think: Some(false),
+                    ..Default::default()
+                },
+            };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            let cancel = AtomicBool::new(false);
+            run_turn(&model, ctx, cached, Some(&mtmd), media_cache, n_ctx, &req, &sink, &cancel)
+                .expect("run_turn");
+            let out = sink.buf.into_inner();
+            eprintln!("--- reply: {out}");
+            out
+        };
+
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut media_cache: Option<MediaCache> = None;
+
+        // ---- turn 1: the model must actually SEE the image ----
+        let mut messages = vec![ChatMessage {
+            images: vec![img_path.to_string_lossy().to_string()],
+            role: Role::User,
+            content: "What is the dominant color of this image? Answer with one English word.".into(),
+        }];
+        let ans1 = ask(messages.clone(), &mut ctx, &mut cached, &mut media_cache);
+        assert!(
+            ans1.to_lowercase().contains("red"),
+            "expected 'red' in the answer, got: {ans1}"
+        );
+        let cache1 = media_cache.as_ref().expect("media cache after a vision turn");
+        let (prompt1, n_past1) = (cache1.prompt.clone(), cache1.n_past);
+        assert!(n_past1 > 0 && !prompt1.is_empty());
+        assert!(cached.is_empty(), "token cache must stay empty in the media regime");
+
+        // ---- turn 2: follow-up reuses the media prefill incrementally ----
+        messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: ans1 });
+        messages.push(ChatMessage {
+            images: Vec::new(),
+            role: Role::User,
+            content: "Is this image mostly red? Answer strictly yes or no.".into(),
+        });
+        // The rendered turn-2 prompt must extend the cached prefill — the
+        // property the incremental (no image re-encode) path depends on.
+        let prompt2 = build_prompt(&model, &inject_media_markers(&messages), Some(false)).unwrap();
+        assert!(
+            prompt2.starts_with(&prompt1),
+            "turn-2 prompt should string-extend the turn-1 prefill"
+        );
+        let ans2 = ask(messages, &mut ctx, &mut cached, &mut media_cache);
+        assert!(
+            ans2.to_lowercase().contains("yes"),
+            "expected 'yes' (image still visible through the reused KV), got: {ans2}"
+        );
+        let cache2 = media_cache.as_ref().unwrap();
+        assert!(cache2.n_past > n_past1, "prefill must have grown, not restarted");
+
+        // ---- turn 3: a text-only request leaves the media regime cleanly ----
+        let ans3 = ask(
+            vec![ChatMessage {
+                images: Vec::new(),
+                role: Role::User,
+                content: "Say the single word 'hello'.".into(),
+            }],
+            &mut ctx,
+            &mut cached,
+            &mut media_cache,
+        );
+        assert!(!ans3.trim().is_empty(), "text-only turn after vision must still generate");
+        assert!(media_cache.is_none(), "media cache must clear when leaving the media regime");
+        assert!(!cached.is_empty(), "token cache must resume in the text regime");
+
+        let _ = std::fs::remove_file(&img_path);
+    }
+}
+
+/// Engine-level wiring test: `LlamaEngine::load` must auto-pair the mmproj and
+/// report `vision_ready` (the worker inits the mtmd context). Ignored; run:
+///   CHATY_TEST_VLM=… cargo test -p chaty engine_load_pairs_mmproj -- --ignored --nocapture
+#[cfg(test)]
+mod vision_engine {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn engine_load_pairs_mmproj() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_VLM=/path/to/vlm.gguf (mmproj beside it)");
+                return;
+            }
+        };
+        let (engine, info) = LlamaEngine::load(&model_path, None, Some(4096)).expect("load");
+        eprintln!("vision_ready={} mmproj={:?} warning={:?}", info.vision_ready, info.mmproj, info.warning);
+        assert!(info.multimodal, "VLM must be flagged multimodal");
+        assert!(info.vision_ready, "mmproj must be paired and loaded");
+        assert!(info.mmproj.as_deref().map_or(false, |p| p.to_lowercase().contains("mmproj")));
+        assert!(info.warning.is_none(), "clean load expected, got {:?}", info.warning);
+
+        // generate_collect (the one-shot vision path used by KB/Canvas/browser)
+        let img = std::env::temp_dir().join(format!("chaty-collect-e2e-{}.png", std::process::id()));
+        image::RgbImage::from_pixel(160, 160, image::Rgb([25, 120, 220]))
+            .save(&img)
+            .unwrap();
+        let req = GenRequest {
+            messages: vec![ChatMessage {
+                images: vec![img.to_string_lossy().to_string()],
+                role: Role::User,
+                content: "What is the dominant color? One English word.".into(),
+            }],
+            params: GenParams { temperature: 0.1, max_tokens: 32, think: Some(false), ..Default::default() },
+        };
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let out =
+            tokio::runtime::Runtime::new().unwrap().block_on(engine.generate_collect(req, cancel));
+        let text = out.expect("generate_collect");
+        eprintln!("collect reply: {text}");
+        assert!(text.to_lowercase().contains("blue"), "expected 'blue', got: {text}");
+        let _ = std::fs::remove_file(&img);
+
+        // A richer scene → a descriptive, retrieval-friendly caption (the KB
+        // image-indexing path). Draw a red disc and a green rectangle.
+        let mut scene = image::RgbImage::from_pixel(320, 240, image::Rgb([245, 245, 245]));
+        for y in 0..240i32 {
+            for x in 0..320i32 {
+                let (dx, dy) = (x - 90, y - 120);
+                if dx * dx + dy * dy < 55 * 55 {
+                    scene.put_pixel(x as u32, y as u32, image::Rgb([220, 30, 30]));
+                }
+                if (190..=280).contains(&x) && (80..=170).contains(&y) {
+                    scene.put_pixel(x as u32, y as u32, image::Rgb([30, 170, 70]));
+                }
+            }
+        }
+        let scene_path = std::env::temp_dir().join(format!("chaty-scene-e2e-{}.png", std::process::id()));
+        scene.save(&scene_path).unwrap();
+        let cap_req = GenRequest {
+            messages: vec![ChatMessage {
+                images: vec![scene_path.to_string_lossy().to_string()],
+                role: Role::User,
+                content: "Describe this image thoroughly for search: shapes, colors, layout.".into(),
+            }],
+            params: GenParams { temperature: 0.3, max_tokens: 200, think: Some(false), ..Default::default() },
+        };
+        let cancel2 = std::sync::Arc::new(AtomicBool::new(false));
+        let caption = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(engine.generate_collect(cap_req, cancel2))
+            .expect("caption");
+        eprintln!("=== KB caption:\n{caption}\n===");
+        let lc = caption.to_lowercase();
+        assert!(caption.trim().len() > 40, "caption should be descriptive");
+        assert!(
+            lc.contains("red") || lc.contains("green") || lc.contains("circle") || lc.contains("rectang") || lc.contains("square"),
+            "caption should mention a shape/color, got: {caption}"
+        );
+        let _ = std::fs::remove_file(&scene_path);
+
+        engine.unload();
+    }
+
+    // The full "browser + vision verification" loop: render a web page in the
+    // headless CDP browser, screenshot it, and have the vision model describe
+    // what it sees. Needs Chrome + CHATY_TEST_VLM.
+    #[test]
+    #[ignore]
+    fn browser_vision_verify() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") {
+            Ok(p) => p,
+            Err(_) => { eprintln!("SKIP: set CHATY_TEST_VLM"); return; }
+        };
+        if crate::browser::chrome_path_pub().is_none() {
+            eprintln!("SKIP: no Chrome"); return;
+        }
+        std::env::set_var("CHATY_BROWSER_HEADLESS", "1");
+        let (engine, info) = LlamaEngine::load(&model_path, None, Some(4096)).expect("load");
+        assert!(info.vision_ready);
+
+        let html = "<!doctype html><html><head><title>Invoice</title></head>\
+            <body style='font-family:sans-serif;padding:40px'>\
+            <h1 style='color:#0a7'>Monthly Invoice</h1>\
+            <p>Total due: <b>$4,200</b></p>\
+            <button>Pay now</button>\
+            <script>console.error('checkout failed: card declined')</script></body></html>";
+        let path = std::env::temp_dir().join(format!("chaty-bv-{}.html", std::process::id()));
+        std::fs::write(&path, html).unwrap();
+        let url = format!("file://{}", path.display());
+        crate::browser::navigate(&url).expect("navigate");
+        let png = crate::browser::screenshot().expect("screenshot");
+        let shot = std::env::temp_dir().join(format!("chaty-bv-{}.png", std::process::id()));
+        std::fs::write(&shot, &png).unwrap();
+
+        let console = crate::browser::console().expect("console");
+        eprintln!("console: {console}");
+        assert!(console.contains("card declined"), "console error should be captured");
+
+        let req = GenRequest {
+            messages: vec![ChatMessage {
+                images: vec![shot.to_string_lossy().to_string()],
+                role: Role::User,
+                content: "What is the heading text and the total amount shown on this page?".into(),
+            }],
+            params: GenParams { temperature: 0.2, max_tokens: 96, think: Some(false), ..Default::default() },
+        };
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let ans = tokio::runtime::Runtime::new().unwrap()
+            .block_on(engine.generate_collect(req, cancel)).expect("vision");
+        eprintln!("=== vision read of the page: {ans}");
+        let lc = ans.to_lowercase();
+        assert!(lc.contains("invoice") || lc.contains("4,200") || lc.contains("4200") || lc.contains("pay"),
+            "model should read the page content, got: {ans}");
+
+        crate::browser::shutdown();
+        engine.unload();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&shot);
+    }
+}
+
+/// PROBE: drive a realistic multi-page form task with the agent tool-loop so we
+/// can see where a real model gets stuck. A local site: home → Contact link →
+/// form (name/email/message) → submit → thank-you. Needs Chrome + CHATY_TEST_VLM.
+#[cfg(test)]
+mod browser_task_probe {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Collector { buf: RefCell<String> }
+    impl EventSink for Collector {
+        fn emit(&self, ev: StreamEvent) -> Result<()> {
+            if let StreamEvent::Token { text } = ev { self.buf.borrow_mut().push_str(&text); }
+            Ok(())
+        }
+    }
+    fn strip_think(s: &str) -> String {
+        let mut out = String::new(); let mut rest = s;
+        while let Some(i) = rest.find("<think>") { out.push_str(&rest[..i]); if let Some(j)=rest[i..].find("</think>"){rest=&rest[i+j+8..];} else {rest="";} }
+        out.push_str(rest); out.trim().to_string()
+    }
+    fn parse_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
+        let open = text.find("<tool_call>")?;
+        let mut body = &text[open + "<tool_call>".len()..];
+        if let Some(c) = body.find("</tool_call>") { body = &body[..c]; }
+        let body = body.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        let s = body.find('{')?; let e = body.rfind('}')?;
+        let json: serde_json::Value = serde_json::from_str(&body[s..=e]).ok()?;
+        let name = json.get("name")?.as_str()?.to_string();
+        let args = json.get("arguments").or_else(|| json.get("parameters")).cloned().unwrap_or(serde_json::json!({}));
+        Some((name, args))
+    }
+
+    #[test]
+    #[ignore]
+    fn agent_fills_and_submits_a_form() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") { Ok(p) => p, Err(_) => { eprintln!("SKIP: CHATY_TEST_VLM"); return; } };
+        if crate::browser::chrome_path_pub().is_none() { eprintln!("SKIP: no Chrome"); return; }
+        std::env::set_var("CHATY_BROWSER_HEADLESS", "1");
+
+        // Two-page local site.
+        let dir = std::env::temp_dir().join(format!("chaty-formsite-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"),
+            "<!doctype html><title>Acme</title><body style='font-family:sans-serif;padding:40px'>\
+             <h1>Acme Inc.</h1><nav><a href='contact.html'>Contact</a> · <a href='about.html'>About</a></nav>\
+             <p>Welcome to Acme.</p></body>").unwrap();
+        std::fs::write(dir.join("contact.html"),
+            "<!doctype html><title>Contact Acme</title><body style='font-family:sans-serif;padding:40px'>\
+             <h1>Contact us</h1>\
+             <form onsubmit=\"event.preventDefault();document.body.innerHTML='<h1 id=ok>Thanks, we got your message!</h1>'\">\
+             <input name='name' placeholder='Your name'><br>\
+             <input name='email' type='email' placeholder='Your email'><br>\
+             <textarea name='message' placeholder='Your message'></textarea><br>\
+             <button type='submit'>Send message</button></form></body>").unwrap();
+        let home = format!("file://{}/index.html", dir.display());
+
+        let backend = crate::inference::llama::llama_backend_pub().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
+        let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
+        let mmproj = find_mmproj(&model_path).expect("mmproj");
+        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut media_cache: Option<MediaCache> = None;
+
+        // Minimal browser-tool system prompt + the task.
+        let sys = format!(
+            "你是浏览器自动化助手。每步只输出一行 <tool_call>{{\"name\":..,\"arguments\":{{..}}}}</tool_call> 然后停止。可用工具:\n\
+             - browser_navigate {{url}}:打开页面,返回可交互元素清单\n\
+             - browser_read {{}}:刷新当前页面的元素清单\n\
+             - browser_screenshot {{}}:看当前页面(会把截图给你)\n\
+             - browser_click {{text}} 或 {{selector}}:优先用 text 按可见文字点击\n\
+             - browser_type {{label,text}}:按占位符/字段名填输入框\n\
+             系统会用 <tool_result> 回你。完成后不要再调用工具,直接说\"完成\"。\n\
+             CSS 选择器只支持标准语法(没有 :contains/:has-text);按文字点用 browser_click 的 text。首个页面:{home}"
+        );
+        let mut messages = vec![
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys },
+            ChatMessage { images: Vec::new(), role: Role::User,
+                content: format!("打开 {home},进入 Contact 页面,填写姓名 Alice、邮箱 alice@example.com、留言 Hello,然后提交表单。\n/no_think") },
+        ];
+
+        let cancel = AtomicBool::new(false);
+        let mut submitted = false;
+        let mut step_log: Vec<String> = Vec::new();
+        for step in 0..16 {
+            let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.3, max_tokens: 1024, think: Some(false), ..Default::default() } };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            let call = parse_tool_call(&raw);
+            eprintln!("--- step {step}: {}", call.as_ref().map(|(n,a)| format!("{n} {a}")).unwrap_or_else(|| format!("(no tool) {}", raw.trim().chars().take(80).collect::<String>())));
+            let Some((name, args)) = call else { break; };
+            step_log.push(name.clone());
+            let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let (result, image): (String, Option<String>) = match name.as_str() {
+                "browser_navigate" => (crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_read" => (crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_click" => (crate::browser::click(g("selector"), g("text")).unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_type" => (crate::browser::type_text(g("selector"), g("label"), g("text").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_screenshot" => {
+                    let png = crate::browser::screenshot().unwrap();
+                    let p = std::env::temp_dir().join(format!("chaty-probe-{}-{step}.png", std::process::id()));
+                    std::fs::write(&p, png).unwrap();
+                    ("(截图已附上)".into(), Some(p.to_string_lossy().to_string()))
+                }
+                _ => (format!("未知工具 {name}"), None),
+            };
+            // Did the form submit?
+            if let Ok(ok) = crate::browser::eval("document.getElementById('ok')?document.getElementById('ok').textContent:''") {
+                if ok.contains("Thanks") { submitted = true; }
+            }
+            // Echo the model's ACTUAL output (with args) — the real loop does this;
+            // a name-only echo makes the model mimic argument-less calls.
+            let asst = strip_think(&raw);
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: asst });
+            let mut m = ChatMessage { images: image.clone().into_iter().collect(), role: Role::User,
+                content: format!("<tool_result>{}</tool_result>\n/no_think", result) };
+            if image.is_some() { m.content = "<tool_result>这是当前页面截图,请查看后继续。</tool_result>\n/no_think".into(); }
+            messages.push(m);
+            if submitted { eprintln!("=== FORM SUBMITTED at step {step}"); break; }
+        }
+        crate::browser::shutdown();
+        eprintln!("=== steps: {}", step_log.join(" → "));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(submitted, "the agent should have filled + submitted the form; steps: {step_log:?}");
+    }
+}
+
+/// PRODUCTION E2E: drive the 35B through several realistic, multi-step web tasks
+/// on a local "real" site (SPA shop→checkout, login→secret, lazy-load feed) plus
+/// a real web_fetch research task — and VERIFY the actual end state via the DOM,
+/// not the model's self-report. Also mirrors the production loop's identical-call
+/// breaker WITH the scroll/observe exemption, so a legit multi-scroll isn't
+/// wrongly intercepted (regression for the "scroll 300px ×2" false positive), and
+/// records step counts + flags sub-optimal tool choices (browser for pure
+/// research, redundant reads, screenshot-instead-of-snapshot).
+///
+///   CHATY_TEST_VLM=/path/Folder/model.gguf cargo test -p chaty \
+///     agent_completes_production_web_tasks -- --ignored --nocapture
+#[cfg(test)]
+mod browser_tasks_e2e {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Collector { buf: RefCell<String> }
+    impl EventSink for Collector {
+        fn emit(&self, ev: StreamEvent) -> Result<()> {
+            if let StreamEvent::Token { text } = ev { self.buf.borrow_mut().push_str(&text); }
+            Ok(())
+        }
+    }
+    fn strip_think(s: &str) -> String {
+        let mut out = String::new(); let mut rest = s;
+        while let Some(i) = rest.find("<think>") { out.push_str(&rest[..i]); if let Some(j)=rest[i..].find("</think>"){rest=&rest[i+j+8..];} else {rest="";} }
+        out.push_str(rest); out.trim().to_string()
+    }
+    fn parse_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
+        let open = text.find("<tool_call>")?;
+        let mut body = &text[open + "<tool_call>".len()..];
+        if let Some(c) = body.find("</tool_call>") { body = &body[..c]; }
+        let body = body.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        let s = body.find('{')?; let e = body.rfind('}')?;
+        let json: serde_json::Value = serde_json::from_str(&body[s..=e]).ok()?;
+        let name = json.get("name")?.as_str()?.to_string();
+        let args = json.get("arguments").or_else(|| json.get("parameters")).cloned().unwrap_or(serde_json::json!({}));
+        Some((name, args))
+    }
+
+    // Tools whose repeated identical call is legitimate progress/observation —
+    // MUST match REPEAT_EXEMPT in src/lib/agentLoop.ts (kept in sync by hand).
+    // NOT browser_navigate / view_image: an identical call there re-fetches the
+    // SAME target (a real degenerate loop the breaker must stop).
+    fn repeat_exempt(name: &str) -> bool {
+        matches!(name,
+            "browser_scroll" | "browser_screenshot" | "browser_snapshot" |
+            "browser_read" | "browser_console" | "bg_output")
+    }
+
+    struct TaskReport {
+        name: &'static str,
+        done: bool,
+        steps: Vec<String>,
+        final_text: String,
+        notes: Vec<String>,
+        wrongly_blocked: bool,
+    }
+
+    /// Faithful mirror of the production agent loop for ONE task. Executes real
+    /// browser/web tools, echoes the model's full output, attaches screenshots
+    /// as images, and applies the identical-call breaker (with the exemption).
+    #[allow(clippy::too_many_arguments)]
+    fn drive(
+        model: &LlamaModel,
+        backend: &LlamaBackend,
+        mtmd: &MtmdContext,
+        n_ctx: u32,
+        nt: i32,
+        rt: &tokio::runtime::Runtime,
+        name: &'static str,
+        sys: &str,
+        task: &str,
+        max_steps: usize,
+        break_on_done: bool,
+        done: &dyn Fn() -> bool,
+    ) -> TaskReport {
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut media_cache: Option<MediaCache> = None;
+
+        let mut messages = vec![
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys.to_string() },
+            ChatMessage { images: Vec::new(), role: Role::User, content: format!("{task}\n/no_think") },
+        ];
+        let cancel = AtomicBool::new(false);
+
+        let mut steps: Vec<String> = Vec::new();
+        let mut final_text = String::new();
+        let mut last_key = String::new();
+        let mut repeat = 0usize;
+        let mut screenshot_ct = 0usize;
+
+        for step in 0..max_steps {
+            let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.3, max_tokens: 1024, think: Some(false), ..Default::default() } };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(model, &mut ctx, &mut cached, Some(mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            let call = parse_tool_call(&raw);
+            let Some((tname, args)) = call else {
+                final_text = strip_think(&raw);
+                eprintln!("--- [{name}] step {step}: FINAL: {}", final_text.chars().take(120).collect::<String>());
+                break;
+            };
+            eprintln!("--- [{name}] step {step}: {tname} {args}");
+
+            // ── Identical-call breaker (mirror of production) ──
+            let call_key = format!("{tname}:{args}");
+            if repeat_exempt(&tname) {
+                last_key.clear(); repeat = 0;
+            } else if call_key == last_key {
+                repeat += 1;
+            } else {
+                last_key = call_key.clone(); repeat = 0;
+            }
+            if repeat >= 1 && !repeat_exempt(&tname) {
+                // Production intercepts the 2nd identical NON-exempt call. For an
+                // exempt tool (scroll/observe) this branch is unreachable — which
+                // is exactly what proves a legit repeated scroll is NOT blocked.
+                eprintln!("    (breaker: intercepted identical non-exempt call {tname})");
+                steps.push(format!("{tname}*BLOCKED"));
+                messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+                messages.push(ChatMessage { images: Vec::new(), role: Role::User,
+                    content: "<tool_result>这一步和上一步完全相同,已拦截。换一种做法或读取当前状态。</tool_result>\n/no_think".into() });
+                continue;
+            }
+
+            steps.push(tname.clone());
+            let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let (result, image): (String, Option<String>) = match tname.as_str() {
+                "browser_navigate" => (crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_read" => (crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_console" => (crate::browser::console().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_click" => (crate::browser::click(g("selector"), g("text")).unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_type" => (crate::browser::type_text(g("selector"), g("label"), g("text").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_scroll" => {
+                    let to = g("to");
+                    let by = args.get("by").and_then(|v| v.as_f64());
+                    (crate::browser::scroll_page(to, by).unwrap_or_else(|e| format!("ERROR: {e}")), None)
+                }
+                "browser_snapshot" | "browser_screenshot" => {
+                    screenshot_ct += 1;
+                    let png = if tname == "browser_snapshot" { crate::browser::snapshot() } else { crate::browser::screenshot() };
+                    match png {
+                        Ok(bytes) => {
+                            let p = std::env::temp_dir().join(format!("chaty-e2e-{}-{step}.png", std::process::id()));
+                            std::fs::write(&p, bytes).unwrap();
+                            ("(截图已附上)".into(), Some(p.to_string_lossy().to_string()))
+                        }
+                        Err(e) => (format!("ERROR: {e}"), None),
+                    }
+                }
+                "web_fetch" => {
+                    let url = g("url").unwrap_or_default();
+                    match rt.block_on(crate::search::fetch_url(url)) {
+                        Ok(pc) => (format!("标题: {}\n正文:\n{}", pc.title, pc.text.chars().take(1500).collect::<String>()), None),
+                        Err(e) => (format!("ERROR: {e}"), None),
+                    }
+                }
+                "web_search" => {
+                    let q = g("query").unwrap_or_default();
+                    match rt.block_on(crate::search::web_search(q)) {
+                        Ok(rs) => {
+                            let s = rs.iter().take(5)
+                                .map(|r| format!("- {} — {}\n  {}", r.title, r.url, r.snippet))
+                                .collect::<Vec<_>>().join("\n");
+                            (if s.is_empty() { "(no results)".into() } else { s }, None)
+                        }
+                        Err(e) => (format!("ERROR: {e}"), None),
+                    }
+                }
+                other => (format!("未知工具 {other}"), None),
+            };
+
+            // Echo the model's ACTUAL output (with args), then the tool result.
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+            if let Some(img) = image {
+                messages.push(ChatMessage { images: vec![img], role: Role::User,
+                    content: "<tool_result>这是当前页面截图,请查看后继续。</tool_result>\n/no_think".into() });
+            } else {
+                messages.push(ChatMessage { images: Vec::new(), role: Role::User,
+                    content: format!("<tool_result>{result}</tool_result>\n/no_think") });
+            }
+
+            if break_on_done && done() { break; }
+        }
+
+        // ── Efficiency / optimal-choice notes ──
+        let mut notes = Vec::new();
+        // 1. redundant browser_read directly after browser_navigate (navigate
+        //    already returns the digest).
+        for w in steps.windows(2) {
+            if w[0] == "browser_navigate" && w[1] == "browser_read" {
+                notes.push("次优: browser_navigate 后紧跟 browser_read(navigate 已返回元素清单,多余一步)".into());
+                break;
+            }
+        }
+        // 2. full-page screenshots when a viewport snapshot would do.
+        let full_shots = steps.iter().filter(|s| *s == "browser_screenshot").count();
+        if full_shots >= 2 {
+            notes.push(format!("次优: 用了 {full_shots} 次整页 browser_screenshot(较慢);多数情况 browser_snapshot 更快"));
+        }
+        // 3. any scroll/observe tool that got intercepted means the breaker
+        //    misfired. Checked against a LITERAL list (not repeat_exempt) so the
+        //    test still fails loudly if someone deletes the exemption.
+        const SHOULD_NEVER_BLOCK: &[&str] = &[
+            "browser_scroll", "browser_screenshot", "browser_snapshot",
+            "browser_read", "browser_console", "browser_navigate", "view_image", "bg_output",
+        ];
+        let wrongly_blocked = steps.iter().any(|s| {
+            s.ends_with("*BLOCKED") && SHOULD_NEVER_BLOCK.contains(&s.trim_end_matches("*BLOCKED"))
+        });
+        let _ = screenshot_ct;
+
+        TaskReport { name, done: done(), steps, final_text, notes, wrongly_blocked }
+    }
+
+    fn shop_html() -> String {
+        r#"<!doctype html><title>Nimbus Shop</title>
+<body style="font-family:sans-serif;padding:32px;max-width:640px;margin:auto">
+<h1>Nimbus Shop</h1><div id="view"></div>
+<script>
+var products={"Nimbus Pro":{price:299,desc:"Flagship. Everything included."},
+ "Nimbus Lite":{price:99,desc:"Essentials for starters."},
+ "Nimbus Max":{price:499,desc:"For power users."}};
+var view=document.getElementById('view');
+function grid(){var h='<h2>Products</h2>';for(var k in products){h+='<div style="margin:12px 0"><button onclick="detail(\''+k+'\')">'+k+'</button> — $'+products[k].price+'</div>';}view.innerHTML=h;}
+function detail(name){var p=products[name];view.innerHTML='<h2>'+name+'</h2><p>'+p.desc+'</p><p>Price: $'+p.price+'</p><button onclick="addcart(\''+name+'\')">Add to cart</button> <button onclick="grid()">Back</button>';}
+function addcart(name){view.innerHTML='<h2>Cart</h2><p>1 x '+name+' added.</p><button onclick="checkout()">Proceed to checkout</button>';}
+function checkout(){view.innerHTML='<h2>Checkout</h2><p><input placeholder="Full name" id="f_name"></p><p><input placeholder="Email" id="f_email"></p><p><input placeholder="Shipping address" id="f_addr"></p><button onclick="place()">Place order</button>';}
+function place(){var n=document.getElementById('f_name').value,e=document.getElementById('f_email').value,a=document.getElementById('f_addr').value;if(!n||!e||!a){alert('fill all');return;}document.title='Order Confirmed';view.innerHTML='<h2>Thank you, '+n+'!</h2><div id="order-number">ORD-4821</div><p>Confirmation sent to '+e+'</p>';}
+grid();
+</script></body>"#.to_string()
+    }
+    fn login_html() -> String {
+        r#"<!doctype html><title>Nimbus Login</title>
+<body style="font-family:sans-serif;padding:32px"><h1>Sign in</h1>
+<div id="app"><p><input placeholder="Username" id="u"></p><p><input placeholder="Password" type="password" id="p"></p>
+<button onclick="signin()">Sign in</button><div id="err" style="color:crimson"></div></div>
+<script>
+function signin(){var u=document.getElementById('u').value,p=document.getElementById('p').value;
+if(u==='admin'&&p==='nimbus2026'){document.getElementById('app').innerHTML='<h2>Dashboard</h2><p>Your API key:</p><div id="secret">TOKEN-7Q2X</div>';}
+else{console.error('login failed for user '+u);document.getElementById('err').textContent='Invalid credentials';}}
+</script></body>"#.to_string()
+    }
+    // A longer content page whose key fact (the Enterprise price) sits well
+    // below the fold. The optimal move is ONE full-page screenshot to see the
+    // whole thing at once; browser_read returns no body text, so reading the
+    // price REQUIRES vision. Tests "screenshot-first" for page research.
+    fn docs_html() -> String {
+        r#"<!doctype html><title>Nimbus Pricing</title>
+<body style="font-family:sans-serif;max-width:760px;margin:0 auto;padding:24px;line-height:1.6">
+<h1>Nimbus Cloud — Pricing</h1>
+<p>Nimbus Cloud is our managed platform. Below are the plans. Every plan includes the core runtime, automatic backups, and email support. Annual billing saves 20%.</p>
+<h2>Starter</h2><p>For individuals getting started. Includes 1 project, 5 GB storage, community support. Price: 9 dollars per month.</p>
+<h2>Team</h2><p>For small teams shipping together. Includes 10 projects, 100 GB storage, priority email support, and role-based access. Price: 49 dollars per month.</p>
+<h2>Business</h2><p>For growing companies. Includes unlimited projects, 1 TB storage, SSO, audit logs, and a 99.9% uptime SLA. Price: 199 dollars per month.</p>
+<h2>Enterprise</h2>
+<p style="font-size:22px"><b>The Enterprise plan costs 999 dollars per month.</b> It adds dedicated infrastructure, a named support engineer, custom contracts, and a 99.99% uptime SLA.</p>
+<p>Contact sales for volume discounts. All prices are in USD and exclude local taxes.</p>
+</body>"#.to_string()
+    }
+    fn feed_html() -> String {
+        r#"<!doctype html><title>Nimbus Feed</title>
+<body style="font-family:sans-serif;margin:0;padding:16px"><h1>Feed</h1><div id="feed"></div>
+<script>
+var n=0,max=30;
+function add(k){var d=document.createElement('div');d.id='item-'+k;d.style.height='150px';d.style.borderBottom='1px solid gray';d.textContent='Item '+k+(k===max?' — LAST (item-30)':'');document.getElementById('feed').appendChild(d);}
+function batch(){for(var i=0;i<8&&n<max;i++){add(++n);}}
+batch();
+addEventListener('scroll',function(){if(window.innerHeight+window.scrollY>=document.body.scrollHeight-250){batch();}});
+</script></body>"#.to_string()
+    }
+
+    const SYS: &str = "你是浏览器/网页自动化助手。每步只输出一行 <tool_call>{\"name\":..,\"arguments\":{..}}</tool_call> 然后停止,系统会用 <tool_result> 回你。\n\
+可用工具:\n\
+- web_search {query}:联网搜索,返回结果标题+链接+摘要。\n\
+- web_fetch {url}:抓取一个网址的正文(查资料/读文档首选,比开浏览器快)。\n\
+- browser_navigate {url}:打开页面,返回页面上可交互元素清单。\n\
+- browser_read {}:刷新当前页面的可交互元素清单(只含可点/可填元素,不含正文;点击/跳转后核实状态用)。\n\
+- browser_screenshot {}:截取整页给你看。打开一个要研究/读内容的页面后,第一步就用它一次性拿到整页全貌,快速定位元素或读正文,省掉反复 snapshot+scroll。\n\
+- browser_snapshot {}:只截当前视口给你看(整页某处要放大细看、或某次交互后只想确认这一屏时用)。\n\
+- browser_scroll {to?,by?}:向下滚动加载更多内容(连续多次滚动是正常进度)。\n\
+- browser_click {text|selector}:优先用 text 按可见文字点击。\n\
+- browser_type {label,text}:按占位符/字段名 label 向输入框填 text。\n\
+- browser_console {}:读控制台输出与报错。\n\
+规则:①任何点击/输入/跳转/滚动后,页面可能变了——先看工具返回的元素清单,或用 browser_read/browser_snapshot 核实当前状态,再进行下一步,别凭猜测连续操作。②CSS 选择器只支持标准语法(不存在 :contains/:has-text);按文字点用 browser_click 的 text。③纯查资料/读文档优先用 web_fetch/web_search(更快,不必开浏览器);web_fetch/web_search 一旦拿到能回答问题的内容,就直接回答,不要再多开浏览器重复核实。完成任务后不要再调用工具,直接用一句话回答结果。";
+
+    #[test]
+    #[ignore]
+    fn agent_completes_production_web_tasks() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") { Ok(p) => p, Err(_) => { eprintln!("SKIP: set CHATY_TEST_VLM"); return; } };
+        if crate::browser::chrome_path_pub().is_none() { eprintln!("SKIP: no Chrome"); return; }
+        std::env::set_var("CHATY_BROWSER_HEADLESS", "1");
+
+        let dir = std::env::temp_dir().join(format!("chaty-e2e-site-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shop.html"), shop_html()).unwrap();
+        std::fs::write(dir.join("login.html"), login_html()).unwrap();
+        std::fs::write(dir.join("feed.html"), feed_html()).unwrap();
+        std::fs::write(dir.join("pricing.html"), docs_html()).unwrap();
+        let shop = format!("file://{}/shop.html", dir.display());
+        let login = format!("file://{}/login.html", dir.display());
+        let feed = format!("file://{}/feed.html", dir.display());
+        let pricing = format!("file://{}/pricing.html", dir.display());
+
+        let backend = crate::inference::llama::llama_backend_pub().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
+        let mmproj = find_mmproj(&model_path).expect("mmproj");
+        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let mut reports: Vec<TaskReport> = Vec::new();
+
+        // ── Task 1: shop → product → cart → checkout form → order confirmed ──
+        {
+            let shop2 = shop.clone();
+            let done = move || {
+                crate::browser::eval("(document.title==='Order Confirmed'&&/ORD-/.test(document.body.innerText))?'Y':'N'")
+                    .map(|s| s.contains('Y')).unwrap_or(false)
+            };
+            let task = format!("打开 {shop2},进入商品 Nimbus Pro,把它加入购物车,前往结账,\
+                姓名填 Alice、邮箱填 alice@example.com、收货地址填 1 Rue Nimbus,然后下单(Place order)。");
+            reports.push(drive(&model, backend, &mtmd, n_ctx, nt, &rt, "shop-checkout", SYS, &task, 16, true, &done));
+        }
+
+        // ── Task 2: login with correct creds → read the revealed secret token ──
+        {
+            let done = || {
+                crate::browser::eval("(function(){var s=document.getElementById('secret');return s?s.textContent:'';})()")
+                    .map(|s| s.contains("TOKEN-7Q2X")).unwrap_or(false)
+            };
+            let task = format!("打开 {login},用用户名 admin、密码 nimbus2026 登录,\
+                然后告诉我登录后页面显示的 API 密钥是什么。");
+            reports.push(drive(&model, backend, &mtmd, n_ctx, nt, &rt, "login-secret", SYS, &task, 12, false, &done));
+        }
+
+        // ── Task 3: lazy-load feed — scroll repeatedly until item-30 appears ──
+        {
+            let done = || {
+                crate::browser::eval("document.getElementById('item-30')?'Y':'N'")
+                    .map(|s| s.contains('Y')).unwrap_or(false)
+            };
+            let task = format!("打开 {feed},这是一个懒加载的信息流,一直向下滚动直到出现第 30 条 (item-30),\
+                然后告诉我第 30 条的文字内容。");
+            reports.push(drive(&model, backend, &mtmd, n_ctx, nt, &rt, "lazy-feed", SYS, &task, 14, true, &done));
+        }
+
+        // ── Task 4: research a page — should full-page screenshot FIRST to
+        //    locate the fact, not snapshot+scroll around. Answer is below the
+        //    fold and browser_read has no body text, so vision is required. ──
+        {
+            let done = || false; // content question — judged by final text + tool path
+            let task = format!("打开 {pricing},这是 Nimbus 的定价页面,告诉我 Enterprise(企业版)套餐每月多少钱。");
+            reports.push(drive(&model, backend, &mtmd, n_ctx, nt, &rt, "locate-price", SYS, &task, 8, false, &done));
+        }
+
+        // ── Task 5: pure research — should pick web_fetch, NOT the browser ──
+        let research_online = {
+            let done = || false; // no DOM; judged by final text + tool choice
+            let task = "查一下 https://example.com 这个网页的主标题(H1)是什么,一句话告诉我。".to_string();
+            let r = drive(&model, backend, &mtmd, n_ctx, nt, &rt, "research", SYS, &task, 6, false, &done);
+            // If the fetch itself failed (offline/sandbox), don't hard-fail the suite.
+            let online = !r.final_text.is_empty()
+                && (r.final_text.to_lowercase().contains("example domain")
+                    || r.steps.iter().any(|s| s == "web_fetch"));
+            reports.push(r);
+            online
+        };
+
+        crate::browser::shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // ── Report ──
+        eprintln!("\n================ PRODUCTION WEB-TASK E2E REPORT ================");
+        for r in &reports {
+            eprintln!("[{}] done={} steps={} :: {}", r.name, r.done, r.steps.len(), r.steps.join(" → "));
+            if !r.final_text.is_empty() { eprintln!("    final: {}", r.final_text.chars().take(140).collect::<String>()); }
+            for n in &r.notes { eprintln!("    ⚠ {n}"); }
+            if r.wrongly_blocked { eprintln!("    ✗ a legit exempt tool was wrongly blocked by the breaker!"); }
+        }
+        eprintln!("===============================================================\n");
+
+        // ── Hard assertions on ACTUAL end state (not the model's claim) ──
+        let get = |name: &str| reports.iter().find(|r| r.name == name).unwrap();
+        assert!(get("shop-checkout").done, "shop task: order was NOT actually confirmed in the DOM; steps: {:?}", get("shop-checkout").steps);
+        assert!(get("login-secret").done, "login task: the secret token was NOT actually revealed; steps: {:?}", get("login-secret").steps);
+        assert!(get("login-secret").final_text.to_uppercase().contains("TOKEN-7Q2X"), "login task: model didn't report the token; got: {}", get("login-secret").final_text);
+        assert!(get("lazy-feed").done, "feed task: item-30 was NOT actually reached; steps: {:?}", get("lazy-feed").steps);
+        // No exempt tool may ever be wrongly blocked (regression for scroll ×2).
+        for r in &reports { assert!(!r.wrongly_blocked, "[{}] a scroll/observe tool was wrongly intercepted as a repeat", r.name); }
+        // Locate-on-page: HARD gate = correct answer (999) read off the page.
+        // SOFT check = did it screenshot the whole page FIRST (optimal) instead
+        // of a snapshot+scroll hunt? Surfaced as an efficiency note.
+        let locate = get("locate-price");
+        assert!(locate.final_text.contains("999"), "locate task: expected the Enterprise price 999 in the answer; got: {}", locate.final_text);
+        let first_visual = locate.steps.iter().find(|s| *s == "browser_screenshot" || *s == "browser_snapshot");
+        let scroll_hunt = locate.steps.iter().filter(|s| *s == "browser_snapshot" || *s == "browser_scroll").count();
+        match first_visual.map(|s| s.as_str()) {
+            Some("browser_screenshot") if scroll_hunt == 0 =>
+                eprintln!("✓ locate task took the full-page screenshot first (optimal): {:?}", locate.steps),
+            _ =>
+                eprintln!("⚠ EFFICIENCY: locate task did NOT lead with a full-page screenshot — steps: {:?} (prompt now steers screenshot-first for page research)", locate.steps),
+        }
+
+        // Research: only assert when the fetch actually reached the network.
+        // HARD gate = the answer is correct (real extraction). Tool CHOICE is a
+        // probabilistic model behaviour, so a sub-optimal choice (opening the
+        // browser after web_fetch already answered) is surfaced as an efficiency
+        // WARNING, not a flaky hard failure — the regression suite stays
+        // deterministic while still making the inefficiency visible.
+        let research = get("research");
+        if research_online {
+            assert!(research.final_text.to_lowercase().contains("example domain"), "research task: expected 'Example Domain' in the answer; got: {}", research.final_text);
+            if research.steps.iter().any(|s| s == "browser_navigate") {
+                eprintln!("⚠ EFFICIENCY: research task opened the browser after web_fetch already had the answer — steps: {:?} (prompt now discourages this; watch the trend)", research.steps);
+            } else {
+                eprintln!("✓ research task used web_fetch only (optimal): {:?}", research.steps);
+            }
+        } else {
+            eprintln!("NOTE: research task network unreachable — skipped its assertions.");
+        }
+    }
+}
+
+/// E2E: the decode loop must emit `Prefill` progress events for a LONG prompt
+/// (several batches — drives the Code-mode progress ring), monotonically up to
+/// 100% — and must NOT emit them when the KV prefix cache leaves only a short
+/// tail to decode (no ring flash on fast steps).
+///
+///   CHATY_TEST_MODEL=/path/model.gguf cargo test -p chaty prefill_progress -- --ignored --nocapture
+#[cfg(test)]
+mod prefill_progress_e2e {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct AllEvents {
+        evs: RefCell<Vec<StreamEvent>>,
+    }
+    impl EventSink for AllEvents {
+        fn emit(&self, ev: StreamEvent) -> Result<()> {
+            self.evs.borrow_mut().push(ev);
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn prefill_progress_long_yes_short_no() {
+        let model_path = match std::env::var("CHATY_TEST_MODEL")
+            .or_else(|_| std::env::var("CHATY_TEST_VLM"))
+        {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_MODEL (or CHATY_TEST_VLM)");
+                return;
+            }
+        };
+        let backend = llama_backend_pub().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut media_cache: Option<MediaCache> = None;
+        let cancel = AtomicBool::new(false);
+
+        // ── Turn 1: ~several-thousand-token prompt → multiple decode batches ──
+        let filler = "这是一段用来撑长提示词的资料文本,内容本身不重要。".repeat(120);
+        let mut messages = vec![ChatMessage {
+            images: Vec::new(),
+            role: Role::User,
+            content: format!("{filler}\n读完以上资料,回答:一加一等于几?只答数字。\n/no_think"),
+        }];
+        let req = GenRequest {
+            messages: messages.clone(),
+            params: GenParams { temperature: 0.0, max_tokens: 8, think: Some(false), ..Default::default() },
+        };
+        let sink = AllEvents { evs: RefCell::new(Vec::new()) };
+        run_turn(&model, &mut ctx, &mut cached, None, &mut media_cache, n_ctx, &req, &sink, &cancel)
+            .expect("run_turn long");
+        let evs = sink.evs.into_inner();
+        let reply: String = evs
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::Token { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let prefills: Vec<(u32, u32)> = evs
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::Prefill { processed, total } => Some((*processed, *total)),
+                _ => None,
+            })
+            .collect();
+        eprintln!(
+            "long turn: {} prefill events, first {:?}, last {:?}, reply {:?}",
+            prefills.len(),
+            prefills.first(),
+            prefills.last(),
+            reply.trim().chars().take(40).collect::<String>()
+        );
+        assert!(prefills.len() >= 3, "long prompt must emit several progress events, got {prefills:?}");
+        let total = prefills[0].1;
+        assert!(total > 1000, "the test prompt should be well over a batch, total={total}");
+        assert!(prefills.iter().all(|(_, t)| *t == total), "total must be stable");
+        assert!(prefills.windows(2).all(|w| w[0].0 <= w[1].0), "progress must be monotonic: {prefills:?}");
+        assert_eq!(prefills.last().unwrap().0, total, "progress must end at 100%");
+
+        // ── Turn 2: append a short exchange → KV prefix reuse leaves a tiny
+        //    tail (< one batch) → NO prefill events (the ring must not flash) ──
+        messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: reply });
+        messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: "再答一次,只答数字。\n/no_think".into() });
+        let req2 = GenRequest {
+            messages,
+            params: GenParams { temperature: 0.0, max_tokens: 8, think: Some(false), ..Default::default() },
+        };
+        let sink2 = AllEvents { evs: RefCell::new(Vec::new()) };
+        run_turn(&model, &mut ctx, &mut cached, None, &mut media_cache, n_ctx, &req2, &sink2, &cancel)
+            .expect("run_turn short");
+        let prefills2: Vec<(u32, u32)> = sink2
+            .evs
+            .into_inner()
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::Prefill { processed, total } => Some((*processed, *total)),
+                _ => None,
+            })
+            .collect();
+        eprintln!("short incremental turn: {} prefill events (want 0)", prefills2.len());
+        assert!(prefills2.is_empty(), "a short cached-prefix tail must not emit progress: {prefills2:?}");
     }
 }

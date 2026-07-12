@@ -27,6 +27,9 @@ const MODEL = {
   quant: "Q4_K_P",
   supportsThinking: true,
   thinkSwitch: false,
+  multimodal: true,
+  visionReady: true,
+  mmproj: "/models/Qwen3.6-35B-A3B/mmproj-F16.gguf",
 };
 
 const CONVERSATIONS = [
@@ -76,7 +79,7 @@ $$\\text{borrows}(t) \\in \\{\\,(n, 0) : n \\ge 0\\,\\} \\cup \\{(0, 1)\\}$$
 
 If you want to go deeper, start with \`std::mem::drop\` and the NLL RFC.`,
   },
-  { id: "m3", role: "user", content: "Nice. So what does 'static actually mean?" },
+  { id: "m3", role: "user", content: "Nice. So what does 'static actually mean?", images: ["/Users/demo/Pictures/whiteboard.png"] },
   {
     id: "m4",
     role: "assistant",
@@ -169,8 +172,10 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return [
         { name: MODEL.name, path: MODEL.path, sizeMb: MODEL.sizeMb },
         { name: "chaty-qwen3.5-4b-design-v3-Q4_K_M.gguf", path: "/models/chaty-4b.gguf", sizeMb: 2600 },
-        { name: "Gemma-4-E4B-Q8.gguf", path: "/models/gemma4.gguf", sizeMb: 4900 },
+        { name: "Gemma-4-E4B-Q8.gguf", path: "/models/gemma4.gguf", sizeMb: 4900, mmproj: "/models/gemma4/mmproj-F16.gguf" },
       ];
+    case "image_thumb":
+      return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='220'><defs><linearGradient id='s' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%23aee3f5'/><stop offset='1' stop-color='%23e8f6dd'/></linearGradient></defs><rect width='320' height='220' fill='url(%23s)'/><circle cx='250' cy='58' r='26' fill='%23ffd66e'/><path d='M0 160 L90 92 L150 150 L210 105 L320 175 L320 220 L0 220 Z' fill='%236fae7a'/><path d='M0 190 L70 140 L160 195 L320 150 L320 220 L0 220 Z' fill='%23477a54'/></svg>";
     case "get_hardware_info":
       return { cpu: "Apple M4 Pro (14 核)", cpuThreads: 14, ramMb: 49152, gpuBackend: "Metal", gpu: { name: "Apple M4 Pro", vramMb: 40200 } };
     case "get_gpu_usage":
@@ -265,11 +270,36 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "agent_list_files":
       return ["src/parser.ts", "src/index.ts", "src/parser.test.ts", "package.json", "README.md"];
 
+    // ---- generation: a long prefill (progress ring 0→100%) then a short
+    // streamed answer, so chat/Code streaming UI is testable in the browser ----
+    case "generate": {
+      const ch = args?.onEvent as { onmessage?: (ev: unknown) => void } | undefined;
+      const emit = (ev: unknown) => ch?.onmessage?.(ev);
+      const total = 6144;
+      const reply = "收到。这是浏览器预览的模拟输出 — the mock stream after a simulated prompt-processing phase.";
+      return (async () => {
+        emit({ type: "started" });
+        for (let done = 0; done <= total; done += 512) {
+          emit({ type: "prefill", processed: Math.min(done, total), total });
+          await new Promise((r) => setTimeout(r, 140));
+        }
+        for (const piece of reply.match(/.{1,6}/g) ?? []) {
+          emit({ type: "token", text: piece });
+          await new Promise((r) => setTimeout(r, 30));
+        }
+        emit({
+          type: "done",
+          stats: { promptTokens: total, completionTokens: 64, tokensPerSecond: 42.5, stopReason: "eos" },
+        });
+      })();
+    }
+
     // ---- misc ----
     case "set_tray_language":
     case "open_data_dir":
     case "open_models_dir":
     case "open_external":
+    case "browser_set_headless":
       return null;
     case "cancel_generation":
     case "cancel_download":

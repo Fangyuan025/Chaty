@@ -28,6 +28,10 @@ pub enum Role {
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
+    /// Image attachments (absolute file paths) for vision models. Ignored —
+    /// and expected empty — when the loaded model has no mmproj.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 /// Sampling / decoding parameters. Sensible defaults so the UI can omit them.
@@ -83,6 +87,10 @@ pub struct GenRequest {
 pub enum StreamEvent {
     /// Generation accepted; prompt is being processed.
     Started,
+    /// Prompt-processing progress: `processed` of `total` prompt tokens are in
+    /// the KV cache. Only emitted for prefills long enough to be worth a
+    /// progress ring (more than one decode batch of new tokens).
+    Prefill { processed: u32, total: u32 },
     /// One decoded piece of text (not necessarily a whole token).
     Token { text: String },
     /// Generation finished cleanly.
@@ -142,6 +150,12 @@ pub struct ModelInfo {
     pub supports_tools: bool,
     /// Best-effort: the model appears to be multimodal (vision).
     pub multimodal: bool,
+    /// The vision encoder (mmproj) is loaded — the model can actually see
+    /// images this session. `multimodal && !vision_ready` means "the model
+    /// could do vision, but its mmproj GGUF is missing next to the weights".
+    pub vision_ready: bool,
+    /// Path of the paired mmproj GGUF, when one was found.
+    pub mmproj: Option<String>,
     /// Non-fatal load warning code for the UI (e.g. "gpu-oom" when the GPU
     /// offload had to be reduced to fit memory). `None` on a clean load.
     pub warning: Option<String>,
@@ -164,4 +178,14 @@ pub trait InferenceBackend: Send + Sync {
         sink: Channel<StreamEvent>,
         cancel: Arc<AtomicBool>,
     ) -> anyhow::Result<()>;
+
+    /// One-shot, non-streaming generation returning the full text. Powers
+    /// vision analysis (Code mode / KB / Canvas). Default: unsupported.
+    async fn generate_collect(
+        &self,
+        _req: GenRequest,
+        _cancel: Arc<AtomicBool>,
+    ) -> anyhow::Result<String> {
+        anyhow::bail!("this backend does not support one-shot generation")
+    }
 }

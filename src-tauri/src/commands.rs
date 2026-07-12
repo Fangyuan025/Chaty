@@ -34,6 +34,28 @@ pub async fn load_model(
     n_ctx: Option<u32>,
     on_progress: Channel<LoadProgress>,
 ) -> Result<ModelInfo, String> {
+    // Stored paths from before the folder-layout migration point at
+    // `models/Foo.gguf`; the file now lives at `models/Foo/Foo.gguf`. Follow
+    // it transparently — the returned ModelInfo carries the new path, which
+    // the frontend persists, so this heals itself after one load.
+    let path = {
+        let p = std::path::Path::new(&path);
+        if p.exists() {
+            path
+        } else {
+            match (p.parent(), p.file_stem(), p.file_name()) {
+                (Some(dir), Some(stem), Some(name)) => {
+                    let migrated = dir.join(stem).join(name);
+                    if migrated.exists() {
+                        migrated.to_string_lossy().to_string()
+                    } else {
+                        path
+                    }
+                }
+                _ => path,
+            }
+        }
+    };
     let _ = on_progress.send(LoadProgress { phase: "eject", frac: 0.0 });
 
     // Eject the old model SYNCHRONOUSLY before loading the new one. Merely
@@ -231,6 +253,9 @@ pub struct ModelEntry {
     pub path: String,
     /// On-disk size in MiB (for display + a hint at delete time).
     pub size_mb: Option<u64>,
+    /// Paired vision encoder (mmproj) path — present for folder-layout vision
+    /// models, so the picker can badge them before loading.
+    pub mmproj: Option<String>,
 }
 
 /// Directories scanned for `.gguf` files: a `models/` folder next to the
@@ -249,6 +274,185 @@ fn model_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
         dirs.push(res.join("models"));
     }
     dirs
+}
+
+/// One-time layout migration: every loose `*.gguf` sitting directly in a
+/// models root moves into its own folder (`models/Foo.gguf` →
+/// `models/Foo/Foo.gguf`). The folder layout is the only one `list_models`
+/// recognizes — one folder per model, with an optional `mmproj*.gguf` beside
+/// the weights for vision models. Best-effort and idempotent; a same-volume
+/// rename is instant even for 20 GB files.
+pub fn migrate_models_layout(app: &tauri::AppHandle) {
+    for dir in model_dirs(app) {
+        migrate_models_dir(&dir);
+    }
+}
+
+/// Loose MAIN model files sitting directly in a models root — the pre-folder
+/// layout that `list_models` no longer shows. mmproj-only leftovers don't
+/// count: they were never listed as models, so there's nothing user-visible
+/// to organize.
+fn loose_main_ggufs(dir: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    rd.flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension().map_or(false, |x| x.eq_ignore_ascii_case("gguf"))
+                && !p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map_or(false, |n| n.to_lowercase().contains("mmproj"))
+        })
+        .collect()
+}
+
+/// Startup entry point for the models-folder migration.
+///
+/// Normal operation is unchanged: loose GGUFs are silently organized into the
+/// folder layout on every launch (drop-in convenience). The ONE addition is a
+/// friendly heads-up for users updating from an old version: on the FIRST
+/// launch of a build that has this feature, if models are still sitting loose
+/// in a models root, ask once with a native dialog and organize on click.
+///
+/// A marker file in app-data (survives updates) makes it strictly one-time.
+/// Fresh installs and users with no loose files never see the dialog — the
+/// marker is written silently on their first launch, and silent migration
+/// takes over from then on.
+pub fn migrate_or_prompt_models(app: &tauri::AppHandle) {
+    let marker = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("models-migrate-prompted"));
+
+    // Already past the one-time gate (or no app-data dir) → keep the existing
+    // silent behavior.
+    if marker.as_ref().map_or(true, |m| m.exists()) {
+        migrate_models_layout(app);
+        return;
+    }
+    let marker = marker.unwrap();
+
+    let loose: usize = model_dirs(app).iter().map(|d| loose_main_ggufs(d).len()).sum();
+    // Record that this build has done its one-time check, whatever happens next
+    // (so a later drop-in on a fresh install never triggers the update dialog).
+    let _ = std::fs::write(&marker, "1");
+
+    if loose == 0 {
+        // Fresh install / already organized — no dialog, just the usual silent
+        // pass (also pairs any stray mmproj).
+        migrate_models_layout(app);
+        return;
+    }
+
+    prompt_models_migration(app, loose);
+}
+
+/// Show the one-time native dialog and organize loose models on confirmation.
+fn prompt_models_migration(app: &tauri::AppHandle, n: usize) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+
+    let title = "整理模型文件 (Organize models)";
+    let msg = format!(
+        "检测到 {n} 个旧版本散放的模型文件。新版本按「一个模型一个文件夹」管理 —— 点击「立即整理」自动归位（只移动文件位置，不删除任何内容，20GB 大模型也是秒级完成）。\n选择「以后再说」则暂不整理。\n\nFound {n} loose model file(s) from an older version. This version keeps one folder per model — click Organize to move them into place (files are only relocated, never deleted; instant even for 20 GB models). Or choose Later to skip for now."
+    );
+    let handle = app.clone();
+    app.dialog()
+        .message(msg)
+        .title(title)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "立即整理 (Organize)".into(),
+            "以后再说 (Later)".into(),
+        ))
+        .show(move |organize| {
+            if !organize {
+                return;
+            }
+            migrate_models_layout(&handle);
+            handle
+                .dialog()
+                .message(format!(
+                    "已整理好 {n} 个模型，现在可以在模型列表里直接选用。\nOrganized {n} model(s) — they now appear in the model list."
+                ))
+                .title(title)
+                .show(|_| {});
+        });
+}
+
+fn migrate_models_dir(dir: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    let is_gguf =
+        |p: &PathBuf| p.extension().map_or(false, |x| x.eq_ignore_ascii_case("gguf"));
+    let is_mmproj = |p: &PathBuf| {
+        p.file_name()
+            .and_then(|s| s.to_str())
+            .map_or(false, |n| n.to_lowercase().contains("mmproj"))
+    };
+
+    // Pass 1: loose main GGUFs → their own folders.
+    for p in &entries {
+        if !p.is_file() || !is_gguf(p) || is_mmproj(p) {
+            continue;
+        }
+        let (Some(stem), Some(name)) = (p.file_stem().and_then(|s| s.to_str()), p.file_name())
+        else {
+            continue;
+        };
+        let dest = dir.join(stem).join(name);
+        if dest.exists() {
+            eprintln!(
+                "models migration: {} already exists; leaving {} in place",
+                dest.display(),
+                p.display()
+            );
+            continue;
+        }
+        if std::fs::create_dir_all(dir.join(stem)).is_err() {
+            continue; // read-only dir (install/resource) — nothing to do
+        }
+        match std::fs::rename(p, &dest) {
+            Ok(()) => eprintln!("models migration: {} -> {}", p.display(), dest.display()),
+            Err(e) => eprintln!("models migration failed for {}: {e}", p.display()),
+        }
+    }
+
+    // Pass 2: a loose mmproj joins the single name-affine model folder, if
+    // exactly one matches. Ambiguous or unmatched ones stay in the root
+    // (harmless — mmproj files are never listed as models).
+    for p in &entries {
+        if !p.is_file() || !is_gguf(p) || !is_mmproj(p) {
+            continue;
+        }
+        let Some(name) = p.file_name().and_then(|s| s.to_str()) else { continue };
+        let lower = name.to_lowercase();
+        let mut hits: Vec<PathBuf> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for f in rd.flatten() {
+                let fp = f.path();
+                let Some(fstem) = fp.file_name().and_then(|s| s.to_str()) else { continue };
+                if !fp.is_dir() {
+                    continue;
+                }
+                let token = fstem
+                    .to_lowercase()
+                    .split(['-', '_', '.'])
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                if token.len() >= 3 && lower.contains(&token) {
+                    hits.push(fp);
+                }
+            }
+        }
+        if let [folder] = hits.as_slice() {
+            let dest = folder.join(name);
+            if !dest.exists() && std::fs::rename(p, &dest).is_ok() {
+                eprintln!("models migration: {} -> {}", p.display(), dest.display());
+            }
+        }
+    }
 }
 
 /// Make sure at least one `models/` folder exists so users have a place to
@@ -395,28 +599,62 @@ pub fn open_html_report(
 pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
+    // A GGUF whose name mentions "mmproj" is a vision encoder, not a chat
+    // model — paired via `find_mmproj`, never listed as its own entry.
+    let is_mmproj = |p: &PathBuf| {
+        p.file_name()
+            .and_then(|s| s.to_str())
+            .map_or(false, |n| n.to_lowercase().contains("mmproj"))
+    };
+    let push = |path: PathBuf, out: &mut Vec<ModelEntry>, seen: &mut HashSet<PathBuf>| {
+        if !path
+            .extension()
+            .map_or(false, |x| x.eq_ignore_ascii_case("gguf"))
+            || is_mmproj(&path)
+        {
+            return;
+        }
+        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if seen.insert(canon) {
+            let name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let mmproj = crate::inference::llama::find_mmproj(&path.to_string_lossy())
+                .map(|p| p.to_string_lossy().to_string());
+            // Honest on-disk footprint: weights + paired vision encoder.
+            let size_mb = std::fs::metadata(&path).ok().map(|m| {
+                let extra = mmproj
+                    .as_deref()
+                    .and_then(|p| std::fs::metadata(p).ok())
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                (m.len() + extra) / (1024 * 1024)
+            });
+            out.push(ModelEntry {
+                name,
+                path: path.to_string_lossy().to_string(),
+                size_mb,
+                mmproj,
+            });
+        }
+    };
+    // Folder layout ONLY: models/<Name>/{model.gguf[, mmproj-*.gguf]} — one
+    // folder per model. Loose GGUFs directly in a models root are migrated
+    // into folders at startup (`migrate_models_layout`) and are deliberately
+    // not listed, so the picker always reflects the canonical layout.
     for dir in model_dirs(&app) {
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in rd.flatten() {
             let path = entry.path();
-            if path
-                .extension()
-                .map_or(false, |x| x.eq_ignore_ascii_case("gguf"))
-            {
-                let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
-                if seen.insert(canon) {
-                    let name = path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    let size_mb = std::fs::metadata(&path).ok().map(|m| m.len() / (1024 * 1024));
-                    out.push(ModelEntry {
-                        name,
-                        path: path.to_string_lossy().to_string(),
-                        size_mb,
-                    });
+            if !path.is_dir() {
+                continue;
+            }
+            if let Ok(sub) = std::fs::read_dir(&path) {
+                for e in sub.flatten() {
+                    push(e.path(), &mut out, &mut seen);
                 }
             }
         }
@@ -465,8 +703,101 @@ pub async fn delete_model_file(
             );
         }
     }
-    std::fs::remove_file(&canon).map_err(|e| format!("删除失败 (delete failed): {e}"))?;
+    // Folder-layout vision models live in a dedicated subfolder together with
+    // their mmproj — deleting the model removes the whole folder. A model
+    // sitting directly in a models root is deleted alone (plus its paired
+    // mmproj when nothing else would use it).
+    let parent = canon.parent().map(PathBuf::from);
+    let parent_is_models_root = parent.as_ref().map_or(true, |p| {
+        model_dirs(&app)
+            .iter()
+            .any(|d| d.canonicalize().map_or(false, |dc| dc == *p))
+    });
+    if parent_is_models_root {
+        let mmproj = crate::inference::llama::find_mmproj(&canon.to_string_lossy());
+        std::fs::remove_file(&canon).map_err(|e| format!("删除失败 (delete failed): {e}"))?;
+        // Remove a flat-dir mmproj orphaned by this delete (it only paired
+        // because this was the folder's single main model).
+        if let Some(p) = mmproj {
+            if p.parent() == canon.parent() {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    } else {
+        let dir = parent.expect("non-root parent");
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("删除失败 (delete failed): {e}"))?;
+    }
     Ok(())
+}
+
+/// Copy a file from `src` to `dest` (used by "save screenshot to local…").
+/// `dest` comes from the native save dialog, so it's a user-chosen location.
+#[tauri::command]
+pub async fn save_file(src: String, dest: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || std::fs::copy(&src, &dest).map(|_| ()))
+        .await
+        .map_err(|e| format!("保存任务异常 (save task failed): {e}"))?
+        .map_err(|e| format!("保存失败 (save failed): {e}"))
+}
+
+/// Full-resolution image as a data URL (no downscaling) — for the crisp
+/// screenshot preview modal. Only re-encodes if the file is huge.
+#[tauri::command]
+pub async fn image_data_url(path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(&path).map_err(|e| format!("读取失败 (read failed): {e}"))?;
+        use base64::Engine as _;
+        let lower = path.to_lowercase();
+        // Serve PNG/JPEG/etc. verbatim so the preview is pixel-exact; downscale
+        // only if the file is very large (> ~12 MB).
+        if bytes.len() <= 12 * 1024 * 1024 {
+            let mime = if lower.ends_with(".png") {
+                "image/png"
+            } else if lower.ends_with(".webp") {
+                "image/webp"
+            } else if lower.ends_with(".gif") {
+                "image/gif"
+            } else {
+                "image/jpeg"
+            };
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            return Ok(format!("data:{mime};base64,{b64}"));
+        }
+        let img = image::load_from_memory(&bytes).map_err(|e| format!("解码失败 (decode failed): {e}"))?;
+        let scaled = img.thumbnail(2400, 2400);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        scaled
+            .to_rgb8()
+            .write_to(&mut buf, image::ImageFormat::Jpeg)
+            .map_err(|e| format!("编码失败 (encode failed): {e}"))?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
+        Ok(format!("data:image/jpeg;base64,{b64}"))
+    })
+    .await
+    .map_err(|e| format!("图片任务异常 (image task failed): {e}"))?
+}
+
+/// Downscaled data-URL thumbnail of a local image, for chat-bubble previews.
+/// (WKWebView can't load arbitrary file paths without the asset protocol; a
+/// small JPEG data URL sidesteps that and keeps the DOM light.)
+#[tauri::command]
+pub async fn image_thumb(path: String, max_dim: Option<u32>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let img = image::open(&path).map_err(|e| format!("无法读取图片 (failed to read image): {e}"))?;
+        let max = max_dim.unwrap_or(512).clamp(64, 1024);
+        let thumb = img.thumbnail(max, max);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        // JPEG keeps photo thumbnails tiny; alpha is dropped (fine for previews).
+        thumb
+            .to_rgb8()
+            .write_to(&mut buf, image::ImageFormat::Jpeg)
+            .map_err(|e| format!("缩略图编码失败 (thumbnail encode failed): {e}"))?;
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
+        Ok(format!("data:image/jpeg;base64,{b64}"))
+    })
+    .await
+    .map_err(|e| format!("缩略图任务异常 (thumbnail task failed): {e}"))?
 }
 
 /// Rebuild the system-tray menu in the given UI language (`"zh"` | `"en"`).
@@ -523,6 +854,78 @@ pub async fn generate(
 #[tauri::command]
 pub fn cancel_generation(state: State<'_, AppState>) {
     state.cancel.store(true, Ordering::SeqCst);
+}
+
+/// One-shot vision analysis: run the loaded vision model on `images` + `prompt`
+/// and return the full text (no streaming). Shared by Code mode (view_image /
+/// browser screenshots), the knowledge base (image captions) and Canvas
+/// (screenshot review). Errors clearly when the active model can't see images.
+#[tauri::command]
+pub async fn vision_query(
+    state: State<'_, AppState>,
+    images: Vec<String>,
+    prompt: String,
+    max_tokens: Option<u32>,
+) -> Result<String, String> {
+    let vision_ready = state
+        .model
+        .read()
+        .await
+        .as_ref()
+        .map(|m| m.vision_ready)
+        .unwrap_or(false);
+    if !vision_ready {
+        return Err(
+            "当前模型不支持图像识别（未加载视觉编码器 mmproj）。(The active model can't see images — no vision encoder loaded.)"
+                .into(),
+        );
+    }
+    let Some(backend) = state.backend().await else {
+        return Err("尚未加载模型 (no model loaded)".into());
+    };
+    for p in &images {
+        if !std::path::Path::new(p).exists() {
+            return Err(format!("图片不存在 (image not found): {p}"));
+        }
+    }
+    state.cancel.store(false, Ordering::SeqCst);
+    let req = crate::inference::GenRequest {
+        messages: vec![crate::inference::ChatMessage {
+            role: crate::inference::Role::User,
+            content: prompt,
+            images,
+        }],
+        params: crate::inference::GenParams {
+            temperature: 0.3,
+            max_tokens: max_tokens.unwrap_or(640),
+            think: Some(false),
+            ..Default::default()
+        },
+    };
+    let text = backend
+        .generate_collect(req, state.cancel.clone())
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    // These callers want the answer, not any stray reasoning block.
+    Ok(strip_think_blocks(&text).trim().to_string())
+}
+
+/// Remove `<think>…</think>` spans (and a dangling opener) from model output.
+pub fn strip_think_blocks(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("<think>") {
+        out.push_str(&rest[..i]);
+        match rest[i..].find("</think>") {
+            Some(j) => rest = &rest[i + j + "</think>".len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 // ---------- Voice (STT / TTS via sherpa-onnx, CPU) ----------
@@ -583,4 +986,85 @@ pub async fn synthesize(
     }
     let audio = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(SynthAudio { audio, sample_rate })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{loose_main_ggufs, migrate_models_dir};
+    use std::path::PathBuf;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("chaty-migrate-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+    fn mk(dir: &PathBuf, name: &str) {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+
+    #[test]
+    fn migrates_loose_ggufs_into_folders() {
+        let d = tmp("loose");
+        mk(&d, "Qwen-7B-Chat.Q4_K_M.gguf");
+        mk(&d, "notes.txt"); // non-gguf untouched
+        mk(&d, "download.gguf.part"); // partial download untouched
+        migrate_models_dir(&d);
+        assert!(d.join("Qwen-7B-Chat.Q4_K_M/Qwen-7B-Chat.Q4_K_M.gguf").is_file());
+        assert!(!d.join("Qwen-7B-Chat.Q4_K_M.gguf").exists());
+        assert!(d.join("notes.txt").is_file());
+        assert!(d.join("download.gguf.part").is_file());
+        // idempotent: a second run changes nothing
+        migrate_models_dir(&d);
+        assert!(d.join("Qwen-7B-Chat.Q4_K_M/Qwen-7B-Chat.Q4_K_M.gguf").is_file());
+    }
+
+    #[test]
+    fn loose_main_ggufs_counts_only_loose_main_files() {
+        let d = tmp("loose-count");
+        mk(&d, "Qwen-7B.Q4_K_M.gguf"); // loose main → counts
+        mk(&d, "Gemma-4-E4B.gguf"); // loose main → counts
+        mk(&d, "mmproj-Gemma-4-E4B.gguf"); // mmproj → never counts
+        mk(&d, "readme.txt"); // non-gguf → never counts
+        std::fs::create_dir_all(d.join("Already-Organized")).unwrap();
+        std::fs::write(d.join("Already-Organized/model.gguf"), b"x").unwrap(); // in a folder → not loose
+        assert_eq!(loose_main_ggufs(&d).len(), 2);
+        // After migration nothing is loose → the dialog would not fire.
+        migrate_models_dir(&d);
+        assert_eq!(loose_main_ggufs(&d).len(), 0);
+    }
+
+    #[test]
+    fn loose_mmproj_joins_unique_affine_folder() {
+        let d = tmp("mmproj");
+        mk(&d, "SmolVLM-500M-Instruct-Q8_0.gguf");
+        mk(&d, "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf");
+        migrate_models_dir(&d);
+        let folder = d.join("SmolVLM-500M-Instruct-Q8_0");
+        assert!(folder.join("SmolVLM-500M-Instruct-Q8_0.gguf").is_file());
+        assert!(
+            folder.join("mmproj-SmolVLM-500M-Instruct-Q8_0.gguf").is_file(),
+            "affine mmproj should join the model's folder"
+        );
+    }
+
+    #[test]
+    fn unmatched_mmproj_stays_in_root() {
+        let d = tmp("orphan");
+        mk(&d, "SomeModel-Q4.gguf");
+        mk(&d, "mmproj-F16.gguf"); // no shared stem token
+        migrate_models_dir(&d);
+        assert!(d.join("mmproj-F16.gguf").is_file(), "unmatched mmproj must not move");
+    }
+
+    #[test]
+    fn collision_leaves_source_in_place() {
+        let d = tmp("collide");
+        std::fs::create_dir_all(d.join("model")).unwrap();
+        std::fs::write(d.join("model/model.gguf"), b"existing").unwrap();
+        std::fs::write(d.join("model.gguf"), b"loose").unwrap();
+        migrate_models_dir(&d);
+        assert_eq!(std::fs::read(d.join("model/model.gguf")).unwrap(), b"existing");
+        assert!(d.join("model.gguf").is_file(), "loose file must survive a collision");
+    }
 }

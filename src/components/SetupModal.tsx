@@ -7,8 +7,12 @@ import {
   downloadModel,
   DOWNLOAD_CANCELLED,
   getHardwareInfo,
+  isMmprojFile,
   listHfGgufs,
+  modelFolderFor,
+  pickMmproj,
   type DownloadProgress,
+  type HfFile,
 } from "../lib/ipc";
 
 /** One hardware-fitted recommendation (a model family at a size + quant). */
@@ -21,6 +25,8 @@ interface Pick {
   repos: string[];
   blurbZh: string;
   blurbEn: string;
+  /** The repos ship an mmproj — the download pairs it and the model sees images. */
+  vision?: boolean;
 }
 
 /**
@@ -50,6 +56,7 @@ function recommend(budgetGb: number): Pick[] {
       {
         family: "Qwen3.5",
         label: "Qwen3.5 35B-A3B",
+        vision: true,
         quant: "Q4_K_M",
         approxGb: 21,
         repos: [
@@ -63,6 +70,7 @@ function recommend(budgetGb: number): Pick[] {
       {
         family: "Gemma 4",
         label: "Gemma 4 26B-A4B",
+        vision: true,
         quant: "Q4_K_M",
         approxGb: 16,
         repos: [
@@ -81,6 +89,7 @@ function recommend(budgetGb: number): Pick[] {
       {
         family: "Qwen3.5",
         label: "Qwen3.5 9B",
+        vision: true,
         quant: "Q5_K_M",
         approxGb: 6.5,
         repos: ["unsloth/Qwen3.5-9B-GGUF", "Qwen/Qwen3.5-9B-GGUF"],
@@ -90,6 +99,7 @@ function recommend(budgetGb: number): Pick[] {
       {
         family: "Gemma 4",
         label: "Gemma 4 E4B",
+        vision: true,
         quant: "Q5_K_M",
         approxGb: 6,
         repos: ["unsloth/gemma-4-E4B-it-GGUF", "bartowski/google_gemma-4-E4B-it-GGUF"],
@@ -104,6 +114,7 @@ function recommend(budgetGb: number): Pick[] {
       {
         family: "Qwen3.5",
         label: "Qwen3.5 9B",
+        vision: true,
         quant: "Q4_K_M",
         approxGb: 5.5,
         repos: ["unsloth/Qwen3.5-9B-GGUF", "Qwen/Qwen3.5-9B-GGUF"],
@@ -113,6 +124,7 @@ function recommend(budgetGb: number): Pick[] {
       {
         family: "Gemma 4",
         label: "Gemma 4 E4B",
+        vision: true,
         quant: "Q4_K_M",
         approxGb: 5,
         repos: ["unsloth/gemma-4-E4B-it-GGUF", "bartowski/google_gemma-4-E4B-it-GGUF"],
@@ -126,6 +138,7 @@ function recommend(budgetGb: number): Pick[] {
     {
       family: "Qwen3.5",
       label: "Qwen3.5 4B",
+        vision: true,
       quant: "Q4_K_M",
       approxGb: 2.7,
       repos: ["unsloth/Qwen3.5-4B-GGUF", "Qwen/Qwen3.5-4B-GGUF"],
@@ -135,6 +148,7 @@ function recommend(budgetGb: number): Pick[] {
     {
       family: "Gemma 4",
       label: "Gemma 4 E2B",
+        vision: true,
       quant: "Q4_K_M",
       approxGb: 3,
       repos: ["unsloth/gemma-4-E2B-it-GGUF", "bartowski/google_gemma-4-E2B-it-GGUF"],
@@ -192,18 +206,24 @@ export function SetupModal({
   async function download(p: Pick) {
     setCard(p.label, { kind: "resolving" });
     try {
-      // Resolve: first candidate repo that lists GGUFs wins.
-      let chosen: { name: string; url: string } | null = null;
+      // Resolve: first candidate repo that lists GGUFs wins. Keep the repo's
+      // file list around — it also tells us whether an mmproj ships with it.
+      let chosen: HfFile | null = null;
+      let chosenRepo = "";
+      let repoFiles: HfFile[] = [];
       let lastErr = "";
       for (const repo of p.repos) {
         try {
-          const files = (await listHfGgufs(repo)).filter(
-            (f) => !/-\d{5}-of-/.test(f.name), // skip multi-part shards
+          const all = await listHfGgufs(repo);
+          const mains = all.filter(
+            (f) => !/-\d{5}-of-/.test(f.name) && !isMmprojFile(f.name), // skip shards + encoders
           );
           for (const q of [p.quant, ...QUANT_FALLBACK]) {
-            const hit = files.find((f) => f.name.toUpperCase().includes(q));
+            const hit = mains.find((f) => f.name.toUpperCase().includes(q));
             if (hit) {
               chosen = hit;
+              chosenRepo = repo;
+              repoFiles = all;
               break;
             }
           }
@@ -219,23 +239,40 @@ export function SetupModal({
         });
         return;
       }
-      const file = chosen.name;
-      etaStores.current[p.label] = [];
-      setCard(p.label, { kind: "downloading", pct: 0, file, eta: null });
-      await downloadModel(chosen.url, file, (ev: DownloadProgress) => {
-        if (ev.type === "progress" && ev.total > 0) {
-          setCard(p.label, {
-            kind: "downloading",
-            pct: Math.round((ev.downloaded / ev.total) * 100),
+      // Folder layout always: main GGUF (+ mmproj, when the repo ships one)
+      // lands in models/<Name>/.
+      const mmproj = pickMmproj(repoFiles);
+      const subdir = modelFolderFor(chosenRepo);
+      let mainPath = "";
+      const fetchOne = async (f: HfFile, keepPath: boolean) => {
+        const file = f.name;
+        etaStores.current[p.label] = [];
+        setCard(p.label, { kind: "downloading", pct: 0, file, eta: null });
+        await new Promise<void>((resolve, reject) => {
+          downloadModel(
+            f.url,
             file,
-            eta: etaSeconds((etaStores.current[p.label] ??= []), ev.downloaded, ev.total),
-          });
-        } else if (ev.type === "done") {
-          setCard(p.label, { kind: "done", path: ev.path });
-        } else if (ev.type === "error" && ev.message !== DOWNLOAD_CANCELLED) {
-          setCard(p.label, { kind: "error", message: ev.message });
-        }
-      });
+            (ev: DownloadProgress) => {
+              if (ev.type === "progress" && ev.total > 0) {
+                setCard(p.label, {
+                  kind: "downloading",
+                  pct: Math.round((ev.downloaded / ev.total) * 100),
+                  file,
+                  eta: etaSeconds((etaStores.current[p.label] ??= []), ev.downloaded, ev.total),
+                });
+              } else if (ev.type === "done") {
+                if (keepPath) mainPath = ev.path;
+              } else if (ev.type === "error" && ev.message !== DOWNLOAD_CANCELLED) {
+                setCard(p.label, { kind: "error", message: ev.message });
+              }
+            },
+            subdir,
+          ).then(resolve, reject);
+        });
+      };
+      await fetchOne(chosen, true);
+      if (mmproj) await fetchOne(mmproj, false);
+      if (mainPath) setCard(p.label, { kind: "done", path: mainPath });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setCard(
@@ -267,7 +304,10 @@ export function SetupModal({
             return (
               <div key={p.label} className="setup-card">
                 <div className="setup-card-family">{p.family}</div>
-                <div className="setup-card-name">{p.label}</div>
+                <div className="setup-card-name">
+                  {p.label}
+                  {p.vision && <span className="setup-card-vision">{t("setupVision")}</span>}
+                </div>
                 <div className="setup-card-meta">
                   {p.quant} · ≈{p.approxGb} GB
                 </div>

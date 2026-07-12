@@ -674,6 +674,55 @@ pub struct RagProgress {
     pub frac: f32,
 }
 
+/// Ask the loaded vision model to describe an image for retrieval. Returns
+/// `None` (not an error) when no vision model is active — the caller falls
+/// back to OCR-only indexing.
+async fn vision_caption(
+    app: &tauri::AppHandle,
+    path: &str,
+    on_progress: &Channel<RagProgress>,
+) -> Option<String> {
+    use tauri::Manager;
+    let state = app.state::<crate::state::AppState>();
+    let vision_ready = state
+        .model
+        .read()
+        .await
+        .as_ref()
+        .map(|m| m.vision_ready)
+        .unwrap_or(false);
+    if !vision_ready {
+        return None;
+    }
+    let backend = state.backend().await?;
+    let _ = on_progress.send(RagProgress { phase: "vision", frac: 0.0 });
+    let prompt = "Describe this image thoroughly for search and retrieval. Cover: the main subject and scene, any people/objects, colors and layout, and — if it's a chart, diagram, screenshot or document — what it conveys and any labels. Be factual and specific. Do not add commentary.".to_string();
+    let req = crate::inference::GenRequest {
+        messages: vec![crate::inference::ChatMessage {
+            role: crate::inference::Role::User,
+            content: prompt,
+            images: vec![path.to_string()],
+        }],
+        params: crate::inference::GenParams {
+            temperature: 0.3,
+            max_tokens: 480,
+            think: Some(false),
+            ..Default::default()
+        },
+    };
+    state.cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+    match backend.generate_collect(req, state.cancel.clone()).await {
+        Ok(t) => {
+            let t = crate::commands::strip_think_blocks(&t).trim().to_string();
+            (!t.is_empty()).then_some(t)
+        }
+        Err(e) => {
+            eprintln!("vision caption failed (indexing OCR only): {e:#}");
+            None
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn rag_add_document(
     app: tauri::AppHandle,
@@ -685,27 +734,42 @@ pub async fn rag_add_document(
     root: Option<String>,
     on_progress: Channel<RagProgress>,
 ) -> Result<(), String> {
-    // Images go through the same OCR engine as attachments (ocrs, Latin).
-    // It's async, so run it before entering the blocking section.
+    // Images are indexed two ways, both async so they run before the blocking
+    // section: (1) a vision-model description of what the image SHOWS (objects,
+    // scene, any chart/diagram meaning) when a vision model is loaded, and
+    // (2) OCR of any embedded text (ocrs, Latin). Either alone is enough to
+    // index; together they make an image findable by content, not just its
+    // literal text.
     let ext = std::path::Path::new(&path)
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_lowercase();
-    let ocr_text = if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif") {
+    let is_image = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif");
+    let (ocr_text, vision_text) = if is_image {
+        // (1) Vision caption — best-effort; skipped when no vision model is loaded.
+        let vision_text = vision_caption(&app, &path, &on_progress).await;
+        // (2) OCR text.
         let _ = on_progress.send(RagProgress { phase: "extract", frac: 0.0 });
         let dir = app
             .path()
             .app_data_dir()
             .map_err(|e| e.to_string())?
             .join("ocr-models");
-        Some(
-            crate::ocr::ocr_image(dir, path.clone())
-                .await
-                .map_err(|e| format!("OCR 失败 (OCR failed): {e:#}"))?,
-        )
+        let ocr = crate::ocr::ocr_image(dir, path.clone())
+            .await
+            .map(|t| t.trim().to_string())
+            .unwrap_or_default();
+        // An image with neither a caption nor OCR text has nothing to index.
+        if vision_text.is_none() && ocr.is_empty() {
+            return Err(
+                "无法从图片中提取内容：未加载视觉模型且未识别到文字。(Nothing to index from the image — no vision model loaded and no OCR text found.)"
+                    .into(),
+            );
+        }
+        (Some(ocr), vision_text)
     } else {
-        None
+        (None, None)
     };
 
     tokio::task::spawn_blocking(move || {
@@ -729,7 +793,20 @@ pub async fn rag_add_document(
             .unwrap_or_else(basename);
         let _ = on_progress.send(RagProgress { phase: "extract", frac: 0.0 });
         let text = match ocr_text {
-            Some(t) => t,
+            // Image: combine the vision description with any OCR'd text so the
+            // chunk is retrievable by visual content AND literal text.
+            Some(ocr) => {
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(v) = &vision_text {
+                    if !v.trim().is_empty() {
+                        parts.push(format!("[图像内容 / Image description]\n{}", v.trim()));
+                    }
+                }
+                if !ocr.trim().is_empty() {
+                    parts.push(format!("[图中文字 / Text in image]\n{}", ocr.trim()));
+                }
+                parts.join("\n\n")
+            }
             None => extract_text(&path)?,
         };
         let chunks = chunk_text(&text);

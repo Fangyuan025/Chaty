@@ -7,6 +7,9 @@ import {
   downloadModel,
   cancelDownload,
   DOWNLOAD_CANCELLED,
+  isMmprojFile,
+  pickMmproj,
+  modelFolderFor,
   type HfFile,
 } from "../lib/ipc";
 
@@ -54,21 +57,37 @@ export function DownloadModal({
     }
   };
 
-  const download = async (f: HfFile) => {
+  // `list`/`repoId` default to state but are passed explicitly by the deep-link
+  // effect, whose closure runs before the state updates land.
+  const download = async (f: HfFile, list: HfFile[] = files, repoId: string = repo) => {
     if (active) return;
     setError("");
-    setActive(f.name);
-    setProgress({ done: 0, total: f.size });
-    setEta(null);
-    etaStore.current = [];
+    // Every download lands in the folder layout: models/<Name>/. A MAIN model
+    // from a repo that also ships an mmproj grabs both, side by side, so the
+    // backend pairs them automatically.
+    const mmproj = !isMmprojFile(f.name) ? pickMmproj(list) : null;
+    const subdir = modelFolderFor(repoId);
+    const fetchOne = async (file: HfFile) => {
+      setActive(file.name);
+      setProgress({ done: 0, total: file.size });
+      setEta(null);
+      etaStore.current = [];
+      await downloadModel(
+        file.url,
+        file.name,
+        (p) => {
+          if (p.type === "progress") {
+            const total = p.total || file.size;
+            setProgress({ done: p.downloaded, total });
+            setEta(etaSeconds(etaStore.current, p.downloaded, total));
+          } else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) setError(p.message);
+        },
+        subdir,
+      );
+    };
     try {
-      await downloadModel(f.url, f.name, (p) => {
-        if (p.type === "progress") {
-          const total = p.total || f.size;
-          setProgress({ done: p.downloaded, total });
-          setEta(etaSeconds(etaStore.current, p.downloaded, total));
-        } else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) setError(p.message);
-      });
+      await fetchOne(f);
+      if (mmproj) await fetchOne(mmproj);
       onDownloaded();
       onClose();
     } catch (e) {
@@ -92,7 +111,7 @@ export function DownloadModal({
         setFiles(found);
         if (initialFile) {
           const f = found.find((x) => x.name === initialFile);
-          if (f) void download(f);
+          if (f) void download(f, found, initialRepo);
         }
       } catch (e) {
         setError(typeof e === "string" ? e : t("dlSearchFailed"));
@@ -135,13 +154,19 @@ export function DownloadModal({
         </div>
 
         <div className="dl-hint">{t("dlHint")}</div>
+        {files.some((f) => isMmprojFile(f.name)) && files.some((f) => !isMmprojFile(f.name)) && (
+          <div className="dl-vision-note">{t("dlVisionPair")}</div>
+        )}
         {error && <div className="dl-error">{error}</div>}
 
         <div className="dl-list">
           {files.map((f) => (
             <div key={f.name} className="dl-item">
               <div className="dl-item-info">
-                <span className="dl-item-name">{f.name}</span>
+                <span className="dl-item-name">
+                  {f.name}
+                  {isMmprojFile(f.name) && <span className="dl-mmproj-tag">{t("dlVisionTag")}</span>}
+                </span>
                 <span className="dl-item-size">{fmtSize(f.size)}</span>
               </div>
               {active === f.name ? (

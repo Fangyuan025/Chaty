@@ -49,6 +49,7 @@ import {
   deleteModelFile,
   openExternal,
   setUiZoom,
+  browserSetHeadless,
   openModelsDir,
   openDataDir,
   ragSearch,
@@ -56,6 +57,10 @@ import {
   pickAttachmentFile,
   pickModelFile,
   readAttachment,
+  imageThumb,
+  browserRenderHtml,
+
+  isVisionImagePath,
   renameConversation,
   setConversationPinned,
   replaceMessages,
@@ -87,6 +92,36 @@ import "./App.css";
 interface UiMessage extends ChatMessage {
   id: string;
   sources?: SearchResult[];
+}
+
+/** Module-level thumbnail cache: path → data URL (survives re-renders). */
+const thumbCache = new Map<string, string>();
+
+/** Self-loading thumbnail for a local image path; hides itself if unreadable. */
+function ImageThumb({ path, size = 168 }: { path: string; size?: number }) {
+  const [src, setSrc] = useState<string | null>(thumbCache.get(path) ?? null);
+  useEffect(() => {
+    let live = true;
+    if (!thumbCache.has(path)) {
+      imageThumb(path, 512)
+        .then((d) => {
+          thumbCache.set(path, d);
+          if (live) setSrc(d);
+        })
+        .catch(() => {
+          if (live) setSrc("");
+        });
+    }
+    return () => {
+      live = false;
+    };
+  }, [path]);
+  if (src === "") return null; // moved/deleted — degrade quietly
+  return (
+    <span className="img-thumb" style={{ maxWidth: size, maxHeight: size }}>
+      {src ? <img src={src} alt="" /> : <span className="img-thumb-ph" />}
+    </span>
+  );
 }
 
 // Host OS, resolved once at startup. Drives native window chrome on macOS
@@ -559,6 +594,11 @@ export default function App() {
     document.documentElement.dataset.answer = settings.answerSize;
   }, [settings.uiScale, settings.reduceMotion, settings.answerSize]);
 
+  // Settings → Code: agent-browser visibility (applies on its next launch).
+  useEffect(() => {
+    void browserSetHeadless(settings.codeBrowserHeadless).catch(console.error);
+  }, [settings.codeBrowserHeadless]);
+
   // Tag the document root with the host OS once, so CSS can adapt the title bar
   // (e.g. macOS leaves room for the native traffic lights). CSS keys off [data-os].
   useEffect(() => {
@@ -769,13 +809,42 @@ export default function App() {
       );
     setCanvasBusy(true);
     setBusy(true);
+    // Visual context: a vision model also SEES the current page (a real
+    // headless-browser screenshot) and its live console errors, so an edit
+    // request isn't judged from the HTML source alone. Best-effort — a browser
+    // failure degrades to the text-only path.
+    let shotImages: string[] | undefined;
+    let visualNote = "";
+    if (model.visionReady && base.trim()) {
+      try {
+        const cap = await browserRenderHtml(base);
+        shotImages = [cap.image];
+        const con = cap.console;
+        if (con && !/console is empty|控制台无输出/.test(con)) {
+          visualNote =
+            lang === "zh"
+              ? `\n\n当前页面的浏览器控制台输出/报错:\n${con.slice(0, 1500)}`
+              : `\n\nCurrent browser console output/errors:\n${con.slice(0, 1500)}`;
+        }
+      } catch (e) {
+        console.error("canvas visual capture failed", e);
+      }
+    }
+    const userText =
+      `${user}${visualNote}` +
+      (shotImages
+        ? lang === "zh"
+          ? "\n\n(上方附有当前页面的实际渲染截图,请据此判断视觉效果后再修改。)"
+          : "\n\n(A screenshot of how the page currently renders is attached — judge the visual result from it before editing.)"
+        : "") +
+      (model?.thinkSwitch ? "\n/no_think" : "");
     try {
       let acc = "";
       await generate(
         {
           messages: [
             { role: "system", content: sys },
-            { role: "user", content: `${user}${model?.thinkSwitch ? "\n/no_think" : ""}` },
+            { role: "user", content: userText, images: shotImages },
           ],
           params: { temperature: 0.4, topP: 0.9, maxTokens: 8192, think: noThinkFlag() },
         },
@@ -861,6 +930,8 @@ export default function App() {
           ? t("oomPartial", { a: info.gpuLayers, b: info.nLayer ?? "?" })
           : t("oomCpu"),
       );
+    } else if (info.warning === "mmproj-failed") {
+      showNotice("warn", t("mmprojFailed"));
     } else if (info.warning === "ctx-clamped" && info.nCtx) {
       showNotice("warn", t("ctxClamped", { n: info.nCtx }));
     }
@@ -1036,6 +1107,13 @@ export default function App() {
 
   async function loadAttachmentPath(path: string) {
     setAttachError("");
+    // Vision-ready model + image file → attach the pixels themselves (the
+    // model sees the image); otherwise images fall back to the OCR text path.
+    if (model?.visionReady && isVisionImagePath(path)) {
+      const name = path.split(/[/\\]/).pop() ?? "image";
+      setAttachment({ name, kind: "vision", text: "", chars: 0, truncated: false, path });
+      return;
+    }
     try {
       setAttaching(true);
       setAttachment(await readAttachment(path));
@@ -1057,7 +1135,9 @@ export default function App() {
     if (busy || id === conversationId) return;
     try {
       const stored = await getMessages(id);
-      setMessages(stored.map((m) => ({ id: m.id, role: m.role, content: m.content })));
+      setMessages(
+        stored.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images })),
+      );
       setConversationId(id);
       setStats(null);
       setAttachment(null);
@@ -1155,8 +1235,8 @@ export default function App() {
       const copied: UiMessage[] = [];
       for (const m of slice) {
         const id = uid();
-        await saveMessage(id, newId, m.role, m.content);
-        copied.push({ id, role: m.role, content: m.content });
+        await saveMessage(id, newId, m.role, m.content, m.images);
+        copied.push({ id, role: m.role, content: m.content, images: m.images });
       }
       setConversationId(newId);
       setMessages(copied);
@@ -1171,9 +1251,9 @@ export default function App() {
    *  turns into one note and keep only the recent tail verbatim. Returns `null`
    *  when there's still plenty of room (the common case). Non-destructive: the
    *  stored/displayed messages are never touched — only the prompt we send. */
-  async function composeContext(
-    msgs: { role: Role; content: string }[],
-  ): Promise<{ summary: string; tail: { role: Role; content: string }[] } | null> {
+  async function composeContext<T extends { role: Role; content: string }>(
+    msgs: T[],
+  ): Promise<{ summary: string; tail: T[] } | null> {
     const nCtx = model?.nCtx ?? 0;
     if (!nCtx || msgs.length < 6) return null;
 
@@ -1345,9 +1425,12 @@ export default function App() {
     // Never feed a prior turn's reasoning back to the model: Qwen's own guidance
     // is that history should carry only the final answer, and stale <think> blocks
     // just waste context and confuse newer (3.5+) reasoning parsers.
-    const historyForModel = history.map(({ role, content }) => ({
+    const historyForModel = history.map(({ role, content, images }) => ({
       role,
       content: role === "assistant" ? stripThink(content) : content,
+      // Only vision-ready models get pixels; otherwise images were already
+      // OCR'd into text at attach time (or never attached).
+      ...(role === "user" && images?.length && model?.visionReady ? { images } : {}),
     }));
 
     // Near the context limit: summarise the older turns so the user can keep the
@@ -1394,7 +1477,7 @@ export default function App() {
         : []),
       ...(webDesign ? [{ role: "system" as const, content: WEBDESIGN_PROMPT }] : []),
       ...(sys ? [{ role: "system" as const, content: sys }] : []),
-      ...(attachment
+      ...(attachment && attachment.kind !== "vision"
         ? [
             {
               role: "system" as const,
@@ -1553,18 +1636,23 @@ export default function App() {
 
     const freshConv = conversationId === null;
     const convId = conversationId ?? uid();
-    const userMsg: UiMessage = { id: uid(), role: "user", content: text };
+    // A vision attachment rides on this very message (pixels, not OCR text)
+    // and is consumed by the send; document attachments stay pinned.
+    const visionImgs =
+      attachment?.kind === "vision" && attachment.path ? [attachment.path] : undefined;
+    const userMsg: UiMessage = { id: uid(), role: "user", content: text, images: visionImgs };
     const asstMsg: UiMessage = { id: uid(), role: "assistant", content: "" };
     const history = [...messages, userMsg];
     setMessages([...history, asstMsg]);
     setInput("");
+    if (visionImgs) setAttachment(null);
 
     try {
       if (freshConv) {
         setConversationId(convId);
         await saveConversation(convId, convTitle(text), model.path);
       }
-      await saveMessage(userMsg.id, convId, "user", text);
+      await saveMessage(userMsg.id, convId, "user", text, visionImgs);
       await refreshConversations();
     } catch (e) {
       console.error(e);
@@ -1585,7 +1673,7 @@ export default function App() {
     try {
       await replaceMessages(
         conversationId,
-        history.map((m) => ({ id: m.id, role: m.role, content: m.content })),
+        history.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images })),
       );
       await refreshConversations();
     } catch (e) {
@@ -1601,14 +1689,14 @@ export default function App() {
     if (busy || !model || !conversationId || !txt) return;
     const target = messages[index];
     if (!target || target.role !== "user") return;
-    const editedUser: UiMessage = { id: target.id, role: "user", content: txt };
+    const editedUser: UiMessage = { id: target.id, role: "user", content: txt, images: target.images };
     const asstMsg: UiMessage = { id: uid(), role: "assistant", content: "" };
     const history = [...messages.slice(0, index), editedUser];
     setMessages([...history, asstMsg]);
     try {
       await replaceMessages(
         conversationId,
-        history.map((m) => ({ id: m.id, role: m.role, content: m.content })),
+        history.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images })),
       );
       await refreshConversations();
     } catch (e) {
@@ -1902,6 +1990,11 @@ export default function App() {
                           title={m.path}
                         >
                           <span className="mm-name">{m.name}</span>
+                          {m.mmproj ? (
+                            <span className="mm-vision" title={t("visionBadgeTip")}>
+                              {t("visionBadge")}
+                            </span>
+                          ) : null}
                           {m.sizeMb ? (
                             <span className="mm-size">{(m.sizeMb / 1024).toFixed(1)} GB</span>
                           ) : null}
@@ -2097,6 +2190,8 @@ export default function App() {
         active={appMode === "code"}
         maxSteps={settings.codeMaxSteps}
         bashTimeout={settings.codeBashTimeout}
+        temperature={settings.codeTemperature}
+        autoApproveEdits={settings.codeAutoApproveEdits}
         skills={settings.codeSkills}
         disabledSkills={settings.codeDisabledSkills}
         allowedCommands={settings.codeAllowedCommands}
@@ -2380,6 +2475,13 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="bubble">
+                        {m.images && m.images.length > 0 && (
+                          <span className="msg-images">
+                            {m.images.map((p) => (
+                              <ImageThumb key={p} path={p} />
+                            ))}
+                          </span>
+                        )}
                         <span className="user-text">{m.content}</span>
                         {!busy && (
                           <button
@@ -2463,6 +2565,9 @@ export default function App() {
               <div className="attach-bar">
                 {attachment && (
                   <div className="attach-chip">
+                    {attachment.kind === "vision" && attachment.path && (
+                      <ImageThumb path={attachment.path} size={26} />
+                    )}
                     <span className="attach-name">
                       <svg
                         width="13"
@@ -2482,8 +2587,10 @@ export default function App() {
                       {attachment.name}
                     </span>
                     <span className="attach-meta">
-                      {t("charsLabel", { n: attachment.chars })}
-                      {attachment.truncated ? t("truncatedSuffix") : ""}
+                      {attachment.kind === "vision"
+                        ? t("visionAttach")
+                        : t("charsLabel", { n: attachment.chars }) +
+                          (attachment.truncated ? t("truncatedSuffix") : "")}
                     </span>
                     <button
                       className="attach-remove"

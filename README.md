@@ -47,6 +47,7 @@ at a folder, describe the task, and it explores, edits, and verifies the project
 itself — every step shown live, every change behind an approval + diff.
 
 - 🌐 **The whole web as a tool** — key-less search of **GitHub** (repos, issues, *and code*), Reddit, YouTube, Bilibili, and any domain; fetching adapts to the content (articles → Markdown, GitHub pages → raw source, PDFs → text, videos → transcripts).
+- 🧭 **Drives a real browser** — with a vision model, the agent opens pages, clicks by visible text, fills forms, scrolls, reads the console, and takes **screenshots it actually looks at** — watch it work in a real Chrome, logins and all.
 - ✏️ **Precise edits** — exact-string patches with a diff preview and “did-you-mean” hints, file outlines to navigate big files, and `search_files` to find by name or content.
 - 🖥️ **Real shell** — run commands and long **background jobs** (dev servers, builds), sandboxed to the workspace (Seatbelt on macOS).
 - ⏪ **You stay in control** — per-action approval, a command allowlist, a live task-plan checklist, and **one-click checkpoint rewind** that restores files *and* rolls back the conversation.
@@ -54,8 +55,9 @@ itself — every step shown live, every change behind an approval + diff.
 <details>
 <summary>More Code-mode details</summary>
 
-- Built for local models: an **Off / Normal / Deep** reasoning switch, a context-usage ring with automatic compaction, whole-file reads sized to your context window, ranked `search_code` + knowledge-base `search_docs`, and loop-breaking for repetitive small models.
+- Built for local models: an **Off / Normal / Deep** reasoning switch, a **prompt-processing progress ring**, a context-usage ring with automatic compaction, whole-file reads sized to your context window, ranked `search_code` + knowledge-base `search_docs`, and loop-breaking for repetitive small models.
 - Persistent sessions, project memory (**AGENTS.md**), custom **/skills**, and slash commands.
+- Tune it under **Settings → Code**: step limit, command timeout, step temperature, an auto-approve-edits toggle, a headless-browser toggle, and a command allowlist.
 - File access never leaves the folder you pick; downloads land in the workspace and are covered by checkpoints too.
 
 </details>
@@ -78,13 +80,26 @@ itself — every step shown live, every change behind an approval + diff.
 
 <br />
 
+## Chaty can see
+
+Load a **vision model** (its weights and `mmproj` encoder live together in one folder, paired automatically) and image understanding turns on everywhere:
+
+- **Chat** — attach a picture and ask about it; follow-ups stay fast (already-seen images aren't re-encoded).
+- **Code** — the agent reads screenshots and can look at any image with `view_image`; the composer takes images and documents just like chat.
+- **Knowledge base** — imported images get a written description beside their OCR text, so search finds what's *in* them.
+- **Canvas** — the model sees the live rendered page when you ask for an edit.
+
+Text-only models keep the OCR path, so nothing regresses — and updating from an older version, a one-time prompt tidies your existing loose `.gguf` files into the one-folder-per-model layout with a single click.
+
+<br />
+
 ## A private knowledge base
 
 <table>
 <tr>
 <td width="52%">
 
-- Index **PDF, Word, Excel, Markdown, ~90 text/code formats, and images** (OCR) into an on-device store — one file or a whole folder.
+- Index **PDF, Word, Excel, Markdown, ~90 text/code formats, and images** into an on-device store — one file or a whole folder. Images are read by **OCR *and*, with a vision model, described in words** so you can search what's *in* the picture.
 - **Hybrid retrieval**: bge-m3 vectors + BM25 keywords, fused with RRF, de-duplicated with MMR, expanded with neighbors.
 - **Strict grounding** — answers come only from your files, with **per-file citations** and hover-preview of the source passage. Chaty says when something isn't covered instead of guessing.
 - **One-click report** — a cited, NotebookLM-style overview of the whole base, exportable to PDF or Markdown.
@@ -145,7 +160,7 @@ itself — every step shown live, every change behind an approval + diff.
 ## Design Canvas
 
 - **Build a page by chatting** — open any single-file HTML Chaty generates into a split studio: live preview on one side, an instruction box on the other. Ask for changes in plain language and Chaty edits the page **in place** (a fast search/replace patch, not a full re-render).
-- **Self-healing** — the preview watches for runtime errors and offers a one-click **Fix**; every fix asks first, so there's no runaway loop.
+- **Self-healing** — the preview watches for runtime errors and offers a one-click **Fix**; every fix asks first, so there's no runaway loop. With a vision model, Chaty also *sees* the rendered page (a live screenshot + console) when you ask for a change.
 - **Version history** with revert, plus export to a standalone `.html`. Pairs naturally with Chaty's own web-design fine-tune.
 
 <br />

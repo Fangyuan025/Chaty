@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod attach;
+pub mod browser;
 pub mod mic;
 pub mod rag;
 mod commands;
@@ -87,8 +88,18 @@ pub fn run() {
             let db = store::init_db(&dir.join("chaty.db"))?;
             app.manage(db);
 
+            // ---- browser automation: persistent profile (logins survive) ----
+            if let Ok(data) = app.path().app_data_dir() {
+                browser::set_profile_dir(data.join("browser-profile"));
+            }
+
             // ---- models folder (drop-in GGUF hot-swap) ----
             commands::ensure_models_dir(app.handle());
+            // Folder layout: loose GGUFs migrate into one folder per model
+            // (vision models keep their mmproj beside the weights). On the first
+            // launch after updating from an old (loose-layout) version this pops
+            // a one-time native dialog to organize; otherwise it's silent.
+            commands::migrate_or_prompt_models(app.handle());
 
             // ---- chaty:// deep link ----
             // macOS registers the scheme via Info.plist (CFBundleURLTypes from
@@ -198,6 +209,9 @@ pub fn run() {
             commands::set_tray_language,
             commands::generate,
             commands::cancel_generation,
+            commands::vision_query,
+            commands::image_thumb,
+            commands::save_file,
             commands::transcribe,
             commands::synthesize,
             voice::request_mic_permission,
@@ -223,6 +237,20 @@ pub fn run() {
             agent::agent_edit_file,
             agent::agent_multi_edit,
             agent::agent_outline,
+            agent::agent_resolve_image,
+            agent::browser_navigate,
+            agent::browser_screenshot,
+            agent::browser_snapshot,
+            agent::browser_scroll,
+            agent::browser_eval,
+            agent::browser_click,
+            agent::browser_type,
+            agent::browser_console,
+            agent::browser_read,
+            agent::browser_close,
+            agent::browser_set_headless,
+            agent::browser_render_html,
+            commands::image_data_url,
             agent::agent_list_dir,
             agent::agent_glob,
             agent::agent_grep,
@@ -277,6 +305,9 @@ pub fn run() {
                 // which skips ExitRequested and was still reaching ggml's
                 // teardown (ggml_metal_rsets_free → ggml_abort → SIGABRT).
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    // Kill the automation browser first — the _exit below skips
+                    // destructors, which would otherwise orphan Chrome.
+                    browser::kill_now();
                     #[cfg(unix)]
                     unsafe {
                         libc::_exit(0)

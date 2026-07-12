@@ -8,6 +8,8 @@ export type Role = "system" | "user" | "assistant";
 export interface ChatMessage {
   role: Role;
   content: string;
+  /** Image attachment paths — only honoured by vision-ready models (mmproj loaded). */
+  images?: string[];
 }
 
 export interface GenParams {
@@ -51,6 +53,10 @@ export interface ModelInfo {
   thinkSwitch: boolean;
   supportsTools: boolean;
   multimodal: boolean;
+  /** The vision encoder (mmproj) is loaded — images actually work this session. */
+  visionReady: boolean;
+  /** Path of the paired mmproj GGUF, when one was found. */
+  mmproj?: string | null;
   /** Non-fatal load warning code (e.g. "gpu-oom"), or null. */
   warning?: string | null;
 }
@@ -380,6 +386,8 @@ export async function setUiZoom(factor: number): Promise<void> {
 
 export type StreamEvent =
   | { type: "started" }
+  /** Prompt-processing progress (long prefills only): `processed`/`total` prompt tokens. */
+  | { type: "prefill"; processed: number; total: number }
   | { type: "token"; text: string }
   | { type: "done"; stats: GenStats }
   | { type: "error"; message: string };
@@ -429,6 +437,8 @@ export interface ModelEntry {
   name: string;
   path: string;
   sizeMb?: number;
+  /** Paired vision encoder (mmproj) path, for the picker's vision badge. */
+  mmproj?: string | null;
 }
 
 export interface HfFile {
@@ -452,14 +462,36 @@ export async function downloadModel(
   url: string,
   filename: string,
   onProgress: (p: DownloadProgress) => void,
+  /** Optional folder under models/ — the vision-model layout (main + mmproj side by side). */
+  subdir?: string,
 ): Promise<void> {
   const channel = new Channel<DownloadProgress>();
   channel.onmessage = onProgress;
-  await invoke("download_model", { url, filename, onProgress: channel });
+  await invoke("download_model", { url, filename, subdir: subdir ?? null, onProgress: channel });
 }
 
 /** Sentinel rejection message of a user-cancelled download. */
 export const DOWNLOAD_CANCELLED = "DOWNLOAD_CANCELLED";
+
+/** True when an HF GGUF filename is a vision encoder (mmproj), not a chat model. */
+export function isMmprojFile(name: string): boolean {
+  return /mmproj/i.test(name);
+}
+
+/** Best mmproj companion in a repo's GGUF list: F16 > BF16 > Q8 > rest, then smallest. */
+export function pickMmproj(files: HfFile[]): HfFile | null {
+  const projs = files.filter((f) => isMmprojFile(f.name));
+  if (projs.length === 0) return null;
+  const score = (n: string) => (/f16/i.test(n) && !/bf16/i.test(n) ? 0 : /bf16/i.test(n) ? 1 : /q8/i.test(n) ? 2 : 3);
+  return [...projs].sort((a, b) => score(a.name) - score(b.name) || a.size - b.size)[0];
+}
+
+/** Folder name for the vision-model layout ("owner/Name-GGUF" → "Name"). */
+export function modelFolderFor(repo: string): string {
+  const base = repo.split("/").filter(Boolean).pop() ?? repo;
+  const clean = base.replace(/-gguf$/i, "").replace(/[/\\:*?"<>|]/g, "_").trim();
+  return clean || "model";
+}
 
 /** Ask an in-flight `downloadModel(…, filename)` to stop (partial file removed). */
 export async function cancelDownload(filename: string): Promise<void> {
@@ -520,6 +552,7 @@ export interface StoredMessage {
   role: Role;
   content: string;
   createdAt: number;
+  images?: string[];
 }
 
 export async function saveConversation(
@@ -535,8 +568,9 @@ export async function saveMessage(
   conversationId: string,
   role: Role,
   content: string,
+  images?: string[],
 ): Promise<void> {
-  await invoke("save_message", { id, conversationId, role, content });
+  await invoke("save_message", { id, conversationId, role, content, images: images ?? null });
 }
 
 export async function listConversations(): Promise<Conversation[]> {
@@ -550,7 +584,7 @@ export async function getMessages(conversationId: string): Promise<StoredMessage
 /** Replace all messages of a conversation (for edit / regenerate truncation). */
 export async function replaceMessages(
   conversationId: string,
-  messages: { id: string; role: Role; content: string }[],
+  messages: { id: string; role: Role; content: string; images?: string[] }[],
 ): Promise<void> {
   await invoke("replace_messages", { conversationId, messages });
 }
@@ -722,6 +756,59 @@ export async function agentOutline(path: string): Promise<string> {
   return await invoke<string>("agent_outline", { path });
 }
 
+/** Resolve a workspace image path to a confined absolute path for `view_image`. */
+export async function agentResolveImage(path: string): Promise<string> {
+  return await invoke<string>("agent_resolve_image", { path });
+}
+
+// ---------- Browser automation (Code mode, CDP-driven Chrome) ----------
+export async function browserNavigate(url: string): Promise<string> {
+  return await invoke<string>("browser_navigate", { url });
+}
+/** Full-page screenshot (auto-scrolls to trigger lazy content) → temp PNG path. */
+export async function browserScreenshot(): Promise<string> {
+  return await invoke<string>("browser_screenshot");
+}
+/** Snapshot of just the current viewport (immediate) → temp PNG path. */
+export async function browserSnapshot(): Promise<string> {
+  return await invoke<string>("browser_snapshot");
+}
+/** Scroll the page (to "bottom"/"top" or by pixels) to trigger lazy loading. */
+export async function browserScroll(to?: "bottom" | "top", by?: number): Promise<string> {
+  return await invoke<string>("browser_scroll", { to: to ?? null, by: by ?? null });
+}
+export async function browserEval(expression: string): Promise<string> {
+  return await invoke<string>("browser_eval", { expression });
+}
+export async function browserClick(selector?: string, text?: string): Promise<string> {
+  return await invoke<string>("browser_click", { selector: selector ?? null, text: text ?? null });
+}
+export async function browserType(selector?: string, label?: string, text = ""): Promise<string> {
+  return await invoke<string>("browser_type", { selector: selector ?? null, label: label ?? null, text });
+}
+export async function browserConsole(): Promise<string> {
+  return await invoke<string>("browser_console");
+}
+export async function browserRead(): Promise<string> {
+  return await invoke<string>("browser_read");
+}
+export async function browserClose(): Promise<string> {
+  return await invoke<string>("browser_close");
+}
+/** Settings → Code: run the agent's browser hidden (applies on next launch). */
+export async function browserSetHeadless(on: boolean): Promise<void> {
+  await invoke("browser_set_headless", { on });
+}
+/** Render self-contained HTML in a dedicated headless browser (no window),
+ *  returning a screenshot path + the page's console output (Canvas). */
+export interface CanvasCapture {
+  image: string;
+  console: string;
+}
+export async function browserRenderHtml(html: string): Promise<CanvasCapture> {
+  return await invoke<CanvasCapture>("browser_render_html", { html });
+}
+
 // ---------- Voice (STT / TTS) ----------
 
 export interface SynthAudio {
@@ -751,6 +838,8 @@ export interface Attachment {
   text: string;
   chars: number;
   truncated: boolean;
+  /** Original file path — set for vision-image attachments (sent as pixels, not OCR text). */
+  path?: string;
 }
 
 export async function pickAttachmentFile(): Promise<string | null> {
@@ -774,4 +863,50 @@ export async function pickAttachmentFile(): Promise<string | null> {
 
 export async function readAttachment(path: string): Promise<Attachment> {
   return await invoke<Attachment>("read_attachment", { path });
+}
+
+/** Downscaled data-URL thumbnail of a local image (chat-bubble preview). */
+export async function imageThumb(path: string, maxDim?: number): Promise<string> {
+  return await invoke<string>("image_thumb", { path, maxDim: maxDim ?? null });
+}
+
+/** Full-resolution image as a data URL (no downscaling) — crisp preview. */
+export async function imageDataUrl(path: string): Promise<string> {
+  return await invoke<string>("image_data_url", { path });
+}
+
+/** Copy `src` to `dest` (a user-chosen path from the save dialog). */
+export async function saveFile(src: string, dest: string): Promise<void> {
+  await invoke("save_file", { src, dest });
+}
+
+/** Save an image to a user-picked location via the native dialog. Returns the
+ *  destination path, or null if the user cancelled. */
+export async function saveImageAs(src: string, suggestedName = "screenshot.png"): Promise<string | null> {
+  const dest = await save({
+    defaultPath: suggestedName,
+    filters: [{ name: "PNG", extensions: ["png"] }],
+  });
+  if (!dest) return null;
+  await saveFile(src, dest);
+  return dest;
+}
+
+/** One-shot vision analysis: run the loaded vision model on image paths + a
+ *  prompt, return its full text answer. Throws if no vision model is loaded. */
+export async function visionQuery(
+  images: string[],
+  prompt: string,
+  maxTokens?: number,
+): Promise<string> {
+  return await invoke<string>("vision_query", { images, prompt, maxTokens: maxTokens ?? null });
+}
+
+/** File extensions the vision pipeline accepts as direct image input. */
+export const VISION_IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
+
+/** True when `path` looks like an image a vision model can consume directly. */
+export function isVisionImagePath(path: string): boolean {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return VISION_IMAGE_EXTS.includes(ext);
 }

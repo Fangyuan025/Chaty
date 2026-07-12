@@ -95,9 +95,11 @@ pub fn agent_set_workspace(path: String) -> Result<String, String> {
     let shown = canon.to_string_lossy().to_string();
     let changed = WORKSPACE.lock().unwrap().replace(canon.clone()) != Some(canon);
     if changed {
-        // Background jobs and checkpoints belong to the previous workspace.
+        // Background jobs, checkpoints and the browser belong to the previous
+        // workspace.
         bg_kill_all();
         cp_clear();
+        crate::browser::shutdown();
     }
     Ok(shown)
 }
@@ -401,6 +403,169 @@ pub fn agent_multi_edit(path: String, edits: Vec<EditOp>) -> Result<String, Stri
     std::fs::write(&abs, cur.as_bytes()).map_err(|e| format!("写入失败 (write failed): {e}"))?;
     let root = workspace()?;
     Ok(format!("已编辑 {}(应用全部 {total} 处修改)", rel_display(&root, &abs)))
+}
+
+// ---- Browser automation tools (CDP; see browser.rs) ----
+
+#[tauri::command]
+pub async fn browser_navigate(url: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || crate::browser::navigate(&url))
+        .await
+        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+}
+
+/// Full-page screenshot (auto-scrolls to trigger lazy content). Returns a temp
+/// PNG path the agent loop attaches to the model's next turn (like view_image).
+#[tauri::command]
+pub async fn browser_screenshot() -> Result<String, String> {
+    let png = tokio::task::spawn_blocking(crate::browser::screenshot)
+        .await
+        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))??;
+    write_shot(png)
+}
+
+/// Snapshot of just the current viewport (immediate) — for lazy-load pages,
+/// after scrolling. Returns a temp PNG path attached to the next turn.
+#[tauri::command]
+pub async fn browser_snapshot() -> Result<String, String> {
+    let png = tokio::task::spawn_blocking(crate::browser::snapshot)
+        .await
+        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))??;
+    write_shot(png)
+}
+
+/// Scroll the page (to "bottom"/"top" or by pixels) to trigger lazy loading.
+#[tauri::command]
+pub async fn browser_scroll(to: Option<String>, by: Option<f64>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || crate::browser::scroll_page(to, by))
+        .await
+        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+}
+
+fn write_shot(png: Vec<u8>) -> Result<String, String> {
+    let path = std::env::temp_dir().join(format!(
+        "chaty-browser-shot-{}-{}.png",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&path, png).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn browser_eval(expression: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || crate::browser::eval(&expression))
+        .await
+        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+}
+
+#[tauri::command]
+pub async fn browser_click(selector: Option<String>, text: Option<String>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || crate::browser::click(selector, text))
+        .await
+        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+}
+
+#[tauri::command]
+pub async fn browser_type(
+    selector: Option<String>,
+    label: Option<String>,
+    text: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || crate::browser::type_text(selector, label, text))
+        .await
+        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+}
+
+#[tauri::command]
+pub async fn browser_console() -> Result<String, String> {
+    tokio::task::spawn_blocking(crate::browser::console)
+        .await
+        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+}
+
+/// Digest of the current page's interactive elements (links/buttons/inputs).
+#[tauri::command]
+pub async fn browser_read() -> Result<String, String> {
+    tokio::task::spawn_blocking(crate::browser::read_page)
+        .await
+        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+}
+
+/// Close the automation browser the agent has been driving.
+#[tauri::command]
+pub async fn browser_close() -> Result<String, String> {
+    tokio::task::spawn_blocking(|| {
+        crate::browser::shutdown();
+        "已关闭浏览器 (browser closed)".to_string()
+    })
+    .await
+    .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))
+}
+
+/// Settings → Code: run the agent's browser hidden (headless). Applies the
+/// next time the browser starts.
+#[tauri::command]
+pub fn browser_set_headless(on: bool) {
+    crate::browser::set_headless(on);
+}
+
+/// Result of rendering a Canvas HTML string headlessly: a screenshot path + the
+/// page's console output/errors — the model's "visual + console" pair.
+#[derive(serde::Serialize)]
+pub struct CanvasCapture {
+    pub image: String,
+    pub console: String,
+}
+
+/// Render a self-contained HTML string in a dedicated HEADLESS browser (never
+/// pops a window) and return both a screenshot path and the page's console —
+/// the Canvas "see the current page + its errors" path. Writes the PNG under
+/// the app cache dir, not the workspace.
+#[tauri::command]
+pub async fn browser_render_html(app: tauri::AppHandle, html: String) -> Result<CanvasCapture, String> {
+    use tauri::Manager;
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("canvas-shots");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    let html_path = dir.join("canvas.html");
+    std::fs::write(&html_path, html).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    let url = format!("file://{}", html_path.display());
+    let (png, console) = tokio::task::spawn_blocking(move || crate::browser::capture_headless(&url))
+        .await
+        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))??;
+    let png_path = dir.join("canvas-shot.png");
+    std::fs::write(&png_path, png).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    Ok(CanvasCapture { image: png_path.to_string_lossy().to_string(), console })
+}
+
+/// Resolve a workspace-relative image path to a confined absolute path for the
+/// `view_image` tool. Enforces the same sandbox as every other file tool, and
+/// checks the file exists and is a supported image — so the vision model only
+/// ever sees images from inside the workspace.
+#[tauri::command]
+pub fn agent_resolve_image(path: String) -> Result<String, String> {
+    let abs = resolve(&path)?;
+    let ext = abs
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif") {
+        return Err(format!(
+            "不是支持的图片格式 (not a supported image): {path} — 支持 png/jpg/jpeg/webp/bmp/gif"
+        ));
+    }
+    if !abs.is_file() {
+        return Err(format!("图片不存在 (image not found): {path}"));
+    }
+    Ok(abs.to_string_lossy().to_string())
 }
 
 /// File outline: the definition lines (functions/classes/structs/…) with line

@@ -116,17 +116,21 @@ pub async fn list_hf_ggufs(repo: String) -> Result<Vec<HfFile>, String> {
     Ok(out)
 }
 
-/// Stream `url` into `models/<filename>`, reporting progress on `on_progress`.
-/// Writes to a `.part` file first and renames on success.
+/// Stream `url` into `models/[subdir/]<filename>`, reporting progress on
+/// `on_progress`. Writes to a `.part` file first and renames on success.
+/// `subdir` (one path segment) is the folder layout used for vision models —
+/// the main GGUF and its mmproj land side by side in their own folder.
 #[tauri::command]
 pub async fn download_model(
     app: tauri::AppHandle,
     url: String,
     filename: String,
+    subdir: Option<String>,
     on_progress: Channel<DownloadProgress>,
 ) -> Result<(), String> {
     let cancel = register_cancel(&filename);
-    let result = download_inner(&app, &url, &filename, &on_progress, &cancel).await;
+    let result =
+        download_inner(&app, &url, &filename, subdir.as_deref(), &on_progress, &cancel).await;
     clear_cancel(&filename);
     if let Err(ref e) = result {
         let _ = on_progress.send(DownloadProgress::Error { message: e.clone() });
@@ -138,20 +142,29 @@ async fn download_inner(
     app: &tauri::AppHandle,
     url: &str,
     filename: &str,
+    subdir: Option<&str>,
     on_progress: &Channel<DownloadProgress>,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
-    let dir = app
+    let sanitize = |s: &str| -> String {
+        s.chars()
+            .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+            .collect()
+    };
+    let mut dir = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("models");
+    if let Some(sub) = subdir {
+        let sub = sanitize(sub.trim());
+        if !sub.is_empty() && sub != "." && sub != ".." {
+            dir = dir.join(sub);
+        }
+    }
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    let safe: String = filename
-        .chars()
-        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
-        .collect();
+    let safe: String = sanitize(filename);
     if !safe.to_lowercase().ends_with(".gguf") {
         return Err("文件名必须以 .gguf 结尾".into());
     }

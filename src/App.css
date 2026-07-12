@@ -4920,6 +4920,30 @@ a:focus-visible,
   border-color: transparent;
 }
 
+/* ---- prompt-processing progress ring (prefill) ---- */
+.cm-prefill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.cm-prefill svg {
+  display: block;
+}
+.cm-prefill-arc {
+  transition: stroke-dashoffset 0.25s ease;
+}
+[data-motion="reduce"] .cm-prefill-arc {
+  transition: none;
+}
+.cm-prefill-pct {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  min-width: 30px;
+}
+
 /* ---- tool step card ---- */
 .cm-step {
   border: 1px solid var(--border);
@@ -6086,3 +6110,191 @@ body,
 .cm-asst-text {
   animation: pane-in var(--t-med) var(--ease-out) both;
 }
+
+/* ---------- Vision: image attachments & thumbnails ---------- */
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.img-thumb {
+  display: inline-flex;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  line-height: 0;
+}
+.img-thumb img {
+  max-width: 100%;
+  max-height: 168px;
+  object-fit: cover;
+  display: block;
+}
+.img-thumb-ph {
+  width: 42px;
+  height: 42px;
+  background: var(--panel);
+}
+.attach-chip .img-thumb {
+  border-radius: 6px;
+  margin-right: 2px;
+}
+.attach-chip .img-thumb img {
+  width: 26px;
+  height: 26px;
+  object-fit: cover;
+}
+.mm-vision {
+  flex: none;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+  margin-left: 6px;
+}
+.setup-card-vision {
+  display: inline-block;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+.dl-vision-note {
+  font-size: 12px;
+  color: var(--accent);
+  margin: 4px 0 2px;
+}
+.dl-mmproj-tag {
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  margin-left: 6px;
+}
+
+/* ---------- Code mode: image attachments ---------- */
+.cm-attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 4px 2px;
+}
+.cm-attach-img {
+  position: relative;
+  display: inline-flex;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  line-height: 0;
+}
+.cm-attach-img img {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  display: block;
+}
+.cm-attach-ph {
+  width: 44px;
+  height: 44px;
+  background: var(--panel);
+  display: inline-block;
+}
+.cm-attach-del {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 15px;
+  height: 15px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+}
+.cm-attach-btn {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.cm-attach-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.cm-attach-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.cm-user-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.cm-user-images .cm-attach-img img { width: 120px; height: auto; max-height: 120px; }
+
+/* ---------- Code mode: doc attachment chips + screenshot preview ---------- */
+.cm-attach-doc {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--text-dim);
+  max-width: 220px;
+}
+.cm-attach-doc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-attach-del.inline { position: static; background: transparent; color: var(--text-dim); width: 14px; height: 14px; }
+.cm-attach-err { font-size: 12px; color: #d66; align-self: center; }
+.cm-user-docs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+
+/* Screenshot / view_image preview modal — matches .preview-overlay/.preview-modal. */
+.cm-preview {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 92vw);
+  max-height: 90vh;
+  background: var(--surface);
+  border: 1px solid var(--border-strong, var(--border-2));
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 40px 90px -30px var(--shadow);
+}
+.cm-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2, var(--panel));
+}
+.cm-preview-title { font-size: 13px; font-weight: 600; color: var(--text); margin-right: auto; }
+.cm-preview-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border-radius: 8px;
+  border: 1px solid var(--border-2); background: var(--surface); color: var(--text);
+  font-size: 12.5px; cursor: pointer; transition: color 0.15s, border-color 0.15s;
+}
+.cm-preview-btn:hover { border-color: var(--accent); color: var(--accent); }
+.cm-preview-close {
+  width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+  border: 1px solid var(--border-2); background: var(--surface); color: var(--text-dim); cursor: pointer;
+}
+.cm-preview-close:hover { color: var(--text); border-color: var(--border); }
+.cm-preview-stage { overflow: auto; padding: 14px; display: grid; place-items: center; background: var(--bg); }
+.cm-preview-stage img { max-width: 100%; height: auto; display: block; border-radius: 8px; }

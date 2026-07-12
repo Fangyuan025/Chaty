@@ -59,6 +59,12 @@ export interface GenSettings {
   codeMaxSteps: number;
   /** Code mode: default bash-command timeout in seconds. */
   codeBashTimeout: number;
+  /** Code mode: sampling temperature for agent steps (0–1). */
+  codeTemperature: number;
+  /** Code mode: file edits (write/edit/multi_edit) run without approval. */
+  codeAutoApproveEdits: boolean;
+  /** Code mode: run the agent's browser hidden (headless). */
+  codeBrowserHeadless: boolean;
   /** Code mode: user-defined skills (named prompt templates, invoked via /). */
   codeSkills: PromptPreset[];
   /** Code mode: names of built-in skills the user turned off. */
@@ -103,6 +109,9 @@ export const defaultSettings: GenSettings = {
   contextLength: 0,
   codeMaxSteps: 32,
   codeBashTimeout: 60,
+  codeTemperature: 0.3,
+  codeAutoApproveEdits: false,
+  codeBrowserHeadless: false,
   codeSkills: [],
   codeDisabledSkills: [],
   codeAllowedCommands: [],
@@ -675,6 +684,34 @@ export function SettingsPanel({
                 />
               </label>
               <div className="settings-hint">{t("cmBashTimeoutHint")}</div>
+
+              <label className="field">
+                <span>
+                  {t("cmTemp")} <b>{value.codeTemperature.toFixed(2)}</b>
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={value.codeTemperature}
+                  onChange={(e) => set("codeTemperature", Number(e.target.value))}
+                />
+              </label>
+              <div className="settings-hint">{t("cmTempHint")}</div>
+
+              <SetRow label={t("cmAutoEdits")} hint={t("cmAutoEditsHint")}>
+                <Switch
+                  on={value.codeAutoApproveEdits}
+                  onToggle={() => set("codeAutoApproveEdits", !value.codeAutoApproveEdits)}
+                />
+              </SetRow>
+              <SetRow label={t("cmHeadless")} hint={t("cmHeadlessHint")}>
+                <Switch
+                  on={value.codeBrowserHeadless}
+                  onToggle={() => set("codeBrowserHeadless", !value.codeBrowserHeadless)}
+                />
+              </SetRow>
 
               <div className="field">
                 <span>{t("cmAllowlist")}</span>

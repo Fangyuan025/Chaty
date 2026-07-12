@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.7.0 — Chaty can see (2026-07-12)
+
+The big one: local **vision** models now reach every surface, and Code mode gains a **real browser** it can drive and see. Everything still runs on your machine, nothing leaves it.
+
+### Vision, everywhere
+
+- **Image understanding across the whole app.** Load a vision GGUF (with its `mmproj` encoder) and Chaty *sees* — attach an image in **Chat** and ask about it; in **Code** the agent has a `view_image` tool and reads screenshots; the **knowledge base** captions imported images (a real description alongside OCR text); **Canvas** shows the model the live rendered page. Text-only models keep the OCR path, so nothing regresses.
+- **One folder per model.** Vision models keep their weights and `mmproj` encoder together in `models/<Name>/`, and Chaty pairs them automatically — in the downloader, in *"Set up for me"*, and for models you load from disk. Updating from an older version? A **one-time prompt** offers to tidy your existing loose `.gguf` files into this layout with a single click (files are only moved, never deleted).
+- **No re-encoding on every turn.** A media cache keeps already-seen images in the KV cache, so a follow-up question doesn't re-process the picture — later turns stay fast.
+
+### A browser the agent can drive
+
+- **Full browser automation in Code mode.** The agent can open pages, click by visible text, fill forms by field label, scroll lazy-loaded pages, read the interactive-element list, check the JS console, run JavaScript, and take **full-page or viewport screenshots it actually looks at** — driving a real Chrome so you can watch it work. Logins persist in a dedicated profile, so a site you sign into once stays signed in.
+- **See before it acts.** After any click or navigation the agent re-checks the page state before the next step instead of guessing, and it leads page research with a single full-page screenshot to locate what it needs — fewer, surer steps. Research still prefers fast `web_fetch`/`web_search`; the browser is for real interaction and visual verification.
+- **Robust by construction.** If you close the browser window mid-task it transparently relaunches and continues; a repeated scroll counts as progress, not a stuck loop; and an `Organize`-grade multi-step suite (shop checkout, gated login, lazy-load feed, on-page lookup) is verified end-to-end against the real model, checking the actual page state rather than the model's word.
+
+### Code mode, more comfortable
+
+- **A progress ring for the quiet moment.** The pause before the first token — while a long prompt is being processed — now shows a circular **percentage** ring instead of a blank spinner, so you can tell processing from stalling.
+- **New Code settings.** A **step temperature** slider (steadier vs. more creative), **auto-approve file edits** (checkpoints still cover rollback), and **run the browser hidden** (headless, no window) — all under Settings → Code, alongside the existing step limit, command timeout, allowlist and skills.
+- **Attachments match Chat.** The Code composer now takes the same documents *and* images as chat — PDFs/Word/Excel/~90 formats extracted to text, images sent to vision models (or OCR'd for text-only ones) — and screenshot/`view_image` steps are clickable for a full-resolution preview you can save.
+
 ## v1.6.2 — Accurate diffs & whole-file reads (2026-07-10)
 
 - **Code-mode diffs are now exact.** Edit previews were computed with a rough prefix/suffix heuristic and hard-capped at 60 lines — so the +N/−M badge silently under-counted big edits, scattered changes mislabeled untouched lines as changed, and large diffs were cut off. Chaty now runs a real line-level (LCS) diff: the +/− counts are exact over the whole change, only genuinely changed lines are marked, and the rendered hunk shows more with a clear "… N changed lines total" note when it's very long. The before/after snapshots are also read in full, so a big file's diff is no longer polluted by pagination text or truncated.

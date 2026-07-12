@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useI18n } from "../lib/i18n";
 import { diffLines } from "../lib/diff";
@@ -16,6 +17,13 @@ import {
   agentListFiles,
   agentReadFile,
   agentSetWorkspace,
+  imageThumb,
+  imageDataUrl,
+  saveImageAs,
+  pickAttachmentFile,
+  readAttachment,
+  isVisionImagePath,
+  type Attachment,
   type AgentBgInfo,
   codeSessionDelete,
   codeSessionList,
@@ -43,6 +51,10 @@ interface CodeMsg {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** Attached image paths (vision models) shown in the user bubble. */
+  images?: string[];
+  /** All attachments (docs + images) shown as chips in the user bubble. */
+  attachments?: { name: string; kind: string; path?: string }[];
   /** Reasoning shown before the final answer (collapsible). */
   thinking?: string;
   /** Live reasoning streaming for the in-flight step. */
@@ -87,6 +99,17 @@ const TOOL_ICON: Record<string, string> = {
   web_fetch: "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c2.5 2.5 3.8 5.6 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.6-3.8-9S9.5 5.5 12 3z",
   web_download: "M12 3v12M6 9l6 6 6-6M4 21h16",
   ask_user: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 8v5M12 16h.01",
+  view_image: "M3 3h18v18H3zM3 15l5-5 4 4 3-3 6 6",
+  browser_navigate: "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c2.5 2.5 3.8 5.6 3.8 9s-1.3 6.5-3.8 9",
+  browser_screenshot: "M3 7h4l2-2h6l2 2h4v12H3zM12 17a3.5 3.5 0 100-7 3.5 3.5 0 000 7z",
+  browser_snapshot: "M4 5h16v11H4zM8 20h8M12 16v4",
+  browser_scroll: "M12 4v16M6 14l6 6 6-6M6 10l6-6 6 6",
+  browser_close: "M18 6L6 18M6 6l12 12",
+  browser_console: "M4 4h16v16H4zM7 9l3 3-3 3M13 15h4",
+  browser_read: "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7zM12 9a3 3 0 100 6 3 3 0 000-6z",
+  browser_click: "M7 3v6l2-1 2 4 2-1-2-4h3z",
+  browser_type: "M4 7h16M4 12h16M4 17h10",
+  browser_eval: "M8 3H5a2 2 0 00-2 2v14a2 2 0 002 2h3M16 3h3a2 2 0 012 2v14a2 2 0 01-2 2h-3M10 8l-2 4 2 4M14 8l2 4-2 4",
 };
 
 function toolSummary(call: ToolCall): string {
@@ -132,6 +155,28 @@ function toolSummary(call: ToolCall): string {
       return `download → ${argPath(call.args) || a.path || "?"}`;
     case "ask_user":
       return a.question ?? "ask user";
+    case "view_image":
+      return `view ${argPath(call.args) || a.path || "image"}`;
+    case "browser_navigate":
+      return `open ${a.url ?? ""}`;
+    case "browser_screenshot":
+      return "screenshot";
+    case "browser_snapshot":
+      return "snapshot";
+    case "browser_scroll":
+      return `scroll ${(a.to as string) ?? (a.by ? a.by + "px" : "")}`;
+    case "browser_close":
+      return "close browser";
+    case "browser_console":
+      return "console";
+    case "browser_read":
+      return "read page";
+    case "browser_click":
+      return `click ${a.text ?? a.selector ?? ""}`;
+    case "browser_type":
+      return `type → ${a.label ?? a.selector ?? ""}`;
+    case "browser_eval":
+      return `eval ${(a.expression ?? "").slice(0, 40)}`;
     default:
       return call.name;
   }
@@ -161,19 +206,25 @@ function stepMeta(step: ToolStep, linesLabel: string): { text: string; tone: "ad
 }
 
 /** One tool step: a compact header (icon + summary + status) that expands to the
- *  result or a diff. */
-function StepCard({ step }: { step: ToolStep }) {
+ *  result or a diff. Image steps (screenshot / view_image) preview on click. */
+function StepCard({ step, onPreview }: { step: ToolStep; onPreview?: (path: string) => void }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(step.status === "error");
   const diff = step.diff;
+  const hasImage = !!step.image && step.status === "done";
   const hasBody = !!(step.result || diff);
   const meta = stepMeta(step, t("cmLines"));
   // Compute the diff once; the +N/−M badge uses the EXACT totals, never the
   // render-capped rows, so big edits are counted correctly.
   const d = useMemo(() => (diff ? diffLines(diff.before, diff.after) : null), [diff]);
+  // Clicking an image step opens the preview directly; otherwise toggle the body.
+  const onHead = () => {
+    if (hasImage && step.image) onPreview?.(step.image);
+    else if (hasBody) setOpen((o) => !o);
+  };
   return (
     <div className={`cm-step ${step.status}`}>
-      <button className="cm-step-head" onClick={() => hasBody && setOpen((o) => !o)}>
+      <button className="cm-step-head" onClick={onHead}>
         <svg className="cm-step-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
           <path d={TOOL_ICON[step.call.name] ?? "M4 6h16M4 12h16M4 18h16"} />
         </svg>
@@ -184,6 +235,7 @@ function StepCard({ step }: { step: ToolStep }) {
             <em className="minus">-{d.removed}</em>
           </span>
         )}
+        {hasImage && <span className="cm-step-meta muted">{t("cmClickPreview")}</span>}
         {meta && <span className={`cm-step-meta ${meta.tone}`}>{meta.text}</span>}
         <span className="cm-step-status">
           {step.status === "running" ? <span className="cm-spin" /> : null}
@@ -266,11 +318,116 @@ function PlanPanel({ plan, label }: { plan: PlanItem[]; label: string }) {
   );
 }
 
+/** Small self-loading thumbnail for a local image path (attach previews). */
+const cmThumbCache = new Map<string, string>();
+function ImgThumb({ path }: { path: string }) {
+  const [src, setSrc] = useState<string | null>(cmThumbCache.get(path) ?? null);
+  useEffect(() => {
+    let live = true;
+    if (!cmThumbCache.has(path)) {
+      imageThumb(path, 256)
+        .then((d) => {
+          cmThumbCache.set(path, d);
+          if (live) setSrc(d);
+        })
+        .catch(() => live && setSrc(""));
+    }
+    return () => {
+      live = false;
+    };
+  }, [path]);
+  if (src === "") return <span className="cm-attach-ph" />;
+  return src ? <img src={src} alt="" /> : <span className="cm-attach-ph" />;
+}
+
+/** Full-size image preview modal with a "save to local" action. */
+function ImagePreview({ path, onClose }: { path: string; onClose: () => void }) {
+  const { t } = useI18n();
+  const [src, setSrc] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    let live = true;
+    // Full-resolution (crisp) — not a downscaled thumbnail.
+    imageDataUrl(path)
+      .then((d) => live && setSrc(d))
+      .catch(() => live && setSrc(""));
+    return () => {
+      live = false;
+    };
+  }, [path]);
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const save = async () => {
+    try {
+      const name = path.split(/[/\\]/).pop() || "screenshot.png";
+      const dest = await saveImageAs(path, name);
+      if (dest) setSaved(true);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+  return createPortal(
+    <div className="preview-overlay" onMouseDown={onClose}>
+      <div className="cm-preview" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="cm-preview-bar">
+          <span className="cm-preview-title">{t("cmScreenshot")}</span>
+          <button className="cm-preview-btn" onClick={() => void save()}>
+            <Icon name="download" size={13} strokeWidth={2} />
+            {saved ? t("cmSaved") : t("cmSaveImage")}
+          </button>
+          <button className="cm-preview-close" onClick={onClose} title={t("closePreview")}>
+            <Icon name="x" size={14} strokeWidth={2.2} />
+          </button>
+        </div>
+        <div className="cm-preview-stage">
+          {src ? <img src={src} alt="" /> : <span className="cm-spin" />}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** Circular prompt-processing progress: a small ring that fills 0→100% while a
+ *  long prompt is prefilling (the silent gap before tokens stream), plus the
+ *  live percentage. Replaces the generic spinner whenever progress is known. */
+function PrefillRing({ frac, size = 16 }: { frac: number; size?: number }) {
+  const r = (size - 3) / 2; // stroke 2.5 + hairline padding
+  const c = 2 * Math.PI * r;
+  const pct = Math.round(Math.min(1, Math.max(0, frac)) * 100);
+  return (
+    <span className="cm-prefill" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--border-strong)" strokeWidth="2.5" />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke="var(--accent)"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeDasharray={c}
+          strokeDashoffset={c * (1 - pct / 100)}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          className="cm-prefill-arc"
+        />
+      </svg>
+      <span className="cm-prefill-pct">{pct}%</span>
+    </span>
+  );
+}
+
 export function CodeMode({
   model,
   active,
   maxSteps,
   bashTimeout,
+  temperature,
+  autoApproveEdits = false,
   skills = [],
   disabledSkills = [],
   allowedCommands = [],
@@ -282,6 +439,11 @@ export function CodeMode({
   maxSteps?: number;
   /** Default bash timeout in seconds (Settings → Code). */
   bashTimeout?: number;
+  /** Sampling temperature for agent steps (Settings → Code). */
+  temperature?: number;
+  /** Auto-approve file edits — write/edit/multi_edit run without asking
+   *  (Settings → Code; checkpoints still allow rollback). */
+  autoApproveEdits?: boolean;
   /** User-defined skills: /name inserts the prompt template (Settings → Code). */
   skills?: { name: string; prompt: string }[];
   /** Names of built-in skills the user turned off (Settings → Code). */
@@ -298,6 +460,13 @@ export function CodeMode({
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<CodeMsg[]>([]);
   const [input, setInput] = useState("");
+  // Files the user attached to the next Code turn — same as chat: documents
+  // (PDF/Word/Excel/text/code, extracted to text), and images (vision models
+  // see the pixels; text-only models get OCR text).
+  const [codeAttachments, setCodeAttachments] = useState<Attachment[]>([]);
+  const [attachErr, setAttachErr] = useState("");
+  // Full-size image preview (screenshot / view_image steps).
+  const [previewImg, setPreviewImg] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [bypass, setBypass] = useState(false);
   const [thinkMode, setThinkMode] = useState<ThinkMode>(() => {
@@ -343,6 +512,10 @@ export function CodeMode({
   const sessionAllowsRef = useRef<Set<string>>(new Set());
   const allowedCommandsRef = useRef(allowedCommands);
   allowedCommandsRef.current = allowedCommands;
+  const autoEditsRef = useRef(autoApproveEdits);
+  autoEditsRef.current = autoApproveEdits;
+  /** Prompt-processing progress (0..1) for the current step, null = not prefilling. */
+  const [prefill, setPrefill] = useState<number | null>(null);
 
   /** Toggle bypass; turning it ON also releases any approval that's waiting. */
   const toggleBypass = useCallback(() => {
@@ -693,6 +866,28 @@ export function CodeMode({
     return undefined;
   }
 
+  /** Attach a document or image to the next Code turn (mirrors chat). */
+  async function attachCodeFile() {
+    setAttachErr("");
+    const path = await pickAttachmentFile();
+    if (!path) return;
+    try {
+      if (model?.visionReady && isVisionImagePath(path)) {
+        const name = path.split(/[/\\]/).pop() ?? "image";
+        setCodeAttachments((cur) => [
+          ...cur,
+          { name, kind: "vision", text: "", chars: 0, truncated: false, path },
+        ]);
+      } else {
+        // Documents (extracted) and non-vision images (OCR) both go here.
+        const att = await readAttachment(path);
+        setCodeAttachments((cur) => [...cur, { ...att, path }]);
+      }
+    } catch (e) {
+      setAttachErr(typeof e === "string" ? e : t("readAttachFailed"));
+    }
+  }
+
   async function send(textArg?: string) {
     const text = (textArg ?? input).trim();
     if (!textArg && text.startsWith("/") && slashMenu.some((e) => e.cmd === text)) {
@@ -707,7 +902,26 @@ export function CodeMode({
     // so the user can rewind to "before this message".
     const checkpointId = await agentCheckpointBegin().catch(() => undefined);
     const projectDoc = await loadProjectDoc();
-    const userMsg: CodeMsg = { id: uid(), role: "user", text, steps: [], checkpointId };
+    const visionImgs = codeAttachments
+      .filter((a) => a.kind === "vision" && a.path)
+      .map((a) => a.path!);
+    const docAtts = codeAttachments.filter((a) => a.kind !== "vision" && a.text.trim());
+    // Document / OCR text becomes context prepended to the model's prompt, but
+    // the visible bubble keeps just the typed text (+ attachment chips).
+    const attachCtx = docAtts
+      .map((a) => `【${t("attachContextLabel")} ${a.name}】\n${a.text.slice(0, 9000)}`)
+      .join("\n\n");
+    const userMsg: CodeMsg = {
+      id: uid(),
+      role: "user",
+      text,
+      steps: [],
+      checkpointId,
+      images: visionImgs.length ? visionImgs : undefined,
+      attachments: codeAttachments.length
+        ? codeAttachments.map((a) => ({ name: a.name, kind: a.kind, path: a.path }))
+        : undefined,
+    };
     const asst: CodeMsg = { id: uid(), role: "assistant", text: "", steps: [] };
     // Cross-turn history keeps only the text, but assistant turns carry a
     // compact record of the tools they ran — so "continue" resumes from the
@@ -731,18 +945,31 @@ export function CodeMode({
     const update = (fn: (a: CodeMsg) => CodeMsg) =>
       setMsgs((cur) => cur.map((m) => (m.id === asst.id ? fn(m) : m)));
 
-    await runAgentTurn(text, history, workspace, lang, {
+    const turnImages = visionImgs;
+    setCodeAttachments([]);
+    const modelInput = attachCtx ? `${attachCtx}\n\n${text}` : text;
+    await runAgentTurn(modelInput, history, workspace, lang, {
       thinkMode,
       supportsThinking: model.supportsThinking,
       thinkSwitch: model.thinkSwitch,
       nCtx: model.nCtx ?? undefined,
       maxSteps,
+      temperature,
       bashTimeout,
       projectDoc,
+      visionReady: model.visionReady,
+      images: turnImages.length ? turnImages : undefined,
       signal,
       approve: (call: ToolCall) => {
         if (bypassRef.current) return Promise.resolve(true);
         if (sessionAllowsRef.current.has(allowKeyFor(call))) return Promise.resolve(true);
+        // Settings → Code: file edits run without asking (checkpoints cover rollback).
+        if (
+          autoEditsRef.current &&
+          (call.name === "write_file" || call.name === "edit_file" || call.name === "multi_edit")
+        ) {
+          return Promise.resolve(true);
+        }
         if (call.name === "bash" || call.name === "bash_bg") {
           const cmd = String(call.args.command ?? "").trim();
           if (allowedCommandsRef.current.some((p) => cmd === p || cmd.startsWith(p + " "))) {
@@ -755,6 +982,7 @@ export function CodeMode({
       onThinking: (t) => update((m) => ({ ...m, liveThinking: t })),
       onStats: (tokens, tps) => setStats({ tokens, tps }),
       onContext: (used) => setCtxUsed(used),
+      onPrefill: setPrefill,
       onPlan: (todos) => update((m) => ({ ...m, plan: todos })),
       onCompacted: () => update((m) => ({ ...m, compacted: true })),
       onAskUser: (question, options) =>
@@ -785,6 +1013,7 @@ export function CodeMode({
 
     setRunning(false);
     setApproval(null);
+    setPrefill(null);
     setMsgs((cur) => {
       persist(cur, bodyRef.current.workspace, bodyRef.current.sid);
       return cur;
@@ -948,7 +1177,28 @@ export function CodeMode({
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
                     </button>
                   )}
-                  <div className="cm-user">{m.text}</div>
+                  <div className="cm-user">
+                    {m.images && m.images.length > 0 && (
+                      <span className="cm-user-images">
+                        {m.images.map((p) => (
+                          <span key={p} className="cm-attach-img" onClick={() => setPreviewImg(p)} style={{ cursor: "zoom-in" }}>
+                            <ImgThumb path={p} />
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                    {m.attachments && m.attachments.some((a) => a.kind !== "vision") && (
+                      <span className="cm-user-docs">
+                        {m.attachments.filter((a) => a.kind !== "vision").map((a, i) => (
+                          <span key={a.name + i} className="cm-attach-doc">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6" /></svg>
+                            <span className="cm-attach-doc-name">{a.name}</span>
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                    {m.text}
+                  </div>
                 </div>
               ) : (
                 <div key={m.id} className="cm-asst">
@@ -962,7 +1212,7 @@ export function CodeMode({
                   {m.steps.map((s) => (
                     <div key={s.id} className="cm-block">
                       {s.thinking && <ThinkPanel text={s.thinking} label={t("cmThought")} />}
-                      <StepCard step={s} />
+                      <StepCard step={s} onPreview={setPreviewImg} />
                     </div>
                   ))}
                   {m.liveThinking && <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />}
@@ -999,7 +1249,7 @@ export function CodeMode({
                     </button>
                   )}
                   {running && m === msgs[msgs.length - 1] && !m.text && !m.liveThinking && m.steps.length === 0 && (
-                    <span className="cm-spin cm-working" />
+                    prefill != null ? <PrefillRing frac={prefill} size={18} /> : <span className="cm-spin cm-working" />
                   )}
                 </div>
               ),
@@ -1011,10 +1261,15 @@ export function CodeMode({
         {running && (() => {
           const cur = msgs[msgs.length - 1];
           const curStep = cur?.steps?.[cur.steps.length - 1];
-          const label = curStep && curStep.status === "running" ? toolSummary(curStep.call) : t("cmRunning");
+          const label =
+            prefill != null
+              ? t("cmPrefill")
+              : curStep && curStep.status === "running"
+                ? toolSummary(curStep.call)
+                : t("cmRunning");
           return (
             <div className="cm-runbar">
-              <span className="cm-spin" />
+              {prefill != null ? <PrefillRing frac={prefill} /> : <span className="cm-spin" />}
               <span className="cm-runbar-label">{label}</span>
               {stats && (
                 <span className="cm-runbar-stats">
@@ -1038,6 +1293,37 @@ export function CodeMode({
                   </button>
                 </span>
               ))}
+            </div>
+          )}
+          {(codeAttachments.length > 0 || attachErr) && (
+            <div className="cm-attach-row">
+              {codeAttachments.map((a, i) =>
+                a.kind === "vision" && a.path ? (
+                  <span key={a.path} className="cm-attach-img">
+                    <ImgThumb path={a.path} />
+                    <button
+                      className="cm-attach-del"
+                      title={t("removeAttach")}
+                      onClick={() => setCodeAttachments((cur) => cur.filter((_, j) => j !== i))}
+                    >
+                      <Icon name="x" size={10} strokeWidth={2.2} />
+                    </button>
+                  </span>
+                ) : (
+                  <span key={a.name + i} className="cm-attach-doc" title={a.name}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6" /></svg>
+                    <span className="cm-attach-doc-name">{a.name}</span>
+                    <button
+                      className="cm-attach-del inline"
+                      title={t("removeAttach")}
+                      onClick={() => setCodeAttachments((cur) => cur.filter((_, j) => j !== i))}
+                    >
+                      <Icon name="x" size={10} strokeWidth={2.2} />
+                    </button>
+                  </span>
+                ),
+              )}
+              {attachErr && <span className="cm-attach-err">{attachErr}</span>}
             </div>
           )}
           <div className="cm-input-row">
@@ -1135,6 +1421,14 @@ export function CodeMode({
               }}
               rows={1}
             />
+            <button
+              className="cm-attach-btn"
+              title={t("cmAttachFile")}
+              disabled={!workspace || running}
+              onClick={() => void attachCodeFile()}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21.4 11.05l-8.5 8.5a5 5 0 01-7.07-7.07l8.49-8.49a3 3 0 014.24 4.24l-8.49 8.49a1 1 0 01-1.42-1.42l7.8-7.79" /></svg>
+            </button>
             {running ? (
               <button className="cm-send stop" onClick={stop} title={t("drStop")}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
@@ -1148,6 +1442,7 @@ export function CodeMode({
         </div>
       </main>
 
+      {previewImg && <ImagePreview path={previewImg} onClose={() => setPreviewImg(null)} />}
       {approval && (
         <div className="cm-approve-backdrop" onMouseDown={() => { approval.resolve(false); setApproval(null); }}>
           <div className="cm-approve" onMouseDown={(e) => e.stopPropagation()}>

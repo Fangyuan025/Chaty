@@ -28,6 +28,14 @@ pub struct StoredMessage {
     pub role: String,
     pub content: String,
     pub created_at: i64,
+    /// Image attachment paths (vision models), stored as a JSON array.
+    #[serde(default)]
+    pub images: Vec<String>,
+}
+
+/// JSON-decode the `images` column ('[]' default; tolerate legacy NULL/garbage).
+fn images_from_json(s: Option<String>) -> Vec<String> {
+    s.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
 const SCHEMA: &str = "
@@ -46,7 +54,8 @@ CREATE TABLE IF NOT EXISTS messages (
     conversation_id TEXT NOT NULL,
     role            TEXT NOT NULL,
     content         TEXT NOT NULL,
-    created_at      INTEGER NOT NULL
+    created_at      INTEGER NOT NULL,
+    images          TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
 CREATE TABLE IF NOT EXISTS code_sessions (
@@ -66,6 +75,11 @@ pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
     // DBs already have it from SCHEMA, so the duplicate-column error is ignored.
     let _ = conn.execute(
         "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    // Migration for DBs created before v1.7: image attachments (vision models).
+    let _ = conn.execute(
+        "ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT '[]'",
         [],
     );
     Ok(Db(Mutex::new(conn)))
@@ -110,13 +124,16 @@ pub fn save_message(
     conversation_id: String,
     role: String,
     content: String,
+    images: Option<Vec<String>>,
 ) -> Result<(), String> {
     let conn = lock(&db)?;
     let now = now_ms();
+    let images_json =
+        serde_json::to_string(&images.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
     conn.execute(
-        "INSERT OR REPLACE INTO messages (id, conversation_id, role, content, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, conversation_id, role, content, now],
+        "INSERT OR REPLACE INTO messages (id, conversation_id, role, content, created_at, images)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, conversation_id, role, content, now, images_json],
     )
     .map_err(|e| e.to_string())?;
     conn.execute(
@@ -157,7 +174,7 @@ pub fn get_messages(db: State<'_, Db>, conversation_id: String) -> Result<Vec<St
     let conn = lock(&db)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, role, content, created_at FROM messages
+            "SELECT id, role, content, created_at, images FROM messages
              WHERE conversation_id = ?1 ORDER BY created_at ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -168,6 +185,7 @@ pub fn get_messages(db: State<'_, Db>, conversation_id: String) -> Result<Vec<St
                 role: r.get(1)?,
                 content: r.get(2)?,
                 created_at: r.get(3)?,
+                images: images_from_json(r.get(4)?),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -180,6 +198,8 @@ pub struct MsgIn {
     pub id: String,
     pub role: String,
     pub content: String,
+    #[serde(default)]
+    pub images: Vec<String>,
 }
 
 /// Replace ALL messages of a conversation with `messages` (in order). Used by
@@ -199,10 +219,11 @@ pub fn replace_messages(
     )
     .map_err(|e| e.to_string())?;
     for (i, m) in messages.iter().enumerate() {
+        let images_json = serde_json::to_string(&m.images).unwrap_or_else(|_| "[]".into());
         tx.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![m.id, conversation_id, m.role, m.content, base + i as i64],
+            "INSERT INTO messages (id, conversation_id, role, content, created_at, images)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![m.id, conversation_id, m.role, m.content, base + i as i64, images_json],
         )
         .map_err(|e| e.to_string())?;
     }

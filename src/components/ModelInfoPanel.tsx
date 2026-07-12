@@ -96,6 +96,10 @@ export function ModelInfoPanel({
               <span className="hw-k">{t("miMultimodal")}</span>
               {cap(model.multimodal)}
             </div>
+            <div className="hw-row">
+              <span className="hw-k">{t("miVision")}</span>
+              {cap(model.visionReady)}
+            </div>
           </div>
         )}
       </div>

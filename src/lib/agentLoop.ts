@@ -14,6 +14,18 @@ import {
   agentEditFile,
   agentMultiEdit,
   agentOutline,
+  agentResolveImage,
+  browserNavigate,
+  browserScreenshot,
+  browserSnapshot,
+  browserScroll,
+  browserEval,
+  browserClick,
+  browserType,
+  browserConsole,
+  browserRead,
+  browserClose,
+  readAttachment,
   type EditOp,
   agentGlob,
   agentGrep,
@@ -53,6 +65,17 @@ export type AgentToolName =
   | "web_search"
   | "web_fetch"
   | "web_download"
+  | "view_image"
+  | "browser_navigate"
+  | "browser_screenshot"
+  | "browser_snapshot"
+  | "browser_scroll"
+  | "browser_click"
+  | "browser_type"
+  | "browser_eval"
+  | "browser_console"
+  | "browser_read"
+  | "browser_close"
   | "ask_user"
   | "update_plan";
 
@@ -64,6 +87,28 @@ export const MUTATING_TOOLS = new Set<AgentToolName>([
   "bash",
   "bash_bg",
   "web_download",
+]);
+
+/**
+ * Tools exempt from the identical-call loop breaker: with the SAME args they
+ * still make progress or observe a changed world, so a repeat is not a stuck
+ * loop. `browser_scroll` 300px twice moves further down the page; re-taking a
+ * screenshot/snapshot or re-reading the page/console re-observes a page that may
+ * have changed since; `bg_output` polls a running job for new output.
+ *
+ * Deliberately NOT exempt: `browser_navigate` and `view_image` — their arg (the
+ * url / image path) already distinguishes a *different* target (different key →
+ * not a repeat), so an identical call means re-fetching the SAME thing, which is
+ * a genuine degenerate loop the breaker SHOULD stop (a real model got stuck
+ * re-navigating the same URL forever until this was removed).
+ */
+export const REPEAT_EXEMPT = new Set<AgentToolName>([
+  "browser_scroll",
+  "browser_screenshot",
+  "browser_snapshot",
+  "browser_read",
+  "browser_console",
+  "bg_output",
 ]);
 
 export interface ToolCall {
@@ -93,6 +138,9 @@ export interface ToolStep {
   result?: string;
   /** For edit/write, the before/after so the UI can render a diff. */
   diff?: { path: string; before: string; after: string };
+  /** Absolute path of an image this step produced (browser_screenshot /
+   *  view_image) — the UI renders a clickable preview. */
+  image?: string;
 }
 
 export class AgentSignal {
@@ -114,6 +162,9 @@ export interface AgentCallbacks {
   onStats?: (tokens: number, tps: number) => void;
   /** Context window position after a step (prompt + output tokens used). */
   onContext?: (used: number) => void;
+  /** Prompt-processing progress before this step's first token: 0..1 while a
+   *  long prefill runs, then `null` once tokens flow (hide the ring). */
+  onPrefill?: (frac: number | null) => void;
   /** The model asks the user to pick between options. Resolves with the choice. */
   onAskUser?: (question: string, options: string[]) => Promise<string>;
   /** The model set/updated its task plan (todo list). */
@@ -136,11 +187,18 @@ export interface AgentOptions {
   thinkSwitch?: boolean;
   nCtx?: number;
   maxSteps?: number;
+  /** Sampling temperature for agent steps (Settings → Code; default 0.3). */
+  temperature?: number;
   /** Default timeout for bash commands (seconds) when the model doesn't set one. */
   bashTimeout?: number;
   /** Project guide (AGENTS.md / PROJECT.md / CLAUDE.md) injected into the
    *  system prompt — the /init loop's other half. */
   projectDoc?: { name: string; text: string };
+  /** The loaded model has a vision encoder — unlock `view_image` / browser
+   *  visual verification, and let the model see user-attached images. */
+  visionReady?: boolean;
+  /** Absolute paths of images the user attached to this turn (vision models). */
+  images?: string[];
   signal: AgentSignal;
   /** Gate a mutating tool call. Return true to run, false to deny. Bypass mode
    *  passes a function that always resolves true. */
@@ -205,14 +263,34 @@ const TOOLS_DOC = `
 - web_fetch: 抓取任意 URL,按内容类型自动处理:文章页→干净的 Markdown 正文;代码/JSON/配置文件→原文;GitHub 文件页自动取 raw 源文件;Reddit 帖子→正文+评论;YouTube 视频→元信息+完整字幕转写;B站视频→公开元信息+简介(播放/点赞/弹幕);PDF→提取文本;图片等二进制→返回元信息(用 web_download 保存)。结果还会列出页面上的链接和图片 URL——想深入子页面就继续 fetch 那些链接。要 HTML 源码时传 raw=true。args: { "url": string, "raw"?: boolean }
 - web_download: 把 URL 指向的文件(图片、压缩包、任意资源)下载到工作区指定路径。args: { "url": string, "path": string }
 - update_plan: 制定或更新任务计划(待办清单),让用户看到你的推进步骤。开始复杂任务时先列计划,完成一步就把它标为 done、把下一步标为 in_progress。args: { "todos": [{ "content": string, "status": "pending"|"in_progress"|"done" }] }
-- ask_user: 当遇到需要用户拍板的决策(方案分歧、需求不明、破坏性操作确认)时,向用户提一个选择题;不要自己乱猜。args: { "question": string, "options": string[] }`;
+- ask_user: 当遇到需要用户拍板的决策(方案分歧、需求不明、破坏性操作确认)时,向用户提一个选择题;不要自己乱猜。args: { "question": string, "options": string[] }
+- view_image: 查看工作区里的一张图片(截图、设计稿、报错图、图表、扫描件等)。视觉模型会真正"看"到画面;非视觉模型则自动对图片做 OCR 返回其中的文字。args: { "path": string }`;
+
+/** Vision-only tool doc (browser suite), appended when the model has a vision
+ *  encoder — the whole point is seeing the rendered page. */
+const VISION_TOOLS_DOC = `
+- browser_navigate: 打开一个网址(或本地文件 / 运行中的 dev server,如 http://localhost:5173)。返回最终地址、标题,以及页面上**可交互元素的清单**(链接/按钮/输入框的真实文字)。用它真实打开并验证你做的网页。args: { "url": string }
+- browser_read: 重新读取当前页面的可交互元素清单 + 页面标题/网址(**任何操作后确认页面状态的首选,轻量、无需视觉**)。args: {}
+- browser_screenshot: 截取**整页**并用视觉查看(会自动滚动一遍触发懒加载)。**打开一个要研究/理解的页面后,第一步就用它一次性拿到整页全貌**——快速定位你要找的元素、区块或正文(browser_read 只给可交互元素、不含正文,读页面文字内容必须靠它)。这样能省掉后面反复 snapshot+scroll 的来回。args: {}
+- browser_snapshot: 截取**当前视口**并用视觉查看(即时,不滚动)。用于:整页看不清某处细节时放大看那一屏;或某次交互后只想快速确认当前这一屏变成了什么样。args: {}
+- browser_scroll: 向下(或指定方向/像素)滚动以加载更多内容。连续多次滚动是正常进度,不算重复。args: { "to"?: "bottom"|"top", "by"?: number(像素) }
+- browser_close: 关闭你正在操作的浏览器(任务做完或用户让你关时用)。args: {}
+- browser_console: 读取当前页面的 JS 控制台输出与未捕获异常。配合 snapshot 做"后台报错 + 视觉"双验证。args: {}
+- browser_click: 点击元素。**优先用 text 按可见文字点击(最稳)**,例如 { "text": "Contact" };也可用标准 CSS 选择器 { "selector": "button.submit" }。点击后结果会自动附上新页面的元素清单。args: { "text"?: string, "selector"?: string }
+- browser_type: 向输入框填文本。用 label 按占位符/字段名匹配(如 { "label": "email", "text": "..." }),或用 selector。args: { "text": string, "label"?: string, "selector"?: string }
+- browser_eval: 执行一段 JavaScript 返回结果。可以写多行并用 return 返回。args: { "expression": string }
+浏览器工作流:browser_navigate 打开页面(给你元素清单)→ **browser_screenshot 先截整页,一眼掌握全貌、定位到你要的元素或正文**(尤其是要读页面内容、或页面较长时,优先整页截图,别一上来就 snapshot+scroll 一屏屏摸)→ 用 browser_click(优先 text)/browser_type 交互 → **交互后必做:点击/提交/跳转/滚动等任何可能改变页面的操作之后,先用 browser_read(轻量,拿最新元素清单)或 browser_snapshot(要看某一屏视觉时)核实页面确实变成了你预期的样子,再决定下一步——绝不要凭猜测连续操作** → browser_console 查报错 → 做完或用户让你关时用 browser_close 关闭。
+重要:①CSS 选择器只支持**标准语法**——不存在 :contains()、:has-text() 这类;要按文字定位就用 browser_click 的 text 参数。②浏览器用的是持久配置,你之前登录过的网站会保持登录。③你随时能拿到两类信息:页面元素(browser_read)和控制台(browser_console)——拿不准页面状态时先读它们,别硬猜。
+**何时用浏览器**:只有当任务需要真实操作网页(填表单、点按钮、登录后才能看的内容、必须"亲眼看到"渲染效果做视觉验证)、或用户明确要求用浏览器时,才用这套浏览器工具。**单纯查资料、做调研、找文档/报错解法,优先用 web_search / web_fetch**(更快、无需开浏览器);它们查不到或够不着目标时,再考虑浏览器。**web_fetch / web_search 一旦拿到能回答问题的内容,就直接给出答案——不要再多开浏览器"重复核实"一遍,那样只是白白多花时间。**`;
 
 function systemPrompt(
   workspace: string,
   zh: boolean,
   mode: ThinkMode,
   projectDoc?: { name: string; text: string },
+  visionReady?: boolean,
 ): string {
+  const toolsDoc = TOOLS_DOC + (visionReady ? VISION_TOOLS_DOC : "");
   const doc = projectDoc
     ? zh
       ? `\n\n项目说明(来自工作区的 ${projectDoc.name},请遵循其中的约定):\n${projectDoc.text}`
@@ -232,7 +310,7 @@ function systemPrompt(
     return `你是 Chaty 的编程智能体,在一个工作区目录中帮用户完成编码任务。工作区根目录:${workspace}
 
 你可以调用下列工具(所有路径都相对于工作区;越界路径会被拒绝):
-${TOOLS_DOC}
+${toolsDoc}
 
 调用规则(务必严格遵守):
 - 每次只调用一个工具。要调用时,只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要在同一条消息里写其它内容。
@@ -250,7 +328,7 @@ ${TOOLS_DOC}
   return `You are Chaty's coding agent, working inside a workspace directory. Workspace root: ${workspace}
 
 You can call these tools (all paths are relative to the workspace; escaping paths are rejected):
-${TOOLS_DOC}
+${toolsDoc}
 
 Rules (follow strictly):
 - Call ONE tool at a time. To call it, output a single line <tool_call>{"name":"tool","arguments":{...}}</tool_call> and STOP immediately — nothing else in that message.
@@ -598,6 +676,40 @@ async function execTool(
       if (!path) return { result: 'ERROR: 缺少 "path" 参数 (missing "path")' };
       return { result: await agentWebDownload(url, path) };
     }
+    case "browser_navigate": {
+      const url = asStr(a.url);
+      if (!url) return { result: 'ERROR: 缺少 "url" 参数 (missing "url")' };
+      return { result: await browserNavigate(url) };
+    }
+    case "browser_console":
+      return { result: await browserConsole() };
+    case "browser_scroll": {
+      const to = asStr(a.to) as "bottom" | "top" | "";
+      const by = typeof a.by === "number" ? a.by : undefined;
+      return { result: await browserScroll(to || undefined, by) };
+    }
+    case "browser_read":
+      return { result: await browserRead() };
+    case "browser_close":
+      return { result: await browserClose() };
+    case "browser_eval": {
+      const expr = asStr(a.expression) || asStr(a.expr) || asStr(a.code);
+      if (!expr) return { result: 'ERROR: 缺少 "expression" 参数 (missing "expression")' };
+      return { result: await browserEval(expr) };
+    }
+    case "browser_click": {
+      const text = asStr(a.text) || asStr(a.label);
+      const sel = asStr(a.selector) || asStr(a.sel);
+      if (!text && !sel) return { result: 'ERROR: 需要 "text"(优先)或 "selector" (need "text" or "selector")' };
+      return { result: await browserClick(sel || undefined, text || undefined) };
+    }
+    case "browser_type": {
+      const sel = asStr(a.selector) || asStr(a.sel);
+      const label = asStr(a.label) || asStr(a.field) || asStr(a.placeholder);
+      const text = asStr(a.text) || asStr(a.value);
+      if (!sel && !label) return { result: 'ERROR: 需要 "label" 或 "selector" (need "label" or "selector")' };
+      return { result: await browserType(sel || undefined, label || undefined, text) };
+    }
     default:
       return { result: `未知工具 (unknown tool): ${call.name}` };
   }
@@ -716,10 +828,13 @@ export async function runAgentTurn(
   // get a proportionally smaller (safe) budget; big ones read up to ~384 KB.
   const readChars = Math.min(384000, Math.max(8000, Math.floor((nCtx - 5000) * 3)));
   const { history: keptHistory, trimmed } = trimHistory(history, nCtx);
+  // The user's opening turn carries any attached images (vision models only);
+  // otherwise it's plain text as before.
+  const userImages = opts.visionReady && opts.images?.length ? opts.images : undefined;
   const messages: ChatMessage[] = [
-    { role: "system", content: systemPrompt(workspace, lang === "zh", opts.thinkMode, opts.projectDoc) },
+    { role: "system", content: systemPrompt(workspace, lang === "zh", opts.thinkMode, opts.projectDoc, opts.visionReady) },
     ...keptHistory,
-    { role: "user", content: userInput + noThinkSuffix },
+    { role: "user", content: userInput + noThinkSuffix, ...(userImages ? { images: userImages } : {}) },
   ];
 
   // Every user-role turn (tool results, nudges) carries the soft switch too,
@@ -779,9 +894,11 @@ export async function runAgentTurn(
       let raw = "";
       let liveTokens = 0;
       let thinkGateTripped = false;
+      let prefillShown = false;
       const t0 = performance.now();
       // After an intercepted repeat, sample hotter once to escape the pattern.
-      const stepTemp = hotNext ? 0.7 : 0.3;
+      const baseTemp = opts.temperature ?? 0.3;
+      const stepTemp = hotNext ? Math.max(0.7, baseTemp) : baseTemp;
       hotNext = false;
       // Recovery step after the think gate: reasoning off so the model MUST act.
       const stepThink = forceNoThinkNext ? false : think;
@@ -799,7 +916,18 @@ export async function runAgentTurn(
           },
         },
         (ev) => {
-          if (ev.type === "token") {
+          if (ev.type === "prefill") {
+            // Long prompt being processed — drive the progress ring.
+            prefillShown = true;
+            cb.onPrefill?.(ev.total > 0 ? Math.min(1, ev.processed / ev.total) : 0);
+          } else if (ev.type === "token") {
+            // First token after a prefill ⇒ processing is over, hide the ring.
+            // (Can't key off raw === "": a synthetic "<think>" token may arrive
+            // BEFORE the prefill events.)
+            if (prefillShown) {
+              prefillShown = false;
+              cb.onPrefill?.(null);
+            }
             raw += ev.text;
             liveTokens++;
             // The live rate is meaningless for the first fraction of a second
@@ -830,6 +958,8 @@ export async function runAgentTurn(
           }
         },
       );
+      // Safety: a cancelled/errored step may end mid-prefill — clear the ring.
+      cb.onPrefill?.(null);
       if (opts.signal.cancelled) return;
       const thinking = thinkPart(raw);
 
@@ -899,8 +1029,16 @@ export async function runAgentTurn(
       const stepObj: ToolStep = { id: uid(), call, status: "running", thinking };
 
       // ── Loop breaker: identical call to the previous one? ──
+      // Exempt tools whose repeated identical call is legitimate progress or a
+      // fresh observation: scrolling 300px twice moves further; re-taking a
+      // screenshot / re-reading the page / polling a job / re-navigating are all
+      // valid. The breaker only guards degenerate no-op repeats (ls ., etc.).
       const callKey = `${call.name}:${JSON.stringify(call.args)}`;
-      if (callKey === lastCallKey) {
+      const exemptFromRepeat = REPEAT_EXEMPT.has(call.name);
+      if (exemptFromRepeat) {
+        lastCallKey = "";
+        repeatCount = 0;
+      } else if (callKey === lastCallKey) {
         repeatCount++;
       } else {
         lastCallKey = callKey;
@@ -938,6 +1076,86 @@ export async function runAgentTurn(
         const todos = parsePlan(call.args);
         cb.onPlan?.(todos);
         pushUser(toolResultMsg("update_plan", lang === "zh" ? "计划已更新。" : "Plan updated."));
+        continue;
+      }
+      // view_image: works on ANY model. Vision-ready → attach the pixels
+      // (media turn). Text-only → OCR the image and return the text.
+      if (call.name === "view_image") {
+        const rel = argPath(call.args);
+        try {
+          const abs = await agentResolveImage(rel);
+          if (opts.visionReady) {
+            stepObj.status = "done";
+            stepObj.result = (lang === "zh" ? "已查看图片:" : "Viewed image: ") + rel;
+            stepObj.image = abs;
+            cb.onStep(stepObj);
+            messages.push({
+              role: "user",
+              content:
+                toolResultMsg(
+                  "view_image",
+                  lang === "zh"
+                    ? `已加载图片 ${rel},下面是它的内容,请查看后继续。`
+                    : `Loaded image ${rel}; its contents are below — look and continue.`,
+                ) + noThinkSuffix,
+              images: [abs],
+            });
+          } else {
+            // OCR fallback for non-vision models.
+            const att = await readAttachment(abs);
+            const text = att.text.trim();
+            stepObj.status = "done";
+            stepObj.result =
+              (lang === "zh" ? `已对图片做 OCR (${rel}):\n` : `OCR of ${rel}:\n`) +
+              (text || (lang === "zh" ? "(未识别到文字)" : "(no text found)"));
+            stepObj.image = abs;
+            cb.onStep(stepObj);
+            pushUser(
+              toolResultMsg(
+                "view_image",
+                lang === "zh"
+                  ? `图片 ${rel} 的 OCR 文字(当前模型无视觉能力,仅能读取文字):\n${text || "(未识别到文字)"}`
+                  : `OCR text from ${rel} (this model has no vision — text only):\n${text || "(no text found)"}`,
+              ),
+            );
+          }
+        } catch (e) {
+          const msg = `ERROR: ${e instanceof Error ? e.message : String(e)}`;
+          stepObj.status = "error";
+          stepObj.result = msg;
+          cb.onStep(stepObj);
+          pushUser(toolResultMsg("view_image", msg));
+        }
+        continue;
+      }
+      // browser_screenshot: capture the live page and attach it to the next
+      // turn as vision — the model literally sees the rendered web app.
+      if (call.name === "browser_screenshot" || call.name === "browser_snapshot") {
+        try {
+          const abs =
+            call.name === "browser_snapshot" ? await browserSnapshot() : await browserScreenshot();
+          stepObj.status = "done";
+          stepObj.result = lang === "zh" ? "已截取当前页面" : "Captured the current page";
+          stepObj.image = abs;
+          cb.onStep(stepObj);
+          messages.push({
+            role: "user",
+            content:
+              toolResultMsg(
+                "browser_screenshot",
+                lang === "zh"
+                  ? "这是当前网页的截图,请查看后继续验证/操作。"
+                  : "Screenshot of the current page below — look and continue.",
+              ) + noThinkSuffix,
+            images: [abs],
+          });
+        } catch (e) {
+          const msg = `ERROR: ${e instanceof Error ? e.message : String(e)}`;
+          stepObj.status = "error";
+          stepObj.result = msg;
+          cb.onStep(stepObj);
+          pushUser(toolResultMsg("browser_screenshot", msg));
+        }
         continue;
       }
       if (call.name === "ask_user") {
