@@ -17,6 +17,9 @@ pub struct Attachment {
     pub text: String,
     pub chars: usize,
     pub truncated: bool,
+    /// Embedded raster images extracted from the document (cached copies) —
+    /// vision models see these alongside the text; empty for plain text files.
+    pub images: Vec<String>,
 }
 
 #[tauri::command]
@@ -42,6 +45,9 @@ pub async fn read_attachment(app: tauri::AppHandle, path: String) -> Result<Atta
                 .map_err(|e| format!("PDF 解析失败：{e}"))?;
             ("pdf".to_string(), extracted)
         }
+        "docx" => ("docx".to_string(), crate::rag::extract_docx(&path)?),
+        "xlsx" => ("xlsx".to_string(), crate::rag::extract_xlsx(&path)?),
+        "pptx" => ("pptx".to_string(), crate::rag::extract_pptx(&path)?),
         "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" => {
             let dir = app
                 .path()
@@ -56,13 +62,24 @@ pub async fn read_attachment(app: tauri::AppHandle, path: String) -> Result<Atta
         _ => ("text".to_string(), read_text_file(&path)?),
     };
 
+    // Embedded images (docx/xlsx/pptx/pdf) ride along so vision models can SEE
+    // charts, photos and screenshots inside the document — not just the text.
+    let images = if matches!(ext.as_str(), "pdf" | "docx" | "xlsx" | "pptx") {
+        let p2 = path.clone();
+        tokio::task::spawn_blocking(move || crate::docimg::extract_embedded_images(&p2, 6))
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     let total = text.chars().count();
     let truncated = total > MAX_CHARS;
     if truncated {
         text = text.chars().take(MAX_CHARS).collect();
     }
     let text = text.trim().to_string();
-    if text.is_empty() {
+    if text.is_empty() && images.is_empty() {
         return Err("没有从文件中解析到文本内容".into());
     }
 
@@ -72,6 +89,7 @@ pub async fn read_attachment(app: tauri::AppHandle, path: String) -> Result<Atta
         chars: total,
         truncated,
         text,
+        images,
     })
 }
 

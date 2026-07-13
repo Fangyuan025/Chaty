@@ -11,12 +11,18 @@ import { Markdown } from "./Markdown";
 import {
   agentBgKill,
   agentBgList,
+  agentDlList,
+  type AgentDlInfo,
   agentCheckpointBegin,
   agentCheckpointRevertTo,
   agentGetWorkspace,
   agentListFiles,
   agentReadFile,
   agentSetWorkspace,
+  agentGrantDir,
+  agentRevokeDir,
+  agentListGrants,
+  agentClearGrants,
   imageThumb,
   imageDataUrl,
   saveImageAs,
@@ -397,7 +403,26 @@ function ImagePreview({ path, onClose }: { path: string; onClose: () => void }) 
 function PrefillRing({ frac, size = 16 }: { frac: number; size?: number }) {
   const r = (size - 3) / 2; // stroke 2.5 + hairline padding
   const c = 2 * Math.PI * r;
-  const pct = Math.round(Math.min(1, Math.max(0, frac)) * 100);
+  // Progress events arrive per decode batch / per media segment — seconds
+  // apart on big prompts, which read as jumps. Smooth the DISPLAYED value:
+  // chase a new target quickly, and between events creep gently ahead (capped
+  // a few percent past the last report) so the ring visibly keeps moving
+  // through long silent stretches like image encoding.
+  const [shown, setShown] = useState(frac);
+  const targetRef = useRef(frac);
+  targetRef.current = frac;
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setShown((s) => {
+        const t = targetRef.current;
+        if (t < s - 0.08) return t; // new turn restarted — snap back
+        if (t > s) return Math.min(t, s + Math.max((t - s) * 0.3, 0.005)); // chase
+        return Math.min(s + 0.0015, t + 0.05, 0.99); // creep between events
+      });
+    }, 80);
+    return () => clearInterval(timer);
+  }, []);
+  const pct = Math.round(Math.min(1, Math.max(0, shown)) * 100);
   return (
     <span className="cm-prefill" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
@@ -474,6 +499,14 @@ export function CodeMode({
     return v === "off" || v === "normal" || v === "deep" ? v : "normal";
   });
   const [approval, setApproval] = useState<{ call: ToolCall; resolve: (ok: boolean) => void } | null>(null);
+  /** Out-of-workspace access request from the agent (grant persists this session). */
+  const [dirAsk, setDirAsk] = useState<{ dir: string; resolve: (ok: boolean) => void } | null>(null);
+  /** High-risk sudo command awaiting explicit user permission (always asks). */
+  const [sudoAsk, setSudoAsk] = useState<{ cmd: string; resolve: (r: { ok: boolean; password?: string }) => void } | null>(null);
+  /** Password typed into the sudo dialog (masked; cleared the moment it resolves). */
+  const [sudoPw, setSudoPw] = useState("");
+  /** Directories granted beyond the workspace this session (header chips). */
+  const [dirGrants, setDirGrants] = useState<string[]>([]);
   const [ask, setAsk] = useState<{ question: string; options: string[]; resolve: (choice: string) => void } | null>(null);
   const [askText, setAskText] = useState("");
   const [slashSel, setSlashSel] = useState(0);
@@ -497,6 +530,8 @@ export function CodeMode({
   queueRef.current = queue;
   /** Running background jobs (dev servers …) — header indicator. */
   const [bgJobs, setBgJobs] = useState<AgentBgInfo[]>([]);
+  /** Active background downloads (header progress badge). */
+  const [downloads, setDownloads] = useState<AgentDlInfo[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const signalRef = useRef<AgentSignal | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -544,9 +579,14 @@ export function CodeMode({
   // keeps running after the turn — the user needs to see and stop it).
   useEffect(() => {
     if (!active || !workspace) return;
-    const tick = () => agentBgList().then(setBgJobs).catch(() => {});
+    const tick = () => {
+      agentBgList().then(setBgJobs).catch(() => {});
+      agentDlList()
+        .then((all) => setDownloads(all.filter((d) => !d.done)))
+        .catch(() => {});
+    };
     tick();
-    const timer = setInterval(tick, 5000);
+    const timer = setInterval(tick, running ? 1000 : 5000);
     return () => clearInterval(timer);
   }, [active, workspace, running]);
 
@@ -587,6 +627,16 @@ export function CodeMode({
   useEffect(() => {
     if (!active) return;
     const onKey = (e: KeyboardEvent) => {
+      if (sudoAsk) {
+        // High-risk: require an explicit click to allow; Esc denies.
+        if (e.key === "Escape") { e.preventDefault(); sudoAsk.resolve({ ok: false }); setSudoAsk(null); setSudoPw(""); }
+        return;
+      }
+      if (dirAsk) {
+        if (e.key === "Enter") { e.preventDefault(); dirAsk.resolve(true); setDirAsk(null); }
+        else if (e.key === "Escape") { e.preventDefault(); dirAsk.resolve(false); setDirAsk(null); }
+        return;
+      }
       if (approval) {
         if (e.key === "Enter") { e.preventDefault(); approval.resolve(true); setApproval(null); }
         else if (e.key === "Escape") { e.preventDefault(); approval.resolve(false); setApproval(null); }
@@ -608,7 +658,7 @@ export function CodeMode({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, approval, ask, running]);
+  }, [active, approval, ask, dirAsk, sudoAsk, running]);
 
   const persist = useCallback((next: CodeMsg[], ws: string | null, id: string) => {
     const firstUser = next.find((m) => m.role === "user");
@@ -664,6 +714,7 @@ export function CodeMode({
     try {
       const abs = await agentSetWorkspace(dir);
       setWorkspace(abs);
+      agentListGrants().then(setDirGrants).catch(() => {});
     } catch (e) {
       // window.alert doesn't render inside WKWebView — use the in-app modal.
       void confirm({
@@ -673,6 +724,24 @@ export function CodeMode({
     }
   }
 
+  /** Manually grant one more directory for this session (folder picker). */
+  async function addGrantDir() {
+    const dir = await open({ directory: true });
+    if (!dir || Array.isArray(dir)) return;
+    try {
+      await agentGrantDir(dir);
+      setDirGrants(await agentListGrants());
+    } catch (e) {
+      void confirm({ message: e instanceof Error ? e.message : String(e), confirmLabel: t("confirm") });
+    }
+  }
+
+  /** One-click revoke of a granted directory. */
+  async function revokeDir(d: string) {
+    await agentRevokeDir(d).catch(() => {});
+    setDirGrants(await agentListGrants().catch(() => [] as string[]));
+  }
+
   function newSession() {
     if (running) return;
     setSid(uid());
@@ -680,6 +749,8 @@ export function CodeMode({
     setInput("");
     setCtxUsed(0);
     sessionAllowsRef.current = new Set();
+    void agentClearGrants().catch(() => {});
+    setDirGrants([]);
   }
 
   async function openSession(id: string) {
@@ -693,6 +764,8 @@ export function CodeMode({
       setCtxUsed(0);
       setStats(null);
       sessionAllowsRef.current = new Set();
+      void agentClearGrants().catch(() => {});
+      setDirGrants([]);
       const meta = sessions.find((s) => s.id === id);
       if (meta?.workspace) {
         setWorkspace(meta.workspace);
@@ -705,7 +778,7 @@ export function CodeMode({
 
   async function deleteSession(id: string) {
     const ok = await confirm({
-      message: t("confirmDeleteConv"),
+      message: t("confirmDeleteSession"),
       confirmLabel: t("confirmDelete"),
       danger: true,
     });
@@ -744,6 +817,11 @@ export function CodeMode({
     signalRef.current?.cancel();
     approval?.resolve(false);
     setApproval(null);
+    sudoAsk?.resolve({ ok: false });
+    setSudoAsk(null);
+    setSudoPw("");
+    dirAsk?.resolve(false);
+    setDirAsk(null);
     ask?.resolve("");
     setAsk(null);
     setQueue([]);
@@ -902,9 +980,9 @@ export function CodeMode({
     // so the user can rewind to "before this message".
     const checkpointId = await agentCheckpointBegin().catch(() => undefined);
     const projectDoc = await loadProjectDoc();
-    const visionImgs = codeAttachments
-      .filter((a) => a.kind === "vision" && a.path)
-      .map((a) => a.path!);
+    const visionImgs = codeAttachments.flatMap((a) =>
+      a.kind === "vision" && a.path ? [a.path] : (a.images ?? []),
+    );
     const docAtts = codeAttachments.filter((a) => a.kind !== "vision" && a.text.trim());
     // Document / OCR text becomes context prepended to the model's prompt, but
     // the visible bubble keeps just the typed text (+ attachment chips).
@@ -960,6 +1038,13 @@ export function CodeMode({
       visionReady: model.visionReady,
       images: turnImages.length ? turnImages : undefined,
       signal,
+      // Out-of-workspace access always asks — even in bypass mode: bypass
+      // covers per-step approvals, not widening the sandbox boundary itself.
+      approveDir: (dir: string) => new Promise<boolean>((resolve) => setDirAsk({ dir, resolve })),
+      // `sudo` is privileged/dangerous — ALWAYS ask with a dedicated dialog
+      // (with optional secure password entry), even under bypass/allowlist.
+      approveSudo: (cmd: string) =>
+        new Promise<{ ok: boolean; password?: string }>((resolve) => setSudoAsk({ cmd, resolve })),
       approve: (call: ToolCall) => {
         if (bypassRef.current) return Promise.resolve(true);
         if (sessionAllowsRef.current.has(allowKeyFor(call))) return Promise.resolve(true);
@@ -983,6 +1068,7 @@ export function CodeMode({
       onStats: (tokens, tps) => setStats({ tokens, tps }),
       onContext: (used) => setCtxUsed(used),
       onPrefill: setPrefill,
+      onDirGrants: setDirGrants,
       onPlan: (todos) => update((m) => ({ ...m, plan: todos })),
       onCompacted: () => update((m) => ({ ...m, compacted: true })),
       onAskUser: (question, options) =>
@@ -1077,7 +1163,36 @@ export function CodeMode({
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>
             {wsName ? <span className="cm-ws-name">{wsName}</span> : <span className="cm-ws-pick">{t("cmOpenFolder")}</span>}
           </button>
+          {(dirGrants.length > 0 || workspace) && (
+            <div className="cm-grants">
+              {dirGrants.map((d) => (
+                <span key={d} className="cm-grant-chip" title={d}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>
+                  <span className="cm-grant-name">{d.split("/").filter(Boolean).pop()}</span>
+                  <button className="cm-grant-del" title={t("cmGrantRevoke")} onClick={() => void revokeDir(d)}>
+                    <Icon name="x" size={10} strokeWidth={2.2} />
+                  </button>
+                </span>
+              ))}
+              {workspace && (
+                <button className="cm-grant-add" title={t("cmGrantAddTip")} onClick={() => void addGrantDir()}>
+                  +
+                </button>
+              )}
+            </div>
+          )}
           <span className="cm-head-spacer" />
+          {downloads.length > 0 && (
+            <span
+              className="cm-bgjobs cm-dl-badge"
+              title={downloads.map((d) => `#${d.id} ${d.url} → ${d.path}`).join("\n")}
+            >
+              <span className="cm-spin" /> ⬇ {downloads.length}
+              {downloads[0].total
+                ? ` · ${Math.min(100, Math.round((downloads[0].downloaded / downloads[0].total) * 100))}%`
+                : ` · ${(downloads[0].downloaded / 1024 / 1024).toFixed(1)} MB`}
+            </span>
+          )}
           {bgJobs.length > 0 && (
             <button
               className="cm-bgjobs"
@@ -1443,6 +1558,47 @@ export function CodeMode({
       </main>
 
       {previewImg && <ImagePreview path={previewImg} onClose={() => setPreviewImg(null)} />}
+      {sudoAsk && (() => {
+        const deny = () => { sudoAsk.resolve({ ok: false }); setSudoAsk(null); setSudoPw(""); };
+        const allow = () => { sudoAsk.resolve({ ok: true, password: sudoPw || undefined }); setSudoAsk(null); setSudoPw(""); };
+        return (
+          <div className="cm-approve-backdrop" onMouseDown={deny}>
+            <div className="cm-approve cm-approve-danger" onMouseDown={(e) => e.stopPropagation()}>
+              <div className="cm-approve-title">{t("cmSudoTitle")}</div>
+              <pre className="cm-approve-cmd cm-approve-cmd-danger">{sudoAsk.cmd}</pre>
+              <div className="cm-approve-detail">{t("cmSudoHint")}</div>
+              <input
+                type="password"
+                className="cm-sudo-pw"
+                autoFocus
+                autoComplete="off"
+                placeholder={t("cmSudoPwPlaceholder")}
+                value={sudoPw}
+                onChange={(e) => setSudoPw(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); allow(); } }}
+              />
+              <div className="cm-approve-detail cm-sudo-pw-note">{t("cmSudoPwNote")}</div>
+              <div className="cm-approve-actions">
+                <button className="cm-allow" onClick={deny}>{t("cmDeny")}</button>
+                <button className="cm-deny" onClick={allow}>{t("cmSudoAllow")}</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+      {dirAsk && (
+        <div className="cm-approve-backdrop" onMouseDown={() => { dirAsk.resolve(false); setDirAsk(null); }}>
+          <div className="cm-approve" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="cm-approve-title">{t("cmDirAskTitle")}</div>
+            <pre className="cm-approve-cmd">{dirAsk.dir}</pre>
+            <div className="cm-approve-detail">{t("cmDirAskHint")}</div>
+            <div className="cm-approve-actions">
+              <button className="cm-deny" onClick={() => { dirAsk.resolve(false); setDirAsk(null); }}>{t("cmDeny")}</button>
+              <button className="cm-allow" onClick={() => { dirAsk.resolve(true); setDirAsk(null); }}>{t("cmDirAllow")}</button>
+            </div>
+          </div>
+        </div>
+      )}
       {approval && (
         <div className="cm-approve-backdrop" onMouseDown={() => { approval.resolve(false); setApproval(null); }}>
           <div className="cm-approve" onMouseDown={(e) => e.stopPropagation()}>

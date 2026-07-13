@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "chaty"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -672,6 +672,7 @@ dependencies = [
  "image",
  "libc",
  "llama-cpp-2",
+ "lopdf",
  "metal",
  "objc2",
  "objc2-av-foundation",
@@ -2979,6 +2980,7 @@ version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5c8ecfc6c72051981c0459f75ccc585e7ff67c70829560cda8e647882a9abff"
 dependencies = [
+ "chrono",
  "encoding_rs",
  "flate2",
  "indexmap 2.14.0",
@@ -2987,6 +2989,7 @@ dependencies = [
  "md-5",
  "nom 7.1.3",
  "rangemap",
+ "rayon",
  "time",
  "weezl",
 ]

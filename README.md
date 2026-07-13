@@ -47,10 +47,10 @@ at a folder, describe the task, and it explores, edits, and verifies the project
 itself — every step shown live, every change behind an approval + diff.
 
 - 🌐 **The whole web as a tool** — key-less search of **GitHub** (repos, issues, *and code*), Reddit, YouTube, Bilibili, and any domain; fetching adapts to the content (articles → Markdown, GitHub pages → raw source, PDFs → text, videos → transcripts).
-- 🧭 **Drives a real browser** — with a vision model, the agent opens pages, clicks by visible text, fills forms, scrolls, reads the console, and takes **screenshots it actually looks at** — watch it work in a real Chrome, logins and all.
+- 🧭 **Drives a real browser** — opens pages, reads them as text (dynamic content and all), clicks the right element with real mouse events, fills whole forms and dropdowns in one call, logs in, paginates, and *looks* with the vision model when it matters — verified end-to-end against real sites. Watch it work in a real Chrome, logins and all.
 - ✏️ **Precise edits** — exact-string patches with a diff preview and “did-you-mean” hints, file outlines to navigate big files, and `search_files` to find by name or content.
-- 🖥️ **Real shell** — run commands and long **background jobs** (dev servers, builds), sandboxed to the workspace (Seatbelt on macOS).
-- ⏪ **You stay in control** — per-action approval, a command allowlist, a live task-plan checklist, and **one-click checkpoint rewind** that restores files *and* rolls back the conversation.
+- 🖥️ **Real shell** — run commands and long **background jobs** (dev servers, builds), sandboxed to the workspace (Seatbelt on macOS); a `sudo` command asks first, with a secure password prompt.
+- ⏪ **You stay in control** — per-action approval, a command allowlist, out-of-workspace access that asks per folder, prompt-injection defense on everything it reads, and **one-click checkpoint rewind** that restores files *and* rolls back the conversation.
 
 <details>
 <summary>More Code-mode details</summary>
@@ -86,7 +86,7 @@ Load a **vision model** (its weights and `mmproj` encoder live together in one f
 
 - **Chat** — attach a picture and ask about it; follow-ups stay fast (already-seen images aren't re-encoded).
 - **Code** — the agent reads screenshots and can look at any image with `view_image`; the composer takes images and documents just like chat.
-- **Knowledge base** — imported images get a written description beside their OCR text, so search finds what's *in* them.
+- **Knowledge base** — imported images get a written description beside their OCR text, so search finds what's *in* them; images embedded **inside** PDFs, Word, Excel and PowerPoint files are extracted and described too.
 - **Canvas** — the model sees the live rendered page when you ask for an edit.
 
 Text-only models keep the OCR path, so nothing regresses — and updating from an older version, a one-time prompt tidies your existing loose `.gguf` files into the one-folder-per-model layout with a single click.

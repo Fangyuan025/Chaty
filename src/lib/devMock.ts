@@ -163,6 +163,11 @@ const CODE_SESSIONS = [
 ];
 
 /** Command → canned response. Anything unlisted returns a benign default. */
+// Session dir grants (out-of-workspace access) — lets the grant pipeline be
+// exercised end-to-end in the browser preview.
+const GRANTS: string[] = [];
+const SECRET_DIR = "/Users/dev/secrets";
+
 function handle(cmd: string, args: Record<string, unknown> | undefined): unknown {
   switch (cmd) {
     // ---- model / hardware ----
@@ -258,6 +263,35 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "code_session_save":
     case "code_session_delete":
       return null;
+    case "agent_grant_dir": {
+      const d = String(args?.path ?? "");
+      if (!GRANTS.includes(d)) GRANTS.push(d);
+      return d;
+    }
+    case "agent_revoke_dir": {
+      const d = String(args?.path ?? "");
+      const i = GRANTS.indexOf(d);
+      if (i >= 0) GRANTS.splice(i, 1);
+      return null;
+    }
+    case "agent_list_grants":
+      return [...GRANTS];
+    case "agent_clear_grants":
+      GRANTS.length = 0;
+      return null;
+    case "agent_bash":
+      return { stdout: "(preview) cowsay installed", stderr: "", code: 0, timedOut: false };
+    case "agent_read_file": {
+      const path = String(args?.path ?? "");
+      if (path.startsWith(SECRET_DIR)) {
+        if (GRANTS.some((g) => path.startsWith(g))) {
+          return "外部文件内容:数据集清单 v3 (outside-content: dataset manifest v3)";
+        }
+        // Same marker protocol as the Rust backend.
+        throw `NEED_DIR_GRANT\t${SECRET_DIR}\t路径在工作区外，需要用户授权: ${path}`;
+      }
+      return "// mock file contents\nexport function tokenize(src: string) {}\n";
+    }
     case "agent_get_workspace":
       return "/Users/dev/projects/parser-kit";
     case "agent_set_workspace":
@@ -276,12 +310,45 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       const ch = args?.onEvent as { onmessage?: (ev: unknown) => void } | undefined;
       const emit = (ev: unknown) => ch?.onmessage?.(ev);
       const total = 6144;
-      const reply = "收到。这是浏览器预览的模拟输出 — the mock stream after a simulated prompt-processing phase.";
+      // Code-agent script: typing a task containing 外部文件 makes the mock
+      // model read an out-of-workspace file, driving the dir-grant pipeline
+      // (marker error → approval card → grant → retry) end-to-end in preview.
+      const req = args?.request as { messages?: { role: string; content: string }[] } | undefined;
+      const msgs = req?.messages ?? [];
+      const last = msgs[msgs.length - 1]?.content ?? "";
+      const wantsOutside = msgs.some((m) => m.role === "user" && m.content.includes("外部文件"));
+      // Typing a task with 安装/sudo makes the mock model emit a sudo bash call,
+      // driving the high-risk sudo approval dialog end-to-end in preview.
+      const wantsSudo = msgs.some((m) => m.role === "user" && m.content.includes("sudo"));
+      // Asking about the date makes the mock model echo the current-date line
+      // injected into the Code system prompt — proves the agent is grounded.
+      const wantsDate = msgs.some((m) => m.role === "user" && /日期|今天|date|today/i.test(m.content));
+      const sysMsg = msgs.find((m) => m.role === "system")?.content ?? "";
+      const dateEcho = (sysMsg.match(/当前日期时间:([^\n]+)/) || sysMsg.match(/Current date & time: ([^\n]+)/) || [])[1];
+      const fast = wantsOutside || wantsSudo || wantsDate;
+      let reply = "收到。这是浏览器预览的模拟输出 — the mock stream after a simulated prompt-processing phase.";
+      if (wantsDate && dateEcho) {
+        reply = `根据系统提示,当前日期时间是:${dateEcho}`;
+      } else if (wantsOutside) {
+        if (last.includes("<tool_result")) {
+          reply = last.includes("outside-content")
+            ? "已读取外部文件:数据集清单 v3。授权目录已在顶部显示,可随时取消。"
+            : "用户拒绝了该目录的访问,我改用工作区内的资料继续。";
+        } else {
+          reply = '<tool_call>{"name":"read_file","arguments":{"path":"/Users/dev/secrets/manifest.txt"}}</tool_call>';
+        }
+      } else if (wantsSudo) {
+        reply = last.includes("<tool_result")
+          ? (last.includes("denied") || last.includes("拒绝")
+              ? "用户拒绝了 sudo 命令,我改用无需管理员权限的方式。"
+              : "命令已执行完成。")
+          : '<tool_call>{"name":"bash","arguments":{"command":"sudo apt-get install -y cowsay"}}</tool_call>';
+      }
       return (async () => {
         emit({ type: "started" });
         for (let done = 0; done <= total; done += 512) {
           emit({ type: "prefill", processed: Math.min(done, total), total });
-          await new Promise((r) => setTimeout(r, 140));
+          await new Promise((r) => setTimeout(r, fast ? 15 : 140));
         }
         for (const piece of reply.match(/.{1,6}/g) ?? []) {
           emit({ type: "token", text: piece });
@@ -304,6 +371,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "cancel_generation":
     case "cancel_download":
       return null;
+    case "agent_dl_list":
+    case "agent_dl_reap":
+      return [];
     // Browser preview approximation of the native webview zoom.
     case "set_ui_zoom": {
       const f = Number(args?.factor ?? 1);

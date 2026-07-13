@@ -1,6 +1,6 @@
 [package]
 name = "chaty"
-version = "1.7.0"
+version = "1.7.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -61,6 +61,8 @@ base64 = "0.22"
 libc = "0.2"
 # .docx text extraction (OOXML is a zip of XML parts).
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Embedded-image extraction from PDFs (same lopdf pdf-extract uses).
+lopdf = "0.34"
 # .xlsx spreadsheet reading (handles shared strings, numbers, dates).
 calamine = "0.26"
 # Agentic coding tools: file glob + content grep over the workspace.

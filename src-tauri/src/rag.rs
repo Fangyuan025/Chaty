@@ -296,6 +296,7 @@ fn extract_text(path: &str) -> Result<String, String> {
             .map_err(|e| format!("PDF 解析失败 (PDF extraction failed): {e}")),
         "docx" => extract_docx(path),
         "xlsx" => extract_xlsx(path),
+        "pptx" => extract_pptx(path),
         _ => {
             // Text-ish files (code, markup, config, …): decode as UTF-8 with a
             // GBK fallback. Any text-based extension just works here.
@@ -311,10 +312,61 @@ fn extract_text(path: &str) -> Result<String, String> {
     }
 }
 
+/// Extract visible text from a .pptx: every `ppt/slides/slideN.xml` part,
+/// tags stripped, one block per slide.
+pub(crate) fn extract_pptx(path: &str) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file)
+        .map_err(|e| format!("PPTX 解析失败 (not a valid .pptx): {e}"))?;
+    let mut slides: Vec<(usize, String)> = Vec::new();
+    for i in 0..zip.len() {
+        let Ok(mut entry) = zip.by_index(i) else { continue };
+        let name = entry.name().to_string();
+        let Some(num) = name
+            .strip_prefix("ppt/slides/slide")
+            .and_then(|r| r.strip_suffix(".xml"))
+            .and_then(|n| n.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let mut xml = String::new();
+        use std::io::Read as _;
+        if entry.read_to_string(&mut xml).is_err() {
+            continue;
+        }
+        // <a:t>text runs</a:t> hold the visible text; join runs with spaces.
+        let mut text = String::new();
+        let mut rest = xml.as_str();
+        while let Some(open) = rest.find("<a:t>") {
+            rest = &rest[open + 5..];
+            if let Some(close) = rest.find("</a:t>") {
+                text.push_str(&rest[..close]);
+                text.push(' ');
+                rest = &rest[close + 6..];
+            } else {
+                break;
+            }
+        }
+        if !text.trim().is_empty() {
+            slides.push((num, text.trim().to_string()));
+        }
+    }
+    slides.sort_by_key(|(n, _)| *n);
+    let out = slides
+        .into_iter()
+        .map(|(n, t)| format!("[幻灯片 {n}] {t}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if out.is_empty() {
+        return Err("没有从演示文稿中解析到文本 (no text found in the deck)".into());
+    }
+    Ok(out)
+}
+
 /// Extract visible text from a .docx (OOXML: a zip whose `word/document.xml`
 /// holds the body). Paragraph/line/tab tags become whitespace; all other tags
 /// are stripped and the basic XML entities decoded.
-fn extract_docx(path: &str) -> Result<String, String> {
+pub(crate) fn extract_docx(path: &str) -> Result<String, String> {
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file)
@@ -352,7 +404,7 @@ fn extract_docx(path: &str) -> Result<String, String> {
 
 /// Extract a .xlsx workbook as tab-separated rows (one block per sheet). calamine
 /// resolves shared strings, numbers and dates, so the result reads like a CSV.
-fn extract_xlsx(path: &str) -> Result<String, String> {
+pub(crate) fn extract_xlsx(path: &str) -> Result<String, String> {
     use calamine::{open_workbook, Reader, Xlsx};
     let mut wb: Xlsx<_> =
         open_workbook(path).map_err(|e| format!("XLSX 解析失败 (failed to read .xlsx): {e}"))?;
@@ -772,6 +824,26 @@ pub async fn rag_add_document(
         (None, None)
     };
 
+    // Documents with EMBEDDED images (docx/xlsx/pptx/pdf): caption each one
+    // with the vision model so charts/photos inside the document are findable
+    // by what they show — appended to the text before chunking. Best-effort:
+    // skipped without a vision model.
+    let embedded_captions: Vec<String> = if matches!(ext.as_str(), "pdf" | "docx" | "xlsx" | "pptx") {
+        let p2 = path.clone();
+        let imgs = tokio::task::spawn_blocking(move || crate::docimg::extract_embedded_images(&p2, 6))
+            .await
+            .unwrap_or_default();
+        let mut caps = Vec::new();
+        for (i, img) in imgs.iter().enumerate() {
+            if let Some(c) = vision_caption(&app, img, &on_progress).await {
+                caps.push(format!("[文档内嵌图片 {} (embedded image)] {c}", i + 1));
+            }
+        }
+        caps
+    } else {
+        Vec::new()
+    };
+
     tokio::task::spawn_blocking(move || {
         let basename = || {
             std::path::Path::new(&path)
@@ -807,7 +879,16 @@ pub async fn rag_add_document(
                 }
                 parts.join("\n\n")
             }
-            None => extract_text(&path)?,
+            None => {
+                let mut t = extract_text(&path)?;
+                // Vision captions of the document's embedded images — indexed
+                // alongside the text so figures are findable by what they show.
+                if !embedded_captions.is_empty() {
+                    t.push_str("\n\n");
+                    t.push_str(&embedded_captions.join("\n\n"));
+                }
+                t
+            }
         };
         let chunks = chunk_text(&text);
         if chunks.is_empty() {

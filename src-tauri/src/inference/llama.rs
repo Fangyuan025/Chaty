@@ -141,6 +141,29 @@ struct MediaCache {
     image_keys: Vec<String>,
     /// Number of positions resident right after that prefill.
     n_past: i32,
+    /// The prompt WITHOUT the generation tail (assistant header + thinking
+    /// prefill) — the stable anchor the next turn's render string-extends
+    /// even when the tail diverges (Qwen3.5+ `<think>` prefill). Empty when
+    /// the anchor position couldn't be observed (disables anchor reuse).
+    body: String,
+    /// Positions resident at the end of `body`.
+    n_past_body: i32,
+}
+
+/// Total images pushed through the vision encoder (observability: the media
+/// cache exists so old images are NOT re-encoded — tests assert on this).
+static IMG_ENCODES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Times the media cache had to fall back to a full re-prefill because the
+/// model's memory doesn't support partial removal (hybrid/recurrent archs
+/// like Qwen3.6 — their state can't be rewound to a mid-sequence point).
+static CACHE_FALLBACKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) fn img_encode_count() -> usize {
+    IMG_ENCODES.load(Ordering::Relaxed)
+}
+#[cfg(test)]
+pub(crate) fn cache_fallback_count() -> usize {
+    CACHE_FALLBACKS.load(Ordering::Relaxed)
 }
 
 /// Cheap identity for an image file (path + size + mtime).
@@ -691,10 +714,10 @@ fn run_turn(
         eprintln!("images attached but no mmproj is loaded — ignoring them");
     }
 
-    let prompt = if media_turn {
-        build_prompt(model, &inject_media_markers(&req.messages), req.params.think)?
+    let (prompt, prompt_body) = if media_turn {
+        build_prompt_pair(model, &inject_media_markers(&req.messages), req.params.think)?
     } else {
-        build_prompt(model, &req.messages, req.params.think)?
+        (build_prompt(model, &req.messages, req.params.think)?, String::new())
     };
     // Qwen3.5/3.6-style templates PRE-OPEN the reasoning block: the prompt
     // ends with "<think>\n" and the model starts mid-reasoning, so the UI
@@ -723,9 +746,11 @@ fn run_turn(
             mtmd,
             media_cache,
             &prompt,
+            &prompt_body,
             &req.messages,
             n_ctx,
             n_batch as i32,
+            sink,
             cancel,
         )?;
         if cancel.load(Ordering::Relaxed) {
@@ -943,31 +968,63 @@ fn prefill_media(
     mtmd: &MtmdContext,
     media_cache: &mut Option<MediaCache>,
     prompt: &str,
+    prompt_body: &str,
     messages: &[ChatMessage],
     n_ctx: u32,
     n_batch: i32,
+    sink: &dyn EventSink,
     cancel: &AtomicBool,
 ) -> Result<i32> {
     let images: Vec<&String> = messages.iter().flat_map(|m| m.images.iter()).collect();
     let image_keys: Vec<String> = images.iter().map(|p| image_cache_key(p)).collect();
 
-    // Incremental reuse: prior prefill must be a string-prefix of the new
-    // prompt with an identical image prefix. Generated tokens beyond the
-    // cached prefill are dropped (mirrors the text path, which re-renders the
+    // Incremental reuse, best plan first. Generated tokens beyond the cached
+    // prefill are dropped (mirrors the text path, which re-renders the
     // assistant turn from the template rather than trusting raw output).
+    //
+    // 1. EXTEND: the new prompt string-extends the FULL cached prompt
+    //    (generation tail included) — nothing to truncate, evaluate the tail.
+    // 2. ANCHOR: the new prompt extends the cached BODY but not the full
+    //    prompt — the generation tail diverged (Qwen3.5+ `<think>` prefill vs
+    //    the re-rendered assistant turn). Truncate the KV back to the body
+    //    and evaluate from there: a handful of tail tokens re-decoded, every
+    //    already-encoded image kept.
+    // 3. Otherwise start clean.
+    let img_prefix_ok = |c: &MediaCache| {
+        image_keys.len() >= c.image_keys.len() && image_keys[..c.image_keys.len()] == c.image_keys[..]
+    };
+    // Strict extension: an identical prompt (e.g. regenerate) must re-eval —
+    // an empty tail would leave the sampler without fresh logits.
     let reuse = media_cache.as_ref().and_then(|c| {
-        // Strict extension: an identical prompt (e.g. regenerate) must re-eval —
-        // an empty tail would leave the sampler without fresh logits.
-        (prompt.len() > c.prompt.len()
-            && prompt.starts_with(c.prompt.as_str())
-            && image_keys.len() >= c.image_keys.len()
-            && image_keys[..c.image_keys.len()] == c.image_keys[..])
-            .then(|| (c.n_past, c.prompt.len(), c.image_keys.len()))
+        if prompt.len() > c.prompt.len() && prompt.starts_with(c.prompt.as_str()) && img_prefix_ok(c) {
+            Some((c.n_past, c.prompt.len(), c.image_keys.len()))
+        } else if !c.body.is_empty()
+            && prompt.len() > c.body.len()
+            && prompt.starts_with(c.body.as_str())
+            && img_prefix_ok(c)
+        {
+            Some((c.n_past_body, c.body.len(), c.image_keys.len()))
+        } else {
+            None
+        }
     });
     let (start_past, tail, new_images) = match reuse {
-        Some((n_past, prompt_len, n_imgs)) => {
-            let _ = ctx.clear_kv_cache_seq(Some(0), Some(n_past as u32), None);
+        // Reuse needs the generation tail truncated out of the KV first.
+        // Hybrid/recurrent models (Qwen3.6) can't partially rewind their
+        // state — seq_rm reports false — so fall back to a clean full
+        // prefill (correct, just slower; the frontend caps how many images
+        // ride along, so the re-encode cost stays bounded).
+        Some((n_past, prompt_len, n_imgs))
+            if ctx.clear_kv_cache_seq(Some(0), Some(n_past as u32), None) == Ok(true) =>
+        {
             (n_past, &prompt[prompt_len..], &images[n_imgs..])
+        }
+        Some(_) => {
+            CACHE_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+            eprintln!("media cache: partial KV removal unsupported by this model — full re-prefill");
+            ctx.clear_kv_cache();
+            *media_cache = None;
+            (0, prompt, &images[..])
         }
         None => {
             ctx.clear_kv_cache();
@@ -986,8 +1043,15 @@ fn prefill_media(
         if cancel.load(Ordering::Relaxed) {
             return Ok(start_past.max(0));
         }
+        // Oversized screenshots (full-page captures at 2x scale reach tens of
+        // megapixels) are downscaled before they hit the vision encoder — the
+        // model would compress them internally anyway, and pre-shrinking cuts
+        // decode + preprocessing time and caps the visual-token count. The
+        // original file is untouched (UI previews stay full-res).
+        let feed = downscale_for_vision(p);
+        IMG_ENCODES.fetch_add(1, Ordering::Relaxed);
         // `placeholder: false` → decode the actual pixels.
-        match MtmdBitmap::from_file(mtmd, p, false) {
+        match MtmdBitmap::from_file(mtmd, &feed, false) {
             Ok(b) => bitmaps.push(b),
             Err(e) => {
                 clear_all(ctx, media_cache);
@@ -995,51 +1059,218 @@ fn prefill_media(
             }
         }
     }
-    let bitmap_refs: Vec<&MtmdBitmap> = bitmaps.iter().collect();
 
-    let input = MtmdInputText {
-        text: tail.to_string(),
-        // BOS/EOS only at the very start of the sequence; a tail continues it.
-        add_special: start_past == 0,
-        parse_special: true,
-    };
-    let chunks = match mtmd.tokenize(input, &bitmap_refs) {
-        Ok(c) => c,
-        Err(e) => {
-            clear_all(ctx, media_cache);
-            bail!("多模态分词失败 (multimodal tokenization failed): {e}");
+    // ── Segmented prefill with progress ─────────────────────────────────
+    // The helper's eval_chunks() is a single opaque call, so a screenshot
+    // turn used to sit silent for seconds (image encode + decode) with no
+    // prefill events. Split the tail at the media markers instead — one
+    // segment per image — tokenize each piece, then eval them sequentially,
+    // emitting progress between segments. Positions stay identical to a
+    // whole-tail eval because every split point is a marker (special-token)
+    // boundary. The segment containing the BODY boundary (end of the render
+    // without the generation tail) is split once more, so the anchor's KV
+    // position is observable for the next turn's reuse. If the segment count
+    // doesn't line up (defensive), fall back to a single whole-tail eval.
+    let marker = mtmd_default_marker();
+    let parts: Vec<&str> = tail.split(marker).collect();
+    let segmented = parts.len() == new_images.len() + 1;
+
+    // (text, bitmap indices into `bitmaps`)
+    let mut seg_texts: Vec<(String, Vec<usize>)> = Vec::new();
+    if segmented {
+        for (i, part) in parts.iter().enumerate() {
+            if i == 0 {
+                if !part.is_empty() {
+                    seg_texts.push(((*part).to_string(), Vec::new()));
+                }
+            } else {
+                seg_texts.push((format!("{marker}{part}"), vec![i - 1]));
+            }
         }
-    };
+        if seg_texts.is_empty() {
+            seg_texts.push((String::new(), Vec::new()));
+        }
+    } else {
+        seg_texts.push((tail.to_string(), (0..bitmaps.len()).collect()));
+    }
 
-    let total_pos = chunks.total_positions();
-    if start_past + total_pos + 4 >= n_ctx as i32 {
+    // Split the segment containing the body boundary so `n_past` right at the
+    // anchor is observable. The boundary is where the generation header
+    // starts — a special-token edge, so re-tokenizing the halves separately
+    // is BPE-safe. Skipped (anchor disabled) if it would cut a marker.
+    let tail_start = prompt.len() - tail.len();
+    let mut body_seg: Option<usize> = None;
+    if segmented && prompt_body.len() > tail_start && prompt_body.len() <= prompt.len() {
+        let rel = prompt_body.len() - tail_start;
+        let mut acc = 0usize;
+        for i in 0..seg_texts.len() {
+            let len = seg_texts[i].0.len();
+            if rel == acc {
+                // boundary right at a segment edge — previous segment ends the body
+                if i > 0 {
+                    body_seg = Some(i - 1);
+                }
+                break;
+            }
+            if rel < acc + len {
+                let off = rel - acc;
+                let (txt, bms) = seg_texts[i].clone();
+                if !txt.is_char_boundary(off) || (!bms.is_empty() && off < marker.len()) {
+                    break; // would cut a marker / char — disable the anchor
+                }
+                let (a, b) = txt.split_at(off);
+                seg_texts[i] = (a.to_string(), bms);
+                seg_texts.insert(i + 1, (b.to_string(), Vec::new()));
+                body_seg = Some(i);
+                break;
+            }
+            acc += len;
+        }
+        if body_seg.is_none() && rel >= seg_texts.iter().map(|(t, _)| t.len()).sum::<usize>() {
+            // body runs to the very end of the tail (no generation tail?)
+            body_seg = Some(seg_texts.len() - 1);
+        }
+    }
+
+    struct Seg {
+        chunks: llama_cpp_2::mtmd::MtmdInputChunks,
+        positions: i32,
+    }
+
+    let mut segs: Vec<Seg> = Vec::new();
+    let mut total_pos: i32 = 0;
+    for (i, (text, bm_idx)) in seg_texts.iter().enumerate() {
+        let seg_bitmaps: Vec<&MtmdBitmap> = bm_idx.iter().map(|&j| &bitmaps[j]).collect();
+        let input = MtmdInputText {
+            text: text.clone(),
+            // BOS only at the very start of the whole sequence.
+            add_special: start_past == 0 && i == 0,
+            parse_special: true,
+        };
+        match mtmd.tokenize(input, &seg_bitmaps) {
+            Ok(c) => {
+                let p = c.total_positions();
+                total_pos += p;
+                segs.push(Seg { chunks: c, positions: p });
+            }
+            Err(e) => {
+                clear_all(ctx, media_cache);
+                bail!("多模态分词失败 (multimodal tokenization failed): {e}");
+            }
+        }
+    }
+
+    let grand_total = start_past + total_pos;
+    if grand_total + 4 >= n_ctx as i32 {
         clear_all(ctx, media_cache);
         bail!(
-            "图文提示共 {} 个位置，超出上下文窗口 {n_ctx}，请新建对话、缩短输入或减少图片。(The multimodal prompt needs {} positions — over the {n_ctx} context window; start a new chat, shorten the input or drop images.)",
-            start_past + total_pos,
-            start_past + total_pos
+            "图文提示共 {grand_total} 个位置，超出上下文窗口 {n_ctx}，请新建对话、缩短输入或减少图片。(The multimodal prompt needs {grand_total} positions — over the {n_ctx} context window; start a new chat, shorten the input or drop images.)"
         );
     }
     if cancel.load(Ordering::Relaxed) {
         return Ok(start_past.max(0));
     }
 
+    // Image turns are always worth a ring (encoding takes seconds); text-only
+    // media-regime tails follow the text path's rule (skip short ones).
+    let report = !new_images.is_empty() || total_pos > n_batch;
+    if report {
+        let _ = sink.emit(StreamEvent::Prefill {
+            processed: start_past.max(0) as u32,
+            total: grand_total.max(0) as u32,
+        });
+    }
+
     // Encode image chunks + decode text chunks; llama.cpp's helper handles
     // non-causal attention and M-RoPE position bookkeeping per model.
-    let n_past = match chunks.eval_chunks(mtmd, ctx, start_past, 0, n_batch, true) {
-        Ok(p) => p,
-        Err(e) => {
+    let mut n_past = start_past;
+    let mut n_past_body: i32 = 0;
+    let last = segs.len() - 1;
+    for (i, seg) in segs.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            // Mid-prefill cancel: the KV holds a partial media prefill the
+            // cache can't describe — drop it so the next turn starts clean.
             clear_all(ctx, media_cache);
-            bail!("图文预填充失败 (multimodal prefill failed): {e}");
+            return Ok(start_past.max(0));
         }
-    };
+        n_past = match seg.chunks.eval_chunks(mtmd, ctx, n_past, 0, n_batch, i == last) {
+            Ok(p) => p,
+            Err(e) => {
+                clear_all(ctx, media_cache);
+                bail!("图文预填充失败 (multimodal prefill failed): {e}");
+            }
+        };
+        let _ = seg.positions; // tracked via n_past
+        if body_seg == Some(i) {
+            n_past_body = n_past;
+        }
+        if report {
+            let _ = sink.emit(StreamEvent::Prefill {
+                processed: n_past.max(0) as u32,
+                total: grand_total.max(0) as u32,
+            });
+        }
+    }
 
+    let anchored = body_seg.is_some() && n_past_body > 0;
     *media_cache = Some(MediaCache {
         prompt: prompt.to_string(),
         image_keys,
         n_past,
+        body: if anchored { prompt_body.to_string() } else { String::new() },
+        n_past_body,
     });
     Ok(n_past)
+}
+
+/// Feed-side image budget for the vision encoder. Full-page browser
+/// screenshots (2x device scale, many viewports tall) reach 10-25 MP; the
+/// encoder's preprocessing would shrink them internally anyway, so feeding a
+/// pre-shrunk copy is pure speed (and it caps visual tokens / context use).
+const MAX_VISION_PIXELS: u64 = 2_000_000;
+
+/// Return a path whose image is at most `MAX_VISION_PIXELS`: the original
+/// path if it's already small enough (or unreadable — let mtmd report that),
+/// else a cached downscaled JPEG in the temp dir keyed by path+size+mtime.
+fn downscale_for_vision(path: &str) -> String {
+    let Ok(img) = image::open(path) else { return path.to_string() };
+    let (w, h) = (img.width() as u64, img.height() as u64);
+    if w * h <= MAX_VISION_PIXELS {
+        return path.to_string();
+    }
+    use std::hash::{Hash, Hasher};
+    let meta = std::fs::metadata(path).ok();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    meta.as_ref().map(|m| m.len()).unwrap_or(0).hash(&mut hasher);
+    meta.and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .hash(&mut hasher);
+    let dir = std::env::temp_dir().join("chaty-vision-imgs");
+    let _ = std::fs::create_dir_all(&dir);
+    let out = dir.join(format!("{:016x}.jpg", hasher.finish()));
+    if out.is_file() {
+        return out.to_string_lossy().to_string();
+    }
+    let scale = ((MAX_VISION_PIXELS as f64) / ((w * h) as f64)).sqrt();
+    let nw = ((img.width() as f64 * scale) as u32).max(1);
+    let nh = ((img.height() as f64 * scale) as u32).max(1);
+    let resized = img.resize(nw, nh, image::imageops::FilterType::Triangle);
+    // JPEG has no alpha channel — flatten to RGB.
+    let rgb = image::DynamicImage::ImageRgb8(resized.to_rgb8());
+    match rgb.save_with_format(&out, image::ImageFormat::Jpeg) {
+        Ok(()) => {
+            eprintln!(
+                "vision: downscaled {path} {}x{} -> {nw}x{nh} for the encoder",
+                img.width(),
+                img.height()
+            );
+            out.to_string_lossy().to_string()
+        }
+        Err(_) => path.to_string(),
+    }
 }
 
 fn done_event(
@@ -1063,13 +1294,33 @@ fn done_event(
 /// Render messages into a prompt using the model's embedded chat template,
 /// falling back to ChatML if the GGUF doesn't carry one.
 fn build_prompt(model: &LlamaModel, messages: &[ChatMessage], think: Option<bool>) -> Result<String> {
+    build_prompt_pair(model, messages, think).map(|(full, _)| full)
+}
+
+/// Render the prompt twice: the FULL prompt (generation header + any thinking
+/// prefill — what actually gets prefilled), and the BODY (the same render
+/// WITHOUT the generation tail). The body is the media-cache anchor: the next
+/// turn's prompt always re-renders history identically, so it string-extends
+/// the body even when the generation tail (e.g. Qwen3.5+'s `<think>` prefill)
+/// diverges from how the assistant turn is later re-rendered. Truncating the
+/// KV back to the body costs a handful of tokens — re-encoding every image
+/// (the old behavior on any tail divergence) cost seconds per turn.
+fn build_prompt_pair(
+    model: &LlamaModel,
+    messages: &[ChatMessage],
+    think: Option<bool>,
+) -> Result<(String, String)> {
     // Gemma 4 ships a Jinja template the vendored llama.cpp can't parse, and
     // the old built-in "gemma" template uses the wrong (<start_of_turn>) turn
     // delimiters — render its documented format natively instead.
     if is_gemma4(model) {
-        return Ok(render_gemma4(messages, think));
+        return Ok((
+            render_gemma4(messages, think, true),
+            render_gemma4(messages, think, false),
+        ));
     }
-    let mut prompt = render_chat(model, messages)?;
+    let body = render_chat(model, messages, false).unwrap_or_default();
+    let mut prompt = render_chat(model, messages, true)?;
 
     // Qwen3.5+ dropped the `/no_think` soft switch and default to reasoning. To
     // honour a "thinking off" request we pre-fill an empty reasoning block right
@@ -1133,7 +1384,10 @@ fn build_prompt(model: &LlamaModel, messages: &[ChatMessage], think: Option<bool
         }
     }
 
-    Ok(prompt)
+    // The anchor only works if it really is a prefix of the full render
+    // (true for every sane template; guard against odd ones).
+    let body = if prompt.starts_with(&body) { body } else { String::new() };
+    Ok((prompt, body))
 }
 
 /// Gemma 4 uses `<|turn>role\n…<turn|>` turn delimiters (the template string
@@ -1158,7 +1412,7 @@ fn is_gemma4(model: &LlamaModel) -> bool {
 /// start of the system turn; the model then emits
 /// `<|channel>thought\n…<channel|>` before its answer. (BOS is added by the
 /// tokenizer via `AddBos::Always`.)
-fn render_gemma4(messages: &[ChatMessage], think: Option<bool>) -> String {
+fn render_gemma4(messages: &[ChatMessage], think: Option<bool>, add_gen: bool) -> String {
     let think_on = think != Some(false);
     let sys_text = messages
         .iter()
@@ -1195,7 +1449,9 @@ fn render_gemma4(messages: &[ChatMessage], think: Option<bool>) -> String {
         p.push_str(content.trim());
         p.push_str("<turn|>\n");
     }
-    p.push_str("<|turn>model\n");
+    if add_gen {
+        p.push_str("<|turn>model\n");
+    }
     p
 }
 
@@ -1225,7 +1481,7 @@ fn strip_thought_channels(s: &str) -> String {
 ///    (e.g. Gemma 3/4) often embed Jinja the vendored llama.cpp can't parse
 ///    even though the wire format is unchanged;
 /// 4. ChatML as a last resort.
-fn render_chat(model: &LlamaModel, messages: &[ChatMessage]) -> Result<String> {
+fn render_chat(model: &LlamaModel, messages: &[ChatMessage], add_ass: bool) -> Result<String> {
     fn to_chat(msgs: &[ChatMessage]) -> Result<Vec<LlamaChatMessage>> {
         msgs.iter()
             .map(|m| LlamaChatMessage::new(role_str(&m.role).to_string(), m.content.clone()))
@@ -1238,10 +1494,10 @@ fn render_chat(model: &LlamaModel, messages: &[ChatMessage]) -> Result<String> {
     let folded_chat = to_chat(&folded)?;
 
     if let Ok(t) = model.chat_template(None) {
-        if let Ok(p) = model.apply_chat_template(&t, &chat, true) {
+        if let Ok(p) = model.apply_chat_template(&t, &chat, add_ass) {
             return Ok(p);
         }
-        if let Ok(p) = model.apply_chat_template(&t, &folded_chat, true) {
+        if let Ok(p) = model.apply_chat_template(&t, &folded_chat, add_ass) {
             eprintln!("chat template rejected the system role; folded it into the user turn");
             return Ok(p);
         }
@@ -1253,7 +1509,7 @@ fn render_chat(model: &LlamaModel, messages: &[ChatMessage]) -> Result<String> {
         .to_lowercase();
     for name in builtin_template_candidates(&arch) {
         if let Ok(t) = LlamaChatTemplate::new(name) {
-            if let Ok(p) = model.apply_chat_template(&t, &folded_chat, true) {
+            if let Ok(p) = model.apply_chat_template(&t, &folded_chat, add_ass) {
                 eprintln!("embedded chat template unusable; using built-in '{name}' (arch: {arch})");
                 return Ok(p);
             }
@@ -1704,7 +1960,7 @@ mod agent_e2e {
             .unwrap_or_else(|e| format!("ERROR: {e}")),
             "bash" => {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                match rt.block_on(crate::agent::agent_bash(get("command"), Some(60))) {
+                match rt.block_on(crate::agent::agent_bash(get("command"), Some(60), None)) {
                     Ok(r) => format!("{}\n{}\n[exit {}]", r.stdout, r.stderr, r.code),
                     Err(e) => format!("ERROR: {e}"),
                 }
@@ -2615,14 +2871,26 @@ mod vision_e2e {
             role: Role::User,
             content: "Is this image mostly red? Answer strictly yes or no.".into(),
         });
-        // The rendered turn-2 prompt must extend the cached prefill — the
-        // property the incremental (no image re-encode) path depends on.
-        let prompt2 = build_prompt(&model, &inject_media_markers(&messages), Some(false)).unwrap();
-        assert!(
-            prompt2.starts_with(&prompt1),
-            "turn-2 prompt should string-extend the turn-1 prefill"
-        );
+        // The behavioral property the media cache exists for: a follow-up
+        // turn must NOT re-encode the already-seen image. (Checked via the
+        // encoder counter rather than string prefixes — on Qwen3.5+ the
+        // generation tail legitimately diverges and the BODY anchor carries
+        // the reuse.)
+        let _ = prompt1;
+        let encodes_before = img_encode_count();
+        let fallbacks_before = cache_fallback_count();
         let ans2 = ask(messages, &mut ctx, &mut cached, &mut media_cache);
+        // Either the media cache reused the KV (no re-encode) — standard
+        // attention models — or the model's memory can't partially rewind
+        // (hybrid/recurrent, e.g. Qwen3.6) and the CLEAN fallback re-prefilled
+        // everything. Silent re-encoding through any other path is a bug.
+        let reused = img_encode_count() == encodes_before;
+        let clean_fallback = cache_fallback_count() > fallbacks_before;
+        assert!(
+            reused || clean_fallback,
+            "turn 2 re-encoded the image without going through the documented fallback"
+        );
+        eprintln!("turn-2 reuse: reused={reused} clean_fallback={clean_fallback}");
         assert!(
             ans2.to_lowercase().contains("yes"),
             "expected 'yes' (image still visible through the reused KV), got: {ans2}"
@@ -3471,5 +3739,1006 @@ mod prefill_progress_e2e {
             .collect();
         eprintln!("short incremental turn: {} prefill events (want 0)", prefills2.len());
         assert!(prefills2.is_empty(), "a short cached-prefix tail must not emit progress: {prefills2:?}");
+    }
+}
+
+#[cfg(test)]
+mod vision_speed_tests {
+    use super::*;
+
+    #[test]
+    fn downscale_caps_pixels_and_caches() {
+        // 3000x1000 = 3 MP > 2 MP budget → downscaled JPEG in temp cache.
+        let dir = std::env::temp_dir().join(format!("chaty-dsc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(3000, 1000, image::Rgb([200, 30, 30])))
+            .save(&big)
+            .unwrap();
+        let fed = downscale_for_vision(&big.to_string_lossy());
+        assert_ne!(fed, big.to_string_lossy(), "oversized image must be re-routed");
+        let out = image::open(&fed).unwrap();
+        let px = (out.width() as u64) * (out.height() as u64);
+        assert!(px <= MAX_VISION_PIXELS, "downscaled to {px} px");
+        // Aspect ratio preserved (3:1).
+        let ratio = out.width() as f64 / out.height() as f64;
+        assert!((ratio - 3.0).abs() < 0.05, "ratio {ratio}");
+        // Second call hits the cache (same path returned, file already there).
+        let fed2 = downscale_for_vision(&big.to_string_lossy());
+        assert_eq!(fed, fed2);
+
+        // A small image passes through untouched.
+        let small = dir.join("small.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(640, 480, image::Rgb([30, 200, 30])))
+            .save(&small)
+            .unwrap();
+        assert_eq!(downscale_for_vision(&small.to_string_lossy()), small.to_string_lossy());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// E2E: an image turn must emit `Prefill` progress events (the segmented media
+/// prefill), and the model must still understand the DOWNSCALED image — the
+/// oversized original is shrunk before the vision encoder.
+///
+///   CHATY_TEST_VLM=… cargo test -p chaty media_prefill_progress -- --ignored --nocapture
+#[cfg(test)]
+mod media_prefill_e2e {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct AllEvents {
+        evs: RefCell<Vec<StreamEvent>>,
+    }
+    impl EventSink for AllEvents {
+        fn emit(&self, ev: StreamEvent) -> Result<()> {
+            self.evs.borrow_mut().push(ev);
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn media_prefill_progress_and_downscaled_understanding() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_VLM");
+                return;
+            }
+        };
+        // A 3000x1500 (4.5 MP) pure-red image — over the 2 MP feed budget, so
+        // the encoder sees the downscaled copy.
+        let dir = std::env::temp_dir().join(format!("chaty-media-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img_path = dir.join("red.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(3000, 1500, image::Rgb([220, 20, 20])))
+            .save(&img_path)
+            .unwrap();
+
+        let backend = llama_backend_pub().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
+        let mmproj = find_mmproj(&model_path).expect("mmproj");
+        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut media_cache: Option<MediaCache> = None;
+        let cancel = AtomicBool::new(false);
+
+        let req = GenRequest {
+            messages: vec![ChatMessage {
+                images: vec![img_path.to_string_lossy().to_string()],
+                role: Role::User,
+                content: "What is the dominant color of this image? Answer with one word.".into(),
+            }],
+            params: GenParams { temperature: 0.0, max_tokens: 12, think: Some(false), ..Default::default() },
+        };
+        let sink = AllEvents { evs: RefCell::new(Vec::new()) };
+        run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel)
+            .expect("run_turn media");
+        let evs = sink.evs.into_inner();
+        let prefills: Vec<(u32, u32)> = evs
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::Prefill { processed, total } => Some((*processed, *total)),
+                _ => None,
+            })
+            .collect();
+        let reply: String = evs
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::Token { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        eprintln!("media turn: {} prefill events {:?} … {:?}; reply {:?}", prefills.len(), prefills.first(), prefills.last(), reply.trim());
+
+        // 1. The image turn emits progress: an initial event + one per segment,
+        //    monotonic, ending at 100%.
+        assert!(prefills.len() >= 2, "image turn must emit prefill progress: {prefills:?}");
+        let total = prefills[0].1;
+        assert!(prefills.windows(2).all(|w| w[0].0 <= w[1].0), "monotonic: {prefills:?}");
+        assert_eq!(prefills.last().unwrap().0, total, "ends at 100%");
+        // 2. Vision still works on the downscaled feed.
+        assert!(reply.to_lowercase().contains("red"), "model should see red, got: {reply}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// PRODUCTION E2E: a progressive-rules "password game" (a faithful local clone
+/// of neal.fun/password-game — rules appear one at a time as you satisfy them).
+/// Proves the model solves it FAST using ONLY `browser_read` (text) +
+/// `browser_type` — NO screenshots — because the rich text digest surfaces every
+/// dynamically-shown rule. Generalizes to any dynamic page.
+///
+///   CHATY_TEST_VLM=… cargo test -p chaty password_game_no_vision -- --ignored --nocapture
+#[cfg(test)]
+mod password_game_e2e {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Collector { buf: RefCell<String> }
+    impl EventSink for Collector {
+        fn emit(&self, ev: StreamEvent) -> Result<()> {
+            if let StreamEvent::Token { text } = ev { self.buf.borrow_mut().push_str(&text); }
+            Ok(())
+        }
+    }
+    fn strip_think(s: &str) -> String {
+        let mut out = String::new(); let mut rest = s;
+        while let Some(i) = rest.find("<think>") { out.push_str(&rest[..i]); if let Some(j)=rest[i..].find("</think>"){rest=&rest[i+j+8..];} else {rest="";} }
+        out.push_str(rest); out.trim().to_string()
+    }
+    fn parse_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
+        let open = text.find("<tool_call>")?;
+        let mut body = &text[open + "<tool_call>".len()..];
+        if let Some(c) = body.find("</tool_call>") { body = &body[..c]; }
+        let body = body.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        let s = body.find('{')?; let e = body.rfind('}')?;
+        let json: serde_json::Value = serde_json::from_str(&body[s..=e]).ok()?;
+        let name = json.get("name")?.as_str()?.to_string();
+        let args = json.get("arguments").or_else(|| json.get("parameters")).cloned().unwrap_or(serde_json::json!({}));
+        Some((name, args))
+    }
+
+    const GAME_HTML: &str = r##"<!doctype html><meta charset="utf-8"><title>Password Game</title>
+<body style="font-family:sans-serif;max-width:640px;margin:2rem auto">
+<h1>The Password Game</h1><p>Please choose a password.</p>
+<textarea id="pw" rows="3" style="width:100%;font-size:18px" placeholder="password"></textarea>
+<div id="rules"></div><div id="score"></div>
+<script>
+var RULES=[
+ {n:1,text:"Your password must be at least 8 characters.",t:function(p){return p.length>=8;}},
+ {n:2,text:"Your password must include a number.",t:function(p){return /[0-9]/.test(p);}},
+ {n:3,text:"Your password must include an uppercase letter.",t:function(p){return /[A-Z]/.test(p);}},
+ {n:4,text:"Your password must include a special character (one of ! @ % &).",t:function(p){return /[!@%&]/.test(p);}},
+ {n:5,text:"Your password must include a month of the year (e.g. December).",t:function(p){return /(january|february|march|april|may|june|july|august|september|october|november|december)/i.test(p);}},
+ {n:6,text:"Your password must include the Roman numeral XV.",t:function(p){return /XV/.test(p);}},
+ {n:7,text:"Your password must include one of our sponsors: shell.",t:function(p){return /shell/i.test(p);}},
+ {n:8,text:"Your password must include the word chaty.",t:function(p){return /chaty/i.test(p);}}
+];
+var pw=document.getElementById("pw");
+function render(){
+ var p=pw.value, revealed=0;
+ for(var i=0;i<RULES.length;i++){revealed=i+1;if(!RULES[i].t(p))break;}
+ var solved=0,html="";
+ for(var i=0;i<revealed;i++){var ok=RULES[i].t(p);if(ok)solved++;html+="<div>Rule "+RULES[i].n+" — "+(ok?"PASS: ":"TODO: ")+RULES[i].text+"</div>";}
+ document.getElementById("rules").innerHTML=html;
+ var win=solved===RULES.length;
+ document.getElementById("score").innerHTML="<b>Rules solved: "+solved+" of "+RULES.length+(win?" — YOU WIN":"")+"</b>";
+ document.body.dataset.solved=solved;
+}
+pw.addEventListener("input",render);render();
+</script></body>"##;
+
+    #[test]
+    #[ignore]
+    fn password_game_no_vision() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") { Ok(p) => p, Err(_) => { eprintln!("SKIP: CHATY_TEST_VLM"); return; } };
+        if crate::browser::chrome_path_pub().is_none() { eprintln!("SKIP: no Chrome"); return; }
+        std::env::set_var("CHATY_BROWSER_HEADLESS", "1");
+
+        let dir = std::env::temp_dir().join(format!("chaty-pwgame-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("game.html"), GAME_HTML).unwrap();
+        let url = format!("file://{}/game.html", dir.display());
+
+        let backend = crate::inference::llama::llama_backend_pub().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
+        let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
+        let mmproj = find_mmproj(&model_path).expect("mmproj");
+        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut media_cache: Option<MediaCache> = None;
+
+        let sys = format!(
+            "你是浏览器自动化助手。每步只输出一行 <tool_call>{{\"name\":..,\"arguments\":{{..}}}}</tool_call> 然后停止,系统会用 <tool_result> 回你。\n\
+             可用工具:\n\
+             - browser_navigate {{url}}:打开页面,返回页面全部可见文字+元素。\n\
+             - browser_read {{}}:读取当前页面的全部可见文字(规则/提示都在里面)+ 输入框当前值。**看页面只用它,不要截图。**\n\
+             - browser_type {{text}}:把密码输入框的内容设为 text(整体替换,不是追加)。\n\
+             这是一个「密码游戏」:页面会**逐条**给出对密码的要求,你满足当前所有已出现的要求后,会**出现新的一条要求**。\n\
+             做法:browser_read 看当前所有规则 → 想一个**同时满足所有已出现规则**的密码 → browser_type 输入完整密码 → 看返回的新页面文字 → 如果出现新规则或某条没过,再调整密码重新 browser_type。每次都要输入**完整**密码(工具是整体替换)。\n\
+             **只用 browser_read/browser_type 文字操作,绝不要用 browser_screenshot/browser_snapshot。** 首个页面:{url}"
+        );
+        let mut messages = vec![
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys },
+            ChatMessage { images: Vec::new(), role: Role::User, content: format!("打开 {url},玩这个密码游戏,尽量多满足几条规则。\n/no_think") },
+        ];
+
+        let cancel = AtomicBool::new(false);
+        let mut steps: Vec<String> = Vec::new();
+        let solved_now = || -> i64 {
+            crate::browser::eval("document.body.dataset.solved||'0'")
+                .ok().and_then(|s| s.trim_matches('"').parse::<i64>().ok()).unwrap_or(0)
+        };
+        let started = std::time::Instant::now();
+        let mut best = 0i64;
+
+        for step in 0..20 {
+            let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.3, max_tokens: 700, think: Some(false), ..Default::default() } };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            let Some((name, args)) = parse_tool_call(&raw) else {
+                eprintln!("--- step {step}: (no tool) {}", strip_think(&raw).chars().take(80).collect::<String>());
+                break;
+            };
+            let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+            eprintln!("--- step {step}: {name} {}", g("text").unwrap_or_default().chars().take(60).collect::<String>());
+            steps.push(name.clone());
+            let result = match name.as_str() {
+                "browser_navigate" => crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")),
+                "browser_read" => crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")),
+                "browser_type" => crate::browser::type_text(g("selector"), g("label"), g("text").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")),
+                other => format!("未知工具 {other}"),
+            };
+            best = best.max(solved_now());
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{}</tool_result>\n/no_think", result) });
+            if best >= 8 { break; }
+        }
+        let elapsed = started.elapsed();
+        crate::browser::shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let screenshots = steps.iter().filter(|s| *s == "browser_screenshot" || *s == "browser_snapshot").count();
+        eprintln!("=== password game: solved {best}/8 in {} steps, {:.1}s, screenshots={screenshots} :: {}", steps.len(), elapsed.as_secs_f32(), steps.join(" → "));
+
+        // The point of the feature: solve MANY rules FAST, purely from text.
+        assert_eq!(screenshots, 0, "must solve WITHOUT any screenshot (rich text digest is the vision substitute)");
+        assert!(best >= 6, "should progressively solve most rules from text alone; got {best}/8");
+    }
+}
+
+/// PRODUCTION E2E: a LONG, scrollable form with MANY fields spread top-to-bottom
+/// plus a checkbox and a submit button at the very end. Proves the 35B fills it
+/// accurately, optimally (batched multi-field `browser_type` + multi-target
+/// `browser_click`), and fast — and every step is audited (printed) and the
+/// FINAL DOM state is asserted field-by-field (not the model's self-report).
+///
+///   CHATY_TEST_VLM=… cargo test -p chaty long_form_fill_submit -- --ignored --nocapture
+#[cfg(test)]
+mod long_form_e2e {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Collector { buf: RefCell<String> }
+    impl EventSink for Collector {
+        fn emit(&self, ev: StreamEvent) -> Result<()> {
+            if let StreamEvent::Token { text } = ev { self.buf.borrow_mut().push_str(&text); }
+            Ok(())
+        }
+    }
+    fn strip_think(s: &str) -> String {
+        let mut out = String::new(); let mut rest = s;
+        while let Some(i) = rest.find("<think>") { out.push_str(&rest[..i]); if let Some(j)=rest[i..].find("</think>"){rest=&rest[i+j+8..];} else {rest="";} }
+        out.push_str(rest); out.trim().to_string()
+    }
+    fn parse_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
+        let open = text.find("<tool_call>")?;
+        let mut body = &text[open + "<tool_call>".len()..];
+        if let Some(c) = body.find("</tool_call>") { body = &body[..c]; }
+        let body = body.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        let s = body.find('{')?; let e = body.rfind('}')?;
+        let json: serde_json::Value = serde_json::from_str(&body[s..=e]).ok()?;
+        let name = json.get("name")?.as_str()?.to_string();
+        let args = json.get("arguments").or_else(|| json.get("parameters")).cloned().unwrap_or(serde_json::json!({}));
+        Some((name, args))
+    }
+
+    // A tall form: intro text, 3 fields near the top, 3 fields far below the
+    // fold, a consent checkbox, and a Submit at the very bottom. Submit checks
+    // every field is filled AND the box is ticked before confirming.
+    const FORM_HTML: &str = r##"<!doctype html><meta charset="utf-8"><title>Apply</title>
+<body style="font-family:sans-serif;max-width:640px;margin:0 auto;padding:24px;line-height:1.7">
+<h1>Job Application</h1>
+<p>Thanks for applying to Nimbus. Please complete every field below and accept the terms, then submit. This form is long — the submit button is at the bottom.</p>
+<div style="height:220px;background:aliceblue;border-radius:8px;padding:12px">About the role: you'll build local-first AI apps. We value craft, honesty and speed. Fill in your details carefully.</div>
+<h3>Your details</h3>
+<p><label>Full name<br><input id="f_name" placeholder="Full name" style="width:100%"></label></p>
+<p><label>Email<br><input id="f_email" type="email" placeholder="Email" style="width:100%"></label></p>
+<p><label>Current company<br><input id="f_company" placeholder="Company" style="width:100%"></label></p>
+<div style="height:900px;background:seashell;border-radius:8px;padding:12px">Portfolio guidelines … (long section, scroll down to continue the form) …</div>
+<h3>More about you</h3>
+<p><label>Phone<br><input id="f_phone" placeholder="Phone" style="width:100%"></label></p>
+<p><label>City<br><input id="f_city" placeholder="City" style="width:100%"></label></p>
+<p><label>Why do you want this job?<br><textarea id="f_why" placeholder="Motivation" style="width:100%" rows="3"></textarea></label></p>
+<div style="height:500px;background:honeydew;border-radius:8px;padding:12px">Legal … (long) …</div>
+<p><label><input type="checkbox" id="f_agree"> I agree to the terms and privacy policy.</label></p>
+<p><button id="submit">Submit application</button></p>
+<div id="result" style="font-weight:bold"></div>
+<script>
+function val(id){return (document.getElementById(id).value||"").trim();}
+document.getElementById("submit").addEventListener("click",function(){
+  var fields={name:val("f_name"),email:val("f_email"),company:val("f_company"),phone:val("f_phone"),city:val("f_city"),why:val("f_why")};
+  var missing=Object.keys(fields).filter(function(k){return !fields[k];});
+  var agreed=document.getElementById("f_agree").checked;
+  if(missing.length){document.getElementById("result").textContent="ERROR: please fill: "+missing.join(", ");return;}
+  if(!agreed){document.getElementById("result").textContent="ERROR: please accept the terms.";return;}
+  document.title="Submitted";
+  document.body.dataset.submitted="1";
+  document.getElementById("result").textContent="APPLICATION SUBMITTED — ref APP-7788. Thanks, "+fields.name+"!";
+});
+</script></body>"##;
+
+    #[test]
+    #[ignore]
+    fn long_form_fill_submit() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") { Ok(p) => p, Err(_) => { eprintln!("SKIP: CHATY_TEST_VLM"); return; } };
+        if crate::browser::chrome_path_pub().is_none() { eprintln!("SKIP: no Chrome"); return; }
+        std::env::set_var("CHATY_BROWSER_HEADLESS", "1");
+
+        let dir = std::env::temp_dir().join(format!("chaty-longform-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("apply.html"), FORM_HTML).unwrap();
+        let url = format!("file://{}/apply.html", dir.display());
+
+        let backend = crate::inference::llama::llama_backend_pub().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
+        let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
+        let mmproj = find_mmproj(&model_path).expect("mmproj");
+        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut media_cache: Option<MediaCache> = None;
+
+        let sys = format!(
+            "你是浏览器自动化助手。每步只输出一行 <tool_call>{{\"name\":..,\"arguments\":{{..}}}}</tool_call> 然后停止,系统会用 <tool_result> 回你。\n\
+             可用工具:\n\
+             - browser_navigate {{url}}:打开页面,返回全部可见文字+元素。\n\
+             - browser_read {{}}:读取当前页面全部可见文字+输入框当前值(看页面用它,别截图)。\n\
+             - browser_type:填输入框。**一次填多个**用 steps:{{\"steps\":[{{\"label\":\"Full name\",\"text\":\"...\"}},{{\"label\":\"Email\",\"text\":\"...\"}}]}}。\n\
+             - browser_click:点击。**一次点多处**用 steps:{{\"steps\":[{{\"text\":\"I agree\"}},{{\"text\":\"Submit\"}}]}};也可 {{\"text\":\"...\"}}。\n\
+             - browser_scroll {{to?,by?}}:滚动。\n\
+             这是一个很长、需要滚动的求职表单。**尽量用 steps 一次填多个字段、一次点多个按钮**以求最快。要求:填完所有字段(姓名/邮箱/公司/电话/城市/求职动机)、勾选同意条款、点提交。每次操作后读返回文字确认。首个页面:{url}"
+        );
+        let mut messages = vec![
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys },
+            ChatMessage { images: Vec::new(), role: Role::User, content: format!(
+                "打开 {url},填写这张求职表单并提交:姓名 Alice Chen、邮箱 alice@nimbus.io、公司 Acme、电话 5551234567、城市 Montreal、求职动机随便写一句,勾选同意条款,然后提交。\n/no_think") },
+        ];
+
+        let cancel = AtomicBool::new(false);
+        let mut steps_log: Vec<String> = Vec::new();
+        let mut screenshots = 0usize;
+        let mut type_calls = 0usize;
+        let mut fields_typed = 0usize;
+        let submitted = || crate::browser::eval("document.body.dataset.submitted||'0'").map(|s| s.contains('1')).unwrap_or(false);
+        let started = std::time::Instant::now();
+
+        for step in 0..18 {
+            let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.3, max_tokens: 900, think: Some(false), ..Default::default() } };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            let Some((name, args)) = parse_tool_call(&raw) else {
+                eprintln!("--- step {step}: FINAL: {}", strip_think(&raw).chars().take(100).collect::<String>());
+                break;
+            };
+            // AUDIT: print the full call each step.
+            eprintln!("--- step {step} AUDIT: {name} {}", args.to_string().chars().take(200).collect::<String>());
+            let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let result = match name.as_str() {
+                "browser_navigate" => crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")),
+                "browser_read" => crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")),
+                "browser_scroll" => crate::browser::scroll_page(g("to"), args.get("by").and_then(|v| v.as_f64())).unwrap_or_else(|e| format!("ERROR: {e}")),
+                "browser_type" => {
+                    type_calls += 1;
+                    if let Some(arr) = args.get("steps").and_then(|v| v.as_array()) {
+                        fields_typed += arr.len();
+                        let steps: Vec<(Option<String>, Option<String>, String)> = arr.iter().map(|s| (
+                            s.get("selector").and_then(|v| v.as_str()).map(String::from),
+                            s.get("label").and_then(|v| v.as_str()).map(String::from),
+                            s.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                        )).collect();
+                        crate::browser::type_seq(steps).unwrap_or_else(|e| format!("ERROR: {e}"))
+                    } else {
+                        fields_typed += 1;
+                        crate::browser::type_text(g("selector"), g("label"), g("text").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}"))
+                    }
+                }
+                "browser_click" => {
+                    if let Some(arr) = args.get("steps").and_then(|v| v.as_array()) {
+                        let steps: Vec<(Option<String>, Option<String>)> = arr.iter().map(|s| (
+                            s.get("selector").and_then(|v| v.as_str()).map(String::from),
+                            s.get("text").and_then(|v| v.as_str()).map(String::from),
+                        )).collect();
+                        crate::browser::click_seq(steps).unwrap_or_else(|e| format!("ERROR: {e}"))
+                    } else {
+                        crate::browser::click(g("selector"), g("text")).unwrap_or_else(|e| format!("ERROR: {e}"))
+                    }
+                }
+                "browser_snapshot" | "browser_screenshot" => { screenshots += 1; "(截图)".into() }
+                other => format!("未知工具 {other}"),
+            };
+            steps_log.push(name.clone());
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{}</tool_result>\n/no_think", result) });
+            if submitted() { break; }
+        }
+        let elapsed = started.elapsed();
+
+        // ── AUDIT: field-by-field final DOM state (not the model's word) ──
+        let field = |id: &str| crate::browser::eval(&format!("document.getElementById('{id}')?document.getElementById('{id}').value:''")).unwrap_or_default().trim_matches('"').to_string();
+        let name = field("f_name");
+        let email = field("f_email");
+        let company = field("f_company");
+        let phone = field("f_phone");
+        let city = field("f_city");
+        let why = field("f_why");
+        let agreed = crate::browser::eval("document.getElementById('f_agree').checked").unwrap_or_default().contains("true");
+        let done = submitted();
+        crate::browser::shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        eprintln!("\n===== LONG FORM AUDIT =====");
+        eprintln!("steps={} ({:.1}s) type_calls={type_calls} fields_typed={fields_typed} screenshots={screenshots}", steps_log.len(), elapsed.as_secs_f32());
+        eprintln!("path: {}", steps_log.join(" → "));
+        eprintln!("name='{name}' email='{email}' company='{company}' phone='{phone}' city='{city}' why='{}' agreed={agreed} submitted={done}", why.chars().take(30).collect::<String>());
+        eprintln!("===========================\n");
+
+        // ── Hard assertions on the ACTUAL DOM (accuracy) ──
+        assert!(done, "the form was NOT actually submitted; steps: {steps_log:?}");
+        assert_eq!(name, "Alice Chen", "name mis-filled");
+        assert_eq!(email, "alice@nimbus.io", "email mis-filled");
+        assert_eq!(company, "Acme", "company mis-filled");
+        assert_eq!(phone, "5551234567", "phone mis-filled");
+        assert_eq!(city, "Montreal", "city mis-filled");
+        assert!(!why.is_empty(), "motivation left empty");
+        assert!(agreed, "terms checkbox not ticked");
+        // Optimality: 6 fields via batching should take far fewer type calls
+        // than 6, and the whole thing well under the step budget.
+        assert!(steps_log.len() <= 12, "took too many steps ({}), not optimal", steps_log.len());
+        eprintln!("✓ accurate + optimal: {} fields filled in {} type call(s), {} total steps", fields_typed, type_calls, steps_log.len());
+    }
+}
+
+/// PRODUCTION E2E (balance check): a task whose correctness is VISUAL — the page
+/// shows a raster IMAGE (red field + yellow disc) with NO text describing it, so
+/// the ONLY way to answer "what/what color is in the picture" is to LOOK
+/// (screenshot → vision). Proves the rebalanced prompt still makes the model
+/// reach for vision when text can't answer — the complement to
+/// `password_game_no_vision` (pure text → 0 screenshots).
+///
+///   CHATY_TEST_VLM=… cargo test -p chaty visual_task_uses_vision -- --ignored --nocapture
+#[cfg(test)]
+mod visual_verify_e2e {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Collector { buf: RefCell<String> }
+    impl EventSink for Collector {
+        fn emit(&self, ev: StreamEvent) -> Result<()> {
+            if let StreamEvent::Token { text } = ev { self.buf.borrow_mut().push_str(&text); }
+            Ok(())
+        }
+    }
+    fn strip_think(s: &str) -> String {
+        let mut out = String::new(); let mut rest = s;
+        while let Some(i) = rest.find("<think>") { out.push_str(&rest[..i]); if let Some(j)=rest[i..].find("</think>"){rest=&rest[i+j+8..];} else {rest="";} }
+        out.push_str(rest); out.trim().to_string()
+    }
+    fn parse_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
+        let open = text.find("<tool_call>")?;
+        let mut body = &text[open + "<tool_call>".len()..];
+        if let Some(c) = body.find("</tool_call>") { body = &body[..c]; }
+        let body = body.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        let s = body.find('{')?; let e = body.rfind('}')?;
+        let json: serde_json::Value = serde_json::from_str(&body[s..=e]).ok()?;
+        let name = json.get("name")?.as_str()?.to_string();
+        let args = json.get("arguments").or_else(|| json.get("parameters")).cloned().unwrap_or(serde_json::json!({}));
+        Some((name, args))
+    }
+
+    #[test]
+    #[ignore]
+    fn visual_task_uses_vision() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") { Ok(p) => p, Err(_) => { eprintln!("SKIP: CHATY_TEST_VLM"); return; } };
+        if crate::browser::chrome_path_pub().is_none() { eprintln!("SKIP: no Chrome"); return; }
+        std::env::set_var("CHATY_BROWSER_HEADLESS", "1");
+
+        let dir = std::env::temp_dir().join(format!("chaty-visual-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A picture whose content lives ONLY in pixels: a solid RED field with a
+        // big YELLOW disc in the middle. Nothing in the DOM/text says so.
+        let mut img = image::RgbImage::from_pixel(480, 360, image::Rgb([210, 30, 30]));
+        let (cx, cy, r) = (240i32, 180i32, 110i32);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            let (dx, dy) = (x as i32 - cx, y as i32 - cy);
+            if dx * dx + dy * dy <= r * r { *px = image::Rgb([240, 210, 20]); }
+        }
+        let img_path = dir.join("pic.png");
+        image::DynamicImage::ImageRgb8(img).save(&img_path).unwrap();
+        // Deliberately mislead a text-only reader: the ALT text is generic.
+        let html = format!(
+            "<!doctype html><meta charset=utf-8><title>Gallery</title><body style='font-family:sans-serif;text-align:center'>\
+             <h1>My Gallery</h1><p>Here is today's featured picture.</p>\
+             <img src='file://{}/pic.png' alt='featured image' style='width:480px'>\
+             <p>Enjoy the artwork.</p></body>",
+            dir.display()
+        );
+        std::fs::write(dir.join("g.html"), html).unwrap();
+        let url = format!("file://{}/g.html", dir.display());
+
+        let backend = crate::inference::llama::llama_backend_pub().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
+        let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
+        let mmproj = find_mmproj(&model_path).expect("mmproj");
+        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut media_cache: Option<MediaCache> = None;
+
+        let sys = format!(
+            "你是浏览器自动化助手。每步只输出一行 <tool_call>{{\"name\":..,\"arguments\":{{..}}}}</tool_call> 然后停止,系统会用 <tool_result> 回你。\n\
+             工具:browser_navigate {{url}} / browser_read {{}}(读文字) / browser_screenshot {{}}(整页截图给你看) / browser_snapshot {{}}(当前屏截图给你看)。\n\
+             判断:要文字/状态用 browser_read;要判断图片画的是什么、颜色、外观,读文字看不出来,必须用 browser_screenshot/snapshot 亲眼看。首个页面:{url}"
+        );
+        let mut messages = vec![
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys },
+            ChatMessage { images: Vec::new(), role: Role::User, content: format!("打开 {url},页面上有一张图片。告诉我这张图片主要是什么颜色、中间画的是什么形状。\n/no_think") },
+        ];
+
+        let cancel = AtomicBool::new(false);
+        let mut steps: Vec<String> = Vec::new();
+        let mut final_text = String::new();
+
+        for step in 0..10 {
+            let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.3, max_tokens: 500, think: Some(false), ..Default::default() } };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            let Some((name, args)) = parse_tool_call(&raw) else {
+                final_text = strip_think(&raw);
+                eprintln!("--- step {step}: FINAL: {}", final_text.chars().take(120).collect::<String>());
+                break;
+            };
+            eprintln!("--- step {step}: {name}");
+            steps.push(name.clone());
+            let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let (result, image): (String, Option<String>) = match name.as_str() {
+                "browser_navigate" => (crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_read" => (crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_snapshot" | "browser_screenshot" => {
+                    let png = if name == "browser_snapshot" { crate::browser::snapshot() } else { crate::browser::screenshot() };
+                    match png {
+                        Ok(b) => { let p = dir.join(format!("shot-{step}.png")); std::fs::write(&p, b).unwrap(); ("(截图已附上)".into(), Some(p.to_string_lossy().to_string())) }
+                        Err(e) => (format!("ERROR: {e}"), None),
+                    }
+                }
+                other => (format!("未知工具 {other}"), None),
+            };
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+            if let Some(img) = image {
+                messages.push(ChatMessage { images: vec![img], role: Role::User, content: "<tool_result>这是当前页面截图,请查看后回答。</tool_result>\n/no_think".into() });
+            } else {
+                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{result}</tool_result>\n/no_think") });
+            }
+        }
+        crate::browser::shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let shots = steps.iter().filter(|s| *s == "browser_screenshot" || *s == "browser_snapshot").count();
+        let low = final_text.to_lowercase();
+        let saw_red = low.contains("red") || final_text.contains("红");
+        let saw_yellow = low.contains("yellow") || final_text.contains("黄") || low.contains("gold");
+        let saw_circle = low.contains("circle") || low.contains("disc") || final_text.contains("圆") || final_text.contains("圆形");
+        eprintln!("=== visual task: steps={} shots={shots} :: {} | answer red={saw_red} yellow={saw_yellow} circle={saw_circle}\n    {final_text}", steps.len(), steps.join(" → "));
+
+        // BALANCE: a visual-correctness task MUST use vision (not just read text).
+        assert!(shots >= 1, "a visual task must use a screenshot/snapshot — the model skipped vision; steps: {steps:?}");
+        // And it must get the picture right from the pixels.
+        assert!(saw_red && (saw_yellow || saw_circle), "vision answer wrong (expected red field + yellow circle): {final_text}");
+    }
+}
+
+/// PRODUCTION E2E: a Duolingo-style "build the sentence by tapping words in
+/// order" task. Proves the model (a) picks the words with ONE batched
+/// browser_click(steps) instead of one-at-a-time clicks, and (b) takes a
+/// snapshot/screenshot to VISUALLY confirm the assembled sentence BEFORE it
+/// clicks the irreversible Check/Submit button.
+///
+///   CHATY_TEST_VLM=… cargo test -p chaty duolingo_order_click_verify -- --ignored --nocapture
+#[cfg(test)]
+mod duolingo_e2e {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Collector { buf: RefCell<String> }
+    impl EventSink for Collector {
+        fn emit(&self, ev: StreamEvent) -> Result<()> {
+            if let StreamEvent::Token { text } = ev { self.buf.borrow_mut().push_str(&text); }
+            Ok(())
+        }
+    }
+    fn strip_think(s: &str) -> String {
+        let mut out = String::new(); let mut rest = s;
+        while let Some(i) = rest.find("<think>") { out.push_str(&rest[..i]); if let Some(j)=rest[i..].find("</think>"){rest=&rest[i+j+8..];} else {rest="";} }
+        out.push_str(rest); out.trim().to_string()
+    }
+    fn parse_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
+        let open = text.find("<tool_call>")?;
+        let mut body = &text[open + "<tool_call>".len()..];
+        if let Some(c) = body.find("</tool_call>") { body = &body[..c]; }
+        let body = body.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        let s = body.find('{')?; let e = body.rfind('}')?;
+        let json: serde_json::Value = serde_json::from_str(&body[s..=e]).ok()?;
+        let name = json.get("name")?.as_str()?.to_string();
+        let args = json.get("arguments").or_else(|| json.get("parameters")).cloned().unwrap_or(serde_json::json!({}));
+        Some((name, args))
+    }
+
+    // A word-bank sentence builder: tapping a word appends it to the answer
+    // line; "Check" grades the sentence against the target. Target sentence is
+    // "I drink coffee every morning" — the bank has those words plus distractors
+    // in a shuffled order, so the model must tap them in the RIGHT order.
+    const HTML: &str = r##"<!doctype html><meta charset="utf-8"><title>Translate</title>
+<body style="font-family:sans-serif;max-width:640px;margin:2rem auto;text-align:center">
+<h2>Build the sentence</h2>
+<p>Translate: “我每天早上喝咖啡”</p>
+<div id="answer" style="min-height:40px;border-bottom:2px solid teal;font-size:20px;padding:8px">&nbsp;</div>
+<div id="bank" style="margin-top:20px"></div>
+<p><button id="check" style="font-size:16px;padding:8px 20px">Check</button></p>
+<div id="result" style="font-weight:bold;margin-top:16px"></div>
+<script>
+var TARGET="I drink coffee every morning";
+var WORDS=["coffee","every","I","banana","drink","morning","quickly"];
+var picked=[];
+var bank=document.getElementById("bank");
+WORDS.forEach(function(w){
+  var b=document.createElement("button");
+  b.textContent=w; b.style.margin="4px"; b.style.fontSize="16px"; b.style.padding="6px 12px";
+  b.addEventListener("click",function(){ picked.push(w); b.disabled=true; b.style.opacity=0.4; render(); });
+  bank.appendChild(b);
+});
+function render(){ document.getElementById("answer").textContent = picked.join(" ")||" "; }
+document.getElementById("check").addEventListener("click",function(){
+  var ok = picked.join(" ")===TARGET;
+  document.getElementById("result").textContent = ok? "CORRECT — well done!" : ("WRONG: you built \""+picked.join(" ")+"\"");
+  document.body.dataset.correct = ok? "1":"0";
+  document.body.dataset.checked = "1";
+});
+</script></body>"##;
+
+    #[test]
+    #[ignore]
+    fn duolingo_order_click_verify() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") { Ok(p) => p, Err(_) => { eprintln!("SKIP: CHATY_TEST_VLM"); return; } };
+        if crate::browser::chrome_path_pub().is_none() { eprintln!("SKIP: no Chrome"); return; }
+        std::env::set_var("CHATY_BROWSER_HEADLESS", "1");
+
+        let dir = std::env::temp_dir().join(format!("chaty-duo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("q.html"), HTML).unwrap();
+        let url = format!("file://{}/q.html", dir.display());
+
+        let backend = crate::inference::llama::llama_backend_pub().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
+        let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
+        let mmproj = find_mmproj(&model_path).expect("mmproj");
+        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut media_cache: Option<MediaCache> = None;
+
+        let sys = format!(
+            "你是浏览器自动化助手。每步只输出一行 <tool_call>{{\"name\":..,\"arguments\":{{..}}}}</tool_call> 然后停止,系统会用 <tool_result> 回你。\n\
+             工具:browser_navigate {{url}} / browser_read {{}} / browser_snapshot {{}}(截当前屏给你看) / browser_screenshot {{}} / browser_click(点按钮;**一次按顺序点多个用 steps**,如 {{\"steps\":[{{\"text\":\"I\"}},{{\"text\":\"like\"}}]}})。\n\
+             这是一道选词造句题:点击词库里的单词按正确顺序拼成目标句子,再点 Check。\n\
+             要求:①想好完整顺序后**用 browser_click 的 steps 一次把所有词按顺序点完**,不要一个一个点;②点 Check(会判分、不可逆)**之前先用 browser_snapshot 截屏,用视觉确认拼出的句子完全正确**,再点 Check。首个页面:{url}"
+        );
+        let mut messages = vec![
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys },
+            ChatMessage { images: Vec::new(), role: Role::User, content: format!("打开 {url},把「我每天早上喝咖啡」这道选词造句题做对(目标英文句子是 I drink coffee every morning),按要求先批量选词、提交前截图确认,再点 Check。\n/no_think") },
+        ];
+
+        let cancel = AtomicBool::new(false);
+        let mut steps: Vec<(String, serde_json::Value)> = Vec::new();
+        let checked = || crate::browser::eval("document.body.dataset.checked||'0'").map(|s| s.contains('1')).unwrap_or(false);
+
+        for step in 0..14 {
+            let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.2, max_tokens: 600, think: Some(false), ..Default::default() } };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            let Some((name, args)) = parse_tool_call(&raw) else {
+                eprintln!("--- step {step}: FINAL: {}", strip_think(&raw).chars().take(90).collect::<String>());
+                break;
+            };
+            eprintln!("--- step {step}: {name} {}", args.to_string().chars().take(150).collect::<String>());
+            steps.push((name.clone(), args.clone()));
+            let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let (result, image): (String, Option<String>) = match name.as_str() {
+                "browser_navigate" => (crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_read" => (crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_click" => {
+                    if let Some(arr) = args.get("steps").and_then(|v| v.as_array()) {
+                        let s: Vec<(Option<String>,Option<String>)> = arr.iter().map(|x| (x.get("selector").and_then(|v|v.as_str()).map(String::from), x.get("text").and_then(|v|v.as_str()).map(String::from))).collect();
+                        (crate::browser::click_seq(s).unwrap_or_else(|e| format!("ERROR: {e}")), None)
+                    } else {
+                        (crate::browser::click(g("selector"), g("text")).unwrap_or_else(|e| format!("ERROR: {e}")), None)
+                    }
+                }
+                "browser_snapshot" | "browser_screenshot" => {
+                    let png = if name == "browser_snapshot" { crate::browser::snapshot() } else { crate::browser::screenshot() };
+                    match png { Ok(b) => { let p = dir.join(format!("s-{step}.png")); std::fs::write(&p, b).unwrap(); ("(截图已附上)".into(), Some(p.to_string_lossy().to_string())) } Err(e) => (format!("ERROR: {e}"), None) }
+                }
+                other => (format!("未知工具 {other}"), None),
+            };
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+            if let Some(img) = image {
+                messages.push(ChatMessage { images: vec![img], role: Role::User, content: "<tool_result>这是当前页面截图,请查看后继续。</tool_result>\n/no_think".into() });
+            } else {
+                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{result}</tool_result>\n/no_think") });
+            }
+            if checked() { break; }
+        }
+
+        // ── Analyse the tool trace ──
+        let names: Vec<&str> = steps.iter().map(|(n,_)| n.as_str()).collect();
+        // words picked via batched click(steps): count clicks that carried a steps array of length >=2
+        let batched_word_clicks = steps.iter().any(|(n,a)| n=="browser_click" && a.get("steps").and_then(|v|v.as_array()).map(|x|x.len()>=2).unwrap_or(false));
+        let single_word_clicks = steps.iter().filter(|(n,a)| n=="browser_click" && a.get("steps").is_none() && a.get("text").and_then(|v|v.as_str()).map(|t| t!="Check").unwrap_or(false)).count();
+        // a snapshot/screenshot BEFORE the Check click?
+        let check_idx = steps.iter().position(|(n,a)| n=="browser_click" && (a.get("text").and_then(|v|v.as_str())==Some("Check") || a.get("steps").and_then(|v|v.as_array()).map(|x| x.iter().any(|s| s.get("text").and_then(|v|v.as_str())==Some("Check"))).unwrap_or(false)));
+        let shot_before_check = match check_idx {
+            Some(ci) => steps[..ci].iter().any(|(n,_)| n=="browser_snapshot" || n=="browser_screenshot"),
+            None => false,
+        };
+        let correct = crate::browser::eval("document.body.dataset.correct||'0'").map(|s| s.contains('1')).unwrap_or(false);
+        let done = checked();
+        crate::browser::shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        eprintln!("\n===== DUOLINGO AUDIT =====");
+        eprintln!("steps={} path: {}", names.len(), names.join(" → "));
+        eprintln!("batched_word_clicks={batched_word_clicks} single_word_clicks={single_word_clicks} snapshot_before_check={shot_before_check} checked={done} correct={correct}");
+        eprintln!("==========================\n");
+
+        // ── Hard assertions ──
+        assert!(done, "the model never clicked Check; steps: {names:?}");
+        assert!(correct, "the built sentence was wrong");
+        // (1) ordered words picked as ONE batch, not one-at-a-time.
+        assert!(batched_word_clicks, "words should be picked with ONE batched browser_click(steps), not single clicks; steps: {names:?}");
+        assert!(single_word_clicks <= 1, "too many one-at-a-time word clicks ({single_word_clicks}) — should batch");
+        // (2) a visual confirmation BEFORE hitting the irreversible Check.
+        assert!(shot_before_check, "must snapshot/screenshot to visually confirm BEFORE clicking Check; steps: {names:?}");
+        eprintln!("✓ batched the word taps AND visually confirmed before submitting");
+    }
+}
+
+/// PROBE (not a hard-pass gate): run the 35B against MANY REAL websites — real
+/// browser, real model — covering the tool-selection decision points that keep
+/// going wrong (web_fetch vs browser; batched vs single clicks; when to
+/// screenshot). Prints a scorecard per scenario so we can see where the model
+/// picks a sub-optimal tool or fails, then optimize the prompt/tools. Uses
+/// quotes.toscrape.com (built for automation practice, stable) + Wikipedia / HN
+/// / example.com. Network + Chrome required; skips offline.
+///
+///   CHATY_TEST_VLM=… cargo test -p chaty real_web_scenarios -- --ignored --nocapture
+#[cfg(test)]
+mod real_scenarios_e2e {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Collector { buf: RefCell<String> }
+    impl EventSink for Collector {
+        fn emit(&self, ev: StreamEvent) -> Result<()> {
+            if let StreamEvent::Token { text } = ev { self.buf.borrow_mut().push_str(&text); }
+            Ok(())
+        }
+    }
+    fn strip_think(s: &str) -> String {
+        let mut out = String::new(); let mut rest = s;
+        while let Some(i) = rest.find("<think>") { out.push_str(&rest[..i]); if let Some(j)=rest[i..].find("</think>"){rest=&rest[i+j+8..];} else {rest="";} }
+        out.push_str(rest); out.trim().to_string()
+    }
+    fn parse_tool_call(text: &str) -> Option<(String, serde_json::Value)> {
+        let open = text.find("<tool_call>")?;
+        let mut body = &text[open + "<tool_call>".len()..];
+        if let Some(c) = body.find("</tool_call>") { body = &body[..c]; }
+        let body = body.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        let s = body.find('{')?; let e = body.rfind('}')?;
+        let json: serde_json::Value = serde_json::from_str(&body[s..=e]).ok()?;
+        let name = json.get("name")?.as_str()?.to_string();
+        let args = json.get("arguments").or_else(|| json.get("parameters")).cloned().unwrap_or(serde_json::json!({}));
+        Some((name, args))
+    }
+
+    struct Report { name: &'static str, done: bool, steps: Vec<String>, final_text: String, note: String }
+
+    #[allow(clippy::too_many_arguments)]
+    fn drive(
+        model: &LlamaModel, backend: &LlamaBackend, mtmd: &MtmdContext, n_ctx: u32, nt: i32,
+        rt: &tokio::runtime::Runtime, name: &'static str, sys: &str, task: &str, max_steps: usize,
+        done: &dyn Fn() -> bool,
+    ) -> Report {
+        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut media_cache: Option<MediaCache> = None;
+        let mut messages = vec![
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys.to_string() },
+            ChatMessage { images: Vec::new(), role: Role::User, content: format!("{task}\n/no_think") },
+        ];
+        let cancel = AtomicBool::new(false);
+        let mut steps: Vec<String> = Vec::new();
+        let mut final_text = String::new();
+        let mut last_key = String::new();
+        let mut repeat = 0usize;
+        for step in 0..max_steps {
+            let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.25, max_tokens: 900, think: Some(false), ..Default::default() } };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(model, &mut ctx, &mut cached, Some(mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            let Some((tname, args)) = parse_tool_call(&raw) else { final_text = strip_think(&raw); eprintln!("  [{name}] s{step} FINAL: {}", final_text.chars().take(90).collect::<String>()); break; };
+            eprintln!("  [{name}] s{step}: {tname} {}", args.to_string().chars().take(120).collect::<String>());
+            // repeat breaker (non-exempt identical)
+            let key = format!("{tname}:{args}");
+            let exempt = matches!(tname.as_str(), "browser_scroll"|"browser_screenshot"|"browser_snapshot"|"browser_read"|"browser_console"|"bg_output");
+            if exempt { last_key.clear(); repeat = 0; } else if key == last_key { repeat += 1; } else { last_key = key; repeat = 0; }
+            if repeat >= 1 && !exempt {
+                steps.push(format!("{tname}*BLK"));
+                messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: "<tool_result>这一步和上一步完全相同,已拦截,换做法。</tool_result>\n/no_think".into() });
+                continue;
+            }
+            steps.push(tname.clone());
+            let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let click_steps = || args.get("steps").and_then(|v| v.as_array()).map(|arr| arr.iter().map(|x| (x.get("selector").and_then(|v|v.as_str()).map(String::from), x.get("text").and_then(|v|v.as_str()).map(String::from))).collect::<Vec<_>>());
+            let type_steps = || args.get("steps").and_then(|v| v.as_array()).map(|arr| arr.iter().map(|x| (x.get("selector").and_then(|v|v.as_str()).map(String::from), x.get("label").and_then(|v|v.as_str()).map(String::from), x.get("text").and_then(|v|v.as_str()).unwrap_or_default().to_string())).collect::<Vec<_>>());
+            let (result, image): (String, Option<String>) = match tname.as_str() {
+                "browser_navigate" => (crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_read" => (crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_console" => (crate::browser::console().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_scroll" => (crate::browser::scroll_page(g("to"), args.get("by").and_then(|v|v.as_f64())).unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_click" => (if let Some(s)=click_steps(){crate::browser::click_seq(s)}else{crate::browser::click(g("selector"),g("text"))}.unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_type" => (if let Some(s)=type_steps(){crate::browser::type_seq(s)}else{crate::browser::type_text(g("selector"),g("label"),g("text").unwrap_or_default())}.unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_eval" => (crate::browser::eval(&g("expression").or_else(||g("expr")).unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_snapshot" | "browser_screenshot" => {
+                    let png = if tname=="browser_snapshot"{crate::browser::snapshot()}else{crate::browser::screenshot()};
+                    match png { Ok(b)=>{let p=std::env::temp_dir().join(format!("chaty-rs-{}-{step}.png",std::process::id()));std::fs::write(&p,b).unwrap();("(截图已附上)".into(),Some(p.to_string_lossy().to_string()))} Err(e)=>(format!("ERROR: {e}"),None) }
+                }
+                "web_fetch" => match rt.block_on(crate::search::fetch_url(g("url").unwrap_or_default())) { Ok(pc)=>(format!("标题:{}\n正文:\n{}",pc.title,pc.text.chars().take(2000).collect::<String>()),None), Err(e)=>(format!("ERROR: {e}"),None) },
+                "web_search" => match rt.block_on(crate::search::web_search(g("query").unwrap_or_default())) { Ok(rs)=>{let s=rs.iter().take(6).map(|r|format!("- {} — {}\n  {}",r.title,r.url,r.snippet)).collect::<Vec<_>>().join("\n");(if s.is_empty(){"(无结果)".into()}else{s},None)} Err(e)=>(format!("ERROR: {e}"),None) },
+                other => (format!("未知工具 {other}"), None),
+            };
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+            if let Some(img) = image {
+                messages.push(ChatMessage { images: vec![img], role: Role::User, content: "<tool_result>这是当前页面截图,请查看后继续。</tool_result>\n/no_think".into() });
+            } else {
+                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{}</tool_result>\n/no_think", result.chars().take(6000).collect::<String>()) });
+            }
+            if done() && !final_text.is_empty() { break; }
+        }
+        let finished = done() || !final_text.is_empty();
+        Report { name, done: finished, steps, final_text, note: String::new() }
+    }
+
+    #[test]
+    #[ignore]
+    fn real_web_scenarios() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") { Ok(p)=>p, Err(_)=>{eprintln!("SKIP: CHATY_TEST_VLM");return;} };
+        if crate::browser::chrome_path_pub().is_none() { eprintln!("SKIP: no Chrome"); return; }
+        std::env::set_var("CHATY_BROWSER_HEADLESS", "1");
+        // Quick net check.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        if rt.block_on(crate::search::fetch_url("https://example.com".into())).is_err() { eprintln!("SKIP: no network"); return; }
+
+        let backend = crate::inference::llama::llama_backend_pub().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load");
+        let n_ctx = 8192u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
+        let mmproj = find_mmproj(&model_path).expect("mmproj");
+        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+
+        // Reuse the PRODUCTION system prompt so the probe measures what ships.
+        let sys = systemPrompt_for_probe();
+
+        let mut reports: Vec<Report> = Vec::new();
+        macro_rules! run { ($n:expr,$t:expr,$m:expr,$d:expr) => { reports.push(drive(&model,backend,&mtmd,n_ctx,nt,&rt,$n,&sys,$t,$m,&$d)); }; }
+
+        // 1. PURE READ — should use web_fetch, NOT the browser.
+        run!("read-wikipedia", "查一下英文维基百科 Coffee 词条,咖啡因(caffeine)属于哪一类生物碱/化合物?一句话回答。", 6, || false);
+        // 2. PURE READ — HN front page top story (web_fetch).
+        run!("read-hn", "打开 Hacker News 首页 https://news.ycombinator.com,告诉我当前排在最上面那条帖子的标题。", 6, || false);
+        // 3. BROWSER navigation + pagination.
+        run!("quotes-page2", "打开 https://quotes.toscrape.com,翻到第 2 页(点 Next),告诉我第 2 页第一条名言的作者是谁。", 10, || false);
+        // 4. BROWSER click a tag filter.
+        run!("quotes-tag", "打开 https://quotes.toscrape.com,点击标签 'love' 进入该标签页,告诉我该标签页上第一条名言的作者是谁。", 8, || false);
+        // 5. BROWSER login form (accepts any credentials).
+        run!("quotes-login", "打开 https://quotes.toscrape.com/login,用户名 admin 密码 admin 登录,登录成功后页面右上角会出现 Logout 链接,确认登录成功。", 10,
+            || crate::browser::eval("/logout/i.test(document.body.innerText)?'Y':'N'").map(|s|s.contains('Y')).unwrap_or(false));
+        // 6. BROWSER search form with two dropdowns + submit (ordered selects).
+        run!("quotes-search", "打开 https://quotes.toscrape.com/search.aspx,在 author 下拉选 'Albert Einstein',再在 tag 下拉里选一个可选的标签,点 Search,告诉我搜到的第一条名言。", 12, || false);
+
+        let get = |n: &str| reports.iter().find(|r| r.name==n).unwrap();
+        let uses = |r: &Report, t: &str| r.steps.iter().any(|s| s==t);
+
+        eprintln!("\n================= REAL WEB SCENARIOS SCORECARD =================");
+        let mut completed = 0;
+        for r in &reports {
+            let browser = uses(r, "browser_navigate");
+            let webfetch = uses(r, "web_fetch") || uses(r, "web_search");
+            let shots = r.steps.iter().filter(|s| *s=="browser_screenshot"||*s=="browser_snapshot").count();
+            if r.done { completed += 1; }
+            eprintln!("[{}] done={} steps={} browser={browser} web={webfetch} shots={shots}\n    path: {}\n    final: {}",
+                r.name, r.done, r.steps.len(), r.steps.join(" → "), r.final_text.chars().take(110).collect::<String>());
+        }
+        // Optimality notes (read tasks should NOT open the browser).
+        for n in ["read-wikipedia","read-hn"] { let r=get(n); if uses(r,"browser_navigate"){ eprintln!("⚠ {n}: opened browser for a pure-read task (web_fetch was optimal)"); } }
+        eprintln!("completed {completed}/{} scenarios", reports.len());
+        eprintln!("===============================================================\n");
+
+        // Tolerant gate (real sites can flake): most scenarios must complete.
+        assert!(completed >= reports.len() - 1, "too many real-web scenarios failed: {completed}/{}", reports.len());
+    }
+
+    // The production Code-mode system prompt (vision-ready), rendered for the
+    // probe so it measures the SAME guidance users get. Kept in sync by hand
+    // with agentLoop.ts systemPrompt(); if they drift, the probe still works —
+    // it just measures this copy.
+    fn systemPrompt_for_probe() -> String {
+        // A faithful condensation of the shipping browser+web guidance.
+        "你是 Chaty 的浏览器/网页自动化助手,帮用户在真实网页上完成任务。每步只输出一行 <tool_call>{\"name\":..,\"arguments\":{..}}</tool_call> 然后停止,系统会用 <tool_result> 回你。\n\
+         工具:\n\
+         - web_search {query} / web_fetch {url}:联网搜索 / 抓取网址正文。**纯查资料、读文章、找一个事实,优先用它们**(比开浏览器快得多);拿到答案就直接回答,别再开浏览器重复核实。\n\
+         - browser_navigate {url}:打开页面,返回页面全部可见文字+可交互元素。\n\
+         - browser_read {}:读当前页面全部可见文字+输入框当前值(看页面/确认状态用它,不用截图)。\n\
+         - browser_snapshot {} / browser_screenshot {}:截图用视觉看(要判断排版/图片/渲染是否正确,或提交不可逆操作前确认时用)。\n\
+         - browser_click {text|selector|steps}:点击;**已想好顺序的多次点击必须用 steps 一次点完**,如 {\"steps\":[{\"text\":\"A\"},{\"text\":\"B\"}]}。\n\
+         - browser_type {label|selector|text|steps}:填输入框;**下拉框(select)也用它——text 传选项可见文字即可,别去 click 下拉选项**;**多个字段用 steps 一次填完**。\n\
+         - browser_scroll {to?,by?}:滚动。\n\
+         规则:①纯读资料用 web_fetch/web_search,不要开浏览器;②需要真实操作网页(点、填、登录、翻页、必须亲眼看到渲染)才用浏览器;③浏览器里看页面/确认状态优先 browser_read,交互返回已带最新页面文字;④点提交/登录/不可逆按钮前若涉及正确性,先截图视觉确认;⑤顺序点击/多字段填写用 steps 批量;⑥点登录/翻页/Search/提交等按钮后先读返回文字确认结果,成功就别重复点,翻页要点一次读一次别猛点。任务完成后直接用一句话回答。".to_string()
     }
 }

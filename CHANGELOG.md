@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.7.1 — Agentic browsing that finishes the job (2026-07-13)
+
+A deep pass on Code-mode browser automation — driven by testing the local model against **real websites**, not just fixtures — plus embedded-image vision, prompt-injection defense, and a batch of quality-of-life fixes.
+
+### Browser automation you can hand a task to
+
+- **Reads pages as text, screenshots when it matters.** `browser_read` now returns the page's full visible text (dynamic rules, validation messages, results) plus the interactive elements *and their current values* — so the agent tracks state without a screenshot, and it saves the vision model for what actually needs eyes (rendering, layout, images, and confirming an answer before an irreversible submit). Read tasks fly; visual checks still happen where they count.
+- **Real mouse clicks, on the right element.** Clicks are dispatched as genuine mouse events (so React-style widgets that ignore synthetic clicks respond), and when several elements share the same text — a nav "Login" link next to a form's "Login" button — the actionable control wins, so the form actually submits. After a click that navigates, the agent waits for the new page before deciding what's next, instead of re-clicking a stale one.
+- **Do more per call.** `browser_click` and `browser_type` take a `steps` array to click a sequence or fill a whole form in one call — pick words in order for a Duolingo-style exercise, or fill six fields at once — instead of one call each. **Dropdowns** work too: `browser_type` with the option's text selects it.
+- **Verified on real sites.** New end-to-end suites drive the 35B model through real pages (quotes.toscrape login / pagination / tag / search-form, Wikipedia, Hacker News) and local replicas (a long scrollable form, a progressive password game, a word-order sentence builder) — checking the *actual page state*, not the model's self-report.
+
+### See inside documents
+
+- **Embedded images are read, not skipped.** Charts, photos and screenshots *inside* PDFs, Word, Excel and PowerPoint files are now extracted and shown to a vision model — both as chat/Code attachments and when building the knowledge base (each figure gets a searchable description). Word/Excel/PowerPoint also get proper text extraction as chat attachments (previously docx/xlsx fell back to raw bytes), including per-slide text for decks.
+
+### Trust & control
+
+- **Prompt-injection defense.** Web pages, search results and file contents the agent reads are treated as data, never instructions: any control tokens they contain are neutralized (a page can't forge a tool call or break out of a result), and a firm rule tells the model to ignore embedded "commands."
+- **Out-of-workspace access asks first.** When the coding agent needs a file outside your workspace it requests permission (once per directory, per session); granted folders show as removable chips in the header, and you can add one yourself.
+- **`sudo` needs your OK — with a password field.** A privileged command pops a distinct high-risk dialog with a masked password box; the password is piped straight to `sudo` and never shown, logged, saved, or sent to the model, and the command runs outside the workspace sandbox only after you confirm.
+
+### Comfort
+
+- **A real progress ring.** The quiet moment before the first token — while a long prompt (or an image) is processed — shows a smooth circular **percentage** in Code mode, so you can tell working from stuck. Image turns are faster too: oversized screenshots are downscaled before the vision encoder, and already-seen images aren't re-processed.
+- **Background downloads.** `web_download` returns immediately and streams in the background with a live progress badge; the agent keeps working and is told when it finishes.
+- **New Code settings** (step temperature, auto-approve edits, run the browser hidden), a one-time prompt to tidy loose model files into the folder layout after updating, the Code agent now knows the current date/time, and the coding-session delete confirmation no longer says "conversation."
+
 ## v1.7.0 — Chaty can see (2026-07-12)
 
 The big one: local **vision** models now reach every surface, and Code mode gains a **real browser** it can drive and see. Everything still runs on your machine, nothing leaves it.

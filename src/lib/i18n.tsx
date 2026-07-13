@@ -82,6 +82,29 @@ export const T = {
     en: "Default timeout for bash commands. Raise it for slow test/build steps.",
   },
   cmPrefill: { zh: "处理提示词", en: "Processing prompt" },
+  cmDirAskTitle: { zh: "想访问工作区以外的目录", en: "Wants access outside the workspace" },
+  cmDirAskHint: {
+    zh: "允许后,该目录在本会话内可持续读写(顶部会显示,可随时一键取消)。拒绝则模型会换别的做法。",
+    en: "If allowed, this directory stays accessible for the session (shown in the header, revocable anytime). If denied, the model will try another way.",
+  },
+  cmDirAllow: { zh: "允许访问", en: "Allow access" },
+  cmSudoTitle: { zh: "高危:请求以 sudo 运行命令", en: "High risk: run a command with sudo" },
+  cmSudoHint: {
+    zh: "该命令以管理员权限执行,可能影响整个系统,超出工作区沙箱的保护范围。只有你确认安全时才允许。",
+    en: "This runs with administrator privileges — it can affect your whole system and is outside the workspace sandbox. Allow only if you're sure it's safe.",
+  },
+  cmSudoAllow: { zh: "确认以 sudo 运行", en: "Run with sudo" },
+  cmSudoPwPlaceholder: { zh: "sudo 密码(可留空)", en: "sudo password (optional)" },
+  cmSudoPwNote: {
+    zh: "密码仅本机使用:经加密通道直接喂给 sudo,不会显示、不写入日志或历史、也不发给模型。若系统已配置免密可留空。",
+    en: "Used locally only: piped straight to sudo, never shown, logged, saved to history, or sent to the model. Leave blank if your system is passwordless.",
+  },
+  cmGrantRevoke: { zh: "取消该目录的访问授权", en: "Revoke access to this directory" },
+  cmGrantAdd: { zh: "添加目录", en: "Add folder" },
+  cmGrantAddTip: {
+    zh: "允许本会话访问工作区以外的其他文件夹",
+    en: "Allow this session to access another folder outside the workspace",
+  },
   cmTemp: { zh: "步骤温度", en: "Step temperature" },
   cmTempHint: {
     zh: "Code 模式每步生成的采样温度。低 = 更稳定可复现(默认 0.3),高 = 更有创造性但更容易跑偏。",
@@ -204,6 +227,10 @@ export const T = {
   confirmDeleteConv: {
     zh: "确定要删除这个对话吗？",
     en: "Delete this conversation?",
+  },
+  confirmDeleteSession: {
+    zh: "确定要删除这个编程会话吗？",
+    en: "Delete this coding session?",
   },
   pinConv: { zh: "置顶", en: "Pin" },
   unpinConv: { zh: "取消置顶", en: "Unpin" },

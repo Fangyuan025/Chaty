@@ -4920,6 +4920,66 @@ a:focus-visible,
   border-color: transparent;
 }
 
+/* ---- session directory grants (access beyond the workspace) ---- */
+.cm-grants {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.cm-grants::-webkit-scrollbar {
+  display: none;
+}
+.cm-grant-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px 3px 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  white-space: nowrap;
+  flex: none;
+}
+.cm-grant-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cm-grant-del {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cm-grant-del:hover {
+  color: var(--danger);
+  background: var(--accent-soft);
+}
+.cm-grant-add {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.cm-grant-add:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
 /* ---- prompt-processing progress ring (prefill) ---- */
 .cm-prefill {
   display: inline-flex;
@@ -5545,6 +5605,38 @@ a:focus-visible,
   border-radius: var(--r-md);
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* High-risk (sudo) approval: a danger-tinted card + command box. */
+.cm-approve-danger {
+  border: 1px solid var(--danger);
+  box-shadow: 0 0 0 1px var(--danger) inset, var(--shadow);
+}
+.cm-approve-danger .cm-approve-title {
+  color: var(--danger);
+}
+.cm-approve-cmd-danger {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
+.cm-sudo-pw {
+  width: 100%;
+  margin: 10px 0 4px;
+  padding: 9px 12px;
+  font-size: 13.5px;
+  font-family: var(--font-mono);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  outline: none;
+  box-sizing: border-box;
+}
+.cm-sudo-pw:focus {
+  border-color: var(--accent);
+}
+.cm-sudo-pw-note {
+  font-size: 11.5px;
+  opacity: 0.85;
 }
 .cm-approve-detail {
   margin-top: 8px;

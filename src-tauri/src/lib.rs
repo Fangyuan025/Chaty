@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod attach;
 pub mod browser;
+pub mod docimg;
 pub mod mic;
 pub mod rag;
 mod commands;
@@ -232,6 +233,10 @@ pub fn run() {
             rag::rag_clear_all,
             agent::agent_set_workspace,
             agent::agent_get_workspace,
+            agent::agent_grant_dir,
+            agent::agent_revoke_dir,
+            agent::agent_list_grants,
+            agent::agent_clear_grants,
             agent::agent_read_file,
             agent::agent_write_file,
             agent::agent_edit_file,
@@ -286,6 +291,8 @@ pub fn run() {
             webx::site_search,
             webx::fetch_page_ex,
             agent::agent_web_download,
+            agent::agent_dl_list,
+            agent::agent_dl_reap,
             attach::read_attachment,
         ])
         .build(tauri::generate_context!())

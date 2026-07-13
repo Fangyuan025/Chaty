@@ -224,6 +224,19 @@ export async function agentSetWorkspace(path: string): Promise<string> {
 export async function agentGetWorkspace(): Promise<string | null> {
   return invoke<string | null>("agent_get_workspace");
 }
+/** Session directory grants: access beyond the workspace, user-approved. */
+export async function agentGrantDir(path: string): Promise<string> {
+  return invoke<string>("agent_grant_dir", { path });
+}
+export async function agentRevokeDir(path: string): Promise<void> {
+  await invoke("agent_revoke_dir", { path });
+}
+export async function agentListGrants(): Promise<string[]> {
+  return invoke<string[]>("agent_list_grants");
+}
+export async function agentClearGrants(): Promise<void> {
+  await invoke("agent_clear_grants");
+}
 export async function agentReadFile(
   path: string,
   offset?: number,
@@ -315,8 +328,18 @@ export async function agentSearchFiles(query: string, path?: string, namesOnly?:
 export async function agentGrep(pattern: string, path?: string, glob?: string): Promise<string> {
   return invoke<string>("agent_grep", { pattern, path, glob });
 }
-export async function agentBash(command: string, timeoutSecs?: number): Promise<AgentBashResult> {
-  return invoke<AgentBashResult>("agent_bash", { command, timeoutSecs });
+export async function agentBash(
+  command: string,
+  timeoutSecs?: number,
+  /** User's sudo password, when a sudo command was approved — piped to
+   *  `sudo -S` on stdin, never placed in argv or logs. */
+  sudoPassword?: string,
+): Promise<AgentBashResult> {
+  return invoke<AgentBashResult>("agent_bash", {
+    command,
+    timeoutSecs,
+    sudoPassword: sudoPassword ?? null,
+  });
 }
 
 // ---------- Code-mode session persistence ----------
@@ -739,6 +762,22 @@ export async function fetchPageEx(url: string, raw?: boolean): Promise<PageEx> {
 export async function agentWebDownload(url: string, path: string): Promise<string> {
   return await invoke<string>("agent_web_download", { url, path });
 }
+/** A background download's live status (progress badge / reap). */
+export interface AgentDlInfo {
+  id: number;
+  url: string;
+  path: string;
+  downloaded: number;
+  total: number | null;
+  done: boolean;
+  error: string | null;
+}
+export async function agentDlList(): Promise<AgentDlInfo[]> {
+  return invoke<AgentDlInfo[]>("agent_dl_list");
+}
+export async function agentDlReap(): Promise<AgentDlInfo[]> {
+  return invoke<AgentDlInfo[]>("agent_dl_reap");
+}
 
 export interface EditOp {
   old_string: string;
@@ -780,11 +819,38 @@ export async function browserScroll(to?: "bottom" | "top", by?: number): Promise
 export async function browserEval(expression: string): Promise<string> {
   return await invoke<string>("browser_eval", { expression });
 }
-export async function browserClick(selector?: string, text?: string): Promise<string> {
-  return await invoke<string>("browser_click", { selector: selector ?? null, text: text ?? null });
+export interface ClickStep {
+  selector?: string;
+  text?: string;
 }
-export async function browserType(selector?: string, label?: string, text = ""): Promise<string> {
-  return await invoke<string>("browser_type", { selector: selector ?? null, label: label ?? null, text });
+export interface TypeStep {
+  selector?: string;
+  label?: string;
+  text: string;
+}
+export async function browserClick(
+  selector?: string,
+  text?: string,
+  steps?: ClickStep[],
+): Promise<string> {
+  return await invoke<string>("browser_click", {
+    selector: selector ?? null,
+    text: text ?? null,
+    steps: steps ?? null,
+  });
+}
+export async function browserType(
+  selector?: string,
+  label?: string,
+  text = "",
+  steps?: TypeStep[],
+): Promise<string> {
+  return await invoke<string>("browser_type", {
+    selector: selector ?? null,
+    label: label ?? null,
+    text,
+    steps: steps ?? null,
+  });
 }
 export async function browserConsole(): Promise<string> {
   return await invoke<string>("browser_console");
@@ -840,6 +906,8 @@ export interface Attachment {
   truncated: boolean;
   /** Original file path — set for vision-image attachments (sent as pixels, not OCR text). */
   path?: string;
+  /** Images embedded INSIDE the document (extracted copies) — vision models see them too. */
+  images?: string[];
 }
 
 export async function pickAttachmentFile(): Promise<string | null> {

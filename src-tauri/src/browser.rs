@@ -35,7 +35,9 @@ enum BrowserCmd {
     Scroll { to: Option<String>, by: Option<f64>, reply: Sender<Result<String, String>> },
     Eval { expr: String, reply: Sender<Result<String, String>> },
     Click { selector: Option<String>, text: Option<String>, reply: Sender<Result<String, String>> },
+    ClickSeq { steps: Vec<(Option<String>, Option<String>)>, reply: Sender<Result<String, String>> },
     Type { selector: Option<String>, label: Option<String>, text: String, reply: Sender<Result<String, String>> },
+    TypeSeq { steps: Vec<(Option<String>, Option<String>, String)>, reply: Sender<Result<String, String>> },
     Console { reply: Sender<Result<String, String>> },
     Read { reply: Sender<Result<String, String>> },
     Close,
@@ -43,20 +45,39 @@ enum BrowserCmd {
 
 /// JS that returns a compact list of the page's interactive elements, so the
 /// model clicks/types against real visible text rather than guessed selectors.
+/// Inputs/textareas/contenteditables also report their CURRENT value, so the
+/// model sees what's typed without a screenshot.
 const PAGE_DIGEST_JS: &str = r#"(function(){
-  function vis(e){var r=e.getBoundingClientRect();return r.width>1&&r.height>1;}
+  function vis(e){var r=e.getBoundingClientRect();if(r.width<2||r.height<2)return false;var s=getComputedStyle(e);return s.visibility!=='hidden'&&s.display!=='none';}
   var out=[];
-  var nodes=document.querySelectorAll("a,button,[role=button],input,textarea,select,summary");
-  for(var i=0;i<nodes.length&&out.length<70;i++){
+  var nodes=document.querySelectorAll("a,button,[role=button],[role=link],[role=menuitem],[role=tab],input,textarea,select,summary,[contenteditable=''],[contenteditable=true]");
+  for(var i=0;i<nodes.length&&out.length<90;i++){
     var e=nodes[i];if(!vis(e))continue;
     var tag=e.tagName.toLowerCase();
-    var t=((e.innerText||e.value||e.getAttribute('aria-label')||e.placeholder||'')+'').trim().replace(/\s+/g,' ').slice(0,70);
-    if(tag==='a'){ if(t) out.push('链接/link: "'+t+'"'); }
+    var t=((e.innerText||e.value||e.getAttribute('aria-label')||e.placeholder||'')+'').trim().replace(/\s+/g,' ').slice(0,80);
+    if(e.isContentEditable){ out.push('可编辑区/editable: '+(e.getAttribute('aria-label')||e.id||'')+' = "'+((e.innerText||'').trim().replace(/\s+/g,' ').slice(0,120))+'"'); }
+    else if(tag==='a'){ if(t) out.push('链接/link: "'+t+'"'); }
     else if(tag==='button'||e.getAttribute('role')==='button'||e.type==='submit'||e.type==='button'){ if(t) out.push('按钮/button: "'+t+'"'); }
-    else if(tag==='input'||tag==='textarea'){ var h=e.placeholder||e.name||e.getAttribute('aria-label')||e.type||'text'; out.push('输入框/input ['+(e.type||'text')+']: '+h); }
-    else if(tag==='select'){ out.push('下拉/select: '+(e.name||e.id||'')); }
+    else if(tag==='input'||tag==='textarea'){ var h=e.placeholder||e.name||e.getAttribute('aria-label')||e.type||'text'; var v=(e.value||'').trim().replace(/\s+/g,' ').slice(0,120); out.push('输入框/input ['+(e.type||'text')+']: '+h+(v?(' = "'+v+'"'):'')); }
+    else if(tag==='select'){ out.push('下拉/select: '+(e.name||e.id||'')+' = "'+((e.options[e.selectedIndex]||{}).text||'')+'"'); }
   }
   return out.length? out.join("\n") : "(未发现明显的可交互元素 / no obvious interactive elements)";
+})()"#;
+
+/// JS returning the page's VISIBLE text (what a person / the vision model would
+/// read), rendered in document order via innerText (which already respects
+/// visibility, display and layout, and de-duplicates container/child text).
+/// Blank lines are collapsed and the result is capped by the caller-supplied
+/// `__CAP__`. This is the text substitute for a screenshot: dynamically shown
+/// content (game rules, validation messages, results) is read as text, so the
+/// model never has to screenshot to learn what just appeared.
+const PAGE_TEXT_JS: &str = r#"(function(){
+  var t='';
+  try{ t=(document.body&&document.body.innerText)||''; }catch(e){ t=''; }
+  t=t.replace(/[ \t ]+/g,' ').replace(/\n{3,}/g,'\n\n').split('\n').map(function(l){return l.trim();}).join('\n').replace(/\n{3,}/g,'\n\n').trim();
+  var cap=__CAP__;
+  if(t.length>cap){ t=t.slice(0,cap)+'\n…(文字过长已截断 / text truncated)'; }
+  return t||'(页面无可见文字 / no visible text)';
 })()"#;
 
 /// Auto-scroll through the whole page (triggering lazy-loaded content) and
@@ -67,7 +88,7 @@ const AUTOSCROLL_JS: &str = r#"new Promise(function(done){
   var timer=setInterval(function(){
     window.scrollTo(0,y);y+=step;ticks++;
     if(y>=document.body.scrollHeight||ticks>40){clearInterval(timer);window.scrollTo(0,0);setTimeout(done,200);}
-  },80);
+  },50);
 })"#;
 
 /// Process-wide handle to the browser actor thread. Lazily started.
@@ -255,14 +276,20 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
             BrowserCmd::Click { selector, text, reply } => {
                 let _ = reply.send(run(&mut session, headless, |s| s.click(selector.as_deref(), text.as_deref())));
             }
+            BrowserCmd::ClickSeq { steps, reply } => {
+                let _ = reply.send(run(&mut session, headless, |s| s.click_seq(&steps)));
+            }
             BrowserCmd::Type { selector, label, text, reply } => {
                 let _ = reply.send(run(&mut session, headless, |s| s.type_text(selector.as_deref(), &text, label.as_deref())));
+            }
+            BrowserCmd::TypeSeq { steps, reply } => {
+                let _ = reply.send(run(&mut session, headless, |s| s.type_seq(&steps)));
             }
             BrowserCmd::Console { reply } => {
                 let _ = reply.send(run(&mut session, headless, |s| Ok(s.drain_console())));
             }
             BrowserCmd::Read { reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| s.digest()));
+                let _ = reply.send(run(&mut session, headless, |s| s.rich_digest(12000)));
             }
             BrowserCmd::Close => break,
         }
@@ -510,9 +537,9 @@ impl BrowserSession {
         self.pump_pending();
         let title = self.eval("document.title").unwrap_or_default().trim_matches('"').to_string();
         let final_url = self.eval("location.href").unwrap_or_default().trim_matches('"').to_string();
-        let digest = self.eval(PAGE_DIGEST_JS).unwrap_or_default();
+        let rich = self.rich_digest(4000)?;
         Ok(format!(
-            "已打开 (loaded): {final_url}\n标题 (title): {title}\n\n页面上可交互的元素 (interactive elements — click by text / type into these):\n{digest}"
+            "已打开 (loaded): {final_url}\n标题 (title): {title}\n\n{rich}"
         ))
     }
 
@@ -522,6 +549,23 @@ impl BrowserSession {
     /// selectors.
     fn digest(&mut self) -> Result<String, String> {
         self.eval(PAGE_DIGEST_JS)
+    }
+
+    /// Visible page text, capped at `cap` characters.
+    fn page_text(&mut self, cap: usize) -> Result<String, String> {
+        self.eval(&PAGE_TEXT_JS.replace("__CAP__", &cap.to_string()))
+    }
+
+    /// The text substitute for a screenshot: the page's VISIBLE TEXT plus the
+    /// interactive-element list (with current input values). Lets the model
+    /// read everything that just appeared — dynamic rules, messages, results —
+    /// as text, so it doesn't have to screenshot to "see" the page.
+    fn rich_digest(&mut self, text_cap: usize) -> Result<String, String> {
+        let text = self.page_text(text_cap).unwrap_or_default();
+        let els = self.digest().unwrap_or_default();
+        Ok(format!(
+            "页面可见文字 (visible text — read this instead of screenshotting):\n{text}\n\n可交互元素 (interactive — click by text / type into these):\n{els}"
+        ))
     }
 
     /// Full-page screenshot. First auto-scrolls through the page (triggering
@@ -571,16 +615,16 @@ impl BrowserSession {
         // Also dispatch a scroll event — some lazy-load listeners don't fire on
         // programmatic scrollTo in headless Chrome.
         self.eval(&format!("{js};window.dispatchEvent(new Event('scroll'))"))?;
-        std::thread::sleep(Duration::from_millis(700)); // let lazy content load
+        std::thread::sleep(Duration::from_millis(450)); // let lazy content load
         self.pump_pending();
         let pos = self
             .eval("Math.round(window.scrollY)+' / '+Math.round(document.body.scrollHeight)")
             .unwrap_or_default();
-        // Surface any newly-revealed elements (lazy-load) so the model knows
-        // whether scrolling accomplished anything and what's now on screen.
-        let d = self.digest().unwrap_or_default();
+        // Surface any newly-revealed text/elements (lazy-load) so the model
+        // reads what appeared without a screenshot.
+        let rich = self.rich_digest(3500).unwrap_or_default();
         Ok(format!(
-            "已滚动 (scrolled), 位置 scrollY: {}\n当前可交互元素:\n{d}\n(要看这一屏的视觉效果用 browser_snapshot)",
+            "已滚动 (scrolled), 位置 scrollY: {}\n\n{rich}",
             pos.trim_matches('"')
         ))
     }
@@ -602,23 +646,110 @@ impl BrowserSession {
         Ok(remote_object_to_string(&r["result"]))
     }
 
-    /// Click by visible text (preferred — robust) or by CSS selector.
+    /// Dispatch a REAL mouse click at viewport coordinates over CDP — the same
+    /// event stream a human produces (move → press → release), so components
+    /// that listen for mousedown/pointer events (React/Vue widgets, custom
+    /// dropdowns) respond where a synthetic `el.click()` silently did nothing.
+    fn mouse_click(&mut self, x: f64, y: f64) -> Result<(), String> {
+        let sid = self.session_id.clone();
+        self.call(
+            Some(&sid),
+            "Input.dispatchMouseEvent",
+            json!({"type": "mouseMoved", "x": x, "y": y, "button": "none"}),
+        )?;
+        self.call(
+            Some(&sid),
+            "Input.dispatchMouseEvent",
+            json!({"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1}),
+        )?;
+        self.call(
+            Some(&sid),
+            "Input.dispatchMouseEvent",
+            json!({"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1}),
+        )?;
+        Ok(())
+    }
+
+    /// Click by visible text or CSS selector, then hand back the fresh page
+    /// state (visible text + elements). Single-step wrapper over `click_once`.
     fn click(&mut self, selector: Option<&str>, text: Option<&str>) -> Result<String, String> {
+        let label = self.click_once(selector, text)?;
+        let where_ = self.eval("document.title+' — '+location.href").unwrap_or_default();
+        let rich = self.rich_digest(3500).unwrap_or_default();
+        Ok(format!(
+            "已点击 (clicked): {label}\n点击后当前页面:{}\n\n{rich}",
+            where_.trim_matches('"')
+        ))
+    }
+
+    /// Click a SEQUENCE of targets in one call (form flows, multi-step wizards)
+    /// — real mouse events with a short settle between each. Stops at the first
+    /// failure and reports how far it got; on success returns ONE fresh page
+    /// state at the end (not after every click) to keep the result compact.
+    fn click_seq(&mut self, steps: &[(Option<String>, Option<String>)]) -> Result<String, String> {
+        let mut done: Vec<String> = Vec::new();
+        for (i, (sel, text)) in steps.iter().enumerate() {
+            match self.click_once(sel.as_deref(), text.as_deref()) {
+                Ok(label) => done.push(label),
+                Err(e) => {
+                    let rich = self.rich_digest(3000).unwrap_or_default();
+                    return Ok(format!(
+                        "顺序点击:成功 {} 步 [{}],第 {} 步失败:{e}\n\n{rich}",
+                        done.len(),
+                        done.join(" → "),
+                        i + 1
+                    ));
+                }
+            }
+        }
+        let rich = self.rich_digest(3500).unwrap_or_default();
+        Ok(format!("已依次点击 {} 处:{}\n\n{rich}", done.len(), done.join(" → ")))
+    }
+
+    /// Locate + real-mouse-click a single element. Returns the matched label on
+    /// success. Two-phase: JS locates the element (exact visible-text match
+    /// first, then prefix, then substring — visible elements only, so "Save"
+    /// hits the button labelled exactly "Save", not "Save All"), scrolls it into
+    /// view and reports its center; then a REAL mouse click lands on that point.
+    fn click_once(&mut self, selector: Option<&str>, text: Option<&str>) -> Result<String, String> {
         let js = if let Some(txt) = text.filter(|t| !t.is_empty()) {
             format!(
                 r#"(function(){{
-                    var t={txt}.trim().toLowerCase();
-                    var els=[].slice.call(document.querySelectorAll("a,button,[role=button],input[type=submit],input[type=button],[onclick],summary,label"));
-                    var hit=els.find(function(e){{var s=((e.innerText||e.textContent||e.value||e.getAttribute('aria-label')||'')).trim().toLowerCase();return s===t||s.includes(t);}});
+                    var t={txt}.trim().replace(/\s+/g,' ').toLowerCase();
+                    var els=[].slice.call(document.querySelectorAll("a,button,[role=button],[role=link],[role=menuitem],[role=tab],input[type=submit],input[type=button],[onclick],summary,label"));
+                    function vis(e){{var r=e.getBoundingClientRect();if(r.width<2||r.height<2)return false;var s=getComputedStyle(e);return s.visibility!=='hidden'&&s.display!=='none'&&s.pointerEvents!=='none';}}
+                    function txt(e){{return ((e.innerText||e.textContent||e.value||e.getAttribute('aria-label')||'')+'').trim().replace(/\s+/g,' ').toLowerCase();}}
+                    // Priority when several elements share the same text (e.g. a
+                    // nav "Login" LINK vs the form's "Login" SUBMIT button): the
+                    // actionable control wins over a plain link, so clicking
+                    // "Login"/"Submit"/"Search" fires the form, not a same-named
+                    // link that just reloads.
+                    function rank(e){{var tag=e.tagName.toLowerCase(),ty=(e.type||'').toLowerCase();
+                        if(ty==='submit')return 0;
+                        if(tag==='button'||e.getAttribute('role')==='button'||ty==='button')return 1;
+                        return 2;}}
+                    var cand=els.filter(vis);
+                    function pick(pred){{var m=cand.filter(pred);if(!m.length)return null;m.sort(function(a,b){{return rank(a)-rank(b);}});return m[0];}}
+                    var hit=pick(function(e){{return txt(e)===t;}})
+                          ||pick(function(e){{return txt(e).lastIndexOf(t,0)===0;}})
+                          ||pick(function(e){{return txt(e).indexOf(t)>=0;}});
                     if(!hit)return 'NOT_FOUND';
-                    hit.scrollIntoView({{block:'center'}});hit.click();return 'OK';
+                    hit.scrollIntoView({{block:'center'}});
+                    var r=hit.getBoundingClientRect();
+                    return JSON.stringify({{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}});
                 }})()"#,
                 txt = json!(txt)
             )
         } else {
             let sel = selector.unwrap_or("");
             format!(
-                "(function(){{var el=document.querySelector({sel});if(!el)return 'NOT_FOUND';el.scrollIntoView({{block:'center'}});el.click();return 'OK';}})()",
+                r#"(function(){{
+                    var el=document.querySelector({sel});
+                    if(!el)return 'NOT_FOUND';
+                    el.scrollIntoView({{block:'center'}});
+                    var r=el.getBoundingClientRect();
+                    return JSON.stringify({{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}});
+                }})()"#,
                 sel = json!(sel)
             )
         };
@@ -630,22 +761,44 @@ impl BrowserSession {
             ));
         }
         std::thread::sleep(Duration::from_millis(150)); // let a prior nav settle
-        match self.eval(&js)?.trim_matches('"') {
+        let found = self.eval(&js)?;
+        let found = found.trim_matches('"');
+        let clicked = if found == "NOT_FOUND" {
+            "NOT_FOUND"
+        } else {
+            // The eval result is JSON-escaped; parse leniently.
+            let coords: Option<(f64, f64)> = serde_json::from_str::<Value>(&found.replace("\\\"", "\""))
+                .ok()
+                .and_then(|v| Some((v.get("x")?.as_f64()?, v.get("y")?.as_f64()?)));
+            match coords {
+                Some((x, y)) => {
+                    self.mouse_click(x, y)?;
+                    "OK"
+                }
+                None => "NOT_FOUND",
+            }
+        };
+        match clicked {
             "OK" => {
-                // A click may navigate — let it settle before the next step.
-                std::thread::sleep(Duration::from_millis(700));
+                // A click may navigate (submit/login/next). Let it settle, then
+                // if a navigation is in flight, wait for the destination to be
+                // ready — otherwise the digest would show the OLD page and the
+                // model would wrongly re-click (over-clicking Login/Next).
+                std::thread::sleep(Duration::from_millis(300));
                 self.pump_pending();
-                // Hand back the post-click page state so the model verifies the
-                // result instead of guessing what the click did. Include title +
-                // url so a navigation is obvious.
-                let where_ = self
-                    .eval("document.title+' — '+location.href")
-                    .unwrap_or_default();
-                let d = self.digest().unwrap_or_default();
-                Ok(format!(
-                    "已点击 (clicked): {label}\n点击后当前页面:{where_}\n可交互元素:\n{d}\n(若要确认视觉渲染,再用 browser_snapshot)",
-                    where_ = where_.trim_matches('"')
-                ))
+                for _ in 0..12 {
+                    let ready = self
+                        .eval("document.readyState")
+                        .unwrap_or_default();
+                    if ready.contains("complete") {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(150));
+                    self.pump_pending();
+                }
+                std::thread::sleep(Duration::from_millis(150));
+                self.pump_pending();
+                Ok(label.to_string())
             }
             _ => {
                 let d = self.digest().unwrap_or_default();
@@ -656,15 +809,49 @@ impl BrowserSession {
         }
     }
 
-    /// Type into a field matched by CSS selector OR by its label/placeholder text.
+    /// Type into a field, then hand back the fresh page state (validation /
+    /// rules that just appeared). Single-step wrapper over `type_once`.
     fn type_text(&mut self, selector: Option<&str>, text: &str, label: Option<&str>) -> Result<String, String> {
+        let what = self.type_once(selector, text, label)?;
+        let rich = self.rich_digest(3500).unwrap_or_default();
+        Ok(format!("已输入 (typed) → {what}\n\n{rich}"))
+    }
+
+    /// Fill a SEQUENCE of fields in one call (a whole form at once). Stops at the
+    /// first failure; returns ONE fresh page state at the end.
+    fn type_seq(&mut self, steps: &[(Option<String>, Option<String>, String)]) -> Result<String, String> {
+        let mut done: Vec<String> = Vec::new();
+        for (i, (sel, label, text)) in steps.iter().enumerate() {
+            match self.type_once(sel.as_deref(), text, label.as_deref()) {
+                Ok(what) => done.push(what),
+                Err(e) => {
+                    let rich = self.rich_digest(3000).unwrap_or_default();
+                    return Ok(format!(
+                        "顺序输入:成功 {} 个字段 [{}],第 {} 个失败:{e}\n\n{rich}",
+                        done.len(),
+                        done.join(", "),
+                        i + 1
+                    ));
+                }
+            }
+        }
+        let rich = self.rich_digest(3500).unwrap_or_default();
+        Ok(format!("已依次填写 {} 个字段:{}\n\n{rich}", done.len(), done.join(", ")))
+    }
+
+    /// Set one field's value (no digest). Returns the field label on success.
+    /// Matches by CSS selector, label/placeholder text, or the page's single
+    /// obvious text field; supports contenteditable.
+    fn type_once(&mut self, selector: Option<&str>, text: &str, label: Option<&str>) -> Result<String, String> {
+        // The finder also considers contenteditable regions (rich editors,
+        // some game/note inputs) alongside form fields.
         let finder = if let Some(sel) = selector.filter(|s| !s.is_empty()) {
             format!("document.querySelector({})", json!(sel))
         } else if let Some(lbl) = label.filter(|l| !l.is_empty()) {
             format!(
                 r#"(function(){{
                     var l={lbl}.trim().toLowerCase();
-                    var fields=[].slice.call(document.querySelectorAll("input,textarea,select"));
+                    var fields=[].slice.call(document.querySelectorAll("input,textarea,select,[contenteditable=''],[contenteditable=true]"));
                     return fields.find(function(f){{
                         var hints=[f.placeholder,f.name,f.id,f.getAttribute('aria-label')];
                         var lab=f.labels&&f.labels[0];if(lab)hints.push(lab.textContent);
@@ -674,33 +861,55 @@ impl BrowserSession {
                 lbl = json!(lbl)
             )
         } else {
-            "null".to_string()
+            // No selector/label: the single obvious text field (many single-input
+            // pages/games — one textarea/input/editable — need no locator).
+            r#"(function(){var f=[].slice.call(document.querySelectorAll("textarea,input[type=text],input:not([type]),[contenteditable=''],[contenteditable=true]")).filter(function(e){var r=e.getBoundingClientRect();return r.width>1&&r.height>1;});return f.length===1?f[0]:null;})()"#.to_string()
         };
         let js = format!(
             r#"(function(){{
                 var el={finder};
                 if(!el)return 'NOT_FOUND';
                 el.scrollIntoView({{block:'center'}});el.focus();
-                el.value={val};
-                el.dispatchEvent(new Event('input',{{bubbles:true}}));
-                el.dispatchEvent(new Event('change',{{bubbles:true}}));
+                var want=({val}+'').trim().toLowerCase();
+                if(el.tagName==='SELECT'){{
+                    // Dropdown: pick the option whose visible text or value
+                    // matches (exact first, then prefix, then substring). You
+                    // can't "type" into a <select>.
+                    var opts=[].slice.call(el.options);
+                    function t(o){{return (o.textContent||'').trim().toLowerCase();}}
+                    var hit=opts.find(function(o){{return t(o)===want||(o.value||'').toLowerCase()===want;}})
+                          ||opts.find(function(o){{return t(o).lastIndexOf(want,0)===0;}})
+                          ||opts.find(function(o){{return want&&t(o).indexOf(want)>=0;}});
+                    if(!hit)return 'NO_OPTION:'+opts.map(function(o){{return t(o);}}).filter(Boolean).slice(0,20).join(' | ');
+                    el.value=hit.value;
+                    el.dispatchEvent(new Event('input',{{bubbles:true}}));
+                    el.dispatchEvent(new Event('change',{{bubbles:true}}));
+                }} else if(el.isContentEditable){{
+                    el.textContent={val};
+                    el.dispatchEvent(new InputEvent('input',{{bubbles:true}}));
+                }} else {{
+                    el.value={val};
+                    el.dispatchEvent(new Event('input',{{bubbles:true}}));
+                    el.dispatchEvent(new Event('change',{{bubbles:true}}));
+                }}
                 return 'OK';
             }})()"#,
             val = json!(text)
         );
-        let what = selector.or(label).unwrap_or("");
-        if what.is_empty() && selector.is_none() && label.is_none() {
+        let what = selector.or(label).unwrap_or("(the page's single text field)");
+        let r = self.eval(&js)?;
+        let r = r.trim_matches('"');
+        if r == "OK" {
+            std::thread::sleep(Duration::from_millis(250));
+            self.pump_pending();
+            Ok(what.to_string())
+        } else if let Some(opts) = r.strip_prefix("NO_OPTION:") {
+            // A <select> was found but no option matched — list the options so
+            // the model retries with an exact one.
+            Err(format!("下拉框「{what}」里没有匹配「{text}」的选项。可选项:{}", opts.replace("\\|", "|")))
+        } else {
             let d = self.digest().unwrap_or_default();
-            return Err(format!(
-                "browser_type 需要 \"label\"(输入框的占位符/字段名)或 \"selector\",以及 \"text\"。当前页面的输入框:\n{d}"
-            ));
-        }
-        match self.eval(&js)?.trim_matches('"') {
-            "OK" => Ok(format!("已输入 (typed) → {what}")),
-            _ => {
-                let d = self.digest().unwrap_or_default();
-                Err(format!("未找到输入框 (no input matched): {what}。可用输入框见清单:\n{d}"))
-            }
+            Err(format!("未找到输入框 (no input matched): {what}。可用输入框见清单:\n{d}"))
         }
     }
 
@@ -831,8 +1040,18 @@ pub fn click(selector: Option<String>, text: Option<String>) -> Result<String, S
     dispatch(|reply| BrowserCmd::Click { selector, text, reply })
 }
 
+/// Click a sequence of targets in one call: Vec of (selector, text).
+pub fn click_seq(steps: Vec<(Option<String>, Option<String>)>) -> Result<String, String> {
+    dispatch(|reply| BrowserCmd::ClickSeq { steps, reply })
+}
+
 pub fn type_text(selector: Option<String>, label: Option<String>, text: String) -> Result<String, String> {
     dispatch(|reply| BrowserCmd::Type { selector, label, text, reply })
+}
+
+/// Fill a sequence of fields in one call: Vec of (selector, label, text).
+pub fn type_seq(steps: Vec<(Option<String>, Option<String>, String)>) -> Result<String, String> {
+    dispatch(|reply| BrowserCmd::TypeSeq { steps, reply })
 }
 
 pub fn console() -> Result<String, String> {
@@ -925,7 +1144,10 @@ mod tests {
         let html = "<!doctype html><html><head><title>Chaty Test</title></head>\
             <body style='background:#0a7'><h1 id='h'>Hello Chaty</h1>\
             <button id='b' onclick=\"document.getElementById('h').textContent='Clicked'\">Go</button>\
-            <script>console.error('boom-42');console.log('ok-hi');</script></body></html>";
+            <button id='md'>Save</button><button id='md2'>Save All</button>\
+            <script>console.error('boom-42');console.log('ok-hi');\
+            document.getElementById('md').addEventListener('mousedown',function(){document.getElementById('h').dataset.md='exact';});\
+            document.getElementById('md2').addEventListener('mousedown',function(){document.getElementById('h').dataset.md='all';});</script></body></html>";
         let path = std::env::temp_dir().join(format!("chaty-browser-test-{}.html", std::process::id()));
         std::fs::write(&path, html).unwrap();
         let url = format!("file://{}", path.display());
@@ -954,12 +1176,64 @@ mod tests {
         // click by visible text (the robust path)
         let by_text = click(None, Some("Go".into()));
         assert!(by_text.is_ok(), "click-by-text should work: {by_text:?}");
+        // REAL mouse events: a mousedown-only listener (React-style widgets)
+        // must fire — a synthetic el.click() never triggered these. And exact
+        // text ("Save") must win over a substring container ("Save All").
+        click(None, Some("Save".into())).expect("click Save");
+        let md = eval("document.getElementById('h').dataset.md||''").expect("md");
+        assert_eq!(md.trim_matches('"'), "exact", "real mousedown should fire on the EXACT 'Save' button");
+        click(None, Some("Save All".into())).expect("click Save All");
+        let md2 = eval("document.getElementById('h').dataset.md||''").expect("md2");
+        assert_eq!(md2.trim_matches('"'), "all", "exact match 'Save All' should hit the second button");
         // a statement-body eval with `return` must not error
         let ev = eval("const x = 40 + 2; return x").expect("eval stmt");
         assert_eq!(ev.trim_matches('"'), "42");
-        // element digest lists the button by text (still on the first page)
+        // rich read = visible TEXT + interactive elements. The dynamic rule
+        // case: JS injects new text; a plain read must surface it (no screenshot
+        // needed). Also verifies input VALUES show up in the digest.
+        eval("var d=document.createElement('p');d.textContent='RULE: your password must include a month';document.body.appendChild(d);").expect("inject");
+        eval("var i=document.createElement('input');i.id='pw';i.placeholder='password';document.body.appendChild(i);i.value='hunter2';").expect("inject input");
         let dig = read_page().expect("digest");
         assert!(dig.contains("Go"), "digest should list the button: {dig}");
+        assert!(dig.contains("must include a month"), "rich read must surface dynamically-injected TEXT (the vision substitute): {dig}");
+        assert!(dig.contains("hunter2"), "rich read must show the current input VALUE: {dig}");
+        // typing returns the fresh visible text so the model reads changes.
+        let typed = type_text(Some("#pw".into()), None, "December1".into()).expect("type");
+        assert!(typed.contains("December1"), "type result should echo the new page state incl. the value: {typed}");
+
+        // BATCH: fill a whole form + click a sequence of buttons in ONE call each.
+        eval("document.body.innerHTML='<input id=n placeholder=name><input id=e placeholder=email><textarea id=m placeholder=message></textarea><button id=b1>Step1</button><button id=b2>Step2</button><p id=log></p>';var l=document.getElementById('log');document.getElementById('b1').onclick=function(){l.textContent+='1';};document.getElementById('b2').onclick=function(){l.textContent+='2';};").expect("build form");
+        let ts = type_seq(vec![
+            (Some("#n".into()), None, "Alice".into()),
+            (Some("#e".into()), None, "a@b.com".into()),
+            (Some("#m".into()), None, "hello world".into()),
+        ]).expect("type_seq");
+        assert!(ts.contains("3 个字段"), "type_seq should report 3 filled: {ts}");
+        assert_eq!(eval("document.getElementById('n').value").unwrap().trim_matches('"'), "Alice");
+        assert_eq!(eval("document.getElementById('e').value").unwrap().trim_matches('"'), "a@b.com");
+        assert_eq!(eval("document.getElementById('m').value").unwrap().trim_matches('"'), "hello world");
+        let cs = click_seq(vec![
+            (None, Some("Step1".into())),
+            (None, Some("Step2".into())),
+        ]).expect("click_seq");
+        assert!(cs.contains("2 处"), "click_seq should report 2 clicks: {cs}");
+        assert_eq!(eval("document.getElementById('log').textContent").unwrap().trim_matches('"'), "12", "both buttons clicked in order");
+
+        // Ambiguous text: a nav "Login" LINK and a form submit "Login" button.
+        // Clicking "Login" must fire the FORM (submit control wins over link),
+        // not follow the same-named link — the real quotes.toscrape login bug.
+        eval("document.body.innerHTML='<a href=\"/login\">Login</a><form onsubmit=\"event.preventDefault();document.body.dataset.submitted=1;return false;\"><input name=u><input type=submit value=Login></form>';").expect("build login");
+        click(None, Some("Login".into())).expect("click Login");
+        assert_eq!(eval("document.body.dataset.submitted||'0'").unwrap().trim_matches('"'), "1", "click 'Login' must submit the form, not follow the nav link of the same text");
+
+        // <select> dropdown: browser_type selects the option by visible text.
+        eval("document.body.innerHTML='<select id=sel><option value=\"\">--</option><option value=\"e\">Albert Einstein</option><option value=\"m\">Marilyn Monroe</option></select>';").expect("build select");
+        let seld = type_text(Some("#sel".into()), None, "Marilyn Monroe".into()).expect("select by text");
+        assert!(seld.contains("typed"), "select result: {seld}");
+        assert_eq!(eval("document.getElementById('sel').value").unwrap().trim_matches('"'), "m", "select set to the matching option");
+        // A non-existent option returns the option list, not a silent no-op.
+        let miss = type_text(Some("#sel".into()), None, "Nobody".into());
+        assert!(miss.is_err() && format!("{miss:?}").contains("没有匹配"), "missing option should error with the list: {miss:?}");
 
         // lazy-load: a page that injects a marker only after scrolling near the
         // bottom. viewport snapshot at top must NOT see it; scroll + snapshot must.

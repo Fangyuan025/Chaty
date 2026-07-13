@@ -20,6 +20,33 @@ use serde::Serialize;
 /// opens a folder for the coding session.
 static WORKSPACE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// Session-scoped extra directories the user granted beyond the workspace
+/// (absolute, canonicalized). Cleared when the workspace/session changes.
+static GRANTED_DIRS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Error-marker protocol for out-of-workspace access: the frontend recognizes
+/// this prefix, asks the user, grants the directory on approval, and retries.
+/// Format: `NEED_DIR_GRANT\t<absolute dir>\t<human message>`.
+pub(crate) const NEED_DIR_GRANT: &str = "NEED_DIR_GRANT";
+
+fn need_grant_err(target: &Path, raw: &str) -> String {
+    // Suggest the closest directory: the path itself if it's an existing dir,
+    // else its parent (works for files about to be created too).
+    let dir = if target.is_dir() {
+        target.to_path_buf()
+    } else {
+        target.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| target.to_path_buf())
+    };
+    format!(
+        "{NEED_DIR_GRANT}\t{}\t路径在工作区外，需要用户授权 (path is outside the workspace — needs the user's approval): {raw}",
+        dir.display()
+    )
+}
+
+fn in_granted_dirs(p: &Path) -> bool {
+    GRANTED_DIRS.lock().unwrap().iter().any(|g| p.starts_with(g))
+}
+
 const MAX_READ_BYTES: usize = 400 * 1024; // per-file read cap
 const MAX_OUTPUT_BYTES: usize = 60 * 1024; // bash stdout/stderr cap (each)
 const MAX_GREP_MATCHES: usize = 300;
@@ -50,10 +77,29 @@ fn lexical_normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// Resolve a user/model-supplied path against the workspace and guarantee it
-/// stays inside it. Relative paths join the root; absolute paths must already be
-/// within it. Symlinks that resolve outside are rejected too (for paths that
-/// exist).
+/// The canonical form of a path, tolerating paths that don't exist yet: a
+/// missing file canonicalizes its parent and re-appends the name (so `/var/…`
+/// and `/private/var/…` spellings compare equal for new files too); a fully
+/// non-existent chain stays lexical.
+fn canonical_or_lexical(p: &Path) -> PathBuf {
+    if let Ok(c) = p.canonicalize() {
+        return c;
+    }
+    if let (Some(parent), Some(name)) = (p.parent(), p.file_name()) {
+        if let Ok(cp) = parent.canonicalize() {
+            return cp.join(name);
+        }
+    }
+    p.to_path_buf()
+}
+
+/// Resolve a user/model-supplied path against the workspace and confine it.
+/// Relative paths join the root; absolute paths must land inside the workspace
+/// or inside a directory the user granted this session. Anything else returns
+/// a `NEED_DIR_GRANT` marker error so the frontend can ask the user and retry
+/// (instead of the old flat rejection). The check runs on the CANONICAL path,
+/// so a symlink can't smuggle a path out of the allowed roots — and alias
+/// spellings (macOS `/var` → `/private/var`) compare correctly.
 fn resolve(rel: &str) -> Result<PathBuf, String> {
     if rel.trim().is_empty() {
         return Err("路径为空，请提供文件路径 (empty path — provide a file path)".to_string());
@@ -62,17 +108,11 @@ fn resolve(rel: &str) -> Result<PathBuf, String> {
     let p = Path::new(rel);
     let joined = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
     let norm = lexical_normalize(&joined);
-    if !norm.starts_with(&root) {
-        return Err(format!("路径超出工作区，已拒绝 (path escapes the workspace): {rel}"));
+    let checked = canonical_or_lexical(&norm);
+    if checked.starts_with(&root) || in_granted_dirs(&checked) {
+        return Ok(checked);
     }
-    // If it exists, resolve symlinks and re-check (a symlink could point out).
-    if let Ok(canon) = norm.canonicalize() {
-        if !canon.starts_with(&root) {
-            return Err(format!("路径经符号链接逃逸，已拒绝 (symlink escapes the workspace): {rel}"));
-        }
-        return Ok(canon);
-    }
-    Ok(norm)
+    Err(need_grant_err(&checked, rel))
 }
 
 /// Render a path relative to the workspace for display (falls back to the raw
@@ -95,10 +135,12 @@ pub fn agent_set_workspace(path: String) -> Result<String, String> {
     let shown = canon.to_string_lossy().to_string();
     let changed = WORKSPACE.lock().unwrap().replace(canon.clone()) != Some(canon);
     if changed {
-        // Background jobs, checkpoints and the browser belong to the previous
-        // workspace.
+        // Background jobs, checkpoints, dir grants and the browser belong to
+        // the previous workspace.
         bg_kill_all();
         cp_clear();
+        dl_clear();
+        GRANTED_DIRS.lock().unwrap().clear();
         crate::browser::shutdown();
     }
     Ok(shown)
@@ -107,6 +149,45 @@ pub fn agent_set_workspace(path: String) -> Result<String, String> {
 #[tauri::command]
 pub fn agent_get_workspace() -> Option<String> {
     WORKSPACE.lock().unwrap().as_ref().map(|p| p.to_string_lossy().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Session directory grants (access beyond the workspace, user-approved)
+// ---------------------------------------------------------------------------
+
+/// Grant access to a directory outside the workspace for this session.
+/// Returns the canonical path actually granted.
+#[tauri::command]
+pub fn agent_grant_dir(path: String) -> Result<String, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err("不是有效的文件夹 (not a directory)".to_string());
+    }
+    let canon = p.canonicalize().map_err(|e| e.to_string())?;
+    let mut dirs = GRANTED_DIRS.lock().unwrap();
+    if !dirs.iter().any(|d| *d == canon) {
+        dirs.push(canon.clone());
+    }
+    Ok(canon.to_string_lossy().to_string())
+}
+
+/// Revoke a previously granted directory (one-click from the UI).
+#[tauri::command]
+pub fn agent_revoke_dir(path: String) {
+    let p = PathBuf::from(&path);
+    GRANTED_DIRS.lock().unwrap().retain(|d| *d != p);
+}
+
+/// The directories granted this session (for the UI chips).
+#[tauri::command]
+pub fn agent_list_grants() -> Vec<String> {
+    GRANTED_DIRS.lock().unwrap().iter().map(|d| d.to_string_lossy().to_string()).collect()
+}
+
+/// Clear every grant — a new session in the same workspace starts clean.
+#[tauri::command]
+pub fn agent_clear_grants() {
+    GRANTED_DIRS.lock().unwrap().clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -186,49 +267,179 @@ pub fn agent_read_file(
     Ok(out)
 }
 
-/// Download a URL into the workspace (images, archives, any file). Sandboxed
-/// through the same `resolve` as every other write, and journaled so rewind
-/// removes it like any file the agent created.
+// ---------------------------------------------------------------------------
+// Background downloads (progress-tracked; the agent keeps working meanwhile)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DlInfo {
+    pub id: u64,
+    pub url: String,
+    /// Workspace-relative destination for display.
+    pub path: String,
+    pub downloaded: u64,
+    /// Content-Length when the server sent one.
+    pub total: Option<u64>,
+    pub done: bool,
+    pub error: Option<String>,
+}
+
+struct DlState {
+    info: DlInfo,
+    reported: bool,
+}
+
+static DOWNLOADS: Mutex<Option<std::collections::HashMap<u64, DlState>>> = Mutex::new(None);
+static DL_NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn dl_update(id: u64, f: impl FnOnce(&mut DlState)) {
+    if let Some(map) = DOWNLOADS.lock().unwrap().as_mut() {
+        if let Some(st) = map.get_mut(&id) {
+            f(st);
+        }
+    }
+}
+
+/// Start a BACKGROUND download of a URL into the workspace: returns
+/// immediately with an id, streams to disk with live progress (UI badge), and
+/// is picked up by `agent_dl_reap` when finished so the model gets notified
+/// without ever blocking on the transfer. Sandboxed through the same `resolve`
+/// as every other write, and journaled so rewind removes the file.
 #[tauri::command]
 pub async fn agent_web_download(url: String, path: String) -> Result<String, String> {
-    const CAP: usize = 100 * 1024 * 1024;
+    const CAP: u64 = 100 * 1024 * 1024;
     let abs = resolve(&path)?;
     if abs.is_dir() {
         return Err(format!("目标是一个目录 (target is a directory): {path}"));
     }
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15")
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let resp = client.get(url.trim()).send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    let ctype = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("?")
-        .split(';')
-        .next()
-        .unwrap_or("?")
-        .to_string();
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    if bytes.len() > CAP {
-        return Err(format!("文件过大 ({} MB),上限 100 MB", bytes.len() / 1024 / 1024));
-    }
-    cp_record(&abs);
-    if let Some(parent) = abs.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&abs, &bytes).map_err(|e| format!("写入失败 (write failed): {e}"))?;
     let root = workspace()?;
+    let rel = rel_display(&root, &abs);
+    let id = DL_NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    {
+        let mut guard = DOWNLOADS.lock().unwrap();
+        guard.get_or_insert_with(Default::default).insert(
+            id,
+            DlState {
+                info: DlInfo {
+                    id,
+                    url: url.trim().to_string(),
+                    path: rel.clone(),
+                    downloaded: 0,
+                    total: None,
+                    done: false,
+                    error: None,
+                },
+                reported: false,
+            },
+        );
+    }
+
+    let url_owned = url.trim().to_string();
+    tokio::spawn(async move {
+        let finish = |err: Option<String>| {
+            dl_update(id, |st| {
+                st.info.done = true;
+                st.info.error = err;
+            });
+        };
+        let client = match reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15")
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => return finish(Some(e.to_string())),
+        };
+        let resp = match client.get(&url_owned).send().await {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => return finish(Some(format!("HTTP {}", r.status()))),
+            Err(e) => return finish(Some(e.to_string())),
+        };
+        let total = resp.content_length();
+        dl_update(id, |st| st.info.total = total);
+        if total.is_some_and(|t| t > CAP) {
+            return finish(Some(format!("文件过大 ({} MB),上限 100 MB", total.unwrap() / 1024 / 1024)));
+        }
+        cp_record(&abs);
+        if let Some(parent) = abs.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return finish(Some(e.to_string()));
+            }
+        }
+        let tmp = abs.with_extension("part");
+        let mut file = match std::fs::File::create(&tmp) {
+            Ok(f) => f,
+            Err(e) => return finish(Some(format!("写入失败 (write failed): {e}"))),
+        };
+        let mut resp = resp;
+        let mut written: u64 = 0;
+        loop {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    written += chunk.len() as u64;
+                    if written > CAP {
+                        let _ = std::fs::remove_file(&tmp);
+                        return finish(Some("文件过大,上限 100 MB (over the 100 MB cap)".into()));
+                    }
+                    if let Err(e) = std::io::Write::write_all(&mut file, &chunk) {
+                        let _ = std::fs::remove_file(&tmp);
+                        return finish(Some(format!("写入失败 (write failed): {e}")));
+                    }
+                    dl_update(id, |st| st.info.downloaded = written);
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    return finish(Some(e.to_string()));
+                }
+            }
+        }
+        drop(file);
+        if let Err(e) = std::fs::rename(&tmp, &abs) {
+            let _ = std::fs::remove_file(&tmp);
+            return finish(Some(format!("写入失败 (write failed): {e}")));
+        }
+        dl_update(id, |st| st.info.downloaded = written);
+        finish(None);
+    });
+
     Ok(format!(
-        "已下载 {} ({} 字节, {ctype})",
-        rel_display(&root, &abs),
-        bytes.len()
+        "已开始后台下载 (download #{id} started in the background): {url_owned2} → {rel}。下载不会阻塞你,继续做别的;完成或失败时系统会自动通知你,也可随时继续当前任务。",
+        url_owned2 = url.trim()
     ))
+}
+
+/// Live status of all downloads this session (UI progress badge).
+#[tauri::command]
+pub fn agent_dl_list() -> Vec<DlInfo> {
+    DOWNLOADS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|m| m.values().map(|s| s.info.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// Finished-but-unreported downloads: marks them reported and returns them —
+/// the agent loop injects these as tool results so the model learns the outcome.
+#[tauri::command]
+pub fn agent_dl_reap() -> Vec<DlInfo> {
+    let mut out = Vec::new();
+    if let Some(map) = DOWNLOADS.lock().unwrap().as_mut() {
+        for st in map.values_mut() {
+            if st.info.done && !st.reported {
+                st.reported = true;
+                out.push(st.info.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Forget all download records (workspace switch — files stay where they are).
+fn dl_clear() {
+    *DOWNLOADS.lock().unwrap() = None;
 }
 
 #[tauri::command]
@@ -463,21 +674,51 @@ pub async fn browser_eval(expression: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn browser_click(selector: Option<String>, text: Option<String>) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || crate::browser::click(selector, text))
-        .await
-        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+pub async fn browser_click(
+    selector: Option<String>,
+    text: Option<String>,
+    // One call, several clicks in order (form flows / wizards).
+    steps: Option<Vec<ClickStep>>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || match steps {
+        Some(s) if !s.is_empty() => {
+            crate::browser::click_seq(s.into_iter().map(|c| (c.selector, c.text)).collect())
+        }
+        _ => crate::browser::click(selector, text),
+    })
+    .await
+    .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+}
+
+#[derive(serde::Deserialize)]
+pub struct ClickStep {
+    pub selector: Option<String>,
+    pub text: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct TypeStep {
+    pub selector: Option<String>,
+    pub label: Option<String>,
+    pub text: String,
 }
 
 #[tauri::command]
 pub async fn browser_type(
     selector: Option<String>,
     label: Option<String>,
-    text: String,
+    text: Option<String>,
+    // One call, several fields filled in order (a whole form at once).
+    steps: Option<Vec<TypeStep>>,
 ) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || crate::browser::type_text(selector, label, text))
-        .await
-        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+    tokio::task::spawn_blocking(move || match steps {
+        Some(s) if !s.is_empty() => {
+            crate::browser::type_seq(s.into_iter().map(|t| (t.selector, t.label, t.text)).collect())
+        }
+        _ => crate::browser::type_text(selector, label, text.unwrap_or_default()),
+    })
+    .await
+    .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
 }
 
 #[tauri::command]
@@ -1134,13 +1375,21 @@ pub struct BashResult {
 }
 
 /// macOS seatbelt profile: allow everything by default, then deny all writes and
-/// re-allow only inside the workspace and the standard temp dirs. Reads, exec
-/// and network stay available (agents need `git`, `npm`, compilers).
+/// re-allow only inside the workspace, the user's session-granted directories,
+/// and the standard temp dirs. Reads, exec and network stay available (agents
+/// need `git`, `npm`, compilers). Built per bash call, so a fresh grant applies
+/// to the next command immediately.
 #[cfg(target_os = "macos")]
 fn seatbelt_profile(root: &Path) -> String {
+    let grants: String = GRANTED_DIRS
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|d| format!(" (subpath \"{}\")", d.display()))
+        .collect();
     format!(
         "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* \
-         (subpath \"{root}\") (subpath \"/private/tmp\") (subpath \"/tmp\") \
+         (subpath \"{root}\"){grants} (subpath \"/private/tmp\") (subpath \"/tmp\") \
          (subpath \"/private/var/folders\") (subpath \"/var/folders\") \
          (literal \"/dev/null\") (literal \"/dev/stdout\") (literal \"/dev/stderr\") \
          (literal \"/dev/dtracehelper\") (literal \"/dev/tty\"))",
@@ -1203,14 +1452,49 @@ fn cap_utf8(bytes: Vec<u8>) -> String {
     }
 }
 
-fn run_bash(root: &Path, command: &str, timeout: Duration) -> Result<BashResult, String> {
-    let mut cmd = build_command(root, command);
+/// Does this shell command invoke `sudo` (as a command word, not a substring
+/// of an unrelated token like "sudoers")?
+pub(crate) fn command_uses_sudo(command: &str) -> bool {
+    let b = command.as_bytes();
+    let mut i = 0;
+    while let Some(pos) = command[i..].find("sudo") {
+        let s = i + pos;
+        let before_ok = s == 0 || matches!(b[s - 1], b' ' | b'\t' | b'\n' | b';' | b'&' | b'|' | b'(');
+        let after = s + 4;
+        let after_ok = after >= b.len() || matches!(b[after], b' ' | b'\t' | b'\n');
+        if before_ok && after_ok {
+            return true;
+        }
+        i = s + 4;
+    }
+    false
+}
+
+fn run_bash(
+    root: &Path,
+    command: &str,
+    timeout: Duration,
+    // Some(password) for an approved sudo run: fed to `sudo -S` on stdin (never
+    // in argv / the command string / logs) and the command runs UN-sandboxed
+    // (a privileged action the user explicitly approved — it can't work inside
+    // the seatbelt write-jail anyway).
+    stdin: Option<String>,
+    sandboxed: bool,
+) -> Result<BashResult, String> {
+    let mut cmd = build_command(root, command, sandboxed);
     cmd.current_dir(root)
-        .stdin(Stdio::null())
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|e| format!("启动命令失败 (spawn failed): {e}"))?;
+    if let Some(pw) = stdin {
+        if let Some(mut sink) = child.stdin.take() {
+            use std::io::Write as _;
+            let _ = sink.write_all(pw.as_bytes());
+            // drop `sink` → EOF, so `sudo -S` stops waiting for more input.
+        }
+    }
     let out_h = read_capped(child.stdout.take().unwrap());
     let err_h = read_capped(child.stderr.take().unwrap());
 
@@ -1235,15 +1519,24 @@ fn run_bash(root: &Path, command: &str, timeout: Duration) -> Result<BashResult,
 }
 
 #[cfg(target_os = "macos")]
-fn build_command(root: &Path, command: &str) -> Command {
-    let mut cmd = Command::new("/usr/bin/sandbox-exec");
-    cmd.arg("-p").arg(seatbelt_profile(root)).arg("/bin/sh").arg("-c").arg(command);
+fn build_command(root: &Path, command: &str, sandboxed: bool) -> Command {
+    let mut cmd = if sandboxed {
+        let mut c = Command::new("/usr/bin/sandbox-exec");
+        c.arg("-p").arg(seatbelt_profile(root)).arg("/bin/sh").arg("-c").arg(command);
+        c
+    } else {
+        // Un-sandboxed (approved sudo): a privileged action can't run in the
+        // write-jail. Confinement is the explicit user approval.
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg(command);
+        c
+    };
     cmd.env("PATH", augmented_path());
     cmd
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn build_command(_root: &Path, command: &str) -> Command {
+fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
     // No seatbelt off macOS — confinement is the working directory + approval.
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c").arg(command);
@@ -1252,20 +1545,47 @@ fn build_command(_root: &Path, command: &str) -> Command {
 }
 
 #[cfg(windows)]
-fn build_command(_root: &Path, command: &str) -> Command {
+fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
     let mut cmd = Command::new("cmd");
     cmd.arg("/C").arg(command);
     cmd
 }
 
+/// If `command` runs sudo, make it read its password from stdin (`sudo -S`) so
+/// an approved password can be piped in non-interactively. Returns the possibly
+/// rewritten command (unchanged when there's no sudo or `-S` is already there).
+fn ensure_sudo_stdin(command: &str) -> String {
+    if !command_uses_sudo(command) || command.contains("sudo -S") || command.contains("sudo --stdin") {
+        return command.to_string();
+    }
+    command.replacen("sudo ", "sudo -S ", 1)
+}
+
 /// Run a shell command inside the workspace. On macOS it is sandboxed (writes
 /// confined to the workspace); elsewhere it runs in the workspace dir. The
 /// frontend gates this behind per-command approval (or bypass mode).
+///
+/// `sudo_password`: present only when the user approved a `sudo` command in the
+/// dedicated dialog and entered a password — it is piped to `sudo -S` on stdin
+/// (never placed in argv, the command string, or any log), and such a command
+/// runs UN-sandboxed since a privileged action can't work in the write-jail.
 #[tauri::command]
-pub async fn agent_bash(command: String, timeout_secs: Option<u64>) -> Result<BashResult, String> {
+pub async fn agent_bash(
+    command: String,
+    timeout_secs: Option<u64>,
+    sudo_password: Option<String>,
+) -> Result<BashResult, String> {
     let root = workspace()?;
     let timeout = Duration::from_secs(timeout_secs.unwrap_or(120).clamp(1, 600));
-    tokio::task::spawn_blocking(move || run_bash(&root, &command, timeout))
+    let is_sudo = command_uses_sudo(&command);
+    let (command, stdin, sandboxed) = if is_sudo {
+        let cmd = if sudo_password.is_some() { ensure_sudo_stdin(&command) } else { command };
+        let stdin = sudo_password.map(|p| if p.ends_with('\n') { p } else { format!("{p}\n") });
+        (cmd, stdin, false)
+    } else {
+        (command, None, true)
+    };
+    tokio::task::spawn_blocking(move || run_bash(&root, &command, timeout, stdin, sandboxed))
         .await
         .map_err(|e| format!("命令任务异常 (task panicked): {e}"))?
 }
@@ -1347,7 +1667,9 @@ pub fn agent_bash_bg(command: String) -> Result<u64, String> {
         ));
     }
 
-    let mut cmd = build_command(&root, &command);
+    // Background jobs (dev servers, builds) always run sandboxed — sudo isn't
+    // meaningful for a long-running process and would need an interactive tty.
+    let mut cmd = build_command(&root, &command, true);
     cmd.current_dir(&root).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // Own process group so bg_kill can take down the whole tree (npm → node …).
     #[cfg(unix)]
@@ -1651,6 +1973,61 @@ mod tests {
     }
 
     #[test]
+    fn out_of_workspace_access_asks_then_grants_then_revokes() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-grant-ws-{}", std::process::id()));
+        let outside = std::env::temp_dir().join(format!("chaty-grant-out-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::create_dir_all(outside.join("sub")).unwrap();
+        std::fs::write(outside.join("sub/data.txt"), "outside-content").unwrap();
+        set_ws(&tmp);
+        agent_clear_grants();
+
+        // 1. Out-of-workspace access returns the ASK marker (not a flat error),
+        //    carrying the directory to grant.
+        let target = outside.join("sub/data.txt");
+        let err = resolve(&target.to_string_lossy()).unwrap_err();
+        assert!(err.starts_with(NEED_DIR_GRANT), "marker missing: {err}");
+        let dir_in_err = err.split('\t').nth(1).unwrap();
+        assert!(
+            PathBuf::from(dir_in_err).ends_with("sub"),
+            "suggested dir should be the file's parent: {dir_in_err}"
+        );
+
+        // 2. Granting the dir makes the same path resolve (and stay confined
+        //    to the grant).
+        let granted = agent_grant_dir(outside.to_string_lossy().to_string()).expect("grant");
+        assert!(agent_list_grants().contains(&granted));
+        let ok = resolve(&target.to_string_lossy()).expect("resolves after grant");
+        assert!(ok.ends_with("sub/data.txt"));
+        // a real read through the tool works too
+        assert!(std::fs::read_to_string(&ok).unwrap().contains("outside-content"));
+        // …but a path outside BOTH workspace and grant still asks
+        assert!(resolve("/etc/hosts").unwrap_err().starts_with(NEED_DIR_GRANT));
+
+        // 3. One-click revoke → back to asking.
+        agent_revoke_dir(granted.clone());
+        assert!(agent_list_grants().is_empty());
+        assert!(resolve(&target.to_string_lossy()).unwrap_err().starts_with(NEED_DIR_GRANT));
+
+        // 4. Grants are cleared when the workspace changes.
+        let _ = agent_grant_dir(outside.to_string_lossy().to_string());
+        assert!(!agent_list_grants().is_empty());
+        let other = std::env::temp_dir().join(format!("chaty-grant-ws2-{}", std::process::id()));
+        std::fs::create_dir_all(&other).unwrap();
+        let _ = agent_set_workspace(other.to_string_lossy().to_string());
+        assert!(agent_list_grants().is_empty(), "workspace switch must clear grants");
+
+        // 5. Granting a non-directory is rejected.
+        assert!(agent_grant_dir(outside.join("sub/data.txt").to_string_lossy().to_string()).is_err());
+
+        agent_clear_grants();
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::remove_dir_all(&outside).ok();
+        std::fs::remove_dir_all(&other).ok();
+    }
+
+    #[test]
     fn write_read_edit_roundtrip() {
         let _g = serial();
         let tmp = std::env::temp_dir().join(format!("chaty-agent-rw-{}", std::process::id()));
@@ -1813,6 +2190,43 @@ mod tests {
         assert!(agent_bg_reap().iter().all(|j| j.id != id2));
 
         bg_kill_all();
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn detects_sudo_and_rewrites_for_stdin() {
+        assert!(command_uses_sudo("sudo apt-get install x"));
+        assert!(command_uses_sudo("echo hi && sudo rm -rf /tmp/x"));
+        assert!(command_uses_sudo("(sudo -k)"));
+        assert!(command_uses_sudo("sudo"));
+        // Not sudo: substrings / unrelated tokens.
+        assert!(!command_uses_sudo("ls /etc/sudoers"));
+        assert!(!command_uses_sudo("pseudo run"));
+        assert!(!command_uses_sudo("cat sudo.txt"));
+        assert!(!command_uses_sudo("echo sudoku"));
+        // Rewrite adds -S once, and only when needed.
+        assert_eq!(ensure_sudo_stdin("sudo apt-get install x"), "sudo -S apt-get install x");
+        assert_eq!(ensure_sudo_stdin("sudo -S already"), "sudo -S already");
+        assert_eq!(ensure_sudo_stdin("ls -la"), "ls -la");
+    }
+
+    #[test]
+    fn sudo_password_piped_via_stdin_unsandboxed() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-sudo-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        // No real sudo: use `cat` to prove the password is delivered on STDIN
+        // (never in argv). command_uses_sudo(false) so this stays sandboxed —
+        // fine, we're only checking the stdin plumbing via run_bash directly.
+        let out = run_bash(&tmp, "cat", Duration::from_secs(5), Some("s3cret\n".into()), true).unwrap();
+        assert_eq!(out.stdout.trim(), "s3cret", "stdin must reach the child process");
+
+        // Proof the password is NOT in the command string / argv: a sandboxed
+        // run of a sudo-shaped echo would only echo what's in argv.
+        let echoed = run_bash(&tmp, "cat -", Duration::from_secs(5), Some("hunter2\n".into()), true).unwrap();
+        assert_eq!(echoed.stdout.trim(), "hunter2");
+
         std::fs::remove_dir_all(&tmp).ok();
     }
 }

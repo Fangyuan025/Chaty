@@ -1639,7 +1639,11 @@ export default function App() {
     // A vision attachment rides on this very message (pixels, not OCR text)
     // and is consumed by the send; document attachments stay pinned.
     const visionImgs =
-      attachment?.kind === "vision" && attachment.path ? [attachment.path] : undefined;
+      attachment?.kind === "vision" && attachment.path
+        ? [attachment.path]
+        : attachment?.images?.length
+          ? attachment.images
+          : undefined;
     const userMsg: UiMessage = { id: uid(), role: "user", content: text, images: visionImgs };
     const asstMsg: UiMessage = { id: uid(), role: "assistant", content: "" };
     const history = [...messages, userMsg];
