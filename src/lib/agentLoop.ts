@@ -298,7 +298,7 @@ const VISION_TOOLS_DOC = `
 浏览器工作流:browser_navigate 打开(直接回给你页面文字+元素)→ browser_click(优先 text)/browser_type 交互 → **交互后必做:核实这一步的结果**(想确认内容/状态就看返回文字或 browser_read;想确认渲染效果就 screenshot/snapshot),确认变成预期的样子再继续,绝不凭猜测连续操作 → browser_console 查报错 → 关键:**凡是"做/改网页并要保证它渲染正确"的任务,收尾前一定要截一次图用视觉确认成果,不能只靠读文字就宣称完成** → 做完或用户让你关时 browser_close。做题/填表这类纯文字循环,读返回文字即可、无需截图;但涉及视觉正确性时该截就截。
 **顺序点击 + 提交前视觉确认(选词造句/答题/多步向导等)**:像"按顺序选词补全句子(多邻国那种)、拼答案、连续选项"这类你已经想好完整顺序的任务,**一次用 browser_click 的 steps 把这些词/选项按顺序点完**(不要一个词一个词地单独调用,慢且啰嗦)。**在点「提交/检查/确认」这种会定分/不可逆的按钮之前,先用 browser_snapshot(或 screenshot)截一屏,用视觉确认已选内容/已拼句子/答案确实正确无误,再点提交**——别没看一眼就提交。
 **点导航/提交类按钮(登录、Next/翻页、Search、提交)后,务必先看返回的最新页面文字判断结果:成功了(如出现 Logout、翻到了目标页、出现结果列表)就继续下一步或直接回答,绝不要重复点同一个按钮**;需要翻到第 N 页就"点一次 → 读一次确认到没到 → 再点",别连续猛点翻过头。
-重要:①CSS 选择器只支持**标准语法**——不存在 :contains()、:has-text() 这类;要按文字定位就用 browser_click 的 text 参数。②浏览器用的是持久配置,你之前登录过的网站会保持登录。③你随时能拿到两类信息:页面元素(browser_read)和控制台(browser_console)——拿不准页面状态时先读它们,别硬猜。
+重要:①CSS 选择器只支持**标准语法**——不存在 :contains()、:has-text() 这类;要按文字定位就用 browser_click 的 text 参数。②浏览器用的是持久配置,你之前登录过的网站会保持登录。③你随时能拿到两类信息:页面元素(browser_read)和控制台(browser_console)——拿不准页面状态时先读它们,别硬猜。④**文字摘要看不明白就立刻上视觉**:browser_read 的元素/文本对不上你的预期、找不到该有的按钮或字段、点击/输入后页面似乎没反应、或结果含糊到你在"猜"页面长什么样——这时不要基于猜测继续操作,也不要反复 read 同一页,直接 browser_snapshot(看当前屏)或 browser_screenshot(看整页)亲眼确认,再决定下一步。
 **何时用浏览器**:只有当任务需要真实操作网页(填表单、点按钮、登录后才能看的内容、必须"亲眼看到"渲染效果做视觉验证)、或用户明确要求用浏览器时,才用这套浏览器工具。**单纯查资料、做调研、找文档/报错解法,优先用 web_search / web_fetch**(更快、无需开浏览器);它们查不到或够不着目标时,再考虑浏览器。**但"优先搜索"不等于"死磕搜索":web_search 连续 2 次返回不相关结果,就视为搜索源此刻不可靠——别再换措辞重搜,改用 web_fetch 直抓能猜到的 URL,或转浏览器打开搜索引擎/目标站继续。** **web_fetch / web_search 一旦拿到能回答问题的内容,就直接给出答案——不要再多开浏览器"重复核实"一遍,那样只是白白多花时间。**`;
 
 function systemPrompt(
@@ -353,6 +353,7 @@ ${toolsDoc}
 - 工具选择:**新建文件**用 write_file 一次写完;**修改已有文件**用 edit_file(改一处给 old_string/new_string,改多处给 edits 数组一次原子提交)——不要用 write_file 整体重写已有文件来做局部改动,那会覆盖全文、极易丢失你没重写的内容。只有确实要把整个文件推倒重来时才用 write_file。不要把一个改动拆成许多细碎小步。
 - dev server、npm run dev、长构建等不会很快退出的命令必须用 bash_bg 后台运行,再用 bg_output 确认启动成功;用完记得 bg_kill。
 - 遇到不认识的报错、需要查库/API 文档时,用 web_search / web_fetch 联网查证,不要凭空猜测。
+- **换路原则:同一手段连续两次没带来新进展,就必须换一种做法**——搜索搜不到就 web_fetch 直抓或开浏览器;页面文字摘要看不明白就截图亲眼看;命令报同样的错就换方案。把同一动作原样再试第三遍,几乎不会有不同结果。
 - 任务较复杂时,先用 update_plan 列出待办步骤,推进中及时更新状态;需要用户拍板时用 ask_user 提问。
 - 任务完成后,不要再调用工具,直接用简洁的中文总结你做了什么。
 - 谨慎对待 write_file / edit_file / bash(它们会真实改动文件或执行命令)。
@@ -371,6 +372,7 @@ Rules (follow strictly):
 - Tool choice: create **new** files with ONE write_file; **modify existing** files with edit_file (one spot via old_string/new_string, or several at once via an atomic edits array) — do NOT rewrite an existing file wholesale with write_file to make a local change, that overwrites everything and easily drops content you didn't retype. Use write_file on an existing file only when you truly mean to replace the entire thing. Never split one change into many tiny steps.
 - Commands that don't exit quickly (dev servers, npm run dev, long builds) MUST run via bash_bg; check they started with bg_output, and bg_kill them when done.
 - For unfamiliar errors or library/API docs, verify with web_search / web_fetch instead of guessing.
+- **Switch-strategy rule: when the same approach brings no new progress twice in a row, change approach** — search coming up empty → web_fetch a likely URL directly or open the browser; a page's text digest you can't make sense of → screenshot and look with your own eyes; a command failing the same way → different plan. Running the same move a third time unchanged almost never ends differently.
 - For non-trivial tasks, lay out a todo list with update_plan first and keep its statuses current as you go; use ask_user when a decision is the user's to make.
 - When done, DON'T call a tool — just give a concise summary of what you did.
 - Be careful with write_file / edit_file / bash (they really change files / run commands).
