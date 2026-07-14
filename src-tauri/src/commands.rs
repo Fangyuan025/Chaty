@@ -24,6 +24,27 @@ pub struct LoadProgress {
     pub frac: f32,
 }
 
+/// High-water mark for weight-loading progress. The fractions come from
+/// memory-growth heuristics (this process for GGUF, the sidecar for MLX) and
+/// RSS is not monotonic — the OS evicts clean mmap pages, staging buffers
+/// free after GPU upload, and the OOM back-off reloads from scratch — so raw
+/// ticks make the bar jump backwards. `permit` admits only strictly higher
+/// values; `saturate` closes the door once "ready" is on the wire.
+pub(crate) struct MonotonicProgress(std::sync::atomic::AtomicU32);
+
+impl MonotonicProgress {
+    pub(crate) fn new() -> Self {
+        Self(std::sync::atomic::AtomicU32::new(0))
+    }
+    pub(crate) fn permit(&self, frac: f32) -> bool {
+        let pm = (frac.clamp(0.0, 1.0) * 1000.0) as u32;
+        self.0.fetch_max(pm, Ordering::Relaxed) < pm
+    }
+    pub(crate) fn saturate(&self) {
+        self.0.store(1000, Ordering::Relaxed);
+    }
+}
+
 /// Load a GGUF file and make it the active engine. Heavy and blocking, so the
 /// actual load runs on a blocking thread.
 #[tauri::command]
@@ -177,10 +198,14 @@ pub async fn load_model(
     // memory growth over the file size is a good fraction. (GGUF only — the
     // MLX sidecar loads in its own process and reports progress itself.)
     let done_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Shared across the GGUF poller and the MLX callback so the bar the
+    // user sees never moves backwards (see MonotonicProgress).
+    let gate = Arc::new(MonotonicProgress::new());
     if !is_mlx {
         let expected = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0).max(1);
         let done = done_flag.clone();
         let chan = on_progress.clone();
+        let gate = gate.clone();
         std::thread::spawn(move || {
             let pid = sysinfo::Pid::from_u32(std::process::id());
             let mut sys = sysinfo::System::new();
@@ -191,16 +216,21 @@ pub async fn load_model(
                 sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
                 let now = sys.process(pid).map(|p| p.memory()).unwrap_or(base);
                 let frac = (now.saturating_sub(base) as f32 / expected as f32).min(0.99);
-                let _ = chan.send(LoadProgress { phase: "weights", frac });
+                if !done.load(Ordering::Relaxed) && gate.permit(frac) {
+                    let _ = chan.send(LoadProgress { phase: "weights", frac });
+                }
             }
         });
     }
 
     let result = if is_mlx {
         let chan = on_progress.clone();
+        let gate = gate.clone();
         tokio::task::spawn_blocking(move || {
-            crate::inference::mlx::MlxEngine::load(&path, n_ctx, |frac| {
-                let _ = chan.send(LoadProgress { phase: "weights", frac });
+            crate::inference::mlx::MlxEngine::load(&path, n_ctx, move |frac| {
+                if gate.permit(frac) {
+                    let _ = chan.send(LoadProgress { phase: "weights", frac });
+                }
             })
             .map(|(engine, info)| (Arc::new(engine) as Arc<dyn InferenceBackend>, info))
         })
@@ -213,6 +243,8 @@ pub async fn load_model(
         .await
     };
     done_flag.store(true, Ordering::Relaxed);
+    // Saturate the mark so a straggling poller tick can't undercut "ready".
+    gate.saturate();
     let (backend, mut info) = result
         .map_err(|e| format!("加载任务异常 (load task panicked): {e}"))?
         .map_err(|e| format!("{e:#}"))?;
@@ -1177,6 +1209,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+
+    /// The load bar must never move backwards: memory-based fractions dip
+    /// (mmap eviction, staging frees, OOM back-off reload) and a straggling
+    /// poller tick can race the final "ready".
+    #[test]
+    fn load_progress_is_monotonic() {
+        let gate = super::MonotonicProgress::new();
+        let ticks = [0.10, 0.30, 0.20, 0.30, 0.55, 0.40, 0.99];
+        let sent: Vec<bool> = ticks.iter().map(|&f| gate.permit(f)).collect();
+        assert_eq!(sent, [true, true, false, false, true, false, true]);
+        // After "ready" saturates the mark, no weight tick gets through.
+        gate.saturate();
+        assert!(!gate.permit(0.95));
+        assert!(!gate.permit(1.0));
+        // Out-of-range input is clamped, not wrapped.
+        let g2 = super::MonotonicProgress::new();
+        assert!(g2.permit(7.0));
+        assert!(!g2.permit(0.99));
+    }
 
     use super::{loose_main_ggufs, migrate_models_dir};
     use std::path::PathBuf;

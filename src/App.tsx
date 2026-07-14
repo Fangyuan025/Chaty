@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { applyCodeTheme } from "./lib/codeTheme";
 import { platform } from "@tauri-apps/plugin-os";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -261,6 +261,17 @@ export default function App() {
   const [stats, setStats] = useState<GenStats | null>(null);
   const [loadingModel, setLoadingModel] = useState(false);
   const [loadProgress, setLoadProgress] = useState<LoadProgress | null>(null);
+  // Weight ticks come from a poller thread and can race the final "ready" —
+  // drop anything that would move the bar backwards or resurrect it.
+  const onLoadProgress = useCallback((p: LoadProgress) => {
+    setLoadProgress((prev) => {
+      if (prev && p.phase === "weights") {
+        if (prev.phase === "ready") return prev;
+        if (prev.phase === "weights" && p.frac <= prev.frac) return prev;
+      }
+      return p;
+    });
+  }, []);
   const [settings, setSettings] = useState<GenSettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [showCmdk, setShowCmdk] = useState(false);
@@ -418,7 +429,7 @@ export default function App() {
         if (!target) return;
         setLoadingModel(true);
         try {
-          const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, setLoadProgress);
+          const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
           setModel(info);
           localStorage.setItem(LAST_MODEL_KEY, info.path);
           noticeForLoad(info);
@@ -980,7 +991,7 @@ export default function App() {
     if (busy || model?.path === path) return;
     setLoadingModel(true);
     try {
-      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, setLoadProgress);
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
       noticeForLoad(info);
@@ -998,7 +1009,7 @@ export default function App() {
     if (!model || busy || loadingModel) return;
     setLoadingModel(true);
     try {
-      const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, setLoadProgress);
+      const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
       setModel(info);
       noticeForLoad(info);
     } catch (e) {
@@ -1059,7 +1070,7 @@ export default function App() {
       const path = await pickModelFolder();
       if (!path) return;
       setLoadingModel(true);
-      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, setLoadProgress);
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
       noticeForLoad(info);
