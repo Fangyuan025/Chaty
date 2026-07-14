@@ -32,7 +32,7 @@ import { IconPin, IconPinFilled, IconEdit } from "./components/icons";
 import { PodcastPanel } from "./components/PodcastPanel";
 import { DeepResearchPanel } from "./components/DeepResearchPanel";
 import { CodeMode } from "./components/CodeMode";
-import { answerOnly, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
+import { answerOnly, cleanTitle, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
 import { copyToClipboard } from "./lib/clipboard";
 import {
   cancelGeneration,
@@ -160,19 +160,6 @@ function parseHfDeepLink(raw: string): { repo: string; file?: string } | null {
 const copyText = (t: string) => {
   void copyToClipboard(t);
 };
-
-/** Strip a model's reasoning/quotes from a generated title and clamp length. */
-function cleanTitle(raw: string): string {
-  // answerOnly normalizes channel-style reasoning (Gemma 4) into <think> and
-  // returns only the answer — empty if the model never left its reasoning,
-  // in which case we keep the default title rather than show thought text.
-  const t = answerOnly(raw);
-  const firstLine = t.split("\n").map((s) => s.trim()).find(Boolean) ?? "";
-  return firstLine
-    .replace(/^["'「『《<[(]+|["'」』》>\])。.!！?？:：]+$/g, "")
-    .trim()
-    .slice(0, 24);
-}
 
 /** Clean a model-generated search query (strip reasoning/quotes, keep it short). */
 function cleanQuery(raw: string): string {
@@ -2213,6 +2200,7 @@ export default function App() {
         disabledSkills={settings.codeDisabledSkills}
         allowedCommands={settings.codeAllowedCommands}
         sendKey={settings.sendKey}
+        autoTitle={settings.autoTitle}
       />
 
       <div className="body" style={appMode === "code" ? { display: "none" } : undefined}>

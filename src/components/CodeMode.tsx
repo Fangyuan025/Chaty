@@ -6,6 +6,7 @@ import { diffLines } from "../lib/diff";
 import { useConfirm } from "./ConfirmModal";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { copyToClipboard } from "../lib/clipboard";
+import { cleanTitle } from "../lib/voiceText";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 import {
@@ -38,6 +39,7 @@ import {
   type ChatMessage,
   type CodeSessionMeta,
   type ModelInfo,
+  generate,
 } from "../lib/ipc";
 import {
   AgentSignal,
@@ -457,9 +459,12 @@ export function CodeMode({
   disabledSkills = [],
   allowedCommands = [],
   sendKey = "enter",
+  autoTitle = true,
 }: {
   model: ModelInfo | null;
   active: boolean;
+  /** Generate a session title with the model after the first turn (Settings → General). */
+  autoTitle?: boolean;
   /** Max agent steps per turn (Settings → Code). */
   maxSteps?: number;
   /** Default bash timeout in seconds (Settings → Code). */
@@ -660,11 +665,60 @@ export function CodeMode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, approval, ask, dirAsk, sudoAsk, running]);
 
+  /** Model-generated session titles by session id — once one exists it wins
+   *  over the first-message fallback on every later persist. */
+  const titlesRef = useRef(new Map<string, string>());
+
   const persist = useCallback((next: CodeMsg[], ws: string | null, id: string) => {
     const firstUser = next.find((m) => m.role === "user");
-    const title = (firstUser?.text ?? "New session").replace(/\s+/g, " ").trim().slice(0, 48) || "New session";
+    const fallback =
+      (firstUser?.text ?? "New session").replace(/\s+/g, " ").trim().slice(0, 48) || "New session";
+    const title = titlesRef.current.get(id) ?? fallback;
     codeSessionSave(id, title, ws, JSON.stringify(next)).then(refreshSessions).catch(() => {});
   }, [refreshSessions]);
+
+  /** Ask the model for a concise session title after the first turn —
+   *  mirrors the chat side's makeTitle (no-think, low temperature). */
+  async function makeSessionTitle(id: string, firstMsg: string) {
+    if (!autoTitle || !model) return;
+    try {
+      let acc = "";
+      await generate(
+        {
+          messages: [
+            {
+              role: "system",
+              content:
+                lang === "zh"
+                  ? "请用一个不超过12个汉字的简短短语，概括下面这条消息的主题，作为对话标题。只输出标题本身，不要引号、标点、解释或思考过程。"
+                  : "Summarize the topic of the following message as a short chat title (max ~5 words). Output only the title — no quotes, punctuation, explanation, or reasoning.",
+            },
+            { role: "user", content: `${firstMsg}${model.thinkSwitch ? "\n/no_think" : ""}` },
+          ],
+          params: {
+            temperature: 0.2,
+            topP: 0.9,
+            maxTokens: 512,
+            think: model.supportsThinking && !model.thinkSwitch ? false : undefined,
+          },
+        },
+        (ev) => {
+          if (ev.type === "token") acc += ev.text;
+        },
+      );
+      const title = cleanTitle(acc);
+      // The session may have been deleted or switched away while the title
+      // generated — saving then would resurrect / mislabel it.
+      if (!title || bodyRef.current.sid !== id) return;
+      titlesRef.current.set(id, title);
+      setMsgs((cur) => {
+        persist(cur, bodyRef.current.workspace, id);
+        return cur;
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  }
 
   // Drag the rail's right edge to resize (rAF-throttled, persisted on release,
   // double-click resets) — mirrors the chat sidebar.
@@ -802,6 +856,7 @@ export function CodeMode({
         setAsk(null);
       }
       setQueue([]);
+      titlesRef.current.delete(id);
       setSid(uid());
       setMsgs([]);
       setInput("");
@@ -1040,6 +1095,7 @@ export function CodeMode({
       return { role: m.role, content: prefix + m.text };
     });
     const base = [...msgs, userMsg, asst];
+    const isFirstTurn = msgs.length === 0;
     setMsgs(base);
     setRunning(true);
     setStats(null);
@@ -1137,6 +1193,11 @@ export function CodeMode({
         persist(cur, bodyRef.current.workspace, turnSid);
         return cur;
       });
+      // First completed turn of a fresh session → give it a real title (the
+      // engine is idle again; the helper no-op's if the session goes away).
+      if (isFirstTurn && !signal.cancelled) {
+        void makeSessionTitle(turnSid, text);
+      }
     }
 
     // Messages queued while the agent was working → run them in order.

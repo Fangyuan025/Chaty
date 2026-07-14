@@ -23,6 +23,7 @@ Chaty now runs **MLX models** — the Apple-Silicon-native format from mlx-commu
 
 - **Cross-conversation isolation, guaranteed.** On hybrid-attention models (Qwen3.5 / 3.6, GGUF *and* MLX alike) the caches can't partially rewind and also misreport how much they hold — switching conversations could leave the previous one's KV in place, so the model literally saw two conversations at once (spiralling into confused, endless "thinking"). Both engines now keep their own exact ledger of what's in the cache and fall back to a full clear whenever a partial rewind isn't possible — regression-tested with cross-conversation canary prompts on hybrid, dense and standard models, both formats.
 - **Deleting a coding session mid-run resets instantly.** The agent is stopped, any pending approval dialog is dismissed, queued messages are dropped, and the finished turn can no longer resurrect the file you just deleted.
+- **Coding sessions get real titles.** After the first turn the model writes a concise session title (same as chat conversations, honouring the auto-title setting) instead of the sidebar echoing your raw first message.
 
 ### One way to load, no more freezes
 

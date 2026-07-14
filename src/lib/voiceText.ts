@@ -102,3 +102,16 @@ export function forSpeech(text: string): string {
     .trim();
   return dropTrailingOffer(cleaned).slice(0, 1200);
 }
+
+/** Strip a model's reasoning/quotes from a generated title and clamp length. */
+export function cleanTitle(raw: string): string {
+  // answerOnly normalizes channel-style reasoning (Gemma 4) into <think> and
+  // returns only the answer — empty if the model never left its reasoning,
+  // in which case callers keep their default title rather than show thought text.
+  const t = answerOnly(raw);
+  const firstLine = t.split("\n").map((s) => s.trim()).find(Boolean) ?? "";
+  return firstLine
+    .replace(/^["'「『《<[(]+|["'」』》>\])。.!！?？:：]+$/g, "")
+    .trim()
+    .slice(0, 24);
+}
