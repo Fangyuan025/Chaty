@@ -10,6 +10,7 @@ Chaty now runs **MLX models** — the Apple-Silicon-native format from mlx-commu
 - **Vision included.** MLX vision models (the Qwen3.5+ and Qwen3-VL families) carry their vision tower in the weights — attach an image in chat, let the Code agent look at screenshots, caption knowledge-base imports, see Canvas pages. No separate encoder file to manage.
 - **Vision that keeps up with Code mode.** Image prompts show the same prompt-processing **percentage ring** as text, and the image KV cache mirrors the GGUF engine: on models whose cache can rewind (Qwen3-VL), follow-up turns and agent tool loops reuse the cached image — screenshots aren't re-encoded every round. Positions are M-RoPE-exact end to end (a from-scratch decode loop threads the rope state through every token — this also fixed Qwen3-VL models answering with an instant EOS, and long multi-chunk prompts drifting off-position on Qwen3.5).
 - **Memory safety by design.** MLX inference runs in an isolated sidecar process — ejecting the model kills it, so the memory *always* comes back (verified by a repeated load/eject e2e). Runs at full Metal speed via Apple's mlx-swift-lm.
+- **Community quants included.** Some third-party VLM quants ship without their processor config files and would refuse to load — Chaty now heals the folder automatically (the missing preprocessing config is synthesized from the model's own `config.json`), so those models chat *and* see like any other.
 - Windows builds politely decline MLX folders with a clear message; everything GGUF is unchanged.
 
 ### A real model store

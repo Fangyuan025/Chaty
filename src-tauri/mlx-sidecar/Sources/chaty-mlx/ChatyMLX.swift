@@ -150,6 +150,42 @@ struct ModelMeta {
     }
 }
 
+/// Some community quants ship a VLM checkpoint without its processor
+/// configuration (neither preprocessor_config.json nor processor_config.json)
+/// — the vision tower is right there in the weights, but the VLM factory
+/// throws a configurationFileError and the whole model refuses to load. For
+/// the Qwen3-VL processor family the preprocessing values are architecture
+/// constants (mean/std 0.5) plus fields mirrored in config.json's
+/// vision_config, so the folder can be healed by writing a minimal
+/// preprocessor_config.json. Never overwrites an existing file.
+func healProcessorConfig(dir: URL) {
+    let pre = dir.appendingPathComponent("preprocessor_config.json")
+    let proc = dir.appendingPathComponent("processor_config.json")
+    let fm = FileManager.default
+    guard !fm.fileExists(atPath: pre.path), !fm.fileExists(atPath: proc.path),
+        let cfg = readJSON(dir.appendingPathComponent("config.json")),
+        let arch = cfg["model_type"] as? String,
+        ["qwen3_5", "qwen3_5_moe", "qwen3_vl", "qwen3_vl_moe"].contains(arch),
+        let vision = cfg["vision_config"] as? [String: Any]
+    else { return }
+    let synthesized: [String: Any] = [
+        "processor_class": "Qwen3VLProcessor",
+        "image_processor_type": "Qwen2VLImageProcessorFast",
+        "image_mean": [0.5, 0.5, 0.5],
+        "image_std": [0.5, 0.5, 0.5],
+        "patch_size": vision["patch_size"] as? Int ?? 16,
+        "merge_size": vision["spatial_merge_size"] as? Int ?? 2,
+        "temporal_patch_size": vision["temporal_patch_size"] as? Int ?? 2,
+    ]
+    guard
+        let data = try? JSONSerialization.data(
+            withJSONObject: synthesized, options: [.prettyPrinted, .sortedKeys])
+    else { return }
+    if (try? data.write(to: pre)) != nil {
+        log("healed missing processor config for \(arch): \(pre.path)")
+    }
+}
+
 /// Cheap identity for an image file (path + size + mtime) — mirrors the GGUF
 /// engine's `image_cache_key`.
 func imageKey(_ path: String) -> String {
@@ -258,6 +294,7 @@ final class Engine: @unchecked Sendable {
             // text-only until Chaty grows MLX vision.
             let container: ModelContainer
             if meta.multimodal {
+                healProcessorConfig(dir: dir)
                 container = try await VLMModelFactory.shared.loadContainer(
                     from: dir, using: #huggingFaceTokenizerLoader())
             } else {

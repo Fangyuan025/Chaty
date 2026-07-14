@@ -929,6 +929,57 @@ mod mlx_vlm_e2e {
         engine.unload();
     }
 
+    /// Community quants sometimes ship a VLM checkpoint without its processor
+    /// configs (no preprocessor_config.json / processor_config.json) — the
+    /// sidecar heals the folder by synthesizing one from config.json's
+    /// vision_config instead of refusing to load. Prove it on a symlink clone
+    /// of the test model with those files stripped.
+    #[test]
+    #[ignore]
+    fn mlx_vlm_e2e_heals_missing_processor_configs() {
+        let dir = std::env::var("CHATY_TEST_MLX_VLM").expect("set CHATY_TEST_MLX_VLM=<mlx vlm dir>");
+        let clone = std::env::temp_dir().join("chaty-mlx-heal-e2e");
+        let _ = std::fs::remove_dir_all(&clone);
+        std::fs::create_dir_all(&clone).expect("mkdir clone");
+        for entry in std::fs::read_dir(&dir).expect("read model dir").flatten() {
+            let name = entry.file_name();
+            let n = name.to_string_lossy().to_string();
+            if n.contains("preprocessor_config") || n == "processor_config.json" {
+                continue; // the files the broken quants forgot to ship
+            }
+            std::os::unix::fs::symlink(entry.path(), clone.join(&name)).expect("symlink");
+        }
+
+        let (engine, info) =
+            MlxEngine::load(clone.to_str().unwrap(), Some(8192), |_| {}).expect("healed load");
+        assert!(info.vision_ready, "healed VLM must still be vision-ready");
+        assert!(
+            clone.join("preprocessor_config.json").is_file(),
+            "sidecar must synthesize preprocessor_config.json"
+        );
+
+        // The synthesized processor must actually work end to end.
+        let img = image::RgbImage::from_pixel(96, 96, image::Rgb([220, 20, 20]));
+        let img_path = std::env::temp_dir().join("chaty-mlx-heal-red.png");
+        img.save(&img_path).expect("write test image");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let req = GenRequest {
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: "What is the dominant color of this image? Answer with one word.".into(),
+                images: vec![img_path.to_string_lossy().to_string()],
+            }],
+            params: GenParams { max_tokens: 160, think: Some(false), ..Default::default() },
+        };
+        let text = rt
+            .block_on(engine.generate_collect(req, Arc::new(AtomicBool::new(false))))
+            .expect("vision generate on healed clone");
+        eprintln!("healed-clone vision answer: {text:?}");
+        assert!(text.to_lowercase().contains("red"), "expected 'red' in: {text}");
+        engine.unload();
+        let _ = std::fs::remove_dir_all(&clone);
+    }
+
     /// Image-turn prefill progress + the GGUF media-cache analogue: a text
     /// follow-up in the same conversation must not re-encode the image on
     /// dense VLMs (qwen3_vl — trimmable cache resumes past the media prefix,
