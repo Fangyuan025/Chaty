@@ -1254,7 +1254,7 @@ const MAX_VISION_PIXELS: u64 = 2_000_000;
 /// Return a path whose image is at most `MAX_VISION_PIXELS`: the original
 /// path if it's already small enough (or unreadable — let mtmd report that),
 /// else a cached downscaled JPEG in the temp dir keyed by path+size+mtime.
-fn downscale_for_vision(path: &str) -> String {
+pub(crate) fn downscale_for_vision(path: &str) -> String {
     let Ok(img) = image::open(path) else { return path.to_string() };
     let (w, h) = (img.width() as u64, img.height() as u64);
     if w * h <= MAX_VISION_PIXELS {

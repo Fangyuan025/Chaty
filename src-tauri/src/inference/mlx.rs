@@ -486,7 +486,16 @@ fn run_generation(
                     super::Role::Assistant => "assistant",
                 },
                 "content": m.content,
-                "images": m.images,
+                // Same 2 MP vision cap as the GGUF engine: raw 2x full-page
+                // screenshots (15+ MP) either blow past Metal limits inside
+                // the sidecar's mlx_eval (fatalError → "sidecar exited
+                // unexpectedly") or explode into more image tokens than the
+                // context holds. Downscaled JPEGs are cached and keyed by
+                // source path+size+mtime, so the sidecar's image KV cache
+                // still hits across turns.
+                "images": m.images.iter()
+                    .map(|p| super::llama::downscale_for_vision(p))
+                    .collect::<Vec<_>>(),
             })
         })
         .collect();
@@ -1047,6 +1056,54 @@ mod mlx_vlm_e2e {
         assert!(text.to_lowercase().contains("red"), "expected 'red' in: {text}");
         engine.unload();
         let _ = std::fs::remove_dir_all(&clone);
+    }
+
+    /// A 2x full-page browser screenshot easily reaches 15+ megapixels. Fed
+    /// raw, the vision tower blows past Metal's limits inside mlx_eval and
+    /// mlx-swift's error handler fatalError()s the whole sidecar ("MLX 引擎
+    /// 意外退出"). The engine must downscale oversized images to the shared
+    /// vision cap before they cross the stdio boundary — same as GGUF.
+    #[test]
+    #[ignore]
+    fn mlx_vlm_e2e_oversized_screenshot_survives() {
+        let dir = std::env::var("CHATY_TEST_MLX_VLM").expect("set CHATY_TEST_MLX_VLM=<mlx vlm dir>");
+        let (engine, _info) = MlxEngine::load(&dir, Some(8192), |_| {}).expect("load VLM");
+
+        // Tall red "page" at 2x-screenshot proportions: 2200x7000 = 15.4 MP.
+        let img = image::RgbImage::from_pixel(2200, 7000, image::Rgb([220, 20, 20]));
+        let img_path = std::env::temp_dir().join("chaty-mlx-vlm-huge-red.png");
+        img.save(&img_path).expect("write huge test image");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let req = GenRequest {
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: "What is the dominant color of this image? Answer with one word."
+                    .into(),
+                images: vec![img_path.to_string_lossy().to_string()],
+            }],
+            params: GenParams { max_tokens: 160, think: Some(false), temperature: 0.0, ..Default::default() },
+        };
+        let text = rt
+            .block_on(engine.generate_collect(req, Arc::new(AtomicBool::new(false))))
+            .expect("oversized image must not kill the sidecar");
+        eprintln!("huge-image answer: {text:?}");
+        assert!(text.to_lowercase().contains("red"), "expected 'red' in: {text}");
+
+        // The sidecar must still be alive and conversational afterwards.
+        let req = GenRequest {
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: "Name the capital of France. One word.".into(),
+                images: vec![],
+            }],
+            params: GenParams { max_tokens: 64, think: Some(false), temperature: 0.0, ..Default::default() },
+        };
+        let text = rt
+            .block_on(engine.generate_collect(req, Arc::new(AtomicBool::new(false))))
+            .expect("text follow-up after huge image");
+        assert!(text.to_lowercase().contains("paris"), "expected 'Paris' in: {text}");
+        engine.unload();
     }
 
     /// Image-turn prefill progress + the GGUF media-cache analogue: a text

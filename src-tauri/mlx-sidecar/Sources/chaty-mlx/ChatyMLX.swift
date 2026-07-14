@@ -176,6 +176,10 @@ func healProcessorConfig(dir: URL) {
         "patch_size": vision["patch_size"] as? Int ?? 16,
         "merge_size": vision["spatial_merge_size"] as? Int ?? 2,
         "temporal_patch_size": vision["temporal_patch_size"] as? Int ?? 2,
+        // Smart-resize band (total pixels), mirroring the official configs.
+        // Without it the processor never resizes and an oversized image
+        // blows past Metal's limits inside mlx_eval, killing the process.
+        "size": ["longest_edge": 16_777_216, "shortest_edge": 65_536],
     ]
     guard
         let data = try? JSONSerialization.data(
