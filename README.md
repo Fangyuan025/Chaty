@@ -12,8 +12,11 @@ Chaty runs open LLMs **100% offline** in a polished desktop app.
 No account, no cloud, no telemetry — with a local coding agent, a document
 knowledge base, Deep Research, and hands-free voice built right in.
 
+[![Latest release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=19c37d)](../../releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Fangyuan025/Chaty/total?color=8a63d2)](../../releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/Fangyuan025/Chaty/ci.yml?branch=main&label=CI)](../../actions)
 [![Windows · Vulkan](https://img.shields.io/badge/Windows-Vulkan-0078D6?logo=windows&logoColor=white)](../../releases)
-[![macOS · Metal](https://img.shields.io/badge/macOS-Apple_Silicon_·_Metal-000000?logo=apple&logoColor=white)](../../releases)
+[![macOS · Metal + MLX](https://img.shields.io/badge/macOS-Metal_%2B_MLX-000000?logo=apple&logoColor=white)](../../releases)
 [![100% offline](https://img.shields.io/badge/100%25-offline-19c37d)](https://chaty.ca)
 [![Rust + Tauri 2](https://img.shields.io/badge/Rust_+_Tauri_2-CE412B?logo=rust&logoColor=white)](#architecture)
 [![License: MIT](https://img.shields.io/badge/License-MIT-444)](LICENSE)
