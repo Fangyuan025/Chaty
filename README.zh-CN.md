@@ -21,7 +21,7 @@ Deep Research 与免手语音。
 [![Rust + Tauri 2](https://img.shields.io/badge/Rust_+_Tauri_2-CE412B?logo=rust&logoColor=white)](#架构)
 [![License: MIT](https://img.shields.io/badge/License-MIT-444)](LICENSE)
 
-[**↓ 下载**](../../releases) · [**官网**](https://chaty.ca) · [**Hugging Face 上的 Chaty 模型**](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)
+[**↓ 下载**](../../releases) · [**官网**](https://chaty.ca) · [**文档**](https://chaty.ca/docs.html) · [**Hugging Face 上的 Chaty 模型**](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)
 
 <br />
 

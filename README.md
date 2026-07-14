@@ -21,7 +21,7 @@ knowledge base, Deep Research, and hands-free voice built right in.
 [![Rust + Tauri 2](https://img.shields.io/badge/Rust_+_Tauri_2-CE412B?logo=rust&logoColor=white)](#architecture)
 [![License: MIT](https://img.shields.io/badge/License-MIT-444)](LICENSE)
 
-[**↓ Download**](../../releases) · [**Website**](https://chaty.ca) · [**Chaty model on Hugging Face**](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)
+[**↓ Download**](../../releases) · [**Website**](https://chaty.ca) · [**Docs**](https://chaty.ca/docs.html) · [**Chaty model on Hugging Face**](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)
 
 <br />
 

@@ -273,6 +273,19 @@ export default function App() {
   const [showExport, setShowExport] = useState(false);
   const [showDownload, setShowDownload] = useState(false);
   const [deepLink, setDeepLink] = useState<{ repo: string; file?: string } | null>(null);
+
+  // Preview-only deep entry for the screenshot pipeline: ?open=store opens
+  // the model store, &repo=Owner/Name jumps straight to a detail view.
+  // Never active in the real app (VITE_UI_PREVIEW gates the mock build).
+  useEffect(() => {
+    if (!import.meta.env.VITE_UI_PREVIEW) return;
+    const q = new URLSearchParams(window.location.search);
+    if (q.get("open") === "store") {
+      const repo = q.get("repo");
+      if (repo) setDeepLink({ repo });
+      setShowDownload(true);
+    }
+  }, []);
   const [showSetup, setShowSetup] = useState(false);
   const [notice, setNotice] = useState<{ kind: "warn" | "error"; text: string } | null>(null);
   const noticeTimer = useRef<number | null>(null);
