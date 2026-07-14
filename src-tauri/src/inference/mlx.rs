@@ -571,6 +571,7 @@ fn run_generation(
                         completion_tokens: ev["completionTokens"].as_u64().unwrap_or(0) as u32,
                         tokens_per_second: ev["tokensPerSecond"].as_f64().unwrap_or(0.0) as f32,
                         stop_reason: reason,
+                        reused: ev["reused"].as_u64().unwrap_or(0) as u32,
                     },
                 });
                 return Ok(());
@@ -835,6 +836,74 @@ mod mlx_e2e {
     }
 
     /// Streaming path: Started → (Prefill…) → Token… → Done with stats.
+    /// Cross-conversation isolation: after generating in conversation A, a
+    /// brand-new conversation B must never see A's content. Regression test
+    /// for the MambaCache.offset bug — hybrid models reported offset 0, the
+    /// engine concluded "nothing to trim", and B's prompt was appended on top
+    /// of A's KV (the model visibly recalled A's prompt and derailed).
+    #[test]
+    #[ignore]
+    fn mlx_e2e_no_cross_conversation_bleed() {
+        let dir = model_dir();
+        let (engine, info) = MlxEngine::load(&dir, Some(8192), |_| {}).expect("load");
+        let hybrid = info.arch.as_deref().unwrap_or("").starts_with("qwen3_5");
+        let rt = rt();
+
+        let run = |content: &str| -> (String, u64) {
+            let events = Arc::new(Mutex::new(Vec::<String>::new()));
+            let ev2 = events.clone();
+            let sink = Channel::new(move |body: tauri::ipc::InvokeResponseBody| {
+                if let tauri::ipc::InvokeResponseBody::Json(s) = body {
+                    ev2.lock().unwrap().push(s);
+                }
+                Ok(())
+            });
+            let req = GenRequest {
+                messages: vec![ChatMessage {
+                    role: Role::User,
+                    content: content.into(),
+                    images: vec![],
+                }],
+                params: GenParams { max_tokens: 96, think: Some(false), temperature: 0.0, ..Default::default() },
+            };
+            rt.block_on(engine.generate(req, sink, Arc::new(AtomicBool::new(false))))
+                .expect("generate");
+            let evs = events.lock().unwrap();
+            let mut text = String::new();
+            let mut reused = 0;
+            for e in evs.iter() {
+                let v: serde_json::Value = serde_json::from_str(e).unwrap();
+                match v["type"].as_str() {
+                    Some("token") => text.push_str(v["text"].as_str().unwrap_or("")),
+                    Some("done") => reused = v["stats"]["reused"].as_u64().unwrap_or(0),
+                    _ => {}
+                }
+            }
+            (text, reused)
+        };
+
+        // Conversation A: plant a distinctive canary.
+        let (a, _) = run("The secret codeword is BANANA. Acknowledge with OK and nothing else.");
+        eprintln!("conv A answer: {a:?}");
+
+        // Conversation B: totally unrelated. Any trace of A = contamination.
+        let (b, reused_b) =
+            run("Name the capital of France. Answer with one word only.");
+        eprintln!("conv B answer: {b:?}, reused: {reused_b} (hybrid={hybrid})");
+        let lb = b.to_lowercase();
+        assert!(lb.contains("paris"), "expected 'Paris' in: {b}");
+        assert!(
+            !lb.contains("banana") && !lb.contains("codeword") && !lb.contains("secret"),
+            "conversation A leaked into B: {b}"
+        );
+        if hybrid {
+            // Non-trimmable caches can never resume — anything else means the
+            // old conversation's KV was reused (the contamination bug).
+            assert_eq!(reused_b, 0, "hybrid model must re-prefill from scratch");
+        }
+        engine.unload();
+    }
+
     #[test]
     #[ignore]
     fn mlx_e2e_stream_events() {
@@ -856,7 +925,7 @@ mod mlx_e2e {
                 content: format!("{filler}\nSummarize the above in one short sentence."),
                 images: vec![],
             }],
-            params: GenParams { max_tokens: 64, think: Some(false), ..Default::default() },
+            params: GenParams { max_tokens: 64, think: Some(false), temperature: 0.0, ..Default::default() },
         };
         rt().block_on(engine.generate(req, sink, Arc::new(AtomicBool::new(false))))
             .expect("stream");
@@ -903,7 +972,7 @@ mod mlx_vlm_e2e {
                     .into(),
                 images: vec![img_path.to_string_lossy().to_string()],
             }],
-            params: GenParams { max_tokens: 160, think: Some(false), ..Default::default() },
+            params: GenParams { max_tokens: 160, think: Some(false), temperature: 0.0, ..Default::default() },
         };
         let text = rt
             .block_on(engine.generate_collect(req, Arc::new(AtomicBool::new(false))))
@@ -919,7 +988,7 @@ mod mlx_vlm_e2e {
                 content: "Name the capital of France. One word.".into(),
                 images: vec![],
             }],
-            params: GenParams { max_tokens: 64, think: Some(false), ..Default::default() },
+            params: GenParams { max_tokens: 64, think: Some(false), temperature: 0.0, ..Default::default() },
         };
         let text = rt
             .block_on(engine.generate_collect(req, Arc::new(AtomicBool::new(false))))
@@ -969,7 +1038,7 @@ mod mlx_vlm_e2e {
                 content: "What is the dominant color of this image? Answer with one word.".into(),
                 images: vec![img_path.to_string_lossy().to_string()],
             }],
-            params: GenParams { max_tokens: 160, think: Some(false), ..Default::default() },
+            params: GenParams { max_tokens: 160, think: Some(false), temperature: 0.0, ..Default::default() },
         };
         let text = rt
             .block_on(engine.generate_collect(req, Arc::new(AtomicBool::new(false))))
@@ -1010,7 +1079,7 @@ mod mlx_vlm_e2e {
             });
             let req = GenRequest {
                 messages,
-                params: GenParams { max_tokens: 160, think: Some(false), ..Default::default() },
+                params: GenParams { max_tokens: 160, think: Some(false), temperature: 0.0, ..Default::default() },
             };
             rt.block_on(engine.generate(req, sink, Arc::new(AtomicBool::new(false))))
                 .expect("generate");
@@ -1119,7 +1188,7 @@ mod mlx_mem_e2e {
                     content: "Say OK.".into(),
                     images: vec![],
                 }],
-                params: GenParams { max_tokens: 8, think: Some(false), ..Default::default() },
+                params: GenParams { max_tokens: 8, think: Some(false), temperature: 0.0, ..Default::default() },
             };
             let text = rt
                 .block_on(engine.generate_collect(req, Arc::new(AtomicBool::new(false))))

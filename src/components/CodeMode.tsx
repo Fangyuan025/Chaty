@@ -784,8 +784,34 @@ export function CodeMode({
     });
     if (!ok) return;
     await codeSessionDelete(id).catch(() => {});
+    if (id === sid) {
+      // Deleting the session you're viewing must reset the view even
+      // mid-run: newSession()'s running-guard is for the "+" button (don't
+      // silently abandon a run), not for a destructive delete. Stop the
+      // agent first, then wake any dialog it is parked on — the loop only
+      // notices the cancel once the pending promise resolves.
+      if (running) {
+        stop();
+        approval?.resolve(false);
+        setApproval(null);
+        dirAsk?.resolve(false);
+        setDirAsk(null);
+        sudoAsk?.resolve({ ok: false });
+        setSudoAsk(null);
+        ask?.resolve("");
+        setAsk(null);
+      }
+      setQueue([]);
+      setSid(uid());
+      setMsgs([]);
+      setInput("");
+      setCtxUsed(0);
+      setStats(null);
+      sessionAllowsRef.current = new Set();
+      void agentClearGrants().catch(() => {});
+      setDirGrants([]);
+    }
     refreshSessions();
-    if (id === sid) newSession();
   }
 
   /** Rewind to before `m`: restore journaled files and drop later messages.
@@ -1017,6 +1043,9 @@ export function CodeMode({
     setMsgs(base);
     setRunning(true);
     setStats(null);
+    // The session this turn belongs to — if the user deletes it mid-run the
+    // live sid moves on, and the turn's results must not be written anywhere.
+    const turnSid = bodyRef.current.sid;
 
     const signal = new AgentSignal();
     signalRef.current = signal;
@@ -1100,14 +1129,19 @@ export function CodeMode({
     setRunning(false);
     setApproval(null);
     setPrefill(null);
-    setMsgs((cur) => {
-      persist(cur, bodyRef.current.workspace, bodyRef.current.sid);
-      return cur;
-    });
+    // Persist only while this turn's session is still the active one — after
+    // a mid-run delete, writing here would resurrect the file the user just
+    // removed (and clobber the fresh empty session).
+    if (bodyRef.current.sid === turnSid) {
+      setMsgs((cur) => {
+        persist(cur, bodyRef.current.workspace, turnSid);
+        return cur;
+      });
+    }
 
     // Messages queued while the agent was working → run them in order.
     const next = queueRef.current[0];
-    if (next !== undefined && !signal.cancelled) {
+    if (next !== undefined && !signal.cancelled && bodyRef.current.sid === turnSid) {
       setQueue((q) => q.slice(1));
       void send(next);
     }

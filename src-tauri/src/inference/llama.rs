@@ -787,9 +787,17 @@ fn run_turn(
             prefix = n_prompt - 1;
         }
 
-        // Drop everything in the KV at/after `prefix`, then decode only the new tail.
-        if prefix < cached.len() {
-            let _ = ctx.clear_kv_cache_seq(Some(0), Some(prefix as u32), None);
+        // Drop everything in the KV at/after `prefix`, then decode only the new
+        // tail. Partial removal is unsupported on hybrid/recurrent memories
+        // (Qwen3.5/3.6 — seq_rm reports false): silently proceeding would
+        // leave the previous conversation's state in place and the model
+        // would see BOTH conversations at once. Fall back to a full clear.
+        if prefix < cached.len()
+            && ctx.clear_kv_cache_seq(Some(0), Some(prefix as u32), None) != Ok(true)
+        {
+            ctx.clear_kv_cache();
+            cached.clear();
+            prefix = 0;
         }
         cached.truncate(prefix);
 
@@ -931,14 +939,21 @@ fn run_turn(
         }
         batch.clear();
         batch.add(token, n_past, &[0], true)?;
+        n_past += 1;
+        if let Err(e) = ctx.decode(&mut batch) {
+            // The ledger must never run ahead of the cache — reset both
+            // rather than leaving a phantom token the next turn would reuse.
+            ctx.clear_kv_cache();
+            cached.clear();
+            *media_cache = None;
+            return Err(e).context("decode failed");
+        }
         // The token cache only describes text-regime KV contents; generated
         // tokens in a media conversation live beyond `media_cache.n_past` and
         // are truncated away by the next incremental media prefill.
         if !media_turn {
             cached.push(token);
         }
-        n_past += 1;
-        ctx.decode(&mut batch).context("decode failed")?;
         idx = batch.n_tokens() - 1;
     }
     // Flush the unsent tail (unless we halted on a stop sequence).
@@ -1032,6 +1047,13 @@ fn prefill_media(
             (0, prompt, &images[..])
         }
     };
+
+    // From here until the prefill completes, the KV holds a state no record
+    // describes (truncated to the anchor, partially evaluated, …). The ledger
+    // is re-established at the end — any early exit (cancel, error) leaves it
+    // empty so the NEXT turn starts from a clean cache instead of trusting a
+    // stale description of what's in the KV.
+    *media_cache = None;
 
     let clear_all = |ctx: &mut LlamaContext, cache: &mut Option<MediaCache>| {
         ctx.clear_kv_cache();
@@ -1286,6 +1308,9 @@ fn done_event(
             completion_tokens,
             tokens_per_second: tps,
             stop_reason: stop_reason.to_string(),
+            // llama.cpp manages its KV prefix via n_past truncation; reuse
+            // accounting is only surfaced for the MLX engine.
+            reused: 0,
         },
     })?;
     Ok(())
@@ -4740,5 +4765,55 @@ mod real_scenarios_e2e {
          - browser_type {label|selector|text|steps}:填输入框;**下拉框(select)也用它——text 传选项可见文字即可,别去 click 下拉选项**;**多个字段用 steps 一次填完**。\n\
          - browser_scroll {to?,by?}:滚动。\n\
          规则:①纯读资料用 web_fetch/web_search,不要开浏览器;②需要真实操作网页(点、填、登录、翻页、必须亲眼看到渲染)才用浏览器;③浏览器里看页面/确认状态优先 browser_read,交互返回已带最新页面文字;④点提交/登录/不可逆按钮前若涉及正确性,先截图视觉确认;⑤顺序点击/多字段填写用 steps 批量;⑥点登录/翻页/Search/提交等按钮后先读返回文字确认结果,成功就别重复点,翻页要点一次读一次别猛点。任务完成后直接用一句话回答。".to_string()
+    }
+}
+
+/// Cross-conversation isolation for the GGUF engine. Hybrid/recurrent
+/// memories (Qwen3.5 / 3.6) cannot partially rewind — `clear_kv_cache_seq`
+/// reports `false` — and the engine must fall back to a full clear instead
+/// of silently appending the new conversation on top of the old one's state.
+///   CHATY_TEST_GGUF=/path/to/model.gguf \
+///     cargo test -p chaty --lib gguf_e2e_no_cross_conversation_bleed -- --ignored --nocapture
+#[cfg(test)]
+mod gguf_kv_e2e {
+    use super::*;
+    use crate::inference::{ChatMessage, GenParams, GenRequest, InferenceBackend, Role};
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    #[ignore]
+    fn gguf_e2e_no_cross_conversation_bleed() {
+        let Ok(path) = std::env::var("CHATY_TEST_GGUF") else {
+            eprintln!("SKIP: set CHATY_TEST_GGUF=/path/to/model.gguf");
+            return;
+        };
+        let (engine, info) = LlamaEngine::load(&path, None, Some(4096)).expect("load");
+        eprintln!("arch: {:?}", info.arch);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let run = |content: &str| -> String {
+            let req = GenRequest {
+                messages: vec![ChatMessage {
+                    role: Role::User,
+                    content: content.into(),
+                    images: vec![],
+                }],
+                params: GenParams { max_tokens: 96, think: Some(false), ..Default::default() },
+            };
+            rt.block_on(engine.generate_collect(req, Arc::new(AtomicBool::new(false))))
+                .expect("generate")
+        };
+
+        // Conversation A plants a canary; conversation B must never see it.
+        let a = run("The secret codeword is BANANA. Acknowledge with OK and nothing else.");
+        eprintln!("conv A: {a:?}");
+        let b = run("Name the capital of France. Answer with one word only.");
+        eprintln!("conv B: {b:?}");
+        let lb = b.to_lowercase();
+        assert!(lb.contains("paris"), "expected 'Paris' in: {b}");
+        assert!(
+            !lb.contains("banana") && !lb.contains("codeword") && !lb.contains("secret"),
+            "conversation A leaked into B: {b}"
+        );
+        engine.unload();
     }
 }

@@ -157,6 +157,10 @@ const CODE_SESSION_MSGS = [
   },
 ];
 
+// Live session store: sessions saved during a preview run (deletable).
+const SAVED_CODE_SESSIONS: { id: string; title: string; workspace: string }[] = [];
+const SAVED_CODE_BODIES = new Map<string, string>();
+
 const CODE_SESSIONS = [
   { id: "cs1", title: "Match the upstream tokenizer fix", workspace: "/Users/dev/projects/parser-kit", updatedAt: now - 1800e3 },
   { id: "cs2", title: "Add a README to the project", workspace: "/Users/dev/projects/parser-kit", updatedAt: now - 86400e3 },
@@ -259,12 +263,30 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
 
     // ---- code mode ----
     case "code_session_list":
-      return CODE_SESSIONS;
-    case "code_session_load":
+      return [...SAVED_CODE_SESSIONS, ...CODE_SESSIONS];
+    case "code_session_load": {
+      const hit = SAVED_CODE_SESSIONS.find((s) => s.id === String(args?.id ?? ""));
+      if (hit) return SAVED_CODE_BODIES.get(hit.id) ?? "[]";
       return JSON.stringify(CODE_SESSION_MSGS);
-    case "code_session_save":
-    case "code_session_delete":
+    }
+    case "code_session_save": {
+      // Real save/delete semantics so delete-while-running is drivable in
+      // the preview (the fixtures alone made every session immortal).
+      const id = String(args?.id ?? "");
+      const i = SAVED_CODE_SESSIONS.findIndex((s) => s.id === id);
+      const meta = { id, title: String(args?.title ?? "session"), workspace: String(args?.workspace ?? "") };
+      if (i >= 0) SAVED_CODE_SESSIONS[i] = meta;
+      else SAVED_CODE_SESSIONS.unshift(meta);
+      SAVED_CODE_BODIES.set(id, String(args?.data ?? "[]"));
       return null;
+    }
+    case "code_session_delete": {
+      const id = String(args?.id ?? "");
+      const i = SAVED_CODE_SESSIONS.findIndex((s) => s.id === id);
+      if (i >= 0) SAVED_CODE_SESSIONS.splice(i, 1);
+      SAVED_CODE_BODIES.delete(id);
+      return null;
+    }
     case "agent_grant_dir": {
       const d = String(args?.path ?? "");
       if (!GRANTS.includes(d)) GRANTS.push(d);

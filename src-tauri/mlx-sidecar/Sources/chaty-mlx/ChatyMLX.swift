@@ -264,6 +264,13 @@ final class Engine: @unchecked Sendable {
     /// and re-evaluates that text instead of trusting them).
     var kvCache: [KVCache]?
     var kvTokens: [Int] = []
+    /// Exact number of tokens materialized in `kvCache` (prompt + decoded).
+    /// Tracked here because the caches themselves can't be trusted for this:
+    /// hybrid models put a MambaCache at layer 0 whose `offset` never
+    /// advances, so `cache.first.offset` reads 0 forever — the old code
+    /// concluded "nothing to trim" and appended a NEW conversation on top of
+    /// the previous one's KV (cross-conversation contamination).
+    var kvEvaluated = 0
     /// Identity keys (path|size|mtime) of the images baked into `kvCache`,
     /// in prompt order — the analogue of the GGUF engine's media cache.
     /// Image placeholder tokens are identical for different pictures, so
@@ -344,6 +351,7 @@ final class Engine: @unchecked Sendable {
             kvTokens = []
             kvImageKeys = []
             kvState = nil
+            kvEvaluated = 0
             out.error("生成失败 (generation failed): \(error)")
         }
     }
@@ -466,19 +474,25 @@ final class Engine: @unchecked Sendable {
                 if imageKeys != kvImageKeys || common < lastMediaEnd {
                     common = 0
                 }
-                let offset = cached.first?.offset ?? 0
-                let excess = offset - common
-                if common == 0 {
+                // How much sits in the cache comes from OUR ledger, never
+                // from the caches themselves: a hybrid model's MambaCache
+                // reports offset 0 forever, which the old arithmetic read as
+                // "nothing to trim" and then appended the new conversation on
+                // top of the previous one's KV — the model could see (and got
+                // derailed by) another conversation's prompt.
+                let excess = kvEvaluated - common
+                if common == 0 || kvEvaluated < kvTokens.count {
                     kvCache = nil
                 } else if excess > 0 {
                     if cached.allSatisfy({ $0.isTrimmable }) {
                         for c in cached { _ = c.trim(excess) }
+                        kvEvaluated = common
                         start = common
                     } else {
                         kvCache = nil
                     }
                 } else {
-                    start = min(common, offset)
+                    start = common
                 }
                 if start > 0 { state = kvState }
             }
@@ -562,7 +576,8 @@ final class Engine: @unchecked Sendable {
             self.decode(
                 context: context, cache: warm, tokens: tokens, total: total,
                 state: state, gp: gp,
-                recorded: Array(tokens.prefix(prefillEnd)), imageKeys: imageKeys)
+                recorded: Array(tokens.prefix(prefillEnd)), imageKeys: imageKeys,
+                reused: start)
         }
     }
 
@@ -591,7 +606,9 @@ final class Engine: @unchecked Sendable {
             default:
                 break
             }
-            if nCtxCap > 0, let c = cache.first, c.offset >= nCtxCap {
+            // MambaCache never advances its offset — take the largest across
+            // layers (the attention caches do track it).
+            if nCtxCap > 0, (cache.map(\.offset).max() ?? 0) >= nCtxCap {
                 reason = "context"
                 break
             }
@@ -616,7 +633,7 @@ final class Engine: @unchecked Sendable {
     private func decode(
         context: ModelContext, cache: [KVCache], tokens: [Int], total: Int,
         state initialState: LMOutput.State?, gp: GenerateParameters,
-        recorded: [Int], imageKeys: [String]
+        recorded: [Int], imageKeys: [String], reused: Int
     ) {
         var state = initialState
         // The rope state saved for the next turn's resume: ropeDeltas is
@@ -680,7 +697,10 @@ final class Engine: @unchecked Sendable {
                 reason = "length"
                 break
             }
-            if nCtxCap > 0, let c = cache.first, c.offset >= nCtxCap {
+            // Context budget from our own ledger — hybrid caches misreport
+            // offset (MambaCache never advances it), so `total + done` is the
+            // only trustworthy population count.
+            if nCtxCap > 0, total + done >= nCtxCap {
                 reason = "context"
                 break
             }
@@ -689,29 +709,37 @@ final class Engine: @unchecked Sendable {
         let dt = max(Date().timeIntervalSince(started), 0.001)
         self.finish(
             prompt: total, done: done, tps: Double(done) / dt, reason: reason,
-            generated: recorded, images: imageKeys, state: recordedState)
+            generated: recorded, images: imageKeys, state: recordedState,
+            evaluated: total + done, reused: reused)
     }
 
     private func finish(
         prompt: Int, done: Int, tps: Double, reason: String, generated: [Int]?,
-        images: [String] = [], state: LMOutput.State? = nil
+        images: [String] = [], state: LMOutput.State? = nil, evaluated: Int = 0,
+        reused: Int = 0
     ) {
         // Remember the prompt prefix this engine evaluated itself (the cache
-        // also holds the library-decoded tokens past this point; next turn
-        // trims them away and re-evaluates that text with clean positions).
+        // also holds the decoded tokens past this point; next turn trims them
+        // away and re-evaluates that text with clean positions).
         if let generated {
             kvTokens = generated
             kvImageKeys = images
             kvState = state
+            kvEvaluated = evaluated
         } else {
             kvCache = nil
             kvTokens = []
             kvImageKeys = []
             kvState = nil
+            kvEvaluated = 0
         }
         out.emit([
             "event": "done", "promptTokens": prompt, "completionTokens": done,
             "tokensPerSecond": tps, "stopReason": reason,
+            // How many prompt tokens were resumed from the previous turn's
+            // cache — observability for the cross-conversation-contamination
+            // regression tests (0 = evaluated from scratch).
+            "reused": reused,
         ])
     }
 }

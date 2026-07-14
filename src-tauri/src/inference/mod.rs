@@ -109,6 +109,9 @@ pub struct GenStats {
     /// Why generation ended: "eos" (model finished), "length" (max_tokens hit),
     /// "context" (context window full), "stop" (stop sequence), "cancelled".
     pub stop_reason: String,
+    /// Prompt tokens resumed from the previous turn's KV cache (0 = evaluated
+    /// from scratch). Cross-conversation contamination shows up here first.
+    pub reused: u32,
 }
 
 /// Metadata about the currently loaded model, surfaced to the UI.
