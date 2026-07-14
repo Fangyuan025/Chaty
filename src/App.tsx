@@ -275,11 +275,14 @@ export default function App() {
   const [deepLink, setDeepLink] = useState<{ repo: string; file?: string } | null>(null);
 
   // Preview-only deep entry for the screenshot pipeline: ?open=store opens
-  // the model store, &repo=Owner/Name jumps straight to a detail view.
+  // the model store, &repo=Owner/Name jumps straight to a detail view,
+  // &theme=light|dark overrides the theme (light-mode marketing shots).
   // Never active in the real app (VITE_UI_PREVIEW gates the mock build).
   useEffect(() => {
     if (!import.meta.env.VITE_UI_PREVIEW) return;
     const q = new URLSearchParams(window.location.search);
+    const theme = q.get("theme");
+    if (theme === "light" || theme === "dark") setSettings((s) => ({ ...s, theme }));
     if (q.get("open") === "store") {
       const repo = q.get("repo");
       if (repo) setDeepLink({ repo });
