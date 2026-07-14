@@ -272,7 +272,7 @@ const TOOLS_DOC = `
 - bash_bg: 在后台启动长时间运行的命令(dev server、慢构建、长测试),立即返回一个 id,期间你可以继续做别的;它结束时系统会自动把结果告诉你。args: { "command": string }
 - bg_output: 查看某个后台命令的当前状态和最近输出(比如确认 server 已启动)。args: { "id": number }
 - bg_kill: 终止某个后台命令(整棵进程树)。args: { "id": number }
-- web_search: 联网搜索(标题+链接+摘要)。查资料、找文档、查报错时用。加 site 参数可做站内搜索:site="github.com" 返回结构化的仓库/issue/代码匹配;site="reddit.com"(或 "reddit.com/r/某版块")搜帖子;site="youtube.com" / "bilibili.com" 返回视频(标题/时长/UP主/播放量);其他任意域名(docs.python.org、stackoverflow.com、x.com、weibo.com 等)都会限定在该站内搜(登录墙站点只能拿到搜索引擎快照级的标题/摘要)。args: { "query": string, "site"?: string }
+- web_search: 联网搜索(标题+链接+摘要)。查资料、找文档、查报错时用。加 site 参数可做站内搜索:site="github.com" 返回结构化的仓库/issue/代码匹配;site="reddit.com"(或 "reddit.com/r/某版块")搜帖子;site="youtube.com" / "bilibili.com" 返回视频(标题/时长/UP主/播放量);其他任意域名(docs.python.org、stackoverflow.com、x.com、weibo.com 等)都会限定在该站内搜(登录墙站点只能拿到搜索引擎快照级的标题/摘要)。**搜索源偶尔会抽风,返回不相关的结果——连续 2 次搜出来都和问题无关,就说明此刻再换措辞重搜也没用,立即改道:用 web_fetch 直接抓最可能的页面(官方文档、GitHub 仓库、项目官网都能猜出 URL),或用浏览器工具打开搜索引擎/目标站点找。**args: { "query": string, "site"?: string }
 - web_fetch: 抓取任意 URL,按内容类型自动处理:文章页→干净的 Markdown 正文;代码/JSON/配置文件→原文;GitHub 文件页自动取 raw 源文件;Reddit 帖子→正文+评论;YouTube 视频→元信息+完整字幕转写;B站视频→公开元信息+简介(播放/点赞/弹幕);PDF→提取文本;图片等二进制→返回元信息(用 web_download 保存)。结果还会列出页面上的链接和图片 URL——想深入子页面就继续 fetch 那些链接。要 HTML 源码时传 raw=true。args: { "url": string, "raw"?: boolean }
 - web_download: 把 URL 指向的文件(图片、压缩包、任意资源)**后台**下载到工作区指定路径:立即返回,不阻塞你,期间可以继续做别的;完成或失败时系统会自动通知你,在那之前**不要**读取该文件或重复发起同一下载。args: { "url": string, "path": string }
 - update_plan: 制定或更新任务计划(待办清单),让用户看到你的推进步骤。开始复杂任务时先列计划,完成一步就把它标为 done、把下一步标为 in_progress。args: { "todos": [{ "content": string, "status": "pending"|"in_progress"|"done" }] }
@@ -299,7 +299,7 @@ const VISION_TOOLS_DOC = `
 **顺序点击 + 提交前视觉确认(选词造句/答题/多步向导等)**:像"按顺序选词补全句子(多邻国那种)、拼答案、连续选项"这类你已经想好完整顺序的任务,**一次用 browser_click 的 steps 把这些词/选项按顺序点完**(不要一个词一个词地单独调用,慢且啰嗦)。**在点「提交/检查/确认」这种会定分/不可逆的按钮之前,先用 browser_snapshot(或 screenshot)截一屏,用视觉确认已选内容/已拼句子/答案确实正确无误,再点提交**——别没看一眼就提交。
 **点导航/提交类按钮(登录、Next/翻页、Search、提交)后,务必先看返回的最新页面文字判断结果:成功了(如出现 Logout、翻到了目标页、出现结果列表)就继续下一步或直接回答,绝不要重复点同一个按钮**;需要翻到第 N 页就"点一次 → 读一次确认到没到 → 再点",别连续猛点翻过头。
 重要:①CSS 选择器只支持**标准语法**——不存在 :contains()、:has-text() 这类;要按文字定位就用 browser_click 的 text 参数。②浏览器用的是持久配置,你之前登录过的网站会保持登录。③你随时能拿到两类信息:页面元素(browser_read)和控制台(browser_console)——拿不准页面状态时先读它们,别硬猜。
-**何时用浏览器**:只有当任务需要真实操作网页(填表单、点按钮、登录后才能看的内容、必须"亲眼看到"渲染效果做视觉验证)、或用户明确要求用浏览器时,才用这套浏览器工具。**单纯查资料、做调研、找文档/报错解法,优先用 web_search / web_fetch**(更快、无需开浏览器);它们查不到或够不着目标时,再考虑浏览器。**web_fetch / web_search 一旦拿到能回答问题的内容,就直接给出答案——不要再多开浏览器"重复核实"一遍,那样只是白白多花时间。**`;
+**何时用浏览器**:只有当任务需要真实操作网页(填表单、点按钮、登录后才能看的内容、必须"亲眼看到"渲染效果做视觉验证)、或用户明确要求用浏览器时,才用这套浏览器工具。**单纯查资料、做调研、找文档/报错解法,优先用 web_search / web_fetch**(更快、无需开浏览器);它们查不到或够不着目标时,再考虑浏览器。**但"优先搜索"不等于"死磕搜索":web_search 连续 2 次返回不相关结果,就视为搜索源此刻不可靠——别再换措辞重搜,改用 web_fetch 直抓能猜到的 URL,或转浏览器打开搜索引擎/目标站继续。** **web_fetch / web_search 一旦拿到能回答问题的内容,就直接给出答案——不要再多开浏览器"重复核实"一遍,那样只是白白多花时间。**`;
 
 function systemPrompt(
   workspace: string,
@@ -982,6 +982,13 @@ export async function runAgentTurn(
   let lastCallKey = "";
   let repeatCount = 0;
   let hotNext = false;
+  // Search flail breaker: consecutive web_search calls, ANY query. When the
+  // search backend degrades into irrelevant results, models keep rephrasing
+  // the query forever instead of failing over to web_fetch / the browser —
+  // and since every rephrase has different args, the identical-call breaker
+  // above never fires. Nudge from the 3rd consecutive search, intercept from
+  // the 5th; any other tool resets the streak.
+  let searchStreak = 0;
   // Think gate state: consecutive stuck-thinking steps, and a one-shot flag to
   // physically disable reasoning on the recovery step.
   let stuckThinkCount = 0;
@@ -1216,6 +1223,23 @@ export async function runAgentTurn(
         continue;
       }
 
+      // ── Search flail breaker: rephrasing the query is not a new strategy. ──
+      searchStreak = call.name === "web_search" ? searchStreak + 1 : 0;
+      if (searchStreak >= 5) {
+        // 5th consecutive search — stop executing them until the model
+        // actually changes strategy (any other tool resets the streak).
+        hotNext = true;
+        const note =
+          lang === "zh"
+            ? `搜索被拦截:这已是连续第 ${searchStreak} 次 web_search,前几次都没解决问题,说明搜索源此刻不可靠——继续换措辞重搜不会有新结果。请换策略:用 web_fetch 直接抓取最可能的页面(官方文档 / GitHub 仓库 / 项目官网的 URL 通常能直接猜出来),或用 browser_navigate 打开搜索引擎或目标站点查找。用过其它工具后可以再搜索。`
+            : `Intercepted: this is web_search #${searchStreak} in a row and the previous ones didn't resolve the question — the search backend is unreliable right now, and rephrasing again won't produce new results. Change strategy: web_fetch the most likely page directly (official docs / GitHub repo / project site URLs are usually guessable), or open a search engine or the target site with browser_navigate. You may search again after using another tool.`;
+        stepObj.status = "error";
+        stepObj.result = note;
+        cb.onStep(stepObj);
+        pushUser(toolResultMsg(call.name, note));
+        continue;
+      }
+
       // ── Meta-tools handled in the loop (no backend call, no approval) ──
       // update_plan renders as a dedicated live plan panel, not a step card.
       if (call.name === "update_plan") {
@@ -1404,6 +1428,14 @@ export async function runAgentTurn(
       }
       if (opts.signal.cancelled) return;
       cb.onStep(stepObj);
+      // 3rd/4th consecutive search: results go through, but remind the model
+      // (not the UI card) that flailing searches should fail over.
+      if (call.name === "web_search" && searchStreak >= 3) {
+        resultText +=
+          lang === "zh"
+            ? `\n\n[系统提示] 这已是连续第 ${searchStreak} 次搜索。若以上结果仍与问题无关,说明搜索源此刻不可靠——不要再换措辞重搜,改用 web_fetch 直接抓取最可能的页面(官方文档/GitHub/项目官网),或用 browser_navigate 打开搜索引擎/目标站点查找。`
+            : `\n\n[system note] This is consecutive web_search #${searchStreak}. If the results above are still irrelevant, the search backend is unreliable right now — do NOT rephrase and search again; web_fetch the most likely page directly (official docs / GitHub / project site), or open a search engine or the target site with browser_navigate.`;
+      }
       pushUser(toolResultMsg(call.name, resultText));
     }
     cb.onFinal(
