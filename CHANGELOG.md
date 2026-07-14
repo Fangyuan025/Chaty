@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.8.1 — Hotfix: oversized screenshots could kill the MLX engine (2026-07-14)
+
+- **Huge screenshots can no longer crash the MLX engine.** A 2x full-page browser screenshot (15+ megapixels) fed to an MLX vision model — the Code agent's normal "look at the page" flow — could kill the inference sidecar mid-answer ("MLX engine exited unexpectedly"), or come back with an empty answer on models whose processor tolerated the size. Images now pass through the same 2-megapixel downscale as the GGUF engine before reaching the sidecar, with the downscaled copy cached so image reuse across turns still works. Verified end to end on the exact model and flow that crashed.
+- **Healed community quants resize like stock models.** The processor config Chaty synthesizes for community VLM quants that ship without one now includes the official smart-resize band, so oversized inputs are constrained the same way as on official releases.
+- **The model-load progress bar only moves forward.** Loading progress is estimated from memory growth, which dips mid-load (page eviction, GPU staging frees, out-of-memory back-off) — the bar visibly jumped backwards. A high-water mark on both engines plus a guard in the UI keeps it monotonic.
+
 ## v1.8.0 — Apple-Silicon native: MLX models (2026-07-13)
 
 Chaty now runs **MLX models** — the Apple-Silicon-native format from mlx-community — side by side with GGUF, with the exact same feature surface. Plus a brand-new model store and a root fix for the wired-memory balloon.
@@ -10,8 +16,7 @@ Chaty now runs **MLX models** — the Apple-Silicon-native format from mlx-commu
 - **Vision included.** MLX vision models (the Qwen3.5+ and Qwen3-VL families) carry their vision tower in the weights — attach an image in chat, let the Code agent look at screenshots, caption knowledge-base imports, see Canvas pages. No separate encoder file to manage.
 - **Vision that keeps up with Code mode.** Image prompts show the same prompt-processing **percentage ring** as text, and the image KV cache mirrors the GGUF engine: on models whose cache can rewind (Qwen3-VL), follow-up turns and agent tool loops reuse the cached image — screenshots aren't re-encoded every round. Positions are M-RoPE-exact end to end (a from-scratch decode loop threads the rope state through every token — this also fixed Qwen3-VL models answering with an instant EOS, and long multi-chunk prompts drifting off-position on Qwen3.5).
 - **Memory safety by design.** MLX inference runs in an isolated sidecar process — ejecting the model kills it, so the memory *always* comes back (verified by a repeated load/eject e2e). Runs at full Metal speed via Apple's mlx-swift-lm.
-- **Community quants included.** Some third-party VLM quants ship without their processor config files and would refuse to load — Chaty now heals the folder automatically (the missing preprocessing config is synthesized from the model's own `config.json`, including the official smart-resize band), so those models chat *and* see like any other.
-- **Huge screenshots can't kill the engine.** A 2x full-page browser screenshot (15+ megapixels) fed to an MLX vision model could crash the sidecar mid-answer ("MLX engine exited unexpectedly") or come back empty. Images now pass through the same 2-megapixel downscale as the GGUF engine before reaching the sidecar — verified end to end on the exact model and flow that crashed.
+- **Community quants included.** Some third-party VLM quants ship without their processor config files and would refuse to load — Chaty now heals the folder automatically (the missing preprocessing config is synthesized from the model's own `config.json`), so those models chat *and* see like any other.
 - Windows builds politely decline MLX folders with a clear message; everything GGUF is unchanged.
 
 ### A real model store
@@ -31,7 +36,6 @@ Chaty now runs **MLX models** — the Apple-Silicon-native format from mlx-commu
 - **"Load from folder" is the single local entry point** for both formats (one folder per model has been the canonical layout since vision landed) — the backend figures out what's inside.
 - **Auto-load only reloads *your last* model** — it no longer picks the alphabetically-first folder, which could be a 32 GB giant on a 16 GB machine.
 - **Wired-memory root fix:** ggml's Metal residency sets (enabled by newer build SDKs) pinned entire models into wired memory and could freeze the machine on big models. Chaty now disables them at startup on every build, so locally-built and CI binaries behave identically. Verified live with a 32B model: wired memory flat throughout load, chat and eject.
-- **The load bar only moves forward.** Loading progress is estimated from memory growth, which dips mid-load (page eviction, GPU staging frees, out-of-memory back-off) — the bar visibly jumped backwards. A high-water mark on both engines plus a guard in the UI keeps it monotonic.
 
 ## v1.7.1 — Agentic browsing that finishes the job (2026-07-13)
 

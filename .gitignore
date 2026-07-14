@@ -31,3 +31,4 @@ src-tauri/mlx-sidecar/.build/
 *.njsproj
 *.sln
 *.sw?
+.preview-dist/
