@@ -30,6 +30,7 @@ Chaty now runs **MLX models** — the Apple-Silicon-native format from mlx-commu
 - **"Load from folder" is the single local entry point** for both formats (one folder per model has been the canonical layout since vision landed) — the backend figures out what's inside.
 - **Auto-load only reloads *your last* model** — it no longer picks the alphabetically-first folder, which could be a 32 GB giant on a 16 GB machine.
 - **Wired-memory root fix:** ggml's Metal residency sets (enabled by newer build SDKs) pinned entire models into wired memory and could freeze the machine on big models. Chaty now disables them at startup on every build, so locally-built and CI binaries behave identically. Verified live with a 32B model: wired memory flat throughout load, chat and eject.
+- **The load bar only moves forward.** Loading progress is estimated from memory growth, which dips mid-load (page eviction, GPU staging frees, out-of-memory back-off) — the bar visibly jumped backwards. A high-water mark on both engines plus a guard in the UI keeps it monotonic.
 
 ## v1.7.1 — Agentic browsing that finishes the job (2026-07-13)
 
