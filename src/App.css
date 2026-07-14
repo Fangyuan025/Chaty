@@ -6247,6 +6247,16 @@ body,
   color: var(--accent);
   margin-left: 6px;
 }
+/* Weight-format chip (MLX) — neutral tone so the vision badge keeps the accent. */
+.mm-fmt {
+  flex: none;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--text) 28%, transparent);
+  color: color-mix(in srgb, var(--text) 72%, transparent);
+  margin-left: 6px;
+}
 .setup-card-vision {
   display: inline-block;
   font-size: 10.5px;
@@ -6390,3 +6400,286 @@ body,
 .cm-preview-close:hover { color: var(--text); border-color: var(--border); }
 .cm-preview-stage { overflow: auto; padding: 14px; display: grid; place-items: center; background: var(--bg); }
 .cm-preview-stage img { max-width: 100%; height: auto; display: block; border-radius: 8px; }
+
+/* ---- HF model store (download modal v2) ---- */
+.store-modal {
+  width: min(920px, 94vw);
+}
+.store-body {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  min-height: 0;
+  height: min(580px, 74vh);
+}
+.store-list-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  padding-right: 14px;
+}
+.store-filters {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+.store-filters select,
+.store-quant-row select {
+  flex: 1;
+  min-width: 0;
+  appearance: none;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  padding: 6px 26px 6px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+    linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 55%, calc(100% - 10px) 55%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  transition: background-color var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out);
+}
+.store-filters select:hover:not(:disabled),
+.store-quant-row select:hover:not(:disabled) {
+  background-color: var(--surface-2);
+}
+.store-hits {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 2px;
+}
+.store-hit {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  padding: 8px 9px;
+  border: none;
+  background: none;
+  color: var(--text);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+  animation: ctxin 0.12s var(--ease-out) both;
+}
+.store-hit:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.store-hit.active {
+  background: var(--accent-soft);
+}
+.store-avatar {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.org-avatar-img {
+  border-radius: 5px;
+  object-fit: cover;
+  display: block;
+}
+.store-hit-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+  flex: 1;
+}
+.store-hit-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.store-hit-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.store-detail-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding-left: 16px;
+  overflow: hidden;
+}
+.store-detail-title {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  word-break: break-all;
+  animation: ctxin 0.12s var(--ease-out) both;
+}
+.store-detail-author {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 3px 0 10px;
+}
+.store-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.store-badge {
+  font-size: 11px;
+  padding: 2.5px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  background: var(--surface);
+}
+.store-badge-fmt,
+.store-badge-vision {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.store-dl-box {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 12px;
+  margin-bottom: 12px;
+  background: var(--surface);
+}
+.store-quant-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.store-get {
+  flex: none;
+  color: var(--accent-ink, #fff);
+  background: var(--accent);
+  border: 1px solid transparent;
+  font-weight: 600;
+  transition: filter var(--t-fast) var(--ease-out), transform var(--t-fast) var(--ease-out);
+}
+.store-get:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+.store-get:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.store-get:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.store-progress {
+  margin-top: 10px;
+}
+.store-progress .dl-bar-fill {
+  transition: width 0.25s var(--ease-out);
+}
+.store-fit {
+  font-size: 11.5px;
+  margin-top: 9px;
+  color: var(--text-dim);
+}
+.store-fit.ok {
+  color: var(--accent);
+}
+.store-readme {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+  padding: 12px 4px 4px 0;
+  font-size: 13px;
+  line-height: 1.65;
+  animation: ctxin 0.15s var(--ease-out) both;
+}
+.store-readme img {
+  max-width: 100%;
+  border-radius: var(--r-md);
+}
+.store-readme h1 {
+  font-size: 19px;
+  margin: 10px 0 8px;
+}
+.store-readme h2 {
+  font-size: 16px;
+  margin: 12px 0 6px;
+}
+.store-readme h3 {
+  font-size: 14px;
+}
+.store-readme table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.store-readme pre {
+  overflow-x: auto;
+}
+.store-empty {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  padding: 22px 8px;
+  text-align: center;
+}
+/* skeleton shimmer while lists / detail load */
+.store-skel {
+  pointer-events: none;
+}
+.skel-block {
+  display: inline-block;
+  border-radius: 6px;
+  background: linear-gradient(
+    100deg,
+    var(--surface) 40%,
+    var(--surface-2) 50%,
+    var(--surface) 60%
+  );
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.4s ease-in-out infinite;
+}
+.skel-line {
+  height: 11px;
+}
+.skel-line.thin {
+  height: 8px;
+  opacity: 0.7;
+}
+.store-avatar.skel-block {
+  border: none;
+}
+.store-detail-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 6px;
+}
+@keyframes skel-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}

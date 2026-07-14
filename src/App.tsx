@@ -55,7 +55,7 @@ import {
   ragSearch,
   ragStatus,
   pickAttachmentFile,
-  pickModelFile,
+  pickModelFolder,
   readAttachment,
   imageThumb,
   browserRenderHtml,
@@ -405,8 +405,13 @@ export default function App() {
         // Otherwise auto-load: last session's model, else the first GGUF found
         // in the models/ folder.
         if (!settings.autoLoadLast) return;
+        // Only ever auto-load the model the user explicitly loaded last —
+        // never auto-pick models[0]. A models folder can contain something
+        // far bigger than this machine (a 32B alphabetically-first model
+        // froze a 48 GB Mac twice); first-run model choice belongs to the
+        // user / "Set up for me", not a directory sort order.
         const last = localStorage.getItem(LAST_MODEL_KEY);
-        const target = last ?? models[0]?.path ?? null;
+        const target = last;
         if (!target) return;
         setLoadingModel(true);
         try {
@@ -1042,10 +1047,13 @@ export default function App() {
     }
   }
 
-  async function handleLoad() {
+  // One folder per model is the canonical layout for BOTH formats (GGUF
+  // main+mmproj, MLX config+safetensors) — the backend resolves whichever
+  // the folder contains.
+  async function handleLoadFolder() {
     setShowModelMenu(false);
     try {
-      const path = await pickModelFile();
+      const path = await pickModelFolder();
       if (!path) return;
       setLoadingModel(true);
       const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, setLoadProgress);
@@ -1630,7 +1638,7 @@ export default function App() {
       return;
     }
     if (!model) {
-      await handleLoad();
+      await handleLoadFolder();
       return;
     }
 
@@ -1994,7 +2002,12 @@ export default function App() {
                           title={m.path}
                         >
                           <span className="mm-name">{m.name}</span>
-                          {m.mmproj ? (
+                          {m.format === "mlx" ? (
+                            <span className="mm-fmt" title={t("mlxBadgeTip")}>
+                              MLX
+                            </span>
+                          ) : null}
+                          {m.mmproj || m.vision ? (
                             <span className="mm-vision" title={t("visionBadgeTip")}>
                               {t("visionBadge")}
                             </span>
@@ -2023,8 +2036,8 @@ export default function App() {
                   })
                 )}
               </div>
-              <button className="model-menu-file" onClick={handleLoad}>
-                {t("loadFromFile")}
+              <button className="model-menu-file" onClick={handleLoadFolder}>
+                {t("loadFromFolder")}
               </button>
               <button
                 className="model-menu-file"

@@ -6,6 +6,7 @@
 
 pub mod llama;
 pub use llama::llama_backend_pub;
+pub mod mlx;
 pub mod mock;
 
 use std::sync::atomic::AtomicBool;

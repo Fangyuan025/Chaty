@@ -35,7 +35,7 @@ knowledge base, Deep Research, and hands-free voice built right in.
 - 🔒 **Truly private** — every model, document, and conversation stays on your device. No sign-up, no server, nothing phoned home.
 - ⚡ **Native and fast** — a Rust + llama.cpp core with **Vulkan / Metal** GPU offload that auto-tunes to your hardware and falls back gracefully to CPU.
 - 🧰 **More than a chat box** — a coding agent, a knowledge base (RAG), Deep Research, hands-free voice, and a self-healing Design Canvas — all offline.
-- 🧠 **Runs almost anything** — Llama 3, Gemma 3 / 4, Qwen 3 / 3.5 / 3.6, or *any* GGUF from Hugging Face — plus **Chaty's own fine-tuned model**.
+- 🧠 **Runs almost anything** — Llama 3, Gemma 3 / 4, Qwen 3 / 3.5 / 3.6, *any* GGUF from Hugging Face — and **MLX models natively on Apple Silicon** — plus **Chaty's own fine-tuned model**.
 - 💻 **Friendly to modest hardware** — a first-launch *“Set up for me”* picks a model sized to your RAM and downloads it in one click.
 
 <br />
@@ -93,6 +93,14 @@ Text-only models keep the OCR path, so nothing regresses — and updating from a
 
 <br />
 
+## A model store, and MLX on Apple Silicon
+
+- A built-in **model store**: search Hugging Face by name or author, filter **GGUF / MLX**, sort by trending or downloads — then pick a **quantization** from a dropdown and hit download. Models, not file lists.
+- Parameter / architecture / vision badges, the repo's README rendered in-app, and a **"fits fully in memory"** hint sized to your machine. Vision models fetch their encoder automatically; pasting a repo link still works.
+- **MLX runs natively**: mlx-community folder models load through Apple's MLX stack in an isolated sidecar — same chat, vision, reasoning controls, Code agent and knowledge-base support as GGUF, and ejecting a model *always* returns its memory. (macOS · Apple Silicon)
+
+<br />
+
 ## A private knowledge base
 
 <table>
@@ -145,7 +153,7 @@ Text-only models keep the OCR path, so nothing regresses — and updating from a
 
 - Conversations, models, and indexes live in one **local data folder** — copy it to back up, clear it in a click.
 - **GPU acceleration**: cross-vendor **Vulkan** (Windows) and **Metal** (Apple Silicon, offload-all on unified memory), VRAM-aware auto-tuning with OOM back-off and CPU fallback.
-- **Any `.gguf`** — the tokenizer and chat template come from the file; first-class handling for Llama 3, Gemma 3 / 4, and Qwen 3 / 3.5 / 3.6.
+- **Any `.gguf` — or MLX folder** — tokenizer and chat template come from the model itself; first-class handling for Llama 3, Gemma 3 / 4, and Qwen 3 / 3.5 / 3.6.
 - **Adjustable context** that auto-fits the model's trained length to your memory and summarizes older turns near the limit; **safe model switching** and full sampling controls with saveable presets.
 
 </td>
@@ -222,7 +230,7 @@ tag — GitHub Actions builds both installers onto a single release.
 |---|---|
 | Shell | Tauri 2 — system tray, global shortcut, single-instance |
 | Frontend | React 19 · Vite · react-markdown · KaTeX |
-| Inference | Rust · `llama-cpp-2` (llama.cpp) — Vulkan (Windows) / Metal (macOS) |
+| Inference | Rust · `llama-cpp-2` (llama.cpp) — Vulkan (Windows) / Metal (macOS) · MLX via an `mlx-swift-lm` sidecar (Apple Silicon) |
 | Voice | `sherpa-rs` (ONNX Runtime, CPU) — Whisper-base.en + Kokoro-82M |
 | Knowledge base | bge-m3 embeddings + BM25 · hybrid RRF / MMR retrieval · SQLite vector store |
 | Storage | SQLite — conversations, messages, full-text search |

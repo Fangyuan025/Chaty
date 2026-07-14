@@ -50,10 +50,25 @@ jobs:
         # "Library not found: target/release/libonnxruntime.*.dylib".
         with: { workspaces: src-tauri, cache-targets: false }
       - run: npm ci
+      - name: Build MLX sidecar (chaty-mlx)
+        # mlx-swift needs a newer Swift toolchain than the app build — pick
+        # the newest Xcode 16+ on the runner for THIS STEP ONLY. The main app
+        # must keep the runner-default Xcode (macOS 14 SDK): building ggml
+        # Metal against the 15+ SDK enables MTLResidencySet and brings back
+        # the wired-memory balloon on model load.
+        run: |
+          SIDE_XCODE=$(ls -d /Applications/Xcode_1[6-9]*.app 2>/dev/null | sort -V | tail -1 || true)
+          [ -n "$SIDE_XCODE" ] || SIDE_XCODE=$(dirname "$(dirname "$(xcode-select -p)")")
+          echo "sidecar Xcode: $SIDE_XCODE"
+          DEVELOPER_DIR="$SIDE_XCODE/Contents/Developer" ./scripts/build-mlx-sidecar.sh
       - name: Build .app (Metal)
         # Only the "app" bundle: Tauri's bundle_dmg.sh drives Finder via
-        # AppleScript, which fails on headless CI runners.
-        run: npm run tauri build -- --bundles app
+        # AppleScript, which fails on headless CI runners. The extra --config
+        # layer bundles the MLX sidecar (kept out of the base config so local
+        # `tauri dev` works without Xcode).
+        run: npm run tauri build -- --bundles app --config src-tauri/tauri.mlx.conf.json
+      - name: Bundle MLX resource bundles (metallib) + re-sign
+        run: ./scripts/bundle-mlx-resources.sh src-tauri/target/release/bundle/macos/Chaty.app
       - name: Package .dmg (headless hdiutil)
         run: |
           VER="${GITHUB_REF_NAME#v}"

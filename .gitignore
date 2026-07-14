@@ -16,6 +16,11 @@ dist-ssr
 /*.exe
 /*-setup.exe
 
+# Local tooling / locally built MLX sidecar (CI builds its own)
+.claude/
+src-tauri/binaries/
+src-tauri/mlx-sidecar/.build/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

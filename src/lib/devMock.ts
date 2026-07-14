@@ -175,9 +175,11 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return MODEL;
     case "list_models":
       return [
-        { name: MODEL.name, path: MODEL.path, sizeMb: MODEL.sizeMb },
-        { name: "chaty-qwen3.5-4b-design-v3-Q4_K_M.gguf", path: "/models/chaty-4b.gguf", sizeMb: 2600 },
-        { name: "Gemma-4-E4B-Q8.gguf", path: "/models/gemma4.gguf", sizeMb: 4900, mmproj: "/models/gemma4/mmproj-F16.gguf" },
+        { name: MODEL.name, path: MODEL.path, sizeMb: MODEL.sizeMb, format: "gguf" },
+        { name: "chaty-qwen3.5-4b-design-v3-Q4_K_M.gguf", path: "/models/chaty-4b.gguf", sizeMb: 2600, format: "gguf" },
+        { name: "Gemma-4-E4B-Q8.gguf", path: "/models/gemma4.gguf", sizeMb: 4900, mmproj: "/models/gemma4/mmproj-F16.gguf", format: "gguf", vision: true },
+        { name: "Qwen3.5-2B-4bit-MLX", path: "/models/Qwen3.5-2B-4bit-MLX", sizeMb: 1600, format: "mlx", vision: true },
+        { name: "Qwen3-4B-4bit-MLX", path: "/models/Qwen3-4B-4bit-MLX", sizeMb: 2200, format: "mlx" },
       ];
     case "image_thumb":
       return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='220'><defs><linearGradient id='s' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%23aee3f5'/><stop offset='1' stop-color='%23e8f6dd'/></linearGradient></defs><rect width='320' height='220' fill='url(%23s)'/><circle cx='250' cy='58' r='26' fill='%23ffd66e'/><path d='M0 160 L90 92 L150 150 L210 105 L320 175 L320 220 L0 220 Z' fill='%236fae7a'/><path d='M0 190 L70 140 L160 195 L320 150 L320 220 L0 220 Z' fill='%23477a54'/></svg>";
@@ -389,6 +391,41 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       }
       return { audio: btoa(bin), sampleRate: 24000 };
     }
+
+    case "hf_author_avatar": {
+      const av: Record<string, string> = {
+        Qwen: "https://cdn-avatars.huggingface.co/v1/production/uploads/6215ca5692c0ecfba9186921/hrRM50-6XcdWgg2AKpENG.jpeg",
+        google: "https://cdn-avatars.huggingface.co/v1/production/uploads/5dd96eb166059660ed1ee413/WtA3YYitedOr9n02eHfJe.png",
+        "mlx-community": "https://cdn-avatars.huggingface.co/v1/production/uploads/623c830997ddced06d78699b/3qTjC7d3YFCJTwpxd2noq.png",
+      };
+      return av[(args?.author as string) ?? ""] ?? null;
+    }
+    case "hf_search":
+      return [
+        { id: "Qwen/Qwen3-4B-GGUF", name: "Qwen3-4B-GGUF", author: "Qwen", downloads: 2512124, likes: 2710, updatedAt: new Date(Date.now() - 38 * 864e5).toISOString(), vision: false, paramsB: 4 },
+        { id: "google/gemma-4-12b-qat-GGUF", name: "gemma-4-12b-qat-GGUF", author: "google", downloads: 901906, likes: 1074, updatedAt: new Date(Date.now() - 40 * 864e5).toISOString(), vision: true, paramsB: 12 },
+        { id: "mlx-community/Qwen3.5-2B-4bit", name: "Qwen3.5-2B-4bit", author: "mlx-community", downloads: 315434, likes: 101, updatedAt: new Date(Date.now() - 5 * 864e5).toISOString(), vision: true, paramsB: 2 },
+      ];
+    case "hf_model_detail":
+      return {
+        id: (args?.repo as string) ?? "Qwen/Qwen3-4B-GGUF",
+        format: "gguf",
+        vision: true,
+        paramsB: 12,
+        arch: "gemma4",
+        quants: [
+          { label: "Q4_0", size: 7.15 * 2 ** 30, files: ["gemma-4-12b-qat-Q4_0.gguf"] },
+          { label: "Q8_0", size: 12.8 * 2 ** 30, files: ["gemma-4-12b-qat-Q8_0.gguf"] },
+        ],
+        mmproj: "mmproj-F16.gguf",
+        mmprojSize: 812 * 2 ** 20,
+        readme: '<p align="center"> <img src="assets/banner.png" alt="banner" width="100%"/> </p>\n\n# Gemma 4 12B QAT\n\n<b>V2.0 is available</b> — Gemma 4 12B QAT is the <em>Quantization-Aware Training</em> version of Gemma 4 12B. It aims to keep quality close to bfloat16 while using much less memory.\n\n- Text and image input\n- 128K context\n\n<details><summary>Benchmarks</summary>MMLU 78.3 · GSM8K 91.2</details>\n\n![chart](./assets/chart.png)',
+        totalRamMb: 49152,
+      };
+    case "list_hf_ggufs":
+      throw "该仓库没有 .gguf 文件";
+    case "list_hf_mlx":
+      return { name: "Qwen3-4B-4bit-MLX", files: 9, totalSize: 2306867200 };
 
     default:
       console.warn(`[devMock] unhandled command: ${cmd}`, args);

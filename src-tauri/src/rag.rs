@@ -1262,6 +1262,40 @@ pub async fn rag_download_model(
         let resp = match client.get(*url).send().await.and_then(|r| r.error_for_status()) {
             Ok(r) => r,
             Err(e) => {
+                // CDN-blocked network (cas-bridge 403): retry this URL over xet.
+                if e.status() == Some(reqwest::StatusCode::FORBIDDEN) {
+                    if let Some((repo, revision, path)) = crate::download::parse_hf_resolve_url(url) {
+                        let tmp_root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+                        let progress = on_progress.clone();
+                        let result = crate::download::xet_fallback_download(
+                            &repo,
+                            &revision,
+                            &path,
+                            &dest,
+                            &tmp_root,
+                            move |downloaded, total| {
+                                let _ = progress.send(RagDlProgress::Progress { downloaded, total });
+                            },
+                            &cancel,
+                        )
+                        .await;
+                        match result {
+                            Ok(()) => {
+                                crate::download::clear_cancel("rag-embed");
+                                let _ = on_progress.send(RagDlProgress::Done);
+                                return Ok(());
+                            }
+                            Err(msg) if msg == crate::download::CANCELLED => {
+                                crate::download::clear_cancel("rag-embed");
+                                return Err(msg);
+                            }
+                            Err(msg) => {
+                                last_err = crate::download::cdn_blocked_message(&msg);
+                                continue;
+                            }
+                        }
+                    }
+                }
                 last_err = e.to_string();
                 continue;
             }

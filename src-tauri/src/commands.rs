@@ -56,6 +56,40 @@ pub async fn load_model(
             }
         }
     };
+    // "Load from folder" is the one loading entry point for BOTH formats —
+    // the canonical layout has been one-folder-per-model since the vision
+    // pipeline. A GGUF folder resolves to its main weights file here; MLX
+    // folders are routed to the sidecar below.
+    let path = {
+        let p = std::path::Path::new(&path);
+        if p.is_dir() && !crate::inference::mlx::is_mlx_dir(p) {
+            match main_gguf_in_dir(p) {
+                Some(main) => main.to_string_lossy().to_string(),
+                None => {
+                    return Err(
+                        "该文件夹里没有可加载的模型（需要 .gguf 权重，或 MLX 的 config.json + safetensors） \
+                         (no loadable model in this folder — needs a .gguf, or an MLX config.json + safetensors)"
+                            .into(),
+                    )
+                }
+            }
+        } else {
+            path
+        }
+    };
+
+    // MLX models are folders (config.json + safetensors) driven by the
+    // Swift sidecar; GGUF stays on the in-process llama.cpp engine.
+    let is_mlx = crate::inference::mlx::is_mlx_dir(std::path::Path::new(&path));
+    #[cfg(not(target_os = "macos"))]
+    if is_mlx {
+        return Err(
+            "MLX 模型仅支持 macOS (Apple Silicon)，请改用 GGUF 版本 \
+             (MLX models run on macOS only — use a GGUF build instead)"
+                .into(),
+        );
+    }
+
     let _ = on_progress.send(LoadProgress { phase: "eject", frac: 0.0 });
 
     // Eject the old model SYNCHRONOUSLY before loading the new one. Merely
@@ -63,8 +97,15 @@ pub async fn load_model(
     // up resident at once, which on unified memory swap-freezes the machine.
     state.cancel.store(true, Ordering::SeqCst);
     // Size of the model being ejected — used to VERIFY its memory actually
-    // came back before we start the next load.
-    let old_size_mb = state.model.read().await.as_ref().and_then(|m| m.size_mb).unwrap_or(0);
+    // came back before we start the next load. MLX models live in a sidecar
+    // process, so killing it *is* the release — nothing to verify in-process.
+    let (old_size_mb, old_was_mlx) = {
+        let guard = state.model.read().await;
+        (
+            guard.as_ref().and_then(|m| m.size_mb).unwrap_or(0),
+            guard.as_ref().map_or(false, |m| m.backend == "mlx"),
+        )
+    };
     let old = state.engine.write().await.take();
     *state.model.write().await = None;
     if let Some(old) = old {
@@ -90,6 +131,11 @@ pub async fn load_model(
                 sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
                 sys.process(pid).map(|p| p.memory()).unwrap_or(0)
             };
+            // Sidecar-hosted (MLX) models never occupied this process's
+            // memory — the kill+wait in unload() already freed everything.
+            if old_was_mlx {
+                return Ok(());
+            }
             let old_bytes = old_size_mb.saturating_mul(1024 * 1024);
             // Tiny models / unknown size: nothing meaningful to verify.
             if old_bytes < 2 * 1024 * 1024 * 1024 {
@@ -128,10 +174,11 @@ pub async fn load_model(
 
     // Progress: llama-cpp-2 doesn't expose llama.cpp's load callback, but on
     // unified memory the weights stream into the process roughly linearly, so
-    // memory growth over the file size is a good fraction.
-    let expected = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0).max(1);
+    // memory growth over the file size is a good fraction. (GGUF only — the
+    // MLX sidecar loads in its own process and reports progress itself.)
     let done_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    {
+    if !is_mlx {
+        let expected = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0).max(1);
         let done = done_flag.clone();
         let chan = on_progress.clone();
         std::thread::spawn(move || {
@@ -149,15 +196,28 @@ pub async fn load_model(
         });
     }
 
-    let result =
-        tokio::task::spawn_blocking(move || LlamaEngine::load(&path, gpu_layers, n_ctx)).await;
+    let result = if is_mlx {
+        let chan = on_progress.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::inference::mlx::MlxEngine::load(&path, n_ctx, |frac| {
+                let _ = chan.send(LoadProgress { phase: "weights", frac });
+            })
+            .map(|(engine, info)| (Arc::new(engine) as Arc<dyn InferenceBackend>, info))
+        })
+        .await
+    } else {
+        tokio::task::spawn_blocking(move || {
+            LlamaEngine::load(&path, gpu_layers, n_ctx)
+                .map(|(engine, info)| (Arc::new(engine) as Arc<dyn InferenceBackend>, info))
+        })
+        .await
+    };
     done_flag.store(true, Ordering::Relaxed);
-    let (engine, mut info) = result
+    let (backend, mut info) = result
         .map_err(|e| format!("加载任务异常 (load task panicked): {e}"))?
         .map_err(|e| format!("{e:#}"))?;
     let _ = on_progress.send(LoadProgress { phase: "ready", frac: 1.0 });
 
-    let backend: Arc<dyn InferenceBackend> = Arc::new(engine);
     info.backend = backend.name().to_string();
     *state.engine.write().await = Some(backend);
     *state.model.write().await = Some(info.clone());
@@ -256,6 +316,28 @@ pub struct ModelEntry {
     /// Paired vision encoder (mmproj) path — present for folder-layout vision
     /// models, so the picker can badge them before loading.
     pub mmproj: Option<String>,
+    /// Weight format: "gguf" (llama.cpp) or "mlx" (Apple-Silicon sidecar).
+    pub format: &'static str,
+    /// Vision-capable once loaded (GGUF: paired mmproj; MLX: built-in tower).
+    pub vision: bool,
+}
+
+/// The main weights inside a folder-layout GGUF model: the largest non-mmproj
+/// `.gguf` (folders normally hold exactly one, plus an optional encoder).
+fn main_gguf_in_dir(dir: &std::path::Path) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |x| x.eq_ignore_ascii_case("gguf")))
+        .filter(|p| {
+            !p.file_name()
+                .and_then(|s| s.to_str())
+                .map_or(false, |n| n.to_lowercase().contains("mmproj"))
+        })
+        .collect();
+    candidates.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
+    candidates.pop()
 }
 
 /// Directories scanned for `.gguf` files: a `models/` folder next to the
@@ -606,6 +688,23 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
             .and_then(|s| s.to_str())
             .map_or(false, |n| n.to_lowercase().contains("mmproj"))
     };
+    // Multi-part GGUFs: only the first shard is loadable (llama.cpp pulls in
+    // the rest); later shards must not show up as their own models.
+    let shard_of = |name: &str| -> Option<u32> {
+        let stem = name.strip_suffix(".gguf").unwrap_or(name);
+        if stem.len() > 15 {
+            let tail = &stem[stem.len() - 15..];
+            let tb = tail.as_bytes();
+            if tb[0] == b'-'
+                && tb[1..6].iter().all(|c| c.is_ascii_digit())
+                && &tail[6..10] == "-of-"
+                && tb[10..15].iter().all(|c| c.is_ascii_digit())
+            {
+                return tail[1..6].parse().ok();
+            }
+        }
+        None
+    };
     let push = |path: PathBuf, out: &mut Vec<ModelEntry>, seen: &mut HashSet<PathBuf>| {
         if !path
             .extension()
@@ -613,6 +712,15 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
             || is_mmproj(&path)
         {
             return;
+        }
+        if let Some(n) = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .and_then(|n| shard_of(&n.to_lowercase()))
+        {
+            if n != 1 {
+                return;
+            }
         }
         let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
         if seen.insert(canon) {
@@ -635,7 +743,32 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
                 name,
                 path: path.to_string_lossy().to_string(),
                 size_mb,
+                vision: mmproj.is_some(),
                 mmproj,
+                format: "gguf",
+            });
+        }
+    };
+    // MLX model folders (config.json + safetensors) sit directly under a
+    // models root, same one-folder-per-model layout as GGUF. macOS only —
+    // the sidecar is Apple-Silicon-specific, so don't tease them elsewhere.
+    #[cfg(target_os = "macos")]
+    let push_mlx = |path: &PathBuf, out: &mut Vec<ModelEntry>, seen: &mut HashSet<PathBuf>| {
+        if !crate::inference::mlx::is_mlx_dir(path) {
+            return;
+        }
+        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if seen.insert(canon) {
+            out.push(ModelEntry {
+                name: path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                path: path.to_string_lossy().to_string(),
+                size_mb: Some(crate::inference::mlx::mlx_dir_size_mb(path)),
+                mmproj: None,
+                format: "mlx",
+                vision: crate::inference::mlx::mlx_dir_has_vision(path),
             });
         }
     };
@@ -652,6 +785,8 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
             if !path.is_dir() {
                 continue;
             }
+            #[cfg(target_os = "macos")]
+            push_mlx(&path, &mut out, &mut seen);
             if let Ok(sub) = std::fs::read_dir(&path) {
                 for e in sub.flatten() {
                     push(e.path(), &mut out, &mut seen);
@@ -674,6 +809,40 @@ pub async fn delete_model_file(
     path: String,
 ) -> Result<(), String> {
     let target = PathBuf::from(&path);
+    // MLX models are folders — remove the whole folder, behind the same
+    // guards (must be a real MLX model, inside a models dir, not loaded).
+    if target.is_dir() {
+        if !crate::inference::mlx::is_mlx_dir(&target) {
+            return Err(
+                "只能删除模型文件夹 (only model folders can be deleted this way)".into()
+            );
+        }
+        let canon = target
+            .canonicalize()
+            .map_err(|e| format!("文件夹不存在 (folder not found): {e}"))?;
+        let in_models = model_dirs(&app)
+            .iter()
+            .any(|d| d.canonicalize().map_or(false, |dc| canon.starts_with(&dc)));
+        if !in_models {
+            return Err(
+                "该文件夹不在模型文件夹内，已拒绝删除 (folder is outside the models folder; refusing to delete)"
+                    .into(),
+            );
+        }
+        if let Some(m) = state.model.read().await.as_ref() {
+            let loaded = PathBuf::from(&m.path)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(&m.path));
+            if loaded == canon {
+                return Err(
+                    "无法删除正在使用的模型，请先卸载 (can't delete the model in use — eject it first)"
+                        .into(),
+                );
+            }
+        }
+        return std::fs::remove_dir_all(&canon)
+            .map_err(|e| format!("删除失败 (delete failed): {e}"));
+    }
     if !target
         .extension()
         .map_or(false, |x| x.eq_ignore_ascii_case("gguf"))
@@ -990,6 +1159,25 @@ pub async fn synthesize(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn folder_resolves_to_main_gguf() {
+        let tmp = std::env::temp_dir().join(format!("chaty-folder-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // Empty folder → nothing to load.
+        assert!(super::main_gguf_in_dir(&tmp).is_none());
+        // mmproj alone is an encoder, not a model.
+        std::fs::write(tmp.join("mmproj-F16.gguf"), [0u8; 4]).unwrap();
+        assert!(super::main_gguf_in_dir(&tmp).is_none());
+        // The largest non-mmproj gguf wins.
+        std::fs::write(tmp.join("tiny-draft.gguf"), [0u8; 8]).unwrap();
+        std::fs::write(tmp.join("model-Q4_K_M.gguf"), [0u8; 64]).unwrap();
+        let main = super::main_gguf_in_dir(&tmp).expect("main gguf");
+        assert_eq!(main.file_name().unwrap(), "model-Q4_K_M.gguf");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+
     use super::{loose_main_ggufs, migrate_models_dir};
     use std::path::PathBuf;
 

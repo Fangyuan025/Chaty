@@ -415,13 +415,13 @@ export type StreamEvent =
   | { type: "done"; stats: GenStats }
   | { type: "error"; message: string };
 
-/** Open a native file picker filtered to .gguf and return the absolute path. */
-export async function pickModelFile(): Promise<string | null> {
-  const selected = await open({
-    multiple: false,
-    directory: false,
-    filters: [{ name: "GGUF model", extensions: ["gguf"] }],
-  });
+/**
+ * Open a native folder picker and return the absolute path. Folders are the
+ * one loading entry point — GGUF (main + optional mmproj) and MLX
+ * (config.json + safetensors) alike; the backend resolves the format.
+ */
+export async function pickModelFolder(): Promise<string | null> {
+  const selected = await open({ multiple: false, directory: true });
   return typeof selected === "string" ? selected : null;
 }
 
@@ -462,6 +462,10 @@ export interface ModelEntry {
   sizeMb?: number;
   /** Paired vision encoder (mmproj) path, for the picker's vision badge. */
   mmproj?: string | null;
+  /** Weight format: "gguf" (llama.cpp) or "mlx" (Apple-Silicon sidecar folder). */
+  format?: "gguf" | "mlx";
+  /** Vision-capable once loaded (GGUF: paired mmproj; MLX: built-in tower). */
+  vision?: boolean;
 }
 
 export interface HfFile {
@@ -495,6 +499,91 @@ export async function downloadModel(
 
 /** Sentinel rejection message of a user-cancelled download. */
 export const DOWNLOAD_CANCELLED = "DOWNLOAD_CANCELLED";
+
+// ---- HF model store (search / browse / quant-level detail) ----
+
+export interface HfModelHit {
+  /** Repo id, `owner/name`. */
+  id: string;
+  name: string;
+  author: string;
+  downloads: number;
+  likes: number;
+  updatedAt: string;
+  vision: boolean;
+  paramsB?: number | null;
+}
+
+/** One downloadable variant — a GGUF quant (maybe multi-part) or the MLX build. */
+export interface QuantOption {
+  label: string;
+  size: number;
+  /** Repo-relative paths in download order; empty for MLX (whole-repo unit). */
+  files: string[];
+}
+
+export interface HfModelDetail {
+  id: string;
+  format: "gguf" | "mlx";
+  vision: boolean;
+  paramsB?: number | null;
+  arch?: string | null;
+  quants: QuantOption[];
+  mmproj?: string | null;
+  mmprojSize: number;
+  readme: string;
+  totalRamMb: number;
+}
+
+/** Search/browse HF models. Empty query = trending storefront. */
+export async function hfSearch(
+  query: string,
+  format: "gguf" | "mlx",
+  sort: "trending" | "downloads" | "likes" | "updated",
+): Promise<HfModelHit[]> {
+  return await invoke<HfModelHit[]>("hf_search", { query, format, sort, limit: 30 });
+}
+
+/** Quant-level detail for one repo (auto-detects MLX when it has no GGUFs). */
+export async function hfModelDetail(repo: string, format: "gguf" | "mlx"): Promise<HfModelDetail> {
+  return await invoke<HfModelDetail>("hf_model_detail", { repo, format });
+}
+
+/** The author's official HF avatar URL (org or user), or null. */
+export async function hfAuthorAvatar(author: string): Promise<string | null> {
+  return await invoke<string | null>("hf_author_avatar", { author });
+}
+
+/** Resolve-URL for a repo file (store downloads reuse the file downloader). */
+export function hfResolveUrl(repo: string, path: string): string {
+  return `https://huggingface.co/${repo}/resolve/main/${path}?download=true`;
+}
+
+export interface MlxRepoInfo {
+  /** Suggested model folder name (the repo's name segment). */
+  name: string;
+  files: number;
+  totalSize: number;
+}
+
+/** Probe a HuggingFace repo as an MLX folder model (config.json + safetensors). */
+export async function listHfMlx(repo: string): Promise<MlxRepoInfo> {
+  return await invoke<MlxRepoInfo>("list_hf_mlx", { repo });
+}
+
+/**
+ * Download a whole MLX repo into `models/<Name>/` with aggregate progress.
+ * Cancel with `cancelDownload(info.name)` (the folder name is the key).
+ * Resolves to the model folder path.
+ */
+export async function downloadMlxRepo(
+  repo: string,
+  onProgress: (p: DownloadProgress) => void,
+): Promise<string> {
+  const channel = new Channel<DownloadProgress>();
+  channel.onmessage = onProgress;
+  return await invoke<string>("download_mlx_repo", { repo, onProgress: channel });
+}
 
 /** True when an HF GGUF filename is a vision encoder (mmproj), not a chat model. */
 export function isMmprojFile(name: string): boolean {

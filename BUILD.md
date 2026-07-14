@@ -70,6 +70,28 @@ pure-CPU build on either OS. Platform-specific Tauri config lives in
 `-march=apple-m1` for Apple clang, which is rejected and breaks the llama.cpp
 build. The Metal kernels do the heavy lifting anyway.
 
+### MLX sidecar (optional, macOS only)
+
+MLX folder models (`config.json + *.safetensors`) run through a Swift sidecar,
+`chaty-mlx` (`src-tauri/mlx-sidecar/`, built on
+[mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm)). Building it needs
+**full Xcode** — SwiftPM alone can't compile the MLX Metal shaders — plus the
+Metal Toolchain component on macOS 26+ (`xcodebuild -downloadComponent
+MetalToolchain`):
+
+```bash
+scripts/build-mlx-sidecar.sh      # xcodebuild → src-tauri/binaries/
+npm run tauri build -- --config src-tauri/tauri.mlx.conf.json   # bundle it
+```
+
+The sidecar lives in a **separate config layer** (`tauri.mlx.conf.json`) so a
+plain `tauri dev`/`tauri build` keeps working without Xcode — you just don't
+get MLX support in that build. Release CI always bundles it. The sidecar is
+deliberately built with a *newer* Xcode than the app (see release.yml): ggml's
+Metal build must stay on the macOS 14 SDK to avoid the MTLResidencySet
+wired-memory balloon, while mlx-swift wants a current Swift toolchain — the
+two builds are independent processes, so each gets its own toolchain.
+
 ⚠️ **Voice dylibs (one-time, needs the Mac toolchain):** on Windows the
 sherpa-onnx / ONNX Runtime libs are checked in under `src-tauri/libs/*.dll` and
 bundled as resources. On macOS `sherpa-rs` links the `.dylib` equivalents from

@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.8.0 — Apple-Silicon native: MLX models (2026-07-13)
+
+Chaty now runs **MLX models** — the Apple-Silicon-native format from mlx-community — side by side with GGUF, with the exact same feature surface. Plus a brand-new model store and a root fix for the wired-memory balloon.
+
+### MLX, first-class
+
+- **Folder models, fully wired in.** Drop an `mlx-community` model folder into `models/` (or download one in-app) and it loads like any GGUF: streaming, sampling controls, stop sequences, reasoning on/off per family (Qwen3's `enable_thinking`, Qwen3.5's prefilled think block, plain models unaffected), KV prefix reuse across turns, and the prompt-processing ring.
+- **Vision included.** MLX vision models (the Qwen3.5+ and Qwen3-VL families) carry their vision tower in the weights — attach an image in chat, let the Code agent look at screenshots, caption knowledge-base imports, see Canvas pages. No separate encoder file to manage.
+- **Vision that keeps up with Code mode.** Image prompts show the same prompt-processing **percentage ring** as text, and the image KV cache mirrors the GGUF engine: on models whose cache can rewind (Qwen3-VL), follow-up turns and agent tool loops reuse the cached image — screenshots aren't re-encoded every round. Positions are M-RoPE-exact end to end (a from-scratch decode loop threads the rope state through every token — this also fixed Qwen3-VL models answering with an instant EOS, and long multi-chunk prompts drifting off-position on Qwen3.5).
+- **Memory safety by design.** MLX inference runs in an isolated sidecar process — ejecting the model kills it, so the memory *always* comes back (verified by a repeated load/eject e2e). Runs at full Metal speed via Apple's mlx-swift-lm.
+- Windows builds politely decline MLX folders with a clear message; everything GGUF is unchanged.
+
+### A real model store
+
+- **Search & browse HuggingFace in-app** — by keyword or author, filtered by format (GGUF / MLX) and sorted by trending, downloads, likes or recency.
+- **Models, not file lists.** Pick a quantization from a dropdown (`Q4_K_M · 7.15 GB`), see parameter/architecture/vision badges and the repo's README rendered right there, and get a "fits fully in memory" hint sized to your machine. Multi-part quants download and list correctly; vision models grab their encoder automatically.
+- Pasting a repo link still works — Enter opens it directly. `chaty://` deep links now handle MLX repos too.
+
+### One way to load, no more freezes
+
+- **"Load from folder" is the single local entry point** for both formats (one folder per model has been the canonical layout since vision landed) — the backend figures out what's inside.
+- **Auto-load only reloads *your last* model** — it no longer picks the alphabetically-first folder, which could be a 32 GB giant on a 16 GB machine.
+- **Wired-memory root fix:** ggml's Metal residency sets (enabled by newer build SDKs) pinned entire models into wired memory and could freeze the machine on big models. Chaty now disables them at startup on every build, so locally-built and CI binaries behave identically. Verified live with a 32B model: wired memory flat throughout load, chat and eject.
+
 ## v1.7.1 — Agentic browsing that finishes the job (2026-07-13)
 
 A deep pass on Code-mode browser automation — driven by testing the local model against **real websites**, not just fixtures — plus embedded-image vision, prompt-injection defense, and a batch of quality-of-life fixes.

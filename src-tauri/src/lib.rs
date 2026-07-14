@@ -48,6 +48,18 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ggml's Metal backend keeps every weight buffer in an MTLResidencySet
+    // when built against the macOS 15+ SDK, which shows up as a wired-memory
+    // balloon the size of the model (and froze machines on big models with
+    // locally-built binaries). ggml gates this on a runtime env var — set it
+    // before the first Metal init so ALL builds behave like the shipped CI
+    // ones, regardless of the SDK they were compiled with.
+    // (`CHATY_METAL_RESIDENCY=1` opts back in for benchmarking.)
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("CHATY_METAL_RESIDENCY").is_none() {
+        std::env::set_var("GGML_METAL_NO_RESIDENCY", "1");
+    }
+
     // Auto-grant microphone/camera (no WebView2 permission prompt) and allow
     // audio autoplay without a user gesture (for streaming TTS). Must be set
     // before the webview is created. Windows-only: macOS uses WKWebView, which
@@ -101,6 +113,8 @@ pub fn run() {
             // launch after updating from an old (loose-layout) version this pops
             // a one-time native dialog to organize; otherwise it's silent.
             commands::migrate_or_prompt_models(app.handle());
+            // Leftovers of cancelled xet fallback downloads (CDN-blocked networks).
+            download::clear_stale_xet_tmp(app.handle());
 
             // ---- chaty:// deep link ----
             // macOS registers the scheme via Info.plist (CFBundleURLTypes from
@@ -196,7 +210,12 @@ pub fn run() {
             commands::write_text_file,
             commands::write_wav_file,
             download::list_hf_ggufs,
+            download::list_hf_mlx,
+            download::hf_search,
+            download::hf_model_detail,
+            download::hf_author_avatar,
             download::download_model,
+            download::download_mlx_repo,
             download::cancel_download,
             update::check_update,
             update::run_update,
