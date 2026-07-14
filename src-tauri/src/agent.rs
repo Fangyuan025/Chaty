@@ -1585,9 +1585,20 @@ pub async fn agent_bash(
     } else {
         (command, None, true)
     };
-    tokio::task::spawn_blocking(move || run_bash(&root, &command, timeout, stdin, sandboxed))
+    let piped_password = stdin.is_some();
+    let mut res = tokio::task::spawn_blocking(move || run_bash(&root, &command, timeout, stdin, sandboxed))
         .await
-        .map_err(|e| format!("命令任务异常 (task panicked): {e}"))?
+        .map_err(|e| format!("命令任务异常 (task panicked): {e}"))??;
+    // sudo's retry loop hits end-of-input after a rejected password, so its
+    // LAST stderr line is "no password was provided" — which reads as if the
+    // password never arrived. When we know it did, say what actually happened.
+    if piped_password && res.code != 0 && res.stderr.contains("no password was provided") {
+        res.stderr.push_str(
+            "\n[Chaty] 密码已通过安全通道送达,但被 sudo 拒绝——上面的 \"no password was provided\" 只是 sudo 重试时读到输入结束的提示。请检查密码是否正确后重试。\
+             (The password WAS delivered but sudo rejected it; the line above is sudo hitting end-of-input on retry. Check the password and try again.)",
+        );
+    }
+    Ok(res)
 }
 
 // ---------------------------------------------------------------------------
@@ -1657,6 +1668,16 @@ pub struct BgInfo {
 /// when it finishes.
 #[tauri::command]
 pub fn agent_bash_bg(command: String) -> Result<u64, String> {
+    // Background jobs always run sandboxed with no stdin — an approved sudo
+    // password could never reach them, so sudo would always fail with a
+    // misleading "no password was provided". Refuse up front.
+    if command_uses_sudo(&command) {
+        return Err(
+            "bash_bg 不支持 sudo:后台任务在沙盒中运行且没有交互输入,密码无法送达。请用前台 bash 执行 \
+             (sudo is not supported in background jobs — run it with the foreground bash tool)."
+                .into(),
+        );
+    }
     let root = workspace()?;
     let mut reg = BG_JOBS.lock().unwrap();
     let jobs = reg.get_or_insert_with(HashMap::new);
@@ -2208,6 +2229,31 @@ mod tests {
         assert_eq!(ensure_sudo_stdin("sudo apt-get install x"), "sudo -S apt-get install x");
         assert_eq!(ensure_sudo_stdin("sudo -S already"), "sudo -S already");
         assert_eq!(ensure_sudo_stdin("ls -la"), "ls -la");
+    }
+
+    /// The piped password must reach REAL `sudo -S` (the `cat` test above only
+    /// proves generic stdin plumbing). A deliberately wrong password makes
+    /// sudo answer "Sorry, try again" — proof the bytes arrived — without
+    /// needing the user's real credentials. If sudo instead reports only
+    /// "no password was provided", the bytes never made it.
+    #[test]
+    #[ignore] // exercises the real sudo binary — run manually
+    fn sudo_stdin_reaches_real_sudo() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-realsudo-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        let cmd = ensure_sudo_stdin("sudo -k whoami");
+        assert!(cmd.starts_with("sudo -S "), "rewrite: {cmd}");
+        let out =
+            run_bash(&tmp, &cmd, Duration::from_secs(10), Some("definitely-wrong\n".into()), false)
+                .unwrap();
+        let all = format!("{}\n{}", out.stdout, out.stderr);
+        assert!(
+            all.contains("Sorry, try again") || all.contains("incorrect password"),
+            "password bytes must reach sudo — got: {all}"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

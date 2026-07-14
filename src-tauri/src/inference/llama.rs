@@ -2326,7 +2326,7 @@ if __name__ == "__main__":
 - read_file: {"path": string}
 - write_file: {"path": string, "content": string}
 - list_dir: {"path"?: string}
-- web_search: 联网搜索。加 site 参数做站内搜索:site="github.com" 返回仓库/issue/代码匹配;site="reddit.com" 搜帖子;site="youtube.com"/"bilibili.com" 返回视频;其他域名限定站内。args: {"query": string, "site"?: string}
+- web_search: 联网搜索。加 site 参数做站内搜索:site="github.com" 返回仓库/issue/代码匹配;site="reddit.com" 搜帖子;site="youtube.com"/"bilibili.com" 返回视频;其他域名限定站内。搜索源偶尔会抽风,返回不相关的结果——连续 2 次搜出来都和问题无关,就说明此刻再换措辞重搜也没用,立即改道:用 web_fetch 直接抓最可能的页面(官方文档、GitHub 仓库、crates.io、项目官网都能猜出 URL)。args: {"query": string, "site"?: string}
 - web_fetch: 抓取 URL:文章→Markdown;代码/JSON→原文;GitHub 文件页自动取 raw 源码;YouTube 视频→元信息+完整字幕转写;B站视频→公开元信息+简介;结果附页面链接和图片 URL,可继续 fetch 深入。args: {"url": string, "raw"?: boolean}
 - web_download: 把 URL 文件下载到工作区路径。args: {"url": string, "path": string}
 
@@ -2527,6 +2527,134 @@ if __name__ == "__main__":
         assert!(web_calls >= 3, "agent should have searched, fetched, and downloaded");
         assert!(research.to_lowercase().contains("dom_smoothie"), "RESEARCH.md should name the repo");
         assert!(logo_bytes > 500, "logo.png should have been downloaded");
+    }
+
+    /// Search-flail failover e2e: web_search is rigged to return IRRELEVANT
+    /// results every time (a degraded backend), mirroring the production
+    /// loop's nudge (3rd/4th consecutive search) and intercept (5th+). The
+    /// model must stop rephrasing queries and fail over to web_fetch on a
+    /// guessable URL, still completing the task.
+    /// Run: CHATY_TEST_MODEL=… cargo test -p chaty agent_fails_over_from_flaky_search -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn agent_fails_over_from_flaky_search() {
+        let model_path = match std::env::var("CHATY_TEST_MODEL") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_MODEL=/path/to/model.gguf");
+                return;
+            }
+        };
+        let backend = llama_backend().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        eprintln!("loading model: {model_path}");
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load model");
+        let n_ctx = 16384u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+
+        let ws = std::env::temp_dir().join(format!("chaty-agent-flaky-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
+
+        // Degraded search backend: plausible-looking but utterly irrelevant.
+        const GARBAGE: &str = "1. 十大人气奶茶配方大公开 — https://example.com/boba\n   在家自制珍珠奶茶的完整教程…\n2. 2026 春季旅行地推荐 — https://example.com/travel\n   这些小众目的地值得一去…\n3. 如何挑选适合自己的跑鞋 — https://example.com/shoes\n   跑步爱好者的选鞋指南…";
+
+        let mut messages = vec![
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(),
+                role: Role::User,
+                content: "调研一下 Rust crate dom_smoothie 是做什么用的,把一句话结论写入 FINDING.md,然后总结。".into(),
+            },
+        ];
+        let think = Some(false);
+        let cancel = AtomicBool::new(false);
+        let mut finished = false;
+        let mut searches_executed = 0u32;
+        let mut searches_intercepted = 0u32;
+        let mut fetch_calls = 0u32;
+        let mut search_streak = 0u32;
+        let mut cached: Vec<LlamaToken> = Vec::new();
+
+        for step in 0..16 {
+            let req = GenRequest {
+                messages: messages.clone(),
+                params: GenParams {
+                    temperature: 0.2,
+                    top_p: 0.9,
+                    max_tokens: 2048,
+                    repeat_penalty: 1.05,
+                    stop: vec!["</tool_call>".to_string()],
+                    think,
+                    ..Default::default()
+                },
+            };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, None, &mut None, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            eprintln!("\n──────── STEP {step} · RAW ────────\n{}", raw.trim().chars().take(400).collect::<String>());
+
+            match parse_tool_call(&raw) {
+                Some((name, args)) => {
+                    eprintln!("  ▶ TOOL  {name}  {args}");
+                    let result = if name == "web_search" {
+                        search_streak += 1;
+                        if search_streak >= 5 {
+                            // Production intercept, mirrored from agentLoop.ts.
+                            searches_intercepted += 1;
+                            format!("搜索被拦截:这已是连续第 {search_streak} 次 web_search,前几次都没解决问题,说明搜索源此刻不可靠——继续换措辞重搜不会有新结果。请换策略:用 web_fetch 直接抓取最可能的页面(官方文档 / GitHub 仓库 / crates.io 的 URL 通常能直接猜出来)。用过其它工具后可以再搜索。")
+                        } else {
+                            searches_executed += 1;
+                            let mut r = GARBAGE.to_string();
+                            if search_streak >= 3 {
+                                // Production nudge, mirrored from agentLoop.ts.
+                                r.push_str(&format!("\n\n[系统提示] 这已是连续第 {search_streak} 次搜索。若以上结果仍与问题无关,说明搜索源此刻不可靠——不要再换措辞重搜,改用 web_fetch 直接抓取最可能的页面(官方文档/GitHub/crates.io)。"));
+                            }
+                            r
+                        }
+                    } else {
+                        search_streak = 0;
+                        if name == "web_fetch" {
+                            fetch_calls += 1;
+                        }
+                        exec_tool(&name, &args)
+                    };
+                    eprintln!("  ◀ RESULT\n{}", result.chars().take(500).collect::<String>());
+                    let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(),
+                        role: Role::User,
+                        content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
+                    });
+                }
+                None => {
+                    eprintln!("  ✔ FINAL\n{}", strip_think(&raw));
+                    finished = true;
+                    break;
+                }
+            }
+        }
+
+        let finding = std::fs::read_to_string(ws.join("FINDING.md")).unwrap_or_default();
+        eprintln!("\n════════ VERDICT: finished={finished} · searches={searches_executed} (+{searches_intercepted} intercepted) · fetches={fetch_calls} ════════");
+        eprintln!("---- FINDING.md ----\n{finding}");
+        std::fs::remove_dir_all(&ws).ok();
+
+        assert!(finished, "agent never produced a final answer");
+        assert!(
+            searches_executed <= 4,
+            "the model kept flailing on search: {searches_executed} executed searches"
+        );
+        assert!(fetch_calls >= 1, "the model never failed over to web_fetch");
+        let lower = finding.to_lowercase();
+        assert!(
+            lower.contains("readability") || lower.contains("正文") || lower.contains("可读"),
+            "FINDING.md should describe dom_smoothie (readability extraction): {finding}"
+        );
     }
 
     #[test]

@@ -269,7 +269,7 @@ const TOOLS_DOC = `
 - search_code: 按含义搜索代码("哪里处理登录鉴权"),返回排序过的相关代码块(文件+行号)。探索陌生代码库优先用它。args: { "query": string, "k"?: number }
 - search_docs: 检索用户的知识库文档(需求文档、设计稿、笔记)。当任务涉及用户自己的资料时用。args: { "query": string }
 - bash: 在工作区里执行 shell 命令(macOS 沙箱,写限工作区)。会等命令结束;不要用它启动 dev server 等不会退出的进程。args: { "command": string, "timeout_secs"?: number }
-- bash_bg: 在后台启动长时间运行的命令(dev server、慢构建、长测试),立即返回一个 id,期间你可以继续做别的;它结束时系统会自动把结果告诉你。args: { "command": string }
+- bash_bg: 在后台启动长时间运行的命令(dev server、慢构建、长测试),立即返回一个 id,期间你可以继续做别的;它结束时系统会自动把结果告诉你。**不支持 sudo**(后台沙盒无交互输入,密码送不进去)——需要特权的命令必须用前台 bash。args: { "command": string }
 - bg_output: 查看某个后台命令的当前状态和最近输出(比如确认 server 已启动)。args: { "id": number }
 - bg_kill: 终止某个后台命令(整棵进程树)。args: { "id": number }
 - web_search: 联网搜索(标题+链接+摘要)。查资料、找文档、查报错时用。加 site 参数可做站内搜索:site="github.com" 返回结构化的仓库/issue/代码匹配;site="reddit.com"(或 "reddit.com/r/某版块")搜帖子;site="youtube.com" / "bilibili.com" 返回视频(标题/时长/UP主/播放量);其他任意域名(docs.python.org、stackoverflow.com、x.com、weibo.com 等)都会限定在该站内搜(登录墙站点只能拿到搜索引擎快照级的标题/摘要)。**搜索源偶尔会抽风,返回不相关的结果——连续 2 次搜出来都和问题无关,就说明此刻再换措辞重搜也没用,立即改道:用 web_fetch 直接抓最可能的页面(官方文档、GitHub 仓库、项目官网都能猜出 URL),或用浏览器工具打开搜索引擎/目标站点找。**args: { "query": string, "site"?: string }
@@ -1355,6 +1355,21 @@ export async function runAgentTurn(
       const isSudo =
         (call.name === "bash" || call.name === "bash_bg") &&
         /(^|[\s;&|(])sudo(\s|$)/.test(asStr(call.args.command));
+      if (isSudo && call.name === "bash_bg") {
+        // Background jobs run sandboxed with no stdin — a password entered in
+        // the dialog could never reach them (the user would type it and sudo
+        // would still report "no password was provided"). Don't show a dialog
+        // whose password gets dropped; steer to the foreground tool instead.
+        const note =
+          lang === "zh"
+            ? "bash_bg 不支持 sudo:后台任务在沙盒中运行、没有交互输入,密码无法送达。请改用前台 bash 工具执行这条命令(会弹出专用的 sudo 授权对话框);确实耗时的部分可以拆成 sudo 前台步骤 + 非特权后台步骤。"
+            : "bash_bg does not support sudo: background jobs run sandboxed with no interactive input, so a password can never reach them. Run this command with the foreground bash tool instead (it opens the dedicated sudo approval dialog); split genuinely long work into a foreground sudo step plus a non-privileged background step.";
+        stepObj.status = "error";
+        stepObj.result = note;
+        cb.onStep(stepObj);
+        pushUser(toolResultMsg(call.name, note));
+        continue;
+      }
       if (isSudo) {
         const res = opts.approveSudo
           ? await opts.approveSudo(asStr(call.args.command))
