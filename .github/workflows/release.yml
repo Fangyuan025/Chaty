@@ -36,7 +36,11 @@ jobs:
 
   build-macos:
     needs: check-version
-    runs-on: macos-14 # Apple Silicon
+    # macos-15: mlx-swift-lm needs Swift tools 6.1 (Xcode 16.3+), which the
+    # macos-14 image never gets. Building the app against the macOS 15 SDK is
+    # fine now — ggml's MTLResidencySet wired-memory balloon is disabled at
+    # runtime (GGML_METAL_NO_RESIDENCY=1 set on startup, lib.rs).
+    runs-on: macos-15 # Apple Silicon
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -51,11 +55,9 @@ jobs:
         with: { workspaces: src-tauri, cache-targets: false }
       - run: npm ci
       - name: Build MLX sidecar (chaty-mlx)
-        # mlx-swift needs a newer Swift toolchain than the app build — pick
-        # the newest Xcode 16+ on the runner for THIS STEP ONLY. The main app
-        # must keep the runner-default Xcode (macOS 14 SDK): building ggml
-        # Metal against the 15+ SDK enables MTLResidencySet and brings back
-        # the wired-memory balloon on model load.
+        # mlx-swift-lm needs Swift tools 6.1 → pick the newest Xcode 16.x on
+        # the runner (NOT Xcode 26: its Metal toolchain is a separate
+        # multi-hundred-MB download the CI would have to fetch every run).
         run: |
           SIDE_XCODE=$(ls -d /Applications/Xcode_1[6-9]*.app 2>/dev/null | sort -V | tail -1 || true)
           [ -n "$SIDE_XCODE" ] || SIDE_XCODE=$(dirname "$(dirname "$(xcode-select -p)")")
