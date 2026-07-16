@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.8.2 — Smart tools: the agent's tools do the thinking (2026-07-16)
+
+Small local models shouldn't burn steps on planning grunt work — this release moves that intelligence **into the tools**. Verified end to end with a real 8B model: locate → fix → validate a bug in a multi-file project in 18 seconds.
+
+### The toolbox got smarter
+
+- **`understand_repo`** — one call returns the whole workspace orientation: README lede, manifests (name + scripts), a two-level tree, language census, and entry-point candidates. The agent's first move in an unfamiliar project, replacing a chain of directory listings.
+- **`search_code` now ranks files, not chunks.** Ask "where is email validation handled" and get a relevance-ranked file list (semantic score fused with filename matches and exact-phrase hits), each file carrying its matching definition lines and best snippet — the filtering the model used to fumble across grep rounds is done inside the tool.
+- **`read_file` reads symbols.** Pass `symbol: "refreshToken"` and get exactly that definition block plus every call site across the workspace — instead of paging through a 5000-line file. Unknown symbol? The error lists the definitions the file actually has.
+- **Edits pass through a syntax gate.** After every write, cheap per-language checks run (JSON/TOML, Python, shell, JS); breaking a previously-parsable file warns loudly with a pointer to the checkpoint rewind.
+- **`validate_change`** — after editing, one call finds the tests related to what changed (pytest / vitest / jest / cargo conventions), runs just that minimal set, and summarizes failures. No arguments needed: it knows what was touched this turn. Also fixes a real agent-speed hazard — Python's bytecode cache could serve stale code when an edit and its test run land in the same second.
+
+### Documents, both surfaces
+
+- **The Code agent reads documents.** `read_file` on a pdf / docx / xlsx / pptx extracts the text (same pipeline as chat attachments); scanned PDFs with no text layer get their pages OCR'd automatically, and embedded charts/photos are cached for `view_image` — no directory-grant friction.
+- **The chat attachment picker accepts docx / xlsx / pptx.** The extractor always supported them; the picker's filter didn't — only drag-and-drop worked.
+
 ## v1.8.1 — Hotfix: oversized screenshots could kill the MLX engine (2026-07-14)
 
 - **Huge screenshots can no longer crash the MLX engine.** A 2x full-page browser screenshot (15+ megapixels) fed to an MLX vision model — the Code agent's normal "look at the page" flow — could kill the inference sidecar mid-answer ("MLX engine exited unexpectedly"), or come back with an empty answer on models whose processor tolerated the size. Images now pass through the same 2-megapixel downscale as the GGUF engine before reaching the sidecar, with the downscaled copy cached so image reuse across turns still works. Verified end to end on the exact model and flow that crashed.
