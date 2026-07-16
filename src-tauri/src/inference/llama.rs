@@ -1934,8 +1934,27 @@ mod agent_e2e {
     fn exec_tool(name: &str, args: &serde_json::Value) -> String {
         let get = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         match name {
-            "read_file" => crate::agent::agent_read_file(get("path"), None, None, None, None)
+            "read_file" => {
+                let sym = get("symbol");
+                crate::agent::agent_read_file(
+                    get("path"),
+                    None,
+                    None,
+                    None,
+                    (!sym.is_empty()).then_some(sym),
+                )
+                .unwrap_or_else(|e| format!("ERROR: {e}"))
+            }
+            "search_code" => crate::agent::agent_search_code(get("query"), None)
                 .unwrap_or_else(|e| format!("ERROR: {e}")),
+            "validate_change" => {
+                let files: Option<Vec<String>> = args
+                    .get("files")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(crate::agent::agent_validate_change(files))
+                    .unwrap_or_else(|e| format!("ERROR: {e}"))
+            }
             "list_dir" => {
                 let p = get("path");
                 match crate::agent::agent_list_dir(if p.is_empty() { None } else { Some(p) }) {
@@ -2100,12 +2119,15 @@ mod agent_e2e {
 - list_dir: {"path"?: string}
 - grep: {"pattern": string}
 - search_files: 按关键词(字面)一次搜文件名和内容。args: {"query": string, "names_only"?: boolean}
+- search_code: 按含义提问代码库("哪里处理邮箱校验"),返回按相关度排序的文件清单+关键定义+片段,直接据此挑文件。args: {"query": string}
+- validate_change: 改完代码后一键验证:自动找出与改动文件相关的测试并只跑最小集,返回通过/失败与失败摘要。args: {"files"?: string[]}
 - bash: {"command": string}
 
 规则(严格遵守):
 - 每次只调用一个工具。调用时只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要有其它内容。
 - 系统会用 <tool_result>...</tool_result> 返回结果,你再继续。
 - 修改前先用 outline / read_file 了解结构;同一文件多处修改用一次 edit_file(给 edits 数组)。
+- 定位"哪里处理 X"优先用 search_code;改完代码先用 validate_change 验证。
 - 任务完成后不要再调用工具,直接用一两句话总结你做了什么。"#;
 
     /// Refactor e2e: rename a function + update all call sites across the
@@ -2654,6 +2676,134 @@ if __name__ == "__main__":
         assert!(
             lower.contains("readability") || lower.contains("正文") || lower.contains("可读"),
             "FINDING.md should describe dom_smoothie (readability extraction): {finding}"
+        );
+    }
+
+    /// Round-closing e2e for the "smart tools" upgrade: a real model must fix
+    /// a bug it has to FIND first (multi-file project), with search_code
+    /// doing the locating and validate_change doing the verifying — the
+    /// decide/filter/verify work that used to burn many fragile steps.
+    /// Run: CHATY_TEST_MODEL=… cargo test -p chaty agent_uses_smart_tools_e2e -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn agent_uses_smart_tools_e2e() {
+        let model_path = match std::env::var("CHATY_TEST_MODEL") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_MODEL=/path/to/model.gguf");
+                return;
+            }
+        };
+        let backend = llama_backend().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        eprintln!("loading model: {model_path}");
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load model");
+        let n_ctx = 16384u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+
+        let ws = std::env::temp_dir().join(format!("chaty-agent-smart-{}", std::process::id()));
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::write(
+            ws.join("src/validators.py"),
+            "def validate_email(addr):\n    # BUG: accepts anything longer than 3 chars\n    return len(addr) > 3\n\n\ndef validate_age(age):\n    return 0 < age < 150\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("src/signup.py"),
+            "from src.validators import validate_email\n\n\ndef signup(email):\n    if not validate_email(email):\n        raise ValueError('bad email')\n    return {'email': email}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("src/render.py"),
+            "def draw():\n    return 'pixels'\n",
+        )
+        .unwrap();
+        std::fs::write(ws.join("src/__init__.py"), "").unwrap();
+        std::fs::write(
+            ws.join("test_signup.py"),
+            "from src.validators import validate_email\n\n\ndef test_rejects_missing_at():\n    assert validate_email('nope') is False\n\n\ndef test_accepts_normal():\n    assert validate_email('a@b.co') is True\n",
+        )
+        .unwrap();
+        crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
+        let _cp = crate::agent::agent_checkpoint_begin();
+
+        let mut messages = vec![
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(),
+                role: Role::User,
+                content: "这个项目的注册邮箱校验有 bug:没有 @ 的字符串也能通过校验。找到相关代码修复(返回值必须仍是布尔值),然后验证修复是否正确。".into(),
+            },
+        ];
+        let think = Some(false);
+        let cancel = AtomicBool::new(false);
+        let mut finished = false;
+        let mut used_search_code = 0u32;
+        let mut used_validate = 0u32;
+        let mut last_validate = String::new();
+        let mut cached: Vec<LlamaToken> = Vec::new();
+
+        for step in 0..18 {
+            let req = GenRequest {
+                messages: messages.clone(),
+                params: GenParams {
+                    temperature: 0.2,
+                    top_p: 0.9,
+                    max_tokens: 2048,
+                    repeat_penalty: 1.05,
+                    stop: vec!["</tool_call>".to_string()],
+                    think,
+                    ..Default::default()
+                },
+            };
+            let sink = Collector { buf: RefCell::new(String::new()) };
+            run_turn(&model, &mut ctx, &mut cached, None, &mut None, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            let raw = sink.buf.into_inner();
+            eprintln!("\n──────── STEP {step} · RAW ────────\n{}", raw.trim().chars().take(400).collect::<String>());
+
+            match parse_tool_call(&raw) {
+                Some((name, args)) => {
+                    eprintln!("  ▶ TOOL  {name}  {args}");
+                    if name == "search_code" {
+                        used_search_code += 1;
+                    }
+                    let result = exec_tool(&name, &args);
+                    if name == "validate_change" {
+                        used_validate += 1;
+                        last_validate = result.clone();
+                    }
+                    eprintln!("  ◀ RESULT\n{}", result.chars().take(600).collect::<String>());
+                    let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(),
+                        role: Role::User,
+                        content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
+                    });
+                }
+                None => {
+                    eprintln!("  ✔ FINAL\n{}", strip_think(&raw));
+                    finished = true;
+                    break;
+                }
+            }
+        }
+
+        let fixed = std::fs::read_to_string(ws.join("src/validators.py")).unwrap_or_default();
+        eprintln!("\n════════ VERDICT: finished={finished} · search_code={used_search_code} · validate={used_validate} ════════");
+        eprintln!("---- validators.py ----\n{fixed}");
+        std::fs::remove_dir_all(&ws).ok();
+
+        assert!(finished, "agent never produced a final answer");
+        assert!(fixed.contains('@'), "validate_email must now check for @:\n{fixed}");
+        assert!(used_search_code >= 1, "the agent should locate code via search_code");
+        assert!(used_validate >= 1, "the agent should verify via validate_change");
+        assert!(
+            last_validate.contains("✓ 通过"),
+            "the last validation must pass:\n{last_validate}"
         );
     }
 
