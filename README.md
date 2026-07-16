@@ -25,7 +25,7 @@ knowledge base, Deep Research, and hands-free voice built right in.
 
 <br />
 
-<img src="docs/screenshots/shot-code.jpg" width="860" alt="Chaty's local coding agent searching GitHub, editing files, and running tests" />
+<img src="docs/screenshots/demo.gif" width="860" alt="Chaty's local coding agent reading an out-of-workspace file behind a one-click permission grant" />
 
 <sub>A local coding agent — searches GitHub, reads the source, edits your files, and runs the tests. **All on your machine.**</sub>
 

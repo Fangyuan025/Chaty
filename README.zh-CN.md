@@ -25,7 +25,7 @@ Deep Research 与免手语音。
 
 <br />
 
-<img src="docs/screenshots/shot-code.jpg" width="860" alt="Chaty 的本地编码智能体:搜索 GitHub、修改文件、运行测试" />
+<img src="docs/screenshots/demo.gif" width="860" alt="Chaty 本地编码智能体:一键授权后读取工作区外文件并总结" />
 
 <sub>一个本地编码智能体 —— 搜 GitHub、读源码、改你的文件、跑测试。**全在你自己的机器上。**</sub>
 

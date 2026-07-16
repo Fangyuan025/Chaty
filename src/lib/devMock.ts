@@ -340,7 +340,11 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       const req = args?.request as { messages?: { role: string; content: string }[] } | undefined;
       const msgs = req?.messages ?? [];
       const last = msgs[msgs.length - 1]?.content ?? "";
-      const wantsOutside = msgs.some((m) => m.role === "user" && m.content.includes("外部文件"));
+      // Title-generation requests get a clean short title (never a tool_call).
+      const sysAll = msgs.filter((m) => m.role === "system").map((m) => m.content).join("\n");
+      const isTitleReq = /12个汉字|short chat title|作为对话标题/.test(sysAll);
+      const wantsOutside = msgs.some((m) => m.role === "user" && (m.content.includes("外部文件") || /dataset manifest/i.test(m.content)));
+      const outsideEn = msgs.some((m) => m.role === "user" && /dataset manifest/i.test(m.content));
       // Typing a task with 安装/sudo makes the mock model emit a sudo bash call,
       // driving the high-risk sudo approval dialog end-to-end in preview.
       const wantsSudo = msgs.some((m) => m.role === "user" && m.content.includes("sudo"));
@@ -351,13 +355,19 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       const dateEcho = (sysMsg.match(/当前日期时间:([^\n]+)/) || sysMsg.match(/Current date & time: ([^\n]+)/) || [])[1];
       const fast = wantsOutside || wantsSudo || wantsDate;
       let reply = "收到。这是浏览器预览的模拟输出 — the mock stream after a simulated prompt-processing phase.";
-      if (wantsDate && dateEcho) {
+      if (isTitleReq) {
+        reply = /dataset manifest/i.test(last) ? "Summarize dataset manifest" : "读取数据集清单";
+      } else if (wantsDate && dateEcho) {
         reply = `根据系统提示,当前日期时间是:${dateEcho}`;
       } else if (wantsOutside) {
         if (last.includes("<tool_result")) {
           reply = last.includes("outside-content")
-            ? "已读取外部文件:数据集清单 v3。授权目录已在顶部显示,可随时取消。"
-            : "用户拒绝了该目录的访问,我改用工作区内的资料继续。";
+            ? (outsideEn
+                ? "Read the external file — **dataset manifest v3**: 3 datasets, 12,400 files, last updated 2026-06. The granted folder shows as a chip in the header; revoke it anytime."
+                : "已读取外部文件:数据集清单 v3。授权目录已在顶部显示,可随时取消。")
+            : (outsideEn
+                ? "The user denied access to that folder — continuing with workspace files only."
+                : "用户拒绝了该目录的访问,我改用工作区内的资料继续。");
         } else {
           reply = '<tool_call>{"name":"read_file","arguments":{"path":"/Users/dev/secrets/manifest.txt"}}</tool_call>';
         }
