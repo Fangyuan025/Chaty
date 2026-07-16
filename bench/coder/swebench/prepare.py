@@ -198,6 +198,18 @@ def materialize(only_ids):
         write_grading(r, tdir, env)
 
 
+# Per-repo env quirks discovered by gold-patch validation on macOS:
+# old sphinx needs pkg_resources (dropped in setuptools 81) + pre-3.1 Jinja2;
+# old pylint's test_self imports the real `py` package (pytest 7.2+ ships a
+# module shim of the same name); django's admin_docs/ImageField P2P tests
+# SKIP without docutils/Pillow.
+REPO_EXTRA_PKGS = {
+    "sphinx-doc/sphinx": ["setuptools<81", "Jinja2==3.0.3", "markupsafe==2.0.1", "alabaster==0.7.13"],
+    "pylint-dev/pylint": ["py==1.11.0"],
+    "django/django": ["docutils", "Pillow"],
+}
+
+
 def fixdeps():
     """Install each instance's official spec pip_packages (test deps) into its
     env — `pip install -e .` alone doesn't bring pytest & friends. Best-effort
@@ -215,6 +227,7 @@ def fixdeps():
         cmd = s.get("test_cmd") or ""
         if "pytest" in cmd and not any(p.split("==")[0].lower() == "pytest" for p in pkgs):
             pkgs.append("pytest")
+        pkgs += REPO_EXTRA_PKGS.get(r["repo"], [])
         if not pkgs:
             continue
         py = str(env / "bin" / "python")
