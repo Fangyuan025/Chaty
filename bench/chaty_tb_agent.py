@@ -18,6 +18,7 @@ Env / --agent-kwarg:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -47,6 +48,9 @@ Rules (follow strictly):
   write files with heredocs (cat > file <<'EOF' ... EOF).
 - If the same approach fails twice, change approach — never repeat a failing
   command unchanged a third time.
+- Before declaring the task done, re-read the task statement and VERIFY every
+  explicit requirement with commands: exact file paths and names, file contents,
+  executable bits (chmod +x where asked), and actually run any script you wrote.
 - When the task is fully done, output a one-line summary WITHOUT any tool call."""
 
 TOOL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*(?:</tool_call>|$)", re.S)
@@ -158,6 +162,28 @@ def _cap(output: str, limit: int = 8000) -> str:
     return f"{output[:head]}\n… (output truncated) …\n{output[-tail:]}"
 
 
+# The harness's block=True appends "; tmux wait -S done" to the LAST LINE of the
+# command. A multi-line command (heredoc) then never terminates — the marker
+# glues onto the heredoc's closing EOF and the shell waits for input forever.
+# Fix: ship multi-line commands as a base64 single-liner and `source` them so
+# cd/env changes still persist in the interactive shell.
+_B64_ECHO_RE = re.compile(
+    r"echo [A-Za-z0-9+/=]{24,} \| base64 -d > /tmp/\.chaty_step\.sh; \. /tmp/\.chaty_step\.sh"
+)
+
+
+def _wire_format(cmd: str) -> str:
+    if "\n" not in cmd:
+        return cmd
+    b64 = base64.b64encode(cmd.encode()).decode()
+    return f"echo {b64} | base64 -d > /tmp/.chaty_step.sh; . /tmp/.chaty_step.sh"
+
+
+def _clean_echo(output: str) -> str:
+    # Don't feed the base64 blob back to the model — show what it "typed".
+    return _B64_ECHO_RE.sub("(multi-line command executed)", output)
+
+
 class ChatyAgent(BaseAgent):
     @staticmethod
     def name() -> str:
@@ -235,10 +261,23 @@ class ChatyAgent(BaseAgent):
                         markers.append(
                             (session.get_asciinema_timestamp(), cmd[:80])
                         )
-                        session.send_keys(
-                            [cmd, "Enter"], block=True, max_timeout_sec=timeout
-                        )
-                        result = _cap(session.get_incremental_output())
+                        try:
+                            session.send_keys(
+                                [_wire_format(cmd), "Enter"],
+                                block=True,
+                                max_timeout_sec=timeout,
+                            )
+                            result = _cap(_clean_echo(session.get_incremental_output()))
+                        except TimeoutError:
+                            # Recoverable: unwedge the shell, show the model what
+                            # happened, let it try a different approach.
+                            session.send_keys(["C-c"], block=False, min_timeout_sec=1.0)
+                            screen = _cap(_clean_echo(session.get_incremental_output()))
+                            result = (
+                                f"ERROR: command did not finish within {int(timeout)}s "
+                                "and was interrupted with Ctrl-C. Partial output:\n"
+                                f"{screen}"
+                            )
                 note(f"--- step {step} result ---\n{result[:1200]}")
                 closed = raw if "</tool_call>" in raw else raw + "</tool_call>"
                 messages.append({"role": "assistant", "content": THINK_RE.sub("", closed)})
