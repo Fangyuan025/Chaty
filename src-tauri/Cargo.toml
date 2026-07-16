@@ -74,6 +74,7 @@ dom_smoothie = "0.18.0"
 url = "2.5.8"
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 hf-hub = "1.0.0"
+toml = "0.8"
 
 # GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers â€” cross-vendor on Windows.
 [target.'cfg(windows)'.dependencies]

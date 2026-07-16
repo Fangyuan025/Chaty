@@ -448,6 +448,67 @@ fn dl_clear() {
     *DOWNLOADS.lock().unwrap() = None;
 }
 
+/// Cheap post-edit syntax gate. Returns None when no checker exists for the
+/// file type; Some(Err(msg)) when the file fails to parse. Checkers are
+/// millisecond-cheap: pure-Rust parsing for JSON/TOML, `python3 -m
+/// py_compile` / `bash -n` / `node --check` when those binaries exist.
+/// (.ts/.rs need whole-project context — deliberately unchecked.)
+pub(crate) fn syntax_check(abs: &Path) -> Option<Result<(), String>> {
+    let ext = abs.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    let run = |bin: &str, args: &[&str]| -> Option<Result<(), String>> {
+        let out = Command::new(bin)
+            .args(args)
+            .env("PATH", augmented_path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .ok()?; // binary missing → no checker
+        if out.status.success() {
+            Some(Ok(()))
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let tail: String = err.lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            Some(Err(tail.chars().take(600).collect()))
+        }
+    };
+    let p = abs.to_string_lossy();
+    match ext.as_str() {
+        "json" => {
+            let text = std::fs::read_to_string(abs).ok()?;
+            Some(serde_json::from_str::<serde_json::Value>(&text).map(|_| ()).map_err(|e| e.to_string()))
+        }
+        "toml" => {
+            let text = std::fs::read_to_string(abs).ok()?;
+            Some(text.parse::<toml::Value>().map(|_| ()).map_err(|e| e.to_string()))
+        }
+        // compile() instead of py_compile: no __pycache__ dropped into the
+        // user's workspace.
+        "py" => run(
+            "python3",
+            &["-c", "import sys; compile(open(sys.argv[1], 'rb').read(), sys.argv[1], 'exec')", &p],
+        ),
+        "sh" | "bash" => run("bash", &["-n", &p]),
+        "js" | "mjs" | "cjs" => run("node", &["--check", &p]),
+        _ => None,
+    }
+}
+
+/// The syntax note appended to a successful write/edit: silent when clean or
+/// uncheckable; loud when THIS edit broke a previously-parsable file; softer
+/// when the file was already broken before the edit.
+fn syntax_note(abs: &Path, was_clean: Option<bool>) -> String {
+    match syntax_check(abs) {
+        Some(Err(e)) => match was_clean {
+            Some(true) => format!(
+                "\n⚠️ 语法检查失败——本次编辑把一个原本可解析的文件改坏了 (this edit BROKE a previously-parsable file):\n{e}\n请立即修复;如需还原,该文件已有检查点可回退 (fix now, or rewind the checkpoint)."
+            ),
+            _ => format!("\n⚠️ 语法检查失败 (syntax check failed):\n{e}"),
+        },
+        _ => String::new(),
+    }
+}
+
+
 #[tauri::command]
 pub fn agent_write_file(path: String, content: String) -> Result<String, String> {
     let abs = resolve(&path)?;
@@ -457,12 +518,18 @@ pub fn agent_write_file(path: String, content: String) -> Result<String, String>
         ));
     }
     cp_record(&abs);
+    let was_clean = abs.is_file().then(|| syntax_check(&abs)).flatten().map(|r| r.is_ok());
     if let Some(parent) = abs.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     std::fs::write(&abs, content.as_bytes()).map_err(|e| format!("写入失败 (write failed): {e}"))?;
     let root = workspace()?;
-    Ok(format!("已写入 {} ({} 字节)", rel_display(&root, &abs), content.len()))
+    Ok(format!(
+        "已写入 {} ({} 字节){}",
+        rel_display(&root, &abs),
+        content.len(),
+        syntax_note(&abs, was_clean)
+    ))
 }
 
 /// Exact-string edit (like a str-replace). `old_string` must appear exactly once
@@ -480,6 +547,7 @@ pub fn agent_edit_file(
     let abs = resolve(&path)?;
     let text = std::fs::read_to_string(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
     cp_record(&abs);
+    let was_clean = syntax_check(&abs).map(|r| r.is_ok());
     let count = text.matches(&old_string).count();
     if count == 0 {
         return Err(not_found_error(&text, &old_string));
@@ -503,10 +571,11 @@ pub fn agent_edit_file(
     // without spending another read_file step.
     let span = new_string.matches('\n').count() + 1;
     Ok(format!(
-        "已编辑 {}（替换 {} 处）。修改后该处内容:\n{}",
+        "已编辑 {}（替换 {} 处）。修改后该处内容:\n{}{}",
         rel_display(&root, &abs),
         if all { count } else { 1 },
-        numbered_context(&updated, start_line, span)
+        numbered_context(&updated, start_line, span),
+        syntax_note(&abs, was_clean)
     ))
 }
 
@@ -617,9 +686,14 @@ pub fn agent_multi_edit(path: String, edits: Vec<EditOp>) -> Result<String, Stri
         };
     }
     cp_record(&abs);
+    let was_clean = syntax_check(&abs).map(|r| r.is_ok());
     std::fs::write(&abs, cur.as_bytes()).map_err(|e| format!("写入失败 (write failed): {e}"))?;
     let root = workspace()?;
-    Ok(format!("已编辑 {}(应用全部 {total} 处修改)", rel_display(&root, &abs)))
+    Ok(format!(
+        "已编辑 {}(应用全部 {total} 处修改){}",
+        rel_display(&root, &abs),
+        syntax_note(&abs, was_clean)
+    ))
 }
 
 // ---- Browser automation tools (CDP; see browser.rs) ----
@@ -2543,6 +2617,43 @@ mod tests {
         assert_eq!(ensure_sudo_stdin("sudo apt-get install x"), "sudo -S apt-get install x");
         assert_eq!(ensure_sudo_stdin("sudo -S already"), "sudo -S already");
         assert_eq!(ensure_sudo_stdin("ls -la"), "ls -la");
+    }
+
+    /// The syntax gate: breaking a previously-parsable file must produce the
+    /// loud note; fixing it back must stay silent; a fresh broken file gets
+    /// the generic warning; uncheckable types are untouched.
+    #[test]
+    fn edits_run_the_syntax_gate() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-syn-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+
+        std::fs::write(tmp.join("cfg.json"), b"{\"a\": 1}\n").unwrap();
+        // Break it: the note must say the edit broke a clean file.
+        let msg = agent_edit_file("cfg.json".into(), "1}".into(), "1,}".into(), None).unwrap();
+        assert!(msg.contains("语法检查失败"), "broken JSON must warn: {msg}");
+        assert!(msg.contains("改坏了"), "should call out breaking a clean file: {msg}");
+        // Fix it back: silent.
+        let msg = agent_edit_file("cfg.json".into(), "1,}".into(), "1}".into(), None).unwrap();
+        assert!(!msg.contains("语法检查失败"), "clean edit must be silent: {msg}");
+
+        // Fresh broken python via write_file → generic warning (python3 present
+        // on dev machines; skip the assert if not).
+        if std::process::Command::new("python3").arg("--version").output().is_ok() {
+            let msg = agent_write_file("t.py".into(), "def broken(:\n    pass\n".into()).unwrap();
+            assert!(msg.contains("语法检查失败"), "broken py must warn: {msg}");
+            assert!(!msg.contains("改坏了"), "fresh file isn't 'broken by this edit': {msg}");
+            let msg = agent_write_file("t.py".into(), "def ok():\n    pass\n".into()).unwrap();
+            assert!(!msg.contains("语法检查失败"), "valid py must be silent: {msg}");
+            assert!(!tmp.join("__pycache__").exists(), "checker must not drop __pycache__");
+        }
+
+        // Uncheckable type: no note ever.
+        let msg = agent_write_file("notes.txt".into(), "anything at all ((".into()).unwrap();
+        assert!(!msg.contains("语法检查"), "txt must not be checked: {msg}");
+        cp_clear();
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// read_file's symbol mode: brace-matched block for {}-languages,

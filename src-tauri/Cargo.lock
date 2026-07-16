@@ -801,6 +801,7 @@ dependencies = [
  "tauri-plugin-os",
  "tauri-plugin-single-instance",
  "tokio",
+ "toml 0.8.2",
  "tungstenite",
  "url",
  "walkdir",
