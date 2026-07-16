@@ -1,0 +1,8 @@
+runs/
+swebench/mirrors/
+swebench/tasks/
+swebench/envs/
+swebench/verified_full.json
+swebench/_vendored_parsers.txt
+swebench/*.log
+__pycache__/

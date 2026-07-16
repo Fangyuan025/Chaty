@@ -7,7 +7,7 @@ pub mod rag;
 mod commands;
 pub mod download;
 pub mod gpu;
-mod inference;
+pub mod inference;
 pub mod ocr;
 pub mod search;
 mod state;
