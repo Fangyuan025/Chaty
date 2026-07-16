@@ -448,6 +448,193 @@ fn dl_clear() {
     *DOWNLOADS.lock().unwrap() = None;
 }
 
+/// Smart minimal validation: figure out which tests relate to the changed
+/// files, run JUST those, and summarize failures — the find/filter/interpret
+/// work the model used to burn steps on. Targets default to the files touched
+/// this turn (checkpoint journal).
+#[tauri::command]
+pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String, String> {
+    let root = workspace()?;
+    let mut targets: Vec<PathBuf> = Vec::new();
+    match files {
+        Some(fs) if !fs.is_empty() => {
+            for f in fs {
+                targets.push(resolve(&f)?);
+            }
+        }
+        _ => {
+            let cps = CHECKPOINTS.lock().unwrap();
+            if let Some(cp) = cps.last() {
+                for e in &cp.entries {
+                    targets.push(e.path.clone());
+                }
+            }
+        }
+    }
+    targets.retain(|p| p.is_file());
+    if targets.is_empty() {
+        return Ok(
+            "本轮还没有记录到文件改动;可传 files 参数明确指定要验证的文件 \
+             (no tracked changes this turn — pass files explicitly)"
+                .to_string(),
+        );
+    }
+    let stems: Vec<String> = targets
+        .iter()
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_lowercase()))
+        .filter(|s| s.len() >= 3)
+        .collect();
+    let rels: Vec<String> = targets.iter().map(|p| rel_display(&root, p)).collect();
+
+    // Related test files: conventional test names whose CONTENT mentions one
+    // of the changed stems (cheap import/usage heuristic).
+    let mut py_tests: Vec<String> = Vec::new();
+    let mut js_tests: Vec<String> = Vec::new();
+    for entry in walkdir::WalkDir::new(&root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !(name.starts_with('.') && e.depth() > 0)
+                && !(e.file_type().is_dir() && SKIP_DIRS.contains(&name.as_ref()))
+        })
+        .flatten()
+    {
+        if !entry.file_type().is_file() || py_tests.len() + js_tests.len() >= 12 {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        let is_py = (name.starts_with("test_") || name.ends_with("_test.py")) && name.ends_with(".py");
+        let is_js = name.contains(".test.") || name.contains(".spec.") ||
+            entry.path().components().any(|c| c.as_os_str() == "__tests__");
+        if !is_py && !is_js {
+            continue;
+        }
+        if entry.metadata().map(|m| m.len() > SEARCH_MAX_FILE).unwrap_or(true) {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(entry.path()) else { continue };
+        let lower = body.to_lowercase();
+        let rel = rel_display(&root, entry.path());
+        // A test relates if it mentions a changed stem — or IS a changed file.
+        let related = stems.iter().any(|st| lower.contains(st.as_str()))
+            || rels.iter().any(|r| *r == rel);
+        if !related {
+            continue;
+        }
+        if is_py {
+            py_tests.push(rel);
+        } else if is_js {
+            js_tests.push(rel);
+        }
+    }
+
+    let mut ran_any = false;
+    let mut out = format!("验证目标 (validating): {}\n", rels.join(", "));
+    let timeout = Duration::from_secs(180);
+    let mut run_cmd = |title: &str, cmd: String, out: &mut String| {
+        out.push_str(&format!("\n$ {cmd}\n"));
+        match run_bash(&root, &cmd, timeout, None, true) {
+            Ok(r) => {
+                let merged = format!("{}\n{}", r.stdout, r.stderr);
+                // Failure digest: the lines a human would read first.
+                let fails: Vec<&str> = merged
+                    .lines()
+                    .filter(|l| {
+                        let t = l.trim_start();
+                        t.starts_with("FAILED") || t.starts_with("ERROR") || t.contains("AssertionError")
+                            || t.starts_with("✗") || t.starts_with("×") || t.contains("FAIL ")
+                            || (t.contains("failed") && t.contains("passed"))
+                            || t.starts_with("test result:")
+                    })
+                    .take(14)
+                    .collect();
+                if r.timed_out {
+                    out.push_str(&format!("⏱ 超时({title} timed out)\n"));
+                } else if r.code == 0 {
+                    out.push_str("✓ 通过 (passed)\n");
+                } else {
+                    out.push_str(&format!("✗ 失败 (exit {})\n", r.code));
+                }
+                if !fails.is_empty() {
+                    out.push_str(&format!("{}\n", fails.join("\n")));
+                }
+                if r.code != 0 && !r.timed_out {
+                    // Tail carries the actual assertion/context.
+                    let tail: String = merged
+                        .lines()
+                        .rev()
+                        .take(20)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    out.push_str(&format!("--- 输出尾部 (output tail) ---\n{}\n", tail.chars().take(1800).collect::<String>()));
+                }
+            }
+            Err(e) => out.push_str(&format!("(无法运行 / could not run: {e})\n")),
+        }
+    };
+
+    if !py_tests.is_empty() {
+        py_tests.truncate(6);
+        // Fresh PYTHONPYCACHEPREFIX per run: .pyc validation keys on
+        // (mtime-seconds, size), so an agent that edits and validates within
+        // the same second would otherwise execute STALE bytecode.
+        run_cmd(
+            "pytest",
+            format!(
+                "PYTHONPYCACHEPREFIX=$(mktemp -d) python3 -m pytest -x -q {}",
+                py_tests.join(" ")
+            ),
+            &mut out,
+        );
+        ran_any = true;
+    }
+    if !js_tests.is_empty() {
+        js_tests.truncate(6);
+        let pkg = std::fs::read_to_string(root.join("package.json")).unwrap_or_default();
+        let runner = if pkg.contains("\"vitest\"") {
+            Some(format!("npx vitest run {}", js_tests.join(" ")))
+        } else if pkg.contains("\"jest\"") {
+            Some(format!("npx jest {}", js_tests.join(" ")))
+        } else {
+            None
+        };
+        match runner {
+            Some(cmd) => {
+                run_cmd("js tests", cmd, &mut out);
+                ran_any = true;
+            }
+            None => out.push_str(
+                "\n(找到 JS/TS 测试文件但未识别出 vitest/jest——请用 bash 跑项目自己的测试命令)\n",
+            ),
+        }
+    }
+    if root.join("Cargo.toml").is_file()
+        && targets.iter().any(|p| p.extension().is_some_and(|e| e == "rs"))
+    {
+        let mut filters: Vec<&str> = stems.iter().map(|s| s.as_str()).take(3).collect();
+        filters.dedup();
+        run_cmd(
+            "cargo test",
+            format!("cargo test {}", filters.join(" ")),
+            &mut out,
+        );
+        ran_any = true;
+    }
+
+    if !ran_any {
+        out.push_str(
+            "\n没有发现与改动相关的测试(按 test_*.py / *.test.* / *.spec.* / cargo 约定查找)。\
+             如果项目有自己的测试命令,请直接用 bash 运行 \
+             (no related tests found by convention — run the project's own test command via bash)。",
+        );
+    }
+    Ok(out)
+}
+
 /// Cheap post-edit syntax gate. Returns None when no checker exists for the
 /// file type; Some(Err(msg)) when the file fails to parse. Checkers are
 /// millisecond-cheap: pure-Rust parsing for JSON/TOML, `python3 -m
@@ -2617,6 +2804,58 @@ mod tests {
         assert_eq!(ensure_sudo_stdin("sudo apt-get install x"), "sudo -S apt-get install x");
         assert_eq!(ensure_sudo_stdin("sudo -S already"), "sudo -S already");
         assert_eq!(ensure_sudo_stdin("ls -la"), "ls -la");
+    }
+
+    /// validate_change on a real mini pytest project: the related test file is
+    /// discovered by content, the failing assertion is summarized, and the
+    /// fixed version passes. The unrelated test file must NOT be selected.
+    #[test]
+    fn validate_change_runs_related_pytest() {
+        let _g = serial();
+        if std::process::Command::new("python3")
+            .args(["-m", "pytest", "--version"])
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            eprintln!("SKIP: pytest not available");
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-vc-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        std::fs::write(tmp.join("calc.py"), "def add(a, b):\n    return a - b\n").unwrap();
+        std::fs::write(
+            tmp.join("test_calc.py"),
+            "from calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("test_other.py"),
+            "def test_unrelated():\n    assert True\n",
+        )
+        .unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let out = rt
+            .block_on(agent_validate_change(Some(vec!["calc.py".into()])))
+            .expect("validate");
+        eprintln!("{out}");
+        assert!(out.contains("test_calc.py"), "related test not selected:\n{out}");
+        assert!(!out.contains("test_other.py"), "unrelated test selected:\n{out}");
+        assert!(out.contains("✗ 失败"), "failure not reported:\n{out}");
+
+        std::fs::write(tmp.join("calc.py"), "def add(a, b):\n    return a + b\n").unwrap();
+        let out = rt
+            .block_on(agent_validate_change(Some(vec!["calc.py".into()])))
+            .expect("validate 2");
+        assert!(out.contains("✓ 通过"), "fixed code must pass:\n{out}");
+
+        // No tracked changes and no files → instructive message.
+        cp_clear();
+        let out = rt.block_on(agent_validate_change(None)).expect("validate 3");
+        assert!(out.contains("没有记录到文件改动"), "empty-state message missing: {out}");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// The syntax gate: breaking a previously-parsable file must produce the

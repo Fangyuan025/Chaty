@@ -252,6 +252,11 @@ export async function agentReadFile(
 export async function agentReadDoc(path: string): Promise<string> {
   return await invoke<string>("agent_read_doc", { path });
 }
+
+/** Run the minimal set of tests related to the changed files, summarized. */
+export async function agentValidateChange(files?: string[]): Promise<string> {
+  return await invoke<string>("agent_validate_change", { files: files ?? null });
+}
 export async function agentWriteFile(path: string, content: string): Promise<string> {
   return invoke<string>("agent_write_file", { path, content });
 }
