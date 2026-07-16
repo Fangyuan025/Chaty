@@ -259,6 +259,7 @@ pub fn run() {
             agent::agent_read_file,
             agent::agent_read_doc,
             agent::agent_validate_change,
+            agent::agent_understand_repo,
             agent::agent_write_file,
             agent::agent_edit_file,
             agent::agent_multi_edit,

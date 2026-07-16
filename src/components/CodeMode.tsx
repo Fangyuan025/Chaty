@@ -143,6 +143,8 @@ function toolSummary(call: ToolCall): string {
       return `grep ${a.pattern ?? ""}`;
     case "search_files":
       return `find ${a.query ?? ""}`;
+    case "understand_repo":
+      return "understand repo";
     case "validate_change":
       return `validate ${Array.isArray(call.args.files) ? (call.args.files as string[]).join(" ") : "changes"}`;
     case "search_code":

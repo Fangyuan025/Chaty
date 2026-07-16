@@ -37,6 +37,7 @@ import {
   agentReadFile,
   agentReadDoc,
   agentValidateChange,
+  agentUnderstandRepo,
   agentSearchCode,
   agentWriteFile,
   cancelGeneration,
@@ -83,7 +84,8 @@ export type AgentToolName =
   | "browser_close"
   | "ask_user"
   | "update_plan"
-  | "validate_change";
+  | "validate_change"
+  | "understand_repo";
 
 /** Tools that change the world (or run code) → need approval unless bypassed. */
 export const MUTATING_TOOLS = new Set<AgentToolName>([
@@ -276,6 +278,7 @@ const TOOLS_DOC = `
 - bash_bg: 在后台启动长时间运行的命令(dev server、慢构建、长测试),立即返回一个 id,期间你可以继续做别的;它结束时系统会自动把结果告诉你。**不支持 sudo**(后台沙盒无交互输入,密码送不进去)——需要特权的命令必须用前台 bash。args: { "command": string }
 - bg_output: 查看某个后台命令的当前状态和最近输出(比如确认 server 已启动)。args: { "id": number }
 - bg_kill: 终止某个后台命令(整棵进程树)。args: { "id": number }
+- understand_repo: 一次调用拿到整个仓库的速览:README 摘要、manifest(脚本/依赖)、两层目录树、语言构成、入口文件候选。**接手陌生工作区时的第一个动作**,替代逐层 list_dir。args: {}
 - validate_change: 改完代码后一键验证:自动找出与改动文件相关的测试(按 pytest / vitest / jest / cargo 约定),只跑最小相关集,返回通过/失败与失败摘要。不传参数即验证本轮改过的全部文件;找不到相关测试会明确说,再改用 bash 跑项目自己的命令。args: { "files"?: string[] }
 - web_search: 联网搜索(标题+链接+摘要)。查资料、找文档、查报错时用。加 site 参数可做站内搜索:site="github.com" 返回结构化的仓库/issue/代码匹配;site="reddit.com"(或 "reddit.com/r/某版块")搜帖子;site="youtube.com" / "bilibili.com" 返回视频(标题/时长/UP主/播放量);其他任意域名(docs.python.org、stackoverflow.com、x.com、weibo.com 等)都会限定在该站内搜(登录墙站点只能拿到搜索引擎快照级的标题/摘要)。**搜索源偶尔会抽风,返回不相关的结果——连续 2 次搜出来都和问题无关,就说明此刻再换措辞重搜也没用,立即改道:用 web_fetch 直接抓最可能的页面(官方文档、GitHub 仓库、项目官网都能猜出 URL),或用浏览器工具打开搜索引擎/目标站点找。**args: { "query": string, "site"?: string }
 - web_fetch: 抓取任意 URL,按内容类型自动处理:文章页→干净的 Markdown 正文;代码/JSON/配置文件→原文;GitHub 文件页自动取 raw 源文件;Reddit 帖子→正文+评论;YouTube 视频→元信息+完整字幕转写;B站视频→公开元信息+简介(播放/点赞/弹幕);PDF→提取文本;图片等二进制→返回元信息(用 web_download 保存)。结果还会列出页面上的链接和图片 URL——想深入子页面就继续 fetch 那些链接。要 HTML 源码时传 raw=true。args: { "url": string, "raw"?: boolean }
@@ -357,6 +360,7 @@ ${toolsDoc}
 - 读大文件别从头翻到尾:先用 search_code / grep 定位到相关位置,再用 read_file 带 offset/limit 只读需要的区段。
 - 工具选择:**新建文件**用 write_file 一次写完;**修改已有文件**用 edit_file(改一处给 old_string/new_string,改多处给 edits 数组一次原子提交)——不要用 write_file 整体重写已有文件来做局部改动,那会覆盖全文、极易丢失你没重写的内容。只有确实要把整个文件推倒重来时才用 write_file。不要把一个改动拆成许多细碎小步。
 - dev server、npm run dev、长构建等不会很快退出的命令必须用 bash_bg 后台运行,再用 bg_output 确认启动成功;用完记得 bg_kill。
+- 接手一个陌生工作区,第一步用 understand_repo 建立全局观,再决定读什么。
 - 改完代码先用 validate_change 验证(它会自己找相关测试、只跑最小集);它找不到测试时再用 bash 跑项目自己的命令。
 - 遇到不认识的报错、需要查库/API 文档时,用 web_search / web_fetch 联网查证,不要凭空猜测。
 - **换路原则:同一手段连续两次没带来新进展,就必须换一种做法**——搜索搜不到就 web_fetch 直抓或开浏览器;页面文字摘要看不明白就截图亲眼看;命令报同样的错就换方案。把同一动作原样再试第三遍,几乎不会有不同结果。
@@ -700,6 +704,8 @@ async function execTool(
         : `#${info.id} 已结束 (finished, exit ${info.code}): ${info.command}`;
       return { result: `${head}\n--- 最近输出 (recent output) ---\n${info.tail || "(无输出 / no output yet)"}` };
     }
+    case "understand_repo":
+      return { result: await agentUnderstandRepo() };
     case "validate_change": {
       const files = Array.isArray(a.files)
         ? (a.files as unknown[]).map((f) => asStr(f)).filter(Boolean)

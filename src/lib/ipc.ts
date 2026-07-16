@@ -257,6 +257,11 @@ export async function agentReadDoc(path: string): Promise<string> {
 export async function agentValidateChange(files?: string[]): Promise<string> {
   return await invoke<string>("agent_validate_change", { files: files ?? null });
 }
+
+/** One-call repo orientation digest (README lede, manifests, tree, census). */
+export async function agentUnderstandRepo(): Promise<string> {
+  return await invoke<string>("agent_understand_repo");
+}
 export async function agentWriteFile(path: string, content: string): Promise<string> {
   return invoke<string>("agent_write_file", { path, content });
 }

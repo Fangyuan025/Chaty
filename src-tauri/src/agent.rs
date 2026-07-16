@@ -448,6 +448,135 @@ fn dl_clear() {
     *DOWNLOADS.lock().unwrap() = None;
 }
 
+/// One-call repo orientation: README lede, manifest summary, a two-level
+/// directory tree, entry points, and a language census — the "walk around the
+/// codebase for ten steps" a fresh session used to spend on list_dir chains.
+#[tauri::command]
+pub fn agent_understand_repo() -> Result<String, String> {
+    let root = workspace()?;
+    let mut out = String::new();
+
+    // README lede.
+    for name in ["README.md", "README", "readme.md", "README.zh.md"] {
+        if let Ok(text) = std::fs::read_to_string(root.join(name)) {
+            let lede: String = text
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .take(6)
+                .collect::<Vec<_>>()
+                .join("\n");
+            out.push_str(&format!("[{name}]\n{}\n\n", lede.chars().take(600).collect::<String>()));
+            break;
+        }
+    }
+
+    // Manifests → project identity + how to run/test it.
+    if let Ok(pkg) = std::fs::read_to_string(root.join("package.json")) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&pkg) {
+            let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+            let scripts = v
+                .get("scripts")
+                .and_then(|x| x.as_object())
+                .map(|m| m.keys().take(10).cloned().collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            out.push_str(&format!("[package.json] name={name} · scripts: {scripts}\n"));
+        }
+    }
+    for (mf, label) in [
+        ("Cargo.toml", "rust crate"),
+        ("pyproject.toml", "python project"),
+        ("requirements.txt", "python requirements"),
+        ("go.mod", "go module"),
+    ] {
+        if root.join(mf).is_file() {
+            out.push_str(&format!("[{mf}] {label}\n"));
+        }
+    }
+
+    // Two-level tree + language census + entry points.
+    let mut tree = String::new();
+    let mut census: HashMap<String, usize> = HashMap::new();
+    let mut entries_found: Vec<String> = Vec::new();
+    let mut listed = 0;
+    for entry in walkdir::WalkDir::new(&root)
+        .max_depth(2)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !(name.starts_with('.') && e.depth() > 0)
+                && !(e.file_type().is_dir() && SKIP_DIRS.contains(&name.as_ref()))
+        })
+        .flatten()
+    {
+        if entry.depth() == 0 {
+            continue;
+        }
+        let rel = rel_display(&root, entry.path());
+        if entry.file_type().is_dir() {
+            let count = std::fs::read_dir(entry.path()).map(|d| d.count()).unwrap_or(0);
+            if listed < 60 {
+                tree.push_str(&format!("{}{}/ ({count})\n", "  ".repeat(entry.depth() - 1), entry.file_name().to_string_lossy()));
+                listed += 1;
+            }
+        } else {
+            if listed < 60 && entry.depth() == 1 {
+                tree.push_str(&format!("{}\n", entry.file_name().to_string_lossy()));
+                listed += 1;
+            }
+            let stem = entry.file_name().to_string_lossy().to_lowercase();
+            if matches!(
+                stem.as_str(),
+                "main.py" | "app.py" | "index.ts" | "index.js" | "main.ts" | "main.js" | "main.rs" | "lib.rs" | "app.tsx" | "main.go"
+            ) {
+                entries_found.push(rel.clone());
+            }
+        }
+    }
+    // Census over the whole workspace (extensions of source files).
+    for entry in walkdir::WalkDir::new(&root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !(name.starts_with('.') && e.depth() > 0)
+                && !(e.file_type().is_dir() && SKIP_DIRS.contains(&name.as_ref()))
+        })
+        .flatten()
+    {
+        if entry.file_type().is_file() {
+            if let Some(ext) = entry.path().extension().and_then(|s| s.to_str()) {
+                let ext = ext.to_lowercase();
+                if matches!(ext.as_str(), "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "swift" | "java" | "c" | "cpp" | "h" | "rb" | "php" | "css" | "html" | "vue" | "kt") {
+                    *census.entry(ext).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    let mut census: Vec<(String, usize)> = census.into_iter().collect();
+    census.sort_by(|a, b| b.1.cmp(&a.1));
+    let census_str = census
+        .iter()
+        .take(6)
+        .map(|(e, n)| format!(".{e}×{n}"))
+        .collect::<Vec<_>>()
+        .join(" · ");
+
+    out.push_str(&format!("\n[目录 (top 2 levels)]\n{tree}"));
+    if !census_str.is_empty() {
+        out.push_str(&format!("\n[语言构成] {census_str}\n"));
+    }
+    if !entries_found.is_empty() {
+        entries_found.truncate(8);
+        out.push_str(&format!("[入口候选] {}\n", entries_found.join(", ")));
+    }
+    if out.trim().is_empty() {
+        out = "(空工作区 / empty workspace)".to_string();
+    }
+    Ok(out)
+}
+
 /// Smart minimal validation: figure out which tests relate to the changed
 /// files, run JUST those, and summarize failures — the find/filter/interpret
 /// work the model used to burn steps on. Targets default to the files touched
@@ -2855,6 +2984,35 @@ mod tests {
         cp_clear();
         let out = rt.block_on(agent_validate_change(None)).expect("validate 3");
         assert!(out.contains("没有记录到文件改动"), "empty-state message missing: {out}");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// understand_repo must assemble README lede, manifest line, tree,
+    /// language census and entry candidates from a synthesized repo.
+    #[test]
+    fn understand_repo_builds_digest() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-ur-{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        set_ws(&tmp);
+        std::fs::write(tmp.join("README.md"), "# Demo\n\nA tiny demo service.\n").unwrap();
+        std::fs::write(
+            tmp.join("package.json"),
+            r#"{"name":"demo","scripts":{"dev":"vite","test":"vitest run"}}"#,
+        )
+        .unwrap();
+        std::fs::write(tmp.join("src/index.ts"), "export const x = 1;\n").unwrap();
+        std::fs::write(tmp.join("src/util.ts"), "export const y = 2;\n").unwrap();
+        std::fs::write(tmp.join("src/main.py"), "print('hi')\n").unwrap();
+
+        let out = agent_understand_repo().expect("digest");
+        eprintln!("{out}");
+        assert!(out.contains("A tiny demo service"), "README lede missing:\n{out}");
+        assert!(out.contains("name=demo"), "manifest missing:\n{out}");
+        assert!(out.contains("dev, test") || out.contains("test, dev"), "scripts missing:\n{out}");
+        assert!(out.contains("src/ (3)"), "tree missing:\n{out}");
+        assert!(out.contains(".ts×2"), "census missing:\n{out}");
+        assert!(out.contains("src/index.ts"), "entry candidate missing:\n{out}");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
