@@ -1934,7 +1934,7 @@ mod agent_e2e {
     fn exec_tool(name: &str, args: &serde_json::Value) -> String {
         let get = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         match name {
-            "read_file" => crate::agent::agent_read_file(get("path"), None, None, None)
+            "read_file" => crate::agent::agent_read_file(get("path"), None, None, None, None)
                 .unwrap_or_else(|e| format!("ERROR: {e}")),
             "list_dir" => {
                 let p = get("path");

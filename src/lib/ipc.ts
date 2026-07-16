@@ -242,8 +242,9 @@ export async function agentReadFile(
   offset?: number,
   limit?: number,
   maxChars?: number,
+  symbol?: string,
 ): Promise<string> {
-  return invoke<string>("agent_read_file", { path, offset, limit, maxChars });
+  return invoke<string>("agent_read_file", { path, offset, limit, maxChars, symbol });
 }
 
 /** Extract text (+ cached embedded images) from a workspace document —

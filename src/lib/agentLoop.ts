@@ -259,7 +259,7 @@ function proseAfter(raw: string): string {
 }
 
 const TOOLS_DOC = `
-- read_file: 读取文件,一般一次调用即可读完整个文件;只有超出上下文预算的超大文件才分页,此时结果末尾会直接给出下一页的 offset,照着传即可。**pdf/docx/xlsx/pptx 文档也能读**:自动提取文本;扫描件自动 OCR;文档里的图表/照片会被提取缓存,结果里给出路径,用 view_image 查看。args: { "path": string, "offset"?: number(起始行,从1开始), "limit"?: number(行数) }
+- read_file: 读取文件,一般一次调用即可读完整个文件;只有超出上下文预算的超大文件才分页,此时结果末尾会直接给出下一页的 offset,照着传即可。**pdf/docx/xlsx/pptx 文档也能读**:自动提取文本;扫描件自动 OCR;文档里的图表/照片会被提取缓存,结果里给出路径,用 view_image 查看。**只关心某个函数/类时传 symbol**:直接返回该定义的完整代码块 + 全工作区的调用处清单——比读整个大文件省得多。args: { "path": string, "offset"?: number(起始行,从1开始), "limit"?: number(行数), "symbol"?: string(函数/类名) }
 - write_file: 新建文件,或对一个文件做整体重写(会覆盖全部内容)。**修改已有文件请优先用 edit_file / multi_edit**,不要用 write_file 重写整个文件来做局部改动。args: { "path": string, "content": string }
 - edit_file: 精确替换文件内容(old_string 必须与文件逐字匹配且唯一,除非 replace_all=true);匹配失败会提示文件中最相似的位置。改一处直接给 old_string/new_string;同一文件要改多处时给 edits 数组,一次原子提交(任何一条失败则整体不改动),不要拆成多次调用。args: 单处 { "path": string, "old_string": string, "new_string": string, "replace_all"?: boolean } 或 多处 { "path": string, "edits": [{ "old_string": string, "new_string": string, "replace_all"?: boolean }] }
 - outline: 列出文件的定义大纲(函数/类/结构体等 + 行号),不读全文即可掌握文件结构;之后用 read_file 带 offset 精确读需要的区段。args: { "path": string }
@@ -546,7 +546,15 @@ async function execTool(
       if (/\.(pdf|docx|xlsx|pptx)$/i.test(path)) {
         return { result: await agentReadDoc(path) };
       }
-      return { result: await agentReadFile(path, asNum(a.offset), asNum(a.limit), readChars) };
+      return {
+        result: await agentReadFile(
+          path,
+          asNum(a.offset),
+          asNum(a.limit),
+          readChars,
+          a.symbol ? asStr(a.symbol) : undefined,
+        ),
+      };
     }
     case "list_dir": {
       const entries = await agentListDir(a.path ? asStr(a.path) : undefined);

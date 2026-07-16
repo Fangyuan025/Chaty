@@ -204,7 +204,13 @@ pub fn agent_read_file(
     offset: Option<usize>,
     limit: Option<usize>,
     max_chars: Option<usize>,
+    symbol: Option<String>,
 ) -> Result<String, String> {
+    // Symbol mode: return the definition body + its callers instead of the
+    // raw file — a big file becomes one focused, ready-to-reason context.
+    if let Some(sym) = symbol.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        return read_symbol_context(&path, sym);
+    }
     const MAX_READ_LINES: usize = 12000; // hard per-call line ceiling
     const MAX_LINE_CHARS: usize = 4000; // pathological single lines (minified JS)
 
@@ -936,6 +942,147 @@ pub fn agent_outline(path: String) -> Result<String, String> {
     }
     if out.is_empty() {
         return Ok("(未识别到符号定义 — 用 read_file 直接查看 / no definitions recognized)".to_string());
+    }
+    Ok(out)
+}
+
+/// `read_file` with `symbol`: the enclosing definition (brace-matched for
+/// {}-languages, indentation-scoped for Python), plus every call site in the
+/// workspace — target + callers in one round trip.
+fn read_symbol_context(path: &str, sym: &str) -> Result<String, String> {
+    let root = workspace()?;
+    let abs = resolve(path)?;
+    let text = std::fs::read_to_string(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
+    let lines: Vec<&str> = text.lines().collect();
+
+    // Locate the definition line: a symbol line that names `sym`.
+    let word_hit = |line: &str| -> bool {
+        line.match_indices(sym).any(|(i, _)| {
+            let before = line[..i].chars().next_back();
+            let after = line[i + sym.len()..].chars().next();
+            !matches!(before, Some(c) if c.is_alphanumeric() || c == '_')
+                && !matches!(after, Some(c) if c.is_alphanumeric() || c == '_')
+        })
+    };
+    let def_idx = lines.iter().position(|l| is_symbol_line(l.trim_start()) && word_hit(l));
+    let Some(def_idx) = def_idx else {
+        // Help the model recover: list the definitions this file DOES have.
+        let mut have = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if is_symbol_line(l.trim_start()) {
+                have.push(format!("  L{}: {}", i + 1, l.trim().chars().take(120).collect::<String>()));
+                if have.len() >= 20 {
+                    break;
+                }
+            }
+        }
+        return Err(format!(
+            "文件里没有名为 {sym} 的定义 (no definition named {sym} in {path})。该文件的定义有:\n{}",
+            have.join("\n")
+        ));
+    };
+
+    // Block extent: brace matching from the def line; if the def line opens no
+    // brace (Python etc.), take the indentation-scoped suite instead.
+    let def_indent = lines[def_idx].len() - lines[def_idx].trim_start().len();
+    let mut end_idx = def_idx;
+    let mut depth = 0i32;
+    let mut saw_brace = false;
+    'outer: for (i, line) in lines.iter().enumerate().skip(def_idx) {
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    saw_brace = true;
+                }
+                '}' => {
+                    depth -= 1;
+                    if saw_brace && depth == 0 {
+                        end_idx = i;
+                        break 'outer;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if i > def_idx + 400 {
+            end_idx = i;
+            break;
+        }
+        end_idx = i;
+    }
+    if !saw_brace {
+        // Indentation scope (def foo(): …) — run until a non-blank line at or
+        // below the definition's indentation.
+        end_idx = def_idx;
+        for (i, line) in lines.iter().enumerate().skip(def_idx + 1) {
+            if line.trim().is_empty() {
+                end_idx = i;
+                continue;
+            }
+            let ind = line.len() - line.trim_start().len();
+            if ind <= def_indent {
+                break;
+            }
+            end_idx = i;
+            if i > def_idx + 400 {
+                break;
+            }
+        }
+        while end_idx > def_idx && lines[end_idx].trim().is_empty() {
+            end_idx -= 1;
+        }
+    }
+
+    let mut out = format!("[符号 {sym} · {path} L{}-L{}]\n", def_idx + 1, end_idx + 1);
+    for (i, line) in lines.iter().enumerate().take(end_idx + 1).skip(def_idx) {
+        out.push_str(&format!("{:>5}  {}\n", i + 1, line.trim_end()));
+    }
+
+    // Call sites across the workspace (word-boundary, def line excluded).
+    let rel_self = rel_display(&root, &abs);
+    let mut callers = Vec::new();
+    'walk: for entry in walkdir::WalkDir::new(&root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !(name.starts_with('.') && e.depth() > 0)
+                && !(e.file_type().is_dir() && SKIP_DIRS.contains(&name.as_ref()))
+        })
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry.metadata().map(|m| m.len() > SEARCH_MAX_FILE).unwrap_or(true) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(entry.path()) else { continue };
+        if bytes.iter().take(512).any(|&b| b == 0) {
+            continue;
+        }
+        let ftext = String::from_utf8_lossy(&bytes);
+        if !ftext.contains(sym) {
+            continue;
+        }
+        let frel = rel_display(&root, entry.path());
+        for (i, line) in ftext.lines().enumerate() {
+            if frel == rel_self && i >= def_idx && i <= end_idx {
+                continue; // the definition itself
+            }
+            if word_hit(line) {
+                callers.push(format!("{frel}:{}: {}", i + 1, line.trim().chars().take(140).collect::<String>()));
+                if callers.len() >= 12 {
+                    break 'walk;
+                }
+            }
+        }
+    }
+    if callers.is_empty() {
+        out.push_str("\n调用者 (callers): 工作区内没有其它引用 (no other references)\n");
+    } else {
+        out.push_str(&format!("\n调用者 (callers, {} 处):\n{}\n", callers.len(), callers.join("\n")));
     }
     Ok(out)
 }
@@ -2224,12 +2371,12 @@ mod tests {
         set_ws(&tmp);
 
         agent_write_file("sub/hi.txt".into(), "hello world\nsecond".into()).unwrap();
-        let read = agent_read_file("sub/hi.txt".into(), None, None, None).unwrap();
+        let read = agent_read_file("sub/hi.txt".into(), None, None, None, None).unwrap();
         assert!(read.contains("hello world"));
 
         // unique edit
         agent_edit_file("sub/hi.txt".into(), "hello".into(), "hi".into(), None).unwrap();
-        assert!(agent_read_file("sub/hi.txt".into(), None, None, None).unwrap().starts_with("hi world"));
+        assert!(agent_read_file("sub/hi.txt".into(), None, None, None, None).unwrap().starts_with("hi world"));
 
         // non-existent old_string errors
         assert!(agent_edit_file("sub/hi.txt".into(), "nope".into(), "x".into(), None).is_err());
@@ -2248,25 +2395,25 @@ mod tests {
         std::fs::write(tmp.join("big.txt"), &body).unwrap();
 
         // The headline behavior: a 1000-line source file is ONE read — no paging.
-        let full = agent_read_file("big.txt".into(), None, None, None).unwrap();
+        let full = agent_read_file("big.txt".into(), None, None, None, None).unwrap();
         assert!(full.contains("line 1000"));
         assert!(!full.contains("offset="));
 
         // Only when the char budget genuinely can't hold the file does it page,
         // and the footer must carry a FOLLOWABLE offset.
-        let page1 = agent_read_file("big.txt".into(), None, None, Some(4000)).unwrap();
+        let page1 = agent_read_file("big.txt".into(), None, None, Some(4000), None).unwrap();
         assert!(page1.contains("offset="));
         let tail = page1.rsplit("offset=").next().unwrap();
         let next: usize =
             tail.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap();
-        let page2 = agent_read_file("big.txt".into(), Some(next), None, Some(60_000)).unwrap();
+        let page2 = agent_read_file("big.txt".into(), Some(next), None, Some(60_000), None).unwrap();
         assert!(page2.starts_with(&format!("line {next}")));
         assert!(page2.contains("line 1000"));
         assert!(!page2.contains("offset="));
 
         // Small file: no footer at all.
         std::fs::write(tmp.join("small.txt"), "hello\nworld\n").unwrap();
-        let small = agent_read_file("small.txt".into(), None, None, None).unwrap();
+        let small = agent_read_file("small.txt".into(), None, None, None, None).unwrap();
         assert!(!small.contains("offset="));
 
         // A full-file diff snapshot (max_chars = 400_000) reads a large file
@@ -2274,7 +2421,7 @@ mod tests {
         // and its line counts are correct. ~100 KB / 2500 lines.
         let big: String = (1..=2500).map(|i| format!("content line number {i}\n")).collect();
         std::fs::write(tmp.join("huge.txt"), &big).unwrap();
-        let full_snapshot = agent_read_file("huge.txt".into(), None, None, Some(400_000)).unwrap();
+        let full_snapshot = agent_read_file("huge.txt".into(), None, None, Some(400_000), None).unwrap();
         assert!(full_snapshot.contains("content line number 1\n"));
         assert!(full_snapshot.contains("content line number 2500"));
         assert!(!full_snapshot.contains("offset="), "full-read snapshot must not paginate");
@@ -2396,6 +2543,53 @@ mod tests {
         assert_eq!(ensure_sudo_stdin("sudo apt-get install x"), "sudo -S apt-get install x");
         assert_eq!(ensure_sudo_stdin("sudo -S already"), "sudo -S already");
         assert_eq!(ensure_sudo_stdin("ls -la"), "ls -la");
+    }
+
+    /// read_file's symbol mode: brace-matched block for {}-languages,
+    /// indentation suite for Python, callers across the workspace, and a
+    /// helpful definition list when the symbol doesn't exist.
+    #[test]
+    fn read_file_symbol_context() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-sym-{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        set_ws(&tmp);
+        std::fs::write(
+            tmp.join("src/auth.ts"),
+            "export function refreshToken(s: Session) {\n  if (expired(s)) {\n    return issue(s.user);\n  }\n  return s.token;\n}\n\nexport function other() {\n  return 1;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("src/mw.ts"),
+            "import { refreshToken } from './auth';\nconst t = refreshToken(sess);\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("src/calc.py"),
+            "def add(a, b):\n    total = a + b\n    return total\n\ndef unrelated():\n    pass\n",
+        )
+        .unwrap();
+
+        // Brace language: exact block, not the whole file; callers listed.
+        let out = agent_read_file("src/auth.ts".into(), None, None, None, Some("refreshToken".into()))
+            .expect("symbol read");
+        eprintln!("{out}");
+        assert!(out.contains("L1-L6"), "block extent wrong:\n{out}");
+        assert!(!out.contains("function other"), "block leaked past its braces:\n{out}");
+        assert!(out.contains("mw.ts:2"), "caller missing:\n{out}");
+        assert!(out.contains("调用者"), "callers section missing:\n{out}");
+
+        // Python: indentation-scoped suite.
+        let out = agent_read_file("src/calc.py".into(), None, None, None, Some("add".into()))
+            .expect("py symbol read");
+        assert!(out.contains("L1-L3"), "python suite extent wrong:\n{out}");
+        assert!(!out.contains("unrelated"), "python suite leaked:\n{out}");
+
+        // Unknown symbol → error listing the definitions the file has.
+        let err = agent_read_file("src/auth.ts".into(), None, None, None, Some("nonexistent".into()))
+            .unwrap_err();
+        assert!(err.contains("refreshToken"), "recovery list missing: {err}");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// Fused code search: the file whose NAME matches and which holds the
