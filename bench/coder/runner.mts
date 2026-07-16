@@ -120,6 +120,14 @@ async function main() {
     const taskDir = path.join(tasksDir, name);
     const ws = mkdtempSync(path.join(tmpdir(), `chaty-bench-${name}-`));
     cpSync(path.join(taskDir, "workspace"), ws, { recursive: true });
+    // Re-point the instance venv's editable install at THIS run's copy, so the
+    // agent's own test runs exercise the code it is editing.
+    const cfgPath = path.join(taskDir, "grade_config.json");
+    if (existsSync(cfgPath)) {
+      const envBin = (JSON.parse(readFileSync(cfgPath, "utf8")) as { env_bin: string }).env_bin;
+      try { execFileSync("uv", ["pip", "install", "-q", "-e", ws, "--python", path.join(envBin, "python")], { stdio: "pipe" }); }
+      catch { /* editable reinstall is best-effort; PYTHONPATH in grade.py is the backstop */ }
+    }
     await bridge.call("agent_set_workspace", { path: ws });
 
     const instruction = readFileSync(path.join(taskDir, "task.md"), "utf8");

@@ -79,6 +79,12 @@ async function main() {
     const taskDir = path.join(tasksDir, name);
     const ws = mkdtempSync(path.join(tmpdir(), `chaty-bare-${name}-`));
     cpSync(path.join(taskDir, "workspace"), ws, { recursive: true });
+    const cfgPath = path.join(taskDir, "grade_config.json");
+    if (existsSync(cfgPath)) {
+      const envBin = (JSON.parse(readFileSync(cfgPath, "utf8")) as { env_bin: string }).env_bin;
+      try { execFileSync("uv", ["pip", "install", "-q", "-e", ws, "--python", path.join(envBin, "python")], { stdio: "pipe" }); }
+      catch { /* best-effort; grade.py PYTHONPATH is the backstop */ }
+    }
     await bridge.call("agent_set_workspace", { path: ws });
 
     const messages: Json[] = [

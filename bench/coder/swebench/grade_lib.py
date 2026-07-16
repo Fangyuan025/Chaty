@@ -3,12 +3,15 @@ grading needs no swebench install. Do not hand-edit the parser bodies."""
 
 import re
 
-class TestStatus:
-    PASSED = type("V", (), {"value": "PASSED"})()
-    FAILED = type("V", (), {"value": "FAILED"})()
-    ERROR = type("V", (), {"value": "ERROR"})()
-    SKIPPED = type("V", (), {"value": "SKIPPED"})()
-    XFAIL = type("V", (), {"value": "XFAIL"})()
+from enum import Enum
+
+
+class TestStatus(Enum):
+    FAILED = "FAILED"
+    PASSED = "PASSED"
+    SKIPPED = "SKIPPED"
+    ERROR = "ERROR"
+    XFAIL = "XFAIL"
 
 TestSpec = object  # signature compatibility only
 

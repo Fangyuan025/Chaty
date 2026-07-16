@@ -34,6 +34,13 @@ def main():
 
     env = os.environ.copy()
     env["PATH"] = cfg["env_bin"] + ":" + env["PATH"]
+    # The per-instance venv was editable-installed against the PRISTINE
+    # materialized workspace. Grading runs in a per-run COPY — put the copy
+    # first on PYTHONPATH so imports resolve to the code under test, not the
+    # original tree (repos here are pure Python; src/ covers src-layout).
+    env["PYTHONPATH"] = f"{ws}:{ws / 'src'}" + (
+        ":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
     p = subprocess.run(
         ["bash", "-c", cfg["cmd"]],
         cwd=ws,

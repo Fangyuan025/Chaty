@@ -154,9 +154,16 @@ def materialize(only_ids):
         sh(["git", "checkout", "-q", r["base_commit"]], cwd=ws)
         # Strip refs so the future fix commit is unreachable by name.
         sh(["git", "remote", "remove", "origin"], cwd=ws)
-        tags = subprocess.run(["git", "tag"], cwd=ws, capture_output=True, text=True).stdout.split()
-        if tags:
-            sh(["git", "tag", "-d", *tags], cwd=ws, stdout=subprocess.DEVNULL)
+        # Keep tags that are ancestors of base_commit (setuptools-scm derives
+        # versions from them — deleting ALL tags gave pytest "0.1.dev" and its
+        # own minversion check refused to run). Only future tags could leak
+        # the fix, so only those are dropped.
+        all_tags = set(subprocess.run(["git", "tag"], cwd=ws, capture_output=True, text=True).stdout.split())
+        past_tags = set(subprocess.run(["git", "tag", "--merged", "HEAD"], cwd=ws,
+                                       capture_output=True, text=True).stdout.split())
+        future_tags = sorted(all_tags - past_tags)
+        if future_tags:
+            sh(["git", "tag", "-d", *future_tags], cwd=ws, stdout=subprocess.DEVNULL)
         # NOTE: `git branch` prints "(HEAD detached at …)" on a detached HEAD —
         # for-each-ref lists only real branch refs.
         for b in subprocess.run(["git", "for-each-ref", "refs/heads", "--format=%(refname:short)"],
@@ -189,6 +196,34 @@ def materialize(only_ids):
         (tdir / "gold_patch.diff").write_text(r["patch"])
 
         write_grading(r, tdir, env)
+
+
+def fixdeps():
+    """Install each instance's official spec pip_packages (test deps) into its
+    env — `pip install -e .` alone doesn't bring pytest & friends. Best-effort
+    per package so one exotic dep (pyenchant needs a brew lib) doesn't sink
+    the rest; validate decides what's usable."""
+    subset = {r["instance_id"]: r for r in json.load(open(SUBSET))}
+    specs = json.load(open(SPECS))
+    for tdir in sorted(TASKS.iterdir()):
+        r = subset.get(tdir.name)
+        env = ENVS / tdir.name
+        if not r or not env.exists():
+            continue
+        s = specs.get(r["repo"], {}).get(str(r["version"]), {})
+        pkgs = list(s.get("pip_packages") or [])
+        cmd = s.get("test_cmd") or ""
+        if "pytest" in cmd and not any(p.split("==")[0].lower() == "pytest" for p in pkgs):
+            pkgs.append("pytest")
+        if not pkgs:
+            continue
+        py = str(env / "bin" / "python")
+        done, failed = [], []
+        for p in pkgs:
+            ok_ = subprocess.run(["uv", "pip", "install", "-q", "--python", py, p],
+                                 capture_output=True).returncode == 0
+            (done if ok_ else failed).append(p)
+        print(f"{tdir.name}: +{len(done)}" + (f" (failed: {failed})" if failed else ""))
 
 
 def validate():
@@ -249,6 +284,8 @@ if __name__ == "__main__":
         materialize(set(sys.argv[2:]))
     elif mode == "regrade":
         regrade()
+    elif mode == "fixdeps":
+        fixdeps()
     elif mode == "validate":
         validate()
     else:

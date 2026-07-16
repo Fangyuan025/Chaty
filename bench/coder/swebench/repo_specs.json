@@ -3,699 +3,1565 @@
   "1.7": {
    "python": "3.5",
    "install": "python setup.py install",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": [
+    "setuptools"
+   ],
+   "pre_install": [
+    "apt-get update && apt-get install -y locales",
+    "echo 'en_US UTF-8' > /etc/locale.gen",
+    "locale-gen en_US.UTF-8"
+   ]
   },
   "1.8": {
    "python": "3.5",
    "install": "python setup.py install",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": [
+    "setuptools"
+   ],
+   "pre_install": [
+    "apt-get update && apt-get install -y locales",
+    "echo 'en_US UTF-8' > /etc/locale.gen",
+    "locale-gen en_US.UTF-8"
+   ]
   },
   "1.9": {
    "python": "3.5",
    "install": "python setup.py install",
-   "test_cmd": "./tests/runtests.py --verbosity 2"
+   "test_cmd": "./tests/runtests.py --verbosity 2",
+   "pip_packages": [
+    "setuptools"
+   ],
+   "pre_install": [
+    "apt-get update && apt-get install -y locales",
+    "echo 'en_US UTF-8' > /etc/locale.gen",
+    "locale-gen en_US.UTF-8"
+   ]
   },
   "1.10": {
    "python": "3.5",
    "install": "python setup.py install",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": [
+    "setuptools"
+   ],
+   "pre_install": [
+    "apt-get update && apt-get install -y locales",
+    "echo 'en_US UTF-8' > /etc/locale.gen",
+    "locale-gen en_US.UTF-8"
+   ]
   },
   "1.11": {
    "python": "3.5",
    "install": "python setup.py install",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": [
+    "setuptools"
+   ],
+   "pre_install": [
+    "apt-get update && apt-get install -y locales",
+    "echo 'en_US UTF-8' > /etc/locale.gen",
+    "locale-gen en_US.UTF-8"
+   ]
   },
   "2.0": {
    "python": "3.5",
    "install": "python setup.py install",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": [
+    "setuptools"
+   ],
+   "pre_install": [
+    "apt-get update && apt-get install -y locales",
+    "echo 'en_US UTF-8' > /etc/locale.gen",
+    "locale-gen en_US.UTF-8"
+   ]
   },
   "2.1": {
    "python": "3.5",
    "install": "python setup.py install",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": [
+    "setuptools"
+   ],
+   "pre_install": [
+    "apt-get update && apt-get install -y locales",
+    "echo 'en_US UTF-8' > /etc/locale.gen",
+    "locale-gen en_US.UTF-8"
+   ]
   },
   "2.2": {
    "python": "3.5",
    "install": "python setup.py install",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": [
+    "setuptools"
+   ],
+   "pre_install": [
+    "apt-get update && apt-get install -y locales",
+    "echo 'en_US UTF-8' > /etc/locale.gen",
+    "locale-gen en_US.UTF-8"
+   ]
   },
   "1.4": {
    "python": "3.5",
    "install": "python setup.py install",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   },
   "1.5": {
    "python": "3.5",
    "install": "python setup.py install",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   },
   "1.6": {
    "python": "3.5",
    "install": "python setup.py install",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   },
   "3.0": {
    "python": "3.6",
    "install": "python -m pip install -e .",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   },
   "3.1": {
    "python": "3.6",
    "install": "python -m pip install -e .",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   },
   "3.2": {
    "python": "3.6",
    "install": "python -m pip install -e .",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   },
   "4.0": {
    "python": "3.8",
    "install": "python -m pip install -e .",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   },
   "4.1": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   },
   "4.2": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   },
   "5.0": {
    "python": "3.11",
    "install": "python -m pip install -e .",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   },
   "5.1": {
    "python": "3.11",
    "install": "python -m pip install -e .",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   },
   "5.2": {
    "python": "3.11",
    "install": "python -m pip install -e .",
-   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1"
+   "test_cmd": "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+   "pip_packages": null,
+   "pre_install": null
   }
  },
  "sympy/sympy": {
   "0.7": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.0": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.1": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.10": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.11": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.12": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.2": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.4": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.5": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.6": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.7": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.8": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.9": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0",
+    "flake8-comprehensions"
+   ],
+   "pre_install": null
   },
   "1.13": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0"
+   ],
+   "pre_install": null
   },
   "1.14": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose"
+   "test_cmd": "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose",
+   "pip_packages": [
+    "mpmath==1.3.0"
+   ],
+   "pre_install": null
   }
  },
  "pytest-dev/pytest": {
   "4.4": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "atomicwrites==1.4.1",
+    "attrs==23.1.0",
+    "more-itertools==10.1.0",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "setuptools==68.0.0",
+    "six==1.16.0"
+   ],
+   "pre_install": null
   },
   "4.5": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "atomicwrites==1.4.1",
+    "attrs==23.1.0",
+    "more-itertools==10.1.0",
+    "pluggy==0.11.0",
+    "py==1.11.0",
+    "setuptools==68.0.0",
+    "six==1.16.0",
+    "wcwidth==0.2.6"
+   ],
+   "pre_install": null
   },
   "4.6": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "atomicwrites==1.4.1",
+    "attrs==23.1.0",
+    "more-itertools==10.1.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "six==1.16.0",
+    "wcwidth==0.2.6"
+   ],
+   "pre_install": null
   },
   "5.0": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "atomicwrites==1.4.1",
+    "attrs==23.1.0",
+    "more-itertools==10.1.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "wcwidth==0.2.6"
+   ],
+   "pre_install": null
   },
   "5.1": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "atomicwrites==1.4.1",
+    "attrs==23.1.0",
+    "more-itertools==10.1.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "wcwidth==0.2.6"
+   ],
+   "pre_install": null
   },
   "5.2": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "atomicwrites==1.4.1",
+    "attrs==23.1.0",
+    "more-itertools==10.1.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "wcwidth==0.2.6"
+   ],
+   "pre_install": null
   },
   "5.3": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "attrs==23.1.0",
+    "more-itertools==10.1.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "wcwidth==0.2.6"
+   ],
+   "pre_install": null
   },
   "5.4": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "py==1.11.0",
+    "packaging==23.1",
+    "attrs==23.1.0",
+    "more-itertools==10.1.0",
+    "pluggy==0.13.1"
+   ],
+   "pre_install": null
   },
   "6.0": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "attrs==23.1.0",
+    "iniconfig==2.0.0",
+    "more-itertools==10.1.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "toml==0.10.2"
+   ],
+   "pre_install": null
   },
   "6.2": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "attrs==23.1.0",
+    "iniconfig==2.0.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "toml==0.10.2"
+   ],
+   "pre_install": null
   },
   "6.3": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "attrs==23.1.0",
+    "iniconfig==2.0.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "toml==0.10.2"
+   ],
+   "pre_install": [
+    "sed -i 's/>=>=/>=/' setup.cfg"
+   ]
   },
   "7.0": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "attrs==23.1.0",
+    "iniconfig==2.0.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0"
+   ],
+   "pre_install": null
   },
   "7.1": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "attrs==23.1.0",
+    "iniconfig==2.0.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "tomli==2.0.1"
+   ],
+   "pre_install": null
   },
   "7.2": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "attrs==23.1.0",
+    "iniconfig==2.0.0",
+    "packaging==23.1",
+    "pluggy==0.13.1",
+    "py==1.11.0",
+    "tomli==2.0.1"
+   ],
+   "pre_install": null
   },
   "7.4": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "iniconfig==2.0.0",
+    "packaging==23.1",
+    "pluggy==1.3.0",
+    "exceptiongroup==1.1.3",
+    "tomli==2.0.1"
+   ],
+   "pre_install": null
   },
   "8.0": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "iniconfig==2.0.0",
+    "packaging==23.1",
+    "pluggy==1.3.0",
+    "exceptiongroup==1.1.3",
+    "tomli==2.0.1"
+   ],
+   "pre_install": null
   },
   "8.1": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "iniconfig==2.0.0",
+    "packaging==23.1",
+    "pluggy==1.3.0",
+    "exceptiongroup==1.1.3",
+    "tomli==2.0.1"
+   ],
+   "pre_install": null
   },
   "8.2": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "iniconfig==2.0.0",
+    "packaging==23.1",
+    "pluggy==1.3.0",
+    "exceptiongroup==1.1.3",
+    "tomli==2.0.1"
+   ],
+   "pre_install": null
   },
   "8.3": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "iniconfig==2.0.0",
+    "packaging==23.1",
+    "pluggy==1.3.0",
+    "exceptiongroup==1.1.3",
+    "tomli==2.0.1"
+   ],
+   "pre_install": null
   },
   "8.4": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "iniconfig==2.0.0",
+    "packaging==23.1",
+    "pluggy==1.3.0",
+    "exceptiongroup==1.1.3",
+    "tomli==2.0.1"
+   ],
+   "pre_install": null
   }
  },
  "pylint-dev/pylint": {
   "2.10": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.11": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.13": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.14": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.15": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.16": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.17": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.8": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "pyenchant==3.2"
+   ],
+   "pre_install": [
+    "apt-get update && apt-get install -y libenchant-2-dev hunspell-en-us"
+   ]
   },
   "2.9": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "3.0": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "astroid==3.0.0a6",
+    "setuptools"
+   ],
+   "pre_install": null
   },
   "3.1": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "astroid==3.0.0a6",
+    "setuptools"
+   ],
+   "pre_install": null
   },
   "3.2": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "astroid==3.0.0a6",
+    "setuptools"
+   ],
+   "pre_install": null
   },
   "3.3": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "astroid==3.0.0a6",
+    "setuptools"
+   ],
+   "pre_install": null
   },
   "4.0": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "astroid==3.0.0a6",
+    "setuptools"
+   ],
+   "pre_install": null
   }
  },
  "psf/requests": {
   "0.7": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "0.8": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "0.9": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "0.11": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "0.13": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "0.14": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "1.1": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "1.2": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.0": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.2": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.3": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.4": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.5": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.7": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.8": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.9": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.10": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.11": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.12": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.17": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.18": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.19": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.22": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.26": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.25": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.27": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "2.31": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   },
   "3.0": {
    "python": "3.9",
    "install": "python -m pip install .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": null,
+   "pre_install": null
   }
  },
  "sphinx-doc/sphinx": {
   "1.5": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "1.6": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "1.7": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "1.8": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "2.0": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "2.1": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "2.2": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "2.3": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "2.4": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "3.0": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+    "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+    "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+    "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+    "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+    "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+    "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+    "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+   ]
   },
   "3.1": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+    "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+    "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+    "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+    "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+    "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+    "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+    "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+   ]
   },
   "3.2": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+    "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+    "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+    "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+    "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+    "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+    "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+    "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+   ]
   },
   "3.3": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+    "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+    "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+    "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+    "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+    "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+    "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+    "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+   ]
   },
   "3.4": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+    "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+    "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+    "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+    "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+    "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+    "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+    "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+   ]
   },
   "3.5": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+    "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+    "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+    "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+    "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+    "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+    "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+    "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+   ]
   },
   "4.0": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+    "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+    "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+    "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+    "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+    "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+    "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+    "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+   ]
   },
   "4.1": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+    "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+    "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+    "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+    "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+    "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+    "grep -q 'sphinxcontrib-htmlhelp>=2.0.0' setup.py && sed -i 's/sphinxcontrib-htmlhelp>=2.0.0/sphinxcontrib-htmlhelp>=2.0.0,<=2.0.4/' setup.py || sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+    "grep -q 'sphinxcontrib-serializinghtml>=1.1.5' setup.py && sed -i 's/sphinxcontrib-serializinghtml>=1.1.5/sphinxcontrib-serializinghtml>=1.1.5,<=1.1.9/' setup.py || sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+   ]
   },
   "4.2": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+    "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+    "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+    "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+    "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+    "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+    "sed -i 's/sphinxcontrib-htmlhelp>=2.0.0/sphinxcontrib-htmlhelp>=2.0.0,<=2.0.4/' setup.py",
+    "sed -i 's/sphinxcontrib-serializinghtml>=1.1.5/sphinxcontrib-serializinghtml>=1.1.5,<=1.1.9/' setup.py"
+   ]
   },
   "4.3": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+    "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+    "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+    "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+    "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+    "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+    "sed -i 's/sphinxcontrib-htmlhelp>=2.0.0/sphinxcontrib-htmlhelp>=2.0.0,<=2.0.4/' setup.py",
+    "sed -i 's/sphinxcontrib-serializinghtml>=1.1.5/sphinxcontrib-serializinghtml>=1.1.5,<=1.1.9/' setup.py"
+   ]
   },
   "4.4": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+    "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+    "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+    "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+    "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+    "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+    "sed -i 's/sphinxcontrib-htmlhelp>=2.0.0/sphinxcontrib-htmlhelp>=2.0.0,<=2.0.4/' setup.py",
+    "sed -i 's/sphinxcontrib-serializinghtml>=1.1.5/sphinxcontrib-serializinghtml>=1.1.5,<=1.1.9/' setup.py"
+   ]
   },
   "4.5": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "5.0": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "5.1": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "5.2": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "5.3": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "6.0": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "6.2": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "7.0": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "7.1": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini"
+   ]
   },
   "7.2": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "apt-get update && apt-get install -y graphviz"
+   ]
   },
   "7.3": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "apt-get update && apt-get install -y graphviz"
+   ]
   },
   "7.4": {
    "python": "3.9",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "apt-get update && apt-get install -y graphviz"
+   ]
   },
   "8.0": {
    "python": "3.10",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "apt-get update && apt-get install -y graphviz"
+   ]
   },
   "8.1": {
    "python": "3.10",
    "install": "python -m pip install -e .[test]",
-   "test_cmd": "tox --current-env -epy39 -v --"
+   "test_cmd": "tox --current-env -epy39 -v --",
+   "pip_packages": [
+    "tox==4.16.0",
+    "tox-current-env==0.0.11",
+    "Jinja2==3.0.3"
+   ],
+   "pre_install": [
+    "sed -i 's/pytest/pytest -rA/' tox.ini",
+    "apt-get update && apt-get install -y graphviz"
+   ]
   }
  },
  "pallets/flask": {
   "2.0": {
    "python": "3.9",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "setuptools==70.0.0",
+    "Werkzeug==2.3.7",
+    "Jinja2==3.0.1",
+    "itsdangerous==2.1.2",
+    "click==8.0.1",
+    "MarkupSafe==2.1.3"
+   ],
+   "pre_install": null
   },
   "2.1": {
    "python": "3.10",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "setuptools==70.0.0",
+    "click==8.1.3",
+    "itsdangerous==2.1.2",
+    "Jinja2==3.1.2",
+    "MarkupSafe==2.1.1",
+    "Werkzeug==2.3.7"
+   ],
+   "pre_install": null
   },
   "2.2": {
    "python": "3.11",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "setuptools==70.0.0",
+    "click==8.1.3",
+    "itsdangerous==2.1.2",
+    "Jinja2==3.1.2",
+    "MarkupSafe==2.1.1",
+    "Werkzeug==2.3.7"
+   ],
+   "pre_install": null
   },
   "2.3": {
    "python": "3.11",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "setuptools==70.0.0",
+    "click==8.1.3",
+    "itsdangerous==2.1.2",
+    "Jinja2==3.1.2",
+    "MarkupSafe==2.1.1",
+    "Werkzeug==2.3.7"
+   ],
+   "pre_install": null
   },
   "3.0": {
    "python": "3.11",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "setuptools==70.0.0",
+    "click==8.1.3",
+    "itsdangerous==2.1.2",
+    "Jinja2==3.1.2",
+    "MarkupSafe==2.1.1",
+    "Werkzeug==2.3.7"
+   ],
+   "pre_install": null
   },
   "3.1": {
    "python": "3.11",
    "install": "python -m pip install -e .",
-   "test_cmd": "pytest -rA"
+   "test_cmd": "pytest -rA",
+   "pip_packages": [
+    "setuptools==70.0.0",
+    "click==8.1.3",
+    "itsdangerous==2.1.2",
+    "Jinja2==3.1.2",
+    "MarkupSafe==2.1.1",
+    "Werkzeug==2.3.7"
+   ],
+   "pre_install": null
   }
  }
 }
