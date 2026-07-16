@@ -257,6 +257,7 @@ pub fn run() {
             agent::agent_list_grants,
             agent::agent_clear_grants,
             agent::agent_read_file,
+            agent::agent_read_doc,
             agent::agent_write_file,
             agent::agent_edit_file,
             agent::agent_multi_edit,

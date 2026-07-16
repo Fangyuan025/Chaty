@@ -245,6 +245,12 @@ export async function agentReadFile(
 ): Promise<string> {
   return invoke<string>("agent_read_file", { path, offset, limit, maxChars });
 }
+
+/** Extract text (+ cached embedded images) from a workspace document —
+ *  pdf / docx / xlsx / pptx. Scanned PDFs get automatic OCR. */
+export async function agentReadDoc(path: string): Promise<string> {
+  return await invoke<string>("agent_read_doc", { path });
+}
 export async function agentWriteFile(path: string, content: string): Promise<string> {
   return invoke<string>("agent_write_file", { path, content });
 }
@@ -1007,7 +1013,7 @@ export async function pickAttachmentFile(): Promise<string | null> {
       {
         name: "文档 / 图片",
         extensions: [
-          "txt", "md", "markdown", "pdf", "csv", "json", "log", "rs", "py",
+          "txt", "md", "markdown", "pdf", "docx", "xlsx", "pptx", "csv", "json", "log", "rs", "py",
           "js", "ts", "tsx", "jsx", "java", "c", "cpp", "h", "hpp", "go",
           "rb", "php", "html", "css", "xml", "yaml", "yml", "toml", "ini", "sh",
           "png", "jpg", "jpeg", "webp", "bmp", "gif",

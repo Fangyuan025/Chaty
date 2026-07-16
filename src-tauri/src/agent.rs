@@ -790,8 +790,112 @@ pub async fn browser_render_html(app: tauri::AppHandle, html: String) -> Result<
 /// `view_image` tool. Enforces the same sandbox as every other file tool, and
 /// checks the file exists and is a supported image — so the vision model only
 /// ever sees images from inside the workspace.
+/// Extract readable text (and cached embedded images) from a document in the
+/// workspace — pdf / docx / xlsx / pptx. `read_file` routes here from the
+/// frontend so the Code agent reads documents the same way chat attachments
+/// do. Scanned / image-only PDFs with almost no text layer get a few embedded
+/// images OCR'd automatically so text-only models still see the content;
+/// vision models can additionally `view_image` the cached page images.
+#[tauri::command]
+pub async fn agent_read_doc(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    use tauri::Manager as _;
+    let abs = resolve(&path)?;
+    let models_dir = app.path().app_data_dir().ok().map(|d| d.join("ocr-models"));
+    read_doc_core(abs, models_dir).await
+}
+
+/// Testable core of `agent_read_doc` — `models_dir` enables the scanned-PDF
+/// OCR fallback (None in contexts without an app handle).
+pub(crate) async fn read_doc_core(
+    abs: PathBuf,
+    models_dir: Option<PathBuf>,
+) -> Result<String, String> {
+    const DOC_MAX_CHARS: usize = 40_000;
+
+    if !abs.is_file() {
+        return Err(format!("文件不存在 (file not found): {}", abs.display()));
+    }
+    let ext = abs.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+    let abs_str = abs.to_string_lossy().to_string();
+    let text = match ext.as_str() {
+        "pdf" => {
+            let p = abs_str.clone();
+            tokio::task::spawn_blocking(move || pdf_extract::extract_text(&p))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| format!("PDF 解析失败 (PDF parse failed): {e}"))?
+        }
+        "docx" => crate::rag::extract_docx(&abs_str)?,
+        "xlsx" => crate::rag::extract_xlsx(&abs_str)?,
+        "pptx" => crate::rag::extract_pptx(&abs_str)?,
+        _ => {
+            return Err(format!(
+                "不支持的文档类型 (unsupported document type): .{ext} — 文本文件请直接用 read_file"
+            ))
+        }
+    };
+
+    let images = {
+        let p = abs_str.clone();
+        tokio::task::spawn_blocking(move || crate::docimg::extract_embedded_images(&p, 8))
+            .await
+            .unwrap_or_default()
+    };
+
+    let mut text = text.trim().to_string();
+    let total = text.chars().count();
+    let truncated = total > DOC_MAX_CHARS;
+    if truncated {
+        text = text.chars().take(DOC_MAX_CHARS).collect();
+    }
+
+    // Scanned document: the text layer is empty/thin but pages exist as
+    // images — OCR a few so the content is readable without vision.
+    let mut ocr_note = String::new();
+    if total < 200 && !images.is_empty() {
+        if let Some(models_dir) = models_dir {
+            for (i, img) in images.iter().take(4).enumerate() {
+                if let Ok(t) = crate::ocr::ocr_image(models_dir.clone(), img.clone()).await {
+                    let t = t.trim().to_string();
+                    if !t.is_empty() {
+                        ocr_note.push_str(&format!("\n--- 图片 {} OCR ---\n{t}\n", i + 1));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut out = format!(
+        "[.{ext} 文档已提取 {total} 字符{} (document text extracted)]\n{text}",
+        if truncated { ",超出预算已截断 (truncated)" } else { "" }
+    );
+    if !ocr_note.is_empty() {
+        out.push_str("\n\n[文本层极少——已自动 OCR 内嵌图片 (scanned document; embedded images OCR'd):]");
+        out.push_str(&ocr_note);
+    }
+    if !images.is_empty() {
+        out.push_str(&format!(
+            "\n\n[内嵌图片 ×{} 已缓存——需要看图表/照片内容时,用 view_image 打开这些路径 (embedded images; open with view_image):]\n{}",
+            images.len(),
+            images.join("\n")
+        ));
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 pub fn agent_resolve_image(path: String) -> Result<String, String> {
+    // Images extracted from documents (agent_read_doc / chat attachments)
+    // live in the app's own temp cache — no directory grant needed. Guard
+    // against `..` escapes by re-checking the CANONICAL path's prefix.
+    let doc_cache = std::env::temp_dir().join("chaty-doc-imgs");
+    if let (Ok(canon), Ok(cache_canon)) =
+        (std::fs::canonicalize(&path), std::fs::canonicalize(&doc_cache))
+    {
+        if canon.starts_with(&cache_canon) && canon.is_file() {
+            return Ok(canon.to_string_lossy().to_string());
+        }
+    }
     let abs = resolve(&path)?;
     let ext = abs
         .extension()
@@ -2229,6 +2333,87 @@ mod tests {
         assert_eq!(ensure_sudo_stdin("sudo apt-get install x"), "sudo -S apt-get install x");
         assert_eq!(ensure_sudo_stdin("sudo -S already"), "sudo -S already");
         assert_eq!(ensure_sudo_stdin("ls -la"), "ls -la");
+    }
+
+    /// read_doc_core must extract document text (docx synthesized in-test —
+    /// a zip with word/document.xml) and reject unsupported extensions.
+    #[test]
+    fn read_doc_extracts_docx_text() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-doc-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+
+        let docx = tmp.join("spec.docx");
+        {
+            use std::io::Write as _;
+            let f = std::fs::File::create(&docx).unwrap();
+            let mut z = zip::ZipWriter::new(f);
+            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            z.start_file("word/document.xml", opts).unwrap();
+            z.write_all(
+                br#"<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>agent reads documents now</w:t></w:r></w:p></w:body></w:document>"#,
+            )
+            .unwrap();
+            z.finish().unwrap();
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let out = rt.block_on(read_doc_core(docx, None)).expect("docx extract");
+        assert!(out.contains("agent reads documents now"), "text missing: {out}");
+        assert!(out.contains(".docx 文档已提取"), "header missing: {out}");
+
+        // Unsupported extension → clear steer back to read_file.
+        std::fs::write(tmp.join("notes.rtf"), b"x").unwrap();
+        let err = rt.block_on(read_doc_core(tmp.join("notes.rtf"), None)).unwrap_err();
+        assert!(err.contains("read_file"), "steer missing: {err}");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Real-PDF e2e (fixtures generated outside the test):
+    ///   CHATY_TEST_PDF=<text+image.pdf> CHATY_TEST_PDF_SCAN=<image-only.pdf> \
+    ///   cargo test --lib read_doc_pdf_e2e -- --ignored --nocapture
+    /// The scanned fixture exercises the automatic-OCR fallback (needs the
+    /// app's ocr-models dir, downloaded on first OCR use).
+    #[test]
+    #[ignore]
+    fn read_doc_pdf_e2e() {
+        let _g = serial();
+        let pdf = std::env::var("CHATY_TEST_PDF").expect("set CHATY_TEST_PDF");
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-pdf-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::copy(&pdf, tmp.join("doc.pdf")).unwrap();
+        set_ws(&tmp);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let out = rt.block_on(read_doc_core(tmp.join("doc.pdf"), None)).expect("pdf extract");
+        eprintln!("--- text+image pdf ---\n{}", out.chars().take(900).collect::<String>());
+        // NOTE: Chrome's PDF text uses ligatures (ﬁ) — assert ligature-free words.
+        assert!(out.contains("text layer and an embedded chart"), "pdf text layer missing: {out}");
+        assert!(out.contains("内嵌图片"), "embedded image list missing: {out}");
+        // The listed image paths must be viewable without a dir grant.
+        let img = out.lines().find(|l| l.contains("chaty-doc-imgs")).expect("image path");
+        let resolved = agent_resolve_image(img.trim().to_string()).expect("cache whitelist");
+        assert!(std::path::Path::new(&resolved).is_file());
+
+        if let Ok(scan) = std::env::var("CHATY_TEST_PDF_SCAN") {
+            std::fs::copy(&scan, tmp.join("scan.pdf")).unwrap();
+            let models =
+                dirs_home().join("Library/Application Support/com.chaty.desktop/ocr-models");
+            let out =
+                rt.block_on(read_doc_core(tmp.join("scan.pdf"), Some(models))).expect("scan pdf");
+            eprintln!("--- scanned pdf ---\n{}", out.chars().take(900).collect::<String>());
+            assert!(out.contains("OCR"), "scanned pdf should carry OCR output: {out}");
+            assert!(
+                out.to_uppercase().contains("SCANNED FIXTURE TOKEN"),
+                "OCR should read the page text: {out}"
+            );
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    fn dirs_home() -> PathBuf {
+        PathBuf::from(std::env::var("HOME").unwrap_or_default())
     }
 
     /// The piped password must reach REAL `sudo -S` (the `cat` test above only
