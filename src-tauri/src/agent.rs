@@ -2858,6 +2858,46 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    /// Real-vitest probe (fixture project prepared outside the test):
+    ///   CHATY_TEST_VC_JS=<fixture dir with package.json+vitest installed> \
+    ///   cargo test --lib validate_change_js_probe -- --ignored --nocapture
+    /// The fixture's src/math.js is broken (add = a - b); the related
+    /// src/math.test.js must be selected (other.test.js not), fail, then pass
+    /// after the fix.
+    #[test]
+    #[ignore]
+    fn validate_change_js_probe() {
+        let _g = serial();
+        let dir = std::env::var("CHATY_TEST_VC_JS").expect("set CHATY_TEST_VC_JS=<fixture dir>");
+        set_ws(std::path::Path::new(&dir));
+        // Reset the fixture to its broken state.
+        std::fs::write(
+            std::path::Path::new(&dir).join("src/math.js"),
+            "export function add(a, b) { return a - b; }\n",
+        )
+        .unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let out = rt
+            .block_on(agent_validate_change(Some(vec!["src/math.js".into()])))
+            .expect("validate js");
+        eprintln!("{out}");
+        assert!(out.contains("vitest"), "vitest runner not picked: {out}");
+        assert!(out.contains("math.test.js"), "related test not selected: {out}");
+        assert!(!out.contains("other.test.js"), "unrelated test selected: {out}");
+        assert!(out.contains("✗ 失败"), "failure not reported: {out}");
+
+        std::fs::write(
+            std::path::Path::new(&dir).join("src/math.js"),
+            "export function add(a, b) { return a + b; }\n",
+        )
+        .unwrap();
+        let out = rt
+            .block_on(agent_validate_change(Some(vec!["src/math.js".into()])))
+            .expect("validate js 2");
+        assert!(out.contains("✓ 通过"), "fixed code must pass: {out}");
+    }
+
     /// The syntax gate: breaking a previously-parsable file must produce the
     /// loud note; fixing it back must stay silent; a fresh broken file gets
     /// the generic warning; uncheckable types are untouched.
