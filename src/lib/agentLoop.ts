@@ -267,7 +267,7 @@ const TOOLS_DOC = `
 - glob: 按通配符找文件(如 "src/**/*.ts")。args: { "pattern": string }
 - grep: 用正则搜索文件内容(需要正则或精确匹配时用)。args: { "pattern": string, "path"?: string, "glob"?: string }
 - search_files: 按关键词(字面,不是正则)一次性搜文件名和文件内容 —— "跟 X 有关的东西在哪"最快用它。传 names_only=true 只搜文件名。args: { "query": string, "path"?: string, "names_only"?: boolean }
-- search_code: 按含义搜索代码("哪里处理登录鉴权"),返回排序过的相关代码块(文件+行号)。探索陌生代码库优先用它。args: { "query": string, "k"?: number }
+- search_code: 按含义提问代码库("哪里处理登录鉴权"),一次调用返回**按相关度排序的文件清单**(融合语义、文件名与精确短语信号),每个文件附命中的关键定义(函数/类 + 行号)和最佳片段——直接据此挑文件读,不需要自己再 grep 多轮过滤。探索陌生代码库优先用它。args: { "query": string, "k"?: number(文件数,默认 6) }
 - search_docs: 检索用户的知识库文档(需求文档、设计稿、笔记)。当任务涉及用户自己的资料时用。args: { "query": string }
 - bash: 在工作区里执行 shell 命令(macOS 沙箱,写限工作区)。会等命令结束;不要用它启动 dev server 等不会退出的进程。args: { "command": string, "timeout_secs"?: number }
 - bash_bg: 在后台启动长时间运行的命令(dev server、慢构建、长测试),立即返回一个 id,期间你可以继续做别的;它结束时系统会自动把结果告诉你。**不支持 sudo**(后台沙盒无交互输入,密码送不进去)——需要特权的命令必须用前台 bash。args: { "command": string }
@@ -581,13 +581,7 @@ async function execTool(
     case "search_code": {
       const q = asStr(a.query);
       if (!q) return { result: 'ERROR: 缺少 "query" 参数 (missing "query")' };
-      const hits = await agentSearchCode(q, asNum(a.k));
-      if (!hits.length) return { result: "(没有匹配的代码 / no matches)" };
-      return {
-        result: hits
-          .map((h) => `── ${h.path}:${h.line} ──\n${h.snippet}`)
-          .join("\n\n"),
-      };
+      return { result: await agentSearchCode(q, asNum(a.k)) };
     }
     case "search_docs": {
       const q = asStr(a.query);

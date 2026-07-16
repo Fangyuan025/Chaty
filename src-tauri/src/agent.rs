@@ -1171,33 +1171,30 @@ fn code_tokens(s: &str) -> Vec<String> {
     out
 }
 
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct CodeHit {
-    pub path: String,
-    pub line: usize,
-    pub snippet: String,
-    pub score: f32,
-}
 
-/// BM25-ranked search over the workspace. Chunks are overlapping line windows;
-/// results carry the path + start line + snippet.
+/// Ranked code search: BM25 over line-window chunks, AGGREGATED PER FILE and
+/// fused with a filename-match signal and an exact-phrase boost, then dressed
+/// with the file's matching definition lines (same heuristic as `outline`).
+/// One call answers "which files handle X, and through which functions?" —
+/// the decide/filter work small models used to do across many grep rounds.
 #[tauri::command]
-pub fn agent_search_code(query: String, k: Option<usize>) -> Result<Vec<CodeHit>, String> {
+pub fn agent_search_code(query: String, k: Option<usize>) -> Result<String, String> {
     let root = workspace()?;
     let q_tokens = code_tokens(&query);
     if q_tokens.is_empty() {
         return Err("查询为空 (empty query)".to_string());
     }
-    let top_k = k.unwrap_or(8).clamp(1, 30);
+    let q_lower = query.to_lowercase();
+    let top_files = k.unwrap_or(6).clamp(1, 20);
 
     struct Chunk {
-        path: String,
+        file: usize,
         line: usize,
         text: String,
         tf: HashMap<String, u32>,
         len: u32,
     }
+    let mut files: Vec<(String, String)> = Vec::new(); // (rel, full text)
     let mut chunks: Vec<Chunk> = Vec::new();
     let mut df: HashMap<String, u32> = HashMap::new();
     let mut scanned = 0usize;
@@ -1222,9 +1219,10 @@ pub fn agent_search_code(query: String, k: Option<usize>) -> Result<Vec<CodeHit>
         if bytes.iter().take(512).any(|&b| b == 0) {
             continue; // binary
         }
-        let text = String::from_utf8_lossy(&bytes);
+        let text = String::from_utf8_lossy(&bytes).to_string();
         scanned += text.len();
         let rel = rel_display(&root, entry.path());
+        let fid = files.len();
         let lines: Vec<&str> = text.lines().collect();
         let mut start = 0usize;
         while start < lines.len() {
@@ -1239,61 +1237,127 @@ pub fn agent_search_code(query: String, k: Option<usize>) -> Result<Vec<CodeHit>
                 for t in tf.keys() {
                     *df.entry(t.clone()).or_insert(0) += 1;
                 }
-                chunks.push(Chunk {
-                    path: rel.clone(),
-                    line: start + 1,
-                    text: body,
-                    len: toks.len() as u32,
-                    tf,
-                });
+                chunks.push(Chunk { file: fid, line: start + 1, text: body, len: toks.len() as u32, tf });
             }
             if end == lines.len() {
                 break;
             }
             start = end - SEARCH_CHUNK_OVERLAP;
         }
+        files.push((rel, text));
         if scanned > SEARCH_MAX_TOTAL {
             break 'walk;
         }
     }
 
     if chunks.is_empty() {
-        return Ok(Vec::new());
+        return Ok("(没有匹配的代码 / no matches)".to_string());
     }
     let n = chunks.len() as f32;
     let avg_len: f32 = chunks.iter().map(|c| c.len as f32).sum::<f32>() / n;
     let (k1, b) = (1.4f32, 0.75f32);
-    let mut hits: Vec<CodeHit> = chunks
-        .iter()
-        .filter_map(|c| {
-            let mut score = 0f32;
-            for t in &q_tokens {
-                let Some(&tf) = c.tf.get(t) else { continue };
-                let dfi = *df.get(t).unwrap_or(&1) as f32;
-                let idf = ((n - dfi + 0.5) / (dfi + 0.5) + 1.0).ln();
-                let tf = tf as f32;
-                score += idf * (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * c.len as f32 / avg_len));
+    let score_of = |c: &Chunk| -> f32 {
+        let mut score = 0f32;
+        for t in &q_tokens {
+            let Some(&tf) = c.tf.get(t) else { continue };
+            let dfi = *df.get(t).unwrap_or(&1) as f32;
+            let idf = ((n - dfi + 0.5) / (dfi + 0.5) + 1.0).ln();
+            let tf = tf as f32;
+            score += idf * (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * c.len as f32 / avg_len));
+        }
+        score
+    };
+
+    // Per-file aggregation: sum of the two best chunks + fusion signals.
+    struct FileRank {
+        best: Option<usize>, // index of best chunk
+        top2: [f32; 2],
+        hits: usize,
+    }
+    let mut ranks: Vec<FileRank> = files.iter().map(|_| FileRank { best: None, top2: [0.0; 2], hits: 0 }).collect();
+    for (i, c) in chunks.iter().enumerate() {
+        let s = score_of(c);
+        if s <= 0.0 {
+            continue;
+        }
+        let r = &mut ranks[c.file];
+        r.hits += 1;
+        if s > r.top2[0] {
+            r.top2[1] = r.top2[0];
+            r.top2[0] = s;
+            r.best = Some(i);
+        } else if s > r.top2[1] {
+            r.top2[1] = s;
+        }
+    }
+    let max_chunk = ranks.iter().map(|r| r.top2[0]).fold(0f32, f32::max).max(f32::EPSILON);
+
+    let mut scored: Vec<(usize, f32, bool, bool)> = Vec::new(); // (fid, score, name_hit, exact_hit)
+    for (fid, r) in ranks.iter().enumerate() {
+        let mut score = r.top2[0] + r.top2[1];
+        // Filename signal: query tokens appearing in the path outrank body-only
+        // matches ("auth" should surface auth.ts even with sparse text hits).
+        let name_toks = code_tokens(&files[fid].0);
+        let name_hit = q_tokens.iter().any(|t| name_toks.contains(t));
+        if name_hit {
+            score += 0.6 * max_chunk;
+        }
+        // Exact-phrase boost: a literal (case-insensitive) occurrence of the
+        // whole query is grep-grade evidence.
+        let exact_hit = q_tokens.len() > 1 && files[fid].1.to_lowercase().contains(&q_lower);
+        if exact_hit {
+            score += 0.8 * max_chunk;
+        }
+        if score > 0.0 {
+            scored.push((fid, score, name_hit, exact_hit));
+        }
+    }
+    if scored.is_empty() {
+        return Ok("(没有匹配的代码 / no matches)".to_string());
+    }
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(top_files);
+
+    let mut out = String::from("相关文件 (ranked):\n");
+    for (rank, (fid, score, name_hit, exact_hit)) in scored.iter().enumerate() {
+        let (rel, text) = &files[*fid];
+        let mut tags = Vec::new();
+        if *name_hit {
+            tags.push("文件名匹配");
+        }
+        if *exact_hit {
+            tags.push("精确短语");
+        }
+        let tag_str = if tags.is_empty() { String::new() } else { format!(" · {}", tags.join(" · ")) };
+        out.push_str(&format!(
+            "\n{}. {rel}  (score {:.2} · {} 处命中{tag_str})\n",
+            rank + 1,
+            score,
+            ranks[*fid].hits
+        ));
+        // Matching definition lines — the file's API surface for this query.
+        let mut syms = 0;
+        for (i, line) in text.lines().enumerate() {
+            let t = line.trim_start();
+            if !is_symbol_line(t) {
+                continue;
             }
-            (score > 0.0).then(|| CodeHit {
-                path: c.path.clone(),
-                line: c.line,
-                snippet: c.text.chars().take(700).collect(),
-                score,
-            })
-        })
-        .collect();
-    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-    // At most 2 hits per file so one file can't monopolize the results.
-    let mut per_file: HashMap<&str, usize> = HashMap::new();
-    let mut out = Vec::new();
-    for h in &hits {
-        let c = per_file.entry(h.path.as_str()).or_insert(0);
-        if *c < 2 {
-            *c += 1;
-            out.push(h.clone());
-            if out.len() >= top_k {
-                break;
+            let lt = t.to_lowercase();
+            if q_tokens.iter().any(|q| lt.contains(q.as_str())) {
+                out.push_str(&format!("   定义 L{}: {}\n", i + 1, t.chars().take(140).collect::<String>()));
+                syms += 1;
+                if syms >= 4 {
+                    break;
+                }
             }
+        }
+        if let Some(ci) = ranks[*fid].best {
+            let c = &chunks[ci];
+            out.push_str(&format!(
+                "   ── {rel}:{} ──\n{}\n",
+                c.line,
+                c.text.chars().take(500).collect::<String>()
+            ));
         }
     }
     Ok(out)
@@ -2265,13 +2329,12 @@ mod tests {
         .unwrap();
 
         // Multi-term + camelCase splitting: "user name login" should hit auth.ts.
-        let hits = agent_search_code("user name login".into(), Some(5)).unwrap();
-        assert!(!hits.is_empty());
-        assert_eq!(hits[0].path, "auth.ts");
-        assert!(hits[0].snippet.contains("getUserName"));
+        let out = agent_search_code("user name login".into(), Some(5)).unwrap();
+        assert!(out.contains("1. auth.ts"), "auth.ts must rank first:\n{out}");
+        assert!(out.contains("getUserName"), "snippet/definitions missing:\n{out}");
         // Off-topic query prefers the other file.
-        let hits2 = agent_search_code("database pool".into(), Some(5)).unwrap();
-        assert_eq!(hits2[0].path, "db.ts");
+        let out2 = agent_search_code("database pool".into(), Some(5)).unwrap();
+        assert!(out2.contains("1. db.ts"), "db.ts must rank first:\n{out2}");
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -2333,6 +2396,53 @@ mod tests {
         assert_eq!(ensure_sudo_stdin("sudo apt-get install x"), "sudo -S apt-get install x");
         assert_eq!(ensure_sudo_stdin("sudo -S already"), "sudo -S already");
         assert_eq!(ensure_sudo_stdin("ls -la"), "ls -la");
+    }
+
+    /// Fused code search: the file whose NAME matches and which holds the
+    /// matching definitions must outrank files with only incidental token
+    /// overlap; the digest must surface definition lines and the exact-phrase
+    /// tag; a junk query reports no matches.
+    #[test]
+    fn search_code_ranks_by_fusion() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-scr-{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        set_ws(&tmp);
+        std::fs::write(
+            tmp.join("src/auth.ts"),
+            "export function refreshToken(session: Session) {\n  // renew the auth token before expiry\n  return issueToken(session.user);\n}\nexport function validateSession(token: string) {\n  return verify(token);\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("src/middleware.ts"),
+            "import { validateSession } from './auth';\nexport function guard(req: Request) {\n  // checks the session token on every request\n  return validateSession(req.token);\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("src/render.ts"),
+            "export function draw(canvas: Canvas) {\n  // paints pixels, nothing to do with sessions\n}\n",
+        )
+        .unwrap();
+
+        let out = agent_search_code("auth token refresh".into(), None).expect("search");
+        eprintln!("{out}");
+        let auth_pos = out.find("src/auth.ts").expect("auth.ts in results");
+        let mid_pos = out.find("src/middleware.ts").unwrap_or(usize::MAX);
+        assert!(auth_pos < mid_pos, "auth.ts must rank above middleware.ts:\n{out}");
+        assert!(out.contains("文件名匹配"), "filename signal missing:\n{out}");
+        assert!(out.contains("refreshToken"), "definition line missing:\n{out}");
+        assert!(out.contains("定义 L"), "definition lines section missing:\n{out}");
+
+        // Exact-phrase boost: the literal phrase lives only in middleware.ts.
+        let out = agent_search_code("checks the session token".into(), None).expect("search");
+        let mid = out.find("src/middleware.ts").expect("middleware in results");
+        let auth = out.find("src/auth.ts").unwrap_or(usize::MAX);
+        assert!(mid < auth, "exact phrase must put middleware.ts first:\n{out}");
+        assert!(out.contains("精确短语"), "exact-phrase tag missing:\n{out}");
+
+        let none = agent_search_code("zebra quantum lighthouse".into(), None).expect("search");
+        assert!(none.contains("没有匹配"), "junk query must report no matches: {none}");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// read_doc_core must extract document text (docx synthesized in-test —

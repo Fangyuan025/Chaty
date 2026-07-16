@@ -273,15 +273,10 @@ export async function agentListFiles(query?: string, limit?: number): Promise<st
   return invoke<string[]>("agent_list_files", { query, limit });
 }
 
-export interface AgentCodeHit {
-  path: string;
-  line: number;
-  snippet: string;
-  score: number;
-}
-/** BM25-ranked code search over the workspace ("which file handles X?"). */
-export async function agentSearchCode(query: string, k?: number): Promise<AgentCodeHit[]> {
-  return invoke<AgentCodeHit[]>("agent_search_code", { query, k });
+/** Fused, file-ranked code search digest (BM25 + filename + exact-phrase,
+ *  with matching definition lines) — ready to show the model as-is. */
+export async function agentSearchCode(query: string, k?: number): Promise<string> {
+  return invoke<string>("agent_search_code", { query, k });
 }
 
 // ---------- Background commands (Code mode) ----------
