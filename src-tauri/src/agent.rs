@@ -772,13 +772,13 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
 pub(crate) fn syntax_check(abs: &Path) -> Option<Result<(), String>> {
     let ext = abs.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
     let run = |bin: &str, args: &[&str]| -> Option<Result<(), String>> {
-        let out = Command::new(bin)
-            .args(args)
-            .env("PATH", augmented_path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .ok()?; // binary missing → no checker
+        let mut cmd = Command::new(bin);
+        cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped());
+        // augmented_path is unix-only (GUI launches lack brew/nvm paths);
+        // Windows inherits the parent environment as-is.
+        #[cfg(unix)]
+        cmd.env("PATH", augmented_path());
+        let out = cmd.output().ok()?; // binary missing → no checker
         if out.status.success() {
             Some(Ok(()))
         } else {
