@@ -12,31 +12,69 @@ concurrency:
 
 jobs:
   frontend:
-    name: Type-check (frontend)
+    name: Frontend build & type-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with: { node-version: 20, cache: npm }
       - run: npm ci
-      - name: TypeScript type-check
-        run: npx tsc --noEmit
+      # `npm run build` = `tsc && vite build`. This type-checks AND actually
+      # bundles — catching Vite failures (bad asset / dynamic-import paths, env
+      # issues) that a bare `tsc --noEmit` misses and that would otherwise only
+      # surface at release time inside `tauri build`.
+      - name: Build frontend
+        run: npm run build
 
-  backend-tests:
-    name: Unit tests (backend)
+  backend:
+    name: Lint & unit tests (backend)
     # Apple Silicon so the default Metal feature builds (mirrors release.yml).
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
       - uses: Swatinem/rust-cache@v2
         # Don't cache target/: rust-cache prunes the ONNX Runtime dylib that
         # sherpa-rs places in target/release/, breaking the link (same gotcha as
         # release.yml).
         with: { workspaces: src-tauri, cache-targets: false }
+      # clippy over ALL targets (lib, the chaty-headless bin, and tests — which
+      # `cargo test --lib` never compiles). Deny only the correctness and
+      # suspicious lint groups: these flag near-certain bugs (bad comparisons,
+      # misused APIs, likely-wrong logic) and rarely false-positive, so they
+      # gate real defects without drowning the run in style noise.
+      - name: clippy (deny correctness bugs)
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D clippy::correctness -D clippy::suspicious
       # Build in release so sherpa-rs lays down libonnxruntime in target/release/
       # (its build script only populates the release dir, which the link step
       # expects — a debug `cargo test` can't find it on a clean runner).
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --lib --release
+
+  windows-check:
+    name: Windows compile check (CPU)
+    runs-on: windows-latest
+    env:
+      # Short target dir — llama.cpp nests deep and can blow past MAX_PATH even
+      # without the Vulkan backend (same rationale as release.yml).
+      CARGO_TARGET_DIR: C:\ct
+      CMAKE_GENERATOR: Ninja
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: src-tauri, cache-targets: false }
+      - name: Install Ninja
+        run: choco install ninja -y
+      - uses: ilammy/msvc-dev-cmd@v1 # load MSVC env so CMake can find cl.exe
+      # Compile-check every Windows target WITHOUT the Vulkan SDK (`--no-default-
+      # features` drops GPU). This is the cheap guard for `cfg(windows)` code
+      # that the macOS jobs can't even see — the class of bug (e.g. a Windows-
+      # only fn referenced under the wrong cfg) that previously slipped through
+      # to a release tag. `--all-targets` also covers the chaty-headless bin.
+      - name: cargo check (no GPU, all targets)
+        working-directory: src-tauri
+        run: cargo check --no-default-features --all-targets
