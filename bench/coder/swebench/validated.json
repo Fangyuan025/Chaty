@@ -40,5 +40,13 @@
  "pytest-dev__pytest-10051": "ok",
  "pytest-dev__pytest-6197": "ok",
  "pytest-dev__pytest-7432": "ok",
- "pytest-dev__pytest-7571": "ok"
+ "pytest-dev__pytest-7571": "ok",
+ "django__django-14404": "ok",
+ "django__django-15916": "ok",
+ "pallets__flask-5014": "env-incompatible",
+ "pylint-dev__pylint-7080": "env-incompatible",
+ "sphinx-doc__sphinx-7985": "env-incompatible",
+ "sphinx-doc__sphinx-8120": "env-incompatible",
+ "sphinx-doc__sphinx-9658": "ok",
+ "sphinx-doc__sphinx-9711": "env-incompatible"
 }
