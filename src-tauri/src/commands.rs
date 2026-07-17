@@ -609,8 +609,19 @@ fn open_default(target: &str) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        cmd = std::process::Command::new("cmd");
-        cmd.args(["/C", "start", "", target]);
+        // NOT `cmd /C start`: cmd flashes a console window, and its parser
+        // splits an unquoted URL at `&` (links with query strings opened
+        // truncated). Both replacements are GUI processes — no console:
+        //  • URLs → rundll32 FileProtocolHandler (explorer silently DROPS a
+        //    URL's query string — verified with a local listener).
+        //  • files/folders → explorer (its native job).
+        if target.starts_with("http://") || target.starts_with("https://") {
+            cmd = std::process::Command::new("rundll32");
+            cmd.arg("url.dll,FileProtocolHandler").arg(target);
+        } else {
+            cmd = std::process::Command::new("explorer");
+            cmd.arg(target);
+        }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -646,17 +657,63 @@ pub fn set_ui_zoom(window: tauri::WebviewWindow, factor: f64) -> Result<(), Stri
         .map_err(|e| e.to_string())
 }
 
-/// Reveal the writable models folder in the file manager (Finder/Explorer),
-/// creating it first if needed — on macOS it lives under ~/Library, which
-/// users can't easily browse to by hand.
+/// Lightweight "does this models root hold at least one model?" probe — a
+/// subfolder with a GGUF inside (or an MLX folder on macOS). Mirrors the
+/// canonical layout `list_models` scans, without the full metadata pass.
+fn dir_has_models(dir: &std::path::Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else { return false };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        #[cfg(target_os = "macos")]
+        if crate::inference::mlx::is_mlx_dir(&path) {
+            return true;
+        }
+        if let Ok(sub) = std::fs::read_dir(&path) {
+            for e in sub.flatten() {
+                let p = e.path();
+                if p.is_file()
+                    && p.extension().map_or(false, |x| x.eq_ignore_ascii_case("gguf"))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Reveal the models folder in the file manager (Finder/Explorer).
+///
+/// Several roots are scanned for models (`model_dirs`) but downloads land in
+/// app-data — for users upgrading from an old install the models often live in
+/// a DIFFERENT root (e.g. next to the exe on Windows). Opening a hardcoded
+/// app-data folder then shows them an empty directory. So: open the first root
+/// that actually contains models; only when none does, fall back to the
+/// writable app-data root (the download target), creating it if needed.
 #[tauri::command]
 pub fn open_models_dir(app: tauri::AppHandle) -> Result<String, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("models");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // Organize any freshly dropped-in loose GGUFs first, so what the user sees
+    // in the opened folder matches what the picker lists.
+    migrate_models_layout(&app);
+
+    let dir = model_dirs(&app)
+        .into_iter()
+        .find(|d| dir_has_models(d))
+        .map_or_else(
+            || -> Result<PathBuf, String> {
+                let d = app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|e| e.to_string())?
+                    .join("models");
+                std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+                Ok(d)
+            },
+            Ok,
+        )?;
     let path = dir.to_string_lossy().to_string();
     open_default(&path)?;
     Ok(path)
@@ -711,6 +768,11 @@ pub fn open_html_report(
 /// hot-swap picker.
 #[tauri::command]
 pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
+    // Loose GGUFs dropped into a models root WHILE the app runs get organized
+    // right here, so reopening the picker is enough — no restart. Idempotent
+    // and cheap (one read_dir per root; a same-volume rename is instant).
+    migrate_models_layout(&app);
+
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     // A GGUF whose name mentions "mmproj" is a vision encoder, not a chat
@@ -1305,5 +1367,40 @@ mod tests {
         migrate_models_dir(&d);
         assert_eq!(std::fs::read(d.join("model/model.gguf")).unwrap(), b"existing");
         assert!(d.join("model.gguf").is_file(), "loose file must survive a collision");
+    }
+
+    /// The mid-session drop-in flow (issue #1): a loose GGUF appearing AFTER
+    /// the startup migration is organized by the next `migrate_models_dir`
+    /// call (which `list_models` now performs on every invocation) — without
+    /// disturbing already-organized models.
+    #[test]
+    fn runtime_dropin_is_migrated_on_next_pass() {
+        let d = tmp("runtime-dropin");
+        // startup: one model migrated into its folder
+        mk(&d, "First-Q4_K_M.gguf");
+        migrate_models_dir(&d);
+        assert!(d.join("First-Q4_K_M/First-Q4_K_M.gguf").is_file());
+        // mid-session: the user drops another loose gguf into the root
+        mk(&d, "Second-Q8_0.gguf");
+        assert_eq!(loose_main_ggufs(&d).len(), 1);
+        // the next pass (list_models / open_models_dir) picks it up
+        migrate_models_dir(&d);
+        assert!(d.join("Second-Q8_0/Second-Q8_0.gguf").is_file());
+        assert!(d.join("First-Q4_K_M/First-Q4_K_M.gguf").is_file(), "existing folder untouched");
+        assert_eq!(loose_main_ggufs(&d).len(), 0);
+    }
+
+    /// `open_models_dir` root selection: a root counts as "has models" only
+    /// with the canonical folder layout; loose files or empty dirs don't.
+    #[test]
+    fn dir_has_models_detects_folder_layout_only() {
+        let d = tmp("has-models");
+        assert!(!super::dir_has_models(&d), "empty root has no models");
+        mk(&d, "Loose-Q4.gguf"); // loose file — not the canonical layout
+        assert!(!super::dir_has_models(&d), "loose gguf alone doesn't count");
+        migrate_models_dir(&d); // → folder layout
+        assert!(super::dir_has_models(&d), "a model folder counts");
+        std::fs::create_dir_all(d.join("empty-folder")).unwrap();
+        assert!(super::dir_has_models(&d), "unrelated empty folders don't break it");
     }
 }

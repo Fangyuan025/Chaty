@@ -125,32 +125,49 @@ pub fn kill_now() {
         }
         #[cfg(windows)]
         {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .output();
+            let mut cmd = std::process::Command::new("taskkill");
+            cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+            let _ = crate::agent::hide_console(&mut cmd).output();
         }
     }
 }
 
 /// Candidate Chrome/Chromium executables by platform.
 fn chrome_path() -> Option<PathBuf> {
-    let candidates: &[&str] = if cfg!(target_os = "macos") {
-        &[
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
+    let mut candidates: Vec<String> = if cfg!(target_os = "macos") {
+        [
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             "/Applications/Chromium.app/Contents/MacOS/Chromium",
             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
             "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
         ]
+        .map(String::from)
+        .to_vec()
     } else if cfg!(target_os = "windows") {
-        &[
+        [
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
         ]
+        .map(String::from)
+        .to_vec()
     } else {
-        &["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+        ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+            .map(String::from)
+            .to_vec()
     };
-    for c in candidates {
+    // Windows per-user installs (Chrome's default for non-admin setups) live
+    // under %LOCALAPPDATA% — a very common miss on personal machines.
+    #[cfg(target_os = "windows")]
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        candidates.insert(0, format!(r"{local}\Google\Chrome\Application\chrome.exe"));
+        candidates.push(format!(r"{local}\Chromium\Application\chrome.exe"));
+        candidates.push(format!(r"{local}\BraveSoftware\Brave-Browser\Application\brave.exe"));
+    }
+    for c in &candidates {
         let p = PathBuf::from(c);
         if p.exists() {
             return Some(p);
@@ -1131,6 +1148,39 @@ mod tempdir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Discovery must agree with the file system: when any known browser is
+    /// installed (incl. Windows per-user %LOCALAPPDATA% Chrome — the usual
+    /// non-admin install this used to miss), chrome_path finds one.
+    #[test]
+    fn chrome_discovery_matches_filesystem() {
+        #[cfg(target_os = "windows")]
+        {
+            let mut known: Vec<std::path::PathBuf> = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            ]
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+            if let Ok(local) = std::env::var("LOCALAPPDATA") {
+                known.push(std::path::PathBuf::from(format!(
+                    r"{local}\Google\Chrome\Application\chrome.exe"
+                )));
+            }
+            if known.iter().any(|p| p.exists()) {
+                let found = chrome_path();
+                assert!(found.is_some(), "a browser exists on disk but chrome_path found none");
+                assert!(found.unwrap().exists());
+            }
+        }
+        // On any platform a returned path must actually exist.
+        if let Some(p) = chrome_path() {
+            assert!(p.exists());
+        }
+    }
 
     // Full CDP round-trip against the real Chrome. Ignored by default (needs a
     // browser). Run: cargo test -p chaty browser_cdp -- --ignored --nocapture

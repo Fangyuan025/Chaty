@@ -9,6 +9,7 @@ import {
   hfSearch,
   hfModelDetail,
   hfResolveUrl,
+  hfBase,
   downloadModel,
   downloadMlxRepo,
   cancelDownload,
@@ -58,7 +59,7 @@ function cleanReadme(md: string, repo: string): string {
   const abs = (u: string) =>
     /^(https?:)?\/\//.test(u) || u.startsWith("#")
       ? u
-      : `https://huggingface.co/${repo}/resolve/main/${u.replace(/^\.?\//, "")}`;
+      : `${hfBase()}/${repo}/resolve/main/${u.replace(/^\.?\//, "")}`;
   let s = md;
   // <img src=…> → ![](abs)
   s = s.replace(/<img[^>]*?src=["']([^"']+)["'][^>]*>/gi, (_m, src) => `\n\n![](${abs(src)})\n\n`);

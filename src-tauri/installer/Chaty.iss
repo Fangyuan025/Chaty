@@ -54,6 +54,11 @@ Source: "{#SrcDir}\onnxruntime_providers_shared.dll"; DestDir: "{app}"; Flags: i
 Source: "{#SrcDir}\sherpa-onnx-c-api.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\sherpa-onnx-cxx-api.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\cargs.dll"; DestDir: "{app}"; Flags: ignoreversion
+; Vulkan runtime loader: normally provided by the GPU driver, but bare
+; machines/VMs (e.g. winget validation) lack it and the app fails to start.
+; CI copies it from the Vulkan SDK next to the exe before ISCC runs; the local
+; loader wins only when the system has none (standard loader search order).
+Source: "{#SrcDir}\vulkan-1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"

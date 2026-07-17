@@ -89,6 +89,9 @@ export interface GenSettings {
   autoTitle: boolean;
   /** Load the last-used model automatically on startup. */
   autoLoadLast: boolean;
+  /** HuggingFace endpoint for search/downloads — the official host or a
+   *  path-compatible mirror (e.g. https://hf-mirror.com for mainland China). */
+  hfEndpoint: string;
 }
 
 export const defaultSettings: GenSettings = {
@@ -124,7 +127,12 @@ export const defaultSettings: GenSettings = {
   answerSize: "md",
   autoTitle: true,
   autoLoadLast: true,
+  hfEndpoint: "https://huggingface.co",
 };
+
+/** The well-known HF endpoints offered as one-click choices. */
+export const HF_ENDPOINT_OFFICIAL = "https://huggingface.co";
+export const HF_ENDPOINT_MIRROR = "https://hf-mirror.com";
 
 /** kokoro-en-v0_19 speakers, in sid order (the array index IS the speaker id,
  *  so the order must not change). This pack ships exactly these 11 voices;
@@ -650,6 +658,53 @@ export function SettingsPanel({
                   {t("openModelsDir")}
                 </button>
               </SetRow>
+
+              <label className="field">
+                <span><em className="has-tip" data-tip={t("tipHfEndpoint")}>{t("hfEndpoint")}</em></span>
+                <div className="lang-switch">
+                  <button
+                    type="button"
+                    className={value.hfEndpoint === HF_ENDPOINT_OFFICIAL ? "active" : ""}
+                    onClick={() => set("hfEndpoint", HF_ENDPOINT_OFFICIAL)}
+                  >
+                    {t("hfEndpointOfficial")}
+                  </button>
+                  <button
+                    type="button"
+                    className={value.hfEndpoint === HF_ENDPOINT_MIRROR ? "active" : ""}
+                    onClick={() => set("hfEndpoint", HF_ENDPOINT_MIRROR)}
+                  >
+                    hf-mirror.com
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      value.hfEndpoint !== HF_ENDPOINT_OFFICIAL && value.hfEndpoint !== HF_ENDPOINT_MIRROR
+                        ? "active"
+                        : ""
+                    }
+                    onClick={() => {
+                      if (value.hfEndpoint === HF_ENDPOINT_OFFICIAL || value.hfEndpoint === HF_ENDPOINT_MIRROR) {
+                        set("hfEndpoint", "https://");
+                      }
+                    }}
+                  >
+                    {t("hfEndpointCustom")}
+                  </button>
+                </div>
+              </label>
+              {value.hfEndpoint !== HF_ENDPOINT_OFFICIAL && value.hfEndpoint !== HF_ENDPOINT_MIRROR && (
+                <div className="preset-add">
+                  <input
+                    type="text"
+                    placeholder="https://…"
+                    value={value.hfEndpoint}
+                    onChange={(e) => set("hfEndpoint", e.target.value)}
+                    spellCheck={false}
+                  />
+                </div>
+              )}
+              <div className="settings-hint">{t("hfEndpointHint")}</div>
             </>
           )}
 

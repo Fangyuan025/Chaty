@@ -136,7 +136,9 @@ function toolSummary(call: ToolCall): string {
     case "outline":
       return `outline ${argPath(call.args) || "?"}`;
     case "list_dir":
-      return `ls ${a.path ?? "."}`;
+      // NOT "ls" — that read as a successful shell `ls` on Windows (where
+      // cmd.exe has no ls) and sent users chasing a phantom bug.
+      return `list ${a.path ?? "."}`;
     case "glob":
       return `glob ${a.pattern ?? ""}`;
     case "grep":
@@ -226,6 +228,10 @@ function StepCard({ step, onPreview }: { step: ToolStep; onPreview?: (path: stri
   const hasImage = !!step.image && step.status === "done";
   const hasBody = !!(step.result || diff);
   const meta = stepMeta(step, t("cmLines"));
+  // A command that ran but exited non-zero: "done" (the result went back to
+  // the model) but visually a failure — a green check here read as "ls
+  // worked" when cmd.exe had actually rejected the command.
+  const cmdFailed = step.status === "done" && meta?.tone === "warn";
   // Compute the diff once; the +N/−M badge uses the EXACT totals, never the
   // render-capped rows, so big edits are counted correctly.
   const d = useMemo(() => (diff ? diffLines(diff.before, diff.after) : null), [diff]);
@@ -235,7 +241,7 @@ function StepCard({ step, onPreview }: { step: ToolStep; onPreview?: (path: stri
     else if (hasBody) setOpen((o) => !o);
   };
   return (
-    <div className={`cm-step ${step.status}`}>
+    <div className={`cm-step ${step.status}${cmdFailed ? " cmd-failed" : ""}`}>
       <button className="cm-step-head" onClick={onHead}>
         <svg className="cm-step-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
           <path d={TOOL_ICON[step.call.name] ?? "M4 6h16M4 12h16M4 18h16"} />
@@ -251,7 +257,9 @@ function StepCard({ step, onPreview }: { step: ToolStep; onPreview?: (path: stri
         {meta && <span className={`cm-step-meta ${meta.tone}`}>{meta.text}</span>}
         <span className="cm-step-status">
           {step.status === "running" ? <span className="cm-spin" /> : null}
-          {step.status === "done" ? <Icon name="check" size={12} strokeWidth={2.2} /> : null}
+          {step.status === "done" ? (
+            <Icon name={cmdFailed ? "x" : "check"} size={12} strokeWidth={2.2} />
+          ) : null}
           {step.status === "error" ? <Icon name="x" size={12} strokeWidth={2.2} /> : null}
           {step.status === "denied" ? <Icon name="ban" size={12} strokeWidth={2} /> : null}
         </span>

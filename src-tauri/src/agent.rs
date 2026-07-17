@@ -16,6 +16,19 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+/// Keep Windows console children invisible: a GUI-subsystem app spawning a
+/// console process (cmd, taskkill, python …) pops a black console window for
+/// every call without CREATE_NO_WINDOW. No-op elsewhere.
+pub(crate) fn hide_console(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// The active workspace root (absolute, canonicalized). `None` until the user
 /// opens a folder for the coding session.
 static WORKSPACE: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -774,6 +787,7 @@ pub(crate) fn syntax_check(abs: &Path) -> Option<Result<(), String>> {
     let run = |bin: &str, args: &[&str]| -> Option<Result<(), String>> {
         let mut cmd = Command::new(bin);
         cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped());
+        hide_console(&mut cmd); // post-edit checks would flash a console per edit
         // augmented_path is unix-only (GUI launches lack brew/nvm paths);
         // Windows inherits the parent environment as-is.
         #[cfg(unix)]
@@ -799,10 +813,31 @@ pub(crate) fn syntax_check(abs: &Path) -> Option<Result<(), String>> {
         }
         // compile() instead of py_compile: no __pycache__ dropped into the
         // user's workspace.
-        "py" => run(
-            "python3",
-            &["-c", "import sys; compile(open(sys.argv[1], 'rb').read(), sys.argv[1], 'exec')", &p],
-        ),
+        "py" => {
+            let args: &[&str] =
+                &["-c", "import sys; compile(open(sys.argv[1], 'rb').read(), sys.argv[1], 'exec')", &p];
+            // Windows official installers ship `python.exe` (no python3);
+            // worse, the Microsoft-Store stub NAMED python3 exists on stock
+            // installs and exits non-zero with a store hint — which would
+            // flag every .py edit as a syntax error. Prefer `python`, and
+            // treat a failure that mentions the store stub as "no checker".
+            #[cfg(windows)]
+            {
+                let looks_like_stub = |r: &Result<(), String>| {
+                    r.as_ref()
+                        .err()
+                        .map_or(false, |e| e.contains("Microsoft Store") || e.contains("app store") || e.contains("AppData\\Local\\Microsoft\\WindowsApps"))
+                };
+                let first = run("python", args);
+                match first {
+                    Some(ref r) if looks_like_stub(r) => run("python3", args).filter(|r| !looks_like_stub(r)),
+                    Some(r) => Some(r),
+                    None => run("python3", args).filter(|r| !looks_like_stub(r)),
+                }
+            }
+            #[cfg(not(windows))]
+            run("python3", args)
+        }
         "sh" | "bash" => run("bash", &["-n", &p]),
         "js" | "mjs" | "cjs" => run("node", &["--check", &p]),
         _ => None,
@@ -2149,7 +2184,17 @@ fn read_capped(mut r: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec
 
 fn cap_utf8(bytes: Vec<u8>) -> String {
     let truncated = bytes.len() > MAX_OUTPUT_BYTES;
-    let s = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_OUTPUT_BYTES)]).into_owned();
+    let slice = &bytes[..bytes.len().min(MAX_OUTPUT_BYTES)];
+    // Chinese-locale Windows consoles emit the ANSI codepage (GBK), not
+    // UTF-8 — `dir`, error messages etc. turned to mojibake under a plain
+    // lossy conversion. Valid UTF-8 passes through; otherwise decode as GBK.
+    #[cfg(windows)]
+    let s = match std::str::from_utf8(slice) {
+        Ok(ok) => ok.to_owned(),
+        Err(_) => encoding_rs::GBK.decode(slice).0.into_owned(),
+    };
+    #[cfg(not(windows))]
+    let s = String::from_utf8_lossy(slice).into_owned();
     if truncated {
         format!("{s}\n… (输出已截断 / output truncated)")
     } else {
@@ -2253,6 +2298,7 @@ fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
 fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
     let mut cmd = Command::new("cmd");
     cmd.arg("/C").arg(command);
+    hide_console(&mut cmd); // every agent step would flash a console otherwise
     cmd
 }
 
@@ -2471,9 +2517,9 @@ fn bg_kill_pid(pid: u32) {
     }
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output();
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        let _ = hide_console(&mut cmd).output();
     }
 }
 
@@ -2548,6 +2594,40 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     fn serial() -> std::sync::MutexGuard<'static, ()> {
         TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Windows consoles emit the ANSI codepage (GBK on Chinese systems) — the
+    /// old lossy-UTF-8 decode turned every non-ASCII byte into mojibake.
+    #[test]
+    fn cap_utf8_decodes_console_output() {
+        // Plain UTF-8 passes through unchanged on every platform.
+        assert_eq!(cap_utf8("hello 世界".as_bytes().to_vec()), "hello 世界");
+        #[cfg(windows)]
+        {
+            // "找不到文件" (file not found) as GBK bytes — what a Chinese-locale
+            // cmd.exe actually writes.
+            let (gbk, _, _) = encoding_rs::GBK.encode("找不到文件 test");
+            assert!(std::str::from_utf8(&gbk).is_err(), "fixture must not be valid UTF-8");
+            assert_eq!(cap_utf8(gbk.into_owned()), "找不到文件 test");
+        }
+    }
+
+    /// The post-edit syntax gate must never flag a VALID .py file as broken —
+    /// on Windows this guards the python-vs-python3 selection (the Microsoft
+    /// Store stub named python3 exits non-zero with a store hint). Passes as
+    /// Ok on machines with a real Python, and as "no checker" without one;
+    /// an Err on valid code is the bug.
+    #[test]
+    fn syntax_gate_accepts_valid_python() {
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-pyok-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let f = tmp.join("ok.py");
+        std::fs::write(&f, "def add(a, b):\n    return a + b\n").unwrap();
+        match syntax_check(&f) {
+            Some(Err(e)) => panic!("valid python flagged as broken: {e}"),
+            _ => {} // Ok(()) with a Python installed, None without — both fine
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -3299,17 +3379,24 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("chaty-agent-sudo-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         set_ws(&tmp);
-        // No real sudo: use `cat` to prove the password is delivered on STDIN
-        // (never in argv). command_uses_sudo(false) so this stays sandboxed —
-        // fine, we're only checking the stdin plumbing via run_bash directly.
-        let out = run_bash(&tmp, "cat", Duration::from_secs(5), Some("s3cret\n".into()), true).unwrap();
+        // No real sudo: echo stdin back to prove the password is delivered on
+        // STDIN (never in argv). Windows runs through `cmd /C`, which has no
+        // `cat` — `findstr /r /c:.` is the built-in stdin-echo equivalent.
+        // command_uses_sudo(false) so this stays sandboxed — fine, we're only
+        // checking the stdin plumbing via run_bash directly.
+        #[cfg(windows)]
+        let (echo1, echo2) = ("findstr /r /c:.", "findstr /r /c:.");
+        #[cfg(not(windows))]
+        let (echo1, echo2) = ("cat", "cat -");
+        let out = run_bash(&tmp, echo1, Duration::from_secs(5), Some("s3cret\n".into()), true).unwrap();
         assert_eq!(out.stdout.trim(), "s3cret", "stdin must reach the child process");
 
         // Proof the password is NOT in the command string / argv: a sandboxed
         // run of a sudo-shaped echo would only echo what's in argv.
-        let echoed = run_bash(&tmp, "cat -", Duration::from_secs(5), Some("hunter2\n".into()), true).unwrap();
+        let echoed = run_bash(&tmp, echo2, Duration::from_secs(5), Some("hunter2\n".into()), true).unwrap();
         assert_eq!(echoed.stdout.trim(), "hunter2");
 
         std::fs::remove_dir_all(&tmp).ok();
     }
 }
+

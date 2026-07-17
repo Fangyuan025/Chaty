@@ -51,6 +51,17 @@ import {
 } from "./ipc";
 import { normalizeChannels } from "./voiceText";
 import { diffLines } from "./diff";
+import { platform } from "@tauri-apps/plugin-os";
+
+// The bash tool runs through cmd.exe on Windows — the prompt must say so, or
+// the model writes POSIX commands (ls, cat, $VAR) that all fail there.
+const IS_WINDOWS = (() => {
+  try {
+    return platform() === "windows";
+  } catch {
+    return false;
+  }
+})();
 
 export type AgentToolName =
   | "read_file"
@@ -346,6 +357,13 @@ function systemPrompt(
           ? "\n- 行动前可在 <think>…</think> 中简要思考下一步,再调用工具。"
           : "\n- You may think briefly inside <think>…</think> before each tool call."
         : "";
+  // Windows executes the bash tool via cmd.exe — without saying so the model
+  // writes POSIX commands (ls / cat / rm / $VAR) that all fail there.
+  const shellNote = IS_WINDOWS
+    ? zh
+      ? "\n- **运行环境是 Windows,bash 工具实际由 cmd.exe 执行**:用 Windows 命令(dir、type、findstr、del、mkdir)或跨平台工具(git、npm、node、python),不要用 ls/cat/rm/grep 这类 Unix 命令;环境变量写 %VAR% 而不是 $VAR;多条命令仍可用 && 串联;路径分隔符正斜杠/反斜杠都行。"
+      : "\n- **You are on Windows and the bash tool runs through cmd.exe**: use Windows commands (dir, type, findstr, del, mkdir) or cross-platform tools (git, npm, node, python) — NOT Unix commands like ls/cat/rm/grep; environment variables are %VAR% not $VAR; chaining with && works; both path separators are fine."
+    : "";
   if (zh) {
     return `你是 Chaty 的编程智能体,在一个工作区目录中帮用户完成编码任务。工作区根目录:${workspace}${dateLine}
 
@@ -355,7 +373,7 @@ ${toolsDoc}
 调用规则(务必严格遵守):
 - 每次只调用一个工具。要调用时,只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要在同一条消息里写其它内容。
 - 系统会把结果以 <tool_result>...</tool_result> 返回给你,你再继续。
-- 没有"当前目录"的概念:每条 bash 都是从工作区根目录启动的全新 shell,单独的 cd 不会保留到下一条命令。访问子目录请直接用相对路径(ls src、read_file "src/app.ts"),或在同一条命令内组合(cd src && npm test)。
+- 没有"当前目录"的概念:每条 bash 都是从工作区根目录启动的全新 shell,单独的 cd 不会保留到下一条命令。访问子目录请直接用相对路径,或在同一条命令内组合(cd src && npm test)。${shellNote}
 - 修改代码前,先用 outline 看文件结构、read_file / grep / list_dir 了解现状;改完可用 bash 跑测试/构建验证。
 - 读大文件别从头翻到尾:先用 search_code / grep 定位到相关位置,再用 read_file 带 offset/limit 只读需要的区段。
 - 工具选择:**新建文件**用 write_file 一次写完;**修改已有文件**用 edit_file(改一处给 old_string/new_string,改多处给 edits 数组一次原子提交)——不要用 write_file 整体重写已有文件来做局部改动,那会覆盖全文、极易丢失你没重写的内容。只有确实要把整个文件推倒重来时才用 write_file。不要把一个改动拆成许多细碎小步。
@@ -377,7 +395,7 @@ ${toolsDoc}
 Rules (follow strictly):
 - Call ONE tool at a time. To call it, output a single line <tool_call>{"name":"tool","arguments":{...}}</tool_call> and STOP immediately — nothing else in that message.
 - You'll get the result as <tool_result>...</tool_result>, then continue.
-- There is NO persistent working directory: every bash command starts a fresh shell at the workspace root, so a lone cd does NOT carry over. Use relative paths directly (ls src, read_file "src/app.ts") or combine in one command (cd src && npm test).
+- There is NO persistent working directory: every bash command starts a fresh shell at the workspace root, so a lone cd does NOT carry over. Use relative paths directly or combine in one command (cd src && npm test).${shellNote}
 - Before editing, understand the code with read_file / grep / list_dir; after editing, you can run tests/builds with bash.
 - Tool choice: create **new** files with ONE write_file; **modify existing** files with edit_file (one spot via old_string/new_string, or several at once via an atomic edits array) — do NOT rewrite an existing file wholesale with write_file to make a local change, that overwrites everything and easily drops content you didn't retype. Use write_file on an existing file only when you truly mean to replace the entire thing. Never split one change into many tiny steps.
 - Commands that don't exit quickly (dev servers, npm run dev, long builds) MUST run via bash_bg; check they started with bg_output, and bg_kill them when done.
@@ -828,7 +846,12 @@ async function execTool(
       return { result: await browserType(sel || undefined, label || undefined, text) };
     }
     default:
-      return { result: `未知工具 (unknown tool): ${call.name}` };
+      // Throw → the step renders as an error (red ✗), not a green check; the
+      // model sees an ERROR-prefixed result. Malformed calls from small models
+      // (e.g. {"name":"tool"}) used to look like successful steps.
+      throw new Error(
+        `未知工具 (unknown tool): ${call.name}。可用工具见系统提示;请检查 tool_call 的 "name" 字段 (check the tool_call's "name" field against the tool list).`,
+      );
   }
 }
 

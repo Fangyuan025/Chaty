@@ -51,6 +51,7 @@ import {
   setUiZoom,
   browserSetHeadless,
   openModelsDir,
+  setHfEndpoint,
   openDataDir,
   ragSearch,
   ragStatus,
@@ -589,6 +590,12 @@ export default function App() {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
 
+  // Mirror the HF endpoint setting into the ipc module, so every store
+  // search / download / KB-model fetch follows it (incl. resolve URLs).
+  useEffect(() => {
+    setHfEndpoint(settings.hfEndpoint);
+  }, [settings.hfEndpoint]);
+
   // Apply the colour theme to the document root (CSS keys off [data-theme],
   // plus per-appearance palettes on [data-dark] / [data-light]).
   useEffect(() => {
@@ -938,6 +945,14 @@ export default function App() {
       () => setNotice(null),
       kind === "error" ? 9000 : 6000,
     );
+  }
+
+  /** Open the models folder + a hint that drop-ins appear on picker reopen —
+   *  first-time users read "open folder" as a file picker (issue #1). */
+  function openModelsFolder() {
+    openModelsDir()
+      .then(() => showNotice("warn", t("modelsDirHintToast")))
+      .catch(console.error);
   }
 
   /** Surface a non-fatal load warning (e.g. GPU offload reduced to fit memory). */
@@ -1872,7 +1887,7 @@ export default function App() {
       id: "models-dir",
       label: t("openModelsDir"),
       keywords: "models folder 模型 文件夹",
-      run: () => void openModelsDir().catch(console.error),
+      run: () => openModelsFolder(),
     },
     {
       id: "data-dir",
@@ -2066,7 +2081,7 @@ export default function App() {
                 className="model-menu-file"
                 onClick={() => {
                   setShowModelMenu(false);
-                  openModelsDir().catch(console.error);
+                  openModelsFolder();
                 }}
               >
                 {t("openModelsDir")}

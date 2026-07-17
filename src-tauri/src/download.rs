@@ -74,6 +74,7 @@ fn normalize_repo(input: &str) -> String {
         .trim_start_matches("https://")
         .trim_start_matches("http://")
         .trim_start_matches("huggingface.co/")
+        .trim_start_matches("hf-mirror.com/")
         .trim_matches('/')
         .split("/tree/")
         .next()
@@ -83,6 +84,41 @@ fn normalize_repo(input: &str) -> String {
         .unwrap_or("")
         .trim_matches('/')
         .to_string()
+}
+
+/// Official HuggingFace host — the default endpoint and the only one the xet
+/// fallback protocol works against.
+pub(crate) const HF_OFFICIAL: &str = "https://huggingface.co";
+
+/// Base URL for HF API / resolve calls. `None`/empty → official. A user-set
+/// mirror (Settings → Model → HF endpoint, e.g. `https://hf-mirror.com`) is
+/// path-compatible with the official API. Trailing slashes are trimmed so
+/// `format!("{base}/api/…")` composes cleanly.
+pub(crate) fn hf_base(endpoint: Option<&str>) -> String {
+    let e = endpoint.unwrap_or("").trim().trim_end_matches('/');
+    if e.is_empty() {
+        HF_OFFICIAL.to_string()
+    } else {
+        e.to_string()
+    }
+}
+
+/// Only the official endpoint speaks the xet chunk protocol (hf-mirror.com
+/// does not) — gate the 403 CDN fallback on this.
+pub(crate) fn is_official_hf(base: &str) -> bool {
+    matches!(base, HF_OFFICIAL | "https://hf.co")
+}
+
+/// Bilingual error for a 403/failure on a mirror endpoint, where the xet
+/// fallback is not available by design.
+pub(crate) fn mirror_403_message(status: reqwest::StatusCode) -> String {
+    format!(
+        "镜像端点拒绝了该文件（HTTP {status}）。该镜像不支持 xet 回退 — \
+         请在设置中切回官方 HuggingFace 端点（可能需要 VPN/代理）后重试 \
+         (the mirror endpoint rejected this file and does not support the xet \
+         fallback; switch back to the official HuggingFace endpoint in Settings — \
+         possibly with a VPN/proxy — and retry)"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -251,8 +287,8 @@ pub fn clear_stale_xet_tmp(app: &tauri::AppHandle) {
 }
 
 /// Full recursive file listing of a HuggingFace repo: `(path, size)` pairs.
-async fn repo_tree(repo: &str) -> Result<Vec<(String, u64)>, String> {
-    let api = format!("https://huggingface.co/api/models/{repo}/tree/main?recursive=true");
+async fn repo_tree(repo: &str, base: &str) -> Result<Vec<(String, u64)>, String> {
+    let api = format!("{base}/api/models/{repo}/tree/main?recursive=true");
     let client = reqwest::Client::builder()
         .user_agent(UA)
         .build()
@@ -278,15 +314,16 @@ async fn repo_tree(repo: &str) -> Result<Vec<(String, u64)>, String> {
 
 /// List the `.gguf` files in a HuggingFace model repo (recursively), newest API.
 #[tauri::command]
-pub async fn list_hf_ggufs(repo: String) -> Result<Vec<HfFile>, String> {
+pub async fn list_hf_ggufs(repo: String, endpoint: Option<String>) -> Result<Vec<HfFile>, String> {
+    let base = hf_base(endpoint.as_deref());
     let repo = normalize_repo(&repo);
     if repo.is_empty() || !repo.contains('/') {
         return Err("请输入有效的 HuggingFace 仓库（owner/name）".into());
     }
     let mut out = Vec::new();
-    for (path, size) in repo_tree(&repo).await? {
+    for (path, size) in repo_tree(&repo, &base).await? {
         if path.to_lowercase().ends_with(".gguf") {
-            let url = format!("https://huggingface.co/{repo}/resolve/main/{path}?download=true");
+            let url = format!("{base}/{repo}/resolve/main/{path}?download=true");
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
             out.push(HfFile { name, size, url });
         }
@@ -542,7 +579,9 @@ pub async fn hf_search(
     format: String,
     sort: String,
     limit: Option<u32>,
+    endpoint: Option<String>,
 ) -> Result<Vec<HfModelHit>, String> {
+    let base = hf_base(endpoint.as_deref());
     let filter = if format == "mlx" { "mlx" } else { "gguf" };
     let sort = match sort.as_str() {
         "downloads" => "downloads",
@@ -551,7 +590,7 @@ pub async fn hf_search(
         _ => "trendingScore",
     };
     let mut url = format!(
-        "https://huggingface.co/api/models?filter={filter}&sort={sort}&direction=-1&limit={}",
+        "{base}/api/models?filter={filter}&sort={sort}&direction=-1&limit={}",
         limit.unwrap_or(30).min(50)
     );
     let q = query.trim();
@@ -598,7 +637,12 @@ pub async fn hf_search(
 
 /// Everything the store's detail pane needs for one repo, quant-level.
 #[tauri::command]
-pub async fn hf_model_detail(repo: String, format: String) -> Result<HfModelDetail, String> {
+pub async fn hf_model_detail(
+    repo: String,
+    format: String,
+    endpoint: Option<String>,
+) -> Result<HfModelDetail, String> {
+    let base = hf_base(endpoint.as_deref());
     let repo = normalize_repo(&repo);
     if repo.is_empty() || !repo.contains('/') {
         return Err("请输入有效的 HuggingFace 仓库（owner/name）".into());
@@ -607,7 +651,7 @@ pub async fn hf_model_detail(repo: String, format: String) -> Result<HfModelDeta
 
     // tags (vision/arch) — tolerate failure, the tree is the critical part
     let tags: Vec<String> = match client
-        .get(format!("https://huggingface.co/api/models/{repo}"))
+        .get(format!("{base}/api/models/{repo}"))
         .send()
         .await
     {
@@ -624,7 +668,7 @@ pub async fn hf_model_detail(repo: String, format: String) -> Result<HfModelDeta
         _ => Vec::new(),
     };
 
-    let tree = repo_tree(&repo).await?;
+    let tree = repo_tree(&repo, &base).await?;
     let (format, quants, mmproj) = if format == "mlx" || (!tree.iter().any(|(p, _)| p.to_lowercase().ends_with(".gguf")) && mlx_repo_check(&mlx_files(&tree)).is_ok()) {
         let files = mlx_files(&tree);
         mlx_repo_check(&files)?;
@@ -645,7 +689,7 @@ pub async fn hf_model_detail(repo: String, format: String) -> Result<HfModelDeta
 
     // README (best-effort, capped)
     let readme = match client
-        .get(format!("https://huggingface.co/{repo}/raw/main/README.md"))
+        .get(format!("{base}/{repo}/raw/main/README.md"))
         .send()
         .await
     {
@@ -737,12 +781,13 @@ pub struct MlxRepoInfo {
 /// Probe a HuggingFace repo as an MLX folder model (config.json +
 /// safetensors). Used by the downloader UI when a repo has no GGUFs.
 #[tauri::command]
-pub async fn list_hf_mlx(repo: String) -> Result<MlxRepoInfo, String> {
+pub async fn list_hf_mlx(repo: String, endpoint: Option<String>) -> Result<MlxRepoInfo, String> {
+    let base = hf_base(endpoint.as_deref());
     let repo = normalize_repo(&repo);
     if repo.is_empty() || !repo.contains('/') {
         return Err("请输入有效的 HuggingFace 仓库（owner/name）".into());
     }
-    let files = mlx_files(&repo_tree(&repo).await?);
+    let files = mlx_files(&repo_tree(&repo, &base).await?);
     mlx_repo_check(&files)?;
     Ok(MlxRepoInfo {
         name: repo.rsplit('/').next().unwrap_or(&repo).to_string(),
@@ -758,22 +803,25 @@ pub async fn list_hf_mlx(repo: String) -> Result<MlxRepoInfo, String> {
 pub async fn download_mlx_repo(
     app: tauri::AppHandle,
     repo: String,
+    endpoint: Option<String>,
     on_progress: Channel<DownloadProgress>,
 ) -> Result<String, String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    download_mlx_repo_inner(&root, repo, on_progress).await
+    download_mlx_repo_inner(&root, repo, endpoint, on_progress).await
 }
 
 async fn download_mlx_repo_inner(
     root: &std::path::Path,
     repo: String,
+    endpoint: Option<String>,
     on_progress: Channel<DownloadProgress>,
 ) -> Result<String, String> {
+    let base = hf_base(endpoint.as_deref());
     let repo = normalize_repo(&repo);
     if repo.is_empty() || !repo.contains('/') {
         return Err("请输入有效的 HuggingFace 仓库（owner/name）".into());
     }
-    let mut files = mlx_files(&repo_tree(&repo).await?);
+    let mut files = mlx_files(&repo_tree(&repo, &base).await?);
     mlx_repo_check(&files)?;
     // Small aux files first, shards last — a failure wastes as little
     // bandwidth as possible and the cleanup below covers the rest.
@@ -801,14 +849,19 @@ async fn download_mlx_repo_inner(
         let mut last = std::time::Instant::now();
         let _ = on_progress.send(DownloadProgress::Progress { downloaded, total });
         for (path, size) in &files {
-            let url = format!("https://huggingface.co/{repo}/resolve/main/{path}?download=true");
+            let url = format!("{base}/{repo}/resolve/main/{path}?download=true");
             let dest = dir.join(path);
             let tmp = dir.join(format!("{path}.part"));
             let mut resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
             if resp.status() == reqwest::StatusCode::FORBIDDEN {
+                // Mirrors don't speak the xet protocol — no fallback there,
+                // just a clear "switch endpoints" error.
+                if !is_official_hf(&base) {
+                    return Err(mirror_403_message(resp.status()));
+                }
                 // CDN block — fetch this file over xet instead (small JSON
                 // files are served by hf.co directly and never land here).
-                let base = downloaded;
+                let done_base = downloaded;
                 let progress = on_progress.clone();
                 xet_fallback_download(
                     &repo,
@@ -818,7 +871,7 @@ async fn download_mlx_repo_inner(
                     root,
                     move |d, _| {
                         let _ = progress.send(DownloadProgress::Progress {
-                            downloaded: base + d,
+                            downloaded: done_base + d,
                             total,
                         });
                     },
@@ -826,7 +879,7 @@ async fn download_mlx_repo_inner(
                 )
                 .await
                 .map_err(|e| if e == CANCELLED { e } else { cdn_blocked_message(&e) })?;
-                downloaded = base + size;
+                downloaded = done_base + size;
                 let _ = on_progress.send(DownloadProgress::Progress { downloaded, total });
                 continue;
             }
@@ -930,7 +983,9 @@ async fn download_inner(
         .map_err(|e| e.to_string())?;
     let mut resp = client.get(url).send().await.map_err(|e| e.to_string())?;
     if resp.status() == reqwest::StatusCode::FORBIDDEN {
-        // Network-level CDN block (cas-bridge 403) — retry over xet.
+        // Network-level CDN block (cas-bridge 403) — retry over xet. Only
+        // official resolve URLs parse here; mirror endpoints (which don't
+        // speak xet) get a clear "switch endpoints" error instead.
         if let Some((repo, revision, path)) = parse_hf_resolve_url(url) {
             let progress = on_progress.clone();
             xet_fallback_download(
@@ -953,6 +1008,7 @@ async fn download_inner(
                 .ok();
             return Ok(());
         }
+        return Err(mirror_403_message(resp.status()));
     }
     if !resp.status().is_success() {
         return Err(format!("下载失败: HTTP {}", resp.status()));
@@ -1043,6 +1099,25 @@ mod tests {
     fn glob_escaping() {
         assert_eq!(glob_escape("model.Q4_K_M.gguf"), "model.Q4_K_M.gguf");
         assert_eq!(glob_escape("a[1]*?.gguf"), "a[[]1[]][*][?].gguf");
+    }
+
+    #[test]
+    fn hf_base_normalizes_endpoints() {
+        // default / empty / whitespace → official
+        assert_eq!(hf_base(None), HF_OFFICIAL);
+        assert_eq!(hf_base(Some("")), HF_OFFICIAL);
+        assert_eq!(hf_base(Some("   ")), HF_OFFICIAL);
+        // mirror kept, trailing slash trimmed
+        assert_eq!(hf_base(Some("https://hf-mirror.com/")), "https://hf-mirror.com");
+        assert_eq!(hf_base(Some("https://hf-mirror.com")), "https://hf-mirror.com");
+        // xet gate: only the official endpoint qualifies
+        assert!(is_official_hf(&hf_base(None)));
+        assert!(!is_official_hf("https://hf-mirror.com"));
+        // mirror repo pastes normalize too
+        assert_eq!(
+            normalize_repo("https://hf-mirror.com/Qwen/Qwen3-4B-GGUF/tree/main"),
+            "Qwen/Qwen3-4B-GGUF"
+        );
     }
 
     #[test]
@@ -1251,7 +1326,7 @@ mod tests {
     async fn download_e2e_mlx_repo_mixed_paths() {
         let root = fresh_root("e2e-mlx");
         let (ch, events) = test_channel();
-        let dir = download_mlx_repo_inner(&root, "mlx-community/SmolLM-135M-Instruct-4bit".into(), ch)
+        let dir = download_mlx_repo_inner(&root, "mlx-community/SmolLM-135M-Instruct-4bit".into(), None, ch)
             .await
             .unwrap();
         let dir = std::path::PathBuf::from(dir);
@@ -1289,7 +1364,7 @@ mod store_e2e {
     #[ignore]
     async fn search_and_detail_both_formats() {
         // GGUF search
-        let hits = hf_search("qwen".into(), "gguf".into(), "downloads".into(), Some(10))
+        let hits = hf_search("qwen".into(), "gguf".into(), "downloads".into(), Some(10), None)
             .await
             .expect("gguf search");
         assert!(!hits.is_empty(), "no gguf hits");
@@ -1297,7 +1372,7 @@ mod store_e2e {
         eprintln!("gguf top: {} (↓{})", hits[0].id, hits[0].downloads);
 
         // GGUF detail on a known-stable repo
-        let d = hf_model_detail("Qwen/Qwen3-0.6B-GGUF".into(), "gguf".into())
+        let d = hf_model_detail("Qwen/Qwen3-0.6B-GGUF".into(), "gguf".into(), None)
             .await
             .expect("gguf detail");
         assert_eq!(d.format, "gguf");
@@ -1309,11 +1384,11 @@ mod store_e2e {
         eprintln!("quants: {:?}", d.quants.iter().map(|q| (q.label.clone(), q.size / 1_000_000)).collect::<Vec<_>>());
 
         // MLX search + detail (auto-detected as single-quant repo)
-        let hits = hf_search("qwen".into(), "mlx".into(), "trending".into(), Some(10))
+        let hits = hf_search("qwen".into(), "mlx".into(), "trending".into(), Some(10), None)
             .await
             .expect("mlx search");
         assert!(!hits.is_empty(), "no mlx hits");
-        let d = hf_model_detail("mlx-community/Qwen3-0.6B-4bit".into(), "mlx".into())
+        let d = hf_model_detail("mlx-community/Qwen3-0.6B-4bit".into(), "mlx".into(), None)
             .await
             .expect("mlx detail");
         assert_eq!(d.format, "mlx");
@@ -1323,7 +1398,7 @@ mod store_e2e {
         eprintln!("mlx quant: {} {}MB", d.quants[0].label, d.quants[0].size / 1_000_000);
 
         // Vision repo carries an mmproj
-        let d = hf_model_detail("Qwen/Qwen3.5-35B-A3B-GGUF".into(), "gguf".into()).await;
+        let d = hf_model_detail("Qwen/Qwen3.5-35B-A3B-GGUF".into(), "gguf".into(), None).await;
         if let Ok(d) = d {
             eprintln!("vision repo: vision={} mmproj={:?}", d.vision, d.mmproj);
         }

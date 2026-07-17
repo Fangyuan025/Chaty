@@ -5049,6 +5049,10 @@ a:focus-visible,
 .cm-step.done .cm-step-status {
   color: var(--accent);
 }
+/* Ran, but the command itself exited non-zero — not a green check. */
+.cm-step.done.cmd-failed .cm-step-status {
+  color: var(--danger);
+}
 .cm-step.error .cm-step-status {
   color: var(--danger);
 }

@@ -1242,6 +1242,7 @@ pub enum RagDlProgress {
 #[tauri::command]
 pub async fn rag_download_model(
     app: tauri::AppHandle,
+    endpoint: Option<String>,
     on_progress: Channel<RagDlProgress>,
 ) -> Result<(), String> {
     let dest = embed_model_path(&app)?;
@@ -1253,13 +1254,22 @@ pub async fn rag_download_model(
     let tmp = dest.with_extension("part");
     let cancel = crate::download::register_cancel("rag-embed");
 
+    // Honour the HF endpoint setting: rewrite the official host to the chosen
+    // base. On a mirror, `parse_hf_resolve_url` won't match the rewritten URL,
+    // so the xet fallback (official-only protocol) is skipped naturally.
+    let base = crate::download::hf_base(endpoint.as_deref());
+    let urls: Vec<String> = EMBED_URLS
+        .iter()
+        .map(|u| u.replace(crate::download::HF_OFFICIAL, &base))
+        .collect();
+
     let client = reqwest::Client::builder()
         .user_agent("Chaty-RAG")
         .build()
         .map_err(|e| e.to_string())?;
     let mut last_err = String::new();
-    for url in EMBED_URLS {
-        let resp = match client.get(*url).send().await.and_then(|r| r.error_for_status()) {
+    for url in &urls {
+        let resp = match client.get(url).send().await.and_then(|r| r.error_for_status()) {
             Ok(r) => r,
             Err(e) => {
                 // CDN-blocked network (cas-bridge 403): retry this URL over xet.

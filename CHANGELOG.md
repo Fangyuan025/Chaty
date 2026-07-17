@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.8.3 — The models folder tells the truth, HF from anywhere (2026-07-17)
+
+Two community-reported fixes (thanks @sprite5) plus a packaging root-fix.
+
+### The models folder finally tells the truth (#1)
+
+- **"Open models folder" opens the folder your models are actually in.** Several roots are scanned for models but the menu always opened the app-data one — for users upgrading from an older install (models next to the exe) that folder is empty, which read as "my models are gone". The menu now opens the first root that really contains models, falling back to the download target only when none does.
+- **Models dropped in mid-session appear without a restart.** Loose `.gguf` files used to be organized into the folder layout only at startup — drop one in while Chaty runs and it stayed invisible until a relaunch. The picker now organizes on every open: drop the file, reopen the model picker, it's there.
+- A small toast after "Open models folder" explains the drop-in flow — the original report read the button as a file picker.
+
+### HuggingFace endpoint setting (#2)
+
+- **Settings → Model → HuggingFace endpoint: Official / hf-mirror.com / custom URL.** Model search, quantization lists, READMEs, downloads (GGUF and MLX), and the knowledge-base embedding model all follow the chosen endpoint — for networks where huggingface.co is unreachable (mainland China: pick hf-mirror.com).
+- Mirrors don't speak the xet fallback protocol (the official-CDN-block workaround), so on a mirror a rejected file now says exactly that — switch back to Official — instead of a cryptic HTTP error.
+
+### Windows-only bug sweep
+
+- **No more flashing console windows.** Every console child a GUI app spawns on Windows pops a black window without `CREATE_NO_WINDOW` — opening a folder or link, every Code-mode command, every post-edit syntax check, and killing background jobs/the agent browser all flashed one. All spawn sites are now silent.
+- **Links with query strings open whole.** "Open externally" went through `cmd /C start`, whose parser splits an unquoted URL at `&` — links died at their first query parameter. URLs now go through `rundll32 FileProtocolHandler` and files/folders through `explorer` (both console-free; verified with a local listener that the full query string reaches the browser — explorer alone silently drops it).
+- **Code mode speaks the right shell.** The agent's instructions described a POSIX shell, but Windows executes commands via `cmd.exe` — models wrote `ls`/`cat`/`$VAR` and watched them fail. On Windows the prompt now says to use Windows commands (`dir`, `type`, `findstr`) or cross-platform tools (git, npm, python), and `%VAR%` syntax.
+- **Chinese-locale command output is readable.** Windows consoles emit GBK, not UTF-8 — `dir` listings and error messages reached the agent as mojibake. Output that isn't valid UTF-8 is now decoded as GBK.
+- **Python syntax checks work with real Windows Pythons.** The post-edit checker invoked `python3`, which official Windows installers don't create — and the Microsoft-Store stub *named* python3 exits with an error, flagging every `.py` edit as a syntax failure. The checker now prefers `python` and ignores the store stub.
+- **Per-user Chrome installs are found.** The agent-browser looked only in `Program Files`; Chrome's default per-user location (`%LOCALAPPDATA%`) — the usual non-admin install — plus 64-bit Edge and Brave are now on the candidate list.
+- **Failed commands no longer wear a green check.** A Code-mode command that ran but exited non-zero (e.g. `ls` on stock Windows) showed the same ✓ as a success — the failure hid in a small exit badge, so broken commands read as working. Non-zero exits now show a red ✗ on the step card.
+- **The `list_dir` step card no longer masquerades as `ls`.** Its summary label was literally "ls <path>" — on Windows that read as a shell `ls` succeeding where cmd.exe has no such command, and sent our own debugging down a phantom-bug hole. It now says `list <path>`.
+- **Malformed tool calls show as errors.** A hallucinated tool name from a small model (e.g. `{"name":"tool"}`) returned a polite "unknown tool" note with a green check; it's now a red-✗ error step, and the model is pointed at the tool list.
+
+### Packaging
+
+- **`vulkan-1.dll` ships in the Windows installer.** Machines without a GPU driver (clean VMs — winget validation among them) lack the system Vulkan loader and the app failed to launch. The runtime loader now sits next to the exe as a fallback; on normal machines the driver's own loader still wins.
+
 ## v1.8.2 — Smart tools: the agent's tools do the thinking (2026-07-16)
 
 Small local models shouldn't burn steps on planning grunt work — this release moves that intelligence **into the tools**. Verified end to end with a real 8B model: locate → fix → validate a bug in a multi-file project in 18 seconds.

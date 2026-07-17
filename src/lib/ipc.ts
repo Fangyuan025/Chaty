@@ -387,7 +387,7 @@ export async function ragDownloadModel(
 ): Promise<void> {
   const channel = new Channel<DownloadProgress>();
   channel.onmessage = onProgress;
-  await invoke("rag_download_model", { onProgress: channel });
+  await invoke("rag_download_model", { endpoint: hfBase(), onProgress: channel });
 }
 
 /** Reveal the writable models folder in Finder/Explorer (creates it if needed). */
@@ -486,9 +486,29 @@ export interface HfFile {
   url: string;
 }
 
+// ---- HuggingFace endpoint (Settings → Model) ----
+// The official host, or a path-compatible mirror like https://hf-mirror.com
+// for networks where huggingface.co is unreachable. App.tsx mirrors the
+// setting here; every HF-touching call below sends it to the backend.
+
+export const HF_OFFICIAL = "https://huggingface.co";
+
+let hfEndpoint = HF_OFFICIAL;
+
+/** Mirror the Settings value into this module (empty/invalid → official). */
+export function setHfEndpoint(url: string | undefined | null): void {
+  const clean = (url ?? "").trim().replace(/\/+$/, "");
+  hfEndpoint = /^https?:\/\/.+/.test(clean) ? clean : HF_OFFICIAL;
+}
+
+/** The active HF base URL (no trailing slash). */
+export function hfBase(): string {
+  return hfEndpoint;
+}
+
 /** List `.gguf` files in a HuggingFace repo (`owner/name` or a full URL). */
 export async function listHfGgufs(repo: string): Promise<HfFile[]> {
-  return await invoke<HfFile[]>("list_hf_ggufs", { repo });
+  return await invoke<HfFile[]>("list_hf_ggufs", { repo, endpoint: hfEndpoint });
 }
 
 export type DownloadProgress =
@@ -553,12 +573,18 @@ export async function hfSearch(
   format: "gguf" | "mlx",
   sort: "trending" | "downloads" | "likes" | "updated",
 ): Promise<HfModelHit[]> {
-  return await invoke<HfModelHit[]>("hf_search", { query, format, sort, limit: 30 });
+  return await invoke<HfModelHit[]>("hf_search", {
+    query,
+    format,
+    sort,
+    limit: 30,
+    endpoint: hfEndpoint,
+  });
 }
 
 /** Quant-level detail for one repo (auto-detects MLX when it has no GGUFs). */
 export async function hfModelDetail(repo: string, format: "gguf" | "mlx"): Promise<HfModelDetail> {
-  return await invoke<HfModelDetail>("hf_model_detail", { repo, format });
+  return await invoke<HfModelDetail>("hf_model_detail", { repo, format, endpoint: hfEndpoint });
 }
 
 /** The author's official HF avatar URL (org or user), or null. */
@@ -566,9 +592,10 @@ export async function hfAuthorAvatar(author: string): Promise<string | null> {
   return await invoke<string | null>("hf_author_avatar", { author });
 }
 
-/** Resolve-URL for a repo file (store downloads reuse the file downloader). */
+/** Resolve-URL for a repo file (store downloads reuse the file downloader).
+ *  Follows the configured HF endpoint. */
 export function hfResolveUrl(repo: string, path: string): string {
-  return `https://huggingface.co/${repo}/resolve/main/${path}?download=true`;
+  return `${hfEndpoint}/${repo}/resolve/main/${path}?download=true`;
 }
 
 export interface MlxRepoInfo {
@@ -580,7 +607,7 @@ export interface MlxRepoInfo {
 
 /** Probe a HuggingFace repo as an MLX folder model (config.json + safetensors). */
 export async function listHfMlx(repo: string): Promise<MlxRepoInfo> {
-  return await invoke<MlxRepoInfo>("list_hf_mlx", { repo });
+  return await invoke<MlxRepoInfo>("list_hf_mlx", { repo, endpoint: hfEndpoint });
 }
 
 /**
@@ -594,7 +621,11 @@ export async function downloadMlxRepo(
 ): Promise<string> {
   const channel = new Channel<DownloadProgress>();
   channel.onmessage = onProgress;
-  return await invoke<string>("download_mlx_repo", { repo, onProgress: channel });
+  return await invoke<string>("download_mlx_repo", {
+    repo,
+    endpoint: hfEndpoint,
+    onProgress: channel,
+  });
 }
 
 /** True when an HF GGUF filename is a vision encoder (mmproj), not a chat model. */

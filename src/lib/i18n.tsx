@@ -494,6 +494,21 @@ export const T = {
     zh: "放入 GGUF 文件或 MLX 模型文件夹即可被识别",
     en: "Drop GGUF files or MLX model folders here to make them available",
   },
+  modelsDirHintToast: {
+    zh: "将模型文件放入此文件夹后，重新打开模型选择器即可看到",
+    en: "Drop model files into this folder, then reopen the model picker to see them",
+  },
+  hfEndpoint: { zh: "HuggingFace 端点", en: "HuggingFace endpoint" },
+  hfEndpointOfficial: { zh: "官方", en: "Official" },
+  hfEndpointCustom: { zh: "自定义", en: "Custom" },
+  hfEndpointHint: {
+    zh: "模型搜索、下载和知识库模型都走此端点。大陆网络推荐 hf-mirror.com；镜像不支持 xet 回退，个别文件失败时请切回官方。",
+    en: "Model search, downloads and the knowledge-base model all use this endpoint. hf-mirror.com is recommended in mainland China; mirrors lack the xet fallback — switch back to Official if a file fails.",
+  },
+  tipHfEndpoint: {
+    zh: "huggingface.co 不可达时可切换到与其路径兼容的镜像站",
+    en: "Switch to a path-compatible mirror when huggingface.co is unreachable",
+  },
   voicePreview: { zh: "试听", en: "Preview" },
   voicePreviewHint: {
     zh: "用当前语音和语速播放示例",

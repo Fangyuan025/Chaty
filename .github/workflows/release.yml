@@ -118,6 +118,30 @@ jobs:
           # newer llama.cpp's Vulkan backend does find_package(SPIRV-Headers/-Tools);
           # point CMake at the Vulkan SDK, which ships those config packages.
           CMAKE_PREFIX_PATH: ${{ env.VULKAN_SDK }}
+      - name: Bundle Vulkan runtime loader (vulkan-1.dll)
+        shell: pwsh
+        run: |
+          # Machines without a GPU driver (winget validation VMs, bare servers)
+          # have no system vulkan-1.dll and the app fails to launch. Ship the
+          # runtime loader next to the exe as a fallback (the system one wins
+          # in the loader search order when present).
+          $dll = Get-ChildItem -Recurse $env:VULKAN_SDK -Filter vulkan-1.dll -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '(x64|X64)' } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $dll) {
+            # SDK archives may omit the runtime component — fetch LunarG's
+            # standalone runtime zip for the same version instead.
+            $ver = "1.3.290.0"
+            $zip = "$env:TEMP\VulkanRT.zip"
+            Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanRT-$ver-Components.zip" -OutFile $zip
+            Expand-Archive $zip -DestinationPath "$env:TEMP\VulkanRT" -Force
+            $dll = Get-ChildItem -Recurse "$env:TEMP\VulkanRT" -Filter vulkan-1.dll |
+              Where-Object { $_.FullName -match '(x64|X64)' } |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $dll) { throw "vulkan-1.dll not found (SDK + runtime zip)" }
+          Copy-Item $dll C:\ct\release\vulkan-1.dll
+          Write-Host "bundled $dll"
       - name: Build Inno Setup installer
         shell: pwsh
         run: |

@@ -1012,6 +1012,9 @@ mod mlx_vlm_e2e {
     /// sidecar heals the folder by synthesizing one from config.json's
     /// vision_config instead of refusing to load. Prove it on a symlink clone
     /// of the test model with those files stripped.
+    // MLX runs through the Apple-Silicon sidecar; unix-only (symlink) so the
+    // Windows `cargo test` build doesn't trip over it.
+    #[cfg(unix)]
     #[test]
     #[ignore]
     fn mlx_vlm_e2e_heals_missing_processor_configs() {
