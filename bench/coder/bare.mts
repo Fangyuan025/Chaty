@@ -9,7 +9,7 @@
  */
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { mkdtempSync, cpSync, readFileSync, appendFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
+import { mkdtempSync, cpSync, rmSync, readFileSync, appendFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -78,56 +78,62 @@ async function main() {
     const t0 = Date.now();
     const taskDir = path.join(tasksDir, name);
     const ws = mkdtempSync(path.join(tmpdir(), `chaty-bare-${name}-`));
-    cpSync(path.join(taskDir, "workspace"), ws, { recursive: true });
-    const cfgPath = path.join(taskDir, "grade_config.json");
-    if (existsSync(cfgPath)) {
-      const envBin = (JSON.parse(readFileSync(cfgPath, "utf8")) as { env_bin: string }).env_bin;
-      try { execFileSync("uv", ["pip", "install", "-q", "-e", ws, "--python", path.join(envBin, "python")], { stdio: "pipe" }); }
-      catch { /* best-effort; grade.py PYTHONPATH is the backstop */ }
-    }
-    await bridge.call("agent_set_workspace", { path: ws });
-
-    const messages: Json[] = [
-      { role: "system", content: SYS, images: [] },
-      { role: "user", content: readFileSync(path.join(taskDir, "task.md"), "utf8"), images: [] },
-    ];
-    let steps = 0, error: string | undefined, lastCmd = "", repeats = 0;
-    for (let step = 0; step < 40; step++) {
-      let raw = "";
-      try {
-        await bridge.call("generate", {
-          request: { messages, params: { temperature: 0.2, topP: 0.9, repeatPenalty: 1.05, maxTokens: 3072, think: false, stop: ["</tool_call>"] } },
-        }, (ev) => { if (ev.type === "token") raw += ev.text; });
-      } catch (e) { error = String(e); break; }
-      const body = raw.replace(THINK_RE, "");
-      const m = TOOL_RE.exec(body);
-      if (!m) break; // final answer
-      let cmd = "";
-      try { cmd = String(JSON.parse(m[1]).arguments?.command ?? ""); } catch { /* malformed */ }
-      steps++;
-      let result: string;
-      if (!cmd) result = "ERROR: malformed tool call";
-      else if (cmd === lastCmd && ++repeats >= 2) break;
-      else {
-        if (cmd !== lastCmd) { lastCmd = cmd; repeats = 0; }
-        try {
-          const r = (await bridge.call("agent_bash", { command: cmd, timeoutSecs: 120 })) as Json;
-          result = String(r.output ?? JSON.stringify(r));
-        } catch (e) { result = `ERROR: ${String(e)}`; }
-        if (result.length > 8000) result = result.slice(0, 2400) + "\n… (truncated) …\n" + result.slice(-5600);
+    // Each workspace copy is ~60MB — always remove it once the task is graded,
+    // including on error paths, or a full run leaks gigabytes of $TMPDIR.
+    try {
+      cpSync(path.join(taskDir, "workspace"), ws, { recursive: true });
+      const cfgPath = path.join(taskDir, "grade_config.json");
+      if (existsSync(cfgPath)) {
+        const envBin = (JSON.parse(readFileSync(cfgPath, "utf8")) as { env_bin: string }).env_bin;
+        try { execFileSync("uv", ["pip", "install", "-q", "-e", ws, "--python", path.join(envBin, "python")], { stdio: "pipe" }); }
+        catch { /* best-effort; grade.py PYTHONPATH is the backstop */ }
       }
-      messages.push({ role: "assistant", content: body.includes("</tool_call>") ? body : body + "</tool_call>", images: [] });
-      messages.push({ role: "user", content: `<tool_result>\n${result}\n</tool_result>`, images: [] });
-    }
+      await bridge.call("agent_set_workspace", { path: ws });
 
-    let resolved = false;
-    if (!error) {
-      try { execFileSync("bash", [path.join(taskDir, "grade.sh")], { cwd: ws, timeout: 600_000, stdio: "pipe" }); resolved = true; }
-      catch { resolved = false; }
+      const messages: Json[] = [
+        { role: "system", content: SYS, images: [] },
+        { role: "user", content: readFileSync(path.join(taskDir, "task.md"), "utf8"), images: [] },
+      ];
+      let steps = 0, error: string | undefined, lastCmd = "", repeats = 0;
+      for (let step = 0; step < 40; step++) {
+        let raw = "";
+        try {
+          await bridge.call("generate", {
+            request: { messages, params: { temperature: 0.2, topP: 0.9, repeatPenalty: 1.05, maxTokens: 3072, think: false, stop: ["</tool_call>"] } },
+          }, (ev) => { if (ev.type === "token") raw += ev.text; });
+        } catch (e) { error = String(e); break; }
+        const body = raw.replace(THINK_RE, "");
+        const m = TOOL_RE.exec(body);
+        if (!m) break; // final answer
+        let cmd = "";
+        try { cmd = String(JSON.parse(m[1]).arguments?.command ?? ""); } catch { /* malformed */ }
+        steps++;
+        let result: string;
+        if (!cmd) result = "ERROR: malformed tool call";
+        else if (cmd === lastCmd && ++repeats >= 2) break;
+        else {
+          if (cmd !== lastCmd) { lastCmd = cmd; repeats = 0; }
+          try {
+            const r = (await bridge.call("agent_bash", { command: cmd, timeoutSecs: 120 })) as Json;
+            result = String(r.output ?? JSON.stringify(r));
+          } catch (e) { result = `ERROR: ${String(e)}`; }
+          if (result.length > 8000) result = result.slice(0, 2400) + "\n… (truncated) …\n" + result.slice(-5600);
+        }
+        messages.push({ role: "assistant", content: body.includes("</tool_call>") ? body : body + "</tool_call>", images: [] });
+        messages.push({ role: "user", content: `<tool_result>\n${result}\n</tool_result>`, images: [] });
+      }
+
+      let resolved = false;
+      if (!error) {
+        try { execFileSync("bash", [path.join(taskDir, "grade.sh")], { cwd: ws, timeout: 600_000, stdio: "pipe" }); resolved = true; }
+        catch { resolved = false; }
+      }
+      if (resolved) resolvedCount++;
+      appendFileSync(outFile, JSON.stringify({ task: name, resolved, steps, seconds: Math.round((Date.now() - t0) / 1000), error }) + "\n");
+      console.log(`${resolved ? "✓" : "✗"} ${name}  ${steps} steps`);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
     }
-    if (resolved) resolvedCount++;
-    appendFileSync(outFile, JSON.stringify({ task: name, resolved, steps, seconds: Math.round((Date.now() - t0) / 1000), error }) + "\n");
-    console.log(`${resolved ? "✓" : "✗"} ${name}  ${steps} steps`);
   }
   console.log(`\nbare agent: ${resolvedCount}/${names.length} resolved — ${outFile}`);
   bridge.kill();

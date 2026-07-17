@@ -31,7 +31,7 @@ g.navigator ??= { userAgent: "chaty-bench" };
 
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
-import { mkdtempSync, cpSync, readFileSync, appendFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
+import { mkdtempSync, cpSync, rmSync, readFileSync, appendFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -119,60 +119,66 @@ async function main() {
     const t0 = Date.now();
     const taskDir = path.join(tasksDir, name);
     const ws = mkdtempSync(path.join(tmpdir(), `chaty-bench-${name}-`));
-    cpSync(path.join(taskDir, "workspace"), ws, { recursive: true });
-    // Re-point the instance venv's editable install at THIS run's copy, so the
-    // agent's own test runs exercise the code it is editing.
-    const cfgPath = path.join(taskDir, "grade_config.json");
-    if (existsSync(cfgPath)) {
-      const envBin = (JSON.parse(readFileSync(cfgPath, "utf8")) as { env_bin: string }).env_bin;
-      try { execFileSync("uv", ["pip", "install", "-q", "-e", ws, "--python", path.join(envBin, "python")], { stdio: "pipe" }); }
-      catch { /* editable reinstall is best-effort; PYTHONPATH in grade.py is the backstop */ }
-    }
-    await bridge.call("agent_set_workspace", { path: ws });
+    // Each workspace copy is ~60MB — always remove it once the task is graded,
+    // including on error paths, or a full run leaks gigabytes of $TMPDIR.
+    try {
+      cpSync(path.join(taskDir, "workspace"), ws, { recursive: true });
+      // Re-point the instance venv's editable install at THIS run's copy, so the
+      // agent's own test runs exercise the code it is editing.
+      const cfgPath = path.join(taskDir, "grade_config.json");
+      if (existsSync(cfgPath)) {
+        const envBin = (JSON.parse(readFileSync(cfgPath, "utf8")) as { env_bin: string }).env_bin;
+        try { execFileSync("uv", ["pip", "install", "-q", "-e", ws, "--python", path.join(envBin, "python")], { stdio: "pipe" }); }
+        catch { /* editable reinstall is best-effort; PYTHONPATH in grade.py is the backstop */ }
+      }
+      await bridge.call("agent_set_workspace", { path: ws });
 
-    const instruction = readFileSync(path.join(taskDir, "task.md"), "utf8");
-    let steps = 0, turns = 0, error: string | undefined;
-    const signal = { cancelled: false };
+      const instruction = readFileSync(path.join(taskDir, "task.md"), "utf8");
+      let steps = 0, turns = 0, error: string | undefined;
+      const signal = { cancelled: false };
 
-    // One turn; if the loop pauses at the step limit, nudge it on (max 3 turns)
-    // — mirrors a user clicking Continue.
-    let prompt = instruction;
-    const history: unknown[] = [];
-    for (turns = 1; turns <= 3; turns++) {
-      let pausedAtSteps = false;
-      await new Promise<void>((resolve) => {
-        runAgentTurn(prompt, history as never, ws, "en", {
-          thinkMode: "off",
-          nCtx: 16384,
-          maxSteps: 40,
-          temperature: 0.2,
-          bashTimeout: 120,
-          signal: signal as never,
-          approve: async () => true,          // benchmark = bypass mode
-          approveDir: async () => false,      // stay inside the workspace
-          approveSudo: async () => ({ ok: false }),
-        }, {
-          onThinking: () => {},
-          onAssistantText: () => {},
-          onStep: () => { steps++; },
-          onFinal: (_text, _think, reason) => { pausedAtSteps = reason === "steps"; resolve(); },
-          onError: (m) => { error = m; resolve(); },
-          onAskUser: async (_q, options) => options[0] ?? "continue",
+      // One turn; if the loop pauses at the step limit, nudge it on (max 3 turns)
+      // — mirrors a user clicking Continue.
+      let prompt = instruction;
+      const history: unknown[] = [];
+      for (turns = 1; turns <= 3; turns++) {
+        let pausedAtSteps = false;
+        await new Promise<void>((resolve) => {
+          runAgentTurn(prompt, history as never, ws, "en", {
+            thinkMode: "off",
+            nCtx: 16384,
+            maxSteps: 40,
+            temperature: 0.2,
+            bashTimeout: 120,
+            signal: signal as never,
+            approve: async () => true,          // benchmark = bypass mode
+            approveDir: async () => false,      // stay inside the workspace
+            approveSudo: async () => ({ ok: false }),
+          }, {
+            onThinking: () => {},
+            onAssistantText: () => {},
+            onStep: () => { steps++; },
+            onFinal: (_text, _think, reason) => { pausedAtSteps = reason === "steps"; resolve(); },
+            onError: (m) => { error = m; resolve(); },
+            onAskUser: async (_q, options) => options[0] ?? "continue",
+          });
         });
-      });
-      if (error || !pausedAtSteps) break;
-      prompt = "继续";
-    }
+        if (error || !pausedAtSteps) break;
+        prompt = "继续";
+      }
 
-    let resolved = false;
-    if (!error) {
-      try { execFileSync("bash", [path.join(taskDir, "grade.sh")], { cwd: ws, timeout: 600_000, stdio: "pipe" }); resolved = true; }
-      catch { resolved = false; }
+      let resolved = false;
+      if (!error) {
+        try { execFileSync("bash", [path.join(taskDir, "grade.sh")], { cwd: ws, timeout: 600_000, stdio: "pipe" }); resolved = true; }
+        catch { resolved = false; }
+      }
+      if (resolved) resolvedCount++;
+      const r: TaskResult = { task: name, resolved, steps, turns, seconds: Math.round((Date.now() - t0) / 1000), error };
+      appendFileSync(outFile, JSON.stringify(r) + "\n");
+      console.log(`${resolved ? "✓" : "✗"} ${name}  ${r.seconds}s  ${steps} steps${error ? `  ERROR: ${error}` : ""}`);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
     }
-    if (resolved) resolvedCount++;
-    const r: TaskResult = { task: name, resolved, steps, turns, seconds: Math.round((Date.now() - t0) / 1000), error };
-    appendFileSync(outFile, JSON.stringify(r) + "\n");
-    console.log(`${resolved ? "✓" : "✗"} ${name}  ${r.seconds}s  ${steps} steps${error ? `  ERROR: ${error}` : ""}`);
   }
 
   console.log(`\n${resolvedCount}/${names.length} resolved — results: ${outFile}`);
