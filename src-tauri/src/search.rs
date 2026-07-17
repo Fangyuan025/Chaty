@@ -741,7 +741,7 @@ mod tests {
         // A hard-blocked provider is skipped until its cooldown elapses.
         st.cooldown.insert("brave", now + HARD_COOLDOWN);
         assert!(st.cooldown.get("brave").is_some_and(|u| *u > now));
-        assert!(st.cooldown.get("bing").is_none());
+        assert!(!st.cooldown.contains_key("bing"));
         // Cache round-trip.
         let res = vec![SearchResult { title: "t".into(), url: "https://e.com".into(), snippet: "s".into() }];
         st.cache.push(("q".into(), res.clone(), now));
