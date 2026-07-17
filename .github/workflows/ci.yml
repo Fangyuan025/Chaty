@@ -44,9 +44,11 @@ jobs:
       # suspicious lint groups: these flag near-certain bugs (bad comparisons,
       # misused APIs, likely-wrong logic) and rarely false-positive, so they
       # gate real defects without drowning the run in style noise.
+      # --release for the same reason as cargo test below: sherpa-rs only lays
+      # down libonnxruntime under target/release/, and the link step looks there.
       - name: clippy (deny correctness bugs)
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D clippy::correctness -D clippy::suspicious
+        run: cargo clippy --all-targets --release -- -D clippy::correctness -D clippy::suspicious
       # Build in release so sherpa-rs lays down libonnxruntime in target/release/
       # (its build script only populates the release dir, which the link step
       # expects — a debug `cargo test` can't find it on a clean runner).
