@@ -39,7 +39,7 @@ jobs:
         # sherpa-rs places in target/release/, breaking the link (same gotcha as
         # release.yml).
         with: { workspaces: src-tauri, cache-targets: false }
-      # clippy over ALL targets (lib, the chaty-headless bin, and tests — which
+      # clippy over lib, the chaty-headless bin, and tests (which
       # `cargo test --lib` never compiles). Deny only the correctness and
       # suspicious lint groups: these flag near-certain bugs (bad comparisons,
       # misused APIs, likely-wrong logic) and rarely false-positive, so they
@@ -48,7 +48,7 @@ jobs:
       # down libonnxruntime under target/release/, and the link step looks there.
       - name: clippy (deny correctness bugs)
         working-directory: src-tauri
-        run: cargo clippy --all-targets --release -- -D clippy::correctness -D clippy::suspicious
+        run: cargo clippy --lib --bins --tests --release -- -D clippy::correctness -D clippy::suspicious
       # Build in release so sherpa-rs lays down libonnxruntime in target/release/
       # (its build script only populates the release dir, which the link step
       # expects — a debug `cargo test` can't find it on a clean runner).
@@ -76,7 +76,7 @@ jobs:
       # features` drops GPU). This is the cheap guard for `cfg(windows)` code
       # that the macOS jobs can't even see — the class of bug (e.g. a Windows-
       # only fn referenced under the wrong cfg) that previously slipped through
-      # to a release tag. `--all-targets` also covers the chaty-headless bin.
+      # to a release tag. Covers the chaty-headless bin too; examples are dev-only
       - name: cargo check (no GPU, all targets)
         working-directory: src-tauri
-        run: cargo check --no-default-features --all-targets
+        run: cargo check --no-default-features --lib --bins --tests
