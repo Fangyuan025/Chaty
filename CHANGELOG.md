@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.8.4 — Scroll free while it streams (2026-07-17)
+
+The streaming-scroll fix (thanks @sprite5, #4), plus benchmark and CI groundwork from this cycle.
+
+### Scroll up any time while the model is streaming (#4)
+
+- **Scrolling up during a streaming reply now sticks immediately.** Auto-follow used to be a distance check — within ~140px of the bottom every new token re-pinned the view, and on a fast stream you couldn't escape the threshold before the next token dragged you back: the scrollbar only moved with the stream, and on a touchpad it felt impossible to leave the bottom at all. Chat now treats following as an *intent*, the same model Code mode has shipped since v1.5.0: any upward wheel or touchpad motion releases auto-follow instantly and the view stays exactly where you put it; dragging the scrollbar away from the bottom releases it too, and parking back at the bottom re-arms it. Sending a message or switching conversations still jumps to the bottom as always.
+
+### Under the hood
+
+- **ChatyCoder-Bench** — a headless harness (`chaty-headless`) that drives the real Code-mode agent loop against SWE-bench-style task sets: gold-validated tasks, per-repo dependency quirks codified, heredoc-safe wiring with per-command timeout recovery, and temp workspaces cleaned up after grading.
+- **CI catches more before a release**: the frontend now really builds in CI, clippy runs as a correctness gate (in release profile so native deps link), and Windows gets a compile check.
+- Scaffold leftovers swept out — the app page carries Chaty's own favicon and title instead of the Vite/Tauri defaults.
+
 ## v1.8.3 — The models folder tells the truth, HF from anywhere (2026-07-17)
 
 Two community-reported fixes (thanks @sprite5) plus a packaging root-fix.
