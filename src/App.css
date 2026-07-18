@@ -73,6 +73,23 @@
 
 /* Light theme — warm paper, not clinical white. Soft real shadows are back:
    on warm surfaces they read as depth, not grime. */
+:root {
+  /* Subtle same-ink overlays (inline code chips, table headers). Dark default;
+     light themes override — the old rgba(255,255,255,…) washed out on light. */
+  --ink-soft: rgba(255, 255, 255, 0.1);
+  --ink-faint: rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="light"] {
+  --ink-soft: rgba(60, 50, 35, 0.08);
+  --ink-faint: rgba(60, 50, 35, 0.045);
+}
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    --ink-soft: rgba(60, 50, 35, 0.08);
+    --ink-faint: rgba(60, 50, 35, 0.045);
+  }
+}
+
 :root[data-theme="light"] {
   --bg: #faf9f7;
   --bg-elev: #f1efec;
@@ -1235,10 +1252,38 @@ body.resizing-x {
 }
 
 .bubble {
+  position: relative;
   line-height: 1.7;
   font-size: 15px;
   word-wrap: break-word;
   overflow-wrap: anywhere;
+}
+/* Whole-reply copy: appears on hover in the bubble's bottom-right corner. */
+.msg-copy {
+  position: absolute;
+  right: 0;
+  bottom: -22px;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 5px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+.bubble:hover .msg-copy {
+  opacity: 1;
+}
+.msg-copy:hover {
+  color: var(--text-dim);
+  background: var(--ink-faint);
+}
+.msg-copy.done {
+  color: var(--ok);
+  opacity: 1;
 }
 
 /* Assistant: no bubble, full column width (ChatGPT style) */
@@ -1290,9 +1335,10 @@ body.resizing-x {
   color: var(--text-dim);
 }
 .bubble pre {
-  /* Follows the active highlight palette (set by applyCodeTheme), so code
-     keeps its intended dark canvas even under the light app themes. */
+  /* Follows the active highlight palette (set by applyCodeTheme); palettes
+     with a light sibling switch canvases with the app theme. */
   background: var(--code-bg, var(--bg-elev));
+  tab-size: 4;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   padding: 12px 14px;
@@ -1305,7 +1351,7 @@ body.resizing-x {
   font-size: 0.9em;
 }
 .bubble :not(pre) > code {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--ink-soft);
   padding: 1.5px 5px;
   border-radius: var(--r-sm);
 }
@@ -1320,6 +1366,57 @@ body.resizing-x {
 }
 .code-block pre {
   margin: 0;
+}
+/* Body wraps gutter + pre so long blocks scroll vertically as one unit. */
+.code-block .code-body {
+  max-height: 60vh;
+  overflow-y: auto;
+  border-radius: var(--r-md);
+}
+.code-block .code-body.numbered {
+  display: flex;
+  background: var(--code-bg, var(--bg-elev));
+  border: 1px solid var(--border);
+}
+.code-block .code-body.numbered pre {
+  border: none;
+  background: transparent;
+  flex: 1;
+  min-width: 0;
+}
+.code-gutter {
+  flex: 0 0 auto;
+  user-select: none;
+  -webkit-user-select: none;
+  text-align: right;
+  padding: 12px 0 12px 12px;
+  border-right: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 13.5px;
+  white-space: pre;
+}
+.code-gutter code {
+  display: block;
+  padding-right: 10px;
+}
+/* Fixed line-height on both columns — the only way the numbers stay glued to
+   their lines regardless of the 0.9em code font scale. */
+.code-block .code-body.numbered pre code,
+.code-gutter code {
+  line-height: 20px;
+}
+.code-lang {
+  position: absolute;
+  top: 7px;
+  right: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.code-block:hover .code-lang {
+  opacity: 0;
 }
 
 /* ---------- Mermaid diagrams ---------- */
@@ -1487,7 +1584,7 @@ body.resizing-x {
   text-align: left;
 }
 .bubble th {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--ink-faint);
   font-weight: 600;
 }
 .bubble .katex-display {

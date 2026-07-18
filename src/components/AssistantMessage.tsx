@@ -3,6 +3,38 @@ import { Markdown } from "./Markdown";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { normalizeChannels } from "../lib/voiceText";
+import { copyToClipboard } from "../lib/clipboard";
+
+/** Hover copy-the-whole-reply button (markdown source, think block excluded). */
+function CopyReply({ text }: { text: string }) {
+  const [ok, setOk] = useState(false);
+  const { t } = useI18n();
+  if (!text) return null;
+  return (
+    <button
+      className={`msg-copy ${ok ? "done" : ""}`}
+      type="button"
+      title={t("copyReply")}
+      onClick={() =>
+        void copyToClipboard(text).then(() => {
+          setOk(true);
+          setTimeout(() => setOk(false), 1400);
+        })
+      }
+    >
+      {ok ? (
+        <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.7" />
+          <path d="M5 15V5a2 2 0 0 1 2-2h8" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+        </svg>
+      )}
+    </button>
+  );
+}
 
 /** Split a streamed assistant message into its `<think>` reasoning and answer. */
 function parseThinking(raw: string): {
@@ -114,6 +146,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         ) : streaming && !answer ? (
           <span className="cursor" />
         ) : null}
+        {!streaming && <CopyReply text={answer} />}
       </div>
     );
   }
@@ -183,6 +216,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       ) : streaming && !cleanAnswer && !thinking ? (
         <span className="cursor" />
       ) : null}
+      {!streaming && <CopyReply text={cleanAnswer} />}
     </div>
   );
 });

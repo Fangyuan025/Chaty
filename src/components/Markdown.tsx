@@ -228,20 +228,25 @@ export function withStorageShim(html: string): string {
 }
 
 
-/** A fenced code block with copy + (for HTML) live-preview buttons. */
+/** A fenced code block with copy + (for HTML) live-preview buttons, a
+ *  language label, and a line-number gutter on longer blocks. */
 function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   const ref = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
   const [isHtml, setIsHtml] = useState(false);
+  const [lines, setLines] = useState(0);
   const { t } = useI18n();
   const openCanvas = useContext(CanvasOpenContext);
 
   const lang = codeLang(children);
 
   useEffect(() => {
-    const text = (ref.current?.textContent ?? "").trimStart().toLowerCase();
+    const raw = ref.current?.textContent ?? "";
+    const text = raw.trimStart().toLowerCase();
     const sniff = text.startsWith("<!doctype") || text.startsWith("<html") || text.startsWith("<svg");
     setIsHtml(lang === "html" || lang === "htm" || (lang === "" && sniff));
+    // Line count for the gutter (grows live while the block streams in).
+    setLines(raw ? raw.split("\n").length - (raw.endsWith("\n") ? 1 : 0) : 0);
   });
 
   // Mermaid diagrams render in place of the code block.
@@ -257,8 +262,11 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
     });
   };
 
+  const showGutter = lines >= 4;
+
   return (
     <div className="code-block">
+      {lang && <span className="code-lang">{lang}</span>}
       <div className="code-actions">
         {isHtml && openCanvas && (
           <button
@@ -323,9 +331,16 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
           )}
         </button>
       </div>
-      <pre ref={ref} {...props}>
-        {children}
-      </pre>
+      <div className={`code-body ${showGutter ? "numbered" : ""}`}>
+        {showGutter && (
+          <div className="code-gutter" aria-hidden="true">
+            <code>{Array.from({ length: lines }, (_, i) => i + 1).join("\n")}</code>
+          </div>
+        )}
+        <pre ref={ref} {...props}>
+          {children}
+        </pre>
+      </div>
     </div>
   );
 }

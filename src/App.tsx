@@ -632,10 +632,19 @@ export default function App() {
     el.dataset.light = settings.lightScheme;
   }, [settings.theme, settings.darkScheme, settings.lightScheme]);
 
-  // Chat code-block highlight palette.
+  // Chat code-block highlight palette. Palettes with a light sibling follow
+  // the app appearance (incl. live OS switches under the system theme).
   useEffect(() => {
-    applyCodeTheme(settings.codeTheme);
-  }, [settings.codeTheme]);
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const apply = () =>
+      applyCodeTheme(
+        settings.codeTheme,
+        settings.theme === "light" || (settings.theme === "system" && mq.matches),
+      );
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, [settings.codeTheme, settings.theme]);
 
   // Display preferences: UI zoom, motion kill-switch, answer reading size.
   // Zoom is the native webview page zoom — CSS `zoom` reflows the document
