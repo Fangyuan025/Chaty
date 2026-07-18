@@ -312,7 +312,12 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
         </button>
       )}
       {lang && <span className="code-lang">{lang}</span>}
-      <div className="code-actions">
+      <div
+        ref={focusRef}
+        className={`code-fold-body ${foldable && !expanded ? (focusMode ? "focus" : "preview") : ""}`}
+        onClick={foldable && !expanded ? () => setOverride(true) : undefined}
+      >
+        <div className="code-actions">
         {isHtml && openCanvas && (
           <button
             className="code-btn"
@@ -379,11 +384,6 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
           )}
         </button>
       </div>
-      <div
-        ref={focusRef}
-        className={`code-fold-body ${foldable && !expanded ? (focusMode ? "focus" : "preview") : ""}`}
-        onClick={foldable && !expanded ? () => setOverride(true) : undefined}
-      >
         <pre ref={ref} {...props}>
           {children}
         </pre>

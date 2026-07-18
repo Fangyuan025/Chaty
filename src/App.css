@@ -1266,33 +1266,6 @@ body.resizing-x {
   word-wrap: break-word;
   overflow-wrap: anywhere;
 }
-/* Whole-reply copy: appears on hover in the bubble's bottom-right corner. */
-.msg-copy {
-  position: absolute;
-  right: 0;
-  bottom: -22px;
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 5px;
-  border: none;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--text-faint);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s, color 0.15s;
-}
-.bubble:hover .msg-copy {
-  opacity: 1;
-}
-.msg-copy:hover {
-  color: var(--text-dim);
-  background: var(--ink-faint);
-}
-.msg-copy.done {
-  color: var(--ok);
-  opacity: 1;
-}
 
 /* Assistant: no bubble, full column width (ChatGPT style) */
 .msg.assistant .bubble {
@@ -1400,6 +1373,9 @@ body.resizing-x {
 .code-fold-count {
   color: var(--text-faint);
 }
+.code-fold-body {
+  position: relative; /* anchors the in-body copy/canvas actions */
+}
 /* Folded-but-finished: the first few lines stay visible as a preview with a
    bottom fade — never a fully blank collapse. Click anywhere to expand. */
 .code-fold-body.preview {
@@ -1437,7 +1413,7 @@ body.resizing-x {
 }
 
 /* Chat reading ergonomics */
-.user-copy {
+.user-edit.user-copy {
   left: -56px;
 }
 .user-text.clamped {

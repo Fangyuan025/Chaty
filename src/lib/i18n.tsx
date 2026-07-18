@@ -115,7 +115,6 @@ export const T = {
     zh: "写入/编辑文件不再逐次询问(命令仍需批准)。每轮开始有检查点,可随时回滚。",
     en: "Write/edit steps run without asking (commands still need approval). Checkpoints let you roll back anytime.",
   },
-  copyReply: { zh: "复制回复", en: "Copy reply" },
   copyMsg: { zh: "复制这条消息", en: "Copy this message" },
   jumpLatest: { zh: "回到最新", en: "Jump to latest" },
   expandAll: { zh: "展开全部", en: "Show all" },
@@ -123,8 +122,8 @@ export const T = {
   codeLines: { zh: "行", en: "lines" },
   chatCollapseCode: { zh: "长代码块自动折叠", en: "Auto-collapse long code blocks" },
   chatCollapseCodeHint: {
-    zh: "超过 14 行的代码块收起为一行标题,点击随时展开/收起;生成中像思考块一样聚焦跟随最新几行。",
-    en: "Code blocks over 14 lines fold to a one-line header — click to expand or re-fold anytime. While generating, they focus-follow the newest lines like the thinking panel.",
+    zh: "长代码块收起为标题+前几行预览,点击展开。",
+    en: "Long code blocks fold to a header + preview; click to expand.",
   },
   cmAutoReadOnly: { zh: "只读命令自动放行", en: "Auto-run read-only commands" },
   cmAutoReadOnlyHint: {
