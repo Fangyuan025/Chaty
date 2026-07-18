@@ -350,6 +350,7 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevMsgCount = useRef(0);
   const prevConvId = useRef<string | null>(null);
+  const followRef = useRef(true);
   const asideRef = useRef<HTMLElement>(null);
   const [sidebarW, setSidebarW] = useState(() => {
     try {
@@ -570,20 +571,46 @@ export default function App() {
     }
   }
 
+  // Follow-the-stream is an *intent*, not a position: any upward wheel motion
+  // releases it immediately (a distance check alone loses to the next stream
+  // frame re-pinning the bottom before the user escapes the threshold), and
+  // parking back at the bottom re-arms it.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const dist = () => el.scrollHeight - el.scrollTop - el.clientHeight;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) followRef.current = false;
+      else if (dist() < 40) followRef.current = true;
+    };
+    const onScroll = () => {
+      // Covers scrollbar drags and keyboard scrolling; programmatic pins land
+      // at the bottom, so they only ever re-arm.
+      const d = dist();
+      if (d < 4) followRef.current = true;
+      else if (d > 240) followRef.current = false;
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     // Structural change (a message sent, a fresh assistant bubble, or switching
-    // conversations) → jump to the bottom. While a reply streams (same message
-    // count, content just growing) only stick to the bottom if the user is
-    // already near it — don't yank them up while they read earlier messages.
+    // conversations) → jump to the bottom and re-arm following. While a reply
+    // streams (same message count, content just growing) only stick to the
+    // bottom while the user hasn't scrolled away.
     const structural =
       messages.length !== prevMsgCount.current || conversationId !== prevConvId.current;
     prevMsgCount.current = messages.length;
     prevConvId.current = conversationId;
-    if (structural || el.scrollHeight - el.scrollTop - el.clientHeight < 140) {
-      el.scrollTo({ top: el.scrollHeight });
-    }
+    if (structural) followRef.current = true;
+    if (followRef.current) el.scrollTo({ top: el.scrollHeight });
   }, [messages, conversationId]);
 
   useEffect(() => {
