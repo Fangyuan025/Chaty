@@ -674,7 +674,13 @@ export default function App() {
       messages.length !== prevMsgCount.current || conversationId !== prevConvId.current;
     prevMsgCount.current = messages.length;
     prevConvId.current = conversationId;
-    if (structural) followRef.current = true;
+    if (structural) {
+      followRef.current = true;
+      // A conversation switch fires no scroll event — without this the pill
+      // from the previous chat lingers over an empty/short one.
+      showJumpRef.current = false;
+      setShowJump(false);
+    }
     if (followRef.current) el.scrollTo({ top: el.scrollHeight });
   }, [messages, conversationId]);
 
@@ -2725,7 +2731,7 @@ export default function App() {
               )
             )}
           </main>
-          {showJump && (
+          {showJump && messages.length > 0 && (
             <button
               className="jump-bottom"
               title={t("jumpLatest")}
