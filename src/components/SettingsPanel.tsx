@@ -63,6 +63,8 @@ export interface GenSettings {
   codeTemperature: number;
   /** Code mode: file edits (write/edit/multi_edit) run without approval. */
   codeAutoApproveEdits: boolean;
+  /** Code mode: obviously read-only bash commands run without approval. */
+  codeAutoRunReadOnly: boolean;
   /** Code mode: run the agent's browser hidden (headless). */
   codeBrowserHeadless: boolean;
   /** Code mode: user-defined skills (named prompt templates, invoked via /). */
@@ -114,6 +116,7 @@ export const defaultSettings: GenSettings = {
   codeBashTimeout: 60,
   codeTemperature: 0.3,
   codeAutoApproveEdits: false,
+  codeAutoRunReadOnly: true,
   codeBrowserHeadless: false,
   codeSkills: [],
   codeDisabledSkills: [],
@@ -759,6 +762,12 @@ export function SettingsPanel({
                 <Switch
                   on={value.codeAutoApproveEdits}
                   onToggle={() => set("codeAutoApproveEdits", !value.codeAutoApproveEdits)}
+                />
+              </SetRow>
+              <SetRow label={t("cmAutoReadOnly")} hint={t("cmAutoReadOnlyHint")}>
+                <Switch
+                  on={value.codeAutoRunReadOnly}
+                  onToggle={() => set("codeAutoRunReadOnly", !value.codeAutoRunReadOnly)}
                 />
               </SetRow>
               <SetRow label={t("cmHeadless")} hint={t("cmHeadlessHint")}>

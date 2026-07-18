@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
 
@@ -13,6 +13,13 @@ export default defineConfig(async () => ({
   plugins: [react()],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+  },
+
+  // Vitest: our unit tests live next to their modules in src/. Without an
+  // explicit include, vitest also sweeps up test files inside bench SWE-bench
+  // workspace checkouts (django js_tests etc.).
+  test: {
+    include: ["src/**/*.test.ts"],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

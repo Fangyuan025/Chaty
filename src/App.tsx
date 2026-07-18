@@ -2265,6 +2265,7 @@ export default function App() {
         bashTimeout={settings.codeBashTimeout}
         temperature={settings.codeTemperature}
         autoApproveEdits={settings.codeAutoApproveEdits}
+        autoRunReadOnly={settings.codeAutoRunReadOnly}
         skills={settings.codeSkills}
         disabledSkills={settings.codeDisabledSkills}
         allowedCommands={settings.codeAllowedCommands}

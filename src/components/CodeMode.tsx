@@ -49,11 +49,13 @@ import {
   argOld,
   argPath,
   runAgentTurn,
+  IS_WINDOWS,
   type PlanItem,
   type ThinkMode,
   type ToolCall,
   type ToolStep,
 } from "../lib/agentLoop";
+import { isReadOnlyCommand } from "../lib/readOnlyCmd";
 
 interface CodeMsg {
   id: string;
@@ -467,6 +469,7 @@ export function CodeMode({
   bashTimeout,
   temperature,
   autoApproveEdits = false,
+  autoRunReadOnly = true,
   skills = [],
   disabledSkills = [],
   allowedCommands = [],
@@ -486,6 +489,8 @@ export function CodeMode({
   /** Auto-approve file edits — write/edit/multi_edit run without asking
    *  (Settings → Code; checkpoints still allow rollback). */
   autoApproveEdits?: boolean;
+  /** Auto-run obviously read-only bash commands without asking (Settings → Code). */
+  autoRunReadOnly?: boolean;
   /** User-defined skills: /name inserts the prompt template (Settings → Code). */
   skills?: { name: string; prompt: string }[];
   /** Names of built-in skills the user turned off (Settings → Code). */
@@ -566,6 +571,8 @@ export function CodeMode({
   allowedCommandsRef.current = allowedCommands;
   const autoEditsRef = useRef(autoApproveEdits);
   autoEditsRef.current = autoApproveEdits;
+  const autoRunReadOnlyRef = useRef(autoRunReadOnly);
+  autoRunReadOnlyRef.current = autoRunReadOnly;
   /** Prompt-processing progress (0..1) for the current step, null = not prefilling. */
   const [prefill, setPrefill] = useState<number | null>(null);
 
@@ -1154,6 +1161,12 @@ export function CodeMode({
         }
         if (call.name === "bash" || call.name === "bash_bg") {
           const cmd = String(call.args.command ?? "").trim();
+          // Settings → Code: obviously read-only commands skip the dialog —
+          // their approval prompt has only one sane answer. Fail-closed:
+          // anything uncertain falls through to the allowlist / dialog.
+          if (autoRunReadOnlyRef.current && isReadOnlyCommand(cmd, { windows: IS_WINDOWS })) {
+            return Promise.resolve(true);
+          }
           if (allowedCommandsRef.current.some((p) => cmd === p || cmd.startsWith(p + " "))) {
             return Promise.resolve(true);
           }

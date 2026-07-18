@@ -55,7 +55,7 @@ import { platform } from "@tauri-apps/plugin-os";
 
 // The bash tool runs through cmd.exe on Windows — the prompt must say so, or
 // the model writes POSIX commands (ls, cat, $VAR) that all fail there.
-const IS_WINDOWS = (() => {
+export const IS_WINDOWS = (() => {
   try {
     return platform() === "windows";
   } catch {
@@ -320,7 +320,7 @@ const VISION_TOOLS_DOC = `
 重要:①CSS 选择器只支持**标准语法**——不存在 :contains()、:has-text() 这类;要按文字定位就用 browser_click 的 text 参数。②浏览器用的是持久配置,你之前登录过的网站会保持登录。③你随时能拿到两类信息:页面元素(browser_read)和控制台(browser_console)——拿不准页面状态时先读它们,别硬猜。④**文字摘要看不明白就立刻上视觉**:browser_read 的元素/文本对不上你的预期、找不到该有的按钮或字段、点击/输入后页面似乎没反应、或结果含糊到你在"猜"页面长什么样——这时不要基于猜测继续操作,也不要反复 read 同一页,直接 browser_snapshot(看当前屏)或 browser_screenshot(看整页)亲眼确认,再决定下一步。
 **何时用浏览器**:只有当任务需要真实操作网页(填表单、点按钮、登录后才能看的内容、必须"亲眼看到"渲染效果做视觉验证)、或用户明确要求用浏览器时,才用这套浏览器工具。**单纯查资料、做调研、找文档/报错解法,优先用 web_search / web_fetch**(更快、无需开浏览器);它们查不到或够不着目标时,再考虑浏览器。**但"优先搜索"不等于"死磕搜索":web_search 连续 2 次返回不相关结果,就视为搜索源此刻不可靠——别再换措辞重搜,改用 web_fetch 直抓能猜到的 URL,或转浏览器打开搜索引擎/目标站继续。** **web_fetch / web_search 一旦拿到能回答问题的内容,就直接给出答案——不要再多开浏览器"重复核实"一遍,那样只是白白多花时间。**`;
 
-function systemPrompt(
+export function systemPrompt(
   workspace: string,
   zh: boolean,
   mode: ThinkMode,

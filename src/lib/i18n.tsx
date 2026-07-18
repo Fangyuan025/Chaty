@@ -115,6 +115,11 @@ export const T = {
     zh: "写入/编辑文件不再逐次询问(命令仍需批准)。每轮开始有检查点,可随时回滚。",
     en: "Write/edit steps run without asking (commands still need approval). Checkpoints let you roll back anytime.",
   },
+  cmAutoReadOnly: { zh: "只读命令自动放行", en: "Auto-run read-only commands" },
+  cmAutoReadOnlyHint: {
+    zh: "ls、grep、git log 这类明确只读的命令不再弹批准框;写入、删除或拿不准的命令仍会询问。",
+    en: "Obviously read-only commands (ls, grep, git log) run without asking; anything that writes, deletes, or is uncertain still asks.",
+  },
   cmHeadless: { zh: "后台运行浏览器", en: "Run browser hidden" },
   cmHeadlessHint: {
     zh: "浏览器工具在后台运行,不弹出窗口。下次启动浏览器时生效;登录状态仍会保留。",
