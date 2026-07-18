@@ -99,6 +99,50 @@ interface UiMessage extends ChatMessage {
 const thumbCache = new Map<string, string>();
 
 /** Self-loading thumbnail for a local image path; hides itself if unreadable. */
+/** User-message text with a clamp for pasted walls of text: over ~15 lines or
+ *  1200 chars it renders a 220px preview with a fade + expand pill. */
+function UserText({ content, expandLabel, collapseLabel }: { content: string; expandLabel: string; collapseLabel: string }) {
+  const long = content.length > 1200 || content.split("\n").length > 15;
+  const [open, setOpen] = useState(false);
+  if (!long) return <span className="user-text">{content}</span>;
+  return (
+    <>
+      <span className={`user-text ${open ? "" : "clamped"}`}>{content}</span>
+      <button className="user-expand" type="button" onClick={() => setOpen(!open)}>
+        {open ? collapseLabel : expandLabel}
+      </button>
+    </>
+  );
+}
+
+/** Hover copy button on user messages (mirrors the edit pencil). */
+function UserCopy({ content, title }: { content: string; title: string }) {
+  const [ok, setOk] = useState(false);
+  return (
+    <button
+      className="user-edit user-copy"
+      title={title}
+      onClick={() =>
+        void copyToClipboard(content).then(() => {
+          setOk(true);
+          setTimeout(() => setOk(false), 1400);
+        })
+      }
+    >
+      {ok ? (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
+          <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+          <rect x="9" y="9" width="11" height="11" rx="2" />
+          <path d="M5 15V5a2 2 0 0 1 2-2h8" strokeLinecap="round" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 function ImageThumb({ path, size = 168 }: { path: string; size?: number }) {
   const [src, setSrc] = useState<string | null>(thumbCache.get(path) ?? null);
   useEffect(() => {
@@ -353,6 +397,8 @@ export default function App() {
   const prevMsgCount = useRef(0);
   const prevConvId = useRef<string | null>(null);
   const followRef = useRef(true);
+  const showJumpRef = useRef(false);
+  const [showJump, setShowJump] = useState(false);
   const asideRef = useRef<HTMLElement>(null);
   const [sidebarW, setSidebarW] = useState(() => {
     try {
@@ -596,6 +642,11 @@ export default function App() {
       const d = dist();
       if (d < 4) followRef.current = true;
       else if (d > 240) followRef.current = false;
+      const jump = d > 320;
+      if (jump !== showJumpRef.current) {
+        showJumpRef.current = jump;
+        setShowJump(jump);
+      }
     };
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("scroll", onScroll, { passive: true });
@@ -2417,6 +2468,7 @@ export default function App() {
               onLockChange={setBusy}
             />
           )}
+          <div className="chat-wrap">
           <main className="chat" ref={scrollRef}>
             {messages.length === 0 ? (
               <div className="empty">
@@ -2574,7 +2626,8 @@ export default function App() {
                             ))}
                           </span>
                         )}
-                        <span className="user-text">{m.content}</span>
+                        <UserText content={m.content} expandLabel={t("expandAll")} collapseLabel={t("collapseText")} />
+                        <UserCopy content={m.content} title={t("copyMsg")} />
                         {!busy && (
                           <button
                             className="user-edit"
@@ -2596,6 +2649,21 @@ export default function App() {
               )
             )}
           </main>
+          {showJump && (
+            <button
+              className="jump-bottom"
+              title={t("jumpLatest")}
+              onClick={() => {
+                followRef.current = true;
+                scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+              }}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          )}
+          </div>
 
           <footer className="composer">
             {stats && (

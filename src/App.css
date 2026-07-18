@@ -935,6 +935,14 @@ body.resizing-x {
   background: var(--bg);
 }
 
+/* Positioning shell for the chat scroller + its floating jump pill. */
+.chat-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .chat {
   flex: 1;
   overflow-y: auto;
@@ -1392,8 +1400,17 @@ body.resizing-x {
 .code-fold-count {
   color: var(--text-faint);
 }
-.code-fold-body.folded {
-  display: none;
+/* Folded-but-finished: the first few lines stay visible as a preview with a
+   bottom fade — never a fully blank collapse. Click anywhere to expand. */
+.code-fold-body.preview {
+  max-height: 140px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 45%, transparent 96%);
+  mask-image: linear-gradient(to bottom, #000 45%, transparent 96%);
+  cursor: pointer;
+}
+.code-fold-body.preview pre {
+  margin: 0;
 }
 /* Focus-follows-generation: a small window pinned to the newest lines while
    the block streams in, older lines fading out above (mirrors .think-body). */
@@ -1417,6 +1434,56 @@ body.resizing-x {
 }
 .code-fold-body.focus pre {
   margin: 0;
+}
+
+/* Chat reading ergonomics */
+.user-copy {
+  left: -56px;
+}
+.user-text.clamped {
+  display: block;
+  max-height: 220px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent 98%);
+  mask-image: linear-gradient(to bottom, #000 60%, transparent 98%);
+}
+.user-expand {
+  display: inline-flex;
+  margin-top: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.user-expand:hover {
+  background: var(--surface);
+}
+/* Floating jump-to-latest pill; appears when the user has scrolled up. */
+.jump-bottom {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  color: var(--text-dim);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  box-shadow: var(--shadow-2);
+  cursor: pointer;
+  transition: color 0.15s, transform 0.15s;
+}
+.jump-bottom:hover {
+  color: var(--text);
+  transform: translateX(-50%) translateY(-1px);
 }
 .code-lang {
   position: absolute;

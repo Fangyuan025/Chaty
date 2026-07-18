@@ -266,12 +266,19 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
 
   const foldable = collapseEnabled && lines >= COLLAPSE_MIN_LINES;
   const expanded = override ?? false;
-  // Focus-follows-generation: while the message still streams (and the user
-  // hasn't clicked), show a small window pinned to the newest lines.
+  // Folded blocks are never fully hidden: while the message streams they show
+  // a window pinned to the NEWEST lines (focus-follow); once finished they
+  // show the FIRST few lines as a preview. Clicking either expands.
   const focusMode = foldable && !expanded && streaming && override === null;
   useEffect(() => {
-    if (focusMode && focusRef.current) {
+    if (!focusRef.current) return;
+    if (focusMode) {
+      // streaming: pin the window to the newest lines
       focusRef.current.scrollTop = focusRef.current.scrollHeight;
+    } else if (foldable && !expanded) {
+      // finished preview: always show the HEAD of the block (the focus
+      // window leaves its scroll position at the tail otherwise)
+      focusRef.current.scrollTop = 0;
     }
   });
 
@@ -280,7 +287,8 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
     return <Mermaid code={codeText(children)} />;
   }
 
-  const copy = () => {
+  const copy = (e?: { stopPropagation: () => void }) => {
+    e?.stopPropagation();
     const text = ref.current?.textContent ?? "";
     void copyToClipboard(text).then(() => {
       setCopied(true);
@@ -308,7 +316,10 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
         {isHtml && openCanvas && (
           <button
             className="code-btn"
-            onClick={() => openCanvas(ref.current?.textContent ?? "")}
+            onClick={(e) => {
+              e.stopPropagation();
+              openCanvas(ref.current?.textContent ?? "");
+            }}
             title={t("openInCanvas")}
             type="button"
           >
@@ -370,8 +381,8 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
       </div>
       <div
         ref={focusRef}
-        className={`code-fold-body ${foldable && !expanded ? (focusMode ? "focus" : "folded") : ""}`}
-        onClick={focusMode ? () => setOverride(true) : undefined}
+        className={`code-fold-body ${foldable && !expanded ? (focusMode ? "focus" : "preview") : ""}`}
+        onClick={foldable && !expanded ? () => setOverride(true) : undefined}
       >
         <pre ref={ref} {...props}>
           {children}

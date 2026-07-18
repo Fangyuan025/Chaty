@@ -116,6 +116,10 @@ export const T = {
     en: "Write/edit steps run without asking (commands still need approval). Checkpoints let you roll back anytime.",
   },
   copyReply: { zh: "复制回复", en: "Copy reply" },
+  copyMsg: { zh: "复制这条消息", en: "Copy this message" },
+  jumpLatest: { zh: "回到最新", en: "Jump to latest" },
+  expandAll: { zh: "展开全部", en: "Show all" },
+  collapseText: { zh: "收起", en: "Collapse" },
   codeLines: { zh: "行", en: "lines" },
   chatCollapseCode: { zh: "长代码块自动折叠", en: "Auto-collapse long code blocks" },
   chatCollapseCodeHint: {
