@@ -1367,54 +1367,56 @@ body.resizing-x {
 .code-block pre {
   margin: 0;
 }
-/* Body is the ONE scroll container (both axes) — pre itself never scrolls in
-   numbered mode, so there is exactly one vertical bar; the gutter stays
-   pinned through horizontal scrolls via position:sticky. */
-.code-block .code-body {
-  max-height: 60vh;
-  overflow: auto;
-  border-radius: var(--r-md);
-}
-.code-block .code-body.numbered {
-  display: flex;
-  background: var(--code-bg, var(--bg-elev));
-  border: 1px solid var(--border);
-}
-.code-block .code-body.numbered pre {
-  border: none;
-  background: transparent;
-  flex: 1 1 auto;
-  /* The box must grow WITH long lines (not clip them): max-content width is
-     what registers the overflow on .code-body, which owns all scrolling. */
-  min-width: max-content;
-  overflow: visible;
-}
-.code-gutter {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-  flex: 0 0 auto;
-  user-select: none;
-  -webkit-user-select: none;
-  text-align: right;
-  padding: 12px 0 12px 12px;
-  background: var(--code-bg, var(--bg-elev));
-  border-right: 1px solid var(--border);
-  color: var(--text-faint);
-  white-space: pre;
-}
-.code-gutter code {
-  display: block;
-  padding-right: 10px;
-}
-/* Identical metrics on BOTH columns. The bubble's inherited 1.7 line-height
-   (× the 0.9em code font) is what let the numbers drift off their lines. */
-.code-block .code-body.numbered pre,
-.code-block .code-body.numbered pre code,
-.code-gutter,
-.code-gutter code {
+/* Optional think-panel-style collapse for long blocks (Settings → Chat).
+   The pre stays in the DOM in every state so the copy button always works. */
+.code-fold-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  padding: 5px 11px;
   font-size: 12.5px;
-  line-height: 20px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.code-fold-toggle:hover {
+  background: var(--surface);
+}
+.code-fold-lang {
+  font-family: var(--font-mono);
+}
+.code-fold-count {
+  color: var(--text-faint);
+}
+.code-fold-body.folded {
+  display: none;
+}
+/* Focus-follows-generation: a small window pinned to the newest lines while
+   the block streams in, older lines fading out above (mirrors .think-body). */
+.code-fold-body.focus {
+  max-height: 140px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
+  cursor: pointer;
+}
+.code-fold-body.focus::-webkit-scrollbar {
+  display: none;
+}
+.code-fold-body.focus .code-actions {
+  display: none;
+}
+/* The header already names the language; the corner tag would duplicate it. */
+.code-block.foldable .code-lang {
+  display: none;
+}
+.code-fold-body.focus pre {
+  margin: 0;
 }
 .code-lang {
   position: absolute;

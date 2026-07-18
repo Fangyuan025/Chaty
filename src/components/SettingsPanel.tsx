@@ -79,6 +79,8 @@ export interface GenSettings {
   lightScheme: "paper" | "cream";
   /** Code-block highlight palette (chat markdown). */
   codeTheme: "github-dark" | "atom-one-dark" | "monokai" | "nord";
+  /** Chat: collapse long code blocks to a header, focus-follow while streaming. */
+  chatCollapseCode: boolean;
   /** UI zoom (0.9–1.2). Applied via the native webview page zoom. */
   uiScale: number;
   /** Composer send key: plain Enter, or ⌘/Ctrl+Enter (Enter = newline). */
@@ -124,6 +126,7 @@ export const defaultSettings: GenSettings = {
   darkScheme: "warm",
   lightScheme: "paper",
   codeTheme: "github-dark",
+  chatCollapseCode: true,
   uiScale: 1,
   sendKey: "enter",
   reduceMotion: false,
@@ -494,6 +497,12 @@ export function SettingsPanel({
                     </button>
                   ))}
                 </div>
+              </SetRow>
+              <SetRow label={t("chatCollapseCode")} hint={t("chatCollapseCodeHint")}>
+                <Switch
+                  on={value.chatCollapseCode}
+                  onToggle={() => set("chatCollapseCode", !value.chatCollapseCode)}
+                />
               </SetRow>
               <SetRow label={t("setAnswerSize")} hint={t("setAnswerSizeHint")}>
                 <div className="lang-switch">

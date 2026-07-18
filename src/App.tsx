@@ -26,7 +26,7 @@ import { KnowledgePanel } from "./components/KnowledgePanel";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import { Icon } from "./components/Icon";
 import { CanvasPanel, type CanvasVersion } from "./components/CanvasPanel";
-import { CanvasOpenContext } from "./components/Markdown";
+import { CanvasOpenContext, CodeCollapseContext } from "./components/Markdown";
 import { useConfirm } from "./components/ConfirmModal";
 import { IconPin, IconPinFilled, IconEdit } from "./components/icons";
 import { PodcastPanel } from "./components/PodcastPanel";
@@ -1968,6 +1968,7 @@ export default function App() {
 
   return (
     <CanvasOpenContext.Provider value={openInCanvas}>
+    <CodeCollapseContext.Provider value={settings.chatCollapseCode}>
     <div className="app">
       <CommandPalette open={showCmdk} onClose={() => setShowCmdk(false)} commands={commands} />
       <CanvasPanel
@@ -3059,6 +3060,7 @@ export default function App() {
         />
       )}
     </div>
+    </CodeCollapseContext.Provider>
     </CanvasOpenContext.Provider>
   );
 }

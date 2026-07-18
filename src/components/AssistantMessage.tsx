@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { Markdown } from "./Markdown";
+import { Markdown, StreamingContext } from "./Markdown";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { normalizeChannels } from "../lib/voiceText";
@@ -133,6 +133,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     ).replace(/^\s+/, "");
     return (
       <div className="bubble">
+        <StreamingContext.Provider value={streaming}>
         {answer && (
           <div className="answer">
             <Markdown cites={sources}>{answer}</Markdown>
@@ -147,6 +148,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           <span className="cursor" />
         ) : null}
         {!streaming && <CopyReply text={answer} />}
+        </StreamingContext.Provider>
       </div>
     );
   }
@@ -171,6 +173,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   return (
     <div className="bubble">
+      <StreamingContext.Provider value={streaming}>
       {showThink && (
         <div className="think">
           <button
@@ -217,6 +220,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         <span className="cursor" />
       ) : null}
       {!streaming && <CopyReply text={cleanAnswer} />}
+      </StreamingContext.Provider>
     </div>
   );
 });

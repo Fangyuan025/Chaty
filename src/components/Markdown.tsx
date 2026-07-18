@@ -42,6 +42,13 @@ const CitesContext = createContext<CiteSource[]>([]);
  *  the snippet to the design studio. Null = feature unavailable (no handler). */
 export const CanvasOpenContext = createContext<((html: string) => void) | null>(null);
 
+/** Settings → Chat: long code blocks collapse to a header (think-panel style). */
+export const CodeCollapseContext = createContext(false);
+/** True while the surrounding assistant message is still streaming in. */
+export const StreamingContext = createContext(false);
+
+const COLLAPSE_MIN_LINES = 14;
+
 const CITE_RE = /【(\d{1,2})】|\[(\d{1,2})\]/g;
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -229,14 +236,22 @@ export function withStorageShim(html: string): string {
 
 
 /** A fenced code block with copy + (for HTML) live-preview buttons, a
- *  language label, and a line-number gutter on longer blocks. */
+ *  language label, and (optional, Settings → Chat) think-panel-style collapse
+ *  for long blocks: while the block streams in it shows a small focus window
+ *  pinned to the newest lines; finished blocks fold to a one-line header;
+ *  clicking toggles the full code at any time. */
 function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   const ref = useRef<HTMLPreElement>(null);
+  const focusRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const [isHtml, setIsHtml] = useState(false);
   const [lines, setLines] = useState(0);
+  // null = automatic (focus while streaming, folded when done); user clicks pin it.
+  const [override, setOverride] = useState<boolean | null>(null);
   const { t } = useI18n();
   const openCanvas = useContext(CanvasOpenContext);
+  const collapseEnabled = useContext(CodeCollapseContext);
+  const streaming = useContext(StreamingContext);
 
   const lang = codeLang(children);
 
@@ -245,8 +260,19 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
     const text = raw.trimStart().toLowerCase();
     const sniff = text.startsWith("<!doctype") || text.startsWith("<html") || text.startsWith("<svg");
     setIsHtml(lang === "html" || lang === "htm" || (lang === "" && sniff));
-    // Line count for the gutter (grows live while the block streams in).
+    // Live line count (grows while the block streams in).
     setLines(raw ? raw.split("\n").length - (raw.endsWith("\n") ? 1 : 0) : 0);
+  });
+
+  const foldable = collapseEnabled && lines >= COLLAPSE_MIN_LINES;
+  const expanded = override ?? false;
+  // Focus-follows-generation: while the message still streams (and the user
+  // hasn't clicked), show a small window pinned to the newest lines.
+  const focusMode = foldable && !expanded && streaming && override === null;
+  useEffect(() => {
+    if (focusMode && focusRef.current) {
+      focusRef.current.scrollTop = focusRef.current.scrollHeight;
+    }
   });
 
   // Mermaid diagrams render in place of the code block.
@@ -262,10 +288,21 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
     });
   };
 
-  const showGutter = lines >= 4;
-
   return (
-    <div className="code-block">
+    <div className={`code-block ${foldable ? "foldable" : ""}`}>
+      {foldable && (
+        <button
+          className="code-fold-toggle"
+          type="button"
+          onClick={() => setOverride(!expanded)}
+        >
+          <span className={`think-caret ${expanded ? "open" : ""}`}>▶</span>
+          <span className="code-fold-lang">{lang || "code"}</span>
+          <span className="code-fold-count">
+            {lines} {t("codeLines")}
+          </span>
+        </button>
+      )}
       {lang && <span className="code-lang">{lang}</span>}
       <div className="code-actions">
         {isHtml && openCanvas && (
@@ -331,12 +368,11 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
           )}
         </button>
       </div>
-      <div className={`code-body ${showGutter ? "numbered" : ""}`}>
-        {showGutter && (
-          <div className="code-gutter" aria-hidden="true">
-            <code>{Array.from({ length: lines }, (_, i) => i + 1).join("\n")}</code>
-          </div>
-        )}
+      <div
+        ref={focusRef}
+        className={`code-fold-body ${foldable && !expanded ? (focusMode ? "focus" : "folded") : ""}`}
+        onClick={focusMode ? () => setOverride(true) : undefined}
+      >
         <pre ref={ref} {...props}>
           {children}
         </pre>

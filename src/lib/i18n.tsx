@@ -116,6 +116,12 @@ export const T = {
     en: "Write/edit steps run without asking (commands still need approval). Checkpoints let you roll back anytime.",
   },
   copyReply: { zh: "复制回复", en: "Copy reply" },
+  codeLines: { zh: "行", en: "lines" },
+  chatCollapseCode: { zh: "长代码块自动折叠", en: "Auto-collapse long code blocks" },
+  chatCollapseCodeHint: {
+    zh: "超过 14 行的代码块收起为一行标题,点击随时展开/收起;生成中像思考块一样聚焦跟随最新几行。",
+    en: "Code blocks over 14 lines fold to a one-line header — click to expand or re-fold anytime. While generating, they focus-follow the newest lines like the thinking panel.",
+  },
   cmAutoReadOnly: { zh: "只读命令自动放行", en: "Auto-run read-only commands" },
   cmAutoReadOnlyHint: {
     zh: "ls、grep、git log 这类明确只读的命令不再弹批准框;写入、删除或拿不准的命令仍会询问。",

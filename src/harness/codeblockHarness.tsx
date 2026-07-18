@@ -1,11 +1,13 @@
-// Visual test harness for chat code-block rendering (line-number gutter,
-// light/dark code palettes, scroll behavior). Real Markdown component, real
-// App.css — served by plain vite at /codeblock-harness.html, no Tauri needed.
-import React, { useState } from "react";
+// Visual test harness for chat code-block rendering (think-style collapse
+// with streaming focus-follow, light/dark code palettes, scroll behavior).
+// Real Markdown component, real App.css — served by plain vite at
+// /codeblock-harness.html, no Tauri needed. 模拟流式 feeds a long block in
+// line by line to exercise the focus window.
+import React, { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import "../App.css";
 import { LangProvider } from "../lib/i18n";
-import { Markdown } from "../components/Markdown";
+import { CodeCollapseContext, Markdown, StreamingContext } from "../components/Markdown";
 import { applyCodeTheme, CODE_THEMES, type CodeTheme } from "../lib/codeTheme";
 
 const QUICKSORT = `def quick_sort(arr, low=0, high=None):
@@ -61,16 +63,23 @@ const DOC = [
   Array.from({ length: 6 }, (_, i) => `const pad${i} = ${i};`).join("\n"),
   "```",
   "",
-  "50 行超高块(60vh 封顶,应只有一条纵向滚动条):",
+  "50 行超高块(折叠开时应收起为标题):",
   "",
   "```js",
   FIFTY,
   "```",
 ].join("\n");
 
+const STREAM_LINES = QUICKSORT.split("\n");
+
 function Harness() {
   const [light, setLight] = useState(false);
   const [palette, setPalette] = useState<CodeTheme>("github-dark");
+  const [collapse, setCollapse] = useState(true);
+  // Streaming simulation: feed the quicksort block in line by line.
+  const [simText, setSimText] = useState<string | null>(null);
+  const [simming, setSimming] = useState(false);
+  const simLine = useRef(0);
 
   const apply = (l: boolean, p: CodeTheme) => {
     document.documentElement.dataset.theme = l ? "light" : "dark";
@@ -79,9 +88,29 @@ function Harness() {
     setPalette(p);
   };
 
+  const startSim = () => {
+    simLine.current = 0;
+    setSimming(true);
+    setSimText("流式模拟:\n\n```python\n");
+  };
+  useEffect(() => {
+    if (!simming) return;
+    const id = setInterval(() => {
+      simLine.current += 1;
+      if (simLine.current > STREAM_LINES.length) {
+        setSimText("流式模拟:\n\n```python\n" + QUICKSORT + "\n```\n\n完成。");
+        setSimming(false);
+        clearInterval(id);
+        return;
+      }
+      setSimText("流式模拟:\n\n```python\n" + STREAM_LINES.slice(0, simLine.current).join("\n") + "\n");
+    }, 350);
+    return () => clearInterval(id);
+  }, [simming]);
+
   return (
     <div id="scroller" style={{ background: "var(--bg)", color: "var(--text)", height: "100vh", overflow: "auto", padding: 24, boxSizing: "border-box" }}>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }} id="controls">
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }} id="controls">
         <button id="toggle-appearance" onClick={() => apply(!light, palette)}>
           {light ? "→ dark" : "→ light"}
         </button>
@@ -90,14 +119,31 @@ function Harness() {
             {CODE_THEMES[k].label}
           </button>
         ))}
+        <button id="toggle-collapse" onClick={() => setCollapse(!collapse)} style={{ fontWeight: collapse ? 700 : 400 }}>
+          折叠{collapse ? "开" : "关"}
+        </button>
+        <button id="start-sim" onClick={startSim}>模拟流式</button>
       </div>
-      <div className="msg assistant" style={{ maxWidth: 760 }}>
-        <div className="bubble">
-          <div className="answer">
-            <Markdown>{DOC}</Markdown>
+      <CodeCollapseContext.Provider value={collapse}>
+        {simText !== null && (
+          <div className="msg assistant" style={{ maxWidth: 760 }} id="sim-message">
+            <div className="bubble">
+              <StreamingContext.Provider value={simming}>
+                <div className="answer">
+                  <Markdown>{simText}</Markdown>
+                </div>
+              </StreamingContext.Provider>
+            </div>
+          </div>
+        )}
+        <div className="msg assistant" style={{ maxWidth: 760 }}>
+          <div className="bubble">
+            <div className="answer">
+              <Markdown>{DOC}</Markdown>
+            </div>
           </div>
         </div>
-      </div>
+      </CodeCollapseContext.Provider>
     </div>
   );
 }
