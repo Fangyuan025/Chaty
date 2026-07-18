@@ -23,6 +23,72 @@ interface CanvasError {
 }
 
 /**
+ * srcdoc/null-origin compatibility shim: APIs that work on a normally-served
+ * page but THROW inside a sandboxed srcdoc frame (SecurityError and friends).
+ * A page that runs fine in the user's browser must not error here. Installed
+ * before any page script; every shim is best-effort.
+ */
+const COMPAT_SHIM = `<script>(function(){
+  try { // history API throws on about:srcdoc
+    var hp = history.pushState.bind(history), hr = history.replaceState.bind(history);
+    history.pushState = function(){ try { return hp.apply(null, arguments); } catch(_){} };
+    history.replaceState = function(){ try { return hr.apply(null, arguments); } catch(_){} };
+  } catch(_){}
+  try { // cookies throw in sandboxed docs — in-memory jar
+    var jar = '';
+    Object.defineProperty(document, 'cookie', {
+      get: function(){ return jar; },
+      set: function(v){ try { var kv = String(v).split(';')[0]; if (kv && kv.indexOf('=') > 0) {
+        var k = kv.split('=')[0].trim(); var parts = jar ? jar.split('; ') : [];
+        parts = parts.filter(function(p){ return p.split('=')[0] !== k; });
+        parts.push(kv.trim()); jar = parts.join('; ');
+      } } catch(_){} return true; },
+      configurable: true
+    });
+  } catch(_){}
+  try { // clipboard rejects on null origin — succeed quietly
+    if (!navigator.clipboard) {
+      Object.defineProperty(navigator, 'clipboard', { value: {
+        writeText: function(){ return Promise.resolve(); },
+        readText: function(){ return Promise.resolve(''); }
+      }, configurable: true });
+    } else if (navigator.clipboard.writeText) {
+      var wt = navigator.clipboard.writeText.bind(navigator.clipboard);
+      try { navigator.clipboard.writeText = function(t){ return wt(t).catch(function(){}); }; } catch(_){}
+    }
+  } catch(_){}
+})();</script>`;
+
+/**
+ * Console capture: mirrors every console call, uncaught error and rejection
+ * up to the Canvas so the code pane's Console tab shows the CURRENT version's
+ * output. Capped; strings truncated.
+ */
+const CONSOLE_SHIM = `<script>(function(){
+  var count = 0;
+  function send(level, args){
+    if (count >= 300) return; count++;
+    var text = '';
+    try { text = Array.prototype.map.call(args, function(a){
+      if (typeof a === 'string') return a;
+      try { return JSON.stringify(a); } catch(_) { return String(a); }
+    }).join(' '); } catch(_) { text = '[unserializable]'; }
+    try { parent.postMessage({ __chatyCvConsole: { level: level, text: String(text).slice(0, 600) } }, '*'); } catch(_){}
+  }
+  ['log','info','warn','error','debug'].forEach(function(l){
+    var orig = console[l] && console[l].bind(console);
+    console[l] = function(){ send(l === 'info' || l === 'debug' ? 'log' : l, arguments); if (orig) orig.apply(null, arguments); };
+  });
+  window.addEventListener('error', function(e){
+    if (e && e.target && (e.target.src || e.target.href)) send('error', ['Failed to load resource: ' + (e.target.src || e.target.href)]);
+    else if (e && e.message) send('error', [e.message + ' (' + (e.filename||'') + ':' + (e.lineno||0) + ')']);
+  }, true);
+  window.addEventListener('unhandledrejection', function(e){
+    var r = e && e.reason; send('error', ['Unhandled rejection: ' + ((r && r.message) || String(r))]);
+  });
+})();</script>`;
+
+/**
  * Capture-shim injected into the preview iframe: forwards uncaught errors,
  * resource-load failures and unhandled rejections to the parent (Canvas) via
  * postMessage. Self-dedups so a render loop can't spam the same error.
@@ -67,7 +133,7 @@ const NAV_GUARD = `<script>(function(){
 
 /** Inject the shims right after <head> so they install before page scripts. */
 function withShims(html: string): string {
-  const shims = ERROR_SHIM + NAV_GUARD + INSPECT_SHIM;
+  const shims = COMPAT_SHIM + CONSOLE_SHIM + ERROR_SHIM + NAV_GUARD + INSPECT_SHIM;
   const head = html.match(/<head[^>]*>/i);
   if (head && head.index !== undefined) {
     const at = head.index + head[0].length;
@@ -115,7 +181,8 @@ export function CanvasPanel({
   const [instruction, setInstruction] = useState("");
   const [error, setError] = useState<CanvasError | null>(null);
   const [muted, setMuted] = useState(false);
-  const [view, setView] = useState<"code" | "diff">("code");
+  const [view, setView] = useState<"code" | "diff" | "console">("code");
+  const [consoleLog, setConsoleLog] = useState<{ level: string; text: string }[]>([]);
   const [inspect, setInspect] = useState(false);
   const [hotLine, setHotLine] = useState<number | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -177,7 +244,9 @@ export function CanvasPanel({
   useEffect(() => {
     setError(null);
     setHotLine(null);
-    if (index === 0) setView("code");
+    setConsoleLog([]);
+    if (index === 0 && view === "diff") setView("code");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index, current?.html]);
 
   // Messages from the sandboxed (null-origin) preview: runtime errors + the
@@ -190,6 +259,10 @@ export function CanvasPanel({
         __chatyCvHover?: string;
         __chatyCvPick?: string;
       };
+      const con = (data as { __chatyCvConsole?: { level: string; text: string } })?.__chatyCvConsole;
+      if (con) {
+        setConsoleLog((prev) => (prev.length >= 300 ? prev : [...prev, con]));
+      }
       if (data?.__chatyCanvasError && !muted) {
         const d = data.__chatyCanvasError;
         setError((prev) => prev ?? d);
@@ -451,6 +524,22 @@ export function CanvasPanel({
                 >
                   {t("canvasDiff")}
                 </button>
+                <button
+                  className={`cvp-tab ${view === "console" && !scan ? "active" : ""}`}
+                  disabled={!!scan}
+                  onClick={() => setView("console")}
+                >
+                  {t("canvasConsole")}
+                  {(() => {
+                    const errs = consoleLog.filter((c) => c.level === "error").length;
+                    const warns = consoleLog.filter((c) => c.level === "warn").length;
+                    return errs + warns > 0 ? (
+                      <span className={`cvp-conbadge ${errs ? "err" : "warn"}`}>
+                        {errs || warns}
+                      </span>
+                    ) : null;
+                  })()}
+                </button>
               </div>
 
               {scan ? (
@@ -470,6 +559,19 @@ export function CanvasPanel({
                       {r.text}
                     </div>
                   ))}
+                </div>
+              ) : view === "console" ? (
+                <div className="cvp-code cvp-console">
+                  {consoleLog.length === 0 ? (
+                    <div className="cvp-scan-note">{t("canvasConsoleEmpty")}</div>
+                  ) : (
+                    consoleLog.map((c, i) => (
+                      <div key={i} className={`cvp-con-row ${c.level}`}>
+                        <span className="cvp-con-lv">{c.level}</span>
+                        {c.text}
+                      </div>
+                    ))
+                  )}
                 </div>
               ) : view === "code" ? (
                 <div className="cvp-code hljs" ref={codeRef}>

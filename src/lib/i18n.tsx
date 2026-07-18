@@ -208,6 +208,8 @@ export const T = {
   openInCanvas: { zh: "在画布中打开", en: "Open in Canvas" },
   canvasTitle: { zh: "设计画布", en: "Design canvas" },
   canvasCode: { zh: "代码", en: "Code" },
+  canvasConsole: { zh: "控制台", en: "Console" },
+  canvasConsoleEmpty: { zh: "当前版本没有控制台输出", en: "No console output for this version" },
   canvasReset: { zh: "重置画布", en: "Reset canvas" },
   canvasResetHint: { zh: "丢弃所有迭代版本,回到初始版本", en: "Drop every iteration and return to the first version" },
   canvasResetConfirm: {

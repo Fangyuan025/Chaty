@@ -2918,6 +2918,40 @@ body.resizing-x {
   height: 11px;
 }
 
+/* Console tab: per-level rows + a count badge on the tab */
+.cvp-console {
+  padding: 8px 0;
+  background: var(--panel);
+  color: var(--text);
+}
+.cvp-con-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-bottom: 1px solid var(--ink-faint);
+}
+.cvp-con-lv {
+  flex: none;
+  width: 40px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  user-select: none;
+}
+.cvp-con-row.warn { color: var(--warn); }
+.cvp-con-row.error { color: var(--danger); }
+.cvp-conbadge {
+  margin-left: 5px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  border-radius: 8px;
+  color: var(--on-accent);
+}
+.cvp-conbadge.err { background: var(--danger); }
+.cvp-conbadge.warn { background: var(--warn); }
+
 .cvp-diffview {
   white-space: pre;
   padding: 8px 10px;

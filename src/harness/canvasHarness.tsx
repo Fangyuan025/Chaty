@@ -26,6 +26,14 @@ const V1 = `<!doctype html>
     <p>A tiny demo card for the inspect test.</p>
     <button id="cta" onclick="this.textContent='Clicked!'">Click me</button>
   </div>
+  <script>
+    // APIs that work on a real page but used to throw in the sandboxed frame:
+    history.replaceState({}, "", "#home");
+    document.cookie = "demo=1";
+    if (navigator.clipboard) navigator.clipboard.writeText("hi");
+    console.log("hello from canvas", { n: 42 });
+    console.warn("demo warning");
+  </script>
 </body>
 </html>`;
 
