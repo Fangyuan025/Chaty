@@ -70,7 +70,13 @@ async function main() {
 
   mkdirSync(path.join(here, "runs"), { recursive: true });
   const outFile = path.join(here, "runs", `bare-${new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19)}.jsonl`);
-  const names = readdirSync(tasksDir).filter((n) => (!only || n === only) && existsSync(path.join(tasksDir, n, "task.md")));
+  const validatedPath = path.join(tasksDir, "..", "validated.json");
+  const validated: Record<string, string> | null = existsSync(validatedPath)
+    ? JSON.parse(readFileSync(validatedPath, "utf8"))
+    : null;
+  const names = readdirSync(tasksDir).filter(
+    (n) => (!only || n === only) && existsSync(path.join(tasksDir, n, "task.md")) && (!validated || validated[n] === "ok"),
+  );
   console.log(`${names.length} task(s)`);
 
   let resolvedCount = 0;

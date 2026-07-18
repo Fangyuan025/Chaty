@@ -109,8 +109,16 @@ async function main() {
   const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
   const outFile = path.join(runsDir, `${stamp}.jsonl`);
 
+  // Gold-patch validation verdicts (swebench track): only "ok" instances count.
+  const validatedPath = path.join(tasksDir, "..", "validated.json");
+  const validated: Record<string, string> | null = existsSync(validatedPath)
+    ? JSON.parse(readFileSync(validatedPath, "utf8"))
+    : null;
   const names = readdirSync(tasksDir).filter(
-    (n) => (!only || n === only) && existsSync(path.join(tasksDir, n, "task.md")),
+    (n) =>
+      (!only || n === only) &&
+      existsSync(path.join(tasksDir, n, "task.md")) &&
+      (!validated || validated[n] === "ok"),
   );
   console.log(`${names.length} task(s): ${names.join(", ")}`);
 
