@@ -1376,6 +1376,21 @@ body.resizing-x {
 .code-fold-body {
   position: relative; /* anchors the in-body copy/canvas actions */
 }
+/* Setup panel → model-store hand-off */
+.setup-store-link {
+  display: block;
+  margin-top: 8px;
+  padding: 0;
+  font-size: 12.5px;
+  color: var(--accent-bright);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.setup-store-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
 /* Folded-but-finished: the first few lines stay visible as a preview with a
    bottom fade — never a fully blank collapse. Click anywhere to expand. */
 .code-fold-body.preview {

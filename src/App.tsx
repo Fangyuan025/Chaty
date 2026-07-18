@@ -3120,6 +3120,10 @@ export default function App() {
       {showSetup && (
         <SetupModal
           onClose={() => setShowSetup(false)}
+          onOpenStore={() => {
+            setShowSetup(false);
+            setShowDownload(true);
+          }}
           onLoad={(path) => {
             setShowSetup(false);
             void refreshModels();

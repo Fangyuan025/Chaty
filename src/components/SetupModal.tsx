@@ -172,10 +172,13 @@ type CardState =
 export function SetupModal({
   onClose,
   onLoad,
+  onOpenStore,
 }: {
   onClose: () => void;
   /** Load the freshly downloaded model (path) and close. */
   onLoad: (path: string) => void;
+  /** Close and open the model store (community models beyond the picks). */
+  onOpenStore: () => void;
 }) {
   const { t, lang } = useI18n();
   const [budgetGb, setBudgetGb] = useState<number | null>(null);
@@ -352,7 +355,12 @@ export function SetupModal({
             );
           })}
         </div>
-        <div className="setup-foot">{t("setupFoot")}</div>
+        <div className="setup-foot">
+          {t("setupFoot")}
+          <button className="setup-store-link" type="button" onClick={onOpenStore}>
+            {t("setupStoreLink")} →
+          </button>
+        </div>
       </div>
     </div>,
     document.body,

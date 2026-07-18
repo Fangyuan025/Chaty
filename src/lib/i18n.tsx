@@ -667,6 +667,7 @@ export const T = {
   setupResolving: { zh: "正在查找…", en: "Resolving…" },
   setupLoad: { zh: "加载此模型", en: "Load this model" },
   setupNotFound: { zh: "未找到合适的 GGUF 文件", en: "No suitable GGUF file found" },
+  setupStoreLink: { zh: "想用社区的其他模型?去模型商店逛逛", en: "Want other community models? Browse the model store" },
   setupFoot: {
     zh: "推荐按本机内存自动匹配规模与量化，下载自 HuggingFace，存入应用的 models 文件夹。",
     en: "Sized & quantized for your memory, downloaded from HuggingFace into the app's models folder.",
