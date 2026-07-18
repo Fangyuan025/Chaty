@@ -185,8 +185,8 @@ Deep Research 与免手语音。
 ## 设计画布
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-hero-light.png" />
-  <img src="docs/screenshots/canvas-hero-dark.png" width="860" alt="设计画布:实时预览与真实源码并排,元素↔代码行对照,控制台" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-hero-light.jpg" />
+  <img src="docs/screenshots/canvas-hero-dark.jpg" width="860" alt="设计画布:实时预览与真实源码并排,元素↔代码行对照,控制台" />
 </picture>
 
 - **预览 | 代码,并排呈现** —— 每个页面都在分栏工作室中打开:左边实时预览,右边**真实源码**(语法高亮,跟随你的代码配色)。三栏宽度自由拖拽,支持全屏、页面刷新按钮,以及镜像页面日志与报错的**控制台**标签。
@@ -194,8 +194,8 @@ Deep Research 与免手语音。
 - **亲眼看着它改** —— 迭代过程 Cursor 式流式呈现:代码栏逐行扫描全文,删改增行实时长出,完成后落到**变更**视图(+N/−N,与 Code 模式同款红绿 diff)。想亲手改?**编辑**按钮直接打开源码,保存即成新版本。
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-scan-light.png" />
-  <img src="docs/screenshots/canvas-scan-dark.png" width="860" alt="模型修改页面时的逐行扫描" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-scan-light.jpg" />
+  <img src="docs/screenshots/canvas-scan-dark.jpg" width="860" alt="模型修改页面时的逐行扫描" />
 </picture>
 
 - **自愈修复,浏览器一致** —— 运行时错误给出一键**修复**(始终先征求同意);兼容层保证真浏览器里能跑的页面在画布里同样干净(history 路由、cookie、剪贴板)。配合视觉模型,改动时 Chaty 还会*看到*渲染出的页面。
