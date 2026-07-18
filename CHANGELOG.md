@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.8.5 — The canvas opens up, the agent slims down (2026-07-18)
+
+The Design Canvas stops being a black box, and the coding agent gets a deep
+efficiency pass built for small local models. Plus a first benchmarks page.
+
+### Design Canvas, rebuilt in the open (#canvas)
+
+- **Preview | code, side by side.** Every canvas now shows the actual source next to the live preview — syntax-highlighted, following your code palette in light and dark. All three columns drag-resize (double-click resets), and a fullscreen toggle (animated, traffic-light-aware, window still draggable) takes the studio edge-to-edge.
+- **Element ↔ code correspondence.** Inspect mode links the panes both ways: hover or click an element in the preview and the code jumps to its line; click a code line and the element flashes in the page. **Clicking selects** (⌘/Ctrl multi-select) — chips above the composer name each element, and your next instruction is scoped to exactly those elements.
+- **Watch edits happen, Cursor-style.** While the model streams an iteration the code pane live-scans the document: the line being read pulses, deletions/additions grow token by token, and a full rewrite dims the not-yet-reached old code instead of pretending it was deleted. Every finished iteration lands on a **Changes** view — the same +N/−N red/green diff as Code mode — so version-to-version deltas are never a mystery.
+- **Hand-edit the source.** An **Edit** button opens the code in place; saving lands as a "Manual edit" version and shows your own change as a diff.
+- **Canvas sessions survive.** Closing the studio no longer wipes iterations — every reply keeps its own version history across close/reopen; an explicit **Reset canvas** (with the standard confirm) drops back to v1.
+- **A real console + browser-honest pages.** A Console tab mirrors the page's logs, warnings and errors (count badge included), and a compatibility layer fixes the class of "works in my browser, errors in the canvas" bugs — history API routing, cookies and clipboard now behave inside the sandboxed preview. Plus a one-click page reload that re-runs scripts from scratch.
+
+### The agent got cheaper to run
+
+- **The system prompt slimmed by a third to a half.** Tool docs are one line of purpose + args each (loop-enforced contracts kept verbatim), and English sessions get real English docs instead of Chinese ones: 5,292→3,545 chars (zh), 8,801→4,432 (zh + vision), 9,873→6,073 bytes (en). The prompt re-prefills every agent step, so this is a per-step saving on slow local prefill.
+- **Guidance moved to just-in-time.** The browser workflow guide and edit-failure recovery now ride into the conversation only when a browser tool first runs or an edit first fails — not on every step of every task.
+- **Tool output speaks ONE language.** Results and errors used to carry Chinese and English side by side; they now render in the session language only (~80 strings converted, contract markers untouched).
+- **Compaction that remembers what it removed.** Elided tool results carry a digest — file + range for reads, command head + exit code for bash, the query for searches — so the model stops re-reading files it already read; trimmed history leaves a bullet summary of the dropped turns.
+- **Read-only commands skip the approval dialog** (Settings → Code, default on): `ls`, `grep`, `git log` and friends run immediately; anything that writes, deletes, or is uncertain still asks. Fail-closed by design — redirection, substitution, and unknown commands always fall through to the dialog.
+
+### Chat polish
+
+- **Long code blocks fold** to a header with a first-lines preview (Settings → Chat, default on); while streaming they show a focus window pinned to the newest lines, think-panel style, and clicking expands at any moment.
+- **Light-theme code, properly.** GitHub and Atom One palettes switch to their light siblings under light app themes; inline code chips and table headers — invisible white-on-white before — now follow the appearance. Code blocks carry a language tag and tab-size 4.
+- **Reading ergonomics.** A floating jump-to-latest pill appears when you scroll up mid-stream (and no longer haunts empty conversations); user messages get a hover copy button, and pasted walls of text clamp to a preview with "show all".
+
+### Benchmarks, published
+
+- First numbers in the repo — same local model (Qwen3.5-35B-A3B MoE, ~3B active) on all rows: **SWE-bench Verified 45-task macOS subset 9/45 with the full Coder loop vs 6/45 bare-bash ablation** (django slice: 7/24 vs 2/24), Terminal-Bench core 15/77. Methodology and honest-comparison notes in `docs/BENCHMARKS.md`.
+
+### Fixed
+
+- **Quitting no longer leaks the MLX model.** The exit path skips destructors (a ggml teardown workaround), which orphaned the MLX sidecar — every quit with an MLX model loaded left a process holding the whole model in unified memory, silently stacking up across sessions until the machine choked. Sidecars are now reaped explicitly on exit.
+- The dev-only double model load at startup (two 35B sidecars racing for RAM) is gated off.
+- `tauri dev` runs again on a fresh clone (`default-run` was ambiguous since the bench tool server joined the crate).
+
 ## v1.8.4 — Scroll free while it streams (2026-07-17)
 
 The streaming-scroll fix (thanks @sprite5, #4), plus benchmark and CI groundwork from this cycle.

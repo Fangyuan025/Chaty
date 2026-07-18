@@ -185,9 +185,22 @@ Text-only models keep the OCR path, so nothing regresses — and updating from a
 
 ## Design Canvas
 
-- **Build a page by chatting** — open any single-file HTML Chaty generates into a split studio: live preview on one side, an instruction box on the other. Ask for changes in plain language and Chaty edits the page **in place** (a fast search/replace patch, not a full re-render).
-- **Self-healing** — the preview watches for runtime errors and offers a one-click **Fix**; every fix asks first, so there's no runaway loop. With a vision model, Chaty also *sees* the rendered page (a live screenshot + console) when you ask for a change.
-- **Version history** with revert, plus export to a standalone `.html`. Pairs naturally with Chaty's own web-design fine-tune.
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-hero-light.png" />
+  <img src="docs/screenshots/canvas-hero-dark.png" width="860" alt="Design Canvas: live preview beside the actual source, element↔line inspect, console" />
+</picture>
+
+- **Preview | code, side by side** — every page opens as a split studio: live preview left, the **actual source** right (syntax-highlighted, palette-following). All three columns drag-resize; there's fullscreen, a page-reload button, and a **Console** tab mirroring the page's logs and errors.
+- **Point at what you mean** — Inspect mode links the two panes: hover/click an element and the code jumps to its line; click a code line and the element flashes in the preview. **Click to select** (⌘/Ctrl multi-select) and your next instruction is scoped to exactly those elements.
+- **Watch the edit happen** — iterations stream in Cursor-style: the code pane live-scans the document, deletions/additions grow line by line, and the finished version lands on a **Changes** diff (+N/−N, same language as Code mode). Prefer hands-on? An **Edit** button opens the source for manual changes, saved as a new version.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-scan-light.png" />
+  <img src="docs/screenshots/canvas-scan-dark.png" width="860" alt="Live line-by-line scan while the model edits the page" />
+</picture>
+
+- **Self-healing, browser-honest** — runtime errors offer a one-click **Fix** (always asks first), and a compat layer means pages that run clean in a real browser run clean here too (history API, cookies, clipboard). With a vision model, Chaty also *sees* the rendered page when you ask for a change.
+- **Versions that persist** — each reply keeps its own canvas session across close/reopen, with version history, an explicit reset (confirmed), and export to a standalone `.html`. Pairs naturally with Chaty's own web-design fine-tune.
 
 <br />
 

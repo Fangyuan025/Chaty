@@ -1,7 +1,7 @@
 // Visual/e2e harness for the rewritten Canvas: split preview|code, element↔
 // line correspondence (Inspect), and the diff view on version iterations.
 // Served by plain vite at /canvas-harness.html — no Tauri needed.
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import "../App.css";
 import { LangProvider } from "../lib/i18n";
@@ -92,6 +92,22 @@ function Harness() {
     setIndex(1);
   };
 
+  // Boot shots for the screenshot pipeline.
+  const bootShot = useRef(false);
+  useEffect(() => {
+    if (bootShot.current) return;
+    bootShot.current = true;
+    const shot = new URLSearchParams(location.search).get("shot");
+    if (shot === "diff") {
+      setVersions((vs) => [...vs, { html: V2, note: "修改:主题色+副段落" }]);
+      setIndex(1);
+    } else if (shot === "scan") {
+      setBusy(true);
+      setTimeout(() => setStream(PATCH_STREAM.slice(0, 150)), 300);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <>
       <div id="controls" style={{ position: "fixed", top: 4, left: 4, zIndex: 99999, display: "flex", gap: 6 }}>
@@ -130,8 +146,17 @@ function Harness() {
   );
 }
 
-document.documentElement.dataset.theme = "dark";
-applyCodeTheme("github-dark", false);
+// Screenshot automation: ?theme=light&shot=diff|scan|chips&chrome=hide sets a
+// deterministic state at boot (used by the release screenshot pipeline).
+const params = new URLSearchParams(location.search);
+const bootLight = params.get("theme") === "light";
+document.documentElement.dataset.theme = bootLight ? "light" : "dark";
+applyCodeTheme("github-dark", bootLight);
+if (params.get("chrome") === "hide") {
+  const style = document.createElement("style");
+  style.textContent = "#controls { display: none !important; }";
+  document.head.appendChild(style);
+}
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <LangProvider>
