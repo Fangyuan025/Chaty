@@ -51,6 +51,7 @@ import {
   type ChatMessage,
 } from "./ipc";
 import { normalizeChannels } from "./voiceText";
+import { jitHintFor, type HintKey } from "./jitHints";
 import { diffLines } from "./diff";
 import { platform } from "@tauri-apps/plugin-os";
 
@@ -281,51 +282,84 @@ function proseAfter(raw: string): string {
   return (tc === -1 ? t : t.slice(0, tc)).trim();
 }
 
-const TOOLS_DOC = `
-- read_file: 读取文件,一般一次调用即可读完整个文件;只有超出上下文预算的超大文件才分页,此时结果末尾会直接给出下一页的 offset,照着传即可。**pdf/docx/xlsx/pptx 文档也能读**:自动提取文本;扫描件自动 OCR;文档里的图表/照片会被提取缓存,结果里给出路径,用 view_image 查看。**只关心某个函数/类时传 symbol**:直接返回该定义的完整代码块 + 全工作区的调用处清单——比读整个大文件省得多。args: { "path": string, "offset"?: number(起始行,从1开始), "limit"?: number(行数), "symbol"?: string(函数/类名) }
-- write_file: 新建文件,或对一个文件做整体重写(会覆盖全部内容)。**修改已有文件请优先用 edit_file / multi_edit**,不要用 write_file 重写整个文件来做局部改动。args: { "path": string, "content": string }
-- edit_file: 精确替换文件内容(old_string 必须与文件逐字匹配且唯一,除非 replace_all=true);匹配失败会提示文件中最相似的位置。改一处直接给 old_string/new_string;同一文件要改多处时给 edits 数组,一次原子提交(任何一条失败则整体不改动),不要拆成多次调用。写入后系统会自动做语法检查(py/js/sh/json/toml):结果里出现 ⚠️ 语法检查失败就**立即修复**,别带着坏语法继续下一步。args: 单处 { "path": string, "old_string": string, "new_string": string, "replace_all"?: boolean } 或 多处 { "path": string, "edits": [{ "old_string": string, "new_string": string, "replace_all"?: boolean }] }
-- outline: 列出文件的定义大纲(函数/类/结构体等 + 行号),不读全文即可掌握文件结构;之后用 read_file 带 offset 精确读需要的区段。args: { "path": string }
-- list_dir: 列出目录一层内容(不传 path = 工作区根;看子目录请传相对路径,如 {"path":"src"})。args: { "path"?: string }
+const TOOL_DOCS: Record<"zh" | "en", string> = {
+  zh: `
+- read_file: 读取文件(pdf/docx/xlsx/pptx 也能读:自动提取文本,扫描件 OCR)。只关心某个函数/类时传 symbol,返回该定义完整代码块+调用处清单。args: { "path": string, "offset"?: number(起始行,从1开始), "limit"?: number, "symbol"?: string }
+- write_file: 新建文件,或整体重写(覆盖全部内容);修改已有文件优先用 edit_file。args: { "path": string, "content": string }
+- edit_file: 精确替换(old_string 须与文件逐字匹配且唯一,除非 replace_all=true)。同一文件改多处给 edits 数组,一次原子提交(任一条失败则整体不改),不要拆成多次调用。args: { "path", "old_string", "new_string", "replace_all"? } 或 { "path", "edits": [{ "old_string", "new_string", "replace_all"? }] }
+- outline: 文件的定义大纲(函数/类+行号),不读全文即掌握结构。args: { "path": string }
+- list_dir: 列出目录一层内容(不传 path = 工作区根)。args: { "path"?: string }
 - glob: 按通配符找文件(如 "src/**/*.ts")。args: { "pattern": string }
-- grep: 用正则搜索文件内容(需要正则或精确匹配时用)。args: { "pattern": string, "path"?: string, "glob"?: string }
-- search_files: 按关键词(字面,不是正则)一次性搜文件名和文件内容 —— "跟 X 有关的东西在哪"最快用它。传 names_only=true 只搜文件名。args: { "query": string, "path"?: string, "names_only"?: boolean }
-- search_code: 按含义提问代码库("哪里处理登录鉴权"),一次调用返回**按相关度排序的文件清单**(融合语义、文件名与精确短语信号),每个文件附命中的关键定义(函数/类 + 行号)和最佳片段——直接据此挑文件读,不需要自己再 grep 多轮过滤。探索陌生代码库优先用它。args: { "query": string, "k"?: number(文件数,默认 6) }
-- search_docs: 检索用户的知识库文档(需求文档、设计稿、笔记)。当任务涉及用户自己的资料时用。args: { "query": string }
-- bash: 在工作区里执行 shell 命令(macOS 沙箱,写限工作区)。会等命令结束;不要用它启动 dev server 等不会退出的进程。args: { "command": string, "timeout_secs"?: number }
-- bash_bg: 在后台启动长时间运行的命令(dev server、慢构建、长测试),立即返回一个 id,期间你可以继续做别的;它结束时系统会自动把结果告诉你。**不支持 sudo**(后台沙盒无交互输入,密码送不进去)——需要特权的命令必须用前台 bash。args: { "command": string }
-- bg_output: 查看某个后台命令的当前状态和最近输出(比如确认 server 已启动)。args: { "id": number }
-- bg_kill: 终止某个后台命令(整棵进程树)。args: { "id": number }
-- understand_repo: 一次调用拿到整个仓库的速览:README 摘要、manifest(脚本/依赖)、两层目录树、语言构成、入口文件候选。**接手陌生工作区时的第一个动作**,替代逐层 list_dir。args: {}
-- validate_change: 改完代码后一键验证:自动找出与改动文件相关的测试(按 pytest / vitest / jest / cargo 约定),只跑最小相关集,返回通过/失败与失败摘要。不传参数即验证本轮改过的全部文件;找不到相关测试会明确说,再改用 bash 跑项目自己的命令。args: { "files"?: string[] }
-- web_search: 联网搜索(标题+链接+摘要)。查资料、找文档、查报错时用。加 site 参数可做站内搜索:site="github.com" 返回结构化的仓库/issue/代码匹配;site="reddit.com"(或 "reddit.com/r/某版块")搜帖子;site="youtube.com" / "bilibili.com" 返回视频(标题/时长/UP主/播放量);其他任意域名(docs.python.org、stackoverflow.com、x.com、weibo.com 等)都会限定在该站内搜(登录墙站点只能拿到搜索引擎快照级的标题/摘要)。**搜索源偶尔会抽风,返回不相关的结果——连续 2 次搜出来都和问题无关,就说明此刻再换措辞重搜也没用,立即改道:用 web_fetch 直接抓最可能的页面(官方文档、GitHub 仓库、项目官网都能猜出 URL),或用浏览器工具打开搜索引擎/目标站点找。**args: { "query": string, "site"?: string }
-- web_fetch: 抓取任意 URL,按内容类型自动处理:文章页→干净的 Markdown 正文;代码/JSON/配置文件→原文;GitHub 文件页自动取 raw 源文件;Reddit 帖子→正文+评论;YouTube 视频→元信息+完整字幕转写;B站视频→公开元信息+简介(播放/点赞/弹幕);PDF→提取文本;图片等二进制→返回元信息(用 web_download 保存)。结果还会列出页面上的链接和图片 URL——想深入子页面就继续 fetch 那些链接。要 HTML 源码时传 raw=true。args: { "url": string, "raw"?: boolean }
-- web_download: 把 URL 指向的文件(图片、压缩包、任意资源)**后台**下载到工作区指定路径:立即返回,不阻塞你,期间可以继续做别的;完成或失败时系统会自动通知你,在那之前**不要**读取该文件或重复发起同一下载。args: { "url": string, "path": string }
-- update_plan: 制定或更新任务计划(待办清单),让用户看到你的推进步骤。开始复杂任务时先列计划,完成一步就把它标为 done、把下一步标为 in_progress。args: { "todos": [{ "content": string, "status": "pending"|"in_progress"|"done" }] }
-- ask_user: 当遇到需要用户拍板的决策(方案分歧、需求不明、破坏性操作确认)时,向用户提一个选择题;不要自己乱猜。args: { "question": string, "options": string[] }
-- view_image: 查看工作区里的一张图片(截图、设计稿、报错图、图表、扫描件等)。视觉模型会真正"看"到画面;非视觉模型则自动对图片做 OCR 返回其中的文字。args: { "path": string }`;
+- grep: 用正则搜索文件内容。args: { "pattern": string, "path"?: string, "glob"?: string }
+- search_files: 按关键词(字面)搜文件名+内容;names_only=true 只搜文件名。args: { "query": string, "path"?: string, "names_only"?: boolean }
+- search_code: 按含义提问代码库,返回按相关度排序的文件+关键定义。探索陌生代码优先用它。args: { "query": string, "k"?: number }
+- search_docs: 检索用户的知识库文档(需求、设计稿、笔记)。args: { "query": string }
+- bash: 在工作区执行 shell 命令(沙箱,写限工作区);会等命令结束,不要用它启动 dev server 等不退出的进程。args: { "command": string, "timeout_secs"?: number }
+- bash_bg: 后台启动长时间运行的命令(dev server、慢构建),立即返回 id,结束时系统自动通知你;不支持 sudo(要特权用前台 bash)。args: { "command": string }
+- bg_output: 查看后台命令的状态与最近输出。args: { "id": number }
+- bg_kill: 终止后台命令(整棵进程树)。args: { "id": number }
+- understand_repo: 一次拿到仓库速览(README/manifest/目录树/语言/入口)。接手陌生工作区的第一个动作。args: {}
+- validate_change: 自动找出与改动相关的测试并只跑最小集;不传参数验证本轮全部改动。args: { "files"?: string[] }
+- web_search: 联网搜索;site 参数限站内(github.com 返回结构化仓库/issue/代码;reddit/youtube/bilibili 及任意域名均可)。args: { "query": string, "site"?: string }
+- web_fetch: 抓取 URL,按内容类型自动处理(文章→Markdown、GitHub 文件→raw 源码、视频→字幕、PDF→文本);要 HTML 源码传 raw=true。args: { "url": string, "raw"?: boolean }
+- web_download: 后台下载文件到工作区路径,完成/失败时自动通知;在那之前不要读取该文件或重复发起。args: { "url": string, "path": string }
+- update_plan: 制定/更新任务待办清单;完成一步标 done、下一步标 in_progress。args: { "todos": [{ "content": string, "status": "pending"|"in_progress"|"done" }] }
+- ask_user: 需要用户拍板的决策(方案分歧、需求不明、破坏性操作)向用户提选择题,不要乱猜。args: { "question": string, "options": string[] }
+- view_image: 查看工作区里的图片(视觉模型直接看;非视觉模型自动 OCR 出文字)。args: { "path": string }`,
+  en: `
+- read_file: read a file (pdf/docx/xlsx/pptx too — text auto-extracted, scans OCR'd). Pass symbol to get one function/class definition plus its call sites. args: { "path": string, "offset"?: number(1-based), "limit"?: number, "symbol"?: string }
+- write_file: create a file, or rewrite one wholesale (replaces ALL content); to modify an existing file prefer edit_file. args: { "path": string, "content": string }
+- edit_file: exact replacement (old_string must match the file verbatim and be unique unless replace_all=true). For several changes in one file, pass an atomic edits array in ONE call (any failure = nothing applied) instead of many small calls. args: { "path", "old_string", "new_string", "replace_all"? } or { "path", "edits": [{ "old_string", "new_string", "replace_all"? }] }
+- outline: definition outline (functions/classes + line numbers) without reading the whole file. args: { "path": string }
+- list_dir: list one directory level (no path = workspace root). args: { "path"?: string }
+- glob: find files by pattern (e.g. "src/**/*.ts"). args: { "pattern": string }
+- grep: regex search over file contents. args: { "pattern": string, "path"?: string, "glob"?: string }
+- search_files: literal keyword search over file names + contents; names_only=true for names only. args: { "query": string, "path"?: string, "names_only"?: boolean }
+- search_code: ask the codebase by meaning; returns relevance-ranked files with their key definitions. First choice for unfamiliar code. args: { "query": string, "k"?: number }
+- search_docs: search the user's knowledge-base documents. args: { "query": string }
+- bash: run a shell command in the workspace (sandboxed, writes limited to the workspace); waits for exit — don't start dev servers with it. args: { "command": string, "timeout_secs"?: number }
+- bash_bg: start a long-running command in the background (dev server, slow build); returns an id, you're notified when it ends; sudo unsupported (use foreground bash). args: { "command": string }
+- bg_output: status + recent output of a background job. args: { "id": number }
+- bg_kill: kill a background job (whole process tree). args: { "id": number }
+- understand_repo: one-call repo overview (README, manifest, tree, languages, entry points). First move in an unfamiliar workspace. args: {}
+- validate_change: find and run just the tests related to the change; no args = everything changed this turn. args: { "files"?: string[] }
+- web_search: web search; site scopes to one site (github.com returns structured repos/issues/code; reddit/youtube/bilibili/any domain). args: { "query": string, "site"?: string }
+- web_fetch: fetch a URL, handled by content type (article→Markdown, GitHub file→raw source, video→transcript, PDF→text); raw=true for HTML. args: { "url": string, "raw"?: boolean }
+- web_download: background-download a file into the workspace; you're notified on completion — don't read it or re-request before that. args: { "url": string, "path": string }
+- update_plan: create/update the todo plan; mark finished steps done, the next one in_progress. args: { "todos": [{ "content": string, "status": "pending"|"in_progress"|"done" }] }
+- ask_user: when a decision is the user's (competing approaches, unclear requirements, destructive ops), ask a multiple-choice question — don't guess. args: { "question": string, "options": string[] }
+- view_image: view an image in the workspace (vision models see it; others get OCR'd text). args: { "path": string }`,
+};
 
 /** Vision-only tool doc (browser suite), appended when the model has a vision
- *  encoder — the whole point is seeing the rendered page. */
-const VISION_TOOLS_DOC = `
-- browser_navigate: 打开一个网址(或本地文件 / 运行中的 dev server,如 http://localhost:5173)。返回最终地址、标题,以及页面上**可交互元素的清单**(链接/按钮/输入框的真实文字)。用它真实打开并验证你做的网页。args: { "url": string }
-- browser_read: 读取当前页面的**全部可见文字**(动态出现的规则/提示/结果都在里面)**+ 可交互元素清单(含输入框当前值)+ 标题/网址**。**要的是页面"内容/文字/状态"时用它**(读规则、读提示、确认输入框值、确认跳转/文案变化),快且省 token。**但它只能读文字,看不出排版、样式、图片、图表、颜色、布局对不对——那些必须用截图。**args: {}
-- browser_screenshot: 截取**整页**并用视觉查看(会自动滚动触发懒加载)。**要判断页面"长什么样"时用它**:验证你自己做/改的网页渲染是否正确、UI/CSS/布局/间距对不对、看图片/图表/图形内容、整体外观走查。args: {}
-- browser_snapshot: 截取**当前视口**用视觉查看(即时,不滚动)。用于:只想看某一屏的视觉效果、或某次交互后确认当前这屏视觉上变成了什么样。args: {}
-- browser_scroll: 向下(或指定方向/像素)滚动以加载更多内容。连续多次滚动是正常进度,不算重复。args: { "to"?: "bottom"|"top", "by"?: number(像素) }
-- browser_close: 关闭你正在操作的浏览器(任务做完或用户让你关时用)。args: {}
-- browser_console: 读取当前页面的 JS 控制台输出与未捕获异常。配合 snapshot 做"后台报错 + 视觉"双验证。args: {}
-- browser_click: 点击元素。**优先用 text 按可见文字点击(最稳)**,例如 { "text": "Contact" };也可用标准 CSS 选择器 { "selector": "button.submit" }。**当你已经想好要按顺序点的多个目标时,必须一次用 steps 传完,不要拆成多次单点调用**,如按顺序选词造句 { "steps": [{"text":"I"},{"text":"like"},{"text":"coffee"}] },或多步向导 { "steps": [{"text":"接受"},{"text":"下一步"}] }——一次搞定,快很多。只有下一个要点什么取决于当前点击结果时才单步点。点击后结果自动附上最新页面文字+元素。args: { "text"?: string, "selector"?: string, "steps"?: [{ "text"?, "selector"? }] }
-- browser_type: 向输入框填文本,**也用于下拉框(select)选项**——对下拉框把 text 设成想选的**选项可见文字**即可(如 { "label": "author", "text": "Albert Einstein" }),会自动选中该项,别去 click 下拉选项。用 label 按占位符/字段名匹配,或用 selector。**一次填多个字段/选多个下拉**:传 steps 按顺序,如 { "steps": [{"label":"姓名","text":"Alice"},{"label":"author","text":"Einstein"}] }——整张表单一次填完。args: { "text"?: string, "label"?: string, "selector"?: string, "steps"?: [{ "text", "label"?, "selector"? }] }
-- browser_eval: 执行一段 JavaScript 返回结果。可以写多行并用 return 返回。args: { "expression": string }
-**选工具的判断标准(每一步都选最优,兼顾效率与准确)**:先问自己这一步要的是"内容/文字/状态"还是"外观/渲染效果"——
-· 要**内容/文字/状态**(读规则提示、确认字段值、确认跳转或文案变化、找可点元素)→ 用 **browser_read**(交互返回里其实已经带了最新文字,通常直接看返回即可,不必额外再 read);快,别为这个去截图。
-· 要**外观/渲染是否正确**(你自己做/改的网页对不对、UI/CSS/布局/间距/颜色、图片/图表/图形的内容、整体走查)→ **必须用 browser_screenshot / browser_snapshot 用视觉亲眼看**,读文字看不出这些,别跳过视觉验证。
-浏览器工作流:browser_navigate 打开(直接回给你页面文字+元素)→ browser_click(优先 text)/browser_type 交互 → **交互后必做:核实这一步的结果**(想确认内容/状态就看返回文字或 browser_read;想确认渲染效果就 screenshot/snapshot),确认变成预期的样子再继续,绝不凭猜测连续操作 → browser_console 查报错 → 关键:**凡是"做/改网页并要保证它渲染正确"的任务,收尾前一定要截一次图用视觉确认成果,不能只靠读文字就宣称完成** → 做完或用户让你关时 browser_close。做题/填表这类纯文字循环,读返回文字即可、无需截图;但涉及视觉正确性时该截就截。
-**顺序点击 + 提交前视觉确认(选词造句/答题/多步向导等)**:像"按顺序选词补全句子(多邻国那种)、拼答案、连续选项"这类你已经想好完整顺序的任务,**一次用 browser_click 的 steps 把这些词/选项按顺序点完**(不要一个词一个词地单独调用,慢且啰嗦)。**在点「提交/检查/确认」这种会定分/不可逆的按钮之前,先用 browser_snapshot(或 screenshot)截一屏,用视觉确认已选内容/已拼句子/答案确实正确无误,再点提交**——别没看一眼就提交。
-**点导航/提交类按钮(登录、Next/翻页、Search、提交)后,务必先看返回的最新页面文字判断结果:成功了(如出现 Logout、翻到了目标页、出现结果列表)就继续下一步或直接回答,绝不要重复点同一个按钮**;需要翻到第 N 页就"点一次 → 读一次确认到没到 → 再点",别连续猛点翻过头。
-重要:①CSS 选择器只支持**标准语法**——不存在 :contains()、:has-text() 这类;要按文字定位就用 browser_click 的 text 参数。②浏览器用的是持久配置,你之前登录过的网站会保持登录。③你随时能拿到两类信息:页面元素(browser_read)和控制台(browser_console)——拿不准页面状态时先读它们,别硬猜。④**文字摘要看不明白就立刻上视觉**:browser_read 的元素/文本对不上你的预期、找不到该有的按钮或字段、点击/输入后页面似乎没反应、或结果含糊到你在"猜"页面长什么样——这时不要基于猜测继续操作,也不要反复 read 同一页,直接 browser_snapshot(看当前屏)或 browser_screenshot(看整页)亲眼确认,再决定下一步。
-**何时用浏览器**:只有当任务需要真实操作网页(填表单、点按钮、登录后才能看的内容、必须"亲眼看到"渲染效果做视觉验证)、或用户明确要求用浏览器时,才用这套浏览器工具。**单纯查资料、做调研、找文档/报错解法,优先用 web_search / web_fetch**(更快、无需开浏览器);它们查不到或够不着目标时,再考虑浏览器。**但"优先搜索"不等于"死磕搜索":web_search 连续 2 次返回不相关结果,就视为搜索源此刻不可靠——别再换措辞重搜,改用 web_fetch 直抓能猜到的 URL,或转浏览器打开搜索引擎/目标站继续。** **web_fetch / web_search 一旦拿到能回答问题的内容,就直接给出答案——不要再多开浏览器"重复核实"一遍,那样只是白白多花时间。**`;
+ *  encoder. Deep workflow guidance lives in the JIT browser hint
+ *  (src/lib/jitHints.ts) — only the always-true rule rides along here. */
+const VISION_TOOL_DOCS: Record<"zh" | "en", string> = {
+  zh: `
+- browser_navigate: 打开网址(或本地文件/dev server)。返回标题+页面文字+可交互元素清单。args: { "url": string }
+- browser_read: 读当前页全部可见文字+元素清单(含输入框当前值)。要"内容/文字/状态"时用它。args: {}
+- browser_screenshot: 整页截图并用视觉查看(自动滚动触发懒加载)。要判断"长什么样"时用它。args: {}
+- browser_snapshot: 当前视口截图(即时,不滚动)。args: {}
+- browser_scroll: 滚动以加载更多内容。args: { "to"?: "bottom"|"top", "by"?: number }
+- browser_close: 关闭浏览器。args: {}
+- browser_console: 读取页面 JS 控制台输出与异常。args: {}
+- browser_click: 点击元素,优先用 text 按可见文字;已想好顺序的多个目标必须一次用 steps 传完。args: { "text"?, "selector"?, "steps"?: [{ "text"?, "selector"? }] }
+- browser_type: 填输入框,也用于下拉框(text=选项可见文字);多个字段一次用 steps 填完。args: { "text"?, "label"?, "selector"?, "steps"?: [{ "text", "label"?, "selector"? }] }
+- browser_eval: 执行 JavaScript 并返回结果。args: { "expression": string }
+要内容/文字/状态→browser_read;要外观/渲染是否正确→browser_screenshot/snapshot 用视觉亲眼看。每次交互后先核实结果再继续。查资料优先 web_search/web_fetch,需要真实操作网页或视觉验证时才用浏览器。`,
+  en: `
+- browser_navigate: open a URL (or local file / dev server). Returns title + page text + interactive elements. args: { "url": string }
+- browser_read: all visible text of the current page + element list (incl. current input values). Use for content/text/state. args: {}
+- browser_screenshot: full-page screenshot, seen with vision (auto-scrolls for lazy content). Use to judge how the page LOOKS. args: {}
+- browser_snapshot: current-viewport screenshot (instant, no scrolling). args: {}
+- browser_scroll: scroll to load more. args: { "to"?: "bottom"|"top", "by"?: number }
+- browser_close: close the browser. args: {}
+- browser_console: read the page's JS console output and exceptions. args: {}
+- browser_click: click an element — prefer text (visible label); when you already know a sequence of targets, pass them ALL in one steps call. args: { "text"?, "selector"?, "steps"?: [{ "text"?, "selector"? }] }
+- browser_type: fill inputs, also selects dropdowns (text = the option's visible label); fill several fields in one steps call. args: { "text"?, "label"?, "selector"?, "steps"?: [{ "text", "label"?, "selector"? }] }
+- browser_eval: run JavaScript and return the result. args: { "expression": string }
+Content/text/state → browser_read; looks/rendering → browser_screenshot/snapshot and SEE it. Verify the result after every interaction before moving on. Research goes through web_search/web_fetch first; open the browser only for real page interaction or visual verification.`,
+};
 
 export function systemPrompt(
   workspace: string,
@@ -334,7 +368,8 @@ export function systemPrompt(
   projectDoc?: { name: string; text: string },
   visionReady?: boolean,
 ): string {
-  const toolsDoc = TOOLS_DOC + (visionReady ? VISION_TOOLS_DOC : "");
+  const l = zh ? "zh" : "en";
+  const toolsDoc = TOOL_DOCS[l] + (visionReady ? VISION_TOOL_DOCS[l] : "");
   // Ground the agent in the real current date/time (chat has this; without it
   // the model guesses from its training cutoff and gets "today/now/recent"
   // wrong — matters for changelogs, git dates, "recent" lookups, etc.).
@@ -383,11 +418,9 @@ ${toolsDoc}
 - 没有"当前目录"的概念:每条 bash 都是从工作区根目录启动的全新 shell,单独的 cd 不会保留到下一条命令。访问子目录请直接用相对路径,或在同一条命令内组合(cd src && npm test)。${shellNote}
 - 修改代码前,先用 outline 看文件结构、read_file / grep / list_dir 了解现状;改完可用 bash 跑测试/构建验证。
 - 读大文件别从头翻到尾:先用 search_code / grep 定位到相关位置,再用 read_file 带 offset/limit 只读需要的区段。
-- 工具选择:**新建文件**用 write_file 一次写完;**修改已有文件**用 edit_file(改一处给 old_string/new_string,改多处给 edits 数组一次原子提交)——不要用 write_file 整体重写已有文件来做局部改动,那会覆盖全文、极易丢失你没重写的内容。只有确实要把整个文件推倒重来时才用 write_file。不要把一个改动拆成许多细碎小步。
 - dev server、npm run dev、长构建等不会很快退出的命令必须用 bash_bg 后台运行,再用 bg_output 确认启动成功;用完记得 bg_kill。
 - 接手一个陌生工作区,第一步用 understand_repo 建立全局观,再决定读什么。
 - 改完代码先用 validate_change 验证(它会自己找相关测试、只跑最小集);它找不到测试时再用 bash 跑项目自己的命令。
-- 遇到不认识的报错、需要查库/API 文档时,用 web_search / web_fetch 联网查证,不要凭空猜测。
 - **换路原则:同一手段连续两次没带来新进展,就必须换一种做法**——搜索搜不到就 web_fetch 直抓或开浏览器;页面文字摘要看不明白就截图亲眼看;命令报同样的错就换方案。把同一动作原样再试第三遍,几乎不会有不同结果。
 - 任务较复杂时,先用 update_plan 列出待办步骤,推进中及时更新状态;需要用户拍板时用 ask_user 提问。
 - 任务完成后,不要再调用工具,直接用简洁的中文总结你做了什么。
@@ -404,9 +437,7 @@ Rules (follow strictly):
 - You'll get the result as <tool_result>...</tool_result>, then continue.
 - There is NO persistent working directory: every bash command starts a fresh shell at the workspace root, so a lone cd does NOT carry over. Use relative paths directly or combine in one command (cd src && npm test).${shellNote}
 - Before editing, understand the code with read_file / grep / list_dir; after editing, you can run tests/builds with bash.
-- Tool choice: create **new** files with ONE write_file; **modify existing** files with edit_file (one spot via old_string/new_string, or several at once via an atomic edits array) — do NOT rewrite an existing file wholesale with write_file to make a local change, that overwrites everything and easily drops content you didn't retype. Use write_file on an existing file only when you truly mean to replace the entire thing. Never split one change into many tiny steps.
 - Commands that don't exit quickly (dev servers, npm run dev, long builds) MUST run via bash_bg; check they started with bg_output, and bg_kill them when done.
-- For unfamiliar errors or library/API docs, verify with web_search / web_fetch instead of guessing.
 - **Switch-strategy rule: when the same approach brings no new progress twice in a row, change approach** — search coming up empty → web_fetch a likely URL directly or open the browser; a page's text digest you can't make sense of → screenshot and look with your own eyes; a command failing the same way → different plan. Running the same move a third time unchanged almost never ends differently.
 - For non-trivial tasks, lay out a todo list with update_plan first and keep its statuses current as you go; use ask_user when a decision is the user's to make.
 - When done, DON'T call a tool — just give a concise summary of what you did.
@@ -1164,6 +1195,7 @@ export async function runAgentTurn(
   // Tool-call metadata per result message, so compaction can replace a big
   // result with a digest that still names the file/command it came from.
   const toolMeta = new WeakMap<ChatMessage, { name: string; args: Record<string, unknown> }>();
+  const jitShown = new Set<HintKey>(); // per-turn: hints re-arm next turn
   const pushUser = (content: string, meta?: { name: string; args: Record<string, unknown> }) => {
     const m: ChatMessage = { role: "user", content: content + noThinkSuffix };
     messages.push(m);
@@ -1658,6 +1690,12 @@ export async function runAgentTurn(
           lang === "zh"
             ? `\n\n[系统提示] 这已是连续第 ${searchStreak} 次搜索。若以上结果仍与问题无关,说明搜索源此刻不可靠——不要再换措辞重搜,改用 web_fetch 直接抓取最可能的页面(官方文档/GitHub/项目官网),或用 browser_navigate 打开搜索引擎/目标站点查找。`
             : `\n\n[system note] This is consecutive web_search #${searchStreak}. If the results above are still irrelevant, the search backend is unreliable right now — do NOT rephrase and search again; web_fetch the most likely page directly (official docs / GitHub / project site), or open a search engine or the target site with browser_navigate.`;
+      }
+      {
+        // JIT hints: situational guidance rides in only when its situation
+        // first occurs this turn (kept out of the every-step system prompt).
+        const hint = jitHintFor(call.name, resultText, lang, jitShown);
+        if (hint) resultText += "\n\n" + hint;
       }
       pushUser(toolResultMsg(call.name, resultText), { name: call.name, args: call.args });
     }

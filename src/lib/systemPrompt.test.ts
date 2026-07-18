@@ -8,15 +8,18 @@ mockIPC(() => Promise.resolve(null));
 const { systemPrompt } = await import("./agentLoop");
 
 const variants = [
-  { zh: true, vision: false, label: "zh plain", maxChars: 5400 },
-  { zh: true, vision: true, label: "zh vision", maxChars: 9000 },
-  { zh: false, vision: false, label: "en plain", maxChars: 7000 },
-  { zh: false, vision: true, label: "en vision", maxChars: 10500 },
+  { zh: true, vision: false, label: "zh plain", maxChars: 3600 },
+  { zh: true, vision: true, label: "zh vision", maxChars: 4600 },
+  { zh: false, vision: false, label: "en plain", maxChars: 6200 },
+  { zh: false, vision: true, label: "en vision", maxChars: 7700 },
 ] as const;
-// Caps anchored to the current sizes (2026-07: 5292 / 8801 / 6837 / 10346 JS
-// chars at think=normal, no project doc). The prompt is re-prefetched on every
-// agent step, so growth here is a per-step tax on slow local prefill — any
-// increase must be deliberate. WS1 (tool-doc slimming) tightens these.
+// Caps anchored to the post-slimming sizes (2026-07 WS1: 3545 / 4432 / 6031 /
+// 7516 JS chars at think=normal, no project doc; before slimming they were
+// 5292 / 8801 / 6837 / 10346). en chars run higher than zh because Latin
+// spells out what CJK packs into single chars — but en is now pure Latin
+// (~4 chars/token vs ~1 for CJK), so it's the cheaper prompt in tokens.
+// The prompt is re-prefetched on every agent step, so growth here is a
+// per-step tax on slow local prefill — any increase must be deliberate.
 
 describe("systemPrompt size gate", () => {
   for (const v of variants) {
