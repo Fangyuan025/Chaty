@@ -155,6 +155,7 @@ export function CanvasPanel({
   streamText = null,
   onSelectVersion,
   onReset,
+  onManualEdit,
   onIterate,
   onFix,
   onExport,
@@ -171,6 +172,8 @@ export function CanvasPanel({
   onSelectVersion: (i: number) => void;
   /** Drop all iterations back to v1 (guarded by a confirm dialog here). */
   onReset: () => void;
+  /** A hand-written source edit — lands as a new version. */
+  onManualEdit: (html: string) => void;
   onIterate: (instruction: string) => void;
   onFix: (errorText: string) => void;
   onExport: (html: string) => void;
@@ -185,6 +188,10 @@ export function CanvasPanel({
   const [consoleLog, setConsoleLog] = useState<{ level: string; text: string }[]>([]);
   // Bumping remounts the iframe: scripts re-run from scratch (page refresh).
   const [reloadNonce, setReloadNonce] = useState(0);
+  // Inspect selection: cv ids the user clicked (⌘/Ctrl toggles membership).
+  const [selected, setSelected] = useState<number[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
   const [inspect, setInspect] = useState(false);
   const [hotLine, setHotLine] = useState<number | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -247,6 +254,8 @@ export function CanvasPanel({
     setError(null);
     setHotLine(null);
     setConsoleLog([]);
+    setSelected([]);
+    setEditing(false);
     if (index === 0 && view === "diff") setView("code");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index, current?.html]);
@@ -269,10 +278,25 @@ export function CanvasPanel({
         const d = data.__chatyCanvasError;
         setError((prev) => prev ?? d);
       }
-      const cv = data?.__chatyCvPick ?? data?.__chatyCvHover;
+      const sel = (data as { __chatyCvSelect?: { cv: string; multi: boolean } })?.__chatyCvSelect;
+      if (sel && annotated) {
+        const id = Number(sel.cv);
+        setSelected((prev) => {
+          if (sel.multi) {
+            return prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+          }
+          return prev.length === 1 && prev[0] === id ? [] : [id];
+        });
+        const line = annotated.lineOf[id];
+        if (line !== undefined && !scan) {
+          setView("code");
+          setHotLine(line);
+        }
+      }
+      const cv = data?.__chatyCvHover;
       if (cv !== undefined && annotated) {
         const line = annotated.lineOf[Number(cv)];
-        if (line !== undefined) {
+        if (line !== undefined && !scan) {
           setView("code");
           setHotLine(line);
         }
@@ -303,7 +327,13 @@ export function CanvasPanel({
   };
   useEffect(() => {
     armInspect(inspect);
+    if (!inspect) setSelected([]);
   }, [inspect, srcDoc]);
+
+  // Mirror the selection into the preview (and re-apply after reloads).
+  useEffect(() => {
+    frameRef.current?.contentWindow?.postMessage({ __chatyCvSetSel: selected.map(String) }, "*");
+  }, [selected, srcDoc, reloadNonce]);
 
   // Esc closes the studio.
   useEffect(() => {
@@ -321,6 +351,19 @@ export function CanvasPanel({
     const text = instruction.trim();
     if (!text || busy) return;
     setInstruction("");
+    if (selected.length && annotated && current) {
+      const lines = current.html.split("\n");
+      const items = selected
+        .map((id) => {
+          const ln = annotated.lineOf[id];
+          const snippet = (lines[ln] ?? "").trim().slice(0, 100);
+          return `- L${ln + 1}: ${snippet}`;
+        })
+        .join("\n");
+      setSelected([]);
+      onIterate(`${t("canvasSelPrefix")}\n${items}\n\n${text}`);
+      return;
+    }
     onIterate(text);
   };
 
@@ -540,6 +583,17 @@ export function CanvasPanel({
                   {t("canvasDiff")}
                 </button>
                 <button
+                  className="cvp-tab"
+                  disabled={!!scan || busy || editing}
+                  title={t("canvasEditCodeHint")}
+                  onClick={() => {
+                    setDraft(current.html);
+                    setEditing(true);
+                  }}
+                >
+                  {t("canvasEditCode")}
+                </button>
+                <button
                   className={`cvp-tab ${view === "console" && !scan ? "active" : ""}`}
                   disabled={!!scan}
                   onClick={() => setView("console")}
@@ -557,7 +611,31 @@ export function CanvasPanel({
                 </button>
               </div>
 
-              {scan ? (
+              {editing ? (
+                <div className="cvp-editwrap">
+                  <textarea
+                    className="cvp-editor"
+                    value={draft}
+                    spellCheck={false}
+                    onChange={(e) => setDraft(e.target.value)}
+                  />
+                  <div className="cvp-editbar">
+                    <button className="cvp-tab" onClick={() => setEditing(false)}>
+                      {t("cancel")}
+                    </button>
+                    <button
+                      className="cvp-tab primary"
+                      disabled={!draft.trim() || draft === current.html}
+                      onClick={() => {
+                        setEditing(false);
+                        onManualEdit(draft);
+                      }}
+                    >
+                      {t("canvasSaveEdit")}
+                    </button>
+                  </div>
+                </div>
+              ) : scan ? (
                 <div className="cvp-code cvp-scanview" ref={scanRef}>
                   {scan.mode === "waiting" && (
                     <div className="cvp-scan-note">{t("canvasScanWaiting")}</div>
@@ -650,6 +728,27 @@ export function CanvasPanel({
           </div>
         )}
 
+        {selected.length > 0 && annotated && (
+          <div className="canvas-selbar">
+            <span className="canvas-selhint">
+              {t("canvasSelHint").replace("{n}", String(selected.length))}
+            </span>
+            {selected.map((id) => (
+              <button
+                key={id}
+                className="canvas-selchip"
+                title={`L${(annotated.lineOf[id] ?? 0) + 1}`}
+                onClick={() => setSelected((prev) => prev.filter((x) => x !== id))}
+              >
+                {"<" + (annotated.tagOf[id] ?? "?") + ">"} · L{(annotated.lineOf[id] ?? 0) + 1}
+                <span className="canvas-selx">×</span>
+              </button>
+            ))}
+            <button className="canvas-selclear" onClick={() => setSelected([])}>
+              {t("canvasSelClear")}
+            </button>
+          </div>
+        )}
         <div className="canvas-composer">
           <IconEdit size={15} style={{ color: "var(--faint)", flex: "none" }} />
           <input

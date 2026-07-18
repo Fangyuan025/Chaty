@@ -148,6 +148,22 @@ export function highlightLines(source: string): string[] {
 export const INSPECT_SHIM = `<script>(function(){
   var armed = false, lastEl = null;
   var box = null;
+  var selStyle = null;
+  function ensureSelStyle(){
+    if (selStyle) return;
+    selStyle = document.createElement('style');
+    selStyle.textContent = '.__cv_sel { outline: 2px solid #4c9ffe !important; outline-offset: 2px; }';
+    document.documentElement.appendChild(selStyle);
+  }
+  function applySel(ids){
+    ensureSelStyle();
+    var old = document.querySelectorAll('.__cv_sel');
+    for (var i = 0; i < old.length; i++) old[i].classList.remove('__cv_sel');
+    (ids || []).forEach(function(id){
+      var el = document.querySelector('[data-cv="' + id + '"]');
+      if (el) el.classList.add('__cv_sel');
+    });
+  }
   function ensureBox(){
     if (box) return box;
     box = document.createElement('div');
@@ -180,7 +196,9 @@ export const INSPECT_SHIM = `<script>(function(){
     if (!armed) return;
     e.preventDefault(); e.stopPropagation();
     var cv = cvOf(e.target);
-    if (cv !== null) { try { parent.postMessage({ __chatyCvPick: cv }, '*'); } catch(_){} }
+    if (cv !== null) {
+      try { parent.postMessage({ __chatyCvSelect: { cv: cv, multi: !!(e.metaKey || e.ctrlKey) } }, '*'); } catch(_){}
+    }
   }, true);
   window.addEventListener('message', function(e){
     var d = e.data || {};
@@ -188,6 +206,7 @@ export const INSPECT_SHIM = `<script>(function(){
       armed = !!d.__chatyCvArm;
       if (!armed && box) box.style.display = 'none';
     }
+    if (d.__chatyCvSetSel !== undefined) applySel(d.__chatyCvSetSel);
     if (d.__chatyCvFlash !== undefined) {
       var el = document.querySelector('[data-cv="' + d.__chatyCvFlash + '"]');
       if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); showBox(el);
@@ -202,7 +221,13 @@ export const INSPECT_SHIM = `<script>(function(){
         var cv = cvOf(t);
         if (cv !== null) {
           showBox(document.querySelector('[data-cv="' + cv + '"]') || t);
-          try { parent.postMessage(d.__chatyCvSim.pick ? { __chatyCvPick: cv } : { __chatyCvHover: cv }, '*'); } catch(_){}
+          try {
+            parent.postMessage(
+              d.__chatyCvSim.pick
+                ? { __chatyCvSelect: { cv: cv, multi: !!d.__chatyCvSim.multi } }
+                : { __chatyCvHover: cv },
+              '*');
+          } catch(_){}
         }
       }
     }

@@ -119,6 +119,7 @@ function Harness() {
         streamText={stream}
         onSelectVersion={setIndex}
         onReset={() => { setVersions((vs) => (vs.length ? [vs[0]] : vs)); setIndex(0); }}
+        onManualEdit={(html) => { setVersions((vs) => [...vs, { html, note: "手动编辑" }]); setIndex(versions.length); }}
         onIterate={(ins) => { setVersions([...versions, { html: V2, note: `修改:${ins}` }]); setIndex(versions.length); }}
         onFix={() => {}}
         onExport={() => {}}

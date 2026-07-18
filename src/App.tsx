@@ -2100,6 +2100,11 @@ export default function App() {
           setCanvasVersions((vs) => (vs.length ? [vs[0]] : vs));
           setCanvasIndex(0);
         }}
+        onManualEdit={(html) => {
+          const at = canvasVersions.length;
+          setCanvasVersions((vs) => [...vs, { html, note: t("canvasManualNote") }]);
+          setCanvasIndex(at);
+        }}
         onFix={(err) => void generateCanvasVersion("fix", err)}
         onExport={(html) => void exportHtmlFile("design.html", html).catch(console.error)}
         onOpenExternal={(html) => void openHtmlReport(html, "canvas").catch(console.error)}
