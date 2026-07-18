@@ -35,10 +35,53 @@ const V2 = V1.replace("Hello Canvas", "Hello Canvas v2")
     `<p>A tiny demo card for the inspect test.</p>\n    <p class="sub">Second paragraph added in v2.</p>`,
   );
 
+// A patch stream like the model emits: prose → SEARCH copy → REPLACE growth.
+const PATCH_STREAM = [
+  "好的,我来修改。\n",
+  "<<<<<<< SEARCH\n  <h1>Hello Canvas</h1>\n",
+  "=======\n",
+  "  <h1>Hello ",
+  "Canvas — scanned!</h1>\n",
+  ">>>>>>> REPLACE\n",
+  "<<<<<<< SEARCH\n  <button id=\"cta\" onclick=\"this.textContent='Clicked!'\">Click me</button>\n",
+  "=======\n  <button id=\"cta\" ",
+  "style=\"background:#e11d48\" ",
+  "onclick=\"this.textContent='Clicked!'\">Click me</button>\n>>>>>>> REPLACE\n",
+].join("");
+
 function Harness() {
   const [versions, setVersions] = useState<CanvasVersion[]>([{ html: V1, note: "初始" }]);
   const [index, setIndex] = useState(0);
   const [open, setOpen] = useState(true);
+  const [stream, setStream] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // Deterministic stepper — browser-pane tabs throttle timers, so the sim is
+  // driven from outside: __simTo(chars) renders the stream at that offset,
+  // __simFinish() lands the version like the real completion path.
+  const startScanSim = () => {
+    setBusy(true);
+    setStream("");
+  };
+  (window as unknown as Record<string, unknown>).__simTo = (chars: number) => {
+    setStream(PATCH_STREAM.slice(0, Math.min(PATCH_STREAM.length, chars)));
+  };
+  (window as unknown as Record<string, unknown>).__simLen = PATCH_STREAM.length;
+  (window as unknown as Record<string, unknown>).__simFinish = () => {
+    setStream(null);
+    setBusy(false);
+    setVersions((vs) => [
+      ...vs,
+      {
+        html: V1.replace("Hello Canvas", "Hello Canvas — scanned!").replace(
+          `<button id="cta" `,
+          `<button id="cta" style="background:#e11d48" `,
+        ),
+        note: "修改:扫描模拟",
+      },
+    ]);
+    setIndex(1);
+  };
 
   return (
     <>
@@ -47,12 +90,14 @@ function Harness() {
           模拟迭代→v2
         </button>
         <button id="reopen" onClick={() => setOpen(true)}>重开</button>
+        <button id="scan-sim" onClick={startScanSim}>模拟扫描</button>
       </div>
       <CanvasPanel
         open={open}
         versions={versions}
         index={index}
-        busy={false}
+        busy={busy}
+        streamText={stream}
         onSelectVersion={setIndex}
         onIterate={(ins) => { setVersions([...versions, { html: V2, note: `修改:${ins}` }]); setIndex(versions.length); }}
         onFix={() => {}}

@@ -326,6 +326,8 @@ export default function App() {
   const [canvasVersions, setCanvasVersions] = useState<CanvasVersion[]>([]);
   const [canvasIndex, setCanvasIndex] = useState(0);
   const [canvasBusy, setCanvasBusy] = useState(false);
+  const [canvasStream, setCanvasStream] = useState<string | null>(null);
+  const canvasStreamRef = useRef<{ acc: string; timer: number | null }>({ acc: "", timer: null });
   const [showHardware, setShowHardware] = useState(false);
   const [showModelInfo, setShowModelInfo] = useState(false);
   const [showExport, setShowExport] = useState(false);
@@ -829,7 +831,18 @@ export default function App() {
           params: { temperature: 0.2, topP: 0.9, maxTokens: 512, think: noThinkFlag() },
         },
         (ev) => {
-          if (ev.type === "token") acc += ev.text;
+          if (ev.type === "token") {
+            acc += ev.text;
+            // Live-scan feed, throttled: the panel re-diffs on every update.
+            const st = canvasStreamRef.current;
+            st.acc = acc;
+            if (st.timer === null) {
+              st.timer = window.setTimeout(() => {
+                st.timer = null;
+                setCanvasStream(st.acc);
+              }, 150);
+            }
+          }
         },
       );
       const title = cleanTitle(acc);
@@ -929,6 +942,8 @@ export default function App() {
       );
     setCanvasBusy(true);
     setBusy(true);
+    canvasStreamRef.current = { acc: "", timer: null };
+    setCanvasStream("");
     // Visual context: a vision model also SEES the current page (a real
     // headless-browser screenshot) and its live console errors, so an edit
     // request isn't judged from the HTML source alone. Best-effort — a browser
@@ -969,7 +984,18 @@ export default function App() {
           params: { temperature: 0.4, topP: 0.9, maxTokens: 8192, think: noThinkFlag() },
         },
         (ev) => {
-          if (ev.type === "token") acc += ev.text;
+          if (ev.type === "token") {
+            acc += ev.text;
+            // Live-scan feed, throttled: the panel re-diffs on every update.
+            const st = canvasStreamRef.current;
+            st.acc = acc;
+            if (st.timer === null) {
+              st.timer = window.setTimeout(() => {
+                st.timer = null;
+                setCanvasStream(st.acc);
+              }, 150);
+            }
+          }
         },
       );
       // Prefer applying the patch; fall back to a full document if the model
@@ -992,6 +1018,10 @@ export default function App() {
       console.error(e);
       showLoadError(e);
     } finally {
+      const st = canvasStreamRef.current;
+      if (st.timer !== null) window.clearTimeout(st.timer);
+      st.timer = null;
+      setCanvasStream(null);
       setCanvasBusy(false);
       setBusy(false);
     }
@@ -1023,7 +1053,18 @@ export default function App() {
           params: { temperature: 0.2, topP: 0.9, maxTokens: 512, think: noThinkFlag() },
         },
         (ev) => {
-          if (ev.type === "token") acc += ev.text;
+          if (ev.type === "token") {
+            acc += ev.text;
+            // Live-scan feed, throttled: the panel re-diffs on every update.
+            const st = canvasStreamRef.current;
+            st.acc = acc;
+            if (st.timer === null) {
+              st.timer = window.setTimeout(() => {
+                st.timer = null;
+                setCanvasStream(st.acc);
+              }, 150);
+            }
+          }
         },
       );
       return cleanQuery(acc) || latest;
@@ -2027,6 +2068,7 @@ export default function App() {
         versions={canvasVersions}
         index={canvasIndex}
         busy={canvasBusy}
+        streamText={canvasStream}
         onSelectVersion={setCanvasIndex}
         onIterate={(instr) => void generateCanvasVersion("edit", instr)}
         onFix={(err) => void generateCanvasVersion("fix", err)}

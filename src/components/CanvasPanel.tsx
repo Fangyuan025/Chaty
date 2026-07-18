@@ -6,6 +6,7 @@ import { withStorageShim } from "./Markdown";
 import { IconDownload, IconEdit } from "./icons";
 import { annotate, highlightLines, INSPECT_SHIM } from "../lib/canvasSource";
 import { diffLines } from "../lib/diff";
+import { buildScanView } from "../lib/canvasStream";
 
 export interface CanvasVersion {
   html: string;
@@ -84,6 +85,7 @@ export function CanvasPanel({
   versions,
   index,
   busy,
+  streamText = null,
   onSelectVersion,
   onIterate,
   onFix,
@@ -95,6 +97,9 @@ export function CanvasPanel({
   versions: CanvasVersion[];
   index: number;
   busy: boolean;
+  /** The model's partial output while an iteration streams (null when idle) —
+   *  drives the Cursor-style live scan/diff in the code pane. */
+  streamText?: string | null;
   onSelectVersion: (i: number) => void;
   onIterate: (instruction: string) => void;
   onFix: (errorText: string) => void;
@@ -112,8 +117,28 @@ export function CanvasPanel({
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const codeRef = useRef<HTMLDivElement | null>(null);
   const prevCount = useRef(versions.length);
+  // Resizable layout: version-rail width and code-pane share, persisted.
+  const [railW, setRailW] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("chaty.canvasLayout") ?? "{}").railW ?? 150; } catch { return 150; }
+  });
+  const [codePct, setCodePct] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("chaty.canvasLayout") ?? "{}").codePct ?? 50; } catch { return 50; }
+  });
+  const [dragging, setDragging] = useState<null | "rail" | "split">(null);
+  // The whole drag can land inside one JS task (fast hands, automation) —
+  // before React commits `dragging`. The ref is the synchronous truth.
+  const dragRef = useRef<null | "rail" | "split">(null);
+  useEffect(() => {
+    try { localStorage.setItem("chaty.canvasLayout", JSON.stringify({ railW, codePct })); } catch { /* ignore */ }
+  }, [railW, codePct]);
 
   const current = versions[index];
+
+  // Live scan while an iteration streams in.
+  const scan = useMemo(
+    () => (streamText !== null && streamText !== undefined && current ? buildScanView(current.html, streamText) : null),
+    [streamText, current],
+  );
 
   // Element↔code correspondence: annotate the source once per version; the
   // preview renders the annotated html, the code pane renders the ORIGINAL
@@ -172,6 +197,14 @@ export function CanvasPanel({
     return () => window.removeEventListener("message", onMsg);
   }, [open, muted, annotated]);
 
+  // Follow the scan head while the model streams.
+  const scanRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!scan || scan.scanIndex === null || !scanRef.current) return;
+    const el = scanRef.current.querySelector(`[data-scan="${scan.scanIndex}"]`);
+    el?.scrollIntoView({ block: "center" });
+  }, [scan]);
+
   // Keep the hot line in view while inspecting from the preview side.
   useEffect(() => {
     if (hotLine === null || !codeRef.current) return;
@@ -204,6 +237,37 @@ export function CanvasPanel({
     if (!text || busy) return;
     setInstruction("");
     onIterate(text);
+  };
+
+  // Divider drags (pointer capture; the iframe eats moves otherwise, so the
+  // stage carries a .dragging class that turns off frame pointer events).
+  const startDrag = (which: "rail" | "split") => (e: React.PointerEvent) => {
+    e.preventDefault();
+    try {
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      /* synthetic pointers may lack a capturable id */
+    }
+    dragRef.current = which;
+    setDragging(which);
+  };
+  const onDragMove = (e: React.PointerEvent) => {
+    const dragging = dragRef.current;
+    if (!dragging) return;
+    const body = e.currentTarget as HTMLElement;
+    if (dragging === "rail") {
+      const r = body.getBoundingClientRect();
+      setRailW(Math.min(340, Math.max(96, e.clientX - r.left)));
+    } else {
+      const stage = body.querySelector(".canvas-stage")?.getBoundingClientRect();
+      if (!stage || stage.width < 1) return;
+      const pct = ((stage.right - e.clientX) / stage.width) * 100;
+      setCodePct(Math.min(85, Math.max(15, pct)));
+    }
+  };
+  const endDrag = () => {
+    dragRef.current = null;
+    setDragging(null);
   };
 
   // Code line → preview element: flash the first element that starts on (or
@@ -251,8 +315,13 @@ export function CanvasPanel({
           </div>
         </div>
 
-        <div className="canvas-body">
-          <div className="canvas-versions">
+        <div
+          className={`canvas-body ${dragging ? "dragging" : ""}`}
+          onPointerMove={onDragMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+        >
+          <div className="canvas-versions" style={{ width: railW, flex: "none" }}>
             {versions.map((v, i) => (
               <button
                 key={i}
@@ -266,8 +335,14 @@ export function CanvasPanel({
             ))}
           </div>
 
+          <div
+            className="cv-divider rail"
+            title="拖动调宽 · 双击复位"
+            onPointerDown={startDrag("rail")}
+            onDoubleClick={() => setRailW(150)}
+          />
           <div className="canvas-stage split">
-            <div className="canvas-pane preview">
+            <div className="canvas-pane preview" style={{ flex: `1 1 ${100 - codePct}%` }}>
               <iframe
                 key={index}
                 ref={frameRef}
@@ -277,7 +352,7 @@ export function CanvasPanel({
                 sandbox="allow-scripts allow-modals allow-forms allow-popups allow-pointer-lock"
                 onLoad={() => armInspect(inspect)}
               />
-              {busy && (
+              {busy && !scan && (
                 <div className="canvas-busy">
                   <span className="canvas-spinner" />
                   {t("canvasGenerating")}
@@ -285,7 +360,13 @@ export function CanvasPanel({
               )}
             </div>
 
-            <div className="canvas-pane codepane">
+            <div
+              className="cv-divider split"
+              title="拖动调宽 · 双击复位"
+              onPointerDown={startDrag("split")}
+              onDoubleClick={() => setCodePct(50)}
+            />
+            <div className="canvas-pane codepane" style={{ flex: `1 1 ${codePct}%` }}>
               <div className="cvp-head">
                 <button
                   className={`cvp-inspect ${inspect ? "active" : ""}`}
@@ -298,20 +379,27 @@ export function CanvasPanel({
                   {t("canvasInspect")}
                 </button>
                 <span className="cvp-spacer" />
+                {scan && (
+                  <span className="cvp-scanning">
+                    <span className="canvas-spinner" />
+                    {t("canvasScanning")}
+                  </span>
+                )}
                 {diff && (
                   <span className="cvp-diffstat">
                     <span className="plus">+{diff.added}</span> <span className="minus">−{diff.removed}</span>
                   </span>
                 )}
                 <button
-                  className={`cvp-tab ${view === "code" ? "active" : ""}`}
+                  className={`cvp-tab ${view === "code" && !scan ? "active" : ""}`}
+                  disabled={!!scan}
                   onClick={() => setView("code")}
                 >
                   {t("canvasCode")}
                 </button>
                 <button
-                  className={`cvp-tab ${view === "diff" ? "active" : ""}`}
-                  disabled={!diff}
+                  className={`cvp-tab ${view === "diff" && !scan ? "active" : ""}`}
+                  disabled={!diff || !!scan}
                   title={diff ? "" : t("canvasNoDiff")}
                   onClick={() => diff && setView("diff")}
                 >
@@ -319,7 +407,25 @@ export function CanvasPanel({
                 </button>
               </div>
 
-              {view === "code" ? (
+              {scan ? (
+                <div className="cvp-code cvp-scanview" ref={scanRef}>
+                  {scan.mode === "waiting" && (
+                    <div className="cvp-scan-note">{t("canvasScanWaiting")}</div>
+                  )}
+                  {scan.rows.map((r, i) => (
+                    <div
+                      key={i}
+                      data-scan={i}
+                      className={`cm-dl ${r.kind === "pending" ? "ctx cvp-pending" : r.kind} ${i === scan.scanIndex ? "cvp-scanhead" : ""}`}
+                    >
+                      <span className="cm-dl-mark">
+                        {r.kind === "add" ? "+" : r.kind === "del" ? "-" : " "}
+                      </span>
+                      {r.text}
+                    </div>
+                  ))}
+                </div>
+              ) : view === "code" ? (
                 <div className="cvp-code hljs" ref={codeRef}>
                   {codeLines.map((h, ln) => (
                     <div

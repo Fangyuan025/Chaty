@@ -2845,6 +2845,59 @@ body.resizing-x {
   flex: 1;
   min-width: 0;
 }
+/* Draggable dividers between rail|preview|code */
+.cv-divider {
+  flex: none;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--border);
+  transition: background 0.12s;
+}
+.cv-divider:hover,
+.canvas-body.dragging .cv-divider {
+  background: var(--accent-soft);
+}
+.canvas-body.dragging {
+  cursor: col-resize;
+  user-select: none;
+}
+.canvas-body.dragging .canvas-frame {
+  pointer-events: none; /* the iframe would swallow drag moves */
+}
+
+/* Cursor-style live scan while an iteration streams */
+.cvp-scanview {
+  white-space: pre;
+  padding: 8px 10px;
+  background: var(--panel);
+  color: var(--text);
+}
+.cvp-pending {
+  opacity: 0.38;
+}
+.cvp-scanhead {
+  animation: cvp-scan-pulse 1.1s ease-in-out infinite;
+  outline: 1px solid rgba(76, 159, 254, 0.55);
+  outline-offset: -1px;
+}
+@keyframes cvp-scan-pulse {
+  0%, 100% { background: rgba(76, 159, 254, 0.1); }
+  50% { background: rgba(76, 159, 254, 0.26); }
+}
+.cvp-scanning {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--accent-bright);
+  margin-right: 6px;
+}
+.cvp-scanning .canvas-spinner {
+  width: 11px;
+  height: 11px;
+}
+
 .cvp-diffview {
   white-space: pre;
   padding: 8px 10px;

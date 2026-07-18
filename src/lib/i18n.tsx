@@ -208,6 +208,8 @@ export const T = {
   openInCanvas: { zh: "在画布中打开", en: "Open in Canvas" },
   canvasTitle: { zh: "设计画布", en: "Design canvas" },
   canvasCode: { zh: "代码", en: "Code" },
+  canvasScanning: { zh: "正在逐行修改…", en: "Rewriting line by line…" },
+  canvasScanWaiting: { zh: "模型思考中,即将开始修改…", en: "Model is thinking — edits start shortly…" },
   canvasDiff: { zh: "变更", en: "Changes" },
   canvasNoDiff: { zh: "首个版本没有可对比的变更", en: "The first version has nothing to compare" },
   canvasInspect: { zh: "对照", en: "Inspect" },
