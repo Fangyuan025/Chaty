@@ -298,7 +298,7 @@ export function CanvasPanel({
   return createPortal(
     <div className={`canvas-overlay ${full ? "full" : ""}`}>
       <div className="canvas">
-        <div className="canvas-head">
+        <div className="canvas-head" data-tauri-drag-region>
           <span className="canvas-title">{t("canvasTitle")}</span>
           <span className="canvas-ver-label">
             v{index + 1}/{versions.length}
@@ -326,11 +326,19 @@ export function CanvasPanel({
               {t("canvasReset")}
             </button>
             <button
-              className="canvas-hbtn"
+              className="canvas-hbtn icon"
               title={full ? t("canvasExitFull") : t("canvasFull")}
               onClick={() => setFull(!full)}
             >
-              {full ? "⤡" : "⤢"}
+              {full ? (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                  <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                  <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
             </button>
             <button
               className="canvas-hbtn"
