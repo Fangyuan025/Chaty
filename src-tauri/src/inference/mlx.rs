@@ -227,6 +227,7 @@ impl MlxEngine {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("无法启动 MLX 引擎 (failed to spawn sidecar) {sidecar:?}"))?;
+        SIDECAR_PIDS.lock().unwrap().push(child.id());
         let mut stdin_pipe = child.stdin.take().context("sidecar stdin unavailable")?;
         let stdout = child.stdout.take().context("sidecar stdout unavailable")?;
 
@@ -371,10 +372,30 @@ impl MlxEngine {
         drop(self.stdin.lock().map(|mut s| s.take()));
         if let Ok(mut guard) = self.child.lock() {
             if let Some(mut c) = guard.take() {
+                let pid = c.id();
                 let _ = c.kill();
                 let _ = c.wait();
+                SIDECAR_PIDS.lock().unwrap().retain(|p| *p != pid);
             }
         }
+    }
+}
+
+/// Live sidecar PIDs. The app's quit path exits via `libc::_exit` (dodging a
+/// ggml teardown SIGABRT), which skips every destructor — without an explicit
+/// reap, quitting while an MLX model is loaded orphans a sidecar that keeps
+/// the entire model resident. lib.rs calls `kill_sidecars_now` on exit.
+static SIDECAR_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+pub fn kill_sidecars_now() {
+    let pids: Vec<u32> = std::mem::take(&mut *SIDECAR_PIDS.lock().unwrap());
+    for pid in pids {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+        #[cfg(not(unix))]
+        let _ = pid;
     }
 }
 

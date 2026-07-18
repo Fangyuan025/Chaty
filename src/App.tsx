@@ -140,6 +140,8 @@ const uid = () => Math.random().toString(36).slice(2);
 const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
 const SETTINGS_KEY = "chaty.settings";
 const LAST_MODEL_KEY = "chaty.lastModel";
+/** Boot auto-load must run once per page load, not once per (Strict)mount. */
+let bootLoadStarted = false;
 const SIDEBAR_DEFAULT = 248;
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 440;
@@ -408,6 +410,11 @@ export default function App() {
   }
 
   useEffect(() => {
+    // StrictMode double-mounts this effect in dev; both invocations used to
+    // race past the getModel() check and spawn TWO model loads — with a 35B
+    // MLX model that's two sidecars resident at once. One boot, one load.
+    if (bootLoadStarted) return;
+    bootLoadStarted = true;
     (async () => {
       try {
         const models = await listModels().catch(() => [] as ModelEntry[]);

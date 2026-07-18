@@ -338,6 +338,9 @@ pub fn run() {
                     // Kill the automation browser first — the _exit below skips
                     // destructors, which would otherwise orphan Chrome.
                     browser::kill_now();
+                    // Same for the MLX sidecar: skipping Drop would orphan a
+                    // process holding the whole model in unified memory.
+                    inference::mlx::kill_sidecars_now();
                     #[cfg(unix)]
                     unsafe {
                         libc::_exit(0)
