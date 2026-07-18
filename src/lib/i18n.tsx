@@ -208,6 +208,7 @@ export const T = {
   openInCanvas: { zh: "在画布中打开", en: "Open in Canvas" },
   canvasTitle: { zh: "设计画布", en: "Design canvas" },
   canvasCode: { zh: "代码", en: "Code" },
+  canvasReload: { zh: "刷新页面(重新运行脚本)", en: "Reload the page (re-runs scripts)" },
   canvasConsole: { zh: "控制台", en: "Console" },
   canvasConsoleEmpty: { zh: "当前版本没有控制台输出", en: "No console output for this version" },
   canvasReset: { zh: "重置画布", en: "Reset canvas" },

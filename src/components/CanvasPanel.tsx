@@ -183,6 +183,8 @@ export function CanvasPanel({
   const [muted, setMuted] = useState(false);
   const [view, setView] = useState<"code" | "diff" | "console">("code");
   const [consoleLog, setConsoleLog] = useState<{ level: string; text: string }[]>([]);
+  // Bumping remounts the iframe: scripts re-run from scratch (page refresh).
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [inspect, setInspect] = useState(false);
   const [hotLine, setHotLine] = useState<number | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -400,6 +402,19 @@ export function CanvasPanel({
             </button>
             <button
               className="canvas-hbtn icon"
+              title={t("canvasReload")}
+              onClick={() => {
+                setConsoleLog([]);
+                setError(null);
+                setReloadNonce((n) => n + 1);
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <button
+              className="canvas-hbtn icon"
               title={full ? t("canvasExitFull") : t("canvasFull")}
               onClick={() => setFull(!full)}
             >
@@ -463,7 +478,7 @@ export function CanvasPanel({
           <div className="canvas-stage split">
             <div className="canvas-pane preview" style={{ flex: `1 1 ${100 - codePct}%` }}>
               <iframe
-                key={index}
+                key={`${index}-${reloadNonce}`}
                 ref={frameRef}
                 className="canvas-frame"
                 title="Canvas preview"
