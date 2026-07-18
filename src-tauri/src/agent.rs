@@ -715,7 +715,7 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
     let mut ran_any = false;
     let mut out = trf!("验证目标: {}\n", "validating: {}\n", rels.join(", "));
     let timeout = Duration::from_secs(180);
-    let mut run_cmd = |title: &str, cmd: String, out: &mut String| {
+    let run_cmd = |title: &str, cmd: String, out: &mut String| {
         out.push_str(&format!("\n$ {cmd}\n"));
         match run_bash(&root, &cmd, timeout, None, true) {
             Ok(r) => {
