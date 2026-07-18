@@ -68,6 +68,20 @@ itself — every step shown live, every change behind an approval + diff.
 
 <br />
 
+## Benchmarks
+
+One local model for every row — **Qwen3.5-35B-A3B** (MoE, ~3 B active per token), mxfp8 on MLX, reasoning off, entirely on one machine:
+
+| Benchmark | Agent | Result |
+| --- | --- | --- |
+| SWE-bench Verified — 45-task macOS-validated subset | **Chaty Coder** (full tool loop) | **9/45** |
+| — same subset, same model | bare bash agent (ablation) | 6/45 |
+| Terminal-Bench core v0.1.1 | Chaty agent protocol, bash-only | 15/77 |
+
+Same model, same tasks: Chaty's tool layer resolves **half again as many** SWE-bench instances as a bare bash agent — on django, the largest slice, **3.5×** (7/24 vs 2/24). That gap is the product, measured. Methodology, run artifacts, and honest-comparison notes (subset, macOS harness — *not* comparable to leaderboard numbers): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+<br />
+
 ## Chat that renders everything
 
 <table>

@@ -67,6 +67,20 @@ Deep Research 与免手语音。
 
 <br />
 
+## 跑分
+
+下表每一行都是**同一个本地模型**——Qwen3.5-35B-A3B(MoE,每 token 仅 ~3B 激活),mxfp8 · MLX,关闭思考,全程单机:
+
+| 基准 | 智能体 | 结果 |
+| --- | --- | --- |
+| SWE-bench Verified — 45 题 macOS 验证子集 | **Chaty Coder**(完整工具链) | **9/45** |
+| — 同一子集、同一模型 | 裸 bash 智能体(消融对照) | 6/45 |
+| Terminal-Bench core v0.1.1 | Chaty 协议,纯 bash 界面 | 15/77 |
+
+同模型、同任务:接上 Chaty 的工具层,SWE-bench 解题数比裸 bash 多出一半——在占比最大的 django 上是 **3.5 倍**(7/24 vs 2/24)。这个差距就是产品本身的价值,用数字量出来。方法学、运行产物与诚实对比说明(子集、macOS 环境——**不可**与官方排行榜数字直接对比):[docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
+
+<br />
+
 ## 什么都能渲染的聊天
 
 <table>
