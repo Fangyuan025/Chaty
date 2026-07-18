@@ -184,6 +184,10 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
 
         // ---- workspace & grants ----
         "agent_set_workspace" => req_s(&args, "path").and_then(|p| res(ag::agent_set_workspace(p))),
+        "agent_set_lang" => req_s(&args, "lang").map(|l| {
+            ag::agent_set_lang(l);
+            Value::Null
+        }),
         "agent_get_workspace" => ok(ag::agent_get_workspace()),
         "agent_grant_dir" => req_s(&args, "path").and_then(|p| res(ag::agent_grant_dir(p))),
         "agent_revoke_dir" => req_s(&args, "path").map(|p| {

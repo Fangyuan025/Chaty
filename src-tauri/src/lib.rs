@@ -251,6 +251,7 @@ pub fn run() {
             rag::rag_corpus_docs,
             rag::rag_clear_all,
             agent::agent_set_workspace,
+            agent::agent_set_lang,
             agent::agent_get_workspace,
             agent::agent_grant_dir,
             agent::agent_revoke_dir,

@@ -221,6 +221,10 @@ export interface AgentBashResult {
 export async function agentSetWorkspace(path: string): Promise<string> {
   return invoke<string>("agent_set_workspace", { path });
 }
+/** Language for model-visible tool output (Rust renders one language, not both). */
+export async function agentSetLang(lang: "zh" | "en"): Promise<void> {
+  return invoke<void>("agent_set_lang", { lang });
+}
 export async function agentGetWorkspace(): Promise<string | null> {
   return invoke<string | null>("agent_get_workspace");
 }

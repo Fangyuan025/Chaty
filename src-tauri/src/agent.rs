@@ -33,6 +33,46 @@ pub(crate) fn hide_console(cmd: &mut Command) -> &mut Command {
 /// opens a folder for the coding session.
 static WORKSPACE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// Language for model-visible tool output. Historically every string carried
+/// both languages ("已写入 … (wrote …)"), which taxes small local models with
+/// tokens on every single step; now the loop sets the session language once
+/// and each string renders in ONE language. Default Zh keeps the existing
+/// Chinese-asserting tests (and old frontends that never call set_lang) green.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Lang {
+    Zh,
+    En,
+}
+static LANG: Mutex<Lang> = Mutex::new(Lang::Zh);
+
+#[tauri::command]
+pub fn agent_set_lang(lang: String) {
+    *LANG.lock().unwrap() = if lang == "en" { Lang::En } else { Lang::Zh };
+}
+
+/// Pick the session-language variant of a model-visible string.
+pub(crate) fn tr(zh: &str, en: &str) -> String {
+    match *LANG.lock().unwrap() {
+        Lang::Zh => zh.to_string(),
+        Lang::En => en.to_string(),
+    }
+}
+
+/// `tr` for format-heavy call sites: `trf!("已写入 {}", "wrote {}", path)`.
+macro_rules! trf {
+    ($zh:literal, $en:literal $(, $arg:expr)* $(,)?) => {
+        if crate::agent::lang_is_en() {
+            format!($en $(, $arg)*)
+        } else {
+            format!($zh $(, $arg)*)
+        }
+    };
+}
+
+pub(crate) fn lang_is_en() -> bool {
+    *LANG.lock().unwrap() == Lang::En
+}
+
 /// Session-scoped extra directories the user granted beyond the workspace
 /// (absolute, canonicalized). Cleared when the workspace/session changes.
 static GRANTED_DIRS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
@@ -50,8 +90,9 @@ fn need_grant_err(target: &Path, raw: &str) -> String {
     } else {
         target.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| target.to_path_buf())
     };
-    format!(
-        "{NEED_DIR_GRANT}\t{}\t路径在工作区外，需要用户授权 (path is outside the workspace — needs the user's approval): {raw}",
+    trf!(
+        "{NEED_DIR_GRANT}\t{}\t路径在工作区外，需要用户授权: {raw}",
+        "{NEED_DIR_GRANT}\t{}\tpath is outside the workspace — needs the user's approval: {raw}",
         dir.display()
     )
 }
@@ -71,7 +112,7 @@ fn workspace() -> Result<PathBuf, String> {
         .lock()
         .unwrap()
         .clone()
-        .ok_or_else(|| "尚未打开工作区 (no workspace opened)".to_string())
+        .ok_or_else(|| tr("尚未打开工作区", "no workspace opened"))
 }
 
 /// Resolve `..`/`.` textually (without touching the filesystem, so it works for
@@ -115,7 +156,7 @@ fn canonical_or_lexical(p: &Path) -> PathBuf {
 /// spellings (macOS `/var` → `/private/var`) compare correctly.
 fn resolve(rel: &str) -> Result<PathBuf, String> {
     if rel.trim().is_empty() {
-        return Err("路径为空，请提供文件路径 (empty path — provide a file path)".to_string());
+        return Err(tr("路径为空，请提供文件路径", "empty path — provide a file path"));
     }
     let root = workspace()?;
     let p = Path::new(rel);
@@ -142,7 +183,7 @@ fn rel_display(root: &Path, p: &Path) -> String {
 pub fn agent_set_workspace(path: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
     if !p.is_dir() {
-        return Err("不是有效的文件夹 (not a directory)".to_string());
+        return Err(tr("不是有效的文件夹", "not a directory"));
     }
     let canon = p.canonicalize().map_err(|e| e.to_string())?;
     let shown = canon.to_string_lossy().to_string();
@@ -174,7 +215,7 @@ pub fn agent_get_workspace() -> Option<String> {
 pub fn agent_grant_dir(path: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
     if !p.is_dir() {
-        return Err("不是有效的文件夹 (not a directory)".to_string());
+        return Err(tr("不是有效的文件夹", "not a directory"));
     }
     let canon = p.canonicalize().map_err(|e| e.to_string())?;
     let mut dirs = GRANTED_DIRS.lock().unwrap();
@@ -234,9 +275,9 @@ pub fn agent_read_file(
     let budget = max_chars.unwrap_or(24_000).clamp(4_000, 400_000);
 
     let abs = resolve(&path)?;
-    let meta = std::fs::metadata(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
+    let meta = std::fs::metadata(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
     if meta.is_dir() {
-        return Err("这是一个目录，请用 list_dir (that's a directory)".to_string());
+        return Err(tr("这是一个目录，请用 list_dir", "that's a directory — use list_dir"));
     }
     let bytes = std::fs::read(&abs).map_err(|e| e.to_string())?;
     let slice = &bytes[..bytes.len().min(MAX_READ_BYTES)];
@@ -246,8 +287,9 @@ pub fn agent_read_file(
     let total = all.len();
     let start = offset.unwrap_or(1).max(1) - 1;
     if start >= total && total > 0 {
-        return Ok(format!(
-            "(offset 超出范围:文件共 {total} 行 / offset beyond EOF: file has {total} lines)"
+        return Ok(trf!(
+            "(offset 超出范围:文件共 {total} 行)",
+            "(offset beyond EOF: file has {total} lines)"
         ));
     }
     let want = limit.unwrap_or(MAX_READ_LINES).clamp(1, MAX_READ_LINES);
@@ -275,10 +317,9 @@ pub fn agent_read_file(
     }
 
     if end < total {
-        out.push_str(&format!(
-            "\n\n[文件共 {total} 行,本次显示第 {}-{end} 行;继续阅读请用 offset={} (file has {total} lines, shown {}-{end}; continue with offset={})]",
-            start + 1,
-            end + 1,
+        out.push_str(&trf!(
+            "\n\n[文件共 {total} 行,本次显示第 {}-{end} 行;继续阅读请用 offset={}]",
+            "\n\n[file has {total} lines, shown {}-{end}; continue with offset={}]",
             start + 1,
             end + 1,
         ));
@@ -330,7 +371,7 @@ pub async fn agent_web_download(url: String, path: String) -> Result<String, Str
     const CAP: u64 = 100 * 1024 * 1024;
     let abs = resolve(&path)?;
     if abs.is_dir() {
-        return Err(format!("目标是一个目录 (target is a directory): {path}"));
+        return Err(trf!("目标是一个目录: {path}", "target is a directory: {path}"));
     }
     let root = workspace()?;
     let rel = rel_display(&root, &abs);
@@ -378,7 +419,7 @@ pub async fn agent_web_download(url: String, path: String) -> Result<String, Str
         let total = resp.content_length();
         dl_update(id, |st| st.info.total = total);
         if total.is_some_and(|t| t > CAP) {
-            return finish(Some(format!("文件过大 ({} MB),上限 100 MB", total.unwrap() / 1024 / 1024)));
+            return finish(Some(trf!("文件过大 ({} MB),上限 100 MB", "file too large ({} MB) — the cap is 100 MB", total.unwrap() / 1024 / 1024)));
         }
         cp_record(&abs);
         if let Some(parent) = abs.parent() {
@@ -389,7 +430,7 @@ pub async fn agent_web_download(url: String, path: String) -> Result<String, Str
         let tmp = abs.with_extension("part");
         let mut file = match std::fs::File::create(&tmp) {
             Ok(f) => f,
-            Err(e) => return finish(Some(format!("写入失败 (write failed): {e}"))),
+            Err(e) => return finish(Some(trf!("写入失败: {e}", "write failed: {e}"))),
         };
         let mut resp = resp;
         let mut written: u64 = 0;
@@ -399,11 +440,11 @@ pub async fn agent_web_download(url: String, path: String) -> Result<String, Str
                     written += chunk.len() as u64;
                     if written > CAP {
                         let _ = std::fs::remove_file(&tmp);
-                        return finish(Some("文件过大,上限 100 MB (over the 100 MB cap)".into()));
+                        return finish(Some(tr("文件过大,上限 100 MB", "file too large — the cap is 100 MB")));
                     }
                     if let Err(e) = std::io::Write::write_all(&mut file, &chunk) {
                         let _ = std::fs::remove_file(&tmp);
-                        return finish(Some(format!("写入失败 (write failed): {e}")));
+                        return finish(Some(trf!("写入失败: {e}", "write failed: {e}")));
                     }
                     dl_update(id, |st| st.info.downloaded = written);
                 }
@@ -417,15 +458,16 @@ pub async fn agent_web_download(url: String, path: String) -> Result<String, Str
         drop(file);
         if let Err(e) = std::fs::rename(&tmp, &abs) {
             let _ = std::fs::remove_file(&tmp);
-            return finish(Some(format!("写入失败 (write failed): {e}")));
+            return finish(Some(trf!("写入失败: {e}", "write failed: {e}")));
         }
         dl_update(id, |st| st.info.downloaded = written);
         finish(None);
     });
 
-    Ok(format!(
-        "已开始后台下载 (download #{id} started in the background): {url_owned2} → {rel}。下载不会阻塞你,继续做别的;完成或失败时系统会自动通知你,也可随时继续当前任务。",
-        url_owned2 = url.trim()
+    let u = url.trim();
+    Ok(trf!(
+        "已开始后台下载 #{id}: {u} → {rel}。下载不会阻塞你,继续做别的;完成或失败时系统会自动通知你,也可随时继续当前任务。",
+        "download #{id} started in the background: {u} → {rel}. It won't block you — keep working; you'll be notified when it finishes or fails, and you can keep going meanwhile."
     ))
 }
 
@@ -576,7 +618,7 @@ pub fn agent_understand_repo() -> Result<String, String> {
         .collect::<Vec<_>>()
         .join(" · ");
 
-    out.push_str(&format!("\n[目录 (top 2 levels)]\n{tree}"));
+    out.push_str(&trf!("\n[目录 (top 2 levels)]\n{tree}", "\n[directory, top 2 levels]\n{tree}"));
     if !census_str.is_empty() {
         out.push_str(&format!("\n[语言构成] {census_str}\n"));
     }
@@ -585,7 +627,7 @@ pub fn agent_understand_repo() -> Result<String, String> {
         out.push_str(&format!("[入口候选] {}\n", entries_found.join(", ")));
     }
     if out.trim().is_empty() {
-        out = "(空工作区 / empty workspace)".to_string();
+        out = tr("(空工作区)", "(empty workspace)");
     }
     Ok(out)
 }
@@ -615,11 +657,10 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
     }
     targets.retain(|p| p.is_file());
     if targets.is_empty() {
-        return Ok(
-            "本轮还没有记录到文件改动;可传 files 参数明确指定要验证的文件 \
-             (no tracked changes this turn — pass files explicitly)"
-                .to_string(),
-        );
+        return Ok(tr(
+            "本轮还没有记录到文件改动;可传 files 参数明确指定要验证的文件",
+            "no tracked changes this turn — pass files explicitly to validate them",
+        ));
     }
     let stems: Vec<String> = targets
         .iter()
@@ -672,7 +713,7 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
     }
 
     let mut ran_any = false;
-    let mut out = format!("验证目标 (validating): {}\n", rels.join(", "));
+    let mut out = trf!("验证目标: {}\n", "validating: {}\n", rels.join(", "));
     let timeout = Duration::from_secs(180);
     let mut run_cmd = |title: &str, cmd: String, out: &mut String| {
         out.push_str(&format!("\n$ {cmd}\n"));
@@ -692,11 +733,11 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
                     .take(14)
                     .collect();
                 if r.timed_out {
-                    out.push_str(&format!("⏱ 超时({title} timed out)\n"));
+                    out.push_str(&trf!("⏱ 超时({title})\n", "⏱ timed out ({title})\n"));
                 } else if r.code == 0 {
-                    out.push_str("✓ 通过 (passed)\n");
+                    out.push_str(&tr("✓ 通过\n", "✓ passed\n"));
                 } else {
-                    out.push_str(&format!("✗ 失败 (exit {})\n", r.code));
+                    out.push_str(&trf!("✗ 失败 (exit {})\n", "✗ failed (exit {})\n", r.code));
                 }
                 if !fails.is_empty() {
                     out.push_str(&format!("{}\n", fails.join("\n")));
@@ -712,10 +753,10 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
                         .rev()
                         .collect::<Vec<_>>()
                         .join("\n");
-                    out.push_str(&format!("--- 输出尾部 (output tail) ---\n{}\n", tail.chars().take(1800).collect::<String>()));
+                    out.push_str(&trf!("--- 输出尾部 ---\n{}\n", "--- output tail ---\n{}\n", tail.chars().take(1800).collect::<String>()));
                 }
             }
-            Err(e) => out.push_str(&format!("(无法运行 / could not run: {e})\n")),
+            Err(e) => out.push_str(&trf!("(无法运行: {e})\n", "(could not run: {e})\n")),
         }
     };
 
@@ -749,9 +790,10 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
                 run_cmd("js tests", cmd, &mut out);
                 ran_any = true;
             }
-            None => out.push_str(
+            None => out.push_str(&tr(
                 "\n(找到 JS/TS 测试文件但未识别出 vitest/jest——请用 bash 跑项目自己的测试命令)\n",
-            ),
+                "\n(JS/TS test files found but no vitest/jest detected — run the project's own test command via bash)\n",
+            )),
         }
     }
     if root.join("Cargo.toml").is_file()
@@ -768,11 +810,10 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
     }
 
     if !ran_any {
-        out.push_str(
-            "\n没有发现与改动相关的测试(按 test_*.py / *.test.* / *.spec.* / cargo 约定查找)。\
-             如果项目有自己的测试命令,请直接用 bash 运行 \
-             (no related tests found by convention — run the project's own test command via bash)。",
-        );
+        out.push_str(&tr(
+            "\n没有发现与改动相关的测试(按 test_*.py / *.test.* / *.spec.* / cargo 约定查找)。如果项目有自己的测试命令,请直接用 bash 运行。",
+            "\nno tests related to the change were found (looked for test_*.py / *.test.* / *.spec.* / cargo conventions) — if the project has its own test command, run it via bash.",
+        ));
     }
     Ok(out)
 }
@@ -850,10 +891,11 @@ pub(crate) fn syntax_check(abs: &Path) -> Option<Result<(), String>> {
 fn syntax_note(abs: &Path, was_clean: Option<bool>) -> String {
     match syntax_check(abs) {
         Some(Err(e)) => match was_clean {
-            Some(true) => format!(
-                "\n⚠️ 语法检查失败——本次编辑把一个原本可解析的文件改坏了 (this edit BROKE a previously-parsable file):\n{e}\n请立即修复;如需还原,该文件已有检查点可回退 (fix now, or rewind the checkpoint)."
+            Some(true) => trf!(
+                "\n⚠️ 语法检查失败——本次编辑把一个原本可解析的文件改坏了:\n{e}\n请立即修复;如需还原,该文件已有检查点可回退。",
+                "\n⚠️ syntax check failed — this edit BROKE a previously-parsable file:\n{e}\nfix now, or rewind the checkpoint."
             ),
-            _ => format!("\n⚠️ 语法检查失败 (syntax check failed):\n{e}"),
+            _ => trf!("\n⚠️ 语法检查失败:\n{e}", "\n⚠️ syntax check failed:\n{e}"),
         },
         _ => String::new(),
     }
@@ -864,8 +906,9 @@ fn syntax_note(abs: &Path, was_clean: Option<bool>) -> String {
 pub fn agent_write_file(path: String, content: String) -> Result<String, String> {
     let abs = resolve(&path)?;
     if abs.is_dir() {
-        return Err(format!(
-            "目标是一个目录，不能写入；请提供文件路径 (target is a directory, give a file path): {path}"
+        return Err(trf!(
+            "目标是一个目录，不能写入；请提供文件路径: {path}",
+            "target is a directory — give a file path: {path}"
         ));
     }
     cp_record(&abs);
@@ -873,10 +916,11 @@ pub fn agent_write_file(path: String, content: String) -> Result<String, String>
     if let Some(parent) = abs.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&abs, content.as_bytes()).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    std::fs::write(&abs, content.as_bytes()).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
     let root = workspace()?;
-    Ok(format!(
+    Ok(trf!(
         "已写入 {} ({} 字节){}",
+        "wrote {} ({} bytes){}",
         rel_display(&root, &abs),
         content.len(),
         syntax_note(&abs, was_clean)
@@ -893,10 +937,10 @@ pub fn agent_edit_file(
     replace_all: Option<bool>,
 ) -> Result<String, String> {
     if old_string == new_string {
-        return Err("old_string 与 new_string 相同 (no-op edit)".to_string());
+        return Err(tr("old_string 与 new_string 相同", "old_string and new_string are identical — no-op edit"));
     }
     let abs = resolve(&path)?;
-    let text = std::fs::read_to_string(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
+    let text = std::fs::read_to_string(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
     cp_record(&abs);
     let was_clean = syntax_check(&abs).map(|r| r.is_ok());
     let count = text.matches(&old_string).count();
@@ -905,8 +949,9 @@ pub fn agent_edit_file(
     }
     let all = replace_all.unwrap_or(false);
     if count > 1 && !all {
-        return Err(format!(
-            "old_string 出现 {count} 次，不唯一；请提供更多上下文或用 replace_all (not unique: {count} matches)"
+        return Err(trf!(
+            "old_string 出现 {count} 次，不唯一；请提供更多上下文或用 replace_all",
+            "old_string is not unique ({count} matches) — add more context or use replace_all"
         ));
     }
     let pos = text.find(&old_string).unwrap_or(0);
@@ -916,13 +961,14 @@ pub fn agent_edit_file(
     } else {
         text.replacen(&old_string, &new_string, 1)
     };
-    std::fs::write(&abs, updated.as_bytes()).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    std::fs::write(&abs, updated.as_bytes()).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
     let root = workspace()?;
     // Echo the edited neighborhood back so the model can confirm the result
     // without spending another read_file step.
     let span = new_string.matches('\n').count() + 1;
-    Ok(format!(
+    Ok(trf!(
         "已编辑 {}（替换 {} 处）。修改后该处内容:\n{}{}",
+        "edited {} ({} replacement(s)). The region now reads:\n{}{}",
         rel_display(&root, &abs),
         if all { count } else { 1 },
         numbered_context(&updated, start_line, span),
@@ -984,10 +1030,16 @@ fn closest_snippet(text: &str, needle: &str) -> Option<String> {
 fn not_found_error(text: &str, old_string: &str) -> String {
     let hint = closest_snippet(text, old_string)
         .map(|s| {
-            format!("\n文件中最相似的位置 (closest match — copy old_string verbatim from here):\n{s}")
+            trf!(
+                "\n文件中最相似的位置(从这里逐字复制 old_string):\n{s}",
+                "\nclosest match in the file (copy old_string verbatim from here):\n{s}"
+            )
         })
         .unwrap_or_default();
-    format!("未找到 old_string（需与文件内容逐字匹配）(old_string not found — must match exactly){hint}")
+    trf!(
+        "未找到 old_string（需与文件内容逐字匹配）{hint}",
+        "old_string not found — it must match the file content exactly{hint}"
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -1004,30 +1056,32 @@ pub struct EditOp {
 #[tauri::command]
 pub fn agent_multi_edit(path: String, edits: Vec<EditOp>) -> Result<String, String> {
     if edits.is_empty() {
-        return Err("edits 为空 (no edits given)".to_string());
+        return Err(tr("edits 为空", "no edits given"));
     }
     let abs = resolve(&path)?;
-    let text = std::fs::read_to_string(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
+    let text = std::fs::read_to_string(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
     let mut cur = text;
     let total = edits.len();
     for (i, e) in edits.iter().enumerate() {
         let n = i + 1;
         if e.old_string.is_empty() {
-            return Err(format!("第 {n}/{total} 条 old_string 为空;未应用任何修改 (edit {n} empty — nothing changed)"));
+            return Err(trf!("第 {n}/{total} 条 old_string 为空;未应用任何修改", "edit {n}/{total} has an empty old_string — nothing changed"));
         }
         if e.old_string == e.new_string {
-            return Err(format!("第 {n}/{total} 条 old_string 与 new_string 相同;未应用任何修改 (edit {n} is a no-op — nothing changed)"));
+            return Err(trf!("第 {n}/{total} 条 old_string 与 new_string 相同;未应用任何修改", "edit {n}/{total} is a no-op — nothing changed"));
         }
         let count = cur.matches(&e.old_string).count();
         if count == 0 {
-            return Err(format!(
-                "第 {n}/{total} 条编辑失败,整个 multi_edit 原子回退、文件未改动 (edit {n} failed — atomic, nothing changed):\n{}",
+            return Err(trf!(
+                "第 {n}/{total} 条编辑失败,整个 multi_edit 原子回退、文件未改动:\n{}",
+                "edit {n}/{total} failed — multi_edit is atomic, nothing changed:\n{}",
                 not_found_error(&cur, &e.old_string)
             ));
         }
         if count > 1 && !e.replace_all {
-            return Err(format!(
-                "第 {n}/{total} 条 old_string 出现 {count} 次,不唯一;文件未改动 (edit {n} not unique: {count} matches — nothing changed)"
+            return Err(trf!(
+                "第 {n}/{total} 条 old_string 出现 {count} 次,不唯一;文件未改动",
+                "edit {n}/{total} is not unique ({count} matches) — nothing changed"
             ));
         }
         cur = if e.replace_all {
@@ -1038,10 +1092,11 @@ pub fn agent_multi_edit(path: String, edits: Vec<EditOp>) -> Result<String, Stri
     }
     cp_record(&abs);
     let was_clean = syntax_check(&abs).map(|r| r.is_ok());
-    std::fs::write(&abs, cur.as_bytes()).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    std::fs::write(&abs, cur.as_bytes()).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
     let root = workspace()?;
-    Ok(format!(
+    Ok(trf!(
         "已编辑 {}(应用全部 {total} 处修改){}",
+        "edited {} (all {total} edits applied){}",
         rel_display(&root, &abs),
         syntax_note(&abs, was_clean)
     ))
@@ -1053,7 +1108,7 @@ pub fn agent_multi_edit(path: String, edits: Vec<EditOp>) -> Result<String, Stri
 pub async fn browser_navigate(url: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || crate::browser::navigate(&url))
         .await
-        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+        .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
 
 /// Full-page screenshot (auto-scrolls to trigger lazy content). Returns a temp
@@ -1062,7 +1117,7 @@ pub async fn browser_navigate(url: String) -> Result<String, String> {
 pub async fn browser_screenshot() -> Result<String, String> {
     let png = tokio::task::spawn_blocking(crate::browser::screenshot)
         .await
-        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))??;
+        .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))??;
     write_shot(png)
 }
 
@@ -1072,7 +1127,7 @@ pub async fn browser_screenshot() -> Result<String, String> {
 pub async fn browser_snapshot() -> Result<String, String> {
     let png = tokio::task::spawn_blocking(crate::browser::snapshot)
         .await
-        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))??;
+        .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))??;
     write_shot(png)
 }
 
@@ -1081,7 +1136,7 @@ pub async fn browser_snapshot() -> Result<String, String> {
 pub async fn browser_scroll(to: Option<String>, by: Option<f64>) -> Result<String, String> {
     tokio::task::spawn_blocking(move || crate::browser::scroll_page(to, by))
         .await
-        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+        .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
 
 fn write_shot(png: Vec<u8>) -> Result<String, String> {
@@ -1093,7 +1148,7 @@ fn write_shot(png: Vec<u8>) -> Result<String, String> {
             .map(|d| d.subsec_nanos())
             .unwrap_or(0)
     ));
-    std::fs::write(&path, png).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    std::fs::write(&path, png).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -1101,7 +1156,7 @@ fn write_shot(png: Vec<u8>) -> Result<String, String> {
 pub async fn browser_eval(expression: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || crate::browser::eval(&expression))
         .await
-        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+        .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -1118,7 +1173,7 @@ pub async fn browser_click(
         _ => crate::browser::click(selector, text),
     })
     .await
-    .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+    .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
 
 #[derive(serde::Deserialize)]
@@ -1149,14 +1204,14 @@ pub async fn browser_type(
         _ => crate::browser::type_text(selector, label, text.unwrap_or_default()),
     })
     .await
-    .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+    .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
 
 #[tauri::command]
 pub async fn browser_console() -> Result<String, String> {
     tokio::task::spawn_blocking(crate::browser::console)
         .await
-        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+        .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
 
 /// Digest of the current page's interactive elements (links/buttons/inputs).
@@ -1164,7 +1219,7 @@ pub async fn browser_console() -> Result<String, String> {
 pub async fn browser_read() -> Result<String, String> {
     tokio::task::spawn_blocking(crate::browser::read_page)
         .await
-        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))?
+        .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
 
 /// Close the automation browser the agent has been driving.
@@ -1172,10 +1227,10 @@ pub async fn browser_read() -> Result<String, String> {
 pub async fn browser_close() -> Result<String, String> {
     tokio::task::spawn_blocking(|| {
         crate::browser::shutdown();
-        "已关闭浏览器 (browser closed)".to_string()
+        tr("已关闭浏览器", "browser closed")
     })
     .await
-    .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))
+    .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))
 }
 
 /// Settings → Code: run the agent's browser hidden (headless). Applies the
@@ -1205,15 +1260,15 @@ pub async fn browser_render_html(app: tauri::AppHandle, html: String) -> Result<
         .app_cache_dir()
         .map_err(|e| e.to_string())?
         .join("canvas-shots");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
     let html_path = dir.join("canvas.html");
-    std::fs::write(&html_path, html).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    std::fs::write(&html_path, html).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
     let url = format!("file://{}", html_path.display());
     let (png, console) = tokio::task::spawn_blocking(move || crate::browser::capture_headless(&url))
         .await
-        .map_err(|e| format!("浏览器任务异常 (browser task failed): {e}"))??;
+        .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))??;
     let png_path = dir.join("canvas-shot.png");
-    std::fs::write(&png_path, png).map_err(|e| format!("写入失败 (write failed): {e}"))?;
+    std::fs::write(&png_path, png).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
     Ok(CanvasCapture { image: png_path.to_string_lossy().to_string(), console })
 }
 
@@ -1244,7 +1299,7 @@ pub(crate) async fn read_doc_core(
     const DOC_MAX_CHARS: usize = 40_000;
 
     if !abs.is_file() {
-        return Err(format!("文件不存在 (file not found): {}", abs.display()));
+        return Err(trf!("文件不存在: {}", "file not found: {}", abs.display()));
     }
     let ext = abs.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
     let abs_str = abs.to_string_lossy().to_string();
@@ -1254,14 +1309,15 @@ pub(crate) async fn read_doc_core(
             tokio::task::spawn_blocking(move || pdf_extract::extract_text(&p))
                 .await
                 .map_err(|e| e.to_string())?
-                .map_err(|e| format!("PDF 解析失败 (PDF parse failed): {e}"))?
+                .map_err(|e| trf!("PDF 解析失败: {e}", "PDF parse failed: {e}"))?
         }
         "docx" => crate::rag::extract_docx(&abs_str)?,
         "xlsx" => crate::rag::extract_xlsx(&abs_str)?,
         "pptx" => crate::rag::extract_pptx(&abs_str)?,
         _ => {
-            return Err(format!(
-                "不支持的文档类型 (unsupported document type): .{ext} — 文本文件请直接用 read_file"
+            return Err(trf!(
+                "不支持的文档类型: .{ext} — 文本文件请直接用 read_file",
+                "unsupported document type: .{ext} — for plain text use read_file"
             ))
         }
     };
@@ -1296,17 +1352,22 @@ pub(crate) async fn read_doc_core(
         }
     }
 
-    let mut out = format!(
-        "[.{ext} 文档已提取 {total} 字符{} (document text extracted)]\n{text}",
-        if truncated { ",超出预算已截断 (truncated)" } else { "" }
+    let mut out = trf!(
+        "[.{ext} 文档已提取 {total} 字符{}]\n{text}",
+        "[.{ext} document text extracted, {total} chars{}]\n{text}",
+        if truncated { tr(",超出预算已截断", ", truncated to budget") } else { String::new() }
     );
     if !ocr_note.is_empty() {
-        out.push_str("\n\n[文本层极少——已自动 OCR 内嵌图片 (scanned document; embedded images OCR'd):]");
+        out.push_str(&tr(
+            "\n\n[文本层极少——已自动 OCR 内嵌图片:]",
+            "\n\n[scanned document — embedded images were OCR'd:]",
+        ));
         out.push_str(&ocr_note);
     }
     if !images.is_empty() {
-        out.push_str(&format!(
-            "\n\n[内嵌图片 ×{} 已缓存——需要看图表/照片内容时,用 view_image 打开这些路径 (embedded images; open with view_image):]\n{}",
+        out.push_str(&trf!(
+            "\n\n[内嵌图片 ×{} 已缓存——需要看图表/照片内容时,用 view_image 打开这些路径:]\n{}",
+            "\n\n[{} embedded image(s) cached — open these paths with view_image to see charts/photos:]\n{}",
             images.len(),
             images.join("\n")
         ));
@@ -1334,12 +1395,13 @@ pub fn agent_resolve_image(path: String) -> Result<String, String> {
         .unwrap_or("")
         .to_lowercase();
     if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif") {
-        return Err(format!(
-            "不是支持的图片格式 (not a supported image): {path} — 支持 png/jpg/jpeg/webp/bmp/gif"
+        return Err(trf!(
+            "不是支持的图片格式: {path} — 支持 png/jpg/jpeg/webp/bmp/gif",
+            "not a supported image: {path} — png/jpg/jpeg/webp/bmp/gif only"
         ));
     }
     if !abs.is_file() {
-        return Err(format!("图片不存在 (image not found): {path}"));
+        return Err(trf!("图片不存在: {path}", "image not found: {path}"));
     }
     Ok(abs.to_string_lossy().to_string())
 }
@@ -1350,7 +1412,7 @@ pub fn agent_resolve_image(path: String) -> Result<String, String> {
 #[tauri::command]
 pub fn agent_outline(path: String) -> Result<String, String> {
     let abs = resolve(&path)?;
-    let text = std::fs::read_to_string(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
+    let text = std::fs::read_to_string(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
     let mut out = String::new();
     let mut n = 0;
     for (i, line) in text.lines().enumerate() {
@@ -1361,12 +1423,15 @@ pub fn agent_outline(path: String) -> Result<String, String> {
         out.push_str(&format!("{:>5}  {sig}\n", i + 1));
         n += 1;
         if n >= 300 {
-            out.push_str("… (更多定义已省略 / more omitted)\n");
+            out.push_str(&tr("… (更多定义已省略)\n", "… (more omitted)\n"));
             break;
         }
     }
     if out.is_empty() {
-        return Ok("(未识别到符号定义 — 用 read_file 直接查看 / no definitions recognized)".to_string());
+        return Ok(tr(
+            "(未识别到符号定义 — 用 read_file 直接查看)",
+            "(no definitions recognized — read the file directly with read_file)",
+        ));
     }
     Ok(out)
 }
@@ -1377,7 +1442,7 @@ pub fn agent_outline(path: String) -> Result<String, String> {
 fn read_symbol_context(path: &str, sym: &str) -> Result<String, String> {
     let root = workspace()?;
     let abs = resolve(path)?;
-    let text = std::fs::read_to_string(&abs).map_err(|e| format!("读取失败 (read failed): {e}"))?;
+    let text = std::fs::read_to_string(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
     let lines: Vec<&str> = text.lines().collect();
 
     // Locate the definition line: a symbol line that names `sym`.
@@ -1401,8 +1466,9 @@ fn read_symbol_context(path: &str, sym: &str) -> Result<String, String> {
                 }
             }
         }
-        return Err(format!(
-            "文件里没有名为 {sym} 的定义 (no definition named {sym} in {path})。该文件的定义有:\n{}",
+        return Err(trf!(
+            "文件里没有名为 {sym} 的定义。该文件的定义有:\n{}",
+            "no definition named {sym} in {path}. The file's definitions are:\n{}",
             have.join("\n")
         ));
     };
@@ -1459,7 +1525,7 @@ fn read_symbol_context(path: &str, sym: &str) -> Result<String, String> {
         }
     }
 
-    let mut out = format!("[符号 {sym} · {path} L{}-L{}]\n", def_idx + 1, end_idx + 1);
+    let mut out = trf!("[符号 {sym} · {path} L{}-L{}]\n", "[symbol {sym} · {path} L{}-L{}]\n", def_idx + 1, end_idx + 1);
     for (i, line) in lines.iter().enumerate().take(end_idx + 1).skip(def_idx) {
         out.push_str(&format!("{:>5}  {}\n", i + 1, line.trim_end()));
     }
@@ -1505,9 +1571,12 @@ fn read_symbol_context(path: &str, sym: &str) -> Result<String, String> {
         }
     }
     if callers.is_empty() {
-        out.push_str("\n调用者 (callers): 工作区内没有其它引用 (no other references)\n");
+        out.push_str(&tr(
+            "\n调用者: 工作区内没有其它引用\n",
+            "\ncallers: no other references in the workspace\n",
+        ));
     } else {
-        out.push_str(&format!("\n调用者 (callers, {} 处):\n{}\n", callers.len(), callers.join("\n")));
+        out.push_str(&trf!("\n调用者 ({} 处):\n{}\n", "\ncallers ({}):\n{}\n", callers.len(), callers.join("\n")));
     }
     Ok(out)
 }
@@ -1553,7 +1622,7 @@ pub fn agent_list_dir(path: Option<String>) -> Result<Vec<DirEntry>, String> {
         Some(p) if !p.trim().is_empty() && p != "." => resolve(&p)?,
         _ => workspace()?,
     };
-    let rd = std::fs::read_dir(&abs).map_err(|e| format!("列目录失败 (list failed): {e}"))?;
+    let rd = std::fs::read_dir(&abs).map_err(|e| trf!("列目录失败: {e}", "list failed: {e}"))?;
     let mut out: Vec<DirEntry> = Vec::new();
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
@@ -1574,7 +1643,7 @@ pub fn agent_list_dir(path: Option<String>) -> Result<Vec<DirEntry>, String> {
 pub fn agent_glob(pattern: String) -> Result<Vec<String>, String> {
     let root = workspace()?;
     let full = root.join(&pattern);
-    let full = full.to_str().ok_or_else(|| "无效的模式 (invalid pattern)".to_string())?;
+    let full = full.to_str().ok_or_else(|| tr("无效的模式", "invalid pattern"))?;
     let mut hits: Vec<String> = Vec::new();
     for entry in glob::glob(full).map_err(|e| e.to_string())?.flatten() {
         if entry.is_file() {
@@ -1697,8 +1766,9 @@ pub fn agent_checkpoint_revert_to(id: u64) -> Result<String, String> {
             }
         }
     }
-    Ok(format!(
-        "已回滚：恢复 {restored} 个文件，删除 {removed} 个新建文件 (reverted: {restored} restored, {removed} removed)"
+    Ok(trf!(
+        "已回滚：恢复 {restored} 个文件，删除 {removed} 个新建文件",
+        "reverted: {restored} file(s) restored, {removed} new file(s) removed"
     ))
 }
 
@@ -1754,7 +1824,7 @@ pub fn agent_search_code(query: String, k: Option<usize>) -> Result<String, Stri
     let root = workspace()?;
     let q_tokens = code_tokens(&query);
     if q_tokens.is_empty() {
-        return Err("查询为空 (empty query)".to_string());
+        return Err(tr("查询为空", "empty query"));
     }
     let q_lower = query.to_lowercase();
     let top_files = k.unwrap_or(6).clamp(1, 20);
@@ -1823,7 +1893,7 @@ pub fn agent_search_code(query: String, k: Option<usize>) -> Result<String, Stri
     }
 
     if chunks.is_empty() {
-        return Ok("(没有匹配的代码 / no matches)".to_string());
+        return Ok(tr("(没有匹配的代码)", "(no matches)"));
     }
     let n = chunks.len() as f32;
     let avg_len: f32 = chunks.iter().map(|c| c.len as f32).sum::<f32>() / n;
@@ -1885,24 +1955,25 @@ pub fn agent_search_code(query: String, k: Option<usize>) -> Result<String, Stri
         }
     }
     if scored.is_empty() {
-        return Ok("(没有匹配的代码 / no matches)".to_string());
+        return Ok(tr("(没有匹配的代码)", "(no matches)"));
     }
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(top_files);
 
-    let mut out = String::from("相关文件 (ranked):\n");
+    let mut out = tr("相关文件 (ranked):\n", "relevant files (ranked):\n");
     for (rank, (fid, score, name_hit, exact_hit)) in scored.iter().enumerate() {
         let (rel, text) = &files[*fid];
         let mut tags = Vec::new();
         if *name_hit {
-            tags.push("文件名匹配");
+            tags.push(tr("文件名匹配", "name match"));
         }
         if *exact_hit {
-            tags.push("精确短语");
+            tags.push(tr("精确短语", "exact phrase"));
         }
         let tag_str = if tags.is_empty() { String::new() } else { format!(" · {}", tags.join(" · ")) };
-        out.push_str(&format!(
+        out.push_str(&trf!(
             "\n{}. {rel}  (score {:.2} · {} 处命中{tag_str})\n",
+            "\n{}. {rel}  (score {:.2} · {} hit(s){tag_str})\n",
             rank + 1,
             score,
             ranks[*fid].hits
@@ -1947,10 +2018,10 @@ pub fn agent_grep(
         Some(p) if !p.trim().is_empty() && p != "." => resolve(&p)?,
         _ => root.clone(),
     };
-    let re = regex::Regex::new(&pattern).map_err(|e| format!("正则无效 (bad regex): {e}"))?;
+    let re = regex::Regex::new(&pattern).map_err(|e| trf!("正则无效: {e}", "bad regex: {e}"))?;
     let glob_matcher = match glob {
         Some(g) if !g.trim().is_empty() => Some(
-            glob::Pattern::new(&g).map_err(|e| format!("glob 无效 (bad glob): {e}"))?,
+            glob::Pattern::new(&g).map_err(|e| trf!("glob 无效: {e}", "bad glob: {e}"))?,
         ),
         _ => None,
     };
@@ -1991,7 +2062,7 @@ pub fn agent_grep(
                 out.push_str(&format!("{rel}:{}: {}\n", i + 1, shown.trim_end()));
                 n += 1;
                 if n >= MAX_GREP_MATCHES {
-                    out.push_str("… (更多结果已省略 / more matches omitted)\n");
+                    out.push_str(&tr("… (更多结果已省略)\n", "… (more matches omitted)\n"));
                     break 'outer;
                 }
             }
@@ -2016,7 +2087,7 @@ pub fn agent_search_files(
     const MAX_NAME_HITS: usize = 60;
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
-        return Err("query 为空 (empty query)".to_string());
+        return Err(tr("query 为空", "empty query"));
     }
     let root = workspace()?;
     let start = match path {
@@ -2070,7 +2141,7 @@ pub fn agent_search_files(
                 content_out.push_str(&format!("{rel}:{}: {}\n", i + 1, shown.trim_end()));
                 content_n += 1;
                 if content_n >= MAX_GREP_MATCHES {
-                    content_out.push_str("… (更多结果已省略 / more matches omitted)\n");
+                    content_out.push_str(&tr("… (更多结果已省略)\n", "… (more matches omitted)\n"));
                     break 'walk;
                 }
             }
@@ -2078,23 +2149,24 @@ pub fn agent_search_files(
     }
 
     if name_hits.is_empty() && content_n == 0 {
-        return Ok("(无匹配 / no matches)".to_string());
+        return Ok(tr("(无匹配)", "(no matches)"));
     }
 
     let mut out = String::new();
     if !name_hits.is_empty() {
-        out.push_str(&format!("文件名匹配 (file names, {} 个):\n", name_hits.len()));
+        out.push_str(&trf!("文件名匹配 ({} 个):\n", "file-name matches ({}):\n", name_hits.len()));
         for h in &name_hits {
             out.push_str(&format!("  {h}\n"));
         }
         if name_capped {
-            out.push_str("  … (更多文件名已省略 / more names omitted)\n");
+            out.push_str(&tr("  … (更多文件名已省略)\n", "  … (more names omitted)\n"));
         }
     }
     if contents {
-        out.push_str(&format!(
-            "\n内容匹配 (file contents{}):\n{}",
-            if content_n == 0 { ", 无 / none" } else { "" },
+        out.push_str(&trf!(
+            "\n内容匹配{}:\n{}",
+            "\nfile-content matches{}:\n{}",
+            if content_n == 0 { tr(", 无", ", none") } else { String::new() },
             content_out
         ));
     }
@@ -2196,7 +2268,7 @@ fn cap_utf8(bytes: Vec<u8>) -> String {
     #[cfg(not(windows))]
     let s = String::from_utf8_lossy(slice).into_owned();
     if truncated {
-        format!("{s}\n… (输出已截断 / output truncated)")
+        trf!("{s}\n… (输出已截断)", "{s}\n… (output truncated)")
     } else {
         s
     }
@@ -2237,7 +2309,7 @@ fn run_bash(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| format!("启动命令失败 (spawn failed): {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| trf!("启动命令失败: {e}", "spawn failed: {e}"))?;
     if let Some(pw) = stdin {
         if let Some(mut sink) = child.stdin.take() {
             use std::io::Write as _;
@@ -2260,7 +2332,7 @@ fn run_bash(
                 }
                 std::thread::sleep(Duration::from_millis(40));
             }
-            Err(e) => return Err(format!("等待命令失败 (wait failed): {e}")),
+            Err(e) => return Err(trf!("等待命令失败: {e}", "wait failed: {e}")),
         }
     };
     let stdout = cap_utf8(out_h.join().unwrap_or_default());
@@ -2339,15 +2411,15 @@ pub async fn agent_bash(
     let piped_password = stdin.is_some();
     let mut res = tokio::task::spawn_blocking(move || run_bash(&root, &command, timeout, stdin, sandboxed))
         .await
-        .map_err(|e| format!("命令任务异常 (task panicked): {e}"))??;
+        .map_err(|e| trf!("命令任务异常: {e}", "command task panicked: {e}"))??;
     // sudo's retry loop hits end-of-input after a rejected password, so its
     // LAST stderr line is "no password was provided" — which reads as if the
     // password never arrived. When we know it did, say what actually happened.
     if piped_password && res.code != 0 && res.stderr.contains("no password was provided") {
-        res.stderr.push_str(
-            "\n[Chaty] 密码已通过安全通道送达,但被 sudo 拒绝——上面的 \"no password was provided\" 只是 sudo 重试时读到输入结束的提示。请检查密码是否正确后重试。\
-             (The password WAS delivered but sudo rejected it; the line above is sudo hitting end-of-input on retry. Check the password and try again.)",
-        );
+        res.stderr.push_str(&tr(
+            "\n[Chaty] 密码已通过安全通道送达,但被 sudo 拒绝——上面的 \"no password was provided\" 只是 sudo 重试时读到输入结束的提示。请检查密码是否正确后重试。",
+            "\n[Chaty] The password WAS delivered over the secure channel but sudo rejected it — the \"no password was provided\" line above is just sudo hitting end-of-input on retry. Check the password and try again.",
+        ));
     }
     Ok(res)
 }
@@ -2423,19 +2495,19 @@ pub fn agent_bash_bg(command: String) -> Result<u64, String> {
     // password could never reach them, so sudo would always fail with a
     // misleading "no password was provided". Refuse up front.
     if command_uses_sudo(&command) {
-        return Err(
-            "bash_bg 不支持 sudo:后台任务在沙盒中运行且没有交互输入,密码无法送达。请用前台 bash 执行 \
-             (sudo is not supported in background jobs — run it with the foreground bash tool)."
-                .into(),
-        );
+        return Err(tr(
+            "bash_bg 不支持 sudo:后台任务在沙盒中运行且没有交互输入,密码无法送达。请用前台 bash 执行。",
+            "sudo is not supported in background jobs (sandboxed, no interactive input — the password can't reach it). Run it with the foreground bash tool.",
+        ));
     }
     let root = workspace()?;
     let mut reg = BG_JOBS.lock().unwrap();
     let jobs = reg.get_or_insert_with(HashMap::new);
     let running = jobs.values().filter(|j| j.code.is_none()).count();
     if running >= BG_MAX_JOBS {
-        return Err(format!(
-            "后台命令过多（{running} 个在跑），请先用 bg_kill 结束一些 (too many background jobs)"
+        return Err(trf!(
+            "后台命令过多（{running} 个在跑），请先用 bg_kill 结束一些",
+            "too many background jobs ({running} running) — bg_kill some first"
         ));
     }
 
@@ -2449,7 +2521,7 @@ pub fn agent_bash_bg(command: String) -> Result<u64, String> {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let mut child = cmd.spawn().map_err(|e| format!("启动命令失败 (spawn failed): {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| trf!("启动命令失败: {e}", "spawn failed: {e}"))?;
     let pid = child.id();
     let output: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     bg_stream(child.stdout.take().unwrap(), output.clone());
@@ -2482,7 +2554,7 @@ pub fn agent_bg_output(id: u64) -> Result<BgInfo, String> {
     let job = reg
         .as_ref()
         .and_then(|j| j.get(&id))
-        .ok_or_else(|| format!("没有这个后台命令 (no such background job): #{id}"))?;
+        .ok_or_else(|| trf!("没有这个后台命令: #{id}", "no such background job: #{id}"))?;
     Ok(BgInfo {
         id,
         command: job.command.clone(),
@@ -2500,13 +2572,13 @@ pub fn agent_bg_kill(id: u64) -> Result<String, String> {
     let job = reg
         .as_mut()
         .and_then(|j| j.get_mut(&id))
-        .ok_or_else(|| format!("没有这个后台命令 (no such background job): #{id}"))?;
+        .ok_or_else(|| trf!("没有这个后台命令: #{id}", "no such background job: #{id}"))?;
     if job.code.is_none() {
         bg_kill_pid(job.pid);
         job.reported = true; // killed on request → no completion notice needed
-        return Ok(format!("已终止后台命令 #{id} (killed)"));
+        return Ok(trf!("已终止后台命令 #{id}", "killed background job #{id}"));
     }
-    Ok(format!("后台命令 #{id} 已经结束 (already finished)"))
+    Ok(trf!("后台命令 #{id} 已经结束", "background job #{id} already finished"))
 }
 
 /// Kill a job's whole process group (unix) / tree (windows).
@@ -2594,6 +2666,27 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     fn serial() -> std::sync::MutexGuard<'static, ()> {
         TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Model-visible strings render in ONE language, driven by the session
+    /// switch. Default stays Zh (every other test asserts Chinese output);
+    /// this test flips to En, checks a write round-trip, and flips back.
+    #[test]
+    fn tool_output_language_switch() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-agent-lang-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        agent_set_lang("en".into());
+        let msg = agent_write_file("hello.txt".into(), "hi".into()).unwrap();
+        assert!(msg.starts_with("wrote "), "en output expected, got: {msg}");
+        assert!(!msg.contains("已写入"));
+        let err = agent_edit_file("hello.txt".into(), "nope".into(), "x".into(), None).unwrap_err();
+        assert!(err.contains("old_string not found"), "en error expected, got: {err}");
+        agent_set_lang("zh".into());
+        let msg = agent_write_file("hello2.txt".into(), "hi".into()).unwrap();
+        assert!(msg.starts_with("已写入"), "zh output expected after switch back, got: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Windows consoles emit the ANSI codepage (GBK on Chinese systems) — the
