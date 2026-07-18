@@ -944,7 +944,89 @@ function estimateTokens(messages: ChatMessage[]): number {
  *  keeping the most recent ones intact — Claude-Code-style compaction without
  *  spending a model round-trip. The system prompt, the task, and all assistant
  *  turns are never touched. */
-function compactMessages(messages: ChatMessage[], nCtx: number): boolean {
+/** One-line "what this call was" digest, so a compacted result still tells the
+ *  model which file/command/query it covered (the old info-free stub made
+ *  models re-read files they had already read). Pure — unit-tested. */
+export function digestForCall(
+  name: string,
+  args: Record<string, unknown> | undefined,
+  lang: "zh" | "en",
+): string {
+  const a = args ?? {};
+  const str = (k: string) => (typeof a[k] === "string" ? (a[k] as string) : "");
+  switch (name) {
+    case "read_file": {
+      let d = str("path");
+      if (str("symbol")) d += ` symbol=${str("symbol")}`;
+      if (typeof a.offset === "number") d += ` offset=${a.offset}`;
+      if (typeof a.limit === "number") d += ` limit=${a.limit}`;
+      return d;
+    }
+    case "bash":
+    case "bash_bg":
+      return str("command").slice(0, 80);
+    case "grep":
+      return str("pattern").slice(0, 80);
+    case "search_code":
+    case "search_docs":
+    case "search_files":
+    case "web_search":
+      return (str("query") || str("pattern")).slice(0, 80);
+    case "edit_file":
+    case "write_file":
+    case "multi_edit":
+      return str("path");
+    case "web_fetch":
+    case "browser_navigate":
+      return str("url").slice(0, 80);
+    default: {
+      try {
+        return JSON.stringify(a).slice(0, 80);
+      } catch {
+        return lang === "zh" ? "(无参数)" : "(no args)";
+      }
+    }
+  }
+}
+
+/** The full replacement content for a compacted tool result: keeps the
+ *  `<tool_result` envelope contract, ≤180 chars (so the <200 rescan guard
+ *  skips it), single language, and — for bash — the original outcome
+ *  ([exit N]) so the model needn't re-run a command to learn it failed. */
+export function compactionStub(
+  name: string,
+  meta: { name: string; args: Record<string, unknown> } | undefined,
+  original: string,
+  lang: "zh" | "en",
+): string {
+  let digest = meta ? digestForCall(meta.name, meta.args, lang) : "";
+  const exit = /\[exit (-?\d+)[^\]]*\]/.exec(original);
+  if (exit && (name === "bash" || name === "bash_bg")) {
+    digest += lang === "zh" ? `,当时 [exit ${exit[1]}]` : `; ended [exit ${exit[1]}]`;
+  }
+  const body = digest
+    ? lang === "zh"
+      ? `(已压缩省略——此调用为 ${name} ${digest},结果当时已处理;确有需要才重读)`
+      : `(compacted — this was ${name} ${digest}; the result was already handled. Re-run only if truly needed.)`
+    : lang === "zh"
+      ? "(较早的结果已被上下文压缩省略)"
+      : "(elided by context compaction)";
+  const content = `<tool_result name="${name}">\n${body}\n</tool_result>`;
+  if (content.length <= 180) return content;
+  const overflow = content.length - 180;
+  const trimmed = digest.slice(0, Math.max(0, digest.length - overflow - 1)) + "…";
+  const body2 =
+    lang === "zh"
+      ? `(已压缩省略——此调用为 ${name} ${trimmed},结果当时已处理)`
+      : `(compacted — this was ${name} ${trimmed}; already handled)`;
+  return `<tool_result name="${name}">\n${body2}\n</tool_result>`;
+}
+
+function compactMessages(
+  messages: ChatMessage[],
+  nCtx: number,
+  toolMeta?: WeakMap<ChatMessage, { name: string; args: Record<string, unknown> }>,
+): boolean {
   const limit = Math.floor(nCtx * 0.8);
   if (estimateTokens(messages) <= limit) return false;
   const results = messages
@@ -958,7 +1040,7 @@ function compactMessages(messages: ChatMessage[], nCtx: number): boolean {
     const name = /name="([^"]+)"/.exec(m.content)?.[1] ?? "tool";
     messages[i] = {
       role: "user",
-      content: `<tool_result name="${name}">\n(较早的结果已被上下文压缩省略 / elided by context compaction)\n</tool_result>`,
+      content: compactionStub(name, toolMeta?.get(m), m.content, currentLang),
     };
     changed = true;
     if (estimateTokens(messages) <= limit) break;
@@ -968,19 +1050,56 @@ function compactMessages(messages: ChatMessage[], nCtx: number): boolean {
 
 /** Cross-turn compaction: if the prior conversation alone would eat too much of
  *  the window, keep only the most recent exchanges and note the elision. */
+/** Bullet digest of dropped history turns, so the model keeps a thread of
+ *  what already happened instead of a generic "earlier stuff was elided"
+ *  note. ≤700 chars — oldest bullets go first when over. Pure — unit-tested. */
+export function digestHistory(dropped: ChatMessage[], lang: "zh" | "en"): string {
+  const bullets: string[] = [];
+  for (const m of dropped) {
+    const text = m.content.trim();
+    if (!text) continue;
+    if (m.role === "user") {
+      if (text.startsWith("<tool_result")) continue; // stale mechanics, not narrative
+      bullets.push((lang === "zh" ? "- 用户: " : "- user: ") + text.slice(0, 60));
+    } else if (m.role === "assistant") {
+      // Stored assistant turns may carry a "(tools run: …)" prefix — reuse it.
+      const tools = /^\((tools run|已用工具)[^)]*\)/.exec(text)?.[0] ?? "";
+      const rest = text.slice(tools.length).trim();
+      const firstLine = rest.split("\n", 1)[0] ?? "";
+      bullets.push(
+        (lang === "zh" ? "- 助手: " : "- assistant: ") +
+          (tools ? tools.slice(0, 80) + " " : "") +
+          firstLine.slice(0, 60),
+      );
+    }
+  }
+  let out = bullets.join("\n");
+  while (out.length > 700 && bullets.length > 1) {
+    bullets.shift();
+    out = bullets.join("\n");
+  }
+  return out.slice(0, 700);
+}
+
 function trimHistory(history: ChatMessage[], nCtx: number): { history: ChatMessage[]; trimmed: boolean } {
   const budget = Math.floor(nCtx * 0.4);
   if (estimateTokens(history) <= budget) return { history, trimmed: false };
   const kept = [...history];
+  const dropped: ChatMessage[] = [];
   while (kept.length > 2 && estimateTokens(kept) > budget) {
-    kept.shift();
+    dropped.push(kept.shift()!);
   }
   // Never start the kept slice mid-exchange with an assistant message.
-  while (kept.length && kept[0].role === "assistant") kept.shift();
+  while (kept.length && kept[0].role === "assistant") dropped.push(kept.shift()!);
+  const digest = digestHistory(dropped, currentLang);
+  const base =
+    currentLang === "zh"
+      ? "(提示:更早的对话已被自动压缩省略,以下是最近的部分。"
+      : "(Note: earlier conversation was auto-compacted; what follows is the most recent part.";
+  const label = currentLang === "zh" ? "被省略部分的梗概:" : " Digest of what was dropped:";
   kept.unshift({
     role: "user",
-    content:
-      "(提示:更早的对话内容较长,已被自动压缩省略,以下是最近的部分。/ Note: earlier conversation was auto-compacted; what follows is the most recent part.)",
+    content: digest ? `${base}${label}\n${digest})` : `${base})`,
   });
   return { history: kept, trimmed: true };
 }
@@ -1042,8 +1161,15 @@ export async function runAgentTurn(
 
   // Every user-role turn (tool results, nudges) carries the soft switch too,
   // since the model reads the LAST user message when deciding to think.
-  const pushUser = (content: string) =>
-    messages.push({ role: "user", content: content + noThinkSuffix });
+  // Tool-call metadata per result message, so compaction can replace a big
+  // result with a digest that still names the file/command it came from.
+  const toolMeta = new WeakMap<ChatMessage, { name: string; args: Record<string, unknown> }>();
+  const pushUser = (content: string, meta?: { name: string; args: Record<string, unknown> }) => {
+    const m: ChatMessage = { role: "user", content: content + noThinkSuffix };
+    messages.push(m);
+    if (meta) toolMeta.set(m, meta);
+    return m;
+  };
 
   let baseTokens = 0; // tokens from completed steps this turn
   let lastTps = 0; // last trustworthy tokens/sec (engine-reported or warmed-up live)
@@ -1092,28 +1218,38 @@ export async function runAgentTurn(
             status: j.code === 0 ? "done" : "error",
             result: `${head}\n${j.tail}`,
           });
-          pushUser(toolResultMsg("bash_bg", `${head}\n--- 输出 (output tail) ---\n${j.tail}`));
+          pushUser(toolResultMsg("bash_bg", `${head}\n${isZh() ? "--- 输出尾部 ---" : "--- output tail ---"}\n${j.tail}`), {
+            name: "bash_bg",
+            args: { command: j.command, id: j.id },
+          });
         }
         // Background downloads that finished since the last step.
         for (const d of await agentDlReap()) {
           const ok = !d.error;
           const head = ok
-            ? `后台下载 #${d.id} 已完成 (download finished): ${d.path} (${d.downloaded} 字节)`
-            : `后台下载 #${d.id} 失败 (download failed): ${d.url} — ${d.error}`;
+            ? isZh()
+              ? `后台下载 #${d.id} 已完成: ${d.path} (${d.downloaded} 字节)`
+              : `Background download #${d.id} finished: ${d.path} (${d.downloaded} bytes)`
+            : isZh()
+              ? `后台下载 #${d.id} 失败: ${d.url} — ${d.error}`
+              : `Background download #${d.id} failed: ${d.url} — ${d.error}`;
           cb.onStep({
             id: uid(),
             call: { name: "web_download", args: { url: d.url, path: d.path, id: d.id } },
             status: ok ? "done" : "error",
             result: head,
           });
-          pushUser(toolResultMsg("web_download", head));
+          pushUser(toolResultMsg("web_download", head), {
+            name: "web_download",
+            args: { url: d.url, path: d.path, id: d.id },
+          });
         }
       } catch {
         /* no workspace yet — nothing to reap */
       }
 
       // keep the running transcript inside the context window
-      if (compactMessages(messages, nCtx)) noteCompacted();
+      if (compactMessages(messages, nCtx, toolMeta)) noteCompacted();
       evictStaleImages(messages);
 
       let raw = "";
@@ -1523,7 +1659,7 @@ export async function runAgentTurn(
             ? `\n\n[系统提示] 这已是连续第 ${searchStreak} 次搜索。若以上结果仍与问题无关,说明搜索源此刻不可靠——不要再换措辞重搜,改用 web_fetch 直接抓取最可能的页面(官方文档/GitHub/项目官网),或用 browser_navigate 打开搜索引擎/目标站点查找。`
             : `\n\n[system note] This is consecutive web_search #${searchStreak}. If the results above are still irrelevant, the search backend is unreliable right now — do NOT rephrase and search again; web_fetch the most likely page directly (official docs / GitHub / project site), or open a search engine or the target site with browser_navigate.`;
       }
-      pushUser(toolResultMsg(call.name, resultText));
+      pushUser(toolResultMsg(call.name, resultText), { name: call.name, args: call.args });
     }
     cb.onFinal(
       lang === "zh"
