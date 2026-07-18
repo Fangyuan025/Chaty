@@ -1367,10 +1367,12 @@ body.resizing-x {
 .code-block pre {
   margin: 0;
 }
-/* Body wraps gutter + pre so long blocks scroll vertically as one unit. */
+/* Body is the ONE scroll container (both axes) — pre itself never scrolls in
+   numbered mode, so there is exactly one vertical bar; the gutter stays
+   pinned through horizontal scrolls via position:sticky. */
 .code-block .code-body {
   max-height: 60vh;
-  overflow-y: auto;
+  overflow: auto;
   border-radius: var(--r-md);
 }
 .code-block .code-body.numbered {
@@ -1381,28 +1383,37 @@ body.resizing-x {
 .code-block .code-body.numbered pre {
   border: none;
   background: transparent;
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 auto;
+  /* The box must grow WITH long lines (not clip them): max-content width is
+     what registers the overflow on .code-body, which owns all scrolling. */
+  min-width: max-content;
+  overflow: visible;
 }
 .code-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
   flex: 0 0 auto;
   user-select: none;
   -webkit-user-select: none;
   text-align: right;
   padding: 12px 0 12px 12px;
+  background: var(--code-bg, var(--bg-elev));
   border-right: 1px solid var(--border);
   color: var(--text-faint);
-  font-size: 13.5px;
   white-space: pre;
 }
 .code-gutter code {
   display: block;
   padding-right: 10px;
 }
-/* Fixed line-height on both columns — the only way the numbers stay glued to
-   their lines regardless of the 0.9em code font scale. */
+/* Identical metrics on BOTH columns. The bubble's inherited 1.7 line-height
+   (× the 0.9em code font) is what let the numbers drift off their lines. */
+.code-block .code-body.numbered pre,
 .code-block .code-body.numbered pre code,
+.code-gutter,
 .code-gutter code {
+  font-size: 12.5px;
   line-height: 20px;
 }
 .code-lang {
