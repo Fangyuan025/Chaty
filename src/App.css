@@ -2632,6 +2632,15 @@ body.resizing-x {
   background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(3px);
 }
+/* Fullscreen: the studio takes the whole window, no margins or rounding. */
+.canvas-overlay.full {
+  padding: 0;
+}
+.canvas-overlay.full .canvas {
+  max-width: none;
+  border-radius: 0;
+  border: none;
+}
 .canvas {
   display: flex;
   flex-direction: column;

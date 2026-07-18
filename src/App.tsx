@@ -325,6 +325,11 @@ export default function App() {
   const [canvasOpen, setCanvasOpen] = useState(false);
   const [canvasVersions, setCanvasVersions] = useState<CanvasVersion[]>([]);
   const [canvasIndex, setCanvasIndex] = useState(0);
+  // Canvas iterations survive closing: sessions are keyed by the reply's
+  // ORIGINAL html block, so reopening the same reply resumes its versions
+  // while a different reply starts fresh. In-memory, app-session scoped.
+  const canvasSessions = useRef(new Map<string, { versions: CanvasVersion[]; index: number }>());
+  const [canvasKey, setCanvasKey] = useState("");
   const [canvasBusy, setCanvasBusy] = useState(false);
   const [canvasStream, setCanvasStream] = useState<string | null>(null);
   const canvasStreamRef = useRef<{ acc: string; timer: number | null }>({ acc: "", timer: null });
@@ -692,6 +697,13 @@ export default function App() {
     el.dataset.light = settings.lightScheme;
   }, [settings.theme, settings.darkScheme, settings.lightScheme]);
 
+  // Keep each reply's canvas session current (cheap: refs into state).
+  useEffect(() => {
+    if (canvasKey && canvasVersions.length) {
+      canvasSessions.current.set(canvasKey, { versions: canvasVersions, index: canvasIndex });
+    }
+  }, [canvasKey, canvasVersions, canvasIndex]);
+
   // Chat code-block highlight palette. Palettes with a light sibling follow
   // the app appearance (incl. live OS switches under the system theme).
   useEffect(() => {
@@ -839,7 +851,9 @@ export default function App() {
             if (st.timer === null) {
               st.timer = window.setTimeout(() => {
                 st.timer = null;
-                setCanvasStream(st.acc);
+                // A stale timer from a finished generation must never
+                // resurrect the stream (the ref object is replaced per run).
+                if (canvasStreamRef.current === st) setCanvasStream(st.acc);
               }, 150);
             }
           }
@@ -874,8 +888,15 @@ export default function App() {
   function openInCanvas(raw: string) {
     const html = extractHtml(raw) || raw.trim();
     if (!html) return;
-    setCanvasVersions([{ html, note: t("canvasInitial") }]);
-    setCanvasIndex(0);
+    const prior = canvasSessions.current.get(html);
+    if (prior) {
+      setCanvasVersions(prior.versions);
+      setCanvasIndex(prior.index);
+    } else {
+      setCanvasVersions([{ html, note: t("canvasInitial") }]);
+      setCanvasIndex(0);
+    }
+    setCanvasKey(html);
     setCanvasOpen(true);
   }
 
@@ -992,7 +1013,9 @@ export default function App() {
             if (st.timer === null) {
               st.timer = window.setTimeout(() => {
                 st.timer = null;
-                setCanvasStream(st.acc);
+                // A stale timer from a finished generation must never
+                // resurrect the stream (the ref object is replaced per run).
+                if (canvasStreamRef.current === st) setCanvasStream(st.acc);
               }, 150);
             }
           }
@@ -1061,7 +1084,9 @@ export default function App() {
             if (st.timer === null) {
               st.timer = window.setTimeout(() => {
                 st.timer = null;
-                setCanvasStream(st.acc);
+                // A stale timer from a finished generation must never
+                // resurrect the stream (the ref object is replaced per run).
+                if (canvasStreamRef.current === st) setCanvasStream(st.acc);
               }, 150);
             }
           }
@@ -2071,6 +2096,10 @@ export default function App() {
         streamText={canvasStream}
         onSelectVersion={setCanvasIndex}
         onIterate={(instr) => void generateCanvasVersion("edit", instr)}
+        onReset={() => {
+          setCanvasVersions((vs) => (vs.length ? [vs[0]] : vs));
+          setCanvasIndex(0);
+        }}
         onFix={(err) => void generateCanvasVersion("fix", err)}
         onExport={(html) => void exportHtmlFile("design.html", html).catch(console.error)}
         onOpenExternal={(html) => void openHtmlReport(html, "canvas").catch(console.error)}

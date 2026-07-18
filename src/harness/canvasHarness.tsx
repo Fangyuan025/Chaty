@@ -5,6 +5,7 @@ import React, { useState } from "react";
 import ReactDOM from "react-dom/client";
 import "../App.css";
 import { LangProvider } from "../lib/i18n";
+import { ConfirmProvider } from "../components/ConfirmModal";
 import { CanvasPanel, type CanvasVersion } from "../components/CanvasPanel";
 import { applyCodeTheme } from "../lib/codeTheme";
 
@@ -91,6 +92,16 @@ function Harness() {
         </button>
         <button id="reopen" onClick={() => setOpen(true)}>重开</button>
         <button id="scan-sim" onClick={startScanSim}>模拟扫描</button>
+        <button
+          id="toggle-appearance"
+          onClick={() => {
+            const light = document.documentElement.dataset.theme !== "light";
+            document.documentElement.dataset.theme = light ? "light" : "dark";
+            applyCodeTheme("github-dark", light);
+          }}
+        >
+          明暗切换
+        </button>
       </div>
       <CanvasPanel
         open={open}
@@ -99,6 +110,7 @@ function Harness() {
         busy={busy}
         streamText={stream}
         onSelectVersion={setIndex}
+        onReset={() => { setVersions((vs) => (vs.length ? [vs[0]] : vs)); setIndex(0); }}
         onIterate={(ins) => { setVersions([...versions, { html: V2, note: `修改:${ins}` }]); setIndex(versions.length); }}
         onFix={() => {}}
         onExport={() => {}}
@@ -114,7 +126,9 @@ applyCodeTheme("github-dark", false);
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <LangProvider>
-      <Harness />
+      <ConfirmProvider>
+        <Harness />
+      </ConfirmProvider>
     </LangProvider>
   </React.StrictMode>,
 );

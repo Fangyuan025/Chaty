@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
+import { useConfirm } from "./ConfirmModal";
 import { Icon } from "./Icon";
 import { withStorageShim } from "./Markdown";
 import { IconDownload, IconEdit } from "./icons";
@@ -87,6 +88,7 @@ export function CanvasPanel({
   busy,
   streamText = null,
   onSelectVersion,
+  onReset,
   onIterate,
   onFix,
   onExport,
@@ -101,6 +103,8 @@ export function CanvasPanel({
    *  drives the Cursor-style live scan/diff in the code pane. */
   streamText?: string | null;
   onSelectVersion: (i: number) => void;
+  /** Drop all iterations back to v1 (guarded by a confirm dialog here). */
+  onReset: () => void;
   onIterate: (instruction: string) => void;
   onFix: (errorText: string) => void;
   onExport: (html: string) => void;
@@ -125,19 +129,25 @@ export function CanvasPanel({
     try { return JSON.parse(localStorage.getItem("chaty.canvasLayout") ?? "{}").codePct ?? 50; } catch { return 50; }
   });
   const [dragging, setDragging] = useState<null | "rail" | "split">(null);
+  const [full, setFull] = useState(() => {
+    try { return !!JSON.parse(localStorage.getItem("chaty.canvasLayout") ?? "{}").full; } catch { return false; }
+  });
+  const confirmDialog = useConfirm();
   // The whole drag can land inside one JS task (fast hands, automation) —
   // before React commits `dragging`. The ref is the synchronous truth.
   const dragRef = useRef<null | "rail" | "split">(null);
   useEffect(() => {
-    try { localStorage.setItem("chaty.canvasLayout", JSON.stringify({ railW, codePct })); } catch { /* ignore */ }
-  }, [railW, codePct]);
+    try { localStorage.setItem("chaty.canvasLayout", JSON.stringify({ railW, codePct, full })); } catch { /* ignore */ }
+  }, [railW, codePct, full]);
 
   const current = versions[index];
 
   // Live scan while an iteration streams in.
+  // Guarded by `busy`: a scan view must be impossible unless a generation is
+  // actually running (a stray stream value once left the badge stuck on).
   const scan = useMemo(
-    () => (streamText !== null && streamText !== undefined && current ? buildScanView(current.html, streamText) : null),
-    [streamText, current],
+    () => (busy && streamText !== null && streamText !== undefined && current ? buildScanView(current.html, streamText) : null),
+    [busy, streamText, current],
   );
 
   // Element↔code correspondence: annotate the source once per version; the
@@ -286,7 +296,7 @@ export function CanvasPanel({
   };
 
   return createPortal(
-    <div className="canvas-overlay">
+    <div className={`canvas-overlay ${full ? "full" : ""}`}>
       <div className="canvas">
         <div className="canvas-head">
           <span className="canvas-title">{t("canvasTitle")}</span>
@@ -294,6 +304,34 @@ export function CanvasPanel({
             v{index + 1}/{versions.length}
           </span>
           <div className="canvas-head-actions">
+            <button
+              className="canvas-hbtn"
+              title={t("canvasResetHint")}
+              disabled={versions.length <= 1 || busy}
+              onClick={() => {
+                void (async () => {
+                  if (
+                    await confirmDialog({
+                      title: t("canvasReset"),
+                      message: t("canvasResetConfirm"),
+                      confirmLabel: t("canvasReset"),
+                      danger: true,
+                    })
+                  ) {
+                    onReset();
+                  }
+                })();
+              }}
+            >
+              {t("canvasReset")}
+            </button>
+            <button
+              className="canvas-hbtn"
+              title={full ? t("canvasExitFull") : t("canvasFull")}
+              onClick={() => setFull(!full)}
+            >
+              {full ? "⤡" : "⤢"}
+            </button>
             <button
               className="canvas-hbtn"
               title={t("canvasOpenExt")}
