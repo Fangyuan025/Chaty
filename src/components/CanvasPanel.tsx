@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { withStorageShim } from "./Markdown";
 import { IconDownload, IconEdit } from "./icons";
+import { annotate, highlightLines, INSPECT_SHIM } from "../lib/canvasSource";
+import { diffLines } from "../lib/diff";
 
 export interface CanvasVersion {
   html: string;
@@ -62,8 +64,8 @@ const NAV_GUARD = `<script>(function(){
 })()<\/script>`;
 
 /** Inject the shims right after <head> so they install before page scripts. */
-function withErrorShim(html: string): string {
-  const shims = ERROR_SHIM + NAV_GUARD;
+function withShims(html: string): string {
+  const shims = ERROR_SHIM + NAV_GUARD + INSPECT_SHIM;
   const head = html.match(/<head[^>]*>/i);
   if (head && head.index !== undefined) {
     const at = head.index + head[0].length;
@@ -104,30 +106,86 @@ export function CanvasPanel({
   const [instruction, setInstruction] = useState("");
   const [error, setError] = useState<CanvasError | null>(null);
   const [muted, setMuted] = useState(false);
+  const [view, setView] = useState<"code" | "diff">("code");
+  const [inspect, setInspect] = useState(false);
+  const [hotLine, setHotLine] = useState<number | null>(null);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const codeRef = useRef<HTMLDivElement | null>(null);
+  const prevCount = useRef(versions.length);
 
   const current = versions[index];
+
+  // Element↔code correspondence: annotate the source once per version; the
+  // preview renders the annotated html, the code pane renders the ORIGINAL
+  // (what the model wrote — annotations are plumbing, not content).
+  const annotated = useMemo(() => (current ? annotate(current.html) : null), [current]);
   const srcDoc = useMemo(
-    () => (current ? withErrorShim(withStorageShim(current.html)) : ""),
-    [current],
+    () => (annotated ? withShims(withStorageShim(annotated.html)) : ""),
+    [annotated],
+  );
+  const codeLines = useMemo(() => (current ? highlightLines(current.html) : []), [current]);
+  const diff = useMemo(
+    () => (index > 0 && current ? diffLines(versions[index - 1].html, current.html) : null),
+    [versions, index, current],
   );
 
-  // A new version (or switch) means the old error no longer applies.
+  // A fresh iteration/fix landing = show WHAT CHANGED first, not a black box.
+  useEffect(() => {
+    if (versions.length > prevCount.current && versions.length >= 2) {
+      setView("diff");
+    }
+    prevCount.current = versions.length;
+  }, [versions.length]);
+
+  // Old error / hot line don't apply across version switches; and a version
+  // with no predecessor has no diff to show — fall back to the code view.
   useEffect(() => {
     setError(null);
+    setHotLine(null);
+    if (index === 0) setView("code");
   }, [index, current?.html]);
 
-  // Receive runtime errors from the sandboxed (null-origin) preview. Keep only
-  // the first per render; the shim already de-dups identical ones.
+  // Messages from the sandboxed (null-origin) preview: runtime errors + the
+  // inspect shim's hover/pick reports.
   useEffect(() => {
     if (!open) return;
     const onMsg = (e: MessageEvent) => {
-      const d = (e.data as { __chatyCanvasError?: CanvasError })?.__chatyCanvasError;
-      if (!d || muted) return;
-      setError((prev) => prev ?? d);
+      const data = e.data as {
+        __chatyCanvasError?: CanvasError;
+        __chatyCvHover?: string;
+        __chatyCvPick?: string;
+      };
+      if (data?.__chatyCanvasError && !muted) {
+        const d = data.__chatyCanvasError;
+        setError((prev) => prev ?? d);
+      }
+      const cv = data?.__chatyCvPick ?? data?.__chatyCvHover;
+      if (cv !== undefined && annotated) {
+        const line = annotated.lineOf[Number(cv)];
+        if (line !== undefined) {
+          setView("code");
+          setHotLine(line);
+        }
+      }
     };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
-  }, [open, muted]);
+  }, [open, muted, annotated]);
+
+  // Keep the hot line in view while inspecting from the preview side.
+  useEffect(() => {
+    if (hotLine === null || !codeRef.current) return;
+    const el = codeRef.current.querySelector(`[data-ln="${hotLine}"]`);
+    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [hotLine]);
+
+  // (Re-)arm the inspect shim on toggle and after every preview reload.
+  const armInspect = (on: boolean) => {
+    frameRef.current?.contentWindow?.postMessage({ __chatyCvArm: on }, "*");
+  };
+  useEffect(() => {
+    armInspect(inspect);
+  }, [inspect, srcDoc]);
 
   // Esc closes the studio.
   useEffect(() => {
@@ -146,6 +204,21 @@ export function CanvasPanel({
     if (!text || busy) return;
     setInstruction("");
     onIterate(text);
+  };
+
+  // Code line → preview element: flash the first element that starts on (or
+  // before) the clicked line.
+  const flashLine = (ln: number) => {
+    if (!annotated) return;
+    setHotLine(ln);
+    let best = -1;
+    for (let cv = 0; cv < annotated.lineOf.length; cv++) {
+      if (annotated.lineOf[cv] <= ln) best = cv;
+      else break;
+    }
+    if (best >= 0) {
+      frameRef.current?.contentWindow?.postMessage({ __chatyCvFlash: String(best) }, "*");
+    }
   };
 
   return createPortal(
@@ -193,20 +266,85 @@ export function CanvasPanel({
             ))}
           </div>
 
-          <div className="canvas-stage">
-            <iframe
-              key={index}
-              className="canvas-frame"
-              title="Canvas preview"
-              srcDoc={srcDoc}
-              sandbox="allow-scripts allow-modals allow-forms allow-popups allow-pointer-lock"
-            />
-            {busy && (
-              <div className="canvas-busy">
-                <span className="canvas-spinner" />
-                {t("canvasGenerating")}
+          <div className="canvas-stage split">
+            <div className="canvas-pane preview">
+              <iframe
+                key={index}
+                ref={frameRef}
+                className="canvas-frame"
+                title="Canvas preview"
+                srcDoc={srcDoc}
+                sandbox="allow-scripts allow-modals allow-forms allow-popups allow-pointer-lock"
+                onLoad={() => armInspect(inspect)}
+              />
+              {busy && (
+                <div className="canvas-busy">
+                  <span className="canvas-spinner" />
+                  {t("canvasGenerating")}
+                </div>
+              )}
+            </div>
+
+            <div className="canvas-pane codepane">
+              <div className="cvp-head">
+                <button
+                  className={`cvp-inspect ${inspect ? "active" : ""}`}
+                  title={t("canvasInspectHint")}
+                  onClick={() => setInspect(!inspect)}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <path d="M3 3l8 19 2.5-7.5L21 12z" strokeLinejoin="round" />
+                  </svg>
+                  {t("canvasInspect")}
+                </button>
+                <span className="cvp-spacer" />
+                {diff && (
+                  <span className="cvp-diffstat">
+                    <span className="plus">+{diff.added}</span> <span className="minus">−{diff.removed}</span>
+                  </span>
+                )}
+                <button
+                  className={`cvp-tab ${view === "code" ? "active" : ""}`}
+                  onClick={() => setView("code")}
+                >
+                  {t("canvasCode")}
+                </button>
+                <button
+                  className={`cvp-tab ${view === "diff" ? "active" : ""}`}
+                  disabled={!diff}
+                  title={diff ? "" : t("canvasNoDiff")}
+                  onClick={() => diff && setView("diff")}
+                >
+                  {t("canvasDiff")}
+                </button>
               </div>
-            )}
+
+              {view === "code" ? (
+                <div className="cvp-code hljs" ref={codeRef}>
+                  {codeLines.map((h, ln) => (
+                    <div
+                      key={ln}
+                      data-ln={ln}
+                      className={`cvp-line ${ln === hotLine ? "hot" : ""}`}
+                      onClick={() => flashLine(ln)}
+                    >
+                      <span className="cvp-ln">{ln + 1}</span>
+                      <span className="cvp-src" dangerouslySetInnerHTML={{ __html: h || " " }} />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="cvp-code cvp-diffview">
+                  {diff?.rows.map((r, i) => (
+                    <div key={i} className={`cm-dl ${r.kind}`}>
+                      <span className="cm-dl-mark">{r.kind === "add" ? "+" : r.kind === "del" ? "-" : " "}</span>
+                      {r.text}
+                    </div>
+                  ))}
+                  {diff?.truncated && <div className="cm-dl ctx cm-dl-more">…</div>}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

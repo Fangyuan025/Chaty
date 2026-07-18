@@ -1,0 +1,210 @@
+// Source tooling for the Canvas code pane: element↔code correspondence and
+// per-line syntax highlighting.
+//
+// `annotate` walks the raw HTML and tags every real element opening tag with
+// `data-cv="N"`, remembering which SOURCE LINE each N starts on. The preview
+// iframe renders the annotated HTML; an inspect shim reports the data-cv of
+// whatever the user hovers/clicks, and the code pane maps it back to a line.
+// The scan is context-aware: nothing inside <script>/<style> bodies or
+// comments is touched (a `<div>` inside a JS string must not be rewritten).
+import hljs from "highlight.js/lib/core";
+import xml from "highlight.js/lib/languages/xml";
+import javascript from "highlight.js/lib/languages/javascript";
+import css from "highlight.js/lib/languages/css";
+
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("javascript", javascript);
+hljs.registerLanguage("css", css);
+
+export interface AnnotatedHtml {
+  /** The html with data-cv attributes injected. */
+  html: string;
+  /** cv index → 0-based source line of the element's opening tag. */
+  lineOf: number[];
+  /** cv index → tag name (for the hover chip). */
+  tagOf: string[];
+}
+
+const VOIDISH = /^(!doctype|!--)/i;
+
+export function annotate(source: string): AnnotatedHtml {
+  const lineOf: number[] = [];
+  const tagOf: string[] = [];
+  let out = "";
+  let i = 0;
+  let line = 0;
+  let ctx: "" | "script" | "style" | "comment" = "";
+  const n = source.length;
+
+  while (i < n) {
+    const ch = source[i];
+    if (ch === "\n") line++;
+
+    if (ctx === "comment") {
+      if (source.startsWith("-->", i)) {
+        ctx = "";
+        out += "-->";
+        i += 3;
+        continue;
+      }
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ctx === "script" || ctx === "style") {
+      const close = ctx === "script" ? "</script" : "</style";
+      if (source.slice(i, i + close.length).toLowerCase() === close) {
+        ctx = "";
+        // fall through to normal tag handling for the closing tag
+      } else {
+        out += ch;
+        i++;
+        continue;
+      }
+    }
+
+    if (ch === "<") {
+      if (source.startsWith("<!--", i)) {
+        ctx = "comment";
+        out += "<!--";
+        i += 4;
+        continue;
+      }
+      const m = /^<([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^"'>])*)>/.exec(source.slice(i));
+      if (m && !VOIDISH.test(m[1])) {
+        const tag = m[1].toLowerCase();
+        const attrs = m[2];
+        const cv = lineOf.length;
+        lineOf.push(line);
+        tagOf.push(tag);
+        const selfClose = attrs.endsWith("/");
+        const body = (selfClose ? attrs.slice(0, -1) : attrs).trimEnd();
+        out += `<${m[1]}${body} data-cv="${cv}"${selfClose ? " /" : ""}>`;
+        line += (m[0].match(/\n/g) ?? []).length;
+        i += m[0].length;
+        if (tag === "script") ctx = "script";
+        else if (tag === "style") ctx = "style";
+        continue;
+      }
+    }
+
+    out += ch;
+    i++;
+  }
+  return { html: out, lineOf, tagOf };
+}
+
+/** Highlight a full HTML document and split into per-line markup, re-opening
+ *  spans that hljs lets run across newlines so each line is self-contained. */
+export function highlightLines(source: string): string[] {
+  let value = "";
+  try {
+    value = hljs.highlight(source, { language: "xml" }).value;
+  } catch {
+    value = source.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  const lines: string[] = [];
+  const open: string[] = []; // currently open span tags, verbatim
+  let cur = "";
+  let i = 0;
+  const n = value.length;
+  while (i < n) {
+    const ch = value[i];
+    if (ch === "\n") {
+      lines.push(cur + "</span>".repeat(open.length));
+      cur = open.join("");
+      i++;
+      continue;
+    }
+    if (ch === "<") {
+      const close = value.startsWith("</span>", i);
+      if (close) {
+        open.pop();
+        cur += "</span>";
+        i += 7;
+        continue;
+      }
+      const m = /^<span[^>]*>/.exec(value.slice(i));
+      if (m) {
+        open.push(m[0]);
+        cur += m[0];
+        i += m[0].length;
+        continue;
+      }
+    }
+    cur += ch;
+    i++;
+  }
+  lines.push(cur + "</span>".repeat(open.length));
+  return lines;
+}
+
+/**
+ * Inspect shim injected into the preview iframe. Armed/disarmed by the parent
+ * via postMessage. While armed: hovering outlines the element and reports its
+ * data-cv up to the parent; clicking pins it. The parent can also ask the
+ * shim to flash a specific data-cv (code line → element direction).
+ */
+export const INSPECT_SHIM = `<script>(function(){
+  var armed = false, lastEl = null;
+  var box = null;
+  function ensureBox(){
+    if (box) return box;
+    box = document.createElement('div');
+    box.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;border:2px solid #4c9ffe;background:rgba(76,159,254,0.12);border-radius:3px;transition:all 60ms linear;display:none';
+    document.documentElement.appendChild(box);
+    return box;
+  }
+  function showBox(el){
+    var r = el.getBoundingClientRect();
+    var b = ensureBox();
+    b.style.display = 'block';
+    b.style.left = r.left + 'px'; b.style.top = r.top + 'px';
+    b.style.width = r.width + 'px'; b.style.height = r.height + 'px';
+  }
+  function cvOf(el){
+    while (el && el.getAttribute && !el.getAttribute('data-cv')) el = el.parentElement;
+    return el && el.getAttribute ? el.getAttribute('data-cv') : null;
+  }
+  document.addEventListener('mousemove', function(e){
+    if (!armed) return;
+    var cv = cvOf(e.target);
+    if (cv === null) return;
+    var el = document.querySelector('[data-cv="' + cv + '"]');
+    if (el === lastEl) return;
+    lastEl = el;
+    if (el) showBox(el);
+    try { parent.postMessage({ __chatyCvHover: cv }, '*'); } catch(_){}
+  }, true);
+  document.addEventListener('click', function(e){
+    if (!armed) return;
+    e.preventDefault(); e.stopPropagation();
+    var cv = cvOf(e.target);
+    if (cv !== null) { try { parent.postMessage({ __chatyCvPick: cv }, '*'); } catch(_){} }
+  }, true);
+  window.addEventListener('message', function(e){
+    var d = e.data || {};
+    if (d.__chatyCvArm !== undefined) {
+      armed = !!d.__chatyCvArm;
+      if (!armed && box) box.style.display = 'none';
+    }
+    if (d.__chatyCvFlash !== undefined) {
+      var el = document.querySelector('[data-cv="' + d.__chatyCvFlash + '"]');
+      if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); showBox(el);
+        setTimeout(function(){ if (!armed && box) box.style.display = 'none'; }, 1600); }
+    }
+    // e2e hook: drive the exact hover/pick pipeline by selector — automation
+    // drivers can't inject pointer events into a sandboxed srcdoc frame.
+    if (d.__chatyCvSim) {
+      var t = null;
+      try { t = document.querySelector(d.__chatyCvSim.sel); } catch(_){}
+      if (armed && t) {
+        var cv = cvOf(t);
+        if (cv !== null) {
+          showBox(document.querySelector('[data-cv="' + cv + '"]') || t);
+          try { parent.postMessage(d.__chatyCvSim.pick ? { __chatyCvPick: cv } : { __chatyCvHover: cv }, '*'); } catch(_){}
+        }
+      }
+    }
+  });
+})();</script>`;

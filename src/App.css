@@ -2748,6 +2748,113 @@ body.resizing-x {
 .canvas-ver.active .cv-note {
   color: var(--text);
 }
+/* Split stage: preview | code, with element↔line correspondence */
+.canvas-stage.split {
+  display: flex;
+  min-width: 0;
+}
+.canvas-pane {
+  position: relative;
+  min-width: 0;
+  flex: 1 1 50%;
+  display: flex;
+  flex-direction: column;
+}
+.canvas-pane.codepane {
+  border-left: 1px solid var(--border);
+  background: var(--code-bg, var(--bg-elev));
+}
+.cvp-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.cvp-spacer {
+  flex: 1;
+}
+.cvp-inspect,
+.cvp-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.cvp-inspect:hover,
+.cvp-tab:hover:not(:disabled) {
+  background: var(--surface);
+}
+.cvp-inspect.active {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.cvp-tab.active {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+.cvp-tab:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.cvp-diffstat {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  margin-right: 4px;
+}
+.cvp-diffstat .plus { color: var(--ok); }
+.cvp-diffstat .minus { color: var(--danger); }
+.cvp-code {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 19px;
+}
+.cvp-line {
+  display: flex;
+  white-space: pre;
+  cursor: pointer;
+}
+.cvp-line:hover {
+  background: var(--ink-faint);
+}
+.cvp-line.hot {
+  background: rgba(76, 159, 254, 0.16);
+}
+.cvp-ln {
+  flex: none;
+  width: 46px;
+  padding-right: 12px;
+  text-align: right;
+  color: var(--text-faint);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cvp-src {
+  flex: 1;
+  min-width: 0;
+}
+.cvp-diffview {
+  white-space: pre;
+  padding: 8px 10px;
+  /* Diff rows use the app-theme cm-dl palette — keep them on an app surface,
+     not the (possibly dark) code canvas. */
+  background: var(--panel);
+  color: var(--text);
+}
+
+
 .canvas-stage {
   position: relative;
   flex: 1;
