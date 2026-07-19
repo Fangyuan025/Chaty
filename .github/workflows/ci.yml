@@ -1,9 +1,17 @@
 name: ci
 
+# Docs-only changes (READMEs, CHANGELOG, docs/ incl. screenshots) don't touch
+# anything CI builds — skip the run entirely.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
   pull_request:
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
 
 # Cancel superseded runs on the same ref.
 concurrency:
