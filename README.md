@@ -49,20 +49,21 @@ Flip the **Chat · Code** switch and Chaty becomes an agent for your codebase. P
 at a folder, describe the task, and it explores, edits, and verifies the project by
 itself — every step shown live, every change behind an approval + diff.
 
-- 🌐 **The whole web as a tool** — key-less search of **GitHub** (repos, issues, *and code*), Reddit, YouTube, Bilibili, and any domain; fetching adapts to the content (articles → Markdown, GitHub pages → raw source, PDFs → text, videos → transcripts).
-- 🧭 **Drives a real browser** — opens pages, reads them as text (dynamic content and all), clicks the right element with real mouse events, fills whole forms and dropdowns in one call, logs in, paginates, and *looks* with the vision model when it matters — verified end-to-end against real sites. Watch it work in a real Chrome, logins and all.
-- 🧠 **Tools that do the thinking** — `understand_repo` orients in one call; `search_code` returns relevance-ranked files with their key definitions; `read_file` can extract a single symbol plus every call site — and reads **PDF / Word / Excel / PowerPoint** (scanned PDFs get OCR'd); `validate_change` finds and runs just the tests related to what changed. Built so small local models spend steps on decisions, not planning grunt work.
-- ✏️ **Precise edits** — exact-string patches with a diff preview and “did-you-mean” hints, a **syntax gate** that warns when an edit breaks a previously-parsable file, file outlines to navigate big files, and `search_files` to find by name or content.
-- 🖥️ **Real shell** — run commands and long **background jobs** (dev servers, builds), sandboxed to the workspace (Seatbelt on macOS); a `sudo` command asks first, with a secure password prompt.
-- ⏪ **You stay in control** — per-action approval, a command allowlist, out-of-workspace access that asks per folder, prompt-injection defense on everything it reads, and **one-click checkpoint rewind** that restores files *and* rolls back the conversation.
+- 🌐 **The whole web as a tool** — key-less search of **GitHub** (repos, issues, *and code*), Reddit, YouTube, Bilibili, and any domain; fetching adapts to the content (articles → Markdown, PDFs → text, videos → transcripts).
+- 🧭 **Drives a real browser** — opens pages, reads dynamic content as text, clicks and fills whole forms with real mouse events, logs in and paginates — and *looks* with the vision model when it matters.
+- 🧠 **Tools that do the thinking** — `understand_repo` orients in one call, `search_code` ranks files by relevance, `read_file` lifts a single symbol plus its call sites, `validate_change` runs just the tests the change touches. Small models spend their steps on decisions, not grunt work.
+- ✏️ **Precise edits, real shell** — exact-string patches behind a diff preview with a **syntax gate**, plus commands and long **background jobs** (dev servers, builds) sandboxed to the workspace.
+- ⏪ **You stay in control** — per-action approval, a command allowlist, prompt-injection defense on everything it reads, and **one-click checkpoint rewind** that restores files *and* rolls back the conversation.
 
 <details>
 <summary>More Code-mode details</summary>
 
+- Reads **PDF / Word / Excel / PowerPoint** (scanned PDFs get OCR'd); `search_files` finds by name or content; file outlines navigate big files; failed patches get “did-you-mean” hints.
+- Browser automation is verified end-to-end against real sites, and can run in your real Chrome — watch it work, logins and all.
 - Built for local models: an **Off / Normal / Deep** reasoning switch, a **prompt-processing progress ring**, a context-usage ring with automatic compaction, whole-file reads sized to your context window, ranked `search_code` + knowledge-base `search_docs`, and loop-breaking for repetitive small models.
 - Persistent sessions, project memory (**AGENTS.md**), custom **/skills**, and slash commands.
 - Tune it under **Settings → Code**: step limit, command timeout, step temperature, an auto-approve-edits toggle, a headless-browser toggle, and a command allowlist.
-- File access never leaves the folder you pick; downloads land in the workspace and are covered by checkpoints too.
+- File access never leaves the folder you pick; out-of-workspace access asks per folder; a `sudo` command asks first with a secure password prompt; downloads land in the workspace and are covered by checkpoints too.
 
 </details>
 
@@ -79,6 +80,26 @@ One local model for every row — **Qwen3.5-35B-A3B** (MoE, ~3 B active per toke
 | Terminal-Bench core v0.1.1 | Chaty agent protocol, bash-only | 15/77 |
 
 Same model, same tasks: Chaty's tool layer resolves **half again as many** SWE-bench instances as a bare bash agent — on django, the largest slice, **3.5×** (7/24 vs 2/24). That gap is the product, measured. Methodology, run artifacts, and honest-comparison notes (subset, macOS harness — *not* comparable to leaderboard numbers): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+<br />
+
+## Design Canvas
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-hero-light.jpg" />
+  <img src="docs/screenshots/canvas-hero-dark.jpg" width="860" alt="Design Canvas: live preview beside the actual source, element↔line inspect, console" />
+</picture>
+
+- **Preview | code, side by side** — every page opens as a split studio: live preview left, the **actual source** right, syntax-highlighted and palette-following. Three drag-resizable columns, fullscreen, page reload, and a **Console** tab for the page's logs and errors.
+- **Point at what you mean** — Inspect links the panes both ways: hover an element and the code jumps to its line; click a code line and the element flashes. **Click to select** (⌘/Ctrl multi-select) and your next instruction edits exactly those elements — or open the source yourself with the **Edit** button.
+- **Watch the edit happen** — iterations stream in Cursor-style: the code pane scans the document line by line and lands on a **Changes** diff (+N/−N, same language as Code mode).
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-scan-light.jpg" />
+  <img src="docs/screenshots/canvas-scan-dark.jpg" width="860" alt="Live line-by-line scan while the model edits the page" />
+</picture>
+
+- **Self-healing, persistent** — runtime errors offer a one-click **Fix** (always asks first); a compat layer keeps browser-clean pages clean here too (history API, cookies, clipboard); and each reply keeps its canvas session across close/reopen, with version history, a confirmed reset, and export to a standalone `.html`.
 
 <br />
 
@@ -111,11 +132,12 @@ Text-only models keep the OCR path, so nothing regresses — and updating from a
 
 <br />
 
-## A model store, and MLX on Apple Silicon
+## Models: the store, native MLX — and Chaty's own
 
 - A built-in **model store**: search Hugging Face by name or author, filter **GGUF / MLX**, sort by trending or downloads — then pick a **quantization** from a dropdown and hit download. Models, not file lists.
 - Parameter / architecture / vision badges, the repo's README rendered in-app, and a **"fits fully in memory"** hint sized to your machine. Vision models fetch their encoder automatically; pasting a repo link still works.
-- **MLX runs natively**: mlx-community folder models load through Apple's MLX stack in an isolated sidecar — same chat, vision, reasoning controls, Code agent and knowledge-base support as GGUF, and ejecting a model *always* returns its memory. (macOS · Apple Silicon)
+- **MLX runs natively** on Apple Silicon: mlx-community folder models load through Apple's MLX stack in an isolated sidecar — same chat, vision, reasoning controls, Code agent and knowledge-base support as GGUF, and ejecting a model *always* returns its memory.
+- **Chaty's own fine-tune** — a Qwen3.5-4B distilled from a much larger teacher for leaner on-device single-file web design, with a baked-in Chaty identity and grounded citations. A one-click pick in *“Set up for me”*, fully open on **[Hugging Face](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)**.
 
 <br />
 
@@ -180,36 +202,6 @@ Text-only models keep the OCR path, so nothing regresses — and updating from a
 </table>
 
 > **Offline-first.** The network is used only for optional web search and one-time model downloads.
-
-<br />
-
-## Design Canvas
-
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-hero-light.jpg" />
-  <img src="docs/screenshots/canvas-hero-dark.jpg" width="860" alt="Design Canvas: live preview beside the actual source, element↔line inspect, console" />
-</picture>
-
-- **Preview | code, side by side** — every page opens as a split studio: live preview left, the **actual source** right (syntax-highlighted, palette-following). All three columns drag-resize; there's fullscreen, a page-reload button, and a **Console** tab mirroring the page's logs and errors.
-- **Point at what you mean** — Inspect mode links the two panes: hover/click an element and the code jumps to its line; click a code line and the element flashes in the preview. **Click to select** (⌘/Ctrl multi-select) and your next instruction is scoped to exactly those elements.
-- **Watch the edit happen** — iterations stream in Cursor-style: the code pane live-scans the document, deletions/additions grow line by line, and the finished version lands on a **Changes** diff (+N/−N, same language as Code mode). Prefer hands-on? An **Edit** button opens the source for manual changes, saved as a new version.
-
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-scan-light.jpg" />
-  <img src="docs/screenshots/canvas-scan-dark.jpg" width="860" alt="Live line-by-line scan while the model edits the page" />
-</picture>
-
-- **Self-healing, browser-honest** — runtime errors offer a one-click **Fix** (always asks first), and a compat layer means pages that run clean in a real browser run clean here too (history API, cookies, clipboard). With a vision model, Chaty also *sees* the rendered page when you ask for a change.
-- **Versions that persist** — each reply keeps its own canvas session across close/reopen, with version history, an explicit reset (confirmed), and export to a standalone `.html`. Pairs naturally with Chaty's own web-design fine-tune.
-
-<br />
-
-## Chaty's own model
-
-Beyond third-party models, Chaty ships its **own fine-tune** — a Qwen3.5-4B distilled from
-a much larger teacher and tuned for leaner, on-device single-file web design, with a baked-in
-Chaty identity and grounded citations. It's a one-click pick in *“Set up for me”* and fully
-open on **[Hugging Face](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)**.
 
 <br />
 

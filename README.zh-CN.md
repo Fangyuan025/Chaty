@@ -48,20 +48,21 @@ Deep Research 与免手语音。
 拨动 **Chat · Code** 开关,Chaty 就成了你代码库的智能体。选一个文件夹、描述任务,
 它便自主探索、修改并验证项目 —— 每一步实时可见,每处改动都先审批 + 看 diff。
 
-- 🌐 **整个互联网都是它的工具** —— 无 key 站内搜索 **GitHub**(仓库、issue、*代码*)、Reddit、YouTube、B站及任意域名;抓取按内容自适应(文章→Markdown、GitHub 页→raw 源码、PDF→文本、视频→字幕转写)。
-- 🧭 **能开真实浏览器** —— 打开网页、把页面当文字读(含动态内容)、用真实鼠标事件点准元素、一次填完整张表单和下拉、登录、翻页,该用视觉时才截图亲眼看 —— 在真实网站上端到端验证过。就在一个真实 Chrome 里,你能全程围观,登录状态也保留。
-- 🧠 **会思考的工具** —— `understand_repo` 一次调用摸清整个仓库;`search_code` 返回按相关度排序的文件与关键定义;`read_file` 可只取一个函数/类的定义块加全部调用处——还能直接读 **PDF / Word / Excel / PowerPoint**(扫描件自动 OCR);`validate_change` 自动找到并只跑与改动相关的测试。把规划性的粗活下沉进工具,小模型只做决策。
-- ✏️ **精确编辑** —— 带 diff 预览与「你是不是想改这里」提示的精确文本补丁、把可解析文件改坏时会大声警告的**语法门**、导航大文件的 outline 大纲,以及按名字或内容查找的 `search_files`。
-- 🖥️ **真 shell** —— 运行命令与长时**后台任务**(dev server、构建),沙箱限定在工作区内(macOS 用 Seatbelt);sudo 命令会先询问,并有安全的密码输入框。
-- ⏪ **一切由你掌控** —— 逐条审批、命令白名单、工作区外访问按目录询问、对读到的一切内容做防注入,以及**检查点一键回滚**:恢复文件*并*回退对话。
+- 🌐 **整个互联网都是它的工具** —— 无 key 站内搜索 **GitHub**(仓库、issue、*代码*)、Reddit、YouTube、B站及任意域名;抓取按内容自适应(文章→Markdown、PDF→文本、视频→字幕转写)。
+- 🧭 **能开真实浏览器** —— 打开网页、把动态内容当文字读、用真实鼠标事件点击和整表单填写、登录、翻页 —— 该用视觉时才截图亲眼看。
+- 🧠 **会思考的工具** —— `understand_repo` 一次摸清仓库、`search_code` 按相关度排序、`read_file` 只取一个符号加全部调用处、`validate_change` 只跑与改动相关的测试。粗活下沉进工具,小模型只做决策。
+- ✏️ **精确编辑 + 真 shell** —— 带 diff 预览与**语法门**的精确文本补丁,以及沙箱限定在工作区内的命令与长时**后台任务**(dev server、构建)。
+- ⏪ **一切由你掌控** —— 逐条审批、命令白名单、对读到的一切内容做防注入,以及**检查点一键回滚**:恢复文件*并*回退对话。
 
 <details>
 <summary>更多 Code 模式细节</summary>
 
+- 直接读 **PDF / Word / Excel / PowerPoint**(扫描件自动 OCR);`search_files` 按名字或内容查找;outline 大纲导航大文件;补丁失配时给「你是不是想改这里」提示。
+- 浏览器自动化在真实网站上端到端验证过,还能开进你的真实 Chrome —— 全程围观,登录状态也保留。
 - 为本地模型而生:**Off / Normal / Deep** 思考强度开关、**提示词处理进度环**、上下文用量环 + 自动压缩、按上下文窗口定预算的整文件读取、`search_code` 语义检索 + 知识库 `search_docs`,以及防复读循环打断。
 - 会话持久化、项目记忆(**AGENTS.md**)、自定义 **/技能** 与 slash 命令。
 - 在**设置 → Code** 里调:单轮步数上限、命令超时、步骤温度、自动批准编辑开关、后台运行浏览器开关,以及命令白名单。
-- 文件访问永远不出你选的文件夹;下载落进工作区,也一并纳入检查点回滚。
+- 文件访问永远不出你选的文件夹;工作区外访问按目录询问;sudo 会先询问并有安全的密码输入框;下载落进工作区,也一并纳入检查点回滚。
 
 </details>
 
@@ -78,6 +79,26 @@ Deep Research 与免手语音。
 | Terminal-Bench core v0.1.1 | Chaty 协议,纯 bash 界面 | 15/77 |
 
 同模型、同任务:接上 Chaty 的工具层,SWE-bench 解题数比裸 bash 多出一半——在占比最大的 django 上是 **3.5 倍**(7/24 vs 2/24)。这个差距就是产品本身的价值,用数字量出来。方法学、运行产物与诚实对比说明(子集、macOS 环境——**不可**与官方排行榜数字直接对比):[docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
+
+<br />
+
+## 设计画布
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-hero-light.jpg" />
+  <img src="docs/screenshots/canvas-hero-dark.jpg" width="860" alt="设计画布:实时预览与真实源码并排,元素↔代码行对照,控制台" />
+</picture>
+
+- **预览 | 代码,并排呈现** —— 每个页面都在分栏工作室中打开:左边实时预览,右边**真实源码**,语法高亮、跟随你的代码配色。三栏宽度自由拖拽,支持全屏、页面刷新,以及镜像页面日志与报错的**控制台**标签。
+- **指哪改哪** —— 对照模式把两栏双向连起来:悬停元素,代码跳到对应行;点代码行,页面元素闪烁定位。**点击即选中**(⌘/Ctrl 多选),下一条指令只改选中的元素 —— 想亲手改就点**编辑**按钮直接开源码。
+- **亲眼看着它改** —— 迭代过程 Cursor 式流式呈现:代码栏逐行扫描全文,完成后落到**变更**视图(+N/−N,与 Code 模式同款红绿 diff)。
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-scan-light.jpg" />
+  <img src="docs/screenshots/canvas-scan-dark.jpg" width="860" alt="模型修改页面时的逐行扫描" />
+</picture>
+
+- **自愈修复,版本留存** —— 运行时错误给出一键**修复**(始终先征求同意);兼容层保证真浏览器里能跑的页面在画布里同样干净(history 路由、cookie、剪贴板);每条回答的画布会话关闭再开都在,版本历史可回退、可确认重置,并可导出为独立 `.html`。
 
 <br />
 
@@ -110,11 +131,12 @@ Deep Research 与免手语音。
 
 <br />
 
-## 模型商店,以及 Apple Silicon 上的 MLX
+## 模型:商店、原生 MLX,以及 Chaty 自研
 
 - 内置**模型商店**:按名称或作者搜索 Hugging Face,按 **GGUF / MLX** 筛选、按热门/下载量排序 —— 从下拉框选一个**量化版本**直接下载。看到的是模型,不是文件列表。
 - 参数量 / 架构 / 视觉徽章、应用内直接渲染仓库 README,还有按你机器内存给出的**「可完整载入内存」**提示。视觉模型自动附带编码器;粘贴仓库链接的老用法依然可用。
-- **MLX 原生运行**:mlx-community 的文件夹模型通过 Apple MLX 栈在独立侧车进程中运行 —— 对话、视觉、思考开关、Code 智能体、知识库与 GGUF 完全同级,弹出模型时内存*必定*全数归还。(macOS · Apple Silicon)
+- **MLX 原生运行**(Apple Silicon):mlx-community 的文件夹模型通过 Apple MLX 栈在独立侧车进程中运行 —— 对话、视觉、思考开关、Code 智能体、知识库与 GGUF 完全同级,弹出模型时内存*必定*全数归还。
+- **Chaty 自研微调** —— 从更大的教师模型蒸馏而来的 Qwen3.5-4B,为本地单文件网页设计调校,内置 Chaty 身份认同与带引用的回答。「为我配置」里的一键选项,在 **[Hugging Face](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)** 完全开源。
 
 <br />
 
@@ -179,35 +201,6 @@ Deep Research 与免手语音。
 </table>
 
 > **离线优先。** 网络仅用于可选的联网搜索和一次性模型下载。
-
-<br />
-
-## 设计画布
-
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-hero-light.jpg" />
-  <img src="docs/screenshots/canvas-hero-dark.jpg" width="860" alt="设计画布:实时预览与真实源码并排,元素↔代码行对照,控制台" />
-</picture>
-
-- **预览 | 代码,并排呈现** —— 每个页面都在分栏工作室中打开:左边实时预览,右边**真实源码**(语法高亮,跟随你的代码配色)。三栏宽度自由拖拽,支持全屏、页面刷新按钮,以及镜像页面日志与报错的**控制台**标签。
-- **指哪改哪** —— 对照模式把两栏连起来:预览里悬停/点击元素,代码跳到对应行;点代码行,预览里元素闪烁定位。**点击即选中**(⌘/Ctrl 多选),下一条指令将只作用于选中的元素。
-- **亲眼看着它改** —— 迭代过程 Cursor 式流式呈现:代码栏逐行扫描全文,删改增行实时长出,完成后落到**变更**视图(+N/−N,与 Code 模式同款红绿 diff)。想亲手改?**编辑**按钮直接打开源码,保存即成新版本。
-
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-scan-light.jpg" />
-  <img src="docs/screenshots/canvas-scan-dark.jpg" width="860" alt="模型修改页面时的逐行扫描" />
-</picture>
-
-- **自愈修复,浏览器一致** —— 运行时错误给出一键**修复**(始终先征求同意);兼容层保证真浏览器里能跑的页面在画布里同样干净(history 路由、cookie、剪贴板)。配合视觉模型,改动时 Chaty 还会*看到*渲染出的页面。
-- **版本随会话留存** —— 每条回答的画布会话关闭再开都在,版本历史可回退、可确认重置,并可导出为独立 `.html`。与 Chaty 自有的网页设计微调模型天然契合。
-
-<br />
-
-## Chaty 自研模型
-
-除了第三方模型,Chaty 还自带**专属微调** —— 一个从更大的教师模型蒸馏而来的 Qwen3.5-4B,
-为本地单文件网页设计调校,内置 Chaty 身份认同与带引用的回答。它是「为我配置」里的一键选项,
-并在 **[Hugging Face](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)** 完全开源。
 
 <br />
 
