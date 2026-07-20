@@ -1,0 +1,24 @@
+{
+  "description": "15-task quick-screen subset of the 45-task validated set, for inner-loop A/B iteration (full 45 only at phase gates). Composition: 6 coder-solved regression guards, 3 bare-only solves (where the tool layer currently loses to bare bash), 6 never-solved upside probes. Baselines: coder-merged-2026-07-18 (9/45), bare-2026-07-17 (6/45).",
+  "regression_guards": [
+    "django__django-14539",
+    "django__django-16116",
+    "django__django-16333",
+    "django__django-16901",
+    "sympy__sympy-12419",
+    "sympy__sympy-13480"
+  ],
+  "bare_only_solves": [
+    "psf__requests-1142",
+    "pytest-dev__pytest-7571",
+    "sympy__sympy-23950"
+  ],
+  "unsolved_probes": [
+    "django__django-13925",
+    "django__django-15814",
+    "pytest-dev__pytest-7432",
+    "sphinx-doc__sphinx-11445",
+    "sympy__sympy-15345",
+    "psf__requests-2931"
+  ]
+}
