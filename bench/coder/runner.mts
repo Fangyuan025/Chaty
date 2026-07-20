@@ -143,6 +143,10 @@ async function main() {
 
       const instruction = readFileSync(path.join(taskDir, "task.md"), "utf8");
       let steps = 0, turns = 0, error: string | undefined;
+      // agentLoop emits the SAME step card twice for an executed tool
+      // (status "running", then "done"/"error") — count each card once, or
+      // recorded steps inflate ~2× past the 3×40 loop budget.
+      const seenSteps = new Set<string>();
       const signal = { cancelled: false };
 
       // One turn; if the loop pauses at the step limit, nudge it on (max 3 turns)
@@ -165,7 +169,7 @@ async function main() {
           }, {
             onThinking: () => {},
             onAssistantText: () => {},
-            onStep: () => { steps++; },
+            onStep: (s) => { if (!seenSteps.has(s.id)) { seenSteps.add(s.id); steps++; } },
             onFinal: (_text, _think, reason) => { pausedAtSteps = reason === "steps"; resolve(); },
             onError: (m) => { error = m; resolve(); },
             onAskUser: async (_q, options) => options[0] ?? "continue",
