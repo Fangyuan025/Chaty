@@ -1042,7 +1042,13 @@ struct ParsedAnchor {
 }
 
 fn parse_anchor(s: &str) -> Option<ParsedAnchor> {
-    let (l, h) = s.trim().split_once(':')?;
+    // Models paste the whole prefixed line as the anchor ("142:qzh→  user.save()")
+    // — every anchor-smoke edit failed on exactly this. Take what's left of the
+    // arrow, then of any whitespace; the line content is redundant, not wrong.
+    let s = s.trim();
+    let s = s.split('→').next().unwrap_or(s);
+    let s = s.split_whitespace().next().unwrap_or(s);
+    let (l, h) = s.split_once(':')?;
     let line1: usize = l.trim().parse().ok()?;
     let hash = h.trim().to_ascii_lowercase();
     if line1 == 0 || hash.is_empty() || hash.len() > 4 || !hash.bytes().all(|b| b.is_ascii_lowercase()) {
@@ -2949,6 +2955,12 @@ mod tests {
         assert!(parse_anchor("5:ab1").is_none());
         // Uppercase hashes are tolerated (normalized down).
         assert!(parse_anchor("5:ABC").is_some());
+        // A whole pasted read_file line is tolerated — content after the
+        // arrow (or whitespace) is redundant, not wrong.
+        let p = parse_anchor("142:qzh→            user.save()").unwrap();
+        assert_eq!((p.line1, p.hash.as_str()), (142, "qzh"));
+        let p = parse_anchor("7:abc  some trailing text").unwrap();
+        assert_eq!(p.line1, 7);
     }
 
     #[test]
