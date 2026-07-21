@@ -908,16 +908,105 @@ pub(crate) fn syntax_check(abs: &Path) -> Option<Result<(), String>> {
 /// The syntax note appended to a successful write/edit: silent when clean or
 /// uncheckable; loud when THIS edit broke a previously-parsable file; softer
 /// when the file was already broken before the edit.
+// Flat-scope "possibly undefined name" scan: every bound name anywhere in the
+// file (assignments, params, defs, imports, targets) forms one permissive set;
+// loads outside it ∪ builtins are almost always TYPOS — the class of bug the
+// syntax gate can't see (a misspelled variable compiles fine). Star imports
+// disable the scan; findings are a soft note, never an error.
+const PY_NAME_SCAN: &str = r#"
+import sys, ast, builtins
+try:
+    tree = ast.parse(open(sys.argv[1], 'rb').read(), sys.argv[1])
+except SyntaxError:
+    sys.exit(0)
+for n in ast.walk(tree):
+    if isinstance(n, ast.ImportFrom) and any(a.name == '*' for a in n.names):
+        sys.exit(0)
+bound = set(dir(builtins)) | {'__file__', '__name__', '__doc__', '__builtins__', '__spec__', '__loader__', '__package__', '__debug__', '__all__', '__version__', '__class__'}
+for n in ast.walk(tree):
+    if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load):
+        bound.add(n.id)
+    elif isinstance(n, ast.arg):
+        bound.add(n.arg)
+    elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        bound.add(n.name)
+    elif isinstance(n, ast.alias):
+        bound.add((n.asname or n.name).split('.')[0])
+    elif isinstance(n, (ast.Global, ast.Nonlocal)):
+        bound.update(n.names)
+    elif isinstance(n, ast.ExceptHandler) and n.name:
+        bound.add(n.name)
+seen, out = set(), []
+for n in ast.walk(tree):
+    if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id not in bound and n.id not in seen:
+        seen.add(n.id)
+        out.append(f"{n.id}:{n.lineno}")
+        if len(out) >= 5:
+            break
+print('\n'.join(out))
+"#;
+
+/// Undefined-name findings for a .py file, or empty. Best-effort: no python,
+/// no findings.
+fn py_undefined_names(abs: &Path) -> Vec<(String, usize)> {
+    let ext = abs.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if !ext.eq_ignore_ascii_case("py") {
+        return Vec::new();
+    }
+    let p = abs.to_string_lossy();
+    let mut cmd = Command::new(if cfg!(windows) { "python" } else { "python3" });
+    cmd.args(["-c", PY_NAME_SCAN, &p]).stdout(Stdio::piped()).stderr(Stdio::null());
+    hide_console(&mut cmd);
+    #[cfg(unix)]
+    cmd.env("PATH", augmented_path());
+    let Ok(out) = cmd.output() else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let (name, line) = l.rsplit_once(':')?;
+            Some((name.to_string(), line.parse().ok()?))
+        })
+        .collect()
+}
+
+/// The offending region with line numbers, parsed out of a checker message —
+/// saves the model the re-read it would otherwise spend locating the error.
+fn error_context(abs: &Path, err: &str) -> String {
+    let re = regex::Regex::new(r"(?i)line (\d+)").unwrap();
+    let Some(line1) = re.captures(err).and_then(|c| c[1].parse::<usize>().ok()) else {
+        return String::new();
+    };
+    let Ok(text) = std::fs::read_to_string(abs) else { return String::new() };
+    trf!("\n出错位置:\n{}", "\nAt the error site:\n{}", numbered_context(&text, line1.saturating_sub(1), 1))
+}
+
 fn syntax_note(abs: &Path, was_clean: Option<bool>) -> String {
     match syntax_check(abs) {
-        Some(Err(e)) => match was_clean {
-            Some(true) => trf!(
-                "\n⚠️ 语法检查失败——本次编辑把一个原本可解析的文件改坏了:\n{e}\n请立即修复;如需还原,该文件已有检查点可回退。",
-                "\n⚠️ syntax check failed — this edit BROKE a previously-parsable file:\n{e}\nfix now, or rewind the checkpoint."
-            ),
-            _ => trf!("\n⚠️ 语法检查失败:\n{e}", "\n⚠️ syntax check failed:\n{e}"),
-        },
-        _ => String::new(),
+        Some(Err(e)) => {
+            let ctx = error_context(abs, &e);
+            match was_clean {
+                Some(true) => trf!(
+                    "\n⚠️ 语法检查失败——本次编辑把一个原本可解析的文件改坏了:\n{e}{ctx}\n请立即修复;如需还原,该文件已有检查点可回退。",
+                    "\n⚠️ syntax check failed — this edit BROKE a previously-parsable file:\n{e}{ctx}\nfix now, or rewind the checkpoint."
+                ),
+                _ => trf!("\n⚠️ 语法检查失败:\n{e}{ctx}", "\n⚠️ syntax check failed:\n{e}{ctx}"),
+            }
+        }
+        _ => {
+            let names = py_undefined_names(abs);
+            if names.is_empty() {
+                return String::new();
+            }
+            let list = names
+                .iter()
+                .map(|(n, l)| trf!("{n}(第 {l} 行)", "{n} (line {l})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            trf!(
+                "\nℹ️ 可能未定义的名字: {list} —— 若是笔误请一并修正;若在别处动态定义可忽略。",
+                "\nℹ️ Possibly undefined name(s): {list} — fix if these are typos; ignore if defined dynamically elsewhere."
+            )
+        }
     }
 }
 
@@ -3018,6 +3107,31 @@ mod tests {
         ]);
         let err = agent_edit_lines("a.txt".into(), overlap).unwrap_err();
         assert!(err.contains("重叠") || err.contains("overlap"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diagnostics_typo_and_error_context() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-agent-diag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        // A typo'd name compiles fine — the soft scan must flag it.
+        let out = agent_write_file(
+            "t.py".into(),
+            "def f(x):\n    cothm = x + 1\n    return cotm\n".into(),
+        )
+        .unwrap();
+        assert!(out.contains("cotm") && (out.contains("可能未定义") || out.contains("Possibly undefined")), "{out}");
+        // A clean file stays note-free.
+        let ok = agent_write_file("ok.py".into(), "def f(x):\n    y = x\n    return y\n".into()).unwrap();
+        assert!(!ok.contains("可能未定义") && !ok.contains("Possibly undefined"), "{ok}");
+        // A syntax break carries the offending region with line numbers.
+        let broken = agent_write_file("b.py".into(), "def f(:\n    pass\n".into()).unwrap();
+        assert!(broken.contains("语法检查失败") || broken.contains("syntax check failed"), "{broken}");
+        assert!(broken.contains("出错位置") || broken.contains("At the error site"), "{broken}");
+        assert!(broken.contains("def f(:"), "{broken}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
