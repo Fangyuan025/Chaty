@@ -549,8 +549,15 @@ export const argEdits = (a: Record<string, unknown>): EditOp[] => {
     }));
 };
 
-const MISSING_PATH =
-  'ERROR: 缺少 "path" 参数(文件路径)。请重新调用并在 arguments 中带上 "path"。(Missing "path" — re-issue the tool call with a "path" argument.)';
+// A missing required arg = the model must retry the SAME tool with the arg
+// filled in. Say exactly that, single-language, with a copyable example — the
+// old bilingual one-liner sent small models into identical-call retry loops
+// (the A/B-1 regression signature: search_code {} → repeat → pause → off-task).
+const missingArg = (arg: string, example: string) =>
+  isZh()
+    ? `ERROR: 缺少 "${arg}" 参数——请带上它重发同一个工具调用,例如 arguments: ${example}`
+    : `ERROR: missing "${arg}" — re-issue the SAME tool call with it, e.g. arguments: ${example}`;
+const MISSING_PATH = () => missingArg("path", '{"path":"src/app.ts"}');
 
 /** Normalize the model's update_plan args into a clean PlanItem[]. */
 function parsePlan(args: Record<string, unknown>): PlanItem[] {
@@ -607,7 +614,7 @@ async function execTool(
   switch (call.name) {
     case "read_file": {
       const path = argPath(a);
-      if (!path) return { result: MISSING_PATH };
+      if (!path) return { result: MISSING_PATH() };
       // Documents aren't plain text — route through the extractor (text +
       // embedded-image cache + automatic OCR for scanned PDFs).
       if (/\.(pdf|docx|xlsx|pptx)$/i.test(path)) {
@@ -644,7 +651,7 @@ async function execTool(
       };
     case "search_files": {
       const q = asStr(a.query);
-      if (!q) return { result: 'ERROR: 缺少 "query" 参数 (missing "query")' };
+      if (!q) return { result: missingArg("query", '{"query":"logging config"}') };
       return {
         result: await agentSearchFiles(
           q,
@@ -655,12 +662,12 @@ async function execTool(
     }
     case "search_code": {
       const q = asStr(a.query);
-      if (!q) return { result: 'ERROR: 缺少 "query" 参数 (missing "query")' };
+      if (!q) return { result: missingArg("query", '{"query":"where url trimming is implemented"}') };
       return { result: await agentSearchCode(q, asNum(a.k)) };
     }
     case "search_docs": {
       const q = asStr(a.query);
-      if (!q) return { result: 'ERROR: 缺少 "query" 参数 (missing "query")' };
+      if (!q) return { result: missingArg("query", '{"query":"how uploads are stored"}') };
       try {
         const hits = await ragSearch(q, 6);
         if (!hits.length) return { result: "(知识库中没有相关内容 / nothing relevant in the knowledge base)" };
@@ -673,7 +680,7 @@ async function execTool(
     }
     case "write_file": {
       const path = argPath(a);
-      if (!path) return { result: MISSING_PATH };
+      if (!path) return { result: MISSING_PATH() };
       let before = "";
       try {
         before = await readFull(path);
@@ -707,7 +714,7 @@ async function execTool(
     case "edit_file":
     case "multi_edit": {
       const path = argPath(a);
-      if (!path) return { result: MISSING_PATH };
+      if (!path) return { result: MISSING_PATH() };
       const edits = argEdits(a);
       let before = "";
       try {
@@ -729,7 +736,7 @@ async function execTool(
     }
     case "outline": {
       const path = argPath(a);
-      if (!path) return { result: MISSING_PATH };
+      if (!path) return { result: MISSING_PATH() };
       return { result: await agentOutline(path) };
     }
     case "bash": {
@@ -775,7 +782,7 @@ async function execTool(
       return { result: await agentBgKill(Number(a.id)) };
     case "web_search": {
       const q = asStr(a.query);
-      if (!q) return { result: 'ERROR: 缺少 "query" 参数 (missing "query")' };
+      if (!q) return { result: missingArg("query", '{"query":"tauri updater docs"}') };
       const site = asStr(a.site);
       if (site) {
         const hits = await siteSearch(site, q);
@@ -798,7 +805,7 @@ async function execTool(
     }
     case "web_fetch": {
       const url = asStr(a.url);
-      if (!url) return { result: 'ERROR: 缺少 "url" 参数 (missing "url")' };
+      if (!url) return { result: missingArg("url", '{"url":"https://example.com/docs"}') };
       const raw = a.raw === true || a.raw === "true";
       const p = await fetchPageEx(url, raw);
       const parts: string[] = [];
@@ -820,13 +827,13 @@ async function execTool(
     case "web_download": {
       const url = asStr(a.url);
       const path = asStr(a.path) || asStr(a.file_path) || asStr(a.dest);
-      if (!url) return { result: 'ERROR: 缺少 "url" 参数 (missing "url")' };
-      if (!path) return { result: 'ERROR: 缺少 "path" 参数 (missing "path")' };
+      if (!url) return { result: missingArg("url", '{"url":"https://…/file.zip","path":"downloads/file.zip"}') };
+      if (!path) return { result: missingArg("path", '{"url":"https://…/file.zip","path":"downloads/file.zip"}') };
       return { result: await agentWebDownload(url, path) };
     }
     case "browser_navigate": {
       const url = asStr(a.url);
-      if (!url) return { result: 'ERROR: 缺少 "url" 参数 (missing "url")' };
+      if (!url) return { result: missingArg("url", '{"url":"https://example.com"}') };
       return { result: await browserNavigate(url) };
     }
     case "browser_console":
@@ -1212,6 +1219,9 @@ export async function runAgentTurn(
   let lastCallKey = "";
   let repeatCount = 0;
   let hotNext = false;
+  // Whether the last executed call returned an ERROR — a repeated identical
+  // call after an error needs "fix the arguments" advice, not "try list_dir".
+  let lastResultErrored = false;
   // Search flail breaker: consecutive web_search calls, ANY query. When the
   // search backend degrades into irrelevant results, models keep rephrasing
   // the query forever instead of failing over to web_fetch / the browser —
@@ -1450,10 +1460,15 @@ export async function runAgentTurn(
       }
       if (repeatCount === 1) {
         // Second identical call — intercept without executing, teach, and let
-        // the next generation sample hotter to break the attractor.
+        // the next generation sample hotter to break the attractor. A repeat
+        // of a call that just ERRORED gets targeted advice: fix the arguments
+        // (generic "go explore" advice here derails the task — A/B-1 autopsy).
         hotNext = true;
-        const note =
-          lang === "zh"
+        const note = lastResultErrored
+          ? lang === "zh"
+            ? "调用被拦截:这个调用刚刚已经报错,原样重发不会有不同结果。请按上面错误信息修正 arguments 后重发同一个工具。"
+            : "Intercepted: this exact call just returned an ERROR — re-sending it unchanged cannot succeed. Fix the arguments per the error message above, then re-issue the same tool."
+          : lang === "zh"
             ? "调用被拦截:这和上一步完全相同,结果不会变化。请换一种做法——传入具体的子目录/文件路径(如 list_dir {\"path\":\"src\"}、read_file \"src/app.ts\")、换个工具,或用 update_plan 重新梳理。提醒:没有持久的工作目录,cd 不会保留。"
             : 'Intercepted: this call is identical to the previous one — the result cannot change. Do something different: pass a concrete subdirectory/file path (list_dir {"path":"src"}, read_file "src/app.ts"), use another tool, or re-plan with update_plan. Reminder: there is no persistent cwd.';
         stepObj.status = "error";
@@ -1681,6 +1696,7 @@ export async function runAgentTurn(
         stepObj.status = "error";
         stepObj.result = resultText;
       }
+      lastResultErrored = resultText.startsWith("ERROR");
       if (opts.signal.cancelled) return;
       cb.onStep(stepObj);
       // 3rd/4th consecutive search: results go through, but remind the model
