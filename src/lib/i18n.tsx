@@ -210,6 +210,7 @@ export const T = {
   canvasCode: { zh: "代码", en: "Code" },
   canvasReload: { zh: "刷新页面(重新运行脚本)", en: "Reload the page (re-runs scripts)" },
   canvasStop: { zh: "停止", en: "Stop" },
+  canvasFollow: { zh: "↓ 跟随修改", en: "↓ Follow edits" },
   canvasDragHint: { zh: "拖动调宽 · 双击复位", en: "Drag to resize · double-click to reset" },
   canvasComposerEditing: { zh: "正在手动编辑——保存或取消后可继续对话", en: "Hand-editing — save or cancel to keep iterating" },
   canvasSelPrefix: {

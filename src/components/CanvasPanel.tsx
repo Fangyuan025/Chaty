@@ -310,13 +310,45 @@ export function CanvasPanel({
     return () => window.removeEventListener("message", onMsg);
   }, [open, muted, annotated]);
 
-  // Follow the scan head while the model streams.
+  // Follow the scan head while the model streams — unless the user scrolled
+  // away to inspect (wheel/touch breaks follow; a pill resumes it). A fresh
+  // generation always re-arms following.
   const scanRef = useRef<HTMLDivElement | null>(null);
+  const [followScan, setFollowScan] = useState(true);
+  // Rows outside a window around the head render as two spacer blocks, so a
+  // long document doesn't rebuild thousands of DOM rows every stream tick.
+  const [scanWin, setScanWin] = useState(0);
+  const SCAN_ROW_H = 19; // .cvp-code line-height — spacer math relies on it
+  const SCAN_OVERSCAN = 140;
   useEffect(() => {
-    if (!scan || scan.scanIndex === null || !scanRef.current) return;
-    const el = scanRef.current.querySelector(`[data-scan="${scan.scanIndex}"]`);
-    el?.scrollIntoView({ block: "center" });
-  }, [scan]);
+    if (busy) setFollowScan(true);
+  }, [busy]);
+  useEffect(() => {
+    if (!scan) return;
+    if (followScan) {
+      const head = scan.scanIndex ?? scan.rows.length - 1;
+      setScanWin(Math.max(0, head - SCAN_OVERSCAN));
+    }
+  }, [scan, followScan]);
+  useEffect(() => {
+    if (!followScan || !scan || scan.scanIndex === null || !scanRef.current) return;
+    // Row-arithmetic scroll (rows are a fixed 19px): element-based
+    // scrollIntoView chases geometry that the window spacers shift in the
+    // same commit, so its animation lands short.
+    const el = scanRef.current;
+    const target = Math.max(0, scan.scanIndex * SCAN_ROW_H + 8 - el.clientHeight / 2);
+    el.scrollTo({ top: target, behavior: "smooth" });
+  }, [scan, followScan, scanWin]);
+  const onScanUserScroll = () => setFollowScan(false);
+  const onScanScroll = () => {
+    // Off-follow, the render window tracks the viewport instead of the head.
+    if (followScan || !scanRef.current) return;
+    const first = Math.floor(scanRef.current.scrollTop / SCAN_ROW_H);
+    setScanWin((w) => {
+      const next = Math.max(0, first - SCAN_OVERSCAN);
+      return Math.abs(next - w) > SCAN_OVERSCAN / 2 ? next : w;
+    });
+  };
 
   // Keep the hot line in view while inspecting from the preview side.
   useEffect(() => {
@@ -671,22 +703,43 @@ export function CanvasPanel({
                   </div>
                 </div>
               ) : scan ? (
-                <div className="cvp-code cvp-scanview" ref={scanRef}>
+                <div
+                  className="cvp-code cvp-scanview"
+                  ref={scanRef}
+                  onWheel={onScanUserScroll}
+                  onTouchMove={onScanUserScroll}
+                  onScroll={onScanScroll}
+                >
                   {scan.mode === "waiting" && (
                     <div className="cvp-scan-note">{t("canvasScanWaiting")}</div>
                   )}
-                  {scan.rows.map((r, i) => (
+                  {scanWin > 0 && <div style={{ height: scanWin * SCAN_ROW_H }} aria-hidden="true" />}
+                  {scan.rows.slice(scanWin, scanWin + SCAN_OVERSCAN * 2).map((r, k) => {
+                    const i = scanWin + k;
+                    return (
+                      <div
+                        key={i}
+                        data-scan={i}
+                        className={`cm-dl ${r.kind === "pending" ? "ctx cvp-pending" : r.kind} ${i === scan.scanIndex ? "cvp-scanhead" : ""}`}
+                      >
+                        <span className="cm-dl-mark">
+                          {r.kind === "add" ? "+" : r.kind === "del" ? "-" : " "}
+                        </span>
+                        {r.text}
+                      </div>
+                    );
+                  })}
+                  {scan.rows.length > scanWin + SCAN_OVERSCAN * 2 && (
                     <div
-                      key={i}
-                      data-scan={i}
-                      className={`cm-dl ${r.kind === "pending" ? "ctx cvp-pending" : r.kind} ${i === scan.scanIndex ? "cvp-scanhead" : ""}`}
-                    >
-                      <span className="cm-dl-mark">
-                        {r.kind === "add" ? "+" : r.kind === "del" ? "-" : " "}
-                      </span>
-                      {r.text}
-                    </div>
-                  ))}
+                      style={{ height: (scan.rows.length - scanWin - SCAN_OVERSCAN * 2) * SCAN_ROW_H }}
+                      aria-hidden="true"
+                    />
+                  )}
+                  {!followScan && (
+                    <button className="cvp-follow" onClick={() => setFollowScan(true)}>
+                      {t("canvasFollow")}
+                    </button>
+                  )}
                 </div>
               ) : view === "console" ? (
                 <div className="cvp-code cvp-console">

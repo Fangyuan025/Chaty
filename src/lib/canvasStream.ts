@@ -98,6 +98,11 @@ function fullDiffRows(base: string, next: string): ScanRow[] {
   return rows;
 }
 
+// Applying the done patches re-walks the whole document on every stream tick,
+// but the done set only grows when a block completes — cache the applied
+// result and re-derive only the active block per tick.
+let applyCache: { base: string; count: number; virtual: string } | null = null;
+
 export function buildScanView(base: string, acc: string): ScanView {
   // Full-document mode wins when a fenced document has started streaming.
   const full = partialFullHtml(acc);
@@ -134,16 +139,23 @@ export function buildScanView(base: string, acc: string): ScanView {
     };
   }
 
-  let virtual = base;
-  for (const e of done) {
-    const next = replaceOnce(virtual, e.search, e.replace);
-    if (next !== null) virtual = next;
+  let virtual: string;
+  if (applyCache && applyCache.base === base && applyCache.count === done.length) {
+    virtual = applyCache.virtual;
+  } else {
+    virtual = base;
+    for (const e of done) {
+      const next = replaceOnce(virtual, e.search, e.replace);
+      if (next !== null) virtual = next;
+    }
+    applyCache = { base, count: done.length, virtual };
   }
+  let working = virtual;
   let searchAnchor: string | null = null;
   if (active) {
     if (active.replace !== null) {
-      const next = replaceOnce(virtual, active.search, active.replace);
-      if (next !== null) virtual = next;
+      const next = replaceOnce(working, active.search, active.replace);
+      if (next !== null) working = next;
       else searchAnchor = active.search.split("\n")[0] || null;
     } else {
       // Still copying the SEARCH block: highlight where it points so far.
@@ -151,7 +163,7 @@ export function buildScanView(base: string, acc: string): ScanView {
     }
   }
 
-  const rows = fullDiffRows(base, virtual);
+  const rows = fullDiffRows(base, working);
   let lastChanged = -1;
   for (let k = 0; k < rows.length; k++) {
     if (rows[k].kind === "add" || rows[k].kind === "del") lastChanged = k;

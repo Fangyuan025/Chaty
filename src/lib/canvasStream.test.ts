@@ -59,6 +59,37 @@ describe("buildScanView — patch mode", () => {
     expect(v.mode).toBe("waiting");
     expect(v.rows.every((r) => r.kind === "ctx")).toBe(true);
   });
+
+  // The follow-scroll UX depends on this invariant: once any block has
+  // started, the head must exist at EVERY stream offset (between-block gaps
+  // fall back to the last changed row). Sweeps the whole stream so a parser
+  // tweak can't quietly strand the viewport mid-generation.
+  test("scan head exists at every offset once patching starts", () => {
+    const stream = [
+      "Warm the copy first, then the palette.\n",
+      "<<<<<<< SEARCH\n<h1>Old title</h1>\n",
+      "=======\n<h1>Bright new title</h1>\n>>>>>>> REPLACE\n",
+      "<<<<<<< SEARCH\n<p>keep me</p>\n",
+      "=======\n<p>keep me, warmly</p>\n>>>>>>> REPLACE\n",
+    ].join("");
+    const firstBlock = stream.indexOf("<<<");
+    for (let cut = firstBlock + 18; cut <= stream.length; cut += 7) {
+      const v = buildScanView(BASE, stream.slice(0, cut));
+      expect(v.mode).toBe("patch");
+      expect(v.scanIndex, `offset ${cut}`).not.toBeNull();
+    }
+  });
+
+  test("done-patch cache never changes results across growing streams", () => {
+    const acc1 = "<<<<<<< SEARCH\n<h1>Old title</h1>\n=======\n<h1>A</h1>\n>>>>>>> REPLACE\n";
+    const withActive = acc1 + "<<<<<<< SEARCH\n<button>Go</button>\n=======\n<button>Stop";
+    const a = buildScanView(BASE, withActive);
+    // Same call again (cache warm) and after an unrelated base (cache bust).
+    buildScanView("<html>\n<p>other</p>\n</html>", "x");
+    const b = buildScanView(BASE, withActive);
+    expect(b.rows).toEqual(a.rows);
+    expect(b.scanIndex).toBe(a.scanIndex);
+  });
 });
 
 describe("buildScanView — full-document mode", () => {
