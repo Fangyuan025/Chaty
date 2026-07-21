@@ -35,6 +35,17 @@ describe("jitHintFor", () => {
     expect(jitHintFor("read_file", "…", "en", new Set())).toBe("");
   });
 
+  test("anchored read_file appends the edit_lines bridge once", () => {
+    const shown = new Set<Parameters<typeof jitHintFor>[3] extends Set<infer K> ? K : never>();
+    const anchored = '1:gaj→"""HTML utilities."""\n2:ddg→\n3:vua→import html';
+    const h = jitHintFor("read_file", anchored, "en", shown);
+    expect(h).toContain("edit_lines");
+    expect(h).toContain('"anchor"');
+    expect(jitHintFor("read_file", anchored, "en", shown)).toBe("");
+    // Plain (non-anchored) reads stay hint-free.
+    expect(jitHintFor("read_file", "import html\nimport json", "en", new Set())).toBe("");
+  });
+
   test("understand_repo appends the concrete-arguments nudge once", () => {
     const shown = new Set<Parameters<typeof jitHintFor>[3] extends Set<infer K> ? K : never>();
     const h = jitHintFor("understand_repo", "[directory, top 2 levels]…", "en", shown);
