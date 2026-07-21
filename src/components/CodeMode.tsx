@@ -17,6 +17,7 @@ import {
   agentCheckpointBegin,
   agentCheckpointRevertTo,
   agentGetWorkspace,
+  agentGlob,
   agentListFiles,
   agentReadFile,
   agentSetWorkspace,
@@ -1030,16 +1031,42 @@ export function CodeMode({
   }
 
   /** Project guide auto-load: AGENTS.md (the emerging standard) > PROJECT.md
-   *  (what /init writes) > CLAUDE.md. Re-read each turn — /init may have just
-   *  written it. Capped so it can't crowd the context window. */
+   *  (what /init writes) > CLAUDE.md > Cursor/Copilot rule files, so projects
+   *  configured for other agents work here unchanged. Re-read each turn —
+   *  /init may have just written it. Capped so it can't crowd the context. */
   async function loadProjectDoc(): Promise<{ name: string; text: string } | undefined> {
-    for (const name of ["AGENTS.md", "PROJECT.md", "CLAUDE.md"]) {
+    // read_file may be in hashline-anchor mode — rule text must go into the
+    // system prompt clean, not with "12:abc→" prefixes.
+    const deanchor = (s: string) => s.replace(/^\d+:[a-z]{2,4}→/gm, "");
+    for (const name of [
+      "AGENTS.md",
+      "PROJECT.md",
+      "CLAUDE.md",
+      ".cursorrules",
+      ".github/copilot-instructions.md",
+    ]) {
       try {
-        const text = await agentReadFile(name);
+        const text = deanchor(await agentReadFile(name));
         if (text.trim()) return { name, text: text.slice(0, 6000) };
       } catch {
         /* try the next candidate */
       }
+    }
+    try {
+      // Cursor's split rules: concatenate the first few .mdc files.
+      const files = (await agentGlob(".cursor/rules/*.mdc")).filter((f) => f.endsWith(".mdc")).slice(0, 3);
+      const parts: string[] = [];
+      for (const f of files) {
+        try {
+          parts.push(deanchor(await agentReadFile(f)));
+        } catch {
+          /* skip unreadable rule */
+        }
+      }
+      const text = parts.join("\n\n").trim();
+      if (text) return { name: ".cursor/rules", text: text.slice(0, 6000) };
+    } catch {
+      /* no cursor rules */
     }
     return undefined;
   }

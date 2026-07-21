@@ -1333,6 +1333,12 @@ export async function runAgentTurn(
   // Format slips (missing required arg) corrected without entering the
   // record; bounded so a stuck model still reaches the normal error path.
   let argRetries = 0;
+  // Pre-compaction memory flush: once per turn, just before the first
+  // compaction, the files already edited get pinned into a plain user note —
+  // compaction digests tool results, and without this the model loses track
+  // of its own completed work and redoes it.
+  let memoryFlushed = false;
+  const editedFiles = new Set<string>();
   // Search flail breaker: consecutive web_search calls, ANY query. When the
   // search backend degrades into irrelevant results, models keep rephrasing
   // the query forever instead of failing over to web_fetch / the browser —
@@ -1401,7 +1407,20 @@ export async function runAgentTurn(
         /* no workspace yet — nothing to reap */
       }
 
-      // keep the running transcript inside the context window
+      // keep the running transcript inside the context window — and flush a
+      // durable recap FIRST the one time compaction begins, so what the turn
+      // has already accomplished survives the digestion of its tool results.
+      if (!memoryFlushed && estimateTokens(messages) > Math.floor(nCtx * 0.8)) {
+        memoryFlushed = true;
+        const edited = [...editedFiles].slice(-8);
+        if (edited.length) {
+          pushUser(
+            (isZh()
+              ? `[进度存档] 上下文即将压缩。本轮已完成的实质修改(以文件现状为准,不要重做):\n- 已编辑: ${edited.join(", ")}`
+              : `[progress ledger] Context is about to compact. Work already DONE this turn (trust the files, do not redo):\n- edited: ${edited.join(", ")}`),
+          );
+        }
+      }
       if (compactMessages(messages, nCtx, toolMeta)) noteCompacted();
       evictStaleImages(messages);
 
@@ -1817,6 +1836,10 @@ export async function runAgentTurn(
         stepObj.status = "done";
         stepObj.result = out.result;
         stepObj.diff = out.diff;
+        if (["edit_file", "edit_lines", "multi_edit", "write_file"].includes(call.name)) {
+          const p = asStr(call.args?.path);
+          if (p && !resultText.startsWith("ERROR")) editedFiles.add(p);
+        }
       } catch (e) {
         resultText = `ERROR: ${e instanceof Error ? e.message : String(e)}`;
         stepObj.status = "error";
