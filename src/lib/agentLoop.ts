@@ -559,6 +559,46 @@ const missingArg = (arg: string, example: string) =>
     : `ERROR: missing "${arg}" — re-issue the SAME tool call with it, e.g. arguments: ${example}`;
 const MISSING_PATH = () => missingArg("path", '{"path":"src/app.ts"}');
 
+// Required string arguments per tool, with a filled-in example for the
+// correction message. A call that misses one is treated as a format slip and
+// never enters the conversation record (see the required-args guard in the
+// loop) — executing it would plant an empty-arguments exemplar that no-think
+// models then imitate.
+const REQUIRED_ARGS: Record<string, string[]> = {
+  search_code: ["query"],
+  search_docs: ["query"],
+  search_files: ["query"],
+  web_search: ["query"],
+  web_fetch: ["url"],
+  browser_navigate: ["url"],
+  web_download: ["url", "path"],
+  read_file: ["path"],
+  write_file: ["path"],
+  edit_file: ["path"],
+  multi_edit: ["path"],
+  view_image: ["path"],
+  grep: ["pattern"],
+  bash: ["command"],
+  bash_bg: ["command"],
+};
+const ARG_EXAMPLE: Record<string, string> = {
+  search_code: '{"query":"where login auth is handled"}',
+  search_docs: '{"query":"how uploads are stored"}',
+  search_files: '{"query":"logging config"}',
+  web_search: '{"query":"tauri updater docs"}',
+  web_fetch: '{"url":"https://example.com/docs"}',
+  browser_navigate: '{"url":"https://example.com"}',
+  web_download: '{"url":"https://…/file.zip","path":"downloads/file.zip"}',
+  read_file: '{"path":"src/app.ts"}',
+  write_file: '{"path":"notes.md","content":"…"}',
+  edit_file: '{"path":"src/app.ts","old_string":"…","new_string":"…"}',
+  multi_edit: '{"path":"src/app.ts","edits":[{"old_string":"…","new_string":"…"}]}',
+  view_image: '{"path":"shot.png"}',
+  grep: '{"pattern":"TODO"}',
+  bash: '{"command":"ls src"}',
+  bash_bg: '{"command":"npm run dev"}',
+};
+
 /** Normalize the model's update_plan args into a clean PlanItem[]. */
 function parsePlan(args: Record<string, unknown>): PlanItem[] {
   const raw = Array.isArray(args.todos)
@@ -1222,6 +1262,9 @@ export async function runAgentTurn(
   // Whether the last executed call returned an ERROR — a repeated identical
   // call after an error needs "fix the arguments" advice, not "try list_dir".
   let lastResultErrored = false;
+  // Format slips (missing required arg) corrected without entering the
+  // record; bounded so a stuck model still reaches the normal error path.
+  let argRetries = 0;
   // Search flail breaker: consecutive web_search calls, ANY query. When the
   // search backend degrades into irrelevant results, models keep rephrasing
   // the query forever instead of failing over to web_fetch / the browser —
@@ -1424,6 +1467,21 @@ export async function runAgentTurn(
       }
       // A valid tool call = real progress; clear the stuck-thinking streak.
       stuckThinkCount = 0;
+
+      // ── Required-args guard ──
+      // A call missing a required argument is a format slip, not an action:
+      // executing it would record the model's own empty-arguments call, which
+      // no-think models then imitate into a spiral (A/B-1 autopsy). Keep the
+      // bad call OUT of the record, correct with a filled-in example, retry —
+      // temperature bump on the 2nd slip, normal error path after the 3rd.
+      const missing = (REQUIRED_ARGS[call.name] ?? []).filter((k) => !asStr(call.args?.[k]));
+      if (missing.length && argRetries < 3) {
+        argRetries++;
+        if (argRetries >= 2) hotNext = true;
+        messages.push({ role: "assistant", content: proseOnly(raw) });
+        pushUser(missingArg(missing[0], ARG_EXAMPLE[call.name] ?? `{"${missing[0]}":"…"}`));
+        continue;
+      }
 
       // Record the assistant turn (its reasoning + the tool call, tag restored).
       const withClose = raw.includes("</tool_call>") ? raw : `${raw}</tool_call>`;
