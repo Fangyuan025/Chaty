@@ -34,4 +34,12 @@ describe("jitHintFor", () => {
     expect(jitHintFor("bash", "[exit 1]", "zh", new Set())).toBe("");
     expect(jitHintFor("read_file", "…", "en", new Set())).toBe("");
   });
+
+  test("understand_repo appends the concrete-arguments nudge once", () => {
+    const shown = new Set<Parameters<typeof jitHintFor>[3] extends Set<infer K> ? K : never>();
+    const h = jitHintFor("understand_repo", "[directory, top 2 levels]…", "en", shown);
+    expect(h).toContain('search_code {"query"');
+    expect(h).not.toMatch(/[一-鿿]/);
+    expect(jitHintFor("understand_repo", "…", "en", shown)).toBe("");
+  });
 });
