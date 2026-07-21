@@ -620,11 +620,12 @@ pub fn agent_understand_repo() -> Result<String, String> {
 
     out.push_str(&trf!("\n[目录 (top 2 levels)]\n{tree}", "\n[directory, top 2 levels]\n{tree}"));
     if !census_str.is_empty() {
-        out.push_str(&format!("\n[语言构成] {census_str}\n"));
+        out.push_str(&trf!("\n[语言构成] {census_str}\n", "\n[language mix] {census_str}\n"));
     }
     if !entries_found.is_empty() {
         entries_found.truncate(8);
-        out.push_str(&format!("[入口候选] {}\n", entries_found.join(", ")));
+        let entries = entries_found.join(", ");
+        out.push_str(&trf!("[入口候选] {entries}\n", "[entry-point candidates] {entries}\n"));
     }
     if out.trim().is_empty() {
         out = tr("(空工作区)", "(empty workspace)");

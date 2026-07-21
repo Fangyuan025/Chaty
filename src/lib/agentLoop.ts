@@ -292,7 +292,7 @@ const TOOL_DOCS: Record<"zh" | "en", string> = {
 - glob: 按通配符找文件(如 "src/**/*.ts")。args: { "pattern": string }
 - grep: 用正则搜索文件内容。args: { "pattern": string, "path"?: string, "glob"?: string }
 - search_files: 按关键词(字面)搜文件名+内容;names_only=true 只搜文件名。args: { "query": string, "path"?: string, "names_only"?: boolean }
-- search_code: 按含义提问代码库,返回按相关度排序的文件+关键定义。探索陌生代码优先用它。args: { "query": string, "k"?: number }
+- search_code: 按含义提问代码库,返回按相关度排序的文件+关键定义。探索陌生代码优先用它。args: { "query": "哪里处理登录鉴权", "k"?: number }
 - search_docs: 检索用户的知识库文档(需求、设计稿、笔记)。args: { "query": string }
 - bash: 在工作区执行 shell 命令(沙箱,写限工作区);会等命令结束,不要用它启动 dev server 等不退出的进程。args: { "command": string, "timeout_secs"?: number }
 - bash_bg: 后台启动长时间运行的命令(dev server、慢构建),立即返回 id,结束时系统自动通知你;不支持 sudo(要特权用前台 bash)。args: { "command": string }
@@ -315,7 +315,7 @@ const TOOL_DOCS: Record<"zh" | "en", string> = {
 - glob: find files by pattern (e.g. "src/**/*.ts"). args: { "pattern": string }
 - grep: regex search over file contents. args: { "pattern": string, "path"?: string, "glob"?: string }
 - search_files: literal keyword search over file names + contents; names_only=true for names only. args: { "query": string, "path"?: string, "names_only"?: boolean }
-- search_code: ask the codebase by meaning; returns relevance-ranked files with their key definitions. First choice for unfamiliar code. args: { "query": string, "k"?: number }
+- search_code: ask the codebase by meaning; returns relevance-ranked files with their key definitions. First choice for unfamiliar code. args: { "query": "where login auth is handled", "k"?: number }
 - search_docs: search the user's knowledge-base documents. args: { "query": string }
 - bash: run a shell command in the workspace (sandboxed, writes limited to the workspace); waits for exit — don't start dev servers with it. args: { "command": string, "timeout_secs"?: number }
 - bash_bg: start a long-running command in the background (dev server, slow build); returns an id, you're notified when it ends; sudo unsupported (use foreground bash). args: { "command": string }
