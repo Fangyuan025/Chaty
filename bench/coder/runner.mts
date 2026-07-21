@@ -162,7 +162,7 @@ async function main() {
       for (turns = 1; turns <= 3; turns++) {
         let pausedAtSteps = false;
         await new Promise<void>((resolve) => {
-          runAgentTurn(prompt, history as never, ws, "en", {
+          runAgentTurn(prompt, history as never, ws, (process.env.CHATY_BENCH_LANG === "zh" ? "zh" : "en"), {
             thinkMode: "off",
             nCtx: 16384,
             maxSteps: 40,
