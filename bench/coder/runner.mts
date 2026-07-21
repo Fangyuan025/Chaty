@@ -147,6 +147,12 @@ async function main() {
       // (status "running", then "done"/"error") — count each card once, or
       // recorded steps inflate ~2× past the 3×40 loop budget.
       const seenSteps = new Set<string>();
+      // CHATY_BENCH_TRANSCRIPT=<dir>: dump per-task agent transcripts (tool
+      // calls with results + assistant text) for failure autopsies.
+      const trDir = process.env.CHATY_BENCH_TRANSCRIPT;
+      const trFile = trDir ? path.join(trDir, `${name}.jsonl`) : null;
+      const trace = (ev: Json) => { if (trFile) appendFileSync(trFile, JSON.stringify(ev) + "\n"); };
+      if (trDir) mkdirSync(trDir, { recursive: true });
       const signal = { cancelled: false };
 
       // One turn; if the loop pauses at the step limit, nudge it on (max 3 turns)
@@ -168,9 +174,12 @@ async function main() {
             approveSudo: async () => ({ ok: false }),
           }, {
             onThinking: () => {},
-            onAssistantText: () => {},
-            onStep: (s) => { if (!seenSteps.has(s.id)) { seenSteps.add(s.id); steps++; } },
-            onFinal: (_text, _think, reason) => { pausedAtSteps = reason === "steps"; resolve(); },
+            onAssistantText: (t) => { trace({ ev: "text", t }); },
+            onStep: (s) => {
+              if (!seenSteps.has(s.id)) { seenSteps.add(s.id); steps++; }
+              if (s.status !== "running") trace({ ev: "step", call: s.call, status: s.status, result: s.result?.slice(0, 4000) });
+            },
+            onFinal: (text, _think, reason) => { trace({ ev: "final", reason: reason ?? "done", text }); pausedAtSteps = reason === "steps"; resolve(); },
             onError: (m) => { error = m; resolve(); },
             onAskUser: async (_q, options) => options[0] ?? "continue",
           });
