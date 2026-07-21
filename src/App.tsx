@@ -331,6 +331,9 @@ export default function App() {
   const canvasSessions = useRef(new Map<string, { versions: CanvasVersion[]; index: number }>());
   const [canvasKey, setCanvasKey] = useState("");
   const [canvasBusy, setCanvasBusy] = useState(false);
+  // Set by the canvas Stop button; the generation flow then discards the
+  // partial output instead of reporting a "no HTML" error.
+  const canvasCancelRef = useRef(false);
   const [canvasStream, setCanvasStream] = useState<string | null>(null);
   const canvasStreamRef = useRef<{ acc: string; timer: number | null }>({ acc: "", timer: null });
   const [showHardware, setShowHardware] = useState(false);
@@ -969,6 +972,7 @@ export default function App() {
       );
     setCanvasBusy(true);
     setBusy(true);
+    canvasCancelRef.current = false;
     canvasStreamRef.current = { acc: "", timer: null };
     setCanvasStream("");
     // Visual context: a vision model also SEES the current page (a real
@@ -1027,6 +1031,9 @@ export default function App() {
           }
         },
       );
+      // A deliberate stop discards the partial output quietly — no error
+      // notice, no version.
+      if (canvasCancelRef.current) return;
       // Prefer applying the patch; fall back to a full document if the model
       // returned one instead (or the patch didn't apply cleanly).
       const edits = parseEdits(acc);
@@ -1044,6 +1051,7 @@ export default function App() {
       setCanvasVersions((vs) => [...vs, { html, note }]);
       setCanvasIndex(newIndex);
     } catch (e) {
+      if (canvasCancelRef.current) return;
       console.error(e);
       showLoadError(e);
     } finally {
@@ -2112,6 +2120,10 @@ export default function App() {
           setCanvasIndex(at);
         }}
         onFix={(err) => void generateCanvasVersion("fix", err)}
+        onStop={() => {
+          canvasCancelRef.current = true;
+          void cancelGeneration().catch(console.error);
+        }}
         onExport={(html) => void exportHtmlFile("design.html", html).catch(console.error)}
         onOpenExternal={(html) => void openHtmlReport(html, "canvas").catch(console.error)}
         onClose={() => setCanvasOpen(false)}

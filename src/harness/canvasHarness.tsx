@@ -248,6 +248,7 @@ function Harness() {
         onManualEdit={(html) => { setVersions((vs) => [...vs, { html, note: "手动编辑" }]); setIndex(versions.length); }}
         onIterate={(ins) => { setVersions([...versions, { html: V2, note: `修改:${ins}` }]); setIndex(versions.length); }}
         onFix={() => {}}
+        onStop={() => { setBusy(false); setStream(null); }}
         onExport={() => {}}
         onOpenExternal={() => {}}
         onClose={() => setOpen(false)}

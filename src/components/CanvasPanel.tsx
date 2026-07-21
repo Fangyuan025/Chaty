@@ -158,6 +158,7 @@ export function CanvasPanel({
   onManualEdit,
   onIterate,
   onFix,
+  onStop,
   onExport,
   onOpenExternal,
   onClose,
@@ -176,6 +177,8 @@ export function CanvasPanel({
   onManualEdit: (html: string) => void;
   onIterate: (instruction: string) => void;
   onFix: (errorText: string) => void;
+  /** Abort the in-flight iteration (wired to the engine's cancel). */
+  onStop?: () => void;
   onExport: (html: string) => void;
   onOpenExternal: (html: string) => void;
   onClose: () => void;
@@ -192,6 +195,7 @@ export function CanvasPanel({
   const [selected, setSelected] = useState<number[]>([]);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const editHlRef = useRef<HTMLPreElement>(null);
   const [inspect, setInspect] = useState(false);
   const [hotLine, setHotLine] = useState<number | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -503,6 +507,10 @@ export function CanvasPanel({
               <button
                 key={i}
                 className={`canvas-ver ${i === index ? "active" : ""}`}
+                // Mid-generation the scan diffs the stream against the version
+                // that was current at start — switching now would render the
+                // scan against the wrong base.
+                disabled={busy && i !== index}
                 onClick={() => onSelectVersion(i)}
                 title={v.note}
               >
@@ -514,7 +522,7 @@ export function CanvasPanel({
 
           <div
             className="cv-divider rail"
-            title="拖动调宽 · 双击复位"
+            title={t("canvasDragHint")}
             onPointerDown={startDrag("rail")}
             onDoubleClick={() => setRailW(150)}
           />
@@ -539,7 +547,7 @@ export function CanvasPanel({
 
             <div
               className="cv-divider split"
-              title="拖动调宽 · 双击复位"
+              title={t("canvasDragHint")}
               onPointerDown={startDrag("split")}
               onDoubleClick={() => setCodePct(50)}
             />
@@ -613,12 +621,39 @@ export function CanvasPanel({
 
               {editing ? (
                 <div className="cvp-editwrap">
-                  <textarea
-                    className="cvp-editor"
-                    value={draft}
-                    spellCheck={false}
-                    onChange={(e) => setDraft(e.target.value)}
-                  />
+                  {/* Highlight lives in a backdrop <pre>; the textarea floats
+                      transparent on top (text invisible, caret kept) so hand
+                      edits stay syntax-colored. Oversized docs fall back to
+                      the plain editor rather than re-highlighting per keystroke. */}
+                  {draft.length <= 60000 ? (
+                    <div className="cvp-editstack">
+                      <pre className="cvp-edit-hl hljs" ref={editHlRef} aria-hidden="true">
+                        {highlightLines(draft).map((h, i) => (
+                          <div key={i} dangerouslySetInnerHTML={{ __html: h || "&nbsp;" }} />
+                        ))}
+                      </pre>
+                      <textarea
+                        className="cvp-editor overlay"
+                        value={draft}
+                        spellCheck={false}
+                        onChange={(e) => setDraft(e.target.value)}
+                        onScroll={(e) => {
+                          const el = editHlRef.current;
+                          if (el) {
+                            el.scrollTop = e.currentTarget.scrollTop;
+                            el.scrollLeft = e.currentTarget.scrollLeft;
+                          }
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <textarea
+                      className="cvp-editor"
+                      value={draft}
+                      spellCheck={false}
+                      onChange={(e) => setDraft(e.target.value)}
+                    />
+                  )}
                   <div className="cvp-editbar">
                     <button className="cvp-tab" onClick={() => setEditing(false)}>
                       {t("cancel")}
@@ -753,9 +788,9 @@ export function CanvasPanel({
           <IconEdit size={15} style={{ color: "var(--faint)", flex: "none" }} />
           <input
             className="canvas-input"
-            placeholder={t("canvasIterate")}
+            placeholder={editing ? t("canvasComposerEditing") : t("canvasIterate")}
             value={instruction}
-            disabled={busy}
+            disabled={busy || editing}
             onChange={(e) => setInstruction(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -764,9 +799,15 @@ export function CanvasPanel({
               }
             }}
           />
-          <button className="canvas-send" disabled={busy || !instruction.trim()} onClick={submit}>
-            {t("canvasSend")}
-          </button>
+          {busy && onStop ? (
+            <button className="canvas-send stop" onClick={onStop} title={t("stopTitle")}>
+              {t("canvasStop")}
+            </button>
+          ) : (
+            <button className="canvas-send" disabled={busy || editing || !instruction.trim()} onClick={submit}>
+              {t("canvasSend")}
+            </button>
+          )}
         </div>
       </div>
     </div>,

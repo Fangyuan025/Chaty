@@ -209,6 +209,9 @@ export const T = {
   canvasTitle: { zh: "设计画布", en: "Design canvas" },
   canvasCode: { zh: "代码", en: "Code" },
   canvasReload: { zh: "刷新页面(重新运行脚本)", en: "Reload the page (re-runs scripts)" },
+  canvasStop: { zh: "停止", en: "Stop" },
+  canvasDragHint: { zh: "拖动调宽 · 双击复位", en: "Drag to resize · double-click to reset" },
+  canvasComposerEditing: { zh: "正在手动编辑——保存或取消后可继续对话", en: "Hand-editing — save or cancel to keep iterating" },
   canvasSelPrefix: {
     zh: "请只修改以下选中的元素,其余保持不变:",
     en: "Modify ONLY these selected elements; keep everything else unchanged:",
