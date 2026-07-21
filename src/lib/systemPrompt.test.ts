@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 (globalThis as Record<string, unknown>).window = globalThis;
 const { mockIPC } = await import("@tauri-apps/api/mocks");
 mockIPC(() => Promise.resolve(null));
-const { systemPrompt } = await import("./agentLoop");
+const { systemPrompt, agentSetEditAnchors } = await import("./agentLoop");
 
 const variants = [
   { zh: true, vision: false, label: "zh plain", maxChars: 3600 },
@@ -63,5 +63,22 @@ describe("systemPrompt behavior contracts", () => {
     expect(zhVision.length).toBeGreaterThan(zh.length);
     expect(zhVision).toContain("browser_");
     expect(zh).not.toContain("browser_navigate");
+  });
+
+  // The swap is a startsWith match on the doc lines — this breaks loudly if
+  // someone reworks those lines and the anchor variants silently stop applying.
+  test("anchor mode swaps the editor docs in both languages", () => {
+    agentSetEditAnchors(true);
+    try {
+      for (const isZh of [true, false]) {
+        const p = systemPrompt("/ws", isZh, "normal", undefined, false);
+        expect(p).toContain("- edit_lines:");
+        expect(p).not.toContain("- edit_file:");
+        expect(p).toContain(isZh ? "行号:哈希→" : 'LINE:HASH→');
+      }
+    } finally {
+      agentSetEditAnchors(false);
+    }
+    expect(systemPrompt("/ws", false, "normal", undefined, false)).toContain("- edit_file:");
   });
 });

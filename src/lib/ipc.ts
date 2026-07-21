@@ -225,6 +225,12 @@ export async function agentSetWorkspace(path: string): Promise<string> {
 export async function agentSetLang(lang: "zh" | "en"): Promise<void> {
   return invoke<void>("agent_set_lang", { lang });
 }
+export async function agentSetEditAnchorsIpc(on: boolean): Promise<void> {
+  return invoke<void>("agent_set_edit_anchors", { on });
+}
+export async function agentEditLines(path: string, edits: unknown): Promise<string> {
+  return invoke<string>("agent_edit_lines", { path, edits });
+}
 export async function agentGetWorkspace(): Promise<string | null> {
   return invoke<string | null>("agent_get_workspace");
 }

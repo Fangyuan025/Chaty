@@ -13,7 +13,9 @@ import {
   agentBgReap,
   agentDlReap,
   agentSetLang,
+  agentSetEditAnchorsIpc,
   agentEditFile,
+  agentEditLines,
   agentMultiEdit,
   agentOutline,
   agentResolveImage,
@@ -75,6 +77,7 @@ export type AgentToolName =
   | "read_file"
   | "write_file"
   | "edit_file"
+  | "edit_lines"
   | "multi_edit"
   | "outline"
   | "list_dir"
@@ -110,6 +113,7 @@ export type AgentToolName =
 export const MUTATING_TOOLS = new Set<AgentToolName>([
   "write_file",
   "edit_file",
+  "edit_lines",
   "multi_edit",
   "bash",
   "bash_bg",
@@ -282,6 +286,30 @@ function proseAfter(raw: string): string {
   return (tc === -1 ? t : t.slice(0, tc)).trim();
 }
 
+// ── Hashline anchor mode ──
+// When on, read_file prefixes every line with its edit anchor ("22:abc→")
+// and edit_lines replaces edit_file as the documented editor (edit_file stays
+// executable as a fallback for models that emit it anyway). Flipped per
+// session (Settings/bench); the Rust side mirrors the flag for read_file.
+let anchorsMode = false;
+export function agentSetEditAnchors(on: boolean): void {
+  anchorsMode = on;
+  try {
+    void agentSetEditAnchorsIpc(on).catch(() => {});
+  } catch {
+    /* no backend (tests) — docs-side switch still applies */
+  }
+}
+
+const ANCHOR_READ_NOTE: Record<"zh" | "en", string> = {
+  zh: `每行行首带编辑锚点 "行号:哈希→"(如 "22:abc→"),编辑时直接把它填进 edit_lines 的 anchor。`,
+  en: `Every line is prefixed with its edit anchor "LINE:HASH→" (e.g. "22:abc→") — pass that straight into edit_lines anchors.`,
+};
+const EDIT_LINES_DOC: Record<"zh" | "en", string> = {
+  zh: `- edit_lines: 按行锚点批量改行(锚点=read_file 行首的 "22:abc")。op: replace(anchor 单行,或 anchor+end_anchor 区间;content 为新内容,空串=删除)、insert_after(anchor|"0" 文件头|"EOF" 文件尾)。content 只写文件内容,不要带锚点前缀。args: { "path", "edits": [{ "op": "replace", "anchor": "22:abc", "content": "新行" }] }`,
+  en: `- edit_lines: batch line edits addressed by anchors (the "22:abc" shown by read_file). op: replace (single anchor, or anchor+end_anchor range; content = new text, "" = delete) and insert_after (anchor | "0" BOF | "EOF"). content is plain file content — never include anchor prefixes. args: { "path", "edits": [{ "op": "replace", "anchor": "22:abc", "content": "new line" }] }`,
+};
+
 const TOOL_DOCS: Record<"zh" | "en", string> = {
   zh: `
 - read_file: 读取文件(pdf/docx/xlsx/pptx 也能读:自动提取文本,扫描件 OCR)。只关心某个函数/类时传 symbol,返回该定义完整代码块+调用处清单。args: { "path": string, "offset"?: number(起始行,从1开始), "limit"?: number, "symbol"?: string }
@@ -369,7 +397,19 @@ export function systemPrompt(
   visionReady?: boolean,
 ): string {
   const l = zh ? "zh" : "en";
-  const toolsDoc = TOOL_DOCS[l] + (visionReady ? VISION_TOOL_DOCS[l] : "");
+  let toolsDoc = TOOL_DOCS[l] + (visionReady ? VISION_TOOL_DOCS[l] : "");
+  if (anchorsMode) {
+    // Swap the exact-string editor's doc for the anchor editor's, and teach
+    // read_file's anchor prefixes. edit_file remains executable, undocumented.
+    toolsDoc = toolsDoc
+      .split("\n")
+      .map((line) => {
+        if (line.startsWith("- edit_file:")) return EDIT_LINES_DOC[l];
+        if (line.startsWith("- read_file:")) return `${line} ${ANCHOR_READ_NOTE[l]}`;
+        return line;
+      })
+      .join("\n");
+  }
   // Ground the agent in the real current date/time (chat has this; without it
   // the model guesses from its training cutoff and gets "today/now/recent"
   // wrong — matters for changelogs, git dates, "recent" lookups, etc.).
@@ -575,6 +615,7 @@ const REQUIRED_ARGS: Record<string, string[]> = {
   read_file: ["path"],
   write_file: ["path"],
   edit_file: ["path"],
+  edit_lines: ["path"],
   multi_edit: ["path"],
   view_image: ["path"],
   grep: ["pattern"],
@@ -592,6 +633,7 @@ const ARG_EXAMPLE: Record<string, string> = {
   read_file: '{"path":"src/app.ts"}',
   write_file: '{"path":"notes.md","content":"…"}',
   edit_file: '{"path":"src/app.ts","old_string":"…","new_string":"…"}',
+  edit_lines: '{"path":"src/app.ts","edits":[{"op":"replace","anchor":"22:abc","content":"…"}]}',
   multi_edit: '{"path":"src/app.ts","edits":[{"old_string":"…","new_string":"…"}]}',
   view_image: '{"path":"shot.png"}',
   grep: '{"pattern":"TODO"}',
@@ -766,6 +808,24 @@ async function execTool(
         edits.length > 0
           ? await agentMultiEdit(path, edits)
           : await agentEditFile(path, argOld(a), argNew(a), a.replace_all === true);
+      let after = before;
+      try {
+        after = await readFull(path);
+      } catch {
+        /* ignore */
+      }
+      return { result, diff: { path, before, after } };
+    }
+    case "edit_lines": {
+      const path = argPath(a);
+      if (!path) return { result: MISSING_PATH() };
+      let before = "";
+      try {
+        before = await readFull(path);
+      } catch {
+        /* edit will re-fail with a clear message */
+      }
+      const result = await agentEditLines(path, a.edits ?? null);
       let after = before;
       try {
         after = await readFull(path);
@@ -1051,6 +1111,7 @@ export function digestForCall(
     case "web_search":
       return (str("query") || str("pattern")).slice(0, 80);
     case "edit_file":
+    case "edit_lines":
     case "write_file":
     case "multi_edit":
       return str("path");

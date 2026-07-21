@@ -188,6 +188,10 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
             ag::agent_set_lang(l);
             Value::Null
         }),
+        "agent_set_edit_anchors" => {
+            ag::agent_set_edit_anchors(b_arg(&args, "on").unwrap_or(false));
+            Ok(Value::Null)
+        }
         "agent_get_workspace" => ok(ag::agent_get_workspace()),
         "agent_grant_dir" => req_s(&args, "path").and_then(|p| res(ag::agent_grant_dir(p))),
         "agent_revoke_dir" => req_s(&args, "path").map(|p| {
@@ -222,6 +226,10 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
             (Ok(p), Ok(o), Ok(n)) => res(ag::agent_edit_file(p, o, n, b_arg(&args, "replace_all"))),
             (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
         },
+        "agent_edit_lines" => req_s(&args, "path").and_then(|p| {
+            let edits = arg(&args, "edits").cloned().unwrap_or(Value::Null);
+            res(ag::agent_edit_lines(p, edits))
+        }),
         "agent_multi_edit" => {
             let edits = arg(&args, "edits")
                 .cloned()
@@ -309,6 +317,11 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
 }
 
 fn main() {
+    // Bench A/B hook: flip hashline anchors on from the environment so the
+    // whole session (read_file prefixes + edit_lines) runs in anchor mode.
+    if std::env::var("CHATY_EDIT_ANCHORS").map(|v| v == "1").unwrap_or(false) {
+        ag::agent_set_edit_anchors(true);
+    }
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };

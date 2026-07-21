@@ -102,7 +102,12 @@ async function main() {
     }
     return bridge.call(cmd, args ?? {});
   });
-  const { runAgentTurn } = await import("../../src/lib/agentLoop");
+  const loop = await import("../../src/lib/agentLoop");
+  const { runAgentTurn } = loop;
+  // CHATY_EDIT_ANCHORS=1: hashline A/B — docs side here, Rust side reads the
+  // same env at headless boot. Optional chaining keeps the runner usable
+  // against older agentLoop checkouts (worktree replays).
+  if (process.env.CHATY_EDIT_ANCHORS === "1") loop.agentSetEditAnchors?.(true);
 
   const runsDir = path.join(here, "runs");
   mkdirSync(runsDir, { recursive: true });

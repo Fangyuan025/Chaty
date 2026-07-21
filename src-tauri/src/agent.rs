@@ -50,6 +50,21 @@ pub fn agent_set_lang(lang: String) {
     *LANG.lock().unwrap() = if lang == "en" { Lang::En } else { Lang::Zh };
 }
 
+/// Hashline anchor mode: read_file prefixes every line with `N:hh→` and the
+/// edit_lines tool becomes the documented editor (exact-string edit_file stays
+/// executable as a fallback). Off by default; flipped per session by the
+/// frontend, or by the CHATY_EDIT_ANCHORS env var (bench A/B, headless boot).
+static EDIT_ANCHORS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+pub fn agent_set_edit_anchors(on: bool) {
+    EDIT_ANCHORS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn anchors_on() -> bool {
+    EDIT_ANCHORS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Pick the session-language variant of a model-visible string.
 pub(crate) fn tr(zh: &str, en: &str) -> String {
     match *LANG.lock().unwrap() {
@@ -294,6 +309,7 @@ pub fn agent_read_file(
     }
     let want = limit.unwrap_or(MAX_READ_LINES).clamp(1, MAX_READ_LINES);
 
+    let anchors = anchors_on();
     let mut out = String::new();
     let mut end = start; // exclusive
     for (i, line) in all.iter().enumerate().skip(start).take(want) {
@@ -306,13 +322,16 @@ pub fn agent_read_file(
         } else {
             line
         };
-        if !out.is_empty() && out.len() + line.len() + 1 > budget {
+        // Hashline mode: every line carries its edit anchor, so the model can
+        // address edit_lines ops straight from what it just read.
+        let display = if anchors { format!("{}→{}", anchor_of(i + 1, line), line) } else { line.to_string() };
+        if !out.is_empty() && out.len() + display.len() + 1 > budget {
             break;
         }
         if !out.is_empty() {
             out.push('\n');
         }
-        out.push_str(line);
+        out.push_str(&display);
         end = i + 1;
     }
 
@@ -973,6 +992,259 @@ pub fn agent_edit_file(
         rel_display(&root, &abs),
         if all { count } else { 1 },
         numbered_context(&updated, start_line, span),
+        syntax_note(&abs, was_clean)
+    ))
+}
+
+// ── Hashline anchors (ported from xai-org/grok-build's hashline scheme) ──
+// Anchor = "LINE:HASH", HASH = 3 lowercase letters from a whitespace-normalized
+// FNV-1a-32 of the line. Line numbers alone go stale after any edit above;
+// exact-string patches pay for uniqueness in tokens. The anchor pins identity
+// (hash) to position (line) so an edit names its target in ~8 characters.
+
+/// Whitespace-normalized FNV-1a-32: trim + collapse internal whitespace runs.
+/// Stable across formatter-only churn; distinguishes real content changes.
+fn line_hash(line: &str) -> u32 {
+    const FNV_OFFSET: u32 = 2_166_136_261;
+    const FNV_PRIME: u32 = 16_777_619;
+    let mut h = FNV_OFFSET;
+    let mut prev_ws = false;
+    for byte in line.trim().bytes() {
+        if byte.is_ascii_whitespace() {
+            if !prev_ws {
+                h ^= b' ' as u32;
+                h = h.wrapping_mul(FNV_PRIME);
+                prev_ws = true;
+            }
+        } else {
+            h ^= byte as u32;
+            h = h.wrapping_mul(FNV_PRIME);
+            prev_ws = false;
+        }
+    }
+    h
+}
+
+/// Three lowercase letters, one per byte region of the hash.
+fn encode_line_hash(hash: u32) -> String {
+    (0..3).map(|i| (((hash >> (i * 8)) % 26) as u8 + b'a') as char).collect()
+}
+
+/// `"22:abc"` for 1-based line `idx1` with content `line`.
+pub(crate) fn anchor_of(idx1: usize, line: &str) -> String {
+    format!("{idx1}:{}", encode_line_hash(line_hash(line)))
+}
+
+/// A parsed `"LINE:HASH"` anchor from model input.
+struct ParsedAnchor {
+    line1: usize,
+    hash: String,
+}
+
+fn parse_anchor(s: &str) -> Option<ParsedAnchor> {
+    let (l, h) = s.trim().split_once(':')?;
+    let line1: usize = l.trim().parse().ok()?;
+    let hash = h.trim().to_ascii_lowercase();
+    if line1 == 0 || hash.is_empty() || hash.len() > 4 || !hash.bytes().all(|b| b.is_ascii_lowercase()) {
+        return None;
+    }
+    Some(ParsedAnchor { line1, hash })
+}
+
+const ANCHOR_SHIFT_RADIUS: usize = 20;
+
+/// Resolve an anchor against current lines: exact line+hash, else a unique
+/// hash match within ±ANCHOR_SHIFT_RADIUS (edits above shift everything).
+/// Ok(0-based index, shifted?) — Err(reason) when missing or ambiguous.
+fn resolve_anchor(a: &ParsedAnchor, lines: &[&str]) -> Result<(usize, bool), String> {
+    let idx0 = a.line1 - 1;
+    if idx0 < lines.len() && encode_line_hash(line_hash(lines[idx0])) == a.hash {
+        return Ok((idx0, false));
+    }
+    let lo = idx0.saturating_sub(ANCHOR_SHIFT_RADIUS);
+    let hi = (idx0 + ANCHOR_SHIFT_RADIUS + 1).min(lines.len());
+    let hits: Vec<usize> = (lo..hi)
+        .filter(|&i| encode_line_hash(line_hash(lines[i])) == a.hash)
+        .collect();
+    match hits.len() {
+        1 => Ok((hits[0], true)),
+        0 => Err(trf!(
+            "锚点 {}:{} 不匹配当前文件(该行已被改动或行号越界)",
+            "anchor {}:{} does not match the current file (line changed or out of range)",
+            a.line1, a.hash
+        )),
+        n => Err(trf!(
+            "锚点 {}:{} 有歧义:附近 {n} 行有相同哈希,请 read_file 后用新锚点",
+            "anchor {}:{} is ambiguous — {n} nearby lines share this hash; re-read and use fresh anchors",
+            a.line1, a.hash
+        )),
+    }
+}
+
+/// `N:hh→content` lines for [line0, line0+span) with ±3 context — the fresh
+/// anchors the model needs for its NEXT edit, no re-read required.
+fn anchored_context(text: &str, line0: usize, span: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let s = line0.saturating_sub(3);
+    let e = (line0 + span + 3).min(lines.len());
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate().take(e).skip(s) {
+        let l: String = line.chars().take(200).collect();
+        out.push_str(&format!("{}→{}\n", anchor_of(i + 1, line), l));
+    }
+    out
+}
+
+/// One resolved hashline op: replace [start,end) with new_lines (insert when
+/// start == end).
+struct ResolvedOp {
+    start: usize,
+    end: usize,
+    new_lines: Vec<String>,
+}
+
+/// Batch line edits addressed by hashline anchors. `edits` is the model's
+/// JSON: an array of {op:"replace",anchor,end_anchor?,content} /
+/// {op:"insert_after",anchor,content} — anchor "0" = BOF, "EOF" = EOF for
+/// insert_after. Tolerates a stringified array (models double-encode).
+#[tauri::command]
+pub fn agent_edit_lines(path: String, edits: serde_json::Value) -> Result<String, String> {
+    let abs = resolve(&path)?;
+    let text = std::fs::read_to_string(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
+    let had_trailing_nl = text.ends_with('\n');
+    let lines: Vec<&str> = text.lines().collect();
+
+    // Accept array | single object | stringified array.
+    let arr: Vec<serde_json::Value> = match edits {
+        serde_json::Value::Array(a) => a,
+        serde_json::Value::String(s) => serde_json::from_str(&s)
+            .map_err(|e| trf!("edits 不是合法的 JSON 数组: {e}", "edits is not a valid JSON array: {e}"))?,
+        v @ serde_json::Value::Object(_) => vec![v],
+        _ => return Err(tr("edits 必须是编辑操作数组", "edits must be an array of edit operations")),
+    };
+    if arr.is_empty() {
+        return Err(tr("edits 为空", "edits is empty"));
+    }
+
+    let as_str = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    let mut ops: Vec<ResolvedOp> = Vec::new();
+    let mut shifted_notes: Vec<String> = Vec::new();
+    for (i, e) in arr.iter().enumerate() {
+        let op = as_str(e, "op").unwrap_or_default();
+        let content = as_str(e, "content").unwrap_or_default();
+        // Anchor prefixes pasted into content = the model copied read_file
+        // output verbatim; applying it would corrupt the file.
+        for (ln, l) in content.lines().enumerate() {
+            let t = l.trim_start();
+            if let Some((before, _)) = t.split_once('→') {
+                if before.len() <= 8 && before.contains(':') && !before.contains(' ') {
+                    return Err(trf!(
+                        "content 第 {} 行仍带着锚点前缀(如 \"22:abc→\")。请去掉每行的前缀和 → 分隔符,只保留文件内容后重试",
+                        "content line {} still carries an anchor prefix (like \"22:abc→\"). Strip the prefix and the → separator from every line, keep only the file content, and retry",
+                        ln + 1
+                    ));
+                }
+            }
+        }
+        let new_lines: Vec<String> = if content.is_empty() {
+            Vec::new()
+        } else {
+            content.lines().map(str::to_string).collect()
+        };
+        let anchor_raw = as_str(e, "anchor").unwrap_or_default();
+        match op.as_str() {
+            "replace" => {
+                let a = parse_anchor(&anchor_raw).ok_or_else(|| trf!(
+                    "第 {} 个操作的 anchor 无效:应为 read_file 里看到的 \"行号:哈希\"(如 \"22:abc\")",
+                    "op {}: invalid anchor — use the \"LINE:HASH\" shown by read_file (e.g. \"22:abc\")",
+                    i + 1
+                ))?;
+                let (s0, sh) = resolve_anchor(&a, &lines)?;
+                if sh { shifted_notes.push(trf!("{}:{} → 第 {} 行", "{}:{} → line {}", a.line1, a.hash, s0 + 1)); }
+                let e0 = match as_str(e, "end_anchor") {
+                    Some(ea) if !ea.trim().is_empty() => {
+                        let b = parse_anchor(&ea).ok_or_else(|| tr("end_anchor 无效", "invalid end_anchor"))?;
+                        let (idx, sh2) = resolve_anchor(&b, &lines)?;
+                        if sh2 { shifted_notes.push(trf!("{}:{} → 第 {} 行", "{}:{} → line {}", b.line1, b.hash, idx + 1)); }
+                        if idx < s0 {
+                            return Err(tr("end_anchor 在 anchor 之前", "end_anchor precedes anchor"));
+                        }
+                        idx + 1
+                    }
+                    _ => s0 + 1,
+                };
+                ops.push(ResolvedOp { start: s0, end: e0, new_lines });
+            }
+            "insert_after" => {
+                let at = match anchor_raw.trim() {
+                    "0" | "0:" => 0,
+                    "EOF" | "eof" => lines.len(),
+                    s => {
+                        let a = parse_anchor(s).ok_or_else(|| trf!(
+                            "第 {} 个操作的 anchor 无效:\"行号:哈希\"、\"0\"(文件头)或 \"EOF\"(文件尾)",
+                            "op {}: invalid anchor — \"LINE:HASH\", \"0\" (BOF) or \"EOF\"",
+                            i + 1
+                        ))?;
+                        let (idx, sh) = resolve_anchor(&a, &lines)?;
+                        if sh { shifted_notes.push(trf!("{}:{} → 第 {} 行", "{}:{} → line {}", a.line1, a.hash, idx + 1)); }
+                        idx + 1
+                    }
+                };
+                if new_lines.is_empty() {
+                    return Err(tr("insert_after 的 content 不能为空", "insert_after needs non-empty content"));
+                }
+                ops.push(ResolvedOp { start: at, end: at, new_lines });
+            }
+            other => {
+                return Err(trf!(
+                    "未知 op \"{other}\":支持 replace / insert_after",
+                    "unknown op \"{other}\": supported ops are replace / insert_after"
+                ));
+            }
+        }
+    }
+
+    // Overlap check, then bottom-up application so indices stay valid.
+    let mut order: Vec<usize> = (0..ops.len()).collect();
+    order.sort_by_key(|&i| (ops[i].start, ops[i].end));
+    for w in order.windows(2) {
+        let (a, b) = (&ops[w[0]], &ops[w[1]]);
+        if b.start < a.end {
+            return Err(tr("编辑区间重叠,请拆成不重叠的操作", "edit ranges overlap — split into non-overlapping ops"));
+        }
+    }
+    cp_record(&abs);
+    let was_clean = syntax_check(&abs).map(|r| r.is_ok());
+    let mut new_lines_all: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    for &i in order.iter().rev() {
+        let op = &ops[i];
+        new_lines_all.splice(op.start..op.end, op.new_lines.iter().cloned());
+    }
+    let mut updated = new_lines_all.join("\n");
+    if had_trailing_nl && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    std::fs::write(&abs, updated.as_bytes()).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
+
+    let root = workspace()?;
+    let first = order.first().map(|&i| ops[i].start).unwrap_or(0);
+    let span: usize = ops.iter().map(|o| o.new_lines.len().max(1)).sum();
+    let shifted = if shifted_notes.is_empty() {
+        String::new()
+    } else {
+        trf!(
+            "\n(部分锚点行号已漂移,按内容对齐: {})",
+            "\n(some anchors had shifted and were matched by content: {})",
+            shifted_notes.join(", ")
+        )
+    };
+    Ok(trf!(
+        "已编辑 {}({} 个操作)。{}修改后该区域(含新锚点):\n{}{}",
+        "edited {} ({} op(s)).{} The region now reads (fresh anchors included):\n{}{}",
+        rel_display(&root, &abs),
+        ops.len(),
+        shifted,
+        anchored_context(&updated, first, span),
         syntax_note(&abs, was_clean)
     ))
 }
@@ -2661,6 +2933,97 @@ mod tests {
 
     fn set_ws(dir: &Path) {
         *WORKSPACE.lock().unwrap() = Some(dir.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn hashline_anchor_basics() {
+        // Whitespace-normalized: indentation and internal runs don't matter.
+        assert_eq!(line_hash("  return x  "), line_hash("return    x"));
+        assert_ne!(line_hash("return x"), line_hash("returnx"));
+        let a = anchor_of(22, "return x");
+        assert!(a.starts_with("22:") && a.len() == 22.to_string().len() + 4);
+        let p = parse_anchor(&a).unwrap();
+        assert_eq!(p.line1, 22);
+        assert!(parse_anchor("0:abc").is_none());
+        assert!(parse_anchor("x:abc").is_none());
+        assert!(parse_anchor("5:ab1").is_none());
+        // Uppercase hashes are tolerated (normalized down).
+        assert!(parse_anchor("5:ABC").is_some());
+    }
+
+    #[test]
+    fn hashline_resolve_shift_and_ambiguity() {
+        let lines = vec!["alpha", "beta", "gamma", "beta", "delta"];
+        // Exact hit.
+        let h = encode_line_hash(line_hash("gamma"));
+        let (idx, shifted) = resolve_anchor(&ParsedAnchor { line1: 3, hash: h }, &lines).unwrap();
+        assert_eq!((idx, shifted), (2, false));
+        // Shifted but unique.
+        let h = encode_line_hash(line_hash("delta"));
+        let (idx, shifted) = resolve_anchor(&ParsedAnchor { line1: 3, hash: h }, &lines).unwrap();
+        assert_eq!((idx, shifted), (4, true));
+        // Ambiguous: two "beta" lines within radius.
+        let h = encode_line_hash(line_hash("beta"));
+        let err = resolve_anchor(&ParsedAnchor { line1: 3, hash: h }, &lines).unwrap_err();
+        assert!(err.contains("歧义") || err.contains("ambiguous"), "{err}");
+    }
+
+    #[test]
+    fn hashline_edit_lines_end_to_end() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-agent-hl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "one\ntwo\nthree\nfour\n").unwrap();
+        let a2 = anchor_of(2, "two");
+        let a3 = anchor_of(3, "three");
+        // replace range [2..3] + insert at EOF, applied bottom-up in one batch.
+        let edits = serde_json::json!([
+            { "op": "replace", "anchor": a2, "end_anchor": a3, "content": "TWO\nTHREE" },
+            { "op": "insert_after", "anchor": "EOF", "content": "five" },
+        ]);
+        let out = agent_edit_lines("a.txt".into(), edits).unwrap();
+        assert!(out.contains("2 个操作") || out.contains("2 op(s)"), "{out}");
+        assert!(out.contains('→'), "fresh anchors expected: {out}");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "one\nTWO\nTHREE\nfour\nfive\n");
+        // Stale anchor after the file changed → clear error.
+        let stale = serde_json::json!([{ "op": "replace", "anchor": a2, "content": "x" }]);
+        let err = agent_edit_lines("a.txt".into(), stale).unwrap_err();
+        assert!(err.contains("不匹配") || err.contains("does not match"), "{err}");
+        // Content carrying pasted anchor prefixes is rejected.
+        let a1 = anchor_of(1, "one");
+        let paste = serde_json::json!([{ "op": "replace", "anchor": a1, "content": "5:abc→one" }]);
+        let err = agent_edit_lines("a.txt".into(), paste).unwrap_err();
+        assert!(err.contains("锚点前缀") || err.contains("anchor prefix"), "{err}");
+        // Overlapping ranges are rejected.
+        let a1 = anchor_of(1, "one");
+        let a4 = anchor_of(4, "four");
+        let overlap = serde_json::json!([
+            { "op": "replace", "anchor": a1, "end_anchor": a4, "content": "x" },
+            { "op": "replace", "anchor": a4, "content": "y" },
+        ]);
+        let err = agent_edit_lines("a.txt".into(), overlap).unwrap_err();
+        assert!(err.contains("重叠") || err.contains("overlap"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hashline_read_prefixes_when_enabled() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-agent-hlr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        std::fs::write(dir.join("b.txt"), "hello\nworld\n").unwrap();
+        agent_set_edit_anchors(true);
+        let out = agent_read_file("b.txt".into(), None, None, None, None).unwrap();
+        agent_set_edit_anchors(false);
+        assert!(out.lines().next().unwrap().starts_with("1:"), "{out}");
+        assert!(out.contains("→hello"), "{out}");
+        let plain = agent_read_file("b.txt".into(), None, None, None, None).unwrap();
+        assert!(plain.starts_with("hello"), "{plain}");
     }
 
     /// Tests share the global WORKSPACE, so they must not run concurrently.
