@@ -156,9 +156,13 @@ async function main() {
       const signal = { cancelled: false };
 
       // One turn; if the loop pauses at the step limit, nudge it on (max 3 turns)
-      // — mirrors a user clicking Continue.
+      // — mirrors a user clicking Continue. The conversation must thread
+      // through `history` like the app does: without it every Continue turn
+      // was amnesiac (system + "继续" only — the task itself was gone), so
+      // paused tasks devolved into repo tours and ask_user("what task?").
       let prompt = instruction;
-      const history: unknown[] = [];
+      const history: { role: string; content: string; images: string[] }[] = [];
+      let finalText = "";
       for (turns = 1; turns <= 3; turns++) {
         let pausedAtSteps = false;
         await new Promise<void>((resolve) => {
@@ -179,13 +183,15 @@ async function main() {
               if (!seenSteps.has(s.id)) { seenSteps.add(s.id); steps++; }
               if (s.status !== "running") trace({ ev: "step", call: s.call, status: s.status, result: s.result?.slice(0, 4000) });
             },
-            onFinal: (text, _think, reason) => { trace({ ev: "final", reason: reason ?? "done", text }); pausedAtSteps = reason === "steps"; resolve(); },
+            onFinal: (text, _think, reason) => { trace({ ev: "final", reason: reason ?? "done", text }); finalText = text; pausedAtSteps = reason === "steps"; resolve(); },
             onError: (m) => { error = m; resolve(); },
             onAskUser: async (_q, options) => options[0] ?? "continue",
           });
         });
         if (error || !pausedAtSteps) break;
-        prompt = "继续";
+        history.push({ role: "user", content: prompt, images: [] });
+        history.push({ role: "assistant", content: finalText, images: [] });
+        prompt = process.env.CHATY_BENCH_LANG === "zh" ? "继续" : "Continue.";
       }
 
       let resolved = false;
