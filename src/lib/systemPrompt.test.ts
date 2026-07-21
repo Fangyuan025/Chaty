@@ -73,7 +73,10 @@ describe("systemPrompt behavior contracts", () => {
       for (const isZh of [true, false]) {
         const p = systemPrompt("/ws", isZh, "normal", undefined, false);
         expect(p).toContain("- edit_lines:");
-        expect(p).not.toContain("- edit_file:");
+        // No mention may survive anywhere (docs, write_file preference,
+        // caution line) — a prompt recommending an unlisted tool made the
+        // model avoid editing altogether in the first anchor smoke.
+        expect(p).not.toContain("edit_file");
         expect(p).toContain(isZh ? "行号:哈希→" : 'LINE:HASH→');
       }
     } finally {
