@@ -211,6 +211,13 @@ export const T = {
   canvasReload: { zh: "刷新页面(重新运行脚本)", en: "Reload the page (re-runs scripts)" },
   canvasStop: { zh: "停止", en: "Stop" },
   canvasFollow: { zh: "↓ 跟随修改", en: "↓ Follow edits" },
+  canvasEditModeLabel: { zh: "画布 HTML 编辑模式", en: "Canvas HTML edit mode" },
+  canvasEditModeHint: {
+    zh: "补丁:模型输出查找/替换块,快但要求逐字回显;整页重写:模型输出完整 HTML,系统随流式输出实时计算 diff——较小的模型建议用重写,更稳。",
+    en: "Patch: the model emits search/replace blocks — fast, but needs verbatim echoes. Rewrite: the model streams the full HTML and the system diffs it live — the reliable choice for smaller models.",
+  },
+  canvasEditModePatch: { zh: "补丁", en: "Patch" },
+  canvasEditModeRewrite: { zh: "整页重写", en: "Rewrite" },
   canvasDragHint: { zh: "拖动调宽 · 双击复位", en: "Drag to resize · double-click to reset" },
   canvasComposerEditing: { zh: "正在手动编辑——保存或取消后可继续对话", en: "Hand-editing — save or cancel to keep iterating" },
   canvasSelPrefix: {

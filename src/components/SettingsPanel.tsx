@@ -81,6 +81,10 @@ export interface GenSettings {
   codeTheme: "github-dark" | "atom-one-dark" | "monokai" | "nord";
   /** Chat: collapse long code blocks to a header, focus-follow while streaming. */
   chatCollapseCode: boolean;
+  /** Canvas iterations: search/replace patches (fast, needs verbatim SEARCH
+   *  echoes) or full-document rewrite (the system diffs the stream live —
+   *  the reliable choice for smaller models). */
+  canvasEditMode: "patch" | "rewrite";
   /** UI zoom (0.9–1.2). Applied via the native webview page zoom. */
   uiScale: number;
   /** Composer send key: plain Enter, or ⌘/Ctrl+Enter (Enter = newline). */
@@ -127,6 +131,7 @@ export const defaultSettings: GenSettings = {
   lightScheme: "paper",
   codeTheme: "github-dark",
   chatCollapseCode: true,
+  canvasEditMode: "patch",
   uiScale: 1,
   sendKey: "enter",
   reduceMotion: false,
@@ -503,6 +508,12 @@ export function SettingsPanel({
                   on={value.chatCollapseCode}
                   onToggle={() => set("chatCollapseCode", !value.chatCollapseCode)}
                 />
+              </SetRow>
+              <SetRow label={t("canvasEditModeLabel")} hint={t("canvasEditModeHint")}>
+                <div className="lang-switch">
+                  <button type="button" className={value.canvasEditMode === "patch" ? "active" : ""} onClick={() => set("canvasEditMode", "patch")}>{t("canvasEditModePatch")}</button>
+                  <button type="button" className={value.canvasEditMode === "rewrite" ? "active" : ""} onClick={() => set("canvasEditMode", "rewrite")}>{t("canvasEditModeRewrite")}</button>
+                </div>
               </SetRow>
               <SetRow label={t("setAnswerSize")} hint={t("setAnswerSizeHint")}>
                 <div className="lang-switch">

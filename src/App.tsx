@@ -953,18 +953,29 @@ export default function App() {
     // Prefer a minimal search/replace patch (small output = fast), but allow the
     // model to return the full file instead — small local models rarely echo an
     // exact SEARCH block, so the full-HTML path is the reliable fallback.
+    // Rewrite mode: the model streams the whole corrected document and the
+    // system computes the live diff (buildScanView's full mode). No verbatim
+    // SEARCH echoes required — the reliable path for smaller models.
     const sys =
-      lang === "zh"
-        ? "你是一个网页设计助手，正在修改一个单文件 HTML 文档。\n优先用「查找/替换」补丁做最小改动（更快）：\n<<<<<<< SEARCH\n（从当前 HTML 原样复制、要被替换的片段）\n=======\n（替换后的新片段）\n>>>>>>> REPLACE\n可以输出多个这样的块，每个 SEARCH 必须与当前 HTML 完全一致。\n如果不方便用补丁，就直接在一个 ```html 代码块里返回**完整修正后**的单文件 HTML。\n所有资源必须内联（禁止外部 CDN、字体或图片链接）；不要输出任何解释或思考。"
-        : "You are a web-design assistant editing a single-file HTML document.\nPrefer minimal search/replace patches for speed:\n<<<<<<< SEARCH\n(exact snippet copied verbatim from the current HTML)\n=======\n(the new snippet)\n>>>>>>> REPLACE\nYou may output several blocks; each SEARCH must match the current HTML exactly.\nIf a patch is awkward, instead return the COMPLETE corrected single-file HTML in one ```html code block.\nKeep everything inline (no external CDNs, fonts or image URLs); output no explanation or reasoning.";
+      settings.canvasEditMode === "rewrite"
+        ? lang === "zh"
+          ? "你是一个网页设计助手，正在修改一个单文件 HTML 文档。\n请在一个 ```html 代码块里返回**完整修正后**的单文件 HTML(从 <!doctype html> 到 </html>,包含所有未改动的部分)。\n所有资源必须内联（禁止外部 CDN、字体或图片链接）；不要输出任何解释或思考。"
+          : "You are a web-design assistant editing a single-file HTML document.\nReturn the COMPLETE corrected single-file HTML in one ```html code block (from <!doctype html> to </html>, including every unchanged part).\nKeep everything inline (no external CDNs, fonts or image URLs); output no explanation or reasoning."
+        : lang === "zh"
+          ? "你是一个网页设计助手，正在修改一个单文件 HTML 文档。\n优先用「查找/替换」补丁做最小改动（更快）：\n<<<<<<< SEARCH\n（从当前 HTML 原样复制、要被替换的片段）\n=======\n（替换后的新片段）\n>>>>>>> REPLACE\n可以输出多个这样的块，每个 SEARCH 必须与当前 HTML 完全一致。\n如果不方便用补丁，就直接在一个 ```html 代码块里返回**完整修正后**的单文件 HTML。\n所有资源必须内联（禁止外部 CDN、字体或图片链接）；不要输出任何解释或思考。"
+          : "You are a web-design assistant editing a single-file HTML document.\nPrefer minimal search/replace patches for speed:\n<<<<<<< SEARCH\n(exact snippet copied verbatim from the current HTML)\n=======\n(the new snippet)\n>>>>>>> REPLACE\nYou may output several blocks; each SEARCH must match the current HTML exactly.\nIf a patch is awkward, instead return the COMPLETE corrected single-file HTML in one ```html code block.\nKeep everything inline (no external CDNs, fonts or image URLs); output no explanation or reasoning.";
+    const how =
+      settings.canvasEditMode === "rewrite"
+        ? lang === "zh" ? "（返回完整修正后的 HTML）" : "(return the complete corrected HTML)"
+        : lang === "zh" ? "（用查找/替换补丁，或返回完整 HTML）" : "(as a search/replace patch, or return the full HTML)";
     const user =
       kind === "edit"
         ? lang === "zh"
-          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n请实现以下修改（用查找/替换补丁，或返回完整 HTML）：${payload}`
-          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nApply this change (as a search/replace patch, or return the full HTML): ${payload}`
+          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n请实现以下修改${how}：${payload}`
+          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nApply this change ${how}: ${payload}`
         : lang === "zh"
-          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n它在浏览器中运行时报错：${payload}\n请修复这个错误（用查找/替换补丁，或返回完整 HTML）。`
-          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nIt throws this runtime error: ${payload}\nFix this error (as a search/replace patch, or return the full HTML).`;
+          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n它在浏览器中运行时报错：${payload}\n请修复这个错误${how}。`
+          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nIt throws this runtime error: ${payload}\nFix this error ${how}.`;
     const note =
       (kind === "edit" ? `${t("canvasEdit")}：${payload}` : `${t("canvasFix")}：${payload}`).slice(
         0,
