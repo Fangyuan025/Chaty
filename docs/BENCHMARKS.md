@@ -27,6 +27,34 @@ django slice are the signal, not any single instance.
 These numbers are **not** leaderboard submissions and are not directly
 comparable to leaderboard entries (subset + harness deviations below).
 
+## v1.9 agent vs v1.8.4 — fixed-harness rerun (2026-07-22)
+
+While building v1.9's reliability work we found and fixed two harness bugs
+that affected the published runs above: recorded step counts were inflated
+~2× (double-counted step events), and "Continue" turns after the step limit
+carried **no conversation history** — the task text itself was gone, so
+turns 2–3 wandered. The published numbers stand as historical artifacts of
+that harness; they are **not comparable** to the rerun below.
+
+Both agent versions, full 45-task subset, identical fixed harness, same
+model and parameters, one fresh process per task:
+
+| Agent | Resolved | django | sympy | pytest | median steps |
+| --- | --- | --- | --- | --- | --- |
+| **v1.9** (arg-guard, JIT hints, post-edit diagnostics, progress ledger) | **15/45 (33.3 %)** | 9/24 | 4/10 | 2/4 | 24 |
+| v1.8.4 | 12/45 (26.7 %) | 9/24 | 1/10 | 1/4 | 29 |
+
+v1.9-only solves: django-15814, django-16901, pytest-7432, sympy-13757,
+sympy-15345, sympy-23950 (13757 and 7432 had never been solved in any prior
+run). v1.8.4-only: django-13925, django-15525, requests-1142. The gap
+concentrates in sympy — the slice where post-edit diagnostics (typo-level
+name scan) and the recovery guards bite hardest — and v1.9 solves with
+fewer steps. Run disclosures: one v1.9 task (django-14034) was killed by a
+faulty run-watchdog and rerun solo; one v1.9 result row (django-13925) was
+lost to a runner crash at grading and rerun solo; both retries scored ✗.
+Artifacts: `runs/ab-final45-v19-2026-07-22.jsonl`,
+`runs/ab-final45-old184-2026-07-22.jsonl`.
+
 ## SWE-bench Verified subset (ChatyCoder-Bench)
 
 Harness: [`bench/coder/`](../bench/coder/README.md) at commit `57adac9`. It
