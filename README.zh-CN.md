@@ -74,11 +74,11 @@ Deep Research 与免手语音。
 
 | 基准 | 智能体 | 结果 |
 | --- | --- | --- |
-| SWE-bench Verified — 45 题 macOS 验证子集 | **Chaty Coder**(完整工具链) | **9/45** |
-| — 同一子集、同一模型 | 裸 bash 智能体(消融对照) | 6/45 |
+| SWE-bench Verified — 45 题 macOS 验证子集 | **Chaty v1.9 智能体** | **15/45(33%)** |
+| — 同一子集、同一模型、同一环境 | Chaty v1.8.4 智能体 | 12/45(27%) |
 | Terminal-Bench core v0.1.1 | Chaty 协议,纯 bash 界面 | 15/77 |
 
-同模型、同任务:接上 Chaty 的工具层,SWE-bench 解题数比裸 bash 多出一半——在占比最大的 django 上是 **3.5 倍**(7/24 vs 2/24)。这个差距就是产品本身的价值,用数字量出来。方法学、运行产物与诚实对比说明(子集、macOS 环境——**不可**与官方排行榜数字直接对比):[docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
+一个版本的智能体工作,用自己量自己:**解题 +25%**,步数还更少(中位 24 vs 29)——v1.9 可靠性专项(恢复护栏、编辑后诊断、进度存档)在 sympy 上收益最大(**4/10 vs 1/10**),其中两题是此前任何配置都从未解出的。方法学、运行产物、harness 修复披露与诚实对比说明(子集、macOS 环境——**不可**与官方排行榜数字直接对比):[docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
 
 <br />
 

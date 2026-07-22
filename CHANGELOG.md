@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.9.0 — The agent proves itself (2026-07-22)
+
+A reliability release built the hard way: every agent change gated by A/B runs
+on the real 35B-A3B (MoE) bench model, full-suite reruns on a repaired
+harness, and one honest negative result. **v1.9 resolves 15/45 on the
+SWE-bench Verified subset vs 12/45 for v1.8.4** — same model, same harness,
+fewer steps (median 24 vs 29). Details and disclosures: docs/BENCHMARKS.md.
+
+### Coding agent: recovery and self-awareness
+
+- **Format slips can't spiral anymore.** A tool call missing a required argument is corrected with a filled-in example and retried without ever entering the conversation — small no-think models used to imitate their own empty-argument calls into a dead loop. Repeats of a just-errored call get "fix the arguments" advice instead of a generic lecture; missing-arg errors are single-language with a copyable example.
+- **Post-edit diagnostics.** Every edit/write confirmation now catches the bug class that compiles fine: a flat-scope AST scan flags possibly-undefined Python names (typos) as a soft note, and syntax-gate failures attach the offending region with line numbers — no re-read needed to locate the error.
+- **A progress ledger survives compaction.** The first time context compaction kicks in, the files already edited are pinned into the transcript, so the model stops redoing work it can no longer see.
+- **Your project rules, whoever they were written for.** The project guide now also reads `.cursorrules`, `.github/copilot-instructions.md`, and `.cursor/rules/*.mdc`.
+- **Experimental: anchor-based line editing** (`edit_lines`, hashline-style `LINE:HASH` anchors with shift recovery). Off by default: our A/B showed the 3B-active bench model reads worse with anchor prefixes — kept for bigger models, documented honestly.
+
+### Design Canvas
+
+- **Generation is interruptible** — Send becomes Stop while an iteration streams; stopping discards the partial quietly.
+- **Hand-editing keeps syntax colors** (highlighted backdrop under a transparent editor, scroll-synced, both themes).
+- **The live scan respects you**: wheel/touch breaks follow so you can inspect mid-generation, a pill resumes it, long documents render windowed instead of rebuilding every row per tick, and version switching locks during generation (it would diff against the wrong base).
+- **HTML edit mode setting** — *Patch* (search/replace, fast) or *Rewrite* (the model streams the full document and Chaty computes the live diff). **Rewrite is the reliable choice for smaller models.**
+
+### Benchmarks & harness
+
+- Fixed two harness bugs that shaped the v1.8.5 published numbers: step counts were double-counted, and "Continue" turns after the step limit carried no history (the task itself vanished). Old numbers stay published as artifacts of that harness; the new comparison reruns **both** versions on the fixed harness.
+- Bench tooling grew per-task transcripts, language/anchor switches, and watchdog patterns — all documented in the repo.
+
 ## v1.8.5 — The canvas opens up, the agent slims down (2026-07-18)
 
 The Design Canvas stops being a black box, and the coding agent gets a deep

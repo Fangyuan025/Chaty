@@ -75,11 +75,11 @@ One local model for every row — **Qwen3.5-35B-A3B** (MoE, ~3 B active per toke
 
 | Benchmark | Agent | Result |
 | --- | --- | --- |
-| SWE-bench Verified — 45-task macOS-validated subset | **Chaty Coder** (full tool loop) | **9/45** |
-| — same subset, same model | bare bash agent (ablation) | 6/45 |
+| SWE-bench Verified — 45-task macOS-validated subset | **Chaty v1.9 agent** | **15/45 (33 %)** |
+| — same subset, same model, same harness | Chaty v1.8.4 agent | 12/45 (27 %) |
 | Terminal-Bench core v0.1.1 | Chaty agent protocol, bash-only | 15/77 |
 
-Same model, same tasks: Chaty's tool layer resolves **half again as many** SWE-bench instances as a bare bash agent — on django, the largest slice, **3.5×** (7/24 vs 2/24). That gap is the product, measured. Methodology, run artifacts, and honest-comparison notes (subset, macOS harness — *not* comparable to leaderboard numbers): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+One release of agent work, measured against itself: **+25 % resolved**, with fewer steps (median 24 vs 29) — the v1.9 reliability pass (recovery guards, post-edit diagnostics, progress ledger) lands hardest on sympy (**4/10 vs 1/10**). Two of v1.9's solves had never been solved by any earlier configuration. Methodology, run artifacts, harness-fix disclosures, and honest-comparison notes (subset, macOS harness — *not* comparable to leaderboard numbers): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 <br />
 
