@@ -10,19 +10,26 @@ user downloads inside the app, running entirely on one machine:
 
 ## Headline
 
-| Track | Agent | Result |
-| --- | --- | --- |
-| SWE-bench Verified — 45-task macOS-validated subset | **Chaty Coder** (full tool loop) | **9/45 (20 %)** |
-| SWE-bench Verified — same subset, same model | bare bash agent (ablation) | 6/45 (13.3 %) |
-| Terminal-Bench core v0.1.1 | Chaty agent protocol, bash-only surface | **15/77 (19.5 %)** |
+One comparison is the whole story:
 
-Same model, same tasks, same grading: Chaty's tool loop resolves **half again
-as many** instances as a bare bash agent (9 vs 6) — and on django, the
-largest and most structured slice, **3.5×** (7/24 vs 2/24). That delta —
-repo-aware search, symbol-level reads, precise edits, targeted test runs —
-is the product, measured. At N = 45 individual tasks do flip both ways
-(the bare agent solved 3 the full loop missed); the aggregate and the
-django slice are the signal, not any single instance.
+| SWE-bench Verified — 45-task macOS-validated subset | Resolved |
+| --- | --- |
+| **Chaty agent (v1.9)** — the full tool loop | **15/45 (33 %)** |
+| bare bash agent — same model, same tasks (ablation) | 6/45 (13.3 %) |
+
+Same model, same tasks, same grading: the Chaty tool loop resolves **2.5×**
+what a bare bash loop does — django **9/24 vs 2/24**, sympy 4/10 vs 2/10.
+That delta — repo-aware search, symbol-level reads, precise edits, recovery
+guards, post-edit diagnostics, targeted test runs — is the product, measured.
+At N = 45 individual tasks flip both ways; the aggregate and the repo slices
+are the signal, not any single instance.
+
+Comparability note: the bare-bash pipeline is single-turn by design and was
+never affected by the two Coder-harness bugs fixed during v1.9 (inflated
+step counts; history-less Continue turns), so its 2026-07-17 run remains
+valid under the fixed harness that produced the v1.9 number. Version-over-
+version data (v1.9 vs v1.8.4: 15/45 vs 12/45) and the Terminal-Bench run
+(15/77) live in the sections below.
 
 These numbers are **not** leaderboard submissions and are not directly
 comparable to leaderboard entries (subset + harness deviations below).
