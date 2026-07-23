@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NimbusWorks — Team signup</title>
+<style>
+  body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#1c2330}
+  header{background:#5b2d5b;color:#fff;padding:14px 20px;font-size:18px;font-weight:600}
+  .wrap{max-width:560px;margin:20px auto;background:#fff;border:1px solid #dfe3ea;border-radius:8px;padding:20px}
+  label{display:block;font-size:12px;color:#5b6472;margin-top:12px}
+  input,select{font:inherit;width:100%;box-sizing:border-box;padding:8px;border:1px solid #c6ccd8;border-radius:6px;margin-top:4px}
+  .opt{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:14px}
+  .opt input{width:auto;margin:0}
+  button{font:inherit;padding:8px 14px;border:0;border-radius:6px;background:#5b2d5b;color:#fff;cursor:pointer;margin-top:16px}
+  button.ghost{background:#eef1f6;color:#1c2330;margin-right:8px}
+  .err{color:#b3261e;font-weight:600;margin-top:10px}
+  .okmsg{color:#0a7a33;font-weight:700;margin-top:10px}
+  .summary{background:#fafbfd;border:1px solid #eef1f6;border-radius:6px;padding:10px;margin-top:14px}
+  .step{font-size:12px;color:#5b6472;letter-spacing:.05em;text-transform:uppercase}
+</style>
+</head>
+<body>
+<header>NimbusWorks — Team signup</header>
+<div class="wrap" id="app"></div>
+<script>
+const S = { first:"", last:"", email:"", company:"", teamSize:"", plan:"", addons:[], start:"", terms:false, step:1 };
+const PLANS = { Starter: 19, Growth: 49, Scale: 99 };
+const ADDONS = { "Priority support": 10, "Audit logs": 15, "SSO": 25 };
+function total() { return (PLANS[S.plan]||0) + S.addons.reduce((s,a)=>s+(ADDONS[a]||0),0); }
+function render(err, okmsg) {
+  const app = document.getElementById("app");
+  if (S.step === 1) {
+    app.innerHTML = `
+      <div class="step">Step 1 of 2 — About your team</div>
+      <label for="f-first">First name</label><input id="f-first" name="first" value="${S.first}">
+      <label for="f-last">Last name</label><input id="f-last" name="last" value="${S.last}">
+      <label for="f-email">Work email</label><input id="f-email" name="email" value="${S.email}">
+      <label for="f-company">Company</label><input id="f-company" name="company" value="${S.company}">
+      <label for="f-size">Team size</label>
+      <select id="f-size" name="teamSize">
+        <option value=""></option><option>1-10</option><option>11-50</option><option>51-200</option><option>200+</option>
+      </select>
+      <button id="continue" onclick="next()">Continue</button>
+      <div class="err">${err||""}</div>`;
+    document.getElementById("f-size").value = S.teamSize;
+    return;
+  }
+  app.innerHTML = `
+    <div class="step">Step 2 of 2 — Plan & start</div>
+    <label>Plan (per user / month)</label>
+    ${Object.entries(PLANS).map(([p,v])=>`<div class="opt"><input type="radio" name="plan" id="plan-${p}" ${S.plan===p?"checked":""} onchange="S.plan='${p}';paint()"><label for="plan-${p}" style="margin:0">${p} — $${v}</label></div>`).join("")}
+    <label style="margin-top:14px">Add-ons</label>
+    ${Object.entries(ADDONS).map(([a,v])=>`<div class="opt"><input type="checkbox" id="addon-${a.replace(/\s/g,'-')}" ${S.addons.includes(a)?"checked":""} onchange="tog('${a}')"><label for="addon-${a.replace(/\s/g,'-')}" style="margin:0">${a} — +$${v}</label></div>`).join("")}
+    <label for="f-start">Start date (YYYY-MM-DD)</label>
+    <input id="f-start" name="start" placeholder="YYYY-MM-DD" value="${S.start}">
+    <div class="opt" style="margin-top:12px"><input type="checkbox" id="f-terms" ${S.terms?"checked":""} onchange="S.terms=this.checked"><label for="f-terms" style="margin:0">I accept the terms of service</label></div>
+    <div class="summary">Monthly total per user: <b id="quote">$${total()}</b></div>
+    <div><button class="ghost" id="back" onclick="S.step=1;render()">Back</button>
+    <button id="submit" onclick="submitForm()">Submit application</button></div>
+    <div class="err">${err||""}</div><div class="okmsg">${okmsg||""}</div>`;
+}
+function paint(){ document.getElementById("quote").textContent = "$" + total(); }
+function tog(a){ S.addons = S.addons.includes(a) ? S.addons.filter(x=>x!==a) : [...S.addons, a]; paint(); }
+function grab1(){
+  S.first=document.getElementById("f-first").value; S.last=document.getElementById("f-last").value;
+  S.email=document.getElementById("f-email").value; S.company=document.getElementById("f-company").value;
+  S.teamSize=document.getElementById("f-size").value; }
+function next(){ grab1(); if(!S.first||!S.last||!S.email||!S.company||!S.teamSize){render("All fields are required.");return;} S.step=2; render(); }
+async function submitForm(){
+  S.start = document.getElementById("f-start").value;
+  const r = await fetch("/api/forms/submit", { method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ first:S.first,last:S.last,email:S.email,company:S.company,teamSize:S.teamSize,plan:S.plan,start:S.start,addons:S.addons,terms:S.terms }) });
+  const d = await r.json();
+  if (d.error) render("Error: " + d.error);
+  else render("", "Application received. Welcome aboard!");
+}
+render();
+</script>
+</body>
+</html>

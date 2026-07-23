@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NimbusWorks Admin — Users</title>
+<style>
+  body{font:14px/1.45 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#1c2330}
+  header{background:#123c5b;color:#fff;padding:14px 20px;font-size:18px;font-weight:600}
+  .wrap{max-width:940px;margin:16px auto;padding:0 16px}
+  .controls{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+  input,select,button{font:inherit;padding:6px 8px;border:1px solid #c6ccd8;border-radius:6px;background:#fff}
+  button{cursor:pointer}
+  button.primary{background:#123c5b;color:#fff;border:0}
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #dfe3ea;border-radius:8px}
+  th,td{padding:8px 10px;border-bottom:1px solid #eef1f6;text-align:left;font-size:13px}
+  th button{border:0;background:none;font-weight:700;padding:0;cursor:pointer}
+  .off{color:#b3261e;font-weight:600}.on{color:#0a7a33;font-weight:600}
+  .pager{display:flex;gap:10px;align-items:center;margin-top:10px}
+  #a-count{color:#5b6472}
+  .editrow td{background:#fafbfd}
+  .editrow select,.editrow label{margin-right:10px}
+</style>
+</head>
+<body>
+<header>NimbusWorks Admin — Users</header>
+<div class="wrap">
+  <div class="controls">
+    <input id="a-q" name="search" aria-label="Search users" placeholder="Search name or email" oninput="P.page=1;render()">
+    <select id="a-role" name="rolefilter" aria-label="Filter by role" onchange="P.page=1;render()">
+      <option value="">All roles</option>
+      <option>Admin</option><option>Manager</option><option>Editor</option><option>Viewer</option>
+    </select>
+    <span id="a-count"></span>
+  </div>
+  <table>
+    <thead><tr>
+      <th><button id="sort-name" onclick="sortBy('name')">Name ⇅</button></th>
+      <th>Email</th><th>Role</th><th>Active</th>
+      <th><button id="sort-joined" onclick="sortBy('joined')">Joined ⇅</button></th>
+      <th></th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="pager">
+    <button id="prev" onclick="page(-1)">Prev</button>
+    <span id="pageinfo"></span>
+    <button id="next" onclick="page(1)">Next</button>
+  </div>
+</div>
+<script>
+let USERS = [], P = { page: 1, sort: "name", dir: 1, editing: 0 };
+const PAGE = 10;
+async function api(p, body) {
+  const r = await fetch("/api/admin/" + p, body ? { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) } : {});
+  return r.json();
+}
+async function load() { USERS = (await api("data")).users; render(); }
+function filtered() {
+  const q = document.getElementById("a-q").value.trim().toLowerCase();
+  const role = document.getElementById("a-role").value;
+  let list = USERS.filter(u => (!q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)) && (!role || u.role === role));
+  list.sort((a,b) => (a[P.sort] < b[P.sort] ? -1 : a[P.sort] > b[P.sort] ? 1 : 0) * P.dir);
+  return list;
+}
+function sortBy(k) { if (P.sort === k) P.dir *= -1; else { P.sort = k; P.dir = 1; } render(); }
+function page(d) { P.page += d; render(); }
+function render() {
+  const list = filtered();
+  const pages = Math.max(1, Math.ceil(list.length / PAGE));
+  P.page = Math.min(Math.max(1, P.page), pages);
+  const slice = list.slice((P.page - 1) * PAGE, P.page * PAGE);
+  document.getElementById("a-count").textContent = `${list.length} users shown`;
+  document.getElementById("pageinfo").textContent = `Page ${P.page} of ${pages}`;
+  document.getElementById("rows").innerHTML = slice.map(u => P.editing === u.id ? `
+    <tr class="editrow"><td>${esc(u.name)}</td><td>${esc(u.email)}</td>
+      <td colspan="3">
+        <select id="e-role" aria-label="Role">${["Admin","Manager","Editor","Viewer"].map(r=>`<option ${u.role===r?"selected":""}>${r}</option>`).join("")}</select>
+        <label><input type="checkbox" id="e-active" ${u.active?"checked":""}> Active</label>
+      </td>
+      <td><button class="primary" id="e-save" onclick="save(${u.id})">Save</button>
+          <button id="e-cancel" onclick="P.editing=0;render()">Cancel</button></td></tr>` : `
+    <tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${u.role}</td>
+      <td class="${u.active?"on":"off"}">${u.active?"active":"inactive"}</td>
+      <td>${u.joined}</td>
+      <td><button id="edit-${u.id}" onclick="P.editing=${u.id};render()">Edit — ${esc(u.name)}</button></td></tr>`).join("");
+}
+async function save(id) {
+  const role = document.getElementById("e-role").value;
+  const active = document.getElementById("e-active").checked;
+  await api("update", { id, role, active });
+  P.editing = 0;
+  USERS = (await api("data")).users;
+  render();
+}
+function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+load();
+</script>
+</body>
+</html>

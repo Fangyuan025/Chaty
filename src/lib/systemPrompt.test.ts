@@ -65,6 +65,27 @@ describe("systemPrompt behavior contracts", () => {
     expect(zh).not.toContain("browser_navigate");
   });
 
+  // Text browser mode: the vision suite minus the two screenshot tools, with
+  // the guidance tail swapped. Derived from VISION_TOOL_DOCS by line filter —
+  // this breaks loudly if those doc lines are reworked and the derivation
+  // silently stops matching.
+  test("browser text mode documents the suite without screenshot tools", () => {
+    for (const isZh of [true, false]) {
+      const p = systemPrompt("/ws", isZh, "normal", undefined, false, true);
+      expect(p).toContain("- browser_navigate:");
+      expect(p).toContain("- browser_read:");
+      expect(p).toContain("- browser_click:");
+      expect(p).toContain("- browser_type:");
+      expect(p).toContain("- browser_eval:");
+      expect(p).not.toContain("browser_screenshot");
+      expect(p).not.toContain("browser_snapshot");
+      expect(p).toContain(isZh ? "就是你的眼睛" : "browser_read is your eyes");
+    }
+    // vision wins when both flags are set — screenshots ARE available then
+    const both = systemPrompt("/ws", false, "normal", undefined, true, true);
+    expect(both).toContain("- browser_screenshot:");
+  });
+
   // The swap is a startsWith match on the doc lines — this breaks loudly if
   // someone reworks those lines and the anchor variants silently stop applying.
   test("anchor mode swaps the editor docs in both languages", () => {

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Nimbus Board</title>
+<style>
+  body{font:14px/1.45 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#1c2330}
+  header{background:#0e5b4a;color:#fff;padding:14px 20px;font-size:18px;font-weight:600}
+  .wrap{display:flex;gap:12px;padding:16px;max-width:1000px;margin:0 auto;align-items:flex-start}
+  .col{flex:1;background:#eef1f6;border-radius:8px;padding:10px}
+  .col h2{font-size:14px;margin:2px 4px 10px;text-transform:uppercase;letter-spacing:.04em;color:#3c4657}
+  .card{background:#fff;border:1px solid #dfe3ea;border-radius:6px;padding:8px 10px;margin-bottom:8px}
+  .card .who{font-size:12px;color:#5b6472}
+  .btns{display:flex;gap:6px;margin-top:6px}
+  button{font:inherit;padding:4px 8px;border:0;border-radius:5px;background:#dfe3ea;cursor:pointer}
+  .addpane{background:#fff;border:1px solid #dfe3ea;border-radius:8px;padding:12px;width:230px}
+  input,select{font:inherit;width:100%;box-sizing:border-box;padding:6px;border:1px solid #c6ccd8;border-radius:6px;margin-top:6px}
+  label{display:block;font-size:12px;color:#5b6472;margin-top:8px}
+  .add{background:#0e5b4a;color:#fff;margin-top:10px}
+</style>
+</head>
+<body>
+<header>Nimbus Board — Sprint 34</header>
+<div class="wrap">
+  <div class="col" id="col-todo"><h2>To do</h2></div>
+  <div class="col" id="col-doing"><h2>Doing</h2></div>
+  <div class="col" id="col-done"><h2>Done</h2></div>
+  <div class="addpane">
+    <h2 style="font-size:14px;margin:2px 0">Add a card</h2>
+    <label for="new-title">Card title</label>
+    <input id="new-title" name="title" aria-label="Card title">
+    <label for="new-assignee">Assignee</label>
+    <select id="new-assignee" name="assignee" aria-label="Assignee">
+      <option>Mira</option><option>Sam</option><option>Dana</option>
+    </select>
+    <label for="new-col">Column</label>
+    <select id="new-col" name="column" aria-label="Column">
+      <option value="todo">To do</option><option value="doing">Doing</option><option value="done">Done</option>
+    </select>
+    <button class="add" id="add-card" onclick="addCard()">Add card</button>
+  </div>
+</div>
+<script>
+let COLS = { todo: [], doing: [], done: [] };
+async function api(p, body) {
+  const r = await fetch("/api/board/" + p, body ? { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) } : {});
+  return r.json();
+}
+async function load() { COLS = (await api("data")).cols; render(); }
+function render() {
+  for (const c of ["todo", "doing", "done"]) {
+    const el = document.getElementById("col-" + c);
+    el.querySelectorAll(".card").forEach(n => n.remove());
+    for (const k of COLS[c]) {
+      const d = document.createElement("div");
+      d.className = "card";
+      d.innerHTML = `<div>${esc(k.title)}</div><div class="who">${esc(k.assignee)}</div>
+        <div class="btns">
+          ${c !== "todo" ? `<button id="left-${k.id}" aria-label='Move "${esc(k.title)}" left' onclick="mv(${k.id},'left')">◀</button>` : ""}
+          ${c !== "done" ? `<button id="right-${k.id}" aria-label='Move "${esc(k.title)}" right' onclick="mv(${k.id},'right')">▶</button>` : ""}
+          <button id="del-${k.id}" aria-label='Delete "${esc(k.title)}"' onclick="del(${k.id})">✕</button>
+        </div>`;
+      el.appendChild(d);
+    }
+  }
+}
+async function mv(id, dir) { COLS = (await api("move", { id, dir })).cols; render(); }
+async function del(id) { COLS = (await api("del", { id })).cols; render(); }
+async function addCard() {
+  const r = await api("add", {
+    title: document.getElementById("new-title").value,
+    assignee: document.getElementById("new-assignee").value,
+    col: document.getElementById("new-col").value,
+  });
+  if (!r.error) { COLS = r.cols; document.getElementById("new-title").value = ""; render(); }
+}
+function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+load();
+</script>
+</body>
+</html>

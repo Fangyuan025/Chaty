@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NimbusWorks Handbook</title>
+<style>
+  body{font:14px/1.6 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#1c2330}
+  header{background:#7a3b12;color:#fff;padding:14px 20px;font-size:18px;font-weight:600}
+  .wrap{display:flex;gap:20px;max-width:960px;margin:16px auto;padding:0 16px}
+  nav{width:200px;flex-shrink:0}
+  nav a{display:block;padding:7px 10px;border-radius:6px;color:#1c2330;text-decoration:none;margin-bottom:2px}
+  nav a.on{background:#7a3b12;color:#fff}
+  main{flex:1;background:#fff;border:1px solid #dfe3ea;border-radius:8px;padding:18px 22px}
+  h1{font-size:19px;margin:2px 0 12px}
+  a.inline{color:#7a3b12}
+</style>
+</head>
+<body>
+<header>NimbusWorks Handbook</header>
+<div class="wrap"><nav id="nav"></nav><main id="page"></main></div>
+<script>
+const PAGES = {
+  history: { title: "Company history", html: `
+    <p>NimbusWorks was founded in <b>2014</b> in Toronto by Sofia Aldana and two co-founders.
+    The first product, <a class="inline" href="#products">Relay</a>, shipped in 2016 and put the
+    company on the map. A second act came with <a class="inline" href="#products">Atlas</a> in 2019,
+    and the platform era began with Beacon in 2023.</p>
+    <p>Growth milestones are tracked on the <a class="inline" href="#offices">Offices</a> page.</p>` },
+  products: { title: "Products", html: `
+    <p><b>Relay</b> (shipped 2016) — team messaging. Still the highest-revenue line.</p>
+    <p><b>Atlas</b> (shipped 2019) — the analytics suite, led end-to-end by
+    <a class="inline" href="#team">Priya Nand</a>.</p>
+    <p><b>Beacon</b> (shipped 2023) — infrastructure monitoring, born out of an internal tool.</p>` },
+  team: { title: "Leadership team", html: `
+    <p><b>Sofia Aldana</b> — CEO and co-founder.</p>
+    <p><b>Priya Nand</b> — VP of Engineering. Joined 2017; led the <a class="inline" href="#products">Atlas</a>
+    program from prototype to launch.</p>
+    <p><b>Theo Brandt</b> — Head of Design, owns the design system.</p>` },
+  offices: { title: "Offices", html: `
+    <p><b>Toronto</b> — HQ, opened 2014.</p>
+    <p><b>Berlin</b> — first international office, opened 2018.</p>
+    <p><b>Lisbon</b> — engineering hub, opened <b>2021</b>.</p>
+    <p><b>Singapore</b> — APAC office, opened 2024.</p>` },
+  benefits: { title: "Benefits & time off", html: `
+    <p>Everyone gets <b>25 days</b> of paid time off per year. Unused days carry over
+    with a maximum carryover of <b>5 days</b> into the next calendar year.</p>
+    <p>Annual learning budget: <b>$1,500</b> per person. Wellness stipend: $60/month.</p>` },
+  security: { title: "Security policy", html: `
+    <p>All laptops use full-disk encryption. Production secrets rotate every <b>90 days</b>.</p>
+    <p>Incident response: sev-1 incidents page the on-call within 5 minutes; the response-time
+    SLA for customer notification is <b>4 hours</b>.</p>` },
+  releases: { title: "Release process", html: `
+    <p>Release trains cut every <b>Wednesday</b>. Hotfixes need approval from <b>2 reviewers</b>.</p>
+    <p>A change freeze applies during the last week of each quarter.</p>` },
+  faq: { title: "FAQ", html: `
+    <p><b>Where do I find office info?</b> See <a class="inline" href="#offices">Offices</a>.</p>
+    <p><b>Who leads engineering?</b> See the <a class="inline" href="#team">Leadership team</a>.</p>
+    <p><b>How much PTO carries over?</b> See <a class="inline" href="#benefits">Benefits</a>.</p>` },
+};
+function render() {
+  const key = (location.hash || "#history").slice(1);
+  const p = PAGES[key] || PAGES.history;
+  document.getElementById("nav").innerHTML = Object.entries(PAGES).map(([k, v]) =>
+    `<a href="#${k}" class="${k === key ? "on" : ""}">${v.title}</a>`).join("");
+  document.getElementById("page").innerHTML = `<h1>${p.title}</h1>` + p.html;
+}
+addEventListener("hashchange", render);
+render();
+</script>
+</body>
+</html>

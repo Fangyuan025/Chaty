@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Nimbus Mail</title>
+<style>
+  body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#1c2330}
+  header{background:#3a2d5b;color:#fff;padding:14px 20px;font-size:18px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+  .wrap{max-width:860px;margin:16px auto;padding:0 16px}
+  .mail{background:#fff;border:1px solid #dfe3ea;border-radius:8px;padding:10px 14px;margin-bottom:8px}
+  .mail .from{font-size:12px;color:#5b6472}
+  .unread .subject{font-weight:700}
+  button{font:inherit;padding:6px 10px;border:0;border-radius:6px;background:#3a2d5b;color:#fff;cursor:pointer}
+  button.ghost{background:#eef1f6;color:#1c2330}
+  textarea,input{font:inherit;width:100%;box-sizing:border-box;padding:8px;border:1px solid #c6ccd8;border-radius:6px;margin-top:6px}
+  .body{white-space:pre-wrap;background:#fafbfd;border:1px solid #eef1f6;border-radius:6px;padding:12px;margin:10px 0}
+  .note{color:#0a7a33;font-weight:600;margin-top:8px}
+  label{display:block;font-size:12px;color:#5b6472;margin-top:10px}
+  .topbtns{display:flex;gap:8px;margin:12px 0}
+  .replied{font-size:12px;color:#0a7a33}
+</style>
+</head>
+<body>
+<header><span>Nimbus Mail — Inbox</span><button id="compose" class="ghost" onclick="view('compose')">Compose</button></header>
+<div class="wrap" id="app"></div>
+<script>
+let EMAILS = [], MODE = { v: "list", id: 0 };
+async function api(p, body) {
+  const r = await fetch("/api/inbox/" + p, body ? { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) } : {});
+  return r.json();
+}
+async function load() { EMAILS = (await api("data")).emails; render(); }
+function view(v, id) { MODE = { v, id: id || 0 }; if (v === "open") open_(id); else render(); }
+async function open_(id) { await api("open", { id }); EMAILS = (await api("data")).emails; render(); }
+function render() {
+  const app = document.getElementById("app");
+  if (MODE.v === "list") {
+    const rows = EMAILS.filter(e => !e.archived).map(e => `
+      <div class="mail ${e.read ? "" : "unread"}">
+        <div class="from">${esc(e.from)}</div>
+        <div class="subject">${esc(e.subject)} ${e.replies.length ? '<span class="replied">· replied</span>' : ""}</div>
+        <div style="margin-top:6px"><button id="open-${e.id}" class="ghost" onclick="view('open',${e.id})">Open — ${esc(e.subject)}</button></div>
+      </div>`).join("");
+    app.innerHTML = rows || "<p>Inbox zero. Nothing here.</p>";
+    return;
+  }
+  if (MODE.v === "compose") {
+    app.innerHTML = `
+      <div class="mail"><h3 style="margin:4px 0">New message</h3>
+        <label for="c-to">To</label><input id="c-to" name="to" aria-label="To">
+        <label for="c-subject">Subject</label><input id="c-subject" name="subject" aria-label="Subject">
+        <label for="c-body">Message body</label><textarea id="c-body" name="body" aria-label="Message body" rows="6"></textarea>
+        <div class="topbtns"><button id="c-send" onclick="sendNew()">Send</button>
+        <button class="ghost" onclick="view('list')">Back to inbox</button></div>
+        <div class="note" id="c-note"></div>
+      </div>`;
+    return;
+  }
+  const e = EMAILS.find(x => x.id === MODE.id);
+  app.innerHTML = `
+    <div class="mail">
+      <div class="from">${esc(e.from)}</div>
+      <h3 style="margin:4px 0">${esc(e.subject)}</h3>
+      <div class="body">${esc(e.body)}</div>
+      ${e.replies.map(r => `<div class="body"><b>Your reply:</b>\n${esc(r)}</div>`).join("")}
+      <label for="reply-body">Reply</label>
+      <textarea id="reply-body" name="reply" aria-label="Reply body" rows="4"></textarea>
+      <div class="topbtns">
+        <button id="send-reply" onclick="reply(${e.id})">Send reply</button>
+        <button id="archive-btn" class="ghost" onclick="archive(${e.id})">Archive</button>
+        <button id="back" class="ghost" onclick="view('list')">Back to inbox</button>
+      </div>
+      <div class="note" id="note"></div>
+    </div>`;
+}
+async function reply(id) {
+  const body = document.getElementById("reply-body").value;
+  const r = await api("reply", { id, body });
+  document.getElementById("note").textContent = r.error ? "Error: " + r.error : "Reply sent.";
+  EMAILS = (await api("data")).emails;
+}
+async function archive(id) { await api("archive", { id }); view("list"); load(); }
+async function sendNew() {
+  const r = await api("compose", {
+    to: document.getElementById("c-to").value,
+    subject: document.getElementById("c-subject").value,
+    body: document.getElementById("c-body").value,
+  });
+  document.getElementById("c-note").textContent = r.error ? "Error: " + r.error : "Message sent.";
+}
+function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+load();
+</script>
+</body>
+</html>

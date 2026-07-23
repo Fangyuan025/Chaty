@@ -231,6 +231,9 @@ export interface AgentOptions {
   /** The loaded model has a vision encoder — unlock `view_image` / browser
    *  visual verification, and let the model see user-attached images. */
   visionReady?: boolean;
+  /** Expose the browser suite to models WITHOUT vision: same tools minus the
+   *  two screenshot captures — browser_read's digest is the model's eyes. */
+  browserTextMode?: boolean;
   /** Absolute paths of images the user attached to this turn (vision models). */
   images?: string[];
   signal: AgentSignal;
@@ -389,19 +392,38 @@ const VISION_TOOL_DOCS: Record<"zh" | "en", string> = {
 Content/text/state → browser_read; looks/rendering → browser_screenshot/snapshot and SEE it. Verify the result after every interaction before moving on. Research goes through web_search/web_fetch first; open the browser only for real page interaction or visual verification.`,
 };
 
+/** Browser suite for models WITHOUT vision — derived from VISION_TOOL_DOCS
+ *  (single source, no drift): drop the two screenshot tools, swap the
+ *  guidance tail. browser_read's digest is the model's only eyes. */
+const TEXT_BROWSER_TAIL: Record<"zh" | "en", string> = {
+  zh: `该模型没有视觉,截图工具不可用:browser_read 就是你的眼睛——每次交互后先用它核实结果再继续。查资料优先 web_search/web_fetch,需要真实操作网页时才用浏览器。`,
+  en: `This model has no vision and screenshot tools are unavailable: browser_read is your eyes — verify with it after every interaction before moving on. Research goes through web_search/web_fetch first; open the browser only for real page interaction.`,
+};
+function textBrowserDocs(l: "zh" | "en"): string {
+  return VISION_TOOL_DOCS[l]
+    .split("\n")
+    .filter(
+      (ln) => !ln.startsWith("- browser_screenshot:") && !ln.startsWith("- browser_snapshot:"),
+    )
+    .map((ln) => (ln.startsWith("- ") || ln.trim() === "" ? ln : TEXT_BROWSER_TAIL[l]))
+    .join("\n");
+}
+
 export function systemPrompt(
   workspace: string,
   zh: boolean,
   mode: ThinkMode,
   projectDoc?: { name: string; text: string },
   visionReady?: boolean,
+  browserText?: boolean,
 ): string {
   const l = zh ? "zh" : "en";
   // In anchor mode, every prompt mention of the exact-string editor follows
   // the docs swap ("prefer edit_file", the caution line) — recommending a
   // tool that is not in the list makes the model avoid editing entirely.
   const anchorize = (p: string) => (anchorsMode ? p.split("edit_file").join("edit_lines") : p);
-  let toolsDoc = TOOL_DOCS[l] + (visionReady ? VISION_TOOL_DOCS[l] : "");
+  let toolsDoc =
+    TOOL_DOCS[l] + (visionReady ? VISION_TOOL_DOCS[l] : browserText ? textBrowserDocs(l) : "");
   if (anchorsMode) {
     // Swap the exact-string editor's doc for the anchor editor's, and teach
     // read_file's anchor prefixes. edit_file remains executable, undocumented —
@@ -1300,7 +1322,17 @@ export async function runAgentTurn(
   // otherwise it's plain text as before.
   const userImages = opts.visionReady && opts.images?.length ? opts.images : undefined;
   const messages: ChatMessage[] = [
-    { role: "system", content: systemPrompt(workspace, lang === "zh", opts.thinkMode, opts.projectDoc, opts.visionReady) },
+    {
+      role: "system",
+      content: systemPrompt(
+        workspace,
+        lang === "zh",
+        opts.thinkMode,
+        opts.projectDoc,
+        opts.visionReady,
+        opts.browserTextMode,
+      ),
+    },
     ...keptHistory,
     { role: "user", content: userInput + noThinkSuffix, ...(userImages ? { images: userImages } : {}) },
   ];
@@ -1701,6 +1733,18 @@ export async function runAgentTurn(
       // browser_screenshot: capture the live page and attach it to the next
       // turn as vision — the model literally sees the rendered web app.
       if (call.name === "browser_screenshot" || call.name === "browser_snapshot") {
+        if (!opts.visionReady) {
+          // No vision encoder: never attach an image the engine can't embed.
+          const msg =
+            lang === "zh"
+              ? "该模型没有视觉,无法查看截图——用 browser_read 获取页面文字和元素状态。"
+              : "No vision on this model — use browser_read for page text and element state.";
+          stepObj.status = "error";
+          stepObj.result = msg;
+          cb.onStep(stepObj);
+          pushUser(toolResultMsg(call.name, msg));
+          continue;
+        }
         try {
           const abs =
             call.name === "browser_snapshot" ? await browserSnapshot() : await browserScreenshot();

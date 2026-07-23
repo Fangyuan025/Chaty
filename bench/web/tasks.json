@@ -1,0 +1,364 @@
+[
+  {
+    "id": "shop-cheapest-audio",
+    "site": "shop.html",
+    "type": "answer",
+    "instruction": "Open {BASE}/shop.html — the Nimbus Supply Store. Find the cheapest product in the Audio category and tell me its exact name and price in your final answer.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/shop.html" } },
+        { "cmd": "browser_read", "args": {} }
+      ],
+      "finalText": "The cheapest Audio product is the Onyx Mic Arm at $34.00."
+    }
+  },
+  {
+    "id": "shop-add-qty2",
+    "site": "shop.html",
+    "type": "state",
+    "instruction": "Open {BASE}/shop.html. Add exactly 2 units of the \"Cinder USB-C Cable 2m\" to the cart (and nothing else).",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/shop.html" } },
+        { "cmd": "browser_click", "args": { "selector": "#add-p04" } },
+        { "cmd": "browser_click", "args": { "selector": "#add-p04" } }
+      ]
+    }
+  },
+  {
+    "id": "shop-order-cheapest-keyboard",
+    "site": "shop.html",
+    "type": "state",
+    "instruction": "Open {BASE}/shop.html. Order the cheapest keyboard in the store: add just that one item to the cart, then check out with full name \"Riley Yu\", shipping address \"88 Pine St, Toronto\", and standard shipping.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/shop.html" } },
+        { "cmd": "browser_click", "args": { "selector": "#add-p06" } },
+        { "cmd": "browser_type", "args": { "steps": [
+          { "selector": "#co-name", "text": "Riley Yu" },
+          { "selector": "#co-address", "text": "88 Pine St, Toronto" }
+        ] } },
+        { "cmd": "browser_click", "args": { "selector": "#place-order" } }
+      ]
+    }
+  },
+  {
+    "id": "shop-price-sum",
+    "site": "shop.html",
+    "type": "answer",
+    "instruction": "Open {BASE}/shop.html. What would the \"Juniper Webcam 1080p\" and the \"Krypton Ring Light\" cost together? Give the combined price in your final answer.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/shop.html" } },
+        { "cmd": "browser_read", "args": {} }
+      ],
+      "finalText": "Together they cost $77.49."
+    }
+  },
+  {
+    "id": "shop-cart-cheap-cables",
+    "site": "shop.html",
+    "type": "state",
+    "instruction": "Open {BASE}/shop.html. Add every product in the Cables category that costs less than $10 to the cart, one unit each, and nothing else.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/shop.html" } },
+        { "cmd": "browser_click", "args": { "selector": "#add-p03" } },
+        { "cmd": "browser_click", "args": { "selector": "#add-p04" } },
+        { "cmd": "browser_click", "args": { "selector": "#add-p15" } },
+        { "cmd": "browser_click", "args": { "selector": "#add-p21" } }
+      ]
+    }
+  },
+  {
+    "id": "inbox-discount-code",
+    "site": "inbox.html",
+    "type": "answer",
+    "instruction": "Open {BASE}/inbox.html — your mail inbox. BlueSky Travel sent a promotional email. What discount code does it contain? Answer with the code.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/inbox.html" } },
+        { "cmd": "browser_click", "args": { "selector": "#open-3" } }
+      ],
+      "finalText": "The discount code is SKYFALL25."
+    }
+  },
+  {
+    "id": "inbox-reply-po",
+    "site": "inbox.html",
+    "type": "state",
+    "instruction": "Open {BASE}/inbox.html. Acme Billing asked for our purchase order number in their invoice email. Find the PO number in another email in the inbox, then reply to the Acme Billing invoice email with a short message that includes that PO number.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/inbox.html" } },
+        { "cmd": "browser_click", "args": { "selector": "#open-5" } },
+        { "cmd": "browser_click", "args": { "selector": "#back" } },
+        { "cmd": "browser_click", "args": { "selector": "#open-1" } },
+        { "cmd": "browser_type", "args": { "selector": "#reply-body", "text": "Hello — our purchase order number is PO-7741. Please reference it for invoice INV-2093." } },
+        { "cmd": "browser_click", "args": { "selector": "#send-reply" } }
+      ]
+    }
+  },
+  {
+    "id": "inbox-archive-newsletters",
+    "site": "inbox.html",
+    "type": "state",
+    "instruction": "Open {BASE}/inbox.html. Archive every newsletter from The Daily Byte (and nothing else).",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/inbox.html" } },
+        { "cmd": "browser_click", "args": { "selector": "#open-2" } },
+        { "cmd": "browser_click", "args": { "selector": "#archive-btn" } },
+        { "cmd": "browser_click", "args": { "selector": "#open-6" } },
+        { "cmd": "browser_click", "args": { "selector": "#archive-btn" } },
+        { "cmd": "browser_click", "args": { "selector": "#open-9" } },
+        { "cmd": "browser_click", "args": { "selector": "#archive-btn" } }
+      ]
+    }
+  },
+  {
+    "id": "inbox-compose-pilot",
+    "site": "inbox.html",
+    "type": "state",
+    "instruction": "Open {BASE}/inbox.html. Rene Okafor from BrightPath emailed about a partnership. Compose a NEW email to rene@brightpath.example with the subject \"Pilot scope\" and a short body that mentions the Q3 co-marketing pilot, then send it.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/inbox.html" } },
+        { "cmd": "browser_click", "args": { "selector": "#compose" } },
+        { "cmd": "browser_type", "args": { "steps": [
+          { "selector": "#c-to", "text": "rene@brightpath.example" },
+          { "selector": "#c-subject", "text": "Pilot scope" },
+          { "selector": "#c-body", "text": "Hi Rene — following up on the Q3 co-marketing pilot. Here is our proposed scope; happy to refine together." }
+        ] } },
+        { "cmd": "browser_click", "args": { "selector": "#c-send" } }
+      ]
+    }
+  },
+  {
+    "id": "board-move-loginbug",
+    "site": "board.html",
+    "type": "state",
+    "instruction": "Open {BASE}/board.html — the sprint board. Move the card \"Fix login bug\" from To do all the way to Done.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/board.html" } },
+        { "cmd": "browser_click", "args": { "selector": "#right-2" } },
+        { "cmd": "browser_click", "args": { "selector": "#right-2" } }
+      ]
+    }
+  },
+  {
+    "id": "board-add-card",
+    "site": "board.html",
+    "type": "state",
+    "instruction": "Open {BASE}/board.html. Add a new card titled \"Draft press release\" assigned to Dana, in the Doing column.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/board.html" } },
+        { "cmd": "browser_type", "args": { "selector": "#new-title", "text": "Draft press release" } },
+        { "cmd": "browser_type", "args": { "selector": "#new-assignee", "text": "Dana" } },
+        { "cmd": "browser_type", "args": { "selector": "#new-col", "text": "Doing" } },
+        { "cmd": "browser_click", "args": { "selector": "#add-card" } }
+      ]
+    }
+  },
+  {
+    "id": "board-most-cards",
+    "site": "board.html",
+    "type": "answer",
+    "instruction": "Open {BASE}/board.html. Counting all three columns, which assignee has the most cards on the board? Answer with the name.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/board.html" } },
+        { "cmd": "browser_read", "args": {} }
+      ],
+      "finalText": "Sam has the most cards on the board (4)."
+    }
+  },
+  {
+    "id": "board-clear-done",
+    "site": "board.html",
+    "type": "state",
+    "instruction": "Open {BASE}/board.html. Delete every card in the Done column. Leave the other columns untouched.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/board.html" } },
+        { "cmd": "browser_click", "args": { "selector": "#del-6" } },
+        { "cmd": "browser_click", "args": { "selector": "#del-7" } },
+        { "cmd": "browser_click", "args": { "selector": "#del-8" } }
+      ]
+    }
+  },
+  {
+    "id": "wiki-lisbon-year",
+    "site": "wiki.html",
+    "type": "answer",
+    "instruction": "Open {BASE}/wiki.html — the NimbusWorks handbook. In what year did the Lisbon office open? Answer with the year.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/wiki.html#offices" } },
+        { "cmd": "browser_read", "args": {} }
+      ],
+      "finalText": "The Lisbon office opened in 2021."
+    }
+  },
+  {
+    "id": "wiki-pto-carryover",
+    "site": "wiki.html",
+    "type": "answer",
+    "instruction": "Open {BASE}/wiki.html. According to the handbook, how many unused PTO days can carry over into the next year at most? Answer with the number of days.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/wiki.html#benefits" } },
+        { "cmd": "browser_read", "args": {} }
+      ],
+      "finalText": "At most 5 days of PTO carry over."
+    }
+  },
+  {
+    "id": "wiki-vp-product",
+    "site": "wiki.html",
+    "type": "answer",
+    "instruction": "Open {BASE}/wiki.html. Find who the VP of Engineering is, then tell me which product that person led and in what year it shipped.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/wiki.html#team" } },
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/wiki.html#products" } },
+        { "cmd": "browser_read", "args": {} }
+      ],
+      "finalText": "Priya Nand, the VP of Engineering, led Atlas, which shipped in 2019."
+    }
+  },
+  {
+    "id": "forms-register-growth",
+    "site": "forms.html",
+    "type": "state",
+    "instruction": "Open {BASE}/forms.html and complete the team signup: first name Jordan, last name Vega, work email jordan.vega@acme.example, company Acme Corp, team size 11-50. On the next step pick the Growth plan, add ONLY the SSO add-on, set the start date to 2026-03-15, accept the terms, and submit.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/forms.html" } },
+        { "cmd": "browser_type", "args": { "steps": [
+          { "selector": "#f-first", "text": "Jordan" },
+          { "selector": "#f-last", "text": "Vega" },
+          { "selector": "#f-email", "text": "jordan.vega@acme.example" },
+          { "selector": "#f-company", "text": "Acme Corp" }
+        ] } },
+        { "cmd": "browser_type", "args": { "selector": "#f-size", "text": "11-50" } },
+        { "cmd": "browser_click", "args": { "selector": "#continue" } },
+        { "cmd": "browser_click", "args": { "selector": "#plan-Growth" } },
+        { "cmd": "browser_click", "args": { "selector": "#addon-SSO" } },
+        { "cmd": "browser_type", "args": { "selector": "#f-start", "text": "2026-03-15" } },
+        { "cmd": "browser_click", "args": { "selector": "#f-terms" } },
+        { "cmd": "browser_click", "args": { "selector": "#submit" } }
+      ]
+    }
+  },
+  {
+    "id": "forms-date-retry",
+    "site": "forms.html",
+    "type": "state",
+    "instruction": "Open {BASE}/forms.html and sign up: Casey Lund, email casey.lund@brightpath.example, company BrightPath, team size 1-10, Starter plan, no add-ons, accept the terms. Try the start date 2026-01-10 first; if the form rejects it, use 2026-02-01 instead and submit successfully.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/forms.html" } },
+        { "cmd": "browser_type", "args": { "steps": [
+          { "selector": "#f-first", "text": "Casey" },
+          { "selector": "#f-last", "text": "Lund" },
+          { "selector": "#f-email", "text": "casey.lund@brightpath.example" },
+          { "selector": "#f-company", "text": "BrightPath" }
+        ] } },
+        { "cmd": "browser_type", "args": { "selector": "#f-size", "text": "1-10" } },
+        { "cmd": "browser_click", "args": { "selector": "#continue" } },
+        { "cmd": "browser_click", "args": { "selector": "#plan-Starter" } },
+        { "cmd": "browser_type", "args": { "selector": "#f-start", "text": "2026-01-10" } },
+        { "cmd": "browser_click", "args": { "selector": "#f-terms" } },
+        { "cmd": "browser_click", "args": { "selector": "#submit" } },
+        { "cmd": "browser_type", "args": { "selector": "#f-start", "text": "2026-02-01" } },
+        { "cmd": "browser_click", "args": { "selector": "#submit" } }
+      ]
+    }
+  },
+  {
+    "id": "forms-quote",
+    "site": "forms.html",
+    "type": "answer",
+    "instruction": "Open {BASE}/forms.html. Fill step 1 with: Toni Park, toni.park@nimbus.example, company Nimbus, team size 51-200, then continue. On step 2, select the Growth plan with the Audit logs and SSO add-ons. What monthly total per user does the summary show? Answer with the amount.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/forms.html" } },
+        { "cmd": "browser_type", "args": { "steps": [
+          { "selector": "#f-first", "text": "Toni" },
+          { "selector": "#f-last", "text": "Park" },
+          { "selector": "#f-email", "text": "toni.park@nimbus.example" },
+          { "selector": "#f-company", "text": "Nimbus" }
+        ] } },
+        { "cmd": "browser_type", "args": { "selector": "#f-size", "text": "51-200" } },
+        { "cmd": "browser_click", "args": { "selector": "#continue" } },
+        { "cmd": "browser_click", "args": { "selector": "#plan-Growth" } },
+        { "cmd": "browser_click", "args": { "selector": "#addon-Audit-logs" } },
+        { "cmd": "browser_click", "args": { "selector": "#addon-SSO" } },
+        { "cmd": "browser_read", "args": {} }
+      ],
+      "finalText": "The summary shows $89 per user per month."
+    }
+  },
+  {
+    "id": "admin-deactivate",
+    "site": "admin.html",
+    "type": "state",
+    "instruction": "Open {BASE}/admin.html — the user admin. Find the user with email hugo.lam@nimbusworks.example and set them to inactive. Do not change anything else about them.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/admin.html" } },
+        { "cmd": "browser_type", "args": { "selector": "#a-q", "text": "hugo" } },
+        { "cmd": "browser_click", "args": { "selector": "#edit-8" } },
+        { "cmd": "browser_click", "args": { "selector": "#e-active" } },
+        { "cmd": "browser_click", "args": { "selector": "#e-save" } }
+      ]
+    }
+  },
+  {
+    "id": "admin-role-change",
+    "site": "admin.html",
+    "type": "state",
+    "instruction": "Open {BASE}/admin.html. Change Xan Price's role to Editor. Leave their active status as it is.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/admin.html" } },
+        { "cmd": "browser_type", "args": { "selector": "#a-q", "text": "xan" } },
+        { "cmd": "browser_click", "args": { "selector": "#edit-24" } },
+        { "cmd": "browser_type", "args": { "selector": "#e-role", "text": "Editor" } },
+        { "cmd": "browser_click", "args": { "selector": "#e-save" } }
+      ]
+    }
+  },
+  {
+    "id": "admin-count-viewers",
+    "site": "admin.html",
+    "type": "answer",
+    "instruction": "Open {BASE}/admin.html. How many users have the Viewer role? The page can filter by role for you. Answer with the number.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/admin.html" } },
+        { "cmd": "browser_type", "args": { "selector": "#a-role", "text": "Viewer" } },
+        { "cmd": "browser_read", "args": {} }
+      ],
+      "finalText": "There are 10 users with the Viewer role."
+    }
+  },
+  {
+    "id": "admin-newest-user",
+    "site": "admin.html",
+    "type": "answer",
+    "instruction": "Open {BASE}/admin.html. Sort the table by the Joined column to find the most recently joined user. Answer with their full name and join date.",
+    "oracle": {
+      "actions": [
+        { "cmd": "browser_navigate", "args": { "url": "{BASE}/admin.html" } },
+        { "cmd": "browser_click", "args": { "selector": "#sort-joined" } },
+        { "cmd": "browser_click", "args": { "selector": "#sort-joined" } },
+        { "cmd": "browser_read", "args": {} }
+      ],
+      "finalText": "The newest user is Jack Bloom, who joined on 2026-12-27."
+    }
+  }
+]

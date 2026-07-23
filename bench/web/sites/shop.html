@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Nimbus Supply Store</title>
+<style>
+  body{font:14px/1.45 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#1c2330}
+  header{background:#14213d;color:#fff;padding:14px 20px;font-size:18px;font-weight:600}
+  .wrap{display:flex;gap:16px;padding:16px;max-width:1100px;margin:0 auto}
+  .catalog{flex:2}.cartpane{flex:1;background:#fff;border:1px solid #dfe3ea;border-radius:8px;padding:14px;height:fit-content}
+  .controls{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+  input,select,button{font:inherit;padding:6px 8px;border:1px solid #c6ccd8;border-radius:6px;background:#fff}
+  button{cursor:pointer;background:#14213d;color:#fff;border:0}
+  button.ghost{background:#eef1f6;color:#1c2330}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+  .card{background:#fff;border:1px solid #dfe3ea;border-radius:8px;padding:10px}
+  .card h3{margin:0 0 4px;font-size:14px}
+  .muted{color:#5b6472;font-size:12px}
+  .price{font-weight:700;margin:6px 0}
+  .row{display:flex;justify-content:space-between;align-items:center;margin:6px 0;gap:6px}
+  #order-note{color:#0a7a33;font-weight:600;margin-top:8px}
+  .err{color:#b3261e;font-weight:600}
+  h2{font-size:15px;margin:4px 0 10px}
+  label{display:block;font-size:12px;color:#5b6472;margin-top:8px}
+  .co input,.co select{width:100%;box-sizing:border-box}
+</style>
+</head>
+<body>
+<header>Nimbus Supply Store</header>
+<div class="wrap">
+  <div class="catalog">
+    <div class="controls">
+      <input id="q" name="search" aria-label="Search products" placeholder="Search products" oninput="render()">
+      <select id="cat" name="category" aria-label="Category filter" onchange="render()">
+        <option value="">All categories</option>
+        <option>Accessories</option><option>Audio</option><option>Cables</option>
+        <option>Displays</option><option>Video</option>
+      </select>
+      <select id="sort" name="sort" aria-label="Sort products" onchange="render()">
+        <option value="name">Name A–Z</option>
+        <option value="asc">Price: low to high</option>
+        <option value="desc">Price: high to low</option>
+      </select>
+    </div>
+    <div id="grid" class="grid"></div>
+  </div>
+  <div class="cartpane">
+    <h2>Cart</h2>
+    <div id="cart"></div>
+    <div class="co">
+      <h2 style="margin-top:14px">Checkout</h2>
+      <label for="co-name">Full name</label>
+      <input id="co-name" name="fullname" aria-label="Full name">
+      <label for="co-address">Shipping address</label>
+      <input id="co-address" name="address" aria-label="Shipping address">
+      <label for="co-ship">Shipping method</label>
+      <select id="co-ship" name="shipping" aria-label="Shipping method">
+        <option value="standard">standard</option>
+        <option value="express">express</option>
+      </select>
+      <div style="margin-top:10px"><button id="place-order" onclick="checkout()">Place order</button></div>
+      <div id="order-note"></div>
+    </div>
+  </div>
+</div>
+<script>
+let DATA = { products: [], cart: [] };
+async function api(p, body) {
+  const r = await fetch("/api/shop/" + p, body ? { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) } : {});
+  return r.json();
+}
+async function load() { DATA = await api("data"); render(); }
+function render() {
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  const cat = document.getElementById("cat").value;
+  const sort = document.getElementById("sort").value;
+  let list = DATA.products.filter(p => (!q || p.name.toLowerCase().includes(q)) && (!cat || p.cat === cat));
+  list.sort((a,b) => sort === "asc" ? a.price - b.price : sort === "desc" ? b.price - a.price : a.name.localeCompare(b.name));
+  document.getElementById("grid").innerHTML = list.map(p => `
+    <div class="card"><h3>${p.name}</h3>
+      <div class="muted">${p.cat} · ${p.stock} in stock</div>
+      <div class="price">$${p.price.toFixed(2)}</div>
+      <button id="add-${p.id}" onclick="add('${p.id}')">Add to cart — ${p.name}</button>
+    </div>`).join("") || '<div class="muted">No products match.</div>';
+  const cart = DATA.cart.map(c => {
+    const p = DATA.products.find(x => x.id === c.id);
+    return `<div class="row"><span>${p.name} × ${c.qty}</span>
+      <span>$${(p.price*c.qty).toFixed(2)} <button class="ghost" id="rm-${p.id}" onclick="rm('${p.id}')">Remove</button></span></div>`;
+  }).join("");
+  const total = DATA.cart.reduce((s,c) => s + DATA.products.find(x=>x.id===c.id).price*c.qty, 0);
+  document.getElementById("cart").innerHTML = cart
+    ? cart + `<div class="row" style="font-weight:700"><span>Total</span><span id="cart-total">$${total.toFixed(2)}</span></div>`
+    : '<div class="muted">Cart is empty.</div>';
+}
+async function add(id) { DATA.cart = (await api("cart/add", { id })).cart; render(); }
+async function rm(id) { DATA.cart = (await api("cart/remove", { id })).cart; render(); }
+async function checkout() {
+  const r = await api("checkout", {
+    name: document.getElementById("co-name").value,
+    address: document.getElementById("co-address").value,
+    shipping: document.getElementById("co-ship").value,
+  });
+  const n = document.getElementById("order-note");
+  if (r.error) { n.className = "err"; n.textContent = "Error: " + r.error; }
+  else { n.className = ""; n.textContent = `Order placed — total $${r.total.toFixed(2)}`; await load(); }
+}
+load();
+</script>
+</body>
+</html>

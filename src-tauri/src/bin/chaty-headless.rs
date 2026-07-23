@@ -311,6 +311,39 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
             Ok(u) => res(search::fetch_url(u).await),
             Err(e) => Err(e),
         },
+
+        // ---- browser tools (automation Chrome; set CHATY_BROWSER_HEADLESS=1
+        // so bench sessions never open a visible window) ----
+        "browser_navigate" => match req_s(&args, "url") {
+            Ok(u) => res(ag::browser_navigate(u).await),
+            Err(e) => Err(e),
+        },
+        "browser_read" => res(ag::browser_read().await),
+        "browser_screenshot" => res(ag::browser_screenshot().await),
+        "browser_snapshot" => res(ag::browser_snapshot().await),
+        "browser_scroll" => res(
+            ag::browser_scroll(s_arg(&args, "to"), args.get("by").and_then(|v| v.as_f64())).await,
+        ),
+        "browser_eval" => match req_s(&args, "expression") {
+            Ok(x) => res(ag::browser_eval(x).await),
+            Err(e) => Err(e),
+        },
+        "browser_click" => {
+            let steps = args.get("steps").cloned().and_then(|v| serde_json::from_value(v).ok());
+            res(ag::browser_click(s_arg(&args, "selector"), s_arg(&args, "text"), steps).await)
+        }
+        "browser_type" => {
+            let steps = args.get("steps").cloned().and_then(|v| serde_json::from_value(v).ok());
+            res(ag::browser_type(
+                s_arg(&args, "selector"),
+                s_arg(&args, "label"),
+                s_arg(&args, "text"),
+                steps,
+            )
+            .await)
+        }
+        "browser_console" => res(ag::browser_console().await),
+        "browser_close" => res(ag::browser_close().await),
         _ => Err(format!("unsupported in headless bench: {cmd}")),
     };
     reply(id, r);
