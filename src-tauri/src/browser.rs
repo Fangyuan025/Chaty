@@ -43,6 +43,14 @@ enum BrowserCmd {
     Close,
 }
 
+/// Session-language pick for model-visible browser strings (WS2 单语化 —
+/// this module was the one surface that missed the v1.8.5 pass).
+macro_rules! btr {
+    ($zh:literal, $en:literal $(, $arg:expr)* $(,)?) => {
+        if crate::agent::lang_is_en() { format!($en $(, $arg)*) } else { format!($zh $(, $arg)*) }
+    };
+}
+
 /// JS that returns a compact list of the page's interactive elements, so the
 /// model clicks/types against real visible text rather than guessed selectors.
 /// Inputs/textareas/contenteditables also report their CURRENT value, so the
@@ -60,14 +68,29 @@ const PAGE_DIGEST_JS: &str = r#"(function(){
     // authors write exactly to disambiguate ("Move \"Fix login bug\" right").
     var al=(e.getAttribute('aria-label')||'').trim().replace(/\s+/g,' ');
     if(al&&al!==t&&t.replace(/[^\w一-鿿]/g,'').length<3){t=al.slice(0,80);}
-    if(e.isContentEditable){ out.push('可编辑区/editable: '+(e.getAttribute('aria-label')||e.id||'')+' = "'+((e.innerText||'').trim().replace(/\s+/g,' ').slice(0,120))+'"'); }
-    else if(tag==='a'){ if(t) out.push('链接/link: "'+t+'"'); }
-    else if(tag==='button'||e.getAttribute('role')==='button'||e.type==='submit'||e.type==='button'){ if(t) out.push('按钮/button: "'+t+'"'); }
-    else if(tag==='input'||tag==='textarea'){ var h=e.placeholder||e.name||e.getAttribute('aria-label')||e.type||'text'; var v=(e.value||'').trim().replace(/\s+/g,' ').slice(0,120); out.push('输入框/input ['+(e.type||'text')+']: '+h+(v?(' = "'+v+'"'):'')); }
-    else if(tag==='select'){ out.push('下拉/select: '+(e.name||e.id||'')+' = "'+((e.options[e.selectedIndex]||{}).text||'')+'"'); }
+    if(e.isContentEditable){ out.push('__L_EDITABLE__: '+(e.getAttribute('aria-label')||e.id||'')+' = "'+((e.innerText||'').trim().replace(/\s+/g,' ').slice(0,120))+'"'); }
+    else if(tag==='a'){ if(t) out.push('__L_LINK__: "'+t+'"'); }
+    else if(tag==='button'||e.getAttribute('role')==='button'||e.type==='submit'||e.type==='button'){ if(t) out.push('__L_BUTTON__: "'+t+'"'); }
+    else if(tag==='input'||tag==='textarea'){ var h=e.placeholder||e.name||e.getAttribute('aria-label')||e.type||'text'; var v=(e.value||'').trim().replace(/\s+/g,' ').slice(0,120); out.push('__L_INPUT__ ['+(e.type||'text')+']: '+h+(v?(' = "'+v+'"'):'')); }
+    else if(tag==='select'){ out.push('__L_SELECT__: '+(e.name||e.id||'')+' = "'+((e.options[e.selectedIndex]||{}).text||'')+'"'); }
   }
-  return out.length? out.join("\n") : "(未发现明显的可交互元素 / no obvious interactive elements)";
+  return out.length? out.join("\n") : "__L_NONE__";
 })()"#;
+
+/// PAGE_DIGEST_JS with its labels in the session language.
+fn digest_js() -> String {
+    let en = crate::agent::lang_is_en();
+    PAGE_DIGEST_JS
+        .replace("__L_EDITABLE__", if en { "editable" } else { "可编辑区" })
+        .replace("__L_LINK__", if en { "link" } else { "链接" })
+        .replace("__L_BUTTON__", if en { "button" } else { "按钮" })
+        .replace("__L_INPUT__", if en { "input" } else { "输入框" })
+        .replace("__L_SELECT__", if en { "select" } else { "下拉" })
+        .replace(
+            "__L_NONE__",
+            if en { "(no obvious interactive elements)" } else { "(未发现明显的可交互元素)" },
+        )
+}
 
 /// JS returning the page's VISIBLE text (what a person / the vision model would
 /// read), rendered in document order via innerText (which already respects
@@ -81,9 +104,18 @@ const PAGE_TEXT_JS: &str = r#"(function(){
   try{ t=(document.body&&document.body.innerText)||''; }catch(e){ t=''; }
   t=t.replace(/[ \t ]+/g,' ').replace(/\n{3,}/g,'\n\n').split('\n').map(function(l){return l.trim();}).join('\n').replace(/\n{3,}/g,'\n\n').trim();
   var cap=__CAP__;
-  if(t.length>cap){ t=t.slice(0,cap)+'\n…(文字过长已截断 / text truncated)'; }
-  return t||'(页面无可见文字 / no visible text)';
+  if(t.length>cap){ t=t.slice(0,cap)+'\n__L_TRUNC__'; }
+  return t||'__L_EMPTY__';
 })()"#;
+
+/// PAGE_TEXT_JS with the cap substituted and notes in the session language.
+fn page_text_js(cap: usize) -> String {
+    let en = crate::agent::lang_is_en();
+    PAGE_TEXT_JS
+        .replace("__CAP__", &cap.to_string())
+        .replace("__L_TRUNC__", if en { "…(text truncated)" } else { "…(文字过长已截断)" })
+        .replace("__L_EMPTY__", if en { "(no visible text)" } else { "(页面无可见文字)" })
+}
 
 /// Auto-scroll through the whole page (triggering lazy-loaded content) and
 /// return to the top — run before a full-page screenshot. Resolves a promise so
@@ -207,14 +239,14 @@ fn ensure() -> Result<Sender<BrowserCmd>, String> {
     std::thread::Builder::new()
         .name("chaty-browser".into())
         .spawn(move || actor(rx, init_tx))
-        .map_err(|e| format!("无法启动浏览器线程 (failed to start browser thread): {e}"))?;
+        .map_err(|e| btr!("无法启动浏览器线程:{}", "failed to start the browser thread: {}", e))?;
     match init_rx.recv() {
         Ok(Ok(())) => {
             *guard = Some(tx.clone());
             Ok(tx)
         }
         Ok(Err(e)) => Err(e),
-        Err(_) => Err("浏览器线程初始化失败 (browser thread failed to init)".into()),
+        Err(_) => Err(btr!("浏览器线程初始化失败", "the browser thread failed to initialize")),
     }
 }
 
@@ -458,7 +490,7 @@ impl BrowserSession {
             let frame = match self.ws.read() {
                 Ok(Message::Text(t)) => t.to_string(),
                 Ok(Message::Binary(_)) | Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
-                Ok(Message::Close(_)) => return Err("CDP 连接已关闭 (CDP connection closed)".into()),
+                Ok(Message::Close(_)) => return Err(btr!("CDP 连接已关闭", "the CDP connection closed")),
                 Ok(Message::Frame(_)) => continue,
                 Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     return Err("CDP 读取超时 (CDP read timed out)".into());
@@ -560,8 +592,12 @@ impl BrowserSession {
         let title = self.eval("document.title").unwrap_or_default().trim_matches('"').to_string();
         let final_url = self.eval("location.href").unwrap_or_default().trim_matches('"').to_string();
         let rich = self.rich_digest(4000)?;
-        Ok(format!(
-            "已打开 (loaded): {final_url}\n标题 (title): {title}\n\n{rich}"
+        Ok(btr!(
+            "已打开:{}\n标题:{}\n\n{}",
+            "Loaded: {}\nTitle: {}\n\n{}",
+            final_url,
+            title,
+            rich
         ))
     }
 
@@ -570,12 +606,12 @@ impl BrowserSession {
     /// actually there, so it clicks by real visible text instead of guessing
     /// selectors.
     fn digest(&mut self) -> Result<String, String> {
-        self.eval(PAGE_DIGEST_JS)
+        self.eval(&digest_js())
     }
 
     /// Visible page text, capped at `cap` characters.
     fn page_text(&mut self, cap: usize) -> Result<String, String> {
-        self.eval(&PAGE_TEXT_JS.replace("__CAP__", &cap.to_string()))
+        self.eval(&page_text_js(cap))
     }
 
     /// The text substitute for a screenshot: the page's VISIBLE TEXT plus the
@@ -585,8 +621,11 @@ impl BrowserSession {
     fn rich_digest(&mut self, text_cap: usize) -> Result<String, String> {
         let text = self.page_text(text_cap).unwrap_or_default();
         let els = self.digest().unwrap_or_default();
-        Ok(format!(
-            "页面可见文字 (visible text — read this instead of screenshotting):\n{text}\n\n可交互元素 (interactive — click by text / type into these):\n{els}"
+        Ok(btr!(
+            "页面可见文字(替代截图,直接读这个):\n{}\n\n可交互元素(按可见文字点击/向这些输入):\n{}",
+            "Visible text (read this instead of screenshotting):\n{}\n\nInteractive elements (click by text / type into these):\n{}",
+            text,
+            els
         ))
     }
 
@@ -645,9 +684,11 @@ impl BrowserSession {
         // Surface any newly-revealed text/elements (lazy-load) so the model
         // reads what appeared without a screenshot.
         let rich = self.rich_digest(3500).unwrap_or_default();
-        Ok(format!(
-            "已滚动 (scrolled), 位置 scrollY: {}\n\n{rich}",
-            pos.trim_matches('"')
+        Ok(btr!(
+            "已滚动,位置 scrollY: {}\n\n{}",
+            "Scrolled, scrollY: {}\n\n{}",
+            pos.trim_matches('"'),
+            rich
         ))
     }
 
@@ -698,9 +739,12 @@ impl BrowserSession {
         let label = self.click_once(selector, text)?;
         let where_ = self.eval("document.title+' — '+location.href").unwrap_or_default();
         let rich = self.rich_digest(3500).unwrap_or_default();
-        Ok(format!(
-            "已点击 (clicked): {label}\n点击后当前页面:{}\n\n{rich}",
-            where_.trim_matches('"')
+        Ok(btr!(
+            "已点击:{}\n点击后当前页面:{}\n\n{}",
+            "Clicked: {}\nPage after the click: {}\n\n{}",
+            label,
+            where_.trim_matches('"'),
+            rich
         ))
     }
 
@@ -715,17 +759,26 @@ impl BrowserSession {
                 Ok(label) => done.push(label),
                 Err(e) => {
                     let rich = self.rich_digest(3000).unwrap_or_default();
-                    return Ok(format!(
-                        "顺序点击:成功 {} 步 [{}],第 {} 步失败:{e}\n\n{rich}",
+                    return Ok(btr!(
+                        "顺序点击:成功 {} 步 [{}],第 {} 步失败:{}\n\n{}",
+                        "Click sequence: {} succeeded [{}], step {} failed: {}\n\n{}",
                         done.len(),
                         done.join(" → "),
-                        i + 1
+                        i + 1,
+                        e,
+                        rich
                     ));
                 }
             }
         }
         let rich = self.rich_digest(3500).unwrap_or_default();
-        Ok(format!("已依次点击 {} 处:{}\n\n{rich}", done.len(), done.join(" → ")))
+        Ok(btr!(
+            "已依次点击 {} 处:{}\n\n{}",
+            "Clicked {} targets in order: {}\n\n{}",
+            done.len(),
+            done.join(" → "),
+            rich
+        ))
     }
 
     /// Locate + real-mouse-click a single element. Returns the matched label on
@@ -782,8 +835,10 @@ impl BrowserSession {
         let label = text.filter(|t| !t.is_empty()).unwrap_or_else(|| selector.unwrap_or(""));
         if label.is_empty() {
             let d = self.digest().unwrap_or_default();
-            return Err(format!(
-                "browser_click 需要 \"text\"(优先,按可见文字)或 \"selector\"。当前页面可点击的元素:\n{d}"
+            return Err(btr!(
+                "browser_click 需要 \"text\"(优先,按可见文字)或 \"selector\"。当前页面可点击的元素:\n{}",
+                "browser_click needs \"text\" (preferred — the visible label) or \"selector\". Clickable elements on this page:\n{}",
+                d
             ));
         }
         std::thread::sleep(Duration::from_millis(150)); // let a prior nav settle
@@ -828,13 +883,18 @@ impl BrowserSession {
                 self.pump_pending();
                 Ok(label.to_string())
             }
-            "IS_SELECT" => Err(format!(
-                "这是下拉框,点击不会展开选项 (that's a <select> — clicking won't open it)。改用 browser_type 选择:{{\"selector\":\"{label}\",\"text\":\"<选项的可见文字 / the option's visible label>\"}}"
+            "IS_SELECT" => Err(btr!(
+                "这是下拉框,点击不会展开选项。改用 browser_type 选择:{{\"selector\":\"{}\",\"text\":\"<选项的可见文字>\"}}",
+                "That's a <select> — clicking won't open it. Choose with browser_type instead: {{\"selector\":\"{}\",\"text\":\"<the option's visible label>\"}}",
+                label
             )),
             _ => {
                 let d = self.digest().unwrap_or_default();
-                Err(format!(
-                    "未找到可点击的元素 (no match): {label}。用下面清单里的准确文字重试:\n{d}"
+                Err(btr!(
+                    "未找到可点击的元素:{}。用下面清单里的准确文字重试:\n{}",
+                    "No clickable element matched: {}. Retry with the exact text from this list:\n{}",
+                    label,
+                    d
                 ))
             }
         }
@@ -845,7 +905,7 @@ impl BrowserSession {
     fn type_text(&mut self, selector: Option<&str>, text: &str, label: Option<&str>) -> Result<String, String> {
         let what = self.type_once(selector, text, label)?;
         let rich = self.rich_digest(3500).unwrap_or_default();
-        Ok(format!("已输入 (typed) → {what}\n\n{rich}"))
+        Ok(btr!("已输入 → {}\n\n{}", "Typed → {}\n\n{}", what, rich))
     }
 
     /// Fill a SEQUENCE of fields in one call (a whole form at once). Stops at the
@@ -857,17 +917,26 @@ impl BrowserSession {
                 Ok(what) => done.push(what),
                 Err(e) => {
                     let rich = self.rich_digest(3000).unwrap_or_default();
-                    return Ok(format!(
-                        "顺序输入:成功 {} 个字段 [{}],第 {} 个失败:{e}\n\n{rich}",
+                    return Ok(btr!(
+                        "顺序输入:成功 {} 个字段 [{}],第 {} 个失败:{}\n\n{}",
+                        "Type sequence: {} fields filled [{}], field {} failed: {}\n\n{}",
                         done.len(),
                         done.join(", "),
-                        i + 1
+                        i + 1,
+                        e,
+                        rich
                     ));
                 }
             }
         }
         let rich = self.rich_digest(3500).unwrap_or_default();
-        Ok(format!("已依次填写 {} 个字段:{}\n\n{rich}", done.len(), done.join(", ")))
+        Ok(btr!(
+            "已依次填写 {} 个字段:{}\n\n{}",
+            "Filled {} fields in order: {}\n\n{}",
+            done.len(),
+            done.join(", "),
+            rich
+        ))
     }
 
     /// Set one field's value (no digest). Returns the field label on success.
@@ -937,10 +1006,21 @@ impl BrowserSession {
         } else if let Some(opts) = r.strip_prefix("NO_OPTION:") {
             // A <select> was found but no option matched — list the options so
             // the model retries with an exact one.
-            Err(format!("下拉框「{what}」里没有匹配「{text}」的选项。可选项:{}", opts.replace("\\|", "|")))
+            Err(btr!(
+                "下拉框「{}」里没有匹配「{}」的选项。可选项:{}",
+                "Dropdown \"{}\" has no option matching \"{}\". Options: {}",
+                what,
+                text,
+                opts.replace("\\|", "|")
+            ))
         } else {
             let d = self.digest().unwrap_or_default();
-            Err(format!("未找到输入框 (no input matched): {what}。可用输入框见清单:\n{d}"))
+            Err(btr!(
+                "未找到输入框:{}。可用输入框见清单:\n{}",
+                "No input field matched: {}. Available fields:\n{}",
+                what,
+                d
+            ))
         }
     }
 
@@ -1028,7 +1108,7 @@ where
 {
     let tx = ensure()?;
     let (reply, rx) = std::sync::mpsc::channel();
-    tx.send(build(reply)).map_err(|_| "浏览器已关闭 (browser closed)".to_string())?;
+    tx.send(build(reply)).map_err(|_| btr!("浏览器已关闭", "the browser is closed"))?;
     rx.recv().map_err(|_| "浏览器无响应 (browser did not respond)".to_string())?
 }
 

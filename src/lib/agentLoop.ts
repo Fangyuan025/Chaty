@@ -1624,8 +1624,17 @@ export async function runAgentTurn(
         lastCallKey = callKey;
         repeatCount = 0;
       }
-      if (repeatCount >= 2) {
-        // Third identical call — pause instead of spinning to the step limit.
+      // A SUCCESSFUL click/type mutates page state, so the identical call can
+      // legitimately repeat and produce a NEW result each time (pagination
+      // "Next"×3, add-to-cart ×2, wizard steps) — the ChatyWeb-Bench
+      // admin-newest-user autopsy caught the breaker killing exactly that.
+      // Repeats after an ERROR stay degenerate, and a long streak still stops.
+      const uiRepeatOk =
+        (call.name === "browser_click" || call.name === "browser_type") && !lastResultErrored;
+      const pauseAt = uiRepeatOk ? 5 : 2;
+      const warnAt = uiRepeatOk ? 4 : 1;
+      if (repeatCount >= pauseAt) {
+        // One past the warning — pause instead of spinning to the step limit.
         cb.onFinal(
           lang === "zh"
             ? `检测到模型连续 ${repeatCount + 1} 次发出完全相同的调用,已暂停以免空转。可点「继续」重试,或换一种说法明确指出要看的子目录/文件。`
@@ -1635,7 +1644,7 @@ export async function runAgentTurn(
         );
         return;
       }
-      if (repeatCount === 1) {
+      if (repeatCount === warnAt) {
         // Second identical call — intercept without executing, teach, and let
         // the next generation sample hotter to break the attractor. A repeat
         // of a call that just ERRORED gets targeted advice: fix the arguments
@@ -1645,9 +1654,13 @@ export async function runAgentTurn(
           ? lang === "zh"
             ? "调用被拦截:这个调用刚刚已经报错,原样重发不会有不同结果。请按上面错误信息修正 arguments 后重发同一个工具。"
             : "Intercepted: this exact call just returned an ERROR — re-sending it unchanged cannot succeed. Fix the arguments per the error message above, then re-issue the same tool."
-          : lang === "zh"
-            ? "调用被拦截:这和上一步完全相同,结果不会变化。请换一种做法——传入具体的子目录/文件路径(如 list_dir {\"path\":\"src\"}、read_file \"src/app.ts\")、换个工具,或用 update_plan 重新梳理。提醒:没有持久的工作目录,cd 不会保留。"
-            : 'Intercepted: this call is identical to the previous one — the result cannot change. Do something different: pass a concrete subdirectory/file path (list_dir {"path":"src"}, read_file "src/app.ts"), use another tool, or re-plan with update_plan. Reminder: there is no persistent cwd.';
+          : uiRepeatOk
+            ? lang === "zh"
+              ? `调用被拦截:同一个点击/输入已连续执行 ${repeatCount + 1} 次。如果页面已不再变化,说明这条路走到头了——用 browser_read 核实当前状态,换一个目标元素或换一种做法。`
+              : `Intercepted: the same click/type has now run ${repeatCount + 1} times in a row. If the page has stopped changing, this path is exhausted — verify the current state with browser_read, then pick a different element or approach.`
+            : lang === "zh"
+              ? "调用被拦截:这和上一步完全相同,结果不会变化。请换一种做法——传入具体的子目录/文件路径(如 list_dir {\"path\":\"src\"}、read_file \"src/app.ts\")、换个工具,或用 update_plan 重新梳理。提醒:没有持久的工作目录,cd 不会保留。"
+              : 'Intercepted: this call is identical to the previous one — the result cannot change. Do something different: pass a concrete subdirectory/file path (list_dir {"path":"src"}, read_file "src/app.ts"), use another tool, or re-plan with update_plan. Reminder: there is no persistent cwd.';
         stepObj.status = "error";
         stepObj.result = note;
         cb.onStep(stepObj);
