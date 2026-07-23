@@ -76,9 +76,10 @@ One local model for every row — **Qwen3.5-35B-A3B** (MoE, ~3 B active per toke
 | SWE-bench Verified — 45-task macOS-validated subset | Resolved |
 | --- | --- |
 | **Chaty agent (v1.9)** — the full tool loop | **15/45 (33 %)** |
+| pi coding agent 0.81 — minimal 4-tool CLI, same model | 7/45 (16 %) |
 | bare bash agent — same model, same tasks (ablation) | 6/45 (13 %) |
 
-Same model, same tasks, same grading: the Chaty tool loop resolves **2.5×** what a bare bash loop does — django **9/24 vs 2/24**, sympy 4/10 vs 2/10. That gap — repo-aware search, symbol reads, precise edits, recovery guards, post-edit diagnostics — is the product, measured. Methodology, run artifacts, and honest-comparison notes (subset, macOS harness — *not* comparable to leaderboard numbers): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+Same model, same tasks, same grading — three agent designs. A deliberately minimal four-tool CLI ([pi](https://github.com/badlogic/pi-mono): read / write / edit / bash) lands barely above bare bash on a ~3B-active MoE model; Chaty's tool loop resolves **2×** the minimal CLI and **2.5×** bare bash. That's the design thesis measured: with frontier models a thin scaffold is enough — on small local models, the intelligence has to live in the tools (repo-aware search, symbol reads, precise edits, recovery guards, post-edit diagnostics). Methodology, run artifacts, and honest-comparison notes (subset, macOS harness — *not* comparable to leaderboard numbers): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 <br />
 

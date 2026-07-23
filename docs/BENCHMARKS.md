@@ -10,19 +10,22 @@ user downloads inside the app, running entirely on one machine:
 
 ## Headline
 
-One comparison is the whole story:
+One table is the whole story — the same local model behind three agent
+designs:
 
 | SWE-bench Verified — 45-task macOS-validated subset | Resolved |
 | --- | --- |
 | **Chaty agent (v1.9)** — the full tool loop | **15/45 (33 %)** |
-| bare bash agent — same model, same tasks (ablation) | 6/45 (13.3 %) |
+| [pi coding agent](https://github.com/badlogic/pi-mono) 0.81 — minimal 4-tool CLI | 7/45 (15.6 %) |
+| bare bash agent — single-tool ablation | 6/45 (13.3 %) |
 
-Same model, same tasks, same grading: the Chaty tool loop resolves **2.5×**
-what a bare bash loop does — django **9/24 vs 2/24**, sympy 4/10 vs 2/10.
-That delta — repo-aware search, symbol-level reads, precise edits, recovery
-guards, post-edit diagnostics, targeted test runs — is the product, measured.
-At N = 45 individual tasks flip both ways; the aggregate and the repo slices
-are the signal, not any single instance.
+Same model, same tasks, same grading. The Chaty tool loop resolves **2×** a
+deliberately minimal four-tool agent and **2.5×** a bare bash loop — django
+**9/24 vs 2/24** against bare, sympy 4/10 vs 2/10. That delta — repo-aware
+search, symbol-level reads, precise edits, recovery guards, post-edit
+diagnostics, targeted test runs — is the product, measured. At N = 45
+individual tasks flip both ways; the aggregate and the repo slices are the
+signal, not any single instance.
 
 Comparability note: the bare-bash pipeline is single-turn by design and was
 never affected by the two Coder-harness bugs fixed during v1.9 (inflated
@@ -33,6 +36,33 @@ version data (v1.9 vs v1.8.4: 15/45 vs 12/45) and the Terminal-Bench run
 
 These numbers are **not** leaderboard submissions and are not directly
 comparable to leaderboard entries (subset + harness deviations below).
+
+## Third-party agent CLI on the same model — pi (2026-07-23)
+
+To place the ablation on a real-world scale, the same 45 tasks also ran
+through **pi** (`@earendil-works/pi-coding-agent` 0.81.1) — a well-regarded,
+deliberately minimal open-source coding agent whose whole scaffold is four
+tools: read / write / edit / bash.
+
+- **Serving**: a local OpenAI-compatible shim over Chaty's own in-process
+  MLX engine, plus a translation layer rendering OpenAI function-calling
+  into the model's native `<tool_call>` XML dialect (bench tooling only,
+  not shipped).
+- **Config**: identical model artifact and quantization, nCtx 16384 (same
+  as Chaty's runs), think off; pi's own system prompt, scaffold, and
+  defaults; one fresh session and workspace per task; identical grading.
+- **Budgets**: 45-minute wall cap per task; pi has no step-count concept,
+  so none was imposed (Chaty's envelope is 40 steps × ≤3 turns). One clean,
+  uninterrupted 45-task pass.
+- **Result**: **7/45** — 6 tasks solved by both, 1 pi-only
+  (`psf__requests-1142`), 9 Chaty-only.
+
+Reading this fairly: pi's minimalism is a sound trade with frontier-class
+models, where the model itself carries planning and repo comprehension. At
+~3 B active parameters that assumption collapses — a minimal scaffold lands
+one task above bare bash (7 vs 6), while a tool loop that carries part of
+the intelligence lands at 15. On small local models, the tools are the
+product.
 
 ## v1.9 agent vs v1.8.4 — fixed-harness rerun (2026-07-22)
 

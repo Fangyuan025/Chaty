@@ -75,9 +75,10 @@ Deep Research 与免手语音。
 | SWE-bench Verified — 45 题 macOS 验证子集 | 解出 |
 | --- | --- |
 | **Chaty 智能体(v1.9)**——完整工具链 | **15/45(33%)** |
+| pi coding agent 0.81——极简四工具 CLI,同模型 | 7/45(16%) |
 | 裸 bash 智能体——同模型同任务(消融对照) | 6/45(13%) |
 
-同模型、同任务、同判分:接上 Chaty 的完整工具链,解题数是裸 bash 的 **2.5 倍**——django **9/24 vs 2/24**,sympy 4/10 vs 2/10。这个差距——仓库感知检索、符号级阅读、精确编辑、恢复护栏、编辑后诊断——就是产品本身,用数字量出来。方法学、运行产物与诚实对比说明(子集、macOS 环境——**不可**与官方排行榜数字直接对比):[docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
+同模型、同任务、同判分,三种智能体设计同台:刻意极简的四工具 CLI([pi](https://github.com/badlogic/pi-mono):read / write / edit / bash)在 ~3B 激活的 MoE 模型上仅比裸 bash 多解一题;Chaty 的完整工具链解题数是极简 CLI 的 **2 倍**、裸 bash 的 **2.5 倍**。这正是设计论点的实测版:前沿大模型配一层薄脚手架就够用,而**小模型上,智能必须下沉到工具里**——仓库感知检索、符号级阅读、精确编辑、恢复护栏、编辑后诊断。方法学、运行产物与诚实对比说明(子集、macOS 环境——**不可**与官方排行榜数字直接对比):[docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
 
 <br />
 
