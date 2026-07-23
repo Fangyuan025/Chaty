@@ -55,6 +55,11 @@ const PAGE_DIGEST_JS: &str = r#"(function(){
     var e=nodes[i];if(!vis(e))continue;
     var tag=e.tagName.toLowerCase();
     var t=((e.innerText||e.value||e.getAttribute('aria-label')||e.placeholder||'')+'').trim().replace(/\s+/g,' ').slice(0,80);
+    // Glyph-only controls (▶ ✕ ☰ …) are unclickable-by-text for a text agent
+    // when the page repeats them per row/card — surface the aria-label, which
+    // authors write exactly to disambiguate ("Move \"Fix login bug\" right").
+    var al=(e.getAttribute('aria-label')||'').trim().replace(/\s+/g,' ');
+    if(al&&al!==t&&t.replace(/[^\w一-鿿]/g,'').length<3){t=al.slice(0,80);}
     if(e.isContentEditable){ out.push('可编辑区/editable: '+(e.getAttribute('aria-label')||e.id||'')+' = "'+((e.innerText||'').trim().replace(/\s+/g,' ').slice(0,120))+'"'); }
     else if(tag==='a'){ if(t) out.push('链接/link: "'+t+'"'); }
     else if(tag==='button'||e.getAttribute('role')==='button'||e.type==='submit'||e.type==='button'){ if(t) out.push('按钮/button: "'+t+'"'); }
@@ -735,7 +740,10 @@ impl BrowserSession {
                     var t={txt}.trim().replace(/\s+/g,' ').toLowerCase();
                     var els=[].slice.call(document.querySelectorAll("a,button,[role=button],[role=link],[role=menuitem],[role=tab],input[type=submit],input[type=button],[onclick],summary,label"));
                     function vis(e){{var r=e.getBoundingClientRect();if(r.width<2||r.height<2)return false;var s=getComputedStyle(e);return s.visibility!=='hidden'&&s.display!=='none'&&s.pointerEvents!=='none';}}
-                    function txt(e){{return ((e.innerText||e.textContent||e.value||e.getAttribute('aria-label')||'')+'').trim().replace(/\s+/g,' ').toLowerCase();}}
+                    // Match the visible text OR the aria-label: the page
+                    // digest surfaces aria-labels for glyph-only buttons, so
+                    // the model clicks by the label it was shown.
+                    function txts(e){{var a=[];function ad(s){{s=((s||'')+'').trim().replace(/\s+/g,' ').toLowerCase();if(s)a.push(s);}}ad(e.innerText||e.textContent||e.value);ad(e.getAttribute('aria-label'));return a;}}
                     // Priority when several elements share the same text (e.g. a
                     // nav "Login" LINK vs the form's "Login" SUBMIT button): the
                     // actionable control wins over a plain link, so clicking
@@ -747,9 +755,9 @@ impl BrowserSession {
                         return 2;}}
                     var cand=els.filter(vis);
                     function pick(pred){{var m=cand.filter(pred);if(!m.length)return null;m.sort(function(a,b){{return rank(a)-rank(b);}});return m[0];}}
-                    var hit=pick(function(e){{return txt(e)===t;}})
-                          ||pick(function(e){{return txt(e).lastIndexOf(t,0)===0;}})
-                          ||pick(function(e){{return txt(e).indexOf(t)>=0;}});
+                    var hit=pick(function(e){{return txts(e).some(function(s){{return s===t;}});}})
+                          ||pick(function(e){{return txts(e).some(function(s){{return s.lastIndexOf(t,0)===0;}});}})
+                          ||pick(function(e){{return txts(e).some(function(s){{return s.indexOf(t)>=0;}});}});
                     if(!hit)return 'NOT_FOUND';
                     hit.scrollIntoView({{block:'center'}});
                     var r=hit.getBoundingClientRect();
@@ -763,6 +771,7 @@ impl BrowserSession {
                 r#"(function(){{
                     var el=document.querySelector({sel});
                     if(!el)return 'NOT_FOUND';
+                    if(el.tagName==='SELECT')return 'IS_SELECT';
                     el.scrollIntoView({{block:'center'}});
                     var r=el.getBoundingClientRect();
                     return JSON.stringify({{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}});
@@ -782,6 +791,8 @@ impl BrowserSession {
         let found = found.trim_matches('"');
         let clicked = if found == "NOT_FOUND" {
             "NOT_FOUND"
+        } else if found == "IS_SELECT" {
+            "IS_SELECT"
         } else {
             // The eval result is JSON-escaped; parse leniently.
             let coords: Option<(f64, f64)> = serde_json::from_str::<Value>(&found.replace("\\\"", "\""))
@@ -817,6 +828,9 @@ impl BrowserSession {
                 self.pump_pending();
                 Ok(label.to_string())
             }
+            "IS_SELECT" => Err(format!(
+                "这是下拉框,点击不会展开选项 (that's a <select> — clicking won't open it)。改用 browser_type 选择:{{\"selector\":\"{label}\",\"text\":\"<选项的可见文字 / the option's visible label>\"}}"
+            )),
             _ => {
                 let d = self.digest().unwrap_or_default();
                 Err(format!(

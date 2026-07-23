@@ -16,15 +16,20 @@ type Grader = (state: State, finalText: string) => Verdict;
 const ok: Verdict = { pass: true, why: "ok" };
 const fail = (why: string): Verdict => ({ pass: false, why });
 
+/** Lowercase and strip markdown emphasis/backticks — models bold the key
+ *  number ("maximum of **5** days") and plain substring matching slides off. */
+function norm(s: string): string {
+  return s.toLowerCase().replace(/[*_`]/g, "");
+}
 /** All `needles` present (case-insensitive) in the final message. */
 function answerHas(finalText: string, needles: string[]): Verdict {
-  const t = finalText.toLowerCase();
+  const t = norm(finalText);
   const missing = needles.filter((n) => !t.includes(n.toLowerCase()));
   return missing.length ? fail(`final answer missing: ${missing.join(", ")}`) : ok;
 }
 /** At least one alternative present. */
 function answerAny(finalText: string, alts: string[]): Verdict {
-  const t = finalText.toLowerCase();
+  const t = norm(finalText);
   return alts.some((n) => t.includes(n.toLowerCase()))
     ? ok
     : fail(`final answer has none of: ${alts.join(" | ")}`);
@@ -120,7 +125,12 @@ export const GRADERS: Record<string, Grader> = {
 
   // ---------- wiki ----------
   "wiki-lisbon-year": (_s, t) => answerHas(t, ["2021"]),
-  "wiki-pto-carryover": (_s, t) => answerAny(t, ["5 days", "5 day", "five days", "maximum of 5", "at most 5"]),
+  // The correct answer is the bare number — models phrase it endlessly
+  // ("maximum of 5", "…is **5**", "five days"). Word-boundary match the
+  // digit; the page's decoys (25 days PTO, $1,500 budget) can't produce a
+  // standalone 5 token.
+  "wiki-pto-carryover": (_s, t) =>
+    /\b(5|five)\b/.test(norm(t)) ? ok : fail("final answer lacks a standalone 5/five"),
   "wiki-vp-product": (_s, t) => answerHas(t, ["atlas", "2019"]),
 
   // ---------- forms ----------
