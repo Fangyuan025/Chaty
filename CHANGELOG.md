@@ -1,5 +1,49 @@
 # Changelog
 
+## v1.9.1 — Browser tools for every model (2026-07-24)
+
+A small release with one big unlock and a set of browser-agent fixes, all
+proven on ChatyWeb-Bench — a new oracle-validated, 23-task local web-agent
+benchmark that ships in `bench/web/` (19/23 → 22/23 across the fixes below).
+
+### The browser is no longer vision-only
+
+- **Text-only models can now drive the browser in Code mode.** Models
+  without a vision encoder get the browser suite minus the two screenshot
+  tools; `browser_read`'s rich digest (visible text + interactive elements +
+  current input values) serves as the model's eyes. A text-only 35B-A3B
+  (MoE) resolves 22/23 ChatyWeb-Bench tasks in this mode.
+- If such a model still hallucinates a screenshot call, it gets a text
+  redirect instead of an image its engine can't embed (previously a latent
+  error path).
+
+### Browser agent, text-first ergonomics
+
+- **Glyph-only buttons are clickable by name.** Repeated ▶ / ✕ / ◀ controls
+  used to be indistinguishable in the page digest; they now surface their
+  `aria-label`, and click-by-text matches that label too — the board-style
+  "move card / delete card" tasks went from unsolvable to solved.
+- **Clicking a `<select>` redirects usefully** — instead of a silent no-op
+  click, the agent is told to choose with `browser_type` and the option's
+  visible label.
+- **Legitimate repeat clicks aren't "loops" anymore.** Pagination
+  (Next × 3), add-to-cart × 2, and wizard steps repeat the same call on a
+  changed page; the repeat breaker now allows identical browser clicks/types
+  after a *successful* one (repeats after an error still intercept).
+- **Single-language browser output.** The browser tool results and page
+  digests now follow the session language — the one model-visible surface
+  that had missed the v1.8.5 single-language pass.
+
+### Benchmarks
+
+- **ChatyWeb-Bench** (`bench/web/`): six deterministic single-file fixture
+  apps, a zero-dependency state server, 23 tasks graded on server state or
+  final answers, and per-task oracles replayed through the real tool chain —
+  fixtures and graders prove themselves with no model involved.
+- The coder benchmark story grew a field: same model, same grading —
+  Chaty 15/45 vs qwen-code 12/45, pi 10/45, opencode 7/45, bare bash 6/45.
+  Full methodology and fairness notes in docs/BENCHMARKS.md.
+
 ## v1.9.0 — The agent proves itself (2026-07-22)
 
 A reliability release built the hard way: every agent change gated by A/B runs

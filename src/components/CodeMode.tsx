@@ -1167,6 +1167,10 @@ export function CodeMode({
       bashTimeout,
       projectDoc,
       visionReady: model.visionReady,
+      // No vision encoder → still expose the browser suite, minus the two
+      // screenshot tools: browser_read's digest is the model's eyes.
+      // (ChatyWeb-Bench: 22/23 web tasks on a text-only 35B-A3B in this mode.)
+      browserTextMode: !model.visionReady,
       images: turnImages.length ? turnImages : undefined,
       signal,
       // Out-of-workspace access always asks — even in bypass mode: bypass
