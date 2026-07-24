@@ -85,12 +85,12 @@ On small local models, the tools are the product.
 
 ## v1.9 agent vs v1.8.4 — fixed-harness rerun (2026-07-22)
 
-While building v1.9's reliability work we found and fixed two harness bugs
-that affected the published runs above: recorded step counts were inflated
-~2× (double-counted step events), and "Continue" turns after the step limit
-carried **no conversation history** — the task text itself was gone, so
-turns 2–3 wandered. The published numbers stand as historical artifacts of
-that harness; they are **not comparable** to the rerun below.
+While building v1.9's reliability work we found and fixed two harness bugs:
+recorded step counts were inflated ~2× (double-counted step events), and
+"Continue" turns after the step limit carried **no conversation history** —
+the task text itself was gone, so turns 2–3 wandered. Numbers published
+before the fix (the v1.8.5-era 9/45 baseline) are retired from this page
+and are **not comparable** to any fixed-harness run.
 
 Both agent versions, full 45-task subset, identical fixed harness, same
 model and parameters, one fresh process per task:
@@ -111,12 +111,11 @@ lost to a runner crash at grading and rerun solo; both retries scored ✗.
 Artifacts: `runs/ab-final45-v19-2026-07-22.jsonl`,
 `runs/ab-final45-old184-2026-07-22.jsonl`.
 
-## SWE-bench Verified subset (ChatyCoder-Bench)
+## Harness & methodology (ChatyCoder-Bench)
 
-Harness: [`bench/coder/`](../bench/coder/README.md) at commit `57adac9`. It
-drives the **real production agent loop**
-(`src/lib/agentLoop.ts` + the real Rust tool layer via a headless stdio
-server) — not a reimplementation.
+Harness: [`bench/coder/`](../bench/coder/README.md). It drives the **real
+production agent loop** (`src/lib/agentLoop.ts` + the real Rust tool layer
+via a headless stdio server) — not a reimplementation.
 
 - **Dataset**: deterministic 50-instance subset (seed 42) of SWE-bench
   Verified — pure-Python repos that install on Apple-Silicon macOS
@@ -124,30 +123,30 @@ server) — not a reimplementation.
   difficulty ≤ 4 h. 5 instances excluded as env-incompatible after
   gold-patch validation (`pallets__flask-5014`, `pylint-dev__pylint-7080`,
   `sphinx-doc__sphinx-7985`, `-8120`, `-9711`) → **N = 45**.
-- **Budgets**: Coder — 40 steps/turn, auto-continue up to 3 turns (mirrors
-  the in-app Continue button); bare — single turn, 40 steps. Both:
-  temperature 0.2, think off, nCtx 16384.
+- **Budgets**: Chaty — 40 steps/turn, auto-continue up to 3 turns (mirrors
+  the in-app Continue button); bare — single turn, 40 steps; third-party
+  CLIs — own defaults, 45-min wall cap (section above). All: temperature
+  0.2, think off.
 - **Grading** mirrors the official harness: reset test files → apply held-out
   `test_patch` → run the repo's own test command → parse with log parsers
   vendored verbatim from `swebench.harness.log_parsers`; resolved iff every
   FAIL_TO_PASS **and** PASS_TO_PASS entry passes.
-- **Runs** (per-task JSONL: resolved, steps, turns, wall time): Coder —
-  `bench/coder/runs/2026-07-17-17-56-57.jsonl` (tasks 1–31) plus 14
-  single-task resume files `runs/2026-07-18-*.jsonl`, merged as
-  `runs/coder-merged-2026-07-18.jsonl`; bare —
-  `bench/coder/runs/bare-2026-07-17-23-22-32.jsonl` (one uninterrupted pass).
+- **Current run artifacts** (per-task JSONL: resolved, steps, turns, wall
+  time): Chaty v1.9 — `runs/ab-final45-v19-2026-07-22.jsonl`; bare —
+  `runs/bare-2026-07-17-23-22-32.jsonl` (single-turn pipeline, unaffected
+  by the harness fixes above); third-party — `runs/agents45/*-results.jsonl`.
 
-### Per-repo breakdown
+### Per-repo breakdown (current)
 
-| Repo | Coder | bare |
-| --- | --- | --- |
-| django (24) | **7** | 2 |
-| sympy (10) | 2 | 2 |
-| pytest (4) | 0 | 1 |
-| sphinx (3) | 0 | 0 |
-| pylint (2) | 0 | 0 |
-| requests (2) | 0 | 1 |
-| **total (45)** | **9** | **6** |
+| Repo | Chaty v1.9 | qwen-code | pi | bare |
+| --- | --- | --- | --- | --- |
+| django (24) | **9** | 7 | 6 | 2 |
+| sympy (10) | **4** | 2 | 3 | 2 |
+| pytest (4) | **2** | 1 | 0 | 1 |
+| sphinx (3) | 0 | **1** | 0 | 0 |
+| pylint (2) | 0 | 0 | 0 | 0 |
+| requests (2) | 0 | **1** | **1** | 1 |
+| **total (45)** | **15** | 12 | 10 | 6 |
 
 ### Deviations from the official harness (read before comparing)
 
@@ -156,17 +155,12 @@ server) — not a reimplementation.
 - sphinx's `tox --current-env` wrapper is invoked as plain pytest in-env.
 - Instances whose **gold patch** fails to grade green on macOS are excluded
   by validation (listed above) — N = 45, not 50, and not the full 500.
-- The headless tool server was a debug build (inference runs in the MLX
-  sidecar either way; affects tool-layer overhead only, not model output).
+- The headless tool server is a debug build (inference runs in the MLX
+  engine either way; affects tool-layer overhead only, not model output).
 - Ablation budget asymmetry: the bare agent has no continue mechanism, so
-  its effective step budget is lower than Coder's (40 vs up to 3 × 40).
-- The Coder pass was interrupted after task 31 (the runner process exited
-  between tasks; no results were affected) and the remaining 14 tasks ran
-  as isolated single-task invocations with a fresh engine each. The bare
-  pass ran uninterrupted end to end. Grading is per-task and independent,
-  so the merge is sound — disclosed for completeness.
+  its effective step budget is lower than Chaty's (40 vs up to 3 × 40).
 
-## Terminal-Bench
+## Terminal-Bench (v1.8.5-era run)
 
 Harness: **terminal-bench v0.2.18**, dataset **terminal-bench-core v0.1.1**,
 `--n-concurrent 1`, run `2026-07-16__16-49-17` (~9.6 h wall). Agent:
