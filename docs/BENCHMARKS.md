@@ -10,20 +10,26 @@ user downloads inside the app, running entirely on one machine:
 
 ## Headline
 
-One table is the whole story — the same local model behind three agent
-designs:
+One table is the whole story — the same local model behind five agent
+designs, one machine, identical grading:
 
-| SWE-bench Verified — 45-task macOS-validated subset | Resolved |
-| --- | --- |
-| **Chaty agent (v1.9)** — the full tool loop | **15/45 (33 %)** |
-| [pi coding agent](https://github.com/badlogic/pi-mono) 0.81 — minimal 4-tool CLI | 7/45 (15.6 %) |
-| bare bash agent — single-tool ablation | 6/45 (13.3 %) |
+| SWE-bench Verified — 45-task macOS-validated subset | Context | Resolved |
+| --- | --- | --- |
+| **Chaty agent (v1.9)** — the full tool loop | 16K | **15/45 (33 %)** |
+| [qwen-code](https://github.com/QwenLM/qwen-code) 0.20 — the model family's first-party CLI | 32K¹ | 12/45 (27 %) |
+| [pi](https://github.com/badlogic/pi-mono) 0.81 — minimal 4-tool agent CLI | 16K | 10/45 (22 %) |
+| [opencode](https://github.com/anomalyco/opencode) 1.18 | 16K | 7/45 (15.6 %) |
+| bare bash agent — single-tool ablation | 16K | 6/45 (13.3 %) |
 
-Same model, same tasks, same grading. The Chaty tool loop resolves **2×** a
-deliberately minimal four-tool agent and **2.5×** a bare bash loop — django
-**9/24 vs 2/24** against bare, sympy 4/10 vs 2/10. That delta — repo-aware
+¹ qwen-code's own system prompt is ~19K tokens and does not fit a 16K
+window; it received the minimum context it can operate in.
+
+Chaty leads the field — including the model family's own first-party CLI,
+while using **half its context window** — and resolves 2.5× the bare-bash
+ablation (django 9/24 vs 2/24). The delta is the tool loop: repo-aware
 search, symbol-level reads, precise edits, recovery guards, post-edit
-diagnostics, targeted test runs — is the product, measured. At N = 45
+diagnostics, targeted test runs. Five tasks were solved by Chaty and no
+third-party agent; the union of all five agents is 19/45. At N = 45
 individual tasks flip both ways; the aggregate and the repo slices are the
 signal, not any single instance.
 
@@ -37,32 +43,45 @@ version data (v1.9 vs v1.8.4: 15/45 vs 12/45) and the Terminal-Bench run
 These numbers are **not** leaderboard submissions and are not directly
 comparable to leaderboard entries (subset + harness deviations below).
 
-## Third-party agent CLI on the same model — pi (2026-07-23)
+## Third-party agent CLIs on the same model (2026-07-23/24)
 
-To place the ablation on a real-world scale, the same 45 tasks also ran
-through **pi** (`@earendil-works/pi-coding-agent` 0.81.1) — a well-regarded,
-deliberately minimal open-source coding agent whose whole scaffold is four
-tools: read / write / edit / bash.
+To place the ablation on a real-world scale, the same 45 tasks ran through
+well-known open-source agent CLIs, each on its own scaffold and defaults:
 
-- **Serving**: a local OpenAI-compatible shim over Chaty's own in-process
-  MLX engine, plus a translation layer rendering OpenAI function-calling
-  into the model's native `<tool_call>` XML dialect (bench tooling only,
-  not shipped).
-- **Config**: identical model artifact and quantization, nCtx 16384 (same
-  as Chaty's runs), think off; pi's own system prompt, scaffold, and
-  defaults; one fresh session and workspace per task; identical grading.
-- **Budgets**: 45-minute wall cap per task; pi has no step-count concept,
-  so none was imposed (Chaty's envelope is 40 steps × ≤3 turns). One clean,
-  uninterrupted 45-task pass.
-- **Result**: **7/45** — 6 tasks solved by both, 1 pi-only
-  (`psf__requests-1142`), 9 Chaty-only.
+- **Serving** (identical for every agent): a local OpenAI-compatible shim
+  over Chaty's own in-process MLX engine, plus a translation layer
+  rendering OpenAI function-calling into the model's native `<tool_call>`
+  XML dialect (bench tooling only, not shipped). The shim retries a
+  truly-empty completion once with hotter sampling — a real cloud endpoint
+  never returns an empty string, and some CLIs treat one empty as fatal;
+  the retry applies uniformly to every agent, and every scored run below
+  used it.
+- **Config**: identical model artifact and quantization, think off; each
+  agent's own system prompt, tools, and defaults; one fresh session and
+  workspace per task; identical grading; 45-minute wall cap per task; no
+  step caps imposed (Chaty's envelope is 40 steps × ≤3 turns). Context is
+  16K except where an agent structurally cannot run there (table above).
+- **Results**: qwen-code **12/45**, pi **10/45**, opencode **7/45**.
+  Chaty-only vs all third parties: django-15814, django-16901, pytest-7571,
+  sympy-13757, sympy-15345. Solved by a third party but not Chaty v1.9:
+  django-15525, requests-1142, sympy-18211 (pi), sphinx-11445 (qwen-code —
+  the only sphinx solve any agent has produced here).
 
-Reading this fairly: pi's minimalism is a sound trade with frontier-class
-models, where the model itself carries planning and repo comprehension. At
-~3 B active parameters that assumption collapses — a minimal scaffold lands
-one task above bare bash (7 vs 6), while a tool loop that carries part of
-the intelligence lands at 15. On small local models, the tools are the
-product.
+Attempted but not scorable on this hardware, for transparency: Hermes
+(hard-requires a 64K context declaration; serving that reliably was not
+possible on this 48 GB machine), mini-swe-agent (requires a tool call in
+every model response and aborts after repeated prose turns — a protocol
+built for larger models), goose (abandons the session on a single empty
+completion; the retry shim rescued transient cases but not deterministic
+ones), and OpenAI's codex CLI (current versions require the Responses API;
+the last chat-completions build was blocked by macOS Gatekeeper).
+
+Reading this fairly: these scaffolds are sound trades with frontier-class
+models, where the model itself carries planning, repo comprehension, and
+protocol discipline. At ~3 B active parameters those assumptions weaken —
+and a tool loop that carries part of the intelligence itself, plus the
+error tolerance small models need, is what separates 15/45 from the field.
+On small local models, the tools are the product.
 
 ## v1.9 agent vs v1.8.4 — fixed-harness rerun (2026-07-22)
 

@@ -75,11 +75,13 @@ One local model for every row — **Qwen3.5-35B-A3B** (MoE, ~3 B active per toke
 
 | SWE-bench Verified — 45-task macOS-validated subset | Resolved |
 | --- | --- |
-| **Chaty agent (v1.9)** — the full tool loop | **15/45 (33 %)** |
-| pi coding agent 0.81 — minimal 4-tool CLI, same model | 7/45 (16 %) |
-| bare bash agent — same model, same tasks (ablation) | 6/45 (13 %) |
+| **Chaty agent (v1.9)** — the full tool loop, 16K context | **15/45 (33 %)** |
+| qwen-code 0.20 — the model family's own CLI (needs 32K) | 12/45 (27 %) |
+| pi 0.81 — minimal 4-tool agent CLI | 10/45 (22 %) |
+| opencode 1.18 | 7/45 (16 %) |
+| bare bash agent — single-tool ablation | 6/45 (13 %) |
 
-Same model, same tasks, same grading — three agent designs. A deliberately minimal four-tool CLI ([pi](https://github.com/badlogic/pi-mono): read / write / edit / bash) lands barely above bare bash on a ~3B-active MoE model; Chaty's tool loop resolves **2×** the minimal CLI and **2.5×** bare bash. That's the design thesis measured: with frontier models a thin scaffold is enough — on small local models, the intelligence has to live in the tools (repo-aware search, symbol reads, precise edits, recovery guards, post-edit diagnostics). Methodology, run artifacts, and honest-comparison notes (subset, macOS harness — *not* comparable to leaderboard numbers): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+Same model, same tasks, same grading, one machine — five agent designs. Chaty leads the field, including the model family's own first-party CLI ([qwen-code](https://github.com/QwenLM/qwen-code)) while using **half its context window**, and resolves **2.5×** the bare-bash ablation. That's the design thesis measured: with frontier models a thin scaffold is enough — on small local models, the intelligence has to live in the tools (repo-aware search, symbol reads, precise edits, recovery guards, post-edit diagnostics). Methodology, per-agent configs, and honest-comparison notes (subset, macOS harness — *not* comparable to leaderboard numbers): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 <br />
 
