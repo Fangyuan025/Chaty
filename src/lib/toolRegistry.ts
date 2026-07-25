@@ -204,6 +204,17 @@ export const ARG_EXAMPLE: Record<string, string> = Object.fromEntries(
   NATIVE_SPECS.filter((s) => s.argExample).map((s) => [s.name, s.argExample as string]),
 );
 
+/** Injection defense must consult the LIVE spec, not the static native set:
+ *  MCP tool results are external content and their names aren't in
+ *  UNTRUSTED_TOOLS. Same for the approval gate. */
+export function isUntrusted(name: string): boolean {
+  return byName.get(name)?.untrusted === true;
+}
+
+export function needsApproval(name: string): boolean {
+  return byName.get(name)?.mutating === true;
+}
+
 export function resultCap(name: string): number {
   return byName.get(name)?.resultCap ?? 12000;
 }

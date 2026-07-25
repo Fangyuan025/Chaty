@@ -8,6 +8,7 @@ mod commands;
 pub mod download;
 pub mod gpu;
 pub mod inference;
+pub mod mcp;
 pub mod ocr;
 pub mod search;
 mod state;
@@ -342,6 +343,9 @@ pub fn run() {
             agent::agent_dl_list,
             agent::agent_dl_reap,
             attach::read_attachment,
+            mcp::mcp_connect,
+            mcp::mcp_disconnect,
+            mcp::mcp_call,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
@@ -380,6 +384,8 @@ pub fn run() {
                     // Same for the MLX sidecar: skipping Drop would orphan a
                     // process holding the whole model in unified memory.
                     inference::mlx::kill_sidecars_now();
+                    // And MCP stdio servers — same orphan risk, same reap.
+                    mcp::kill_all_now();
                     #[cfg(unix)]
                     unsafe {
                         libc::_exit(0)
