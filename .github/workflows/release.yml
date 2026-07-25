@@ -154,8 +154,36 @@ jobs:
           path: C:\ct\release\bundle\inno\*.exe
           if-no-files-found: error
 
+  build-linux:
+    needs: check-version
+    # Ubuntu 22.04: Tauri v2 needs webkit2gtk-4.1, and building against the
+    # OLDEST supported glibc is what makes the AppImage run on newer distros
+    # too (the reverse never works).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 20, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - name: System deps (Tauri v2 + Vulkan for llama.cpp)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libasound2-dev libssl-dev libvulkan-dev glslc ninja-build
+      - run: npm ci
+      - name: Build AppImage (Vulkan)
+        run: npm run tauri build -- --bundles appimage
+      - uses: actions/upload-artifact@v5
+        with:
+          name: linux-appimage
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
   publish:
-    needs: [build-macos, build-windows]
+    needs: [build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v5
@@ -172,6 +200,7 @@ jobs:
             |---|---|
             | **Windows x64** | `Chaty_*_x64-setup.exe` — per-user installer, no admin |
             | **macOS (Apple Silicon)** | `Chaty_*_aarch64.dmg` |
+            | **Linux x64** | `Chaty_*_amd64.AppImage` — `chmod +x` and run |
 
             ### ⚠️ macOS first launch — "Apple could not verify…" / "damaged"
 

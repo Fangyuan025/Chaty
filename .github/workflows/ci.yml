@@ -64,6 +64,29 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib --release
 
+  linux-check:
+    name: Linux compile check (CPU)
+    # 22.04 matches the release job: build against the OLDEST supported glibc
+    # so the AppImage also runs on newer distros. Compile-check only here —
+    # the full AppImage bundle is built at release time.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: src-tauri, cache-targets: false }
+      - name: System deps (Tauri v2 webkit + audio)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libasound2-dev libssl-dev
+      # Same guard the Windows job gives cfg(windows) code: catch cfg(unix) /
+      # cfg(target_os="linux") paths the macOS jobs compile differently (and
+      # anything gated NOT-macos, which only Linux and Windows ever see).
+      - name: cargo check (no GPU, all targets)
+        working-directory: src-tauri
+        run: cargo check --no-default-features --lib --bins --tests
+
   windows-check:
     name: Windows compile check (CPU)
     runs-on: windows-latest

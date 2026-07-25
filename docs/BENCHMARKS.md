@@ -111,6 +111,45 @@ lost to a runner crash at grading and rerun solo; both retries scored ✗.
 Artifacts: `runs/ab-final45-v19-2026-07-22.jsonl`,
 `runs/ab-final45-old184-2026-07-22.jsonl`.
 
+## ChatyMCP-Bench — do MCP servers work in a small model's hands? (2026-07-25)
+
+Connecting to an MCP server is table stakes. The question that decides whether
+the ecosystem is usable on a ~3B-active model is whether the model can *drive*
+those tools — read their schemas, fill nested arguments, verify its own work.
+
+Six tasks against three real servers, run through the real agent loop and the
+real MCP client, graded on **server state** (read back through a different tool
+than the one under test) or final-answer substring:
+
+| Server | Tasks | Resolved | Steps (median) |
+| --- | --- | --- | --- |
+| [filesystem](https://github.com/modelcontextprotocol/servers) (14 tools) | write / read+answer / edit-in-place | **3/3** | 1 |
+| memory — knowledge graph | store entity / store+recall | **2/2** | 3 |
+| everything — reference server (13 tools) | tool-chained arithmetic | **1/1** | 1 |
+| **Total** | | **6/6** | **2** |
+
+Two properties made this work at 16K, both from the 2.0 tool registry:
+
+1. **Lean docs.** Community MCP schemas run to thousands of tokens; Chaty
+   synthesizes a one-line doc per tool (first sentence + compact argument
+   signature). The full schema is held back and returned only as the
+   correction when a call is missing an argument — so the expensive text
+   appears exactly when the model needs it.
+2. **A tool budget.** A server bringing more tools than the core-tier limit
+   collapses into a single index line, keeping the prompt flat as servers are
+   added.
+
+The hardest task is `mem-remember-entity`: `create_entities` takes a nested
+array of objects, the shape small models most often flatten. It passed in 3
+steps.
+
+Reproduce: `CHATY_BENCH_MODEL=… npx tsx bench/mcp/runner.mts` (servers are
+version-pinned in the runner; results land in `bench/mcp/runs/`, gitignored).
+
+Store certification — every catalog entry connecting and answering a probe
+through the real client — is a separate live gate:
+`cargo test -p chaty store_cert -- --ignored`.
+
 ## Harness & methodology (ChatyCoder-Bench)
 
 Harness: [`bench/coder/`](../bench/coder/README.md). It drives the **real

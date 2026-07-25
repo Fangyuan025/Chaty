@@ -344,6 +344,23 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
         }
         "browser_console" => res(ag::browser_console().await),
         "browser_close" => res(ag::browser_close().await),
+        // MCP (2.0): the bench drives real servers through the real client.
+        "mcp_connect" => {
+            let name = match req_s(&args, "name") { Ok(x) => x, Err(e) => return reply(id, Err(e)) };
+            match serde_json::from_value(args.get("transport").cloned().unwrap_or_default()) {
+                Ok(t) => res(chaty_lib::mcp::mcp_connect(name, t).await),
+                Err(e) => Err(format!("bad transport: {e}")),
+            }
+        }
+        "mcp_disconnect" => match req_s(&args, "name") {
+            Ok(name) => { chaty_lib::mcp::mcp_disconnect(name); Ok(serde_json::Value::Null) }
+            Err(e) => Err(e),
+        },
+        "mcp_call" => {
+            let server = match req_s(&args, "server") { Ok(x) => x, Err(e) => return reply(id, Err(e)) };
+            let tool = match req_s(&args, "tool") { Ok(x) => x, Err(e) => return reply(id, Err(e)) };
+            res(chaty_lib::mcp::mcp_call(server, tool, args.get("args").cloned().unwrap_or_default()).await)
+        }
         _ => Err(format!("unsupported in headless bench: {cmd}")),
     };
     reply(id, r);

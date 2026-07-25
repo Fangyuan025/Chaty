@@ -1,0 +1,46 @@
+[
+  {
+    "id": "fs-write-note",
+    "server": "filesystem",
+    "type": "state",
+    "instruction": "Using the filesystem MCP tools (NOT bash, NOT write_file), create a file named release-notes.md in the allowed directory {DIR} whose content is exactly: Chaty 2.0 ships MCP.",
+    "grade": { "kind": "file", "path": "release-notes.md", "contains": "Chaty 2.0 ships MCP." }
+  },
+  {
+    "id": "fs-read-and-answer",
+    "server": "filesystem",
+    "type": "answer",
+    "seedFiles": { "inventory.txt": "widgets: 12\nsprockets: 7\ngizmos: 25\n" },
+    "instruction": "Using the filesystem MCP tools, read inventory.txt in {DIR} and tell me in your final answer how many sprockets there are.",
+    "grade": { "kind": "answer", "expect": "7" }
+  },
+  {
+    "id": "fs-edit-existing",
+    "server": "filesystem",
+    "type": "state",
+    "seedFiles": { "config.ini": "mode = draft\nretries = 1\n" },
+    "instruction": "Using the filesystem MCP tools, change the line 'mode = draft' to 'mode = production' in config.ini in {DIR}. Leave the rest of the file alone.",
+    "grade": { "kind": "file", "path": "config.ini", "contains": "mode = production", "absent": "mode = draft" }
+  },
+  {
+    "id": "mem-remember-entity",
+    "server": "memory",
+    "type": "state",
+    "instruction": "Using the knowledge-graph memory MCP tools, remember this fact: an entity named \"Chaty\" of type \"project\" with the observation \"ships a local MCP client\".",
+    "grade": { "kind": "graph", "entity": "Chaty", "contains": "local MCP client" }
+  },
+  {
+    "id": "mem-recall-after-write",
+    "server": "memory",
+    "type": "answer",
+    "instruction": "Using the knowledge-graph memory MCP tools: first store an entity named \"Ferrite\" of type \"tool\" with the observation \"written in Rust\", then read the graph back and tell me in your final answer what language Ferrite is written in.",
+    "grade": { "kind": "answer", "expect": "rust" }
+  },
+  {
+    "id": "everything-echo-sum",
+    "server": "everything",
+    "type": "answer",
+    "instruction": "Use the reference server's tools to add 20 and 22, then give me the sum in your final answer.",
+    "grade": { "kind": "answer", "expect": "42" }
+  }
+]
