@@ -629,6 +629,57 @@ for line in sys.stdin:
         disconnect_inner("everything");
     }
 
+    // Store certification: every runnable catalog entry must connect and
+    // answer its probe — the evidence behind the store's "certified" badge.
+    // Run: cargo test -p chaty store_cert -- --ignored --nocapture
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn store_certification() {
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/mcpStore.catalog.json"
+        ))
+        .expect("catalog");
+        let cat: Value = serde_json::from_str(&raw).expect("catalog json");
+        let tmp = std::env::temp_dir().join("chaty-mcp-cert");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let dir = tmp.to_string_lossy().to_string();
+        let mut certified = 0;
+        for e in cat["entries"].as_array().unwrap() {
+            if e["transport"] != "stdio" || e["probe"].is_null() {
+                continue; // http/tokened entries need credentials — hand-tested instead
+            }
+            let id = e["id"].as_str().unwrap();
+            let args: Vec<String> = e["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a.as_str().unwrap().replace("{dir}", &dir))
+                .collect();
+            let t = McpTransport::Stdio {
+                command: e["command"].as_str().unwrap().into(),
+                args,
+                env: HashMap::new(),
+            };
+            let tools = connect_inner(id, t).await.unwrap_or_else(|e| panic!("{id}: {e}"));
+            let probe = &e["probe"];
+            let expect = probe["expect"].as_str().unwrap().replace("{dir}", &dir);
+            let out = mcp_call(
+                id.into(),
+                probe["tool"].as_str().unwrap().into(),
+                probe["args"].clone(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{id} probe: {e}"));
+            assert!(out.contains(&expect), "{id} probe mismatch: {out}");
+            eprintln!("✓ {id}: {} tools, probe ok", tools.len());
+            disconnect_inner(id);
+            certified += 1;
+        }
+        assert!(certified >= 3, "only {certified} entries certified");
+    }
+
     #[test]
     fn http_body_parsing_covers_json_and_sse() {
         let plain = r#"{"jsonrpc":"2.0","id":3,"result":{"ok":true}}"#;

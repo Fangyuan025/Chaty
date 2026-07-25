@@ -1,0 +1,72 @@
+{
+  "catalogVersion": 1,
+  "entries": [
+    {
+      "id": "github",
+      "title": { "zh": "GitHub", "en": "GitHub" },
+      "desc": {
+        "zh": "官方托管的 GitHub MCP:仓库、issue、PR、代码搜索。远程 HTTP,零本地依赖;需要 GitHub PAT。",
+        "en": "GitHub's hosted MCP: repos, issues, PRs, code search. Remote HTTP, zero local runtime; needs a GitHub PAT."
+      },
+      "transport": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "needsToken": true,
+      "permNote": {
+        "zh": "可读写你的 GitHub 账号可及的仓库与 issue/PR",
+        "en": "Reads and writes repos, issues and PRs your GitHub account can reach"
+      },
+      "probe": null
+    },
+    {
+      "id": "filesystem",
+      "title": { "zh": "文件系统(工作区外)", "en": "Filesystem (outside workspace)" },
+      "desc": {
+        "zh": "官方文件系统 MCP,读写你指定的一个目录——给智能体一个工作区之外的受控落点。",
+        "en": "The official filesystem MCP scoped to ONE directory you choose — a controlled foothold outside the workspace."
+      },
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.7.10", "{dir}"],
+      "placeholders": [
+        { "key": "dir", "label": { "zh": "允许访问的目录", "en": "Directory to allow" } }
+      ],
+      "permNote": {
+        "zh": "只能读写你在此指定的目录",
+        "en": "Can only read/write the directory you specify here"
+      },
+      "probe": { "tool": "list_allowed_directories", "args": {}, "expect": "{dir}" }
+    },
+    {
+      "id": "memory",
+      "title": { "zh": "知识图谱记忆", "en": "Knowledge-graph memory" },
+      "desc": {
+        "zh": "官方 memory MCP:实体-关系知识图谱,跨对话持久(本地 JSON 文件)。",
+        "en": "The official memory MCP: an entity-relation knowledge graph, persisted locally as JSON."
+      },
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory@2026.7.4"],
+      "permNote": {
+        "zh": "读写本地记忆文件(memory.json)",
+        "en": "Reads/writes a local memory file (memory.json)"
+      },
+      "probe": { "tool": "read_graph", "args": {}, "expect": "entities" }
+    },
+    {
+      "id": "everything",
+      "title": { "zh": "参考演示服务器", "en": "Reference demo server" },
+      "desc": {
+        "zh": "MCP 官方参考服务器(echo、求和、图片等 13 个演示工具)——验证接线、体验 MCP 的最快方式。",
+        "en": "The official MCP reference server (13 demo tools: echo, sum, images…) — the fastest way to verify wiring."
+      },
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything@2026.7.4"],
+      "permNote": {
+        "zh": "演示工具,无真实副作用",
+        "en": "Demo tools, no real side effects"
+      },
+      "probe": { "tool": "echo", "args": { "message": "chaty-cert" }, "expect": "chaty-cert" }
+    }
+  ]
+}
