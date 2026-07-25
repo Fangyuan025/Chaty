@@ -181,6 +181,11 @@ export const T = {
   cmMcpCertified: { zh: "已认证", en: "certified" },
   cmMcpAddBtn: { zh: "添加", en: "Add" },
   cmMcpAdded: { zh: "已添加", en: "added" },
+  cmSkillFiles: { zh: "技能文件", en: "Skill files" },
+  cmSkillFilesHint: {
+    zh: "技能 = 一份写着步骤的 Markdown。系统提示只带「名字+何时用」一行,模型需要时才调 use_skill 载入正文——所以技能再多也不占上下文。放在 ~/.chaty/skills/ (全局)或 项目/.chaty/skills/ (项目,同名覆盖全局)。下面是随应用附带的官方技能,可单独关闭。",
+    en: "A skill is a markdown file of steps. The prompt carries only one line per skill (name + when); the body loads via use_skill only when needed — so skills cost almost no context. Put them in ~/.chaty/skills/ (global) or <project>/.chaty/skills/ (project, shadows global). Below are the ones bundled with Chaty; each can be turned off.",
+  },
   cmCompacted: { zh: "上下文已自动压缩", en: "Context auto-compacted" },
   cmdkGoCode: { zh: "切换到 Code 模式", en: "Switch to Code mode" },
   cmdkGoChat: { zh: "切换到 Chat 模式", en: "Switch to Chat mode" },

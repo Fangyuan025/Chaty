@@ -204,6 +204,27 @@ export const ARG_EXAMPLE: Record<string, string> = Object.fromEntries(
   NATIVE_SPECS.filter((s) => s.argExample).map((s) => [s.name, s.argExample as string]),
 );
 
+/** M3: skills register `use_skill` only when the user actually has skills —
+ *  a user with none sees a byte-identical prompt (golden test enforces it). */
+export function setSkillToolEnabled(on: boolean, names: string[] = []): void {
+  unregisterTool("use_skill");
+  if (!on || !names.length) return;
+  const list = names.join(" | ");
+  registerTool({
+    name: "use_skill",
+    source: "skill",
+    suite: "core",
+    perm: "read",
+    tier: "core",
+    docLine: {
+      zh: `- use_skill: 载入某个技能的完整步骤,再照步骤执行。args: { "name": "${list}" }`,
+      en: `- use_skill: load a skill's full procedure, then follow it. args: { "name": "${list}" }`,
+    },
+    requiredArgs: ["name"],
+    argExample: `{"name":"${names[0]}"}`,
+  });
+}
+
 /** Injection defense must consult the LIVE spec, not the static native set:
  *  MCP tool results are external content and their names aren't in
  *  UNTRUSTED_TOOLS. Same for the approval gate. */

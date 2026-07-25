@@ -108,6 +108,11 @@ async function main() {
   // same env at headless boot. Optional chaining keeps the runner usable
   // against older agentLoop checkouts (worktree replays).
   if (process.env.CHATY_EDIT_ANCHORS === "1") loop.agentSetEditAnchors?.(true);
+  // CHATY_BENCH_SKILLS=1: load the official skills for this run — the A/B knob
+  // that measures what procedural knowledge is worth on the same 15 tasks.
+  const { officialSkills } = await import("../../src/lib/skillFiles");
+  const benchSkills = process.env.CHATY_BENCH_SKILLS === "1" ? officialSkills() : [];
+  if (benchSkills.length) console.log(`skills: ${benchSkills.map((sk) => sk.name).join(", ")}`);
 
   const runsDir = path.join(here, "runs");
   mkdirSync(runsDir, { recursive: true });
@@ -177,6 +182,7 @@ async function main() {
             maxSteps: 40,
             temperature: 0.2,
             bashTimeout: 120,
+            skills: benchSkills,
             signal: signal as never,
             approve: async () => true,          // benchmark = bypass mode
             approveDir: async () => false,      // stay inside the workspace

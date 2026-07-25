@@ -24,6 +24,7 @@ import { Select } from "./Select";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { loadMcpServers, saveMcpServers, syncMcpServers, type McpServerCfg } from "../lib/mcp";
 import catalog from "../lib/mcpStore.catalog.json";
+import { disabledSkills, officialSkills, setDisabledSkills } from "../lib/skillFiles";
 import logoUrl from "../assets/logo.png";
 
 export interface PromptPreset {
@@ -347,6 +348,12 @@ export function SettingsPanel({
   const [mcpCmd, setMcpCmd] = useState("");
   const [mcpToken, setMcpToken] = useState("");
   /** Store entry pending placeholder/token input before it can be added. */
+  const [skillOff, setSkillOff] = useState<string[]>(disabledSkills);
+  const toggleSkill = (name: string) => {
+    const next = skillOff.includes(name) ? skillOff.filter((n) => n !== name) : [...skillOff, name];
+    setSkillOff(next);
+    setDisabledSkills(next);
+  };
   const [storeOpen, setStoreOpen] = useState<string | null>(null);
   const [storeInput, setStoreInput] = useState<Record<string, string>>({});
   const addFromStore = (entry: (typeof catalog)["entries"][number]) => {
@@ -1087,6 +1094,30 @@ export function SettingsPanel({
                 </div>
               </div>
               <div className="settings-hint">{t("cmMcpStoreHint")}</div>
+
+              <div className="field">
+                <span>{t("cmSkillFiles")}</span>
+                <div className="skill-rows">
+                  {officialSkills().map((sk) => {
+                    const on = !skillOff.includes(sk.name);
+                    return (
+                      <button
+                        key={sk.name}
+                        type="button"
+                        className={`skill-row ${on ? "on" : ""}`}
+                        onClick={() => toggleSkill(sk.name)}
+                      >
+                        <span className="skill-row-name">{sk.name}</span>
+                        <span className="skill-row-desc">{sk.description}</span>
+                        <span className="skill-row-toggle" aria-hidden="true">
+                          <span className="skill-row-knob" />
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="settings-hint">{t("cmSkillFilesHint")}</div>
             </>
           )}
 

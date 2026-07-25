@@ -58,6 +58,8 @@ import {
 } from "../lib/agentLoop";
 import { isReadOnlyCommand } from "../lib/readOnlyCmd";
 import { syncMcpServers } from "../lib/mcp";
+import { loadSkills } from "../lib/skillFiles";
+import { homeDir } from "@tauri-apps/api/path";
 
 interface CodeMsg {
   id: string;
@@ -1114,6 +1116,15 @@ export function CodeMode({
     // so the user can rewind to "before this message".
     const checkpointId = await agentCheckpointBegin().catch(() => undefined);
     const projectDoc = await loadProjectDoc();
+    // Skills: official + ~/.chaty/skills + <workspace>/.chaty/skills. Re-read
+    // each turn so a skill the user just wrote is live immediately. A missing
+    // home dir (or a glob that can't reach it) just means no global skills.
+    const home = await homeDir().catch(() => undefined);
+    const skills = await loadSkills(
+      agentGlob,
+      (fp) => agentReadFile(fp),
+      home ? home.replace(/[/\\]$/, "") : undefined,
+    ).catch(() => []);
     const visionImgs = codeAttachments.flatMap((a) =>
       a.kind === "vision" && a.path ? [a.path] : (a.images ?? []),
     );
@@ -1173,6 +1184,7 @@ export function CodeMode({
       temperature,
       bashTimeout,
       projectDoc,
+      skills,
       visionReady: model.visionReady,
       // No vision encoder → still expose the browser suite, minus the two
       // screenshot tools: browser_read's digest is the model's eyes.
