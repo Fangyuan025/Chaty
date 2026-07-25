@@ -34,6 +34,15 @@ benchmark that ships in `bench/web/` (19/23 → 22/23 across the fixes below).
   digests now follow the session language — the one model-visible surface
   that had missed the v1.8.5 single-language pass.
 
+### Design Canvas
+
+- **The preview's default scrollbar is theme-neutral.** With scrollbars set to
+  always-show (or a mouse plugged in), the srcdoc frame drew a bright white
+  track that glared on the dark pages models tend to build. The preview now
+  gets a translucent neutral scrollbar at the lowest specificity — any page
+  that styles its own scrollbar still wins. (This code path was a half-written
+  stub; it is now finished and injected.)
+
 ### The browser waits for the page
 
 Found by driving this release by hand on a 4B text-only model:

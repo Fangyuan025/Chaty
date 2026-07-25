@@ -131,9 +131,27 @@ const NAV_GUARD = `<script>(function(){
   }, true);
 })()<\/script>`;
 
-/** Inject the shims right after <head> so they install before page scripts. */
+/** Default scrollbar for the preview document. With "show scrollbars: always"
+ * (or a plugged-in mouse) the UA paints a classic WHITE track inside the srcdoc
+ * frame, which glares on the dark pages the model tends to build. This gives
+ * the preview a neutral translucent scrollbar keyed to the page's own
+ * color-scheme — but at the LOWEST specificity (a bare pseudo-element rule,
+ * injected first) so anything the user's page sets wins. It never changes a
+ * page that styled its own scrollbar. Injected as the very first thing in
+ * <head> so page CSS that follows overrides it. */
+const SCROLLBAR_CSS = `<style>
+  ::-webkit-scrollbar{width:12px;height:12px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:rgba(128,128,128,.45);border-radius:8px;border:3px solid transparent;background-clip:padding-box}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(128,128,128,.65);background-clip:padding-box}
+  ::-webkit-scrollbar-corner{background:transparent}
+  html{scrollbar-color:rgba(128,128,128,.45) transparent}
+</style>`;
+
+/** Inject shims (and the default scrollbar) right after <head> so they install
+ *  before page scripts; the scrollbar goes first so page CSS can override it. */
 function withShims(html: string): string {
-  const shims = COMPAT_SHIM + CONSOLE_SHIM + ERROR_SHIM + NAV_GUARD + INSPECT_SHIM;
+  const shims = SCROLLBAR_CSS + COMPAT_SHIM + CONSOLE_SHIM + ERROR_SHIM + NAV_GUARD + INSPECT_SHIM;
   const head = html.match(/<head[^>]*>/i);
   if (head && head.index !== undefined) {
     const at = head.index + head[0].length;
