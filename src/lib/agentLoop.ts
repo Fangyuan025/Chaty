@@ -1362,6 +1362,14 @@ export async function runAgentTurn(
   // Whether the last executed call returned an ERROR — a repeated identical
   // call after an error needs "fix the arguments" advice, not "try list_dir".
   let lastResultErrored = false;
+  // Result of the previous executed call, and whether an identical repeat of it
+  // changed anything. A stateful UI click may legitimately repeat (pagination
+  // "Next" × 3) — but only while the page keeps changing; an unchanged result
+  // means the click is a no-op, and for a submit button that would post
+  // duplicates (a real-app report: the agent never saw the "Thank you" and kept
+  // submitting). Identical result → treat the repeat as degenerate.
+  let lastResultText = "";
+  let uiRepeatChangedPage = true;
   // Format slips (missing required arg) corrected without entering the
   // record; bounded so a stuck model still reaches the normal error path.
   let argRetries = 0;
@@ -1628,9 +1636,13 @@ export async function runAgentTurn(
       // legitimately repeat and produce a NEW result each time (pagination
       // "Next"×3, add-to-cart ×2, wizard steps) — the ChatyWeb-Bench
       // admin-newest-user autopsy caught the breaker killing exactly that.
-      // Repeats after an ERROR stay degenerate, and a long streak still stops.
+      // But only while the page keeps CHANGING: an identical result means the
+      // click did nothing visible, and repeating a submit button in that state
+      // posts duplicates. Repeats after an ERROR stay degenerate too.
       const uiRepeatOk =
-        (call.name === "browser_click" || call.name === "browser_type") && !lastResultErrored;
+        (call.name === "browser_click" || call.name === "browser_type") &&
+        !lastResultErrored &&
+        uiRepeatChangedPage;
       const pauseAt = uiRepeatOk ? 5 : 2;
       const warnAt = uiRepeatOk ? 4 : 1;
       if (repeatCount >= pauseAt) {
@@ -1658,7 +1670,11 @@ export async function runAgentTurn(
             ? lang === "zh"
               ? `调用被拦截:同一个点击/输入已连续执行 ${repeatCount + 1} 次。如果页面已不再变化,说明这条路走到头了——用 browser_read 核实当前状态,换一个目标元素或换一种做法。`
               : `Intercepted: the same click/type has now run ${repeatCount + 1} times in a row. If the page has stopped changing, this path is exhausted — verify the current state with browser_read, then pick a different element or approach.`
-            : lang === "zh"
+            : call.name === "browser_click" || call.name === "browser_type"
+              ? lang === "zh"
+                ? "调用被拦截:上一次同样的点击/输入之后页面没有变化。这通常意味着操作**已经生效**(例如表单已提交、成功提示在别处),或者这个元素此刻不起作用。切勿再点一次——提交类按钮重复点击会重复提交。请先用 browser_read 核实页面当前文字(找确认信息),再决定下一步。"
+                : "Intercepted: the page did not change after your previous identical click/type. That usually means the action ALREADY took effect (the form was submitted, the confirmation is elsewhere on the page), or this element does nothing right now. Do NOT click it again — repeating a submit button posts duplicates. Read the current page text with browser_read first (look for a confirmation), then decide."
+              : lang === "zh"
               ? "调用被拦截:这和上一步完全相同,结果不会变化。请换一种做法——传入具体的子目录/文件路径(如 list_dir {\"path\":\"src\"}、read_file \"src/app.ts\")、换个工具,或用 update_plan 重新梳理。提醒:没有持久的工作目录,cd 不会保留。"
               : 'Intercepted: this call is identical to the previous one — the result cannot change. Do something different: pass a concrete subdirectory/file path (list_dir {"path":"src"}, read_file "src/app.ts"), use another tool, or re-plan with update_plan. Reminder: there is no persistent cwd.';
         stepObj.status = "error";
@@ -1903,6 +1919,10 @@ export async function runAgentTurn(
         stepObj.result = resultText;
       }
       lastResultErrored = resultText.startsWith("ERROR");
+      // Did this call actually change what the page reports? Drives the
+      // stateful-UI repeat allowance above (pagination yes, dead submit no).
+      uiRepeatChangedPage = resultText !== lastResultText;
+      lastResultText = resultText;
       if (opts.signal.cancelled) return;
       cb.onStep(stepObj);
       // 3rd/4th consecutive search: results go through, but remind the model

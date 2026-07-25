@@ -737,7 +737,9 @@ export default function App() {
     document.documentElement.dataset.answer = settings.answerSize;
   }, [settings.uiScale, settings.reduceMotion, settings.answerSize]);
 
-  // Settings → Code: agent-browser visibility (applies on its next launch).
+  // Settings → Code: agent-browser visibility. Changing it closes any open
+  // agent browser (Rust side) so the next tool call relaunches hidden/visible
+  // as picked — the setting used to look ignored for the rest of the session.
   useEffect(() => {
     void browserSetHeadless(settings.codeBrowserHeadless).catch(console.error);
   }, [settings.codeBrowserHeadless]);

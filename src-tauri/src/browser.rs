@@ -117,6 +117,47 @@ fn page_text_js(cap: usize) -> String {
         .replace("__L_EMPTY__", if en { "(no visible text)" } else { "(页面无可见文字)" })
 }
 
+/// Watch for asynchronous page work so an action's result digest reflects what
+/// the page became, not what it was. Without this, an AJAX form submit returns
+/// the OLD page (the form, no "Thank you") because `readyState` never left
+/// "complete" — the model concludes the submit failed and clicks again, posting
+/// duplicates. Patches fetch/XHR to count in-flight requests and watches DOM
+/// mutations for a quiet period. Idempotent; re-installed after navigation
+/// (the patch dies with the document).
+const SETTLE_INSTALL_JS: &str = r#"(function(){
+  if(window.__chatyWatch)return 'ok';
+  var w={pending:0,last:Date.now(),n:0};
+  window.__chatyWatch=w;
+  function touch(){w.last=Date.now();w.n++;}
+  try{
+    var of=window.fetch;
+    if(of){window.fetch=function(){w.pending++;touch();
+      var p=of.apply(this,arguments);
+      try{return p.then(function(r){w.pending--;touch();return r;},
+                        function(e){w.pending--;touch();throw e;});}
+      catch(e){w.pending--;touch();return p;}};}
+  }catch(e){}
+  try{
+    var os=XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send=function(){w.pending++;touch();
+      this.addEventListener('loadend',function(){w.pending--;touch();});
+      return os.apply(this,arguments);};
+  }catch(e){}
+  try{
+    new MutationObserver(touch).observe(document.documentElement,
+      {subtree:true,childList:true,characterData:true});
+  }catch(e){}
+  return 'ok';
+})()"#;
+
+/// Returns "<in-flight requests>:<ms since last change>:<change counter>", or
+/// "none" when the watcher isn't installed (fresh document — caller reinstalls).
+const SETTLE_POLL_JS: &str = r#"(function(){
+  var w=window.__chatyWatch;
+  if(!w)return 'none';
+  return w.pending+':'+(Date.now()-w.last)+':'+w.n;
+})()"#;
+
 /// Auto-scroll through the whole page (triggering lazy-loaded content) and
 /// return to the top — run before a full-page screenshot. Resolves a promise so
 /// `Runtime.evaluate` with awaitPromise waits for it.
@@ -141,10 +182,15 @@ pub fn set_profile_dir(dir: PathBuf) {
 }
 
 /// User preference: run the agent's interactive browser hidden (headless).
-/// Settings → Code; applies the next time the browser starts.
+/// Settings → Code. Toggling it while a browser is open closes that browser so
+/// the next tool call relaunches in the mode the user just picked — otherwise
+/// the setting looked ignored until the session ended.
 static HEADLESS_PREF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn set_headless(on: bool) {
-    HEADLESS_PREF.store(on, std::sync::atomic::Ordering::Relaxed);
+    let was = HEADLESS_PREF.swap(on, std::sync::atomic::Ordering::Relaxed);
+    if was != on {
+        shutdown();
+    }
 }
 /// PID of the launched Chrome, for a synchronous kill at app exit (the exit
 /// handler `_exit()`s to dodge a ggml teardown crash, skipping destructors, so
@@ -586,9 +632,11 @@ impl BrowserSession {
                 return Err(format!("导航失败 (navigation failed): {err}"));
             }
         }
-        // Give the page a moment to load + settle (SPA JS, first paint).
+        // Give the page a moment to load + settle (SPA JS, first paint), then
+        // arm the async-work watcher for the interactions that follow.
         std::thread::sleep(Duration::from_millis(1200));
         self.pump_pending();
+        self.install_settle();
         let title = self.eval("document.title").unwrap_or_default().trim_matches('"').to_string();
         let final_url = self.eval("location.href").unwrap_or_default().trim_matches('"').to_string();
         let rich = self.rich_digest(4000)?;
@@ -599,6 +647,67 @@ impl BrowserSession {
             title,
             rich
         ))
+    }
+
+    /// Install the async-work watcher (idempotent, best-effort).
+    fn install_settle(&mut self) {
+        let _ = self.eval(SETTLE_INSTALL_JS);
+    }
+
+    /// Wait for the page to finish reacting to the action we just performed,
+    /// in two phases:
+    ///   1. up to `work_ms`, wait for work to START — an in-flight fetch/XHR or
+    ///      a DOM change past the baseline. A submit whose confirmation arrives
+    ///      a second later (network round-trip, or a plain `setTimeout` render
+    ///      with no request at all) is caught here; a genuinely dead click pays
+    ///      this wait once and reports "nothing happened".
+    ///   2. then wait for quiet — no requests in flight and no change for
+    ///      `quiet_ms` — capped by `max_ms` overall.
+    /// Returns whether any work was observed.
+    fn wait_settled(&mut self, max_ms: u64, quiet_ms: u64) -> bool {
+        fn parse(s: &str) -> Option<(u32, u64, u64)> {
+            let mut it = s.split(':');
+            Some((
+                it.next()?.parse().ok()?,
+                it.next()?.parse().ok()?,
+                it.next()?.parse().ok()?,
+            ))
+        }
+        let raw = self.eval(SETTLE_POLL_JS).unwrap_or_default();
+        let base = raw.trim_matches('"').to_string();
+        if base == "none" {
+            // Fresh document (a navigation replaced ours) — the page already
+            // changed; just re-arm for the next action.
+            self.install_settle();
+            return true;
+        }
+        let base_n = parse(&base).map(|(_, _, n)| n).unwrap_or(0);
+        let work_ms = max_ms.min(2500); // phase-1 budget
+        let mut waited = 0u64;
+        let mut started = false;
+        while waited < max_ms {
+            std::thread::sleep(Duration::from_millis(100));
+            self.pump_pending();
+            waited += 100;
+            let raw = self.eval(SETTLE_POLL_JS).unwrap_or_default();
+            let s = raw.trim_matches('"');
+            if s == "none" {
+                self.install_settle();
+                return true;
+            }
+            let Some((pending, since, n)) = parse(s) else { break };
+            if pending > 0 || n > base_n {
+                started = true;
+            }
+            if started {
+                if pending == 0 && since >= quiet_ms {
+                    break; // reacted, then went quiet
+                }
+            } else if waited >= work_ms {
+                break; // nothing ever happened
+            }
+        }
+        started
     }
 
     /// A compact digest of the page's interactive elements (used after navigate
@@ -842,6 +951,7 @@ impl BrowserSession {
             ));
         }
         std::thread::sleep(Duration::from_millis(150)); // let a prior nav settle
+        self.install_settle(); // so we can tell when this click's work finishes
         let found = self.eval(&js)?;
         let found = found.trim_matches('"');
         let clicked = if found == "NOT_FOUND" {
@@ -879,8 +989,10 @@ impl BrowserSession {
                     std::thread::sleep(Duration::from_millis(150));
                     self.pump_pending();
                 }
-                std::thread::sleep(Duration::from_millis(150));
-                self.pump_pending();
+                // Same-document work (AJAX submit → "Thank you", SPA route
+                // change, spinner → result) never touches readyState, so wait
+                // for the page to actually go quiet before the caller reads it.
+                self.wait_settled(6000, 400);
                 Ok(label.to_string())
             }
             "IS_SELECT" => Err(btr!(
@@ -1002,6 +1114,9 @@ impl BrowserSession {
         if r == "OK" {
             std::thread::sleep(Duration::from_millis(250));
             self.pump_pending();
+            // Typing can trigger async validation / autocomplete — let it land
+            // so the digest shows the rule the model just tripped.
+            self.wait_settled(2500, 300);
             Ok(what.to_string())
         } else if let Some(opts) = r.strip_prefix("NO_OPTION:") {
             // A <select> was found but no option matched — list the options so
@@ -1420,6 +1535,36 @@ mod tests {
 
         shutdown();
         let _ = std::fs::remove_file(&path);
+    }
+
+    // Toggling Settings → Code's hidden-browser preference must close the
+    // running browser, or the setting silently applies "next session".
+    #[test]
+    fn headless_toggle_closes_the_open_browser() {
+        let start = HEADLESS_PREF.load(std::sync::atomic::Ordering::Relaxed);
+        let (tx, _rx) = std::sync::mpsc::channel::<BrowserCmd>();
+        *BROWSER.lock().unwrap() = Some(tx);
+        // Same value → no restart (don't kill a browser for a no-op write).
+        set_headless(start);
+        assert!(BROWSER.lock().unwrap().is_some(), "no-op toggle must keep the browser");
+        // Changed value → the actor is dropped so the next call relaunches.
+        set_headless(!start);
+        assert!(BROWSER.lock().unwrap().is_none(), "changed toggle must close the browser");
+        set_headless(start); // restore the process-wide default
+        *BROWSER.lock().unwrap() = None;
+    }
+
+    // The async-settle watcher is injected as text; a botched edit would break
+    // AJAX-confirmation detection silently (the whole point of the fix).
+    #[test]
+    fn settle_scripts_keep_their_contract() {
+        assert!(SETTLE_INSTALL_JS.contains("window.__chatyWatch"));
+        assert!(SETTLE_INSTALL_JS.contains("MutationObserver"));
+        assert!(SETTLE_INSTALL_JS.contains("XMLHttpRequest.prototype.send"));
+        assert!(SETTLE_INSTALL_JS.contains("window.fetch"));
+        // Poll must report both halves the waiter parses: "pending:sinceMs".
+        assert!(SETTLE_POLL_JS.contains("w.pending+':'+"));
+        assert!(SETTLE_POLL_JS.contains("'none'"));
     }
 
     // Canvas's headless one-shot capture: a PNG + the page's console, with no

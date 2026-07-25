@@ -34,6 +34,24 @@ benchmark that ships in `bench/web/` (19/23 → 22/23 across the fixes below).
   digests now follow the session language — the one model-visible surface
   that had missed the v1.8.5 single-language pass.
 
+### The browser waits for the page
+
+Found by driving this release by hand on a 4B text-only model:
+
+- **Async confirmations are no longer invisible.** After a click, Chaty waits
+  for the page to actually finish reacting — in-flight fetch/XHR plus a
+  DOM-quiet period — not just for `readyState`. A contact form that posts in
+  the background and then renders "Thank you" never reached the model before,
+  so it concluded the submit had failed and **clicked again, posting
+  duplicates**. The same wait surfaces async validation after typing.
+- **Repeating a click is allowed only while the page keeps changing.** The
+  stateful-UI allowance (pagination "Next" × 3) now requires the previous
+  identical click to have *changed* something; on an unchanged page the agent
+  is stopped with "this may have already worked — read the page before
+  clicking again." Pagination still works; duplicate submits don't.
+- **Toggling Settings → Code → hidden browser restarts the browser**, instead
+  of applying only to the next launch (mid-session switches looked ignored).
+
 ### Benchmarks
 
 - **ChatyWeb-Bench** (`bench/web/`): six deterministic single-file fixture
