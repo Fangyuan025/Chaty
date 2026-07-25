@@ -73,75 +73,23 @@ export const IS_WINDOWS = (() => {
   }
 })();
 
-export type AgentToolName =
-  | "read_file"
-  | "write_file"
-  | "edit_file"
-  | "edit_lines"
-  | "multi_edit"
-  | "outline"
-  | "list_dir"
-  | "glob"
-  | "grep"
-  | "search_files"
-  | "search_code"
-  | "search_docs"
-  | "bash"
-  | "bash_bg"
-  | "bg_output"
-  | "bg_kill"
-  | "web_search"
-  | "web_fetch"
-  | "web_download"
-  | "view_image"
-  | "browser_navigate"
-  | "browser_screenshot"
-  | "browser_snapshot"
-  | "browser_scroll"
-  | "browser_click"
-  | "browser_type"
-  | "browser_eval"
-  | "browser_console"
-  | "browser_read"
-  | "browser_close"
-  | "ask_user"
-  | "update_plan"
-  | "validate_change"
-  | "understand_repo";
-
-/** Tools that change the world (or run code) → need approval unless bypassed. */
-export const MUTATING_TOOLS = new Set<AgentToolName>([
-  "write_file",
-  "edit_file",
-  "edit_lines",
-  "multi_edit",
-  "bash",
-  "bash_bg",
-  "web_download",
-  "validate_change",
-]);
-
-/**
- * Tools exempt from the identical-call loop breaker: with the SAME args they
- * still make progress or observe a changed world, so a repeat is not a stuck
- * loop. `browser_scroll` 300px twice moves further down the page; re-taking a
- * screenshot/snapshot or re-reading the page/console re-observes a page that may
- * have changed since; `bg_output` polls a running job for new output.
- *
- * Deliberately NOT exempt: `browser_navigate` and `view_image` — their arg (the
- * url / image path) already distinguishes a *different* target (different key →
- * not a repeat), so an identical call means re-fetching the SAME thing, which is
- * a genuine degenerate loop the breaker SHOULD stop (a real model got stuck
- * re-navigating the same URL forever until this was removed).
- */
-export const REPEAT_EXEMPT = new Set<AgentToolName>([
-  "browser_scroll",
-  "browser_screenshot",
-  "browser_snapshot",
-  "browser_read",
-  "browser_console",
-  "bg_output",
-]);
+// The single source of truth for tool metadata is the registry (2.0 M0):
+// name union, docs, approval/loop-breaker/injection-defense membership,
+// arg validation, and result caps are all fields on one ToolSpec there.
+// Re-exported here so existing importers keep working.
+import {
+  type AgentToolName,
+  ARG_EXAMPLE,
+  buildToolsDoc,
+  capKeepsTail,
+  MUTATING_TOOLS,
+  REPEAT_EXEMPT,
+  REQUIRED_ARGS,
+  resultCap,
+  UNTRUSTED_TOOLS,
+} from "./toolRegistry";
+export type { AgentToolName } from "./toolRegistry";
+export { MUTATING_TOOLS, REPEAT_EXEMPT } from "./toolRegistry";
 
 export interface ToolCall {
   name: AgentToolName;
@@ -304,110 +252,7 @@ export function agentSetEditAnchors(on: boolean): void {
   }
 }
 
-const ANCHOR_READ_NOTE: Record<"zh" | "en", string> = {
-  zh: `每行行首带编辑锚点 "行号:哈希→"(如 "22:abc→"),编辑时直接把它填进 edit_lines 的 anchor。`,
-  en: `Every line is prefixed with its edit anchor "LINE:HASH→" (e.g. "22:abc→") — pass that straight into edit_lines anchors.`,
-};
-const EDIT_LINES_DOC: Record<"zh" | "en", string> = {
-  zh: `- edit_lines: 按行锚点批量改行(锚点=read_file 行首的 "22:abc")。op: replace(anchor 单行,或 anchor+end_anchor 区间;content 为新内容,空串=删除)、insert_after(anchor|"0" 文件头|"EOF" 文件尾)。content 只写文件内容,不要带锚点前缀。args: { "path", "edits": [{ "op": "replace", "anchor": "22:abc", "content": "新行" }] }`,
-  en: `- edit_lines: batch line edits addressed by anchors (the "22:abc" shown by read_file). op: replace (single anchor, or anchor+end_anchor range; content = new text, "" = delete) and insert_after (anchor | "0" BOF | "EOF"). content is plain file content — never include anchor prefixes. args: { "path", "edits": [{ "op": "replace", "anchor": "22:abc", "content": "new line" }] }`,
-};
 
-const TOOL_DOCS: Record<"zh" | "en", string> = {
-  zh: `
-- read_file: 读取文件(pdf/docx/xlsx/pptx 也能读:自动提取文本,扫描件 OCR)。只关心某个函数/类时传 symbol,返回该定义完整代码块+调用处清单。args: { "path": string, "offset"?: number(起始行,从1开始), "limit"?: number, "symbol"?: string }
-- write_file: 新建文件,或整体重写(覆盖全部内容);修改已有文件优先用 edit_file。args: { "path": string, "content": string }
-- edit_file: 精确替换(old_string 须与文件逐字匹配且唯一,除非 replace_all=true)。同一文件改多处给 edits 数组,一次原子提交(任一条失败则整体不改),不要拆成多次调用。args: { "path", "old_string", "new_string", "replace_all"? } 或 { "path", "edits": [{ "old_string", "new_string", "replace_all"? }] }
-- outline: 文件的定义大纲(函数/类+行号),不读全文即掌握结构。args: { "path": string }
-- list_dir: 列出目录一层内容(不传 path = 工作区根)。args: { "path"?: string }
-- glob: 按通配符找文件(如 "src/**/*.ts")。args: { "pattern": string }
-- grep: 用正则搜索文件内容。args: { "pattern": string, "path"?: string, "glob"?: string }
-- search_files: 按关键词(字面)搜文件名+内容;names_only=true 只搜文件名。args: { "query": string, "path"?: string, "names_only"?: boolean }
-- search_code: 按含义提问代码库,返回按相关度排序的文件+关键定义。探索陌生代码优先用它。args: { "query": "哪里处理登录鉴权", "k"?: number }
-- search_docs: 检索用户的知识库文档(需求、设计稿、笔记)。args: { "query": string }
-- bash: 在工作区执行 shell 命令(沙箱,写限工作区);会等命令结束,不要用它启动 dev server 等不退出的进程。args: { "command": string, "timeout_secs"?: number }
-- bash_bg: 后台启动长时间运行的命令(dev server、慢构建),立即返回 id,结束时系统自动通知你;不支持 sudo(要特权用前台 bash)。args: { "command": string }
-- bg_output: 查看后台命令的状态与最近输出。args: { "id": number }
-- bg_kill: 终止后台命令(整棵进程树)。args: { "id": number }
-- understand_repo: 一次拿到仓库速览(README/manifest/目录树/语言/入口)。接手陌生工作区的第一个动作。args: {}
-- validate_change: 自动找出与改动相关的测试并只跑最小集;不传参数验证本轮全部改动。args: { "files"?: string[] }
-- web_search: 联网搜索;site 参数限站内(github.com 返回结构化仓库/issue/代码;reddit/youtube/bilibili 及任意域名均可)。args: { "query": string, "site"?: string }
-- web_fetch: 抓取 URL,按内容类型自动处理(文章→Markdown、GitHub 文件→raw 源码、视频→字幕、PDF→文本);要 HTML 源码传 raw=true。args: { "url": string, "raw"?: boolean }
-- web_download: 后台下载文件到工作区路径,完成/失败时自动通知;在那之前不要读取该文件或重复发起。args: { "url": string, "path": string }
-- update_plan: 制定/更新任务待办清单;完成一步标 done、下一步标 in_progress。args: { "todos": [{ "content": string, "status": "pending"|"in_progress"|"done" }] }
-- ask_user: 需要用户拍板的决策(方案分歧、需求不明、破坏性操作)向用户提选择题,不要乱猜。args: { "question": string, "options": string[] }
-- view_image: 查看工作区里的图片(视觉模型直接看;非视觉模型自动 OCR 出文字)。args: { "path": string }`,
-  en: `
-- read_file: read a file (pdf/docx/xlsx/pptx too — text auto-extracted, scans OCR'd). Pass symbol to get one function/class definition plus its call sites. args: { "path": string, "offset"?: number(1-based), "limit"?: number, "symbol"?: string }
-- write_file: create a file, or rewrite one wholesale (replaces ALL content); to modify an existing file prefer edit_file. args: { "path": string, "content": string }
-- edit_file: exact replacement (old_string must match the file verbatim and be unique unless replace_all=true). For several changes in one file, pass an atomic edits array in ONE call (any failure = nothing applied) instead of many small calls. args: { "path", "old_string", "new_string", "replace_all"? } or { "path", "edits": [{ "old_string", "new_string", "replace_all"? }] }
-- outline: definition outline (functions/classes + line numbers) without reading the whole file. args: { "path": string }
-- list_dir: list one directory level (no path = workspace root). args: { "path"?: string }
-- glob: find files by pattern (e.g. "src/**/*.ts"). args: { "pattern": string }
-- grep: regex search over file contents. args: { "pattern": string, "path"?: string, "glob"?: string }
-- search_files: literal keyword search over file names + contents; names_only=true for names only. args: { "query": string, "path"?: string, "names_only"?: boolean }
-- search_code: ask the codebase by meaning; returns relevance-ranked files with their key definitions. First choice for unfamiliar code. args: { "query": "where login auth is handled", "k"?: number }
-- search_docs: search the user's knowledge-base documents. args: { "query": string }
-- bash: run a shell command in the workspace (sandboxed, writes limited to the workspace); waits for exit — don't start dev servers with it. args: { "command": string, "timeout_secs"?: number }
-- bash_bg: start a long-running command in the background (dev server, slow build); returns an id, you're notified when it ends; sudo unsupported (use foreground bash). args: { "command": string }
-- bg_output: status + recent output of a background job. args: { "id": number }
-- bg_kill: kill a background job (whole process tree). args: { "id": number }
-- understand_repo: one-call repo overview (README, manifest, tree, languages, entry points). First move in an unfamiliar workspace. args: {}
-- validate_change: find and run just the tests related to the change; no args = everything changed this turn. args: { "files"?: string[] }
-- web_search: web search; site scopes to one site (github.com returns structured repos/issues/code; reddit/youtube/bilibili/any domain). args: { "query": string, "site"?: string }
-- web_fetch: fetch a URL, handled by content type (article→Markdown, GitHub file→raw source, video→transcript, PDF→text); raw=true for HTML. args: { "url": string, "raw"?: boolean }
-- web_download: background-download a file into the workspace; you're notified on completion — don't read it or re-request before that. args: { "url": string, "path": string }
-- update_plan: create/update the todo plan; mark finished steps done, the next one in_progress. args: { "todos": [{ "content": string, "status": "pending"|"in_progress"|"done" }] }
-- ask_user: when a decision is the user's (competing approaches, unclear requirements, destructive ops), ask a multiple-choice question — don't guess. args: { "question": string, "options": string[] }
-- view_image: view an image in the workspace (vision models see it; others get OCR'd text). args: { "path": string }`,
-};
-
-/** Vision-only tool doc (browser suite), appended when the model has a vision
- *  encoder. Deep workflow guidance lives in the JIT browser hint
- *  (src/lib/jitHints.ts) — only the always-true rule rides along here. */
-const VISION_TOOL_DOCS: Record<"zh" | "en", string> = {
-  zh: `
-- browser_navigate: 打开网址(或本地文件/dev server)。返回标题+页面文字+可交互元素清单。args: { "url": string }
-- browser_read: 读当前页全部可见文字+元素清单(含输入框当前值)。要"内容/文字/状态"时用它。args: {}
-- browser_screenshot: 整页截图并用视觉查看(自动滚动触发懒加载)。要判断"长什么样"时用它。args: {}
-- browser_snapshot: 当前视口截图(即时,不滚动)。args: {}
-- browser_scroll: 滚动以加载更多内容。args: { "to"?: "bottom"|"top", "by"?: number }
-- browser_close: 关闭浏览器。args: {}
-- browser_console: 读取页面 JS 控制台输出与异常。args: {}
-- browser_click: 点击元素,优先用 text 按可见文字;已想好顺序的多个目标必须一次用 steps 传完。args: { "text"?, "selector"?, "steps"?: [{ "text"?, "selector"? }] }
-- browser_type: 填输入框,也用于下拉框(text=选项可见文字);多个字段一次用 steps 填完。args: { "text"?, "label"?, "selector"?, "steps"?: [{ "text", "label"?, "selector"? }] }
-- browser_eval: 执行 JavaScript 并返回结果。args: { "expression": string }
-要内容/文字/状态→browser_read;要外观/渲染是否正确→browser_screenshot/snapshot 用视觉亲眼看。每次交互后先核实结果再继续。查资料优先 web_search/web_fetch,需要真实操作网页或视觉验证时才用浏览器。`,
-  en: `
-- browser_navigate: open a URL (or local file / dev server). Returns title + page text + interactive elements. args: { "url": string }
-- browser_read: all visible text of the current page + element list (incl. current input values). Use for content/text/state. args: {}
-- browser_screenshot: full-page screenshot, seen with vision (auto-scrolls for lazy content). Use to judge how the page LOOKS. args: {}
-- browser_snapshot: current-viewport screenshot (instant, no scrolling). args: {}
-- browser_scroll: scroll to load more. args: { "to"?: "bottom"|"top", "by"?: number }
-- browser_close: close the browser. args: {}
-- browser_console: read the page's JS console output and exceptions. args: {}
-- browser_click: click an element — prefer text (visible label); when you already know a sequence of targets, pass them ALL in one steps call. args: { "text"?, "selector"?, "steps"?: [{ "text"?, "selector"? }] }
-- browser_type: fill inputs, also selects dropdowns (text = the option's visible label); fill several fields in one steps call. args: { "text"?, "label"?, "selector"?, "steps"?: [{ "text", "label"?, "selector"? }] }
-- browser_eval: run JavaScript and return the result. args: { "expression": string }
-Content/text/state → browser_read; looks/rendering → browser_screenshot/snapshot and SEE it. Verify the result after every interaction before moving on. Research goes through web_search/web_fetch first; open the browser only for real page interaction or visual verification.`,
-};
-
-/** Browser suite for models WITHOUT vision — derived from VISION_TOOL_DOCS
- *  (single source, no drift): drop the two screenshot tools, swap the
- *  guidance tail. browser_read's digest is the model's only eyes. */
-const TEXT_BROWSER_TAIL: Record<"zh" | "en", string> = {
-  zh: `该模型没有视觉,截图工具不可用:browser_read 就是你的眼睛——每次交互后先用它核实结果再继续。查资料优先 web_search/web_fetch,需要真实操作网页时才用浏览器。`,
-  en: `This model has no vision and screenshot tools are unavailable: browser_read is your eyes — verify with it after every interaction before moving on. Research goes through web_search/web_fetch first; open the browser only for real page interaction.`,
-};
-function textBrowserDocs(l: "zh" | "en"): string {
-  return VISION_TOOL_DOCS[l]
-    .split("\n")
-    .filter(
-      (ln) => !ln.startsWith("- browser_screenshot:") && !ln.startsWith("- browser_snapshot:"),
-    )
-    .map((ln) => (ln.startsWith("- ") || ln.trim() === "" ? ln : TEXT_BROWSER_TAIL[l]))
-    .join("\n");
-}
 
 export function systemPrompt(
   workspace: string,
@@ -422,23 +267,17 @@ export function systemPrompt(
   // the docs swap ("prefer edit_file", the caution line) — recommending a
   // tool that is not in the list makes the model avoid editing entirely.
   const anchorize = (p: string) => (anchorsMode ? p.split("edit_file").join("edit_lines") : p);
-  let toolsDoc =
-    TOOL_DOCS[l] + (visionReady ? VISION_TOOL_DOCS[l] : browserText ? textBrowserDocs(l) : "");
-  if (anchorsMode) {
-    // Swap the exact-string editor's doc for the anchor editor's, and teach
-    // read_file's anchor prefixes. edit_file remains executable, undocumented —
-    // and every remaining mention (write_file's "prefer edit_file", the
-    // caution line) must follow, or the prompt recommends a tool that is not
-    // in the list and the model avoids editing altogether (anchor smoke #1).
-    toolsDoc = toolsDoc
-      .split("\n")
-      .map((line) => {
-        if (line.startsWith("- edit_file:")) return EDIT_LINES_DOC[l];
-        if (line.startsWith("- read_file:")) return `${line} ${ANCHOR_READ_NOTE[l]}`;
-        return line;
-      })
-      .join("\n");
-  }
+  // Doc assembly lives in the registry; anchor mode swaps the exact-string
+  // editor's doc for the anchor editor's there. edit_file stays executable,
+  // undocumented — and the whole-prompt anchorize() below renames every
+  // remaining mention ("prefer edit_file", the caution line), or the prompt
+  // would recommend a tool that is not in the list and the model would avoid
+  // editing altogether (anchor smoke #1).
+  const toolsDoc = buildToolsDoc(l, {
+    vision: visionReady,
+    browserText,
+    anchors: anchorsMode,
+  });
   // Ground the agent in the real current date/time (chat has this; without it
   // the model guesses from its training cutoff and gets "today/now/recent"
   // wrong — matters for changelogs, git dates, "recent" lookups, etc.).
@@ -628,47 +467,12 @@ const missingArg = (arg: string, example: string) =>
     : `ERROR: missing "${arg}" — re-issue the SAME tool call with it, e.g. arguments: ${example}`;
 const MISSING_PATH = () => missingArg("path", '{"path":"src/app.ts"}');
 
-// Required string arguments per tool, with a filled-in example for the
-// correction message. A call that misses one is treated as a format slip and
-// never enters the conversation record (see the required-args guard in the
-// loop) — executing it would plant an empty-arguments exemplar that no-think
+// Required-args validation and the correction examples now live on each
+// ToolSpec in the registry (REQUIRED_ARGS / ARG_EXAMPLE are derived there).
+// A call missing one is treated as a format slip and never enters the
+// conversation record (see the required-args guard in the loop) —
+// executing it would plant an empty-arguments exemplar that no-think
 // models then imitate.
-const REQUIRED_ARGS: Record<string, string[]> = {
-  search_code: ["query"],
-  search_docs: ["query"],
-  search_files: ["query"],
-  web_search: ["query"],
-  web_fetch: ["url"],
-  browser_navigate: ["url"],
-  web_download: ["url", "path"],
-  read_file: ["path"],
-  write_file: ["path"],
-  edit_file: ["path"],
-  edit_lines: ["path"],
-  multi_edit: ["path"],
-  view_image: ["path"],
-  grep: ["pattern"],
-  bash: ["command"],
-  bash_bg: ["command"],
-};
-const ARG_EXAMPLE: Record<string, string> = {
-  search_code: '{"query":"where login auth is handled"}',
-  search_docs: '{"query":"how uploads are stored"}',
-  search_files: '{"query":"logging config"}',
-  web_search: '{"query":"tauri updater docs"}',
-  web_fetch: '{"url":"https://example.com/docs"}',
-  browser_navigate: '{"url":"https://example.com"}',
-  web_download: '{"url":"https://…/file.zip","path":"downloads/file.zip"}',
-  read_file: '{"path":"src/app.ts"}',
-  write_file: '{"path":"notes.md","content":"…"}',
-  edit_file: '{"path":"src/app.ts","old_string":"…","new_string":"…"}',
-  edit_lines: '{"path":"src/app.ts","edits":[{"op":"replace","anchor":"22:abc","content":"…"}]}',
-  multi_edit: '{"path":"src/app.ts","edits":[{"old_string":"…","new_string":"…"}]}',
-  view_image: '{"path":"shot.png"}',
-  grep: '{"pattern":"TODO"}',
-  bash: '{"command":"ls src"}',
-  bash_bg: '{"command":"npm run dev"}',
-};
 
 /** Normalize the model's update_plan args into a clean PlanItem[]. */
 function parsePlan(args: Record<string, unknown>): PlanItem[] {
@@ -1032,20 +836,6 @@ async function execTool(
   }
 }
 
-/** Tools whose output is UNTRUSTED external content (web pages, search results,
- *  whatever a site put in the DOM). Any instructions inside it are DATA, never
- *  commands — the prompt-injection defense wraps + neutralizes these. */
-const UNTRUSTED_TOOLS = new Set<AgentToolName>([
-  "web_fetch",
-  "web_search",
-  "browser_navigate",
-  "browser_read",
-  "browser_console",
-  "browser_click",
-  "browser_type",
-  "browser_scroll",
-  "browser_eval",
-]);
 
 /** Defang model control tokens that untrusted content might contain, so a page
  *  can't forge a `<tool_call>`, close the `<tool_result>` wrapper early, or
@@ -1060,13 +850,14 @@ function neutralizeControlTokens(s: string): string {
 }
 
 function toolResultMsg(name: string, content: string): string {
-  // read_file sizes itself in Rust from the model's real context window (plus
-  // an actionable next-offset footer) — never chop that off with a blind cap.
-  const cap = name === "read_file" ? 400000 : name === "web_fetch" ? 48000 : 12000;
+  // Per-tool caps live on the ToolSpec (read_file sizes itself in Rust from
+  // the model's real context window plus an actionable next-offset footer —
+  // never chop that off with a blind cap).
+  const cap = resultCap(name);
   let capped: string;
   if (content.length <= cap) {
     capped = content;
-  } else if (name === "bash" || name === "bash_bg" || name === "bg_output") {
+  } else if (capKeepsTail(name)) {
     // Command output: the failure is almost always at the END (panics, test
     // summaries, exit codes) — keep head AND tail instead of chopping the tail.
     const head = content.slice(0, Math.floor(cap * 0.3));
