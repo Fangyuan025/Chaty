@@ -144,8 +144,12 @@ const SETTLE_INSTALL_JS: &str = r#"(function(){
       return os.apply(this,arguments);};
   }catch(e){}
   try{
+    // attributes matter: real sites reveal a success banner with
+    // `el.style.display='block'` or a class toggle, which changes NO text
+    // nodes — without attribute mutations we'd call the page "unchanged".
     new MutationObserver(touch).observe(document.documentElement,
-      {subtree:true,childList:true,characterData:true});
+      {subtree:true,childList:true,characterData:true,attributes:true,
+       attributeFilter:['style','class','hidden','aria-hidden','disabled','value']});
   }catch(e){}
   return 'ok';
 })()"#;
@@ -156,6 +160,56 @@ const SETTLE_POLL_JS: &str = r#"(function(){
   var w=window.__chatyWatch;
   if(!w)return 'none';
   return w.pending+':'+(Date.now()-w.last)+':'+w.n;
+})()"#;
+
+/// Text of the region around the element the agent last clicked or typed into.
+/// A long page's visible text is capped from the TOP, so anything that appears
+/// next to the control — a form's success banner, an inline error, a cart total
+/// — falls outside the window and the agent concludes nothing happened. (Real
+/// report: a contact form near the bottom of a long single-page site revealed
+/// "Thank you" on success; the agent never saw it and kept submitting.)
+const NEAR_TEXT_JS: &str = r#"(function(){
+  var el=window.__chatyLast;
+  if(!el||!el.isConnected)return '';
+  var box=el.closest('form,[role=dialog],dialog,section,article,main')||el.parentElement;
+  for(var i=0;i<3&&box&&((box.innerText||'').trim().length<40)&&box.parentElement;i++){
+    box=box.parentElement; // tiny wrapper — widen until there's something to read
+  }
+  if(!box)return '';
+  var t=(box.innerText||'').replace(/[ \t ]+/g,' ').split('\n')
+        .map(function(l){return l.trim();}).filter(function(l,i,a){return l||a[i-1];})
+        .join('\n').trim();
+  var cap=__NEARCAP__;
+  if(t.length>cap)t=t.slice(0,cap)+'…';
+  return t;
+})()"#;
+
+/// Why did a click do nothing? The most common answer on real sites is native
+/// form validation: `required` / `type=email` fields block submission before
+/// any handler runs, and the browser's own bubble is invisible to both the
+/// page text and the element list — the agent sees an unchanged page, assumes
+/// the click missed, and clicks forever. Report the blocking fields instead.
+/// Scoped to the form containing the element the agent just used, so a click on
+/// an unrelated link never reports someone else's empty field.
+const FORM_BLOCKERS_JS: &str = r#"(function(){
+  var out=[];
+  try{
+    var el=window.__chatyLast;
+    if(!el||!el.isConnected)return '';
+    var f=el.closest&&el.closest('form');
+    if(!f||typeof f.checkValidity!=='function'||f.checkValidity())return '';
+    var fields=[].slice.call(f.querySelectorAll('input,select,textarea'));
+    for(var j=0;j<fields.length&&out.length<8;j++){
+      var x=fields[j];
+      if(x.disabled||x.type==='hidden')continue;
+      if(x.willValidate===false||x.checkValidity())continue;
+      var name=(x.labels&&x.labels[0]&&x.labels[0].innerText)||x.placeholder||
+               x.getAttribute('aria-label')||x.name||x.id||x.type;
+      out.push(((name+'')).trim().replace(/\s+/g,' ').slice(0,40)+': '+
+               (x.validationMessage||'invalid'));
+    }
+  }catch(e){}
+  return out.join(' | ');
 })()"#;
 
 /// Auto-scroll through the whole page (triggering lazy-loaded content) and
@@ -730,12 +784,40 @@ impl BrowserSession {
     fn rich_digest(&mut self, text_cap: usize) -> Result<String, String> {
         let text = self.page_text(text_cap).unwrap_or_default();
         let els = self.digest().unwrap_or_default();
+        // The page text is capped from the top. On a long page that hides
+        // whatever appeared next to the control the agent just used, so add the
+        // enclosing region's text — that is where confirmations and inline
+        // errors live. Only when the cap actually bit, and only after an
+        // interaction (the anchor is unset otherwise).
+        let mut near = String::new();
+        if text.chars().count() > text_cap {
+            let raw = self
+                .eval(&NEAR_TEXT_JS.replace("__NEARCAP__", "1400"))
+                .unwrap_or_default();
+            let t = raw.trim_matches('"').replace("\\n", "\n").replace("\\\"", "\"");
+            if t.trim().len() > 1 {
+                near = btr!(
+                    "\n\n刚操作的元素所在区域(长页面已截断,这里是重点):\n{}",
+                    "\n\nThe region around the element you just used (the page text above was truncated — this is the part that matters):\n{}",
+                    t.trim()
+                );
+            }
+        }
         Ok(btr!(
-            "页面可见文字(替代截图,直接读这个):\n{}\n\n可交互元素(按可见文字点击/向这些输入):\n{}",
-            "Visible text (read this instead of screenshotting):\n{}\n\nInteractive elements (click by text / type into these):\n{}",
+            "页面可见文字(替代截图,直接读这个):\n{}{}\n\n可交互元素(按可见文字点击/向这些输入):\n{}",
+            "Visible text (read this instead of screenshotting):\n{}{}\n\nInteractive elements (click by text / type into these):\n{}",
             text,
+            near,
             els
         ))
+    }
+
+    /// Fields whose native validation is blocking the form the agent just used
+    /// (empty `required`, malformed `type=email`, …) — invisible to page text.
+    fn form_blockers(&mut self) -> Option<String> {
+        let raw = self.eval(FORM_BLOCKERS_JS).unwrap_or_default();
+        let t = raw.trim_matches('"').replace("\\\"", "\"");
+        (!t.trim().is_empty()).then(|| t.trim().to_string())
     }
 
     /// Full-page screenshot. First auto-scrolls through the page (triggering
@@ -921,6 +1003,7 @@ impl BrowserSession {
                           ||pick(function(e){{return txts(e).some(function(s){{return s.lastIndexOf(t,0)===0;}});}})
                           ||pick(function(e){{return txts(e).some(function(s){{return s.indexOf(t)>=0;}});}});
                     if(!hit)return 'NOT_FOUND';
+                    window.__chatyLast=hit; // anchor for the "near this element" digest
                     hit.scrollIntoView({{block:'center'}});
                     var r=hit.getBoundingClientRect();
                     return JSON.stringify({{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}});
@@ -934,6 +1017,7 @@ impl BrowserSession {
                     var el=document.querySelector({sel});
                     if(!el)return 'NOT_FOUND';
                     if(el.tagName==='SELECT')return 'IS_SELECT';
+                    window.__chatyLast=el;
                     el.scrollIntoView({{block:'center'}});
                     var r=el.getBoundingClientRect();
                     return JSON.stringify({{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}});
@@ -952,6 +1036,7 @@ impl BrowserSession {
         }
         std::thread::sleep(Duration::from_millis(150)); // let a prior nav settle
         self.install_settle(); // so we can tell when this click's work finishes
+        let mut pre_blockers: Option<String> = None;
         let found = self.eval(&js)?;
         let found = found.trim_matches('"');
         let clicked = if found == "NOT_FOUND" {
@@ -965,6 +1050,11 @@ impl BrowserSession {
                 .and_then(|v| Some((v.get("x")?.as_f64()?, v.get("y")?.as_f64()?)));
             match coords {
                 Some((x, y)) => {
+                    // Validity BEFORE the click decides whether a submit could
+                    // even fire. Checking after is wrong: a successful submit
+                    // often calls form.reset(), which makes required fields
+                    // empty (invalid) again and would fake a "blocked" report.
+                    pre_blockers = self.form_blockers();
                     self.mouse_click(x, y)?;
                     "OK"
                 }
@@ -993,6 +1083,19 @@ impl BrowserSession {
                 // change, spinner → result) never touches readyState, so wait
                 // for the page to actually go quiet before the caller reads it.
                 self.wait_settled(6000, 400);
+                // The clicked control sat in a form that already failed native
+                // validation, so no submit could have fired — name the fields.
+                // (Not gated on "did the page react?": that is a false positive
+                // on sites with scroll-reveal animations, whose class toggles
+                // fire on every scroll.)
+                if let Some(bad) = pre_blockers {
+                    return Ok(btr!(
+                        "{}(注意:该表单未通过浏览器校验,提交没有真正发出。先修正这些字段再点提交 → {})",
+                        "{} (note: this form fails browser validation, so the submit never fired. Fix these fields, then click submit again → {})",
+                        label,
+                        bad
+                    ));
+                }
                 Ok(label.to_string())
             }
             "IS_SELECT" => Err(btr!(
@@ -1081,6 +1184,7 @@ impl BrowserSession {
             r#"(function(){{
                 var el={finder};
                 if(!el)return 'NOT_FOUND';
+                window.__chatyLast=el; // anchor for the "near this element" digest
                 el.scrollIntoView({{block:'center'}});el.focus();
                 var want=({val}+'').trim().toLowerCase();
                 if(el.tagName==='SELECT'){{

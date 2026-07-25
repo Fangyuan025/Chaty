@@ -159,6 +159,31 @@ export const GRADERS: Record<string, Grader> = {
 
   "forms-quote": (_s, t) => answerAny(t, ["$89", "89 per", "89/user", "89 dollars"]),
 
+  // ---------- contact (long page, in-place confirmation) ----------
+  // The confirmation sits far below any top-anchored text window and is
+  // revealed with style.display — the exact shape that had the agent
+  // resubmitting a real site's form because it never saw the "Thank you".
+  "contact-send-and-confirm": (s, t) => {
+    const sent = (s as unknown as { contact: { sent: any[] } }).contact.sent;
+    if (sent.length !== 1) return fail(`${sent.length} messages sent, want exactly 1`);
+    if (!String(sent[0].email).includes("dana@reyes.example")) return fail(`email "${sent[0].email}"`);
+    // Must report the confirmation it could only know by reading the revealed banner.
+    const v = answerHas(t, ["two business days"]);
+    if (!v.pass) return v;
+    return answerAny(t, ["thank you", "received your message"]);
+  },
+
+  "contact-validation-blocked": (s, t) => {
+    const sent = (s as unknown as { contact: { sent: any[] } }).contact.sent;
+    if (sent.length) return fail("a message was sent — the empty form should have been blocked");
+    const n = norm(t);
+    const saysNotSent = /not (been )?sent|wasn't sent|was not sent|no,|not submitted|didn't send|did not send|blocked/.test(n);
+    if (!saysNotSent) return fail("answer does not state that the message was not sent");
+    return /required|fill|empty|must be/.test(n)
+      ? ok
+      : fail("answer does not say what the form requires");
+  },
+
   // ---------- admin ----------
   "admin-deactivate": (s) => {
     const u = s.admin.users.find((x) => x.id === 8)!;

@@ -22,8 +22,8 @@ comparable to WebArena leaderboard numbers.
 | Piece | What it is |
 | --- | --- |
 | `server.mts` | Zero-dependency fixture server: six apps + JSON state API. The server is the single source of truth — every UI mutation goes through `POST /api/...`, so graders read `getState()` and never scrape the DOM. `POST /api/reset` restores the seeded world. |
-| `sites/*.html` | Six self-contained single-file apps: **shop** (catalog/cart/checkout), **inbox** (read/reply/archive/compose), **board** (kanban), **wiki** (hash-routed handbook), **forms** (two-step wizard with server-side validation), **admin** (paginated/sortable/filterable user table with row editing). |
-| `tasks.json` | 23 tasks. `type: "state"` tasks are graded on server state; `type: "answer"` tasks on the agent's final message. Each task carries an **oracle**: a known-good action sequence through the real tool chain. |
+| `sites/*.html` | Seven self-contained single-file apps: **shop** (catalog/cart/checkout), **inbox** (read/reply/archive/compose), **board** (kanban), **wiki** (hash-routed handbook), **forms** (two-step wizard with server-side validation), **admin** (paginated/sortable/filterable user table with row editing), **contact** (a long page whose form reveals its confirmation in place — see below). |
+| `tasks.json` | 25 tasks. `type: "state"` tasks are graded on server state; `type: "answer"` tasks on the agent's final message. Each task carries an **oracle**: a known-good action sequence through the real tool chain. |
 | `graders.mts` | One grader per task: state assertions (including collateral-damage checks) or required-substring answer matching. |
 | `oracle.mts` | Gold validation, no model: replay every oracle through chaty-headless → browser.rs → headless Chrome, then grade. A task that can't pass its own oracle never enters a scored run. Gate: **23/23**. |
 | `runner.mts` | The scored run: real `runAgentTurn` per task, fixture reset before, grade after, JSONL row out. |
@@ -36,6 +36,26 @@ suite minus the two screenshot tools, and `browser_read`'s rich digest
 (visible text + interactive elements + current input values) is its only eyes.
 That makes this a benchmark of Chaty's *text-first* browser UX — exactly the
 surface a local-model product must get right.
+
+## The contact-page case (why it exists)
+
+`sites/contact.html` reproduces a failure found by hand-driving a real
+personal site, not a fixture: a long single page whose contact form sits at
+the bottom, submits through `fetch`, and on success reveals a "Thank you"
+paragraph that was in the DOM all along via `style.display = "block"`.
+
+Three things about that shape defeat a naive text-mode browser agent, and the
+two tasks here pin all of them:
+
+1. The confirmation is **far below** the top-anchored page-text window, so the
+   digest never contains it — the agent concludes the submit failed and
+   **resubmits**. (Fixed by adding the interacted element's region to the
+   digest when the page text is truncated.)
+2. The reveal is an **attribute** mutation, changing no text nodes — so a
+   change watcher must observe attributes to know work happened.
+3. Clicking submit on an **empty** form is blocked by native validation before
+   any handler runs: no request, no DOM change, no visible reason. (Fixed by
+   reporting the blocking fields and their validation messages.)
 
 ## Budgets & parameters
 

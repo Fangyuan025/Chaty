@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Norwood Studio — Contact</title>
+<style>
+  body{font:14px/1.6 system-ui,sans-serif;margin:0;background:#fbfaf7;color:#1e2430}
+  header{background:#14213d;color:#fff;padding:14px 20px;font-size:18px;font-weight:600}
+  .wrap{max-width:720px;margin:0 auto;padding:20px 18px 60px}
+  section{padding:22px 0;border-bottom:1px solid #e6e3db}
+  h2{font-size:16px;margin:0 0 8px}
+  label{display:block;font-size:12px;color:#5b6472;margin-top:12px}
+  input,textarea{font:inherit;width:100%;box-sizing:border-box;padding:8px;border:1px solid #c6ccd8;border-radius:6px}
+  button{font:inherit;margin-top:14px;padding:8px 16px;border:0;border-radius:6px;background:#14213d;color:#fff;cursor:pointer}
+  /* The confirmation lives in the DOM from the start, hidden — revealed by
+     setting style.display on success. Mirrors how real contact forms behave. */
+  .form-thanks{display:none;margin-top:12px;color:#0a7a33;font-weight:600}
+</style>
+</head>
+<body>
+<header>Norwood Studio</header>
+<div class="wrap">
+  <!-- Deliberately long preamble: the form sits far below the page-text cap,
+       so a digest taken from the top can never show the confirmation. -->
+  <section><h2>About the studio</h2><p>Norwood Studio is an independent design practice working on identity, editorial and interface work. We have been operating since 2009 out of a converted textile mill, and we take on a small number of engagements each year so that every project gets the attention it needs. Our team is deliberately small: four designers, one writer, and a rotating cast of collaborators for photography, motion and sound. We believe the best work comes from long conversations, sharp constraints, and a willingness to throw out the first three ideas.</p><p>Past clients include regional museums, university presses, two national parks, a chain of neighbourhood bakeries, and a handful of software companies who wanted their tools to feel like objects rather than dashboards. We are equally comfortable producing a 400-page catalogue and a single well-set poster.</p></section>
+  <section><h2>How we work</h2><p>Engagements begin with a two-week discovery: interviews, an audit of what exists, and a written brief that we both sign. From there we work in three-week cycles, sharing progress at the end of each. You will always know what we are doing and why. We do not present mood boards without reasoning, and we do not hide behind unexplained taste.</p><p>Pricing is fixed per phase, quoted after discovery. We do not bill hourly, because we do not want either of us watching a clock. Most identity projects run twelve to eighteen weeks; editorial work depends on page count and photography.</p></section>
+  <section><h2>Studio principles</h2><p>Make fewer things, better. Show the work in progress. Write it down. Prefer the durable choice over the clever one. Leave the client able to run what we made without us — every project ships with documentation, source files, and a walkthrough recording. If a decision cannot be explained in a sentence, it is probably decoration.</p><p>We keep a public log of what we are reading and looking at, updated most Fridays, and we teach one workshop a year at the local college.</p></section>
+  <section><h2>Availability</h2><p>We are currently booking work starting in the next quarter, with one slot open before then for a small engagement. If your timeline is tighter than that, say so in your message — occasionally we can rearrange.</p></section>
+  <section>
+    <h2>Contact</h2>
+    <form id="contact-form" action="/api/contact/send" method="POST">
+      <label for="c-name">Name</label>
+      <input id="c-name" name="name" required>
+      <label for="c-email">Email</label>
+      <input type="email" id="c-email" name="email" required>
+      <label for="c-message">Message</label>
+      <textarea id="c-message" name="message" rows="4" required></textarea>
+      <button type="submit">Send message</button>
+      <p id="contact-thanks" class="form-thanks">Thank you — we received your message and will reply within two business days.</p>
+    </form>
+  </section>
+</div>
+<script>
+document.getElementById("contact-form").addEventListener("submit", function (e) {
+  e.preventDefault();
+  var f = e.target;
+  fetch(f.action, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: f.name.value, email: f.email.value, message: f.message.value }),
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (d.ok) {
+        f.reset();                                        // clears required fields
+        document.getElementById("contact-thanks").style.display = "block";
+      }
+    });
+});
+</script>
+</body>
+</html>

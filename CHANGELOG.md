@@ -38,12 +38,22 @@ benchmark that ships in `bench/web/` (19/23 → 22/23 across the fixes below).
 
 Found by driving this release by hand on a 4B text-only model:
 
-- **Async confirmations are no longer invisible.** After a click, Chaty waits
-  for the page to actually finish reacting — in-flight fetch/XHR plus a
-  DOM-quiet period — not just for `readyState`. A contact form that posts in
-  the background and then renders "Thank you" never reached the model before,
-  so it concluded the submit had failed and **clicked again, posting
-  duplicates**. The same wait surfaces async validation after typing.
+- **Async confirmations are no longer invisible.** Three separate reasons a
+  submitted form looked like it had failed, all fixed: a click now waits for
+  the page to finish reacting (in-flight fetch/XHR plus a DOM-quiet period,
+  not just `readyState`); the change watcher notices **attribute** reveals
+  (`style.display = "block"` on a banner that was already in the DOM changes
+  no text nodes); and when the page text is truncated, the result adds the
+  text of **the region around the element just used** — on a long page the
+  confirmation sits far below a top-anchored window, which is why the agent
+  kept resubmitting a real site's contact form. The wait also surfaces async
+  validation after typing.
+- **A submit blocked by native validation says so.** Clicking submit on a form
+  with an empty `required` field fires no handler, no request, and changes
+  nothing on screen — the agent had no way to know why. The click result now
+  names the blocking fields and their validation messages. Scoped to the form
+  the agent actually used, and judged on validity *before* the click (a
+  successful submit that calls `form.reset()` must not look "blocked").
 - **Repeating a click is allowed only while the page keeps changing.** The
   stateful-UI allowance (pagination "Next" × 3) now requires the previous
   identical click to have *changed* something; on an unchanged page the agent

@@ -112,6 +112,9 @@ function seedUsers() {
 
 export function seedState() {
   return {
+    // Contact form on a long page: the confirmation is revealed in place, far
+    // below any top-anchored text window (the real-site failure mode).
+    contact: { sent: [] as Json[] },
     shop: { cart: [] as { id: string; qty: number }[], orders: [] as Json[] },
     inbox: { emails: seedEmails(), sent: [] as Json[] },
     board: seedBoard(),
@@ -141,6 +144,14 @@ function api(method: string, route: string, body: Json): { code: number; data: J
   if (method === "POST" && route === "/api/reset") {
     resetState();
     return ok();
+  }
+
+  // contact — answers after a beat, like a real form endpoint
+  if (method === "POST" && route === "/api/contact/send") {
+    for (const k of ["name", "email", "message"])
+      if (!String(b[k] ?? "").trim()) return bad(`missing ${k}`);
+    S.contact.sent.push({ name: b.name, email: b.email, message: b.message });
+    return ok({ ok: true });
   }
 
   // shop
