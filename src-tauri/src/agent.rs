@@ -2676,6 +2676,17 @@ fn run_bash(
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Own process group, same as background jobs: killing the shell alone
+    // leaves its children running. A model that runs `python -c` with an
+    // accidental infinite loop would otherwise leave a core spinning FOREVER
+    // after the timeout returned — observed burning 100% CPU for 80+ minutes,
+    // starving everything else on the machine (found via a bench run whose
+    // generation slowed 10x).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
 
     let mut child = cmd.spawn().map_err(|e| trf!("启动命令失败: {e}", "spawn failed: {e}"))?;
     if let Some(pw) = stdin {
@@ -2694,6 +2705,8 @@ fn run_bash(
             Ok(Some(status)) => break (status.code().unwrap_or(-1), false),
             Ok(None) => {
                 if started.elapsed() >= timeout {
+                    // Kill the GROUP (negative pid), not just the shell.
+                    kill_tree(child.id());
                     let _ = child.kill();
                     let _ = child.wait();
                     break (-1, true);
@@ -2942,7 +2955,7 @@ pub fn agent_bg_kill(id: u64) -> Result<String, String> {
         .and_then(|j| j.get_mut(&id))
         .ok_or_else(|| trf!("没有这个后台命令: #{id}", "no such background job: #{id}"))?;
     if job.code.is_none() {
-        bg_kill_pid(job.pid);
+        kill_tree(job.pid);
         job.reported = true; // killed on request → no completion notice needed
         return Ok(trf!("已终止后台命令 #{id}", "killed background job #{id}"));
     }
@@ -2950,7 +2963,10 @@ pub fn agent_bg_kill(id: u64) -> Result<String, String> {
 }
 
 /// Kill a job's whole process group (unix) / tree (windows).
-fn bg_kill_pid(pid: u32) {
+/// Kill a whole process tree by the leader's pid: the foreground timeout path
+/// and bg_kill both need it, because killing only the direct child orphans
+/// every grandchild it spawned.
+fn kill_tree(pid: u32) {
     #[cfg(unix)]
     unsafe {
         libc::kill(-(pid as i32), libc::SIGKILL);
@@ -3011,7 +3027,7 @@ pub fn bg_kill_all() {
     if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
         for job in jobs.values() {
             if job.code.is_none() {
-                bg_kill_pid(job.pid);
+                kill_tree(job.pid);
             }
         }
         jobs.clear();
@@ -3025,6 +3041,33 @@ pub fn bg_kill_all() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A timed-out command must take its whole tree down. Killing only the
+    /// direct child leaves grandchildren (the `python -c` a model just ran)
+    /// spinning forever — one such orphan burned a core for 80 minutes and
+    /// slowed everything else on the machine tenfold.
+    #[cfg(unix)]
+    #[test]
+    fn bash_timeout_kills_grandchildren_too() {
+        let dir = std::env::temp_dir().join(format!("chaty-killtree-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let marker = dir.join("alive.txt");
+        let m = marker.to_string_lossy().to_string();
+        // Grandchild: a detached shell that keeps touching a file. If it
+        // survives the timeout it goes on updating the marker.
+        let cmd = format!("sh -c 'while true; do touch {m}; sleep 0.2; done' & sleep 30");
+        let res = run_bash(&dir, &cmd, Duration::from_secs(2), None, false).expect("run");
+        assert!(res.timed_out, "command should have timed out");
+
+        std::fs::remove_file(&marker).ok();
+        std::thread::sleep(Duration::from_millis(900));
+        assert!(
+            !marker.exists(),
+            "grandchild survived the timeout and is still writing"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     fn set_ws(dir: &Path) {
         *WORKSPACE.lock().unwrap() = Some(dir.canonicalize().unwrap());
