@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Closing Chaty from fullscreen no longer leaves a black screen** (macOS). The
+  close button hides the window to the tray — but a fullscreen window lives in
+  its own Space, so hiding it there left that Space on screen with nothing in
+  it. Chaty now leaves fullscreen first and hides only once the transition has
+  landed; quitting from fullscreen asks to leave it too, so the window server
+  collapses the Space instead of stranding it.
+
 ## v1.9.1 — Browser tools for every model (2026-07-24)
 
 A small release with one big unlock and a set of browser-agent fixes, all

@@ -197,8 +197,32 @@ pub fn run() {
         // Closing the window hides it to the tray instead of quitting.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
                 api.prevent_close();
+                // macOS: a fullscreen window lives in its own Space. Hiding it
+                // there leaves that Space on screen with nothing in it — the
+                // user stares at a black screen until they swipe away. Leave
+                // fullscreen first and hide only once the (window-server
+                // driven, animated) transition has landed; hiding mid-flight
+                // reproduces the same black Space. Reopening from the tray or
+                // Dock then restores a normal windowed Chaty.
+                if window.is_fullscreen().unwrap_or(false) {
+                    let _ = window.set_fullscreen(false);
+                    let w = window.clone();
+                    std::thread::spawn(move || {
+                        // The collapse animation is ~0.5s; poll so a slow
+                        // machine still hides only after it finishes.
+                        for _ in 0..20 {
+                            std::thread::sleep(std::time::Duration::from_millis(60));
+                            if !w.is_fullscreen().unwrap_or(false) {
+                                break;
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(120));
+                        let _ = w.hide();
+                    });
+                } else {
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -337,6 +361,20 @@ pub fn run() {
                 // which skips ExitRequested and was still reaching ggml's
                 // teardown (ggml_metal_rsets_free → ggml_abort → SIGABRT).
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    // Same fullscreen trap as hide-to-tray: dying inside a
+                    // fullscreen Space leaves that Space up with nothing in it.
+                    // We can't wait out the animation here (the `_exit` below is
+                    // what keeps ggml's teardown from crashing, and blocking the
+                    // main thread would stall the transition anyway), but asking
+                    // to leave fullscreen before we go lets the window server
+                    // collapse the Space on its own.
+                    #[cfg(target_os = "macos")]
+                    if let Some(w) = app.get_webview_window("main") {
+                        if w.is_fullscreen().unwrap_or(false) {
+                            let _ = w.set_fullscreen(false);
+                            std::thread::sleep(std::time::Duration::from_millis(250));
+                        }
+                    }
                     // Kill the automation browser first — the _exit below skips
                     // destructors, which would otherwise orphan Chrome.
                     browser::kill_now();
