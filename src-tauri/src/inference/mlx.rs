@@ -88,7 +88,21 @@ pub fn find_sidecar() -> Option<PathBuf> {
     candidates.push(manifest.join("binaries/chaty-mlx-aarch64-apple-darwin"));
     candidates
         .push(manifest.join("mlx-sidecar/.build/xcode/Build/Products/Release/chaty-mlx"));
-    candidates.into_iter().find(|p| p.is_file())
+    let existing: Vec<PathBuf> = candidates.into_iter().filter(|p| p.is_file()).collect();
+    // The sidecar loads Metal kernels from `mlx-swift_Cmlx.bundle` NEXT TO
+    // itself, so a copy without that bundle dies at startup with "failed to
+    // load the default metallib" — which surfaces upstream as the unhelpful
+    // "sidecar exited unexpectedly". `tauri build` stages a bare binary into
+    // target/release/, and that copy sits next to the exe, so it would win the
+    // search for anything run from there (dev builds, benches) while the
+    // complete copy in binaries/ sat unused. Prefer a candidate whose bundle
+    // is present; fall back to plain existence so an unknown-but-working
+    // layout (the .app bundle, a future packaging) still resolves.
+    existing
+        .iter()
+        .find(|p| p.with_file_name("mlx-swift_Cmlx.bundle").exists())
+        .or_else(|| existing.first())
+        .cloned()
 }
 
 // ---------------------------------------------------------------------------
@@ -618,6 +632,44 @@ fn run_generation(
 
 #[cfg(test)]
 mod tests {
+
+    /// A sidecar copy without its Metal resource bundle dies at startup with
+    /// an unhelpful "sidecar exited unexpectedly"; the search must prefer a
+    /// complete copy over a bare one that merely sits closer to the exe.
+    #[test]
+    fn sidecar_search_prefers_the_copy_with_its_resource_bundle() {
+        let tmp = std::env::temp_dir().join(format!("chaty-sidecar-{}", std::process::id()));
+        let bare = tmp.join("staged");
+        let full = tmp.join("shipped");
+        std::fs::create_dir_all(&bare).unwrap();
+        std::fs::create_dir_all(&full).unwrap();
+        std::fs::write(bare.join("chaty-mlx"), b"x").unwrap();
+        std::fs::write(full.join("chaty-mlx"), b"x").unwrap();
+        std::fs::create_dir_all(full.join("mlx-swift_Cmlx.bundle")).unwrap();
+
+        let candidates = vec![bare.join("chaty-mlx"), full.join("chaty-mlx")];
+        let existing: Vec<std::path::PathBuf> =
+            candidates.into_iter().filter(|p| p.is_file()).collect();
+        let picked = existing
+            .iter()
+            .find(|p| p.with_file_name("mlx-swift_Cmlx.bundle").exists())
+            .or_else(|| existing.first())
+            .cloned()
+            .unwrap();
+        assert_eq!(picked, full.join("chaty-mlx"), "must skip the bundle-less copy");
+
+        // With no complete copy anywhere, fall back rather than find nothing.
+        let only_bare = vec![bare.join("chaty-mlx")];
+        let picked2 = only_bare
+            .iter()
+            .find(|p| p.with_file_name("mlx-swift_Cmlx.bundle").exists())
+            .or_else(|| only_bare.first())
+            .cloned()
+            .unwrap();
+        assert_eq!(picked2, bare.join("chaty-mlx"));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     use super::*;
     use crate::inference::{ChatMessage, GenParams, Role};
 
