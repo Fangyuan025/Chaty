@@ -131,27 +131,53 @@ const NAV_GUARD = `<script>(function(){
   }, true);
 })()<\/script>`;
 
-/** Default scrollbar for the preview document. With "show scrollbars: always"
- * (or a plugged-in mouse) the UA paints a classic WHITE track inside the srcdoc
- * frame, which glares on the dark pages the model tends to build. This gives
- * the preview a neutral translucent scrollbar keyed to the page's own
- * color-scheme — but at the LOWEST specificity (a bare pseudo-element rule,
- * injected first) so anything the user's page sets wins. It never changes a
- * page that styled its own scrollbar. Injected as the very first thing in
- * <head> so page CSS that follows overrides it. */
-const SCROLLBAR_CSS = `<style>
-  ::-webkit-scrollbar{width:12px;height:12px}
-  ::-webkit-scrollbar-track{background:transparent}
-  ::-webkit-scrollbar-thumb{background:rgba(128,128,128,.45);border-radius:8px;border:3px solid transparent;background-clip:padding-box}
-  ::-webkit-scrollbar-thumb:hover{background:rgba(128,128,128,.65);background-clip:padding-box}
-  ::-webkit-scrollbar-corner{background:transparent}
-  html{scrollbar-color:rgba(128,128,128,.45) transparent}
-</style>`;
+/**
+ * Scrollbar that matches the previewed page. With "show scrollbars: always"
+ * (or a mouse plugged in) the UA paints a light track+gutter in the srcdoc
+ * frame, which glares beside the dark pages models like to build — WebKit only
+ * draws a dark scrollbar when the document declares a `color-scheme`.
+ *
+ * So declare one FOR the page, inferred from what it actually renders, and let
+ * the UA draw its own native scrollbar. Deliberately not `::-webkit-scrollbar`
+ * rules: styling those switches the engine to a custom scrollbar whose gutter
+ * is backed by the white canvas, not by the page's background — a transparent
+ * track then reads as PURE WHITE (measured: rgb(255,255,255)), which is worse
+ * than the bug. Setting color-scheme also darkens that canvas base, so the
+ * gutter stops glowing at all.
+ *
+ * A page that declares its own color-scheme is left completely alone.
+ */
+const SCROLL_SCHEME_SHIM = `<script>(function(){
+  function bright(c){
+    var m=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?/.exec(c||'');
+    if(!m) return null;
+    if(m[4]!==undefined && parseFloat(m[4])===0) return null; // fully transparent
+    return 0.299*+m[1]+0.587*+m[2]+0.114*+m[3];              // perceived brightness
+  }
+  function apply(){
+    try{
+      var de=document.documentElement, b=document.body; if(!b) return;
+      var declared=getComputedStyle(de).colorScheme;
+      if(declared && declared!=='normal') return;             // the page decides
+      var bg=bright(getComputedStyle(b).backgroundColor);
+      if(bg===null) bg=bright(getComputedStyle(de).backgroundColor);
+      var dark;
+      if(bg!==null) dark = bg < 110;
+      else {                                                  // gradient/image bg:
+        var t=bright(getComputedStyle(b).color);               // light text ⇒ dark page
+        dark = t!==null && t > 128;
+      }
+      de.style.colorScheme = dark ? 'dark' : 'light';
+    }catch(_){}
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',apply); else apply();
+  setTimeout(apply,300); // late CSS (webfonts, async styles) can flip the verdict
+})()<\/script>`;
 
-/** Inject shims (and the default scrollbar) right after <head> so they install
- *  before page scripts; the scrollbar goes first so page CSS can override it. */
+/** Inject the shims right after <head> so they install before page scripts. */
 function withShims(html: string): string {
-  const shims = SCROLLBAR_CSS + COMPAT_SHIM + CONSOLE_SHIM + ERROR_SHIM + NAV_GUARD + INSPECT_SHIM;
+  const shims =
+    COMPAT_SHIM + CONSOLE_SHIM + ERROR_SHIM + NAV_GUARD + INSPECT_SHIM + SCROLL_SCHEME_SHIM;
   const head = html.match(/<head[^>]*>/i);
   if (head && head.index !== undefined) {
     const at = head.index + head[0].length;

@@ -36,12 +36,15 @@ benchmark that ships in `bench/web/` (19/23 → 22/23 across the fixes below).
 
 ### Design Canvas
 
-- **The preview's default scrollbar is theme-neutral.** With scrollbars set to
+- **The preview's scrollbar matches the page.** With scrollbars set to
   always-show (or a mouse plugged in), the srcdoc frame drew a bright white
-  track that glared on the dark pages models tend to build. The preview now
-  gets a translucent neutral scrollbar at the lowest specificity — any page
-  that styles its own scrollbar still wins. (This code path was a half-written
-  stub; it is now finished and injected.)
+  track that glared beside the dark pages models like to build — WebKit only
+  paints a dark scrollbar when the document declares a `color-scheme`. The
+  preview now infers one from what the page actually renders (background
+  brightness, or the text colour when the background is a gradient or image)
+  and lets the engine draw its own native scrollbar; a page that declares its
+  own `color-scheme` is left untouched. Measured on the failing case: track
+  rgb(250,250,250) → rgb(44,44,44), light pages unchanged.
 
 ### The browser waits for the page
 
