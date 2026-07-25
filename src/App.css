@@ -7238,3 +7238,26 @@ body,
   color: var(--text-dim);
   cursor: pointer;
 }
+.mcp-cert {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid currentcolor;
+  border-radius: 999px;
+  padding: 1px 7px;
+  opacity: 0.85;
+}
+.mcp-store-inputs {
+  flex-basis: 100%;
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.mcp-store-inputs input {
+  flex: 1;
+  min-width: 0;
+}
+.mcp-row {
+  flex-wrap: wrap;
+}

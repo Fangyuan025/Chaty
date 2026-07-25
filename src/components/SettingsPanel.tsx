@@ -23,6 +23,7 @@ import { useConfirm } from "./ConfirmModal";
 import { Select } from "./Select";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { loadMcpServers, saveMcpServers, syncMcpServers, type McpServerCfg } from "../lib/mcp";
+import catalog from "../lib/mcpStore.catalog.json";
 import logoUrl from "../assets/logo.png";
 
 export interface PromptPreset {
@@ -345,6 +346,41 @@ export function SettingsPanel({
   const [mcpName, setMcpName] = useState("");
   const [mcpCmd, setMcpCmd] = useState("");
   const [mcpToken, setMcpToken] = useState("");
+  /** Store entry pending placeholder/token input before it can be added. */
+  const [storeOpen, setStoreOpen] = useState<string | null>(null);
+  const [storeInput, setStoreInput] = useState<Record<string, string>>({});
+  const addFromStore = (entry: (typeof catalog)["entries"][number]) => {
+    const values = storeInput;
+    if (entry.transport === "http") {
+      const token = (values.token ?? "").trim();
+      if ((entry as { needsToken?: boolean }).needsToken && !token) return;
+      applyMcp([
+        ...mcpServers,
+        {
+          name: entry.id,
+          enabled: true,
+          transport: "http",
+          url: (entry as { url?: string }).url ?? "",
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        },
+      ]);
+    } else {
+      const args = ((entry as { args?: string[] }).args ?? []).map((a) => {
+        let out = a;
+        for (const ph of (entry as { placeholders?: { key: string }[] }).placeholders ?? []) {
+          out = out.split(`{${ph.key}}`).join((values[ph.key] ?? "").trim());
+        }
+        return out;
+      });
+      if (args.some((a) => /\{[a-z]+\}/.test(a))) return; // unfilled placeholder
+      applyMcp([
+        ...mcpServers,
+        { name: entry.id, enabled: true, transport: "stdio", command: (entry as { command?: string }).command ?? "npx", args },
+      ]);
+    }
+    setStoreOpen(null);
+    setStoreInput({});
+  };
   const applyMcp = (list: McpServerCfg[]) => {
     setMcpServers(list);
     saveMcpServers(list);
@@ -988,6 +1024,69 @@ export function SettingsPanel({
                 )}
               </div>
               <div className="settings-hint">{t("cmMcpHint")}</div>
+
+              <div className="field">
+                <span>{t("cmMcpStore")}</span>
+                <div className="skill-rows">
+                  {catalog.entries.map((en) => {
+                    const installed = mcpServers.some((x) => x.name === en.id);
+                    const needsInput =
+                      (en as { needsToken?: boolean }).needsToken === true ||
+                      ((en as { placeholders?: unknown[] }).placeholders?.length ?? 0) > 0;
+                    const open = storeOpen === en.id;
+                    return (
+                      <div key={en.id} className="skill-row mcp-row on">
+                        <span className="skill-row-name">{lang === "zh" ? en.title.zh : en.title.en}</span>
+                        <span className="skill-row-desc" title={lang === "zh" ? en.permNote.zh : en.permNote.en}>
+                          {lang === "zh" ? en.desc.zh : en.desc.en}
+                        </span>
+                        {en.probe != null && <span className="mcp-cert">✓ {t("cmMcpCertified")}</span>}
+                        <button
+                          type="button"
+                          className="preset-apply"
+                          disabled={installed}
+                          onClick={() => {
+                            if (installed) return;
+                            if (needsInput && !open) {
+                              setStoreOpen(en.id);
+                              setStoreInput({});
+                              return;
+                            }
+                            addFromStore(en);
+                          }}
+                        >
+                          {installed ? t("cmMcpAdded") : t("cmMcpAddBtn")}
+                        </button>
+                        {open && !installed && (
+                          <div className="mcp-store-inputs">
+                            {((en as { placeholders?: { key: string; label: { zh: string; en: string } }[] }).placeholders ?? []).map((ph) => (
+                              <input
+                                key={ph.key}
+                                type="text"
+                                placeholder={lang === "zh" ? ph.label.zh : ph.label.en}
+                                value={storeInput[ph.key] ?? ""}
+                                onChange={(ev) => setStoreInput((v) => ({ ...v, [ph.key]: ev.target.value }))}
+                              />
+                            ))}
+                            {(en as { needsToken?: boolean }).needsToken && (
+                              <input
+                                type="password"
+                                placeholder={t("cmMcpTokenPh")}
+                                value={storeInput.token ?? ""}
+                                onChange={(ev) => setStoreInput((v) => ({ ...v, token: ev.target.value }))}
+                              />
+                            )}
+                            <button type="button" className="preset-apply" onClick={() => addFromStore(en)}>
+                              {t("cmMcpAddBtn")}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="settings-hint">{t("cmMcpStoreHint")}</div>
             </>
           )}
 
