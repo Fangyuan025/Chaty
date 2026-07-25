@@ -25,6 +25,12 @@ use state::AppState;
 
 /// Bring the main window to the foreground.
 fn show_main_window(app: &tauri::AppHandle) {
+    // macOS: closing from fullscreen hides the whole app (see the
+    // CloseRequested handler), so undo that first — otherwise `show()` on the
+    // window alone leaves an app-level hide in place and nothing appears.
+    // Unhiding slides back into the fullscreen Space, window still fullscreen.
+    #[cfg(target_os = "macos")]
+    let _ = app.show();
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
@@ -198,31 +204,24 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                // macOS: a fullscreen window lives in its own Space. Hiding it
-                // there leaves that Space on screen with nothing in it — the
-                // user stares at a black screen until they swipe away. Leave
-                // fullscreen first and hide only once the (window-server
-                // driven, animated) transition has landed; hiding mid-flight
-                // reproduces the same black Space. Reopening from the tray or
-                // Dock then restores a normal windowed Chaty.
+                // macOS: a fullscreen window lives in its own Space, and hiding
+                // just the window there strands that Space on screen with
+                // nothing in it (a black screen until the user swipes away).
+                // Dropping out of fullscreen first only trades that for a
+                // windowed frame flashing on the way out — and `orderOut:` is
+                // dropped while the Space animates, so the window could end up
+                // neither hidden nor fullscreen.
+                //
+                // Hiding the whole app is what macOS itself does for Cmd+H:
+                // it slides out of the fullscreen Space in one motion, and
+                // unhiding slides back in with the window STILL fullscreen.
+                // That is the behavior a close-to-tray should have here.
+                #[cfg(target_os = "macos")]
                 if window.is_fullscreen().unwrap_or(false) {
-                    let _ = window.set_fullscreen(false);
-                    let w = window.clone();
-                    std::thread::spawn(move || {
-                        // The collapse animation is ~0.5s; poll so a slow
-                        // machine still hides only after it finishes.
-                        for _ in 0..20 {
-                            std::thread::sleep(std::time::Duration::from_millis(60));
-                            if !w.is_fullscreen().unwrap_or(false) {
-                                break;
-                            }
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(120));
-                        let _ = w.hide();
-                    });
-                } else {
-                    let _ = window.hide();
+                    let _ = window.app_handle().hide();
+                    return;
                 }
+                let _ = window.hide();
             }
         })
         .invoke_handler(tauri::generate_handler![

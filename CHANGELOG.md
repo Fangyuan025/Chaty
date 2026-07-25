@@ -1,14 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- **Closing Chaty from fullscreen no longer leaves a black screen** (macOS). The
-  close button hides the window to the tray — but a fullscreen window lives in
-  its own Space, so hiding it there left that Space on screen with nothing in
-  it. Chaty now leaves fullscreen first and hides only once the transition has
-  landed; quitting from fullscreen asks to leave it too, so the window server
-  collapses the Space instead of stranding it.
-
 ## v1.9.1 — Browser tools for every model (2026-07-24)
 
 A small release with one big unlock and a set of browser-agent fixes, all
@@ -42,6 +33,16 @@ benchmark that ships in `bench/web/` (19/23 → 22/23 across the fixes below).
 - **Single-language browser output.** The browser tool results and page
   digests now follow the session language — the one model-visible surface
   that had missed the v1.8.5 single-language pass.
+
+### Windowing (macOS)
+
+- **Closing Chaty from fullscreen no longer leaves a black screen.** The close
+  button hides Chaty to the tray, but a fullscreen window lives in its own
+  Space — hiding just the window left that Space up with nothing in it. Chaty
+  now hides the whole app instead, exactly as ⌘H does: one motion out of the
+  Space, no windowed frame flashing on the way, and reopening from the tray or
+  Dock slides back in **still fullscreen**. Quitting from fullscreen also asks
+  to leave it first, so the Space is never stranded.
 
 ### Design Canvas
 
