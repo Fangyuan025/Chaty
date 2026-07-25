@@ -21,6 +21,12 @@ q=json.load(open('bench/coder/quick15.json'))
   echo "=== $(date '+%m-%d %H:%M:%S') START $task [$MEM]" >> "$LOG"
   perl -e 'alarm 2400; exec @ARGV' -- npx tsx bench/coder/runner.mts --tasks bench/coder/swebench/tasks --only "$task" >> "$LOG" 2>&1
   RC=$?
+  # A wall-clock kill (or any crash) takes the runner down without its reaper,
+  # orphaning a sidecar that keeps the whole 35 GB model resident — the next
+  # task then starves and times out too, turning one stuck task into a whole
+  # dead run. Reap before moving on.
+  pkill -f "binaries/chaty-mlx" 2>/dev/null; pkill -f "target/release/chaty-headless" 2>/dev/null
+  sleep 3
   # Only accept a row from a file the runner wrote DURING this task — an
   # `ls -t` without the freshness check happily folds in a stale row from an
   # earlier campaign and reports a pass that never happened (observed).
