@@ -22,6 +22,7 @@ import { CODE_THEMES, type CodeTheme } from "../lib/codeTheme";
 import { useConfirm } from "./ConfirmModal";
 import { Select } from "./Select";
 import { BUILTIN_SKILLS } from "../lib/skills";
+import { loadMcpServers, saveMcpServers, syncMcpServers, type McpServerCfg } from "../lib/mcp";
 import logoUrl from "../assets/logo.png";
 
 export interface PromptPreset {
@@ -339,6 +340,35 @@ export function SettingsPanel({
     onChange({ ...value, codeSkills: value.codeSkills.filter((s) => s.name !== name) });
 
   const [allowInput, setAllowInput] = useState("");
+  const [mcpServers, setMcpServers] = useState<McpServerCfg[]>(loadMcpServers);
+  const [mcpStatus, setMcpStatus] = useState<Record<string, string>>({});
+  const [mcpName, setMcpName] = useState("");
+  const [mcpCmd, setMcpCmd] = useState("");
+  const [mcpToken, setMcpToken] = useState("");
+  const applyMcp = (list: McpServerCfg[]) => {
+    setMcpServers(list);
+    saveMcpServers(list);
+    void syncMcpServers(list).then((rs) => {
+      setMcpStatus((prev) => {
+        const st: Record<string, string> = { ...prev };
+        for (const r of rs) st[r.server] = r.error ? `✗ ${r.error.slice(0, 90)}` : `✓ ${r.tools} tools`;
+        return st;
+      });
+    });
+  };
+  const addMcp = () => {
+    const name = mcpName.trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 16);
+    const cmd = mcpCmd.trim();
+    if (!name || !cmd || mcpServers.some((x) => x.name === name)) return;
+    const token = mcpToken.trim();
+    const cfg: McpServerCfg = /^https?:\/\//.test(cmd)
+      ? { name, enabled: true, transport: "http", url: cmd, headers: token ? { Authorization: `Bearer ${token}` } : {} }
+      : { name, enabled: true, transport: "stdio", command: cmd.split(/\s+/)[0], args: cmd.split(/\s+/).slice(1) };
+    applyMcp([...mcpServers, cfg]);
+    setMcpName("");
+    setMcpCmd("");
+    setMcpToken("");
+  };
   const addAllow = () => {
     const p = allowInput.trim();
     if (!p) return;
@@ -907,6 +937,57 @@ export function SettingsPanel({
                 />
               </div>
               <div className="settings-hint">{t("cmSkillsHint")}</div>
+
+              <div className="field">
+                <span>{t("cmMcp")}</span>
+                {mcpServers.length > 0 && (
+                  <div className="skill-rows">
+                    {mcpServers.map((sv) => (
+                      <div key={sv.name} className={`skill-row mcp-row ${sv.enabled ? "on" : ""}`}>
+                        <button
+                          type="button"
+                          className="skill-row-toggle"
+                          title={sv.enabled ? "on" : "off"}
+                          onClick={() =>
+                            applyMcp(mcpServers.map((x) => (x.name === sv.name ? { ...x, enabled: !x.enabled } : x)))
+                          }
+                        >
+                          <span className="skill-row-knob" />
+                        </button>
+                        <span className="skill-row-name">{sv.name}</span>
+                        <span className="skill-row-desc">
+                          {sv.transport === "http" ? sv.url : [sv.command, ...(sv.args ?? [])].join(" ")}
+                          {mcpStatus[sv.name] ? ` · ${mcpStatus[sv.name]}` : ""}
+                        </span>
+                        <label className="mcp-trust" title={t("cmMcpHint")}>
+                          <input
+                            type="checkbox"
+                            checked={sv.trusted === true}
+                            onChange={(e) =>
+                              applyMcp(mcpServers.map((x) => (x.name === sv.name ? { ...x, trusted: e.target.checked } : x)))
+                            }
+                          />
+                          {t("cmMcpTrusted")}
+                        </label>
+                        <button type="button" className="preset-del" title={t("cancel")} onClick={() => applyMcp(mcpServers.filter((x) => x.name !== sv.name))}>
+                          <Icon name="x" size={11} strokeWidth={2.2} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="preset-add">
+                  <input type="text" placeholder={t("cmMcpNamePh")} value={mcpName} onChange={(e) => setMcpName(e.target.value)} style={{ maxWidth: 120 }} />
+                  <input type="text" placeholder={t("cmMcpCmdPh")} value={mcpCmd} onChange={(e) => setMcpCmd(e.target.value)} />
+                  <button type="button" onClick={addMcp} disabled={!mcpName.trim() || !mcpCmd.trim()}>
+                    {t("presetSave")}
+                  </button>
+                </div>
+                {/^https?:\/\//.test(mcpCmd.trim()) && (
+                  <input type="password" placeholder={t("cmMcpTokenPh")} value={mcpToken} onChange={(e) => setMcpToken(e.target.value)} />
+                )}
+              </div>
+              <div className="settings-hint">{t("cmMcpHint")}</div>
             </>
           )}
 

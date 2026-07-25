@@ -7216,3 +7216,25 @@ body,
     background-position: -200% 0;
   }
 }
+
+/* MCP server rows (Settings → Code): reuse the skill-row shell; the toggle is
+   a real button here (the row also hosts trust + delete controls). */
+.mcp-row {
+  cursor: default;
+}
+.mcp-row .skill-row-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  flex: none;
+}
+.mcp-trust {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+}

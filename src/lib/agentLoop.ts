@@ -858,7 +858,9 @@ function neutralizeControlTokens(s: string): string {
     .replace(/<(\/?)(think|start_of_turn|end_of_turn)>/gi, "<​$1$2>");
 }
 
-function toolResultMsg(name: string, content: string): string {
+/** Exported for the red-team regression: MCP results must ride the same
+ *  injection defense as native web tools. */
+export function toolResultMsg(name: string, content: string): string {
   // Per-tool caps live on the ToolSpec (read_file sizes itself in Rust from
   // the model's real context window plus an actionable next-offset footer —
   // never chop that off with a blind cap).

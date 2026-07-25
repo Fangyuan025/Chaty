@@ -643,6 +643,33 @@ impl BrowserSession {
                     .unwrap_or("Uncaught exception");
                 self.push_console(format!("[exception] {text}"));
             }
+            // A native dialog FREEZES the page's JS engine — an in-flight
+            // Runtime.evaluate never replies and every later call times out.
+            // Handle it right here in the event pump: OK an alert (its only
+            // button), DECLINE confirm/prompt/beforeunload (auto-accepting
+            // could trigger destructive paths). Fire-and-forget: waiting for
+            // the reply would recurse into pump_until and eat the pending
+            // response; the stray ack is dropped by the id filter later.
+            // The dialog text goes to the console so the model SEES why the
+            // page paused (e.g. a form backend's alert on failure).
+            "Page.javascriptDialogOpening" => {
+                let dtype = p["type"].as_str().unwrap_or("alert");
+                let text = p["message"].as_str().unwrap_or("");
+                let accept = dtype == "alert";
+                let id = self.next_id;
+                self.next_id += 1;
+                let cmd = json!({
+                    "id": id,
+                    "sessionId": self.session_id,
+                    "method": "Page.handleJavaScriptDialog",
+                    "params": { "accept": accept },
+                });
+                let _ = self.ws.send(Message::Text(cmd.to_string().into()));
+                self.push_console(format!(
+                    "[dialog] {dtype}: {text} ({})",
+                    if accept { "auto-accepted" } else { "auto-dismissed" }
+                ));
+            }
             "Log.entryAdded" => {
                 let e = &p["entry"];
                 let level = e["level"].as_str().unwrap_or("info");
@@ -1505,6 +1532,29 @@ mod tests {
         if let Some(p) = chrome_path() {
             assert!(p.exists());
         }
+    }
+
+    // A page alert() freezes the JS engine; the event-pump handler must
+    // auto-dismiss it, unblock the in-flight eval, and surface the text in
+    // the console. Run: cargo test -p chaty dialog_ -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn dialog_auto_dismiss_unblocks_eval() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        let nav = navigate("data:text/html,<title>dlg</title><body>hi</body>").expect("navigate");
+        assert!(nav.contains("dlg"), "{nav}");
+        // Without the handler this call times out at 30s — alert() blocks the
+        // engine and Runtime.evaluate never returns.
+        let t0 = std::time::Instant::now();
+        let out = eval("alert('boom-dialog'); 40+2").expect("eval must not wedge");
+        assert!(out.contains("42"), "eval result after alert: {out}");
+        assert!(t0.elapsed() < Duration::from_secs(10), "eval unblocked late: {:?}", t0.elapsed());
+        let console = console().unwrap_or_default();
+        assert!(console.contains("[dialog] alert: boom-dialog"), "console: {console}");
+        shutdown();
     }
 
     // Full CDP round-trip against the real Chrome. Ignored by default (needs a

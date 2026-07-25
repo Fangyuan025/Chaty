@@ -57,6 +57,7 @@ import {
   type ToolStep,
 } from "../lib/agentLoop";
 import { isReadOnlyCommand } from "../lib/readOnlyCmd";
+import { syncMcpServers } from "../lib/mcp";
 
 interface CodeMsg {
   id: string;
@@ -345,6 +346,12 @@ function PlanPanel({ plan, label }: { plan: PlanItem[]; label: string }) {
 const cmThumbCache = new Map<string, string>();
 function ImgThumb({ path }: { path: string }) {
   const [src, setSrc] = useState<string | null>(cmThumbCache.get(path) ?? null);
+  // Connect enabled MCP servers once per session — their tools join the
+  // registry before the first agent turn builds its prompt.
+  useEffect(() => {
+    void syncMcpServers().catch(() => {});
+  }, []);
+
   useEffect(() => {
     let live = true;
     if (!cmThumbCache.has(path)) {

@@ -602,6 +602,33 @@ for line in sys.stdin:
         }
     }
 
+    // Against the REAL official reference server (downloads via npx on first
+    // run). Run: cargo test -p chaty real_everything -- --ignored --nocapture
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn real_everything_server_e2e() {
+        let t = McpTransport::Stdio {
+            command: "npx".into(),
+            args: vec!["-y".into(), "@modelcontextprotocol/server-everything".into()],
+            env: HashMap::new(),
+        };
+        let tools = connect_inner("everything", t).await.expect("connect real server");
+        eprintln!("tools: {:?}", tools.iter().map(|t| &t.name).collect::<Vec<_>>());
+        assert!(tools.iter().any(|t| t.name == "echo"), "reference server exposes echo");
+        let out = mcp_call("everything".into(), "echo".into(), json!({"message": "chaty-e2e"}))
+            .await
+            .expect("echo call");
+        eprintln!("echo → {out}");
+        assert!(out.contains("chaty-e2e"), "{out}");
+        let sum = mcp_call("everything".into(), "get-sum".into(), json!({"a": 20, "b": 22}))
+            .await
+            .expect("add call");
+        eprintln!("add → {sum}");
+        assert!(sum.contains("42"), "{sum}");
+        disconnect_inner("everything");
+    }
+
     #[test]
     fn http_body_parsing_covers_json_and_sse() {
         let plain = r#"{"jsonrpc":"2.0","id":3,"result":{"ok":true}}"#;
