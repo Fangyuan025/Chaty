@@ -196,8 +196,18 @@ const FORM_BLOCKERS_JS: &str = r#"(function(){
   try{
     var el=window.__chatyLast;
     if(!el||!el.isConnected)return '';
+    // Only a control that SUBMITS can be blocked by validation. Clicking a
+    // checkbox or a plain button inside a half-filled form is not blocked, and
+    // saying "the submit never fired" there would be a lie.
+    var tag=(el.tagName||'').toUpperCase(), ty=(el.getAttribute('type')||'').toLowerCase();
+    var submits=(tag==='BUTTON'&&(ty===''||ty==='submit'))||
+                (tag==='INPUT'&&(ty==='submit'||ty==='image'));
+    if(!submits)return '';
+    if(el.hasAttribute('formnovalidate'))return '';
     var f=el.closest&&el.closest('form');
-    if(!f||typeof f.checkValidity!=='function'||f.checkValidity())return '';
+    // novalidate forms validate in JS, if at all — the browser lets them submit.
+    if(!f||f.noValidate)return '';
+    if(typeof f.checkValidity!=='function'||f.checkValidity())return '';
     var fields=[].slice.call(f.querySelectorAll('input,select,textarea'));
     for(var j=0;j<fields.length&&out.length<8;j++){
       var x=fields[j];
@@ -790,11 +800,14 @@ impl BrowserSession {
         // errors live. Only when the cap actually bit, and only after an
         // interaction (the anchor is unset otherwise).
         let mut near = String::new();
+        // `eval` hands back the plain string (no JSON quoting), so a result
+        // longer than the cap we asked for means page_text appended its
+        // truncation note — don't strip or unescape anything here, or a region
+        // that legitimately starts with a quote loses it.
         if text.chars().count() > text_cap {
-            let raw = self
+            let t = self
                 .eval(&NEAR_TEXT_JS.replace("__NEARCAP__", "1400"))
                 .unwrap_or_default();
-            let t = raw.trim_matches('"').replace("\\n", "\n").replace("\\\"", "\"");
             if t.trim().len() > 1 {
                 near = btr!(
                     "\n\n刚操作的元素所在区域(长页面已截断,这里是重点):\n{}",
@@ -815,8 +828,7 @@ impl BrowserSession {
     /// Fields whose native validation is blocking the form the agent just used
     /// (empty `required`, malformed `type=email`, …) — invisible to page text.
     fn form_blockers(&mut self) -> Option<String> {
-        let raw = self.eval(FORM_BLOCKERS_JS).unwrap_or_default();
-        let t = raw.trim_matches('"').replace("\\\"", "\"");
+        let t = self.eval(FORM_BLOCKERS_JS).unwrap_or_default();
         (!t.trim().is_empty()).then(|| t.trim().to_string())
     }
 
