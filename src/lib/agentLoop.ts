@@ -1769,7 +1769,10 @@ export async function runAgentTurn(
           cb.onDirGrants?.(await agentListGrants());
           out = await execTool(call, opts.bashTimeout, readChars, sudoPassword);
         }
-        resultText = out.result;
+        // A tool must return a string; guard anyway so a stray undefined
+        // (e.g. a backend read that resolved null) can't crash the whole turn
+        // at the .startsWith/.slice below.
+        resultText = out.result ?? "";
         stepObj.status = "done";
         stepObj.result = out.result;
         stepObj.diff = out.diff;

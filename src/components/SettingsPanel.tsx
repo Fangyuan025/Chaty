@@ -71,6 +71,7 @@ export interface GenSettings {
   codeAutoRunReadOnly: boolean;
   /** Code mode: run the agent's browser hidden (headless). */
   codeBrowserHeadless: boolean;
+  codeMemory: boolean;
   /** Code mode: user-defined skills (named prompt templates, invoked via /). */
   codeSkills: PromptPreset[];
   /** Code mode: names of built-in skills the user turned off. */
@@ -128,6 +129,7 @@ export const defaultSettings: GenSettings = {
   codeAutoApproveEdits: false,
   codeAutoRunReadOnly: true,
   codeBrowserHeadless: false,
+  codeMemory: true,
   codeSkills: [],
   codeDisabledSkills: [],
   codeAllowedCommands: [],
@@ -863,6 +865,12 @@ export function SettingsPanel({
                 <Switch
                   on={value.codeBrowserHeadless}
                   onToggle={() => set("codeBrowserHeadless", !value.codeBrowserHeadless)}
+                />
+              </SetRow>
+              <SetRow label={t("cmMemory")} hint={t("cmMemoryHint")}>
+                <Switch
+                  on={value.codeMemory}
+                  onToggle={() => set("codeMemory", !value.codeMemory)}
                 />
               </SetRow>
 

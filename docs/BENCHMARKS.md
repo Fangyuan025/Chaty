@@ -111,6 +111,37 @@ lost to a runner crash at grading and rerun solo; both retries scored ✗.
 Artifacts: `runs/ab-final45-v19-2026-07-22.jsonl`,
 `runs/ab-final45-old184-2026-07-22.jsonl`.
 
+## Memory — does a remembered fact help the next session? (2026-07-26)
+
+A tool (`remember`) writes non-obvious findings to `.chaty/memory/`; a capped
+index rides in the next session's prompt, and the model reads a fact when a
+line looks relevant. ChatyMemory-Bench runs each scenario twice — the only
+variable is whether the relevant fact is already in memory:
+
+| Scenario (tiny fixture) | Control (empty) | Seeded (fact in memory) |
+| --- | --- | --- |
+| port-owner — buried port constant | ✓ 3 steps | ✓ 1 step |
+| config-gotcha — non-obvious env condition | ✓ 2 | ✓ 3 |
+| magic-timeout — commented magic number | ✓ 1 | ✓ 1 |
+| test-command — non-standard test target | ✓ 7 | ✓ 21† |
+
+Read this honestly: on three-file fixtures the answer is cheap to find even
+without memory, so the lift is small and within run-to-run noise (†the
+test-command seeded run wandered — variance, not signal). The clean case is
+port-owner, where the seeded agent answers in one step instead of three. The
+mechanism is verified end to end: 8/8 real-model runs, every seeded agent
+reads its fact and answers, no regressions.
+
+Memory's value scales with how expensive the fact is to re-derive — a large
+codebase, or a gotcha learned the hard way in a prior session — which these
+deliberately small fixtures under-represent. The most valuable thing this
+bench did was catch a real crash before release: the index linked facts by
+bare filename, so the model's `read_file` missed and a later `undefined`
+crashed the whole turn. Both are fixed (full workspace-relative paths;
+tool results can never be undefined) with regression tests.
+
+Reproduce: `CHATY_BENCH_MODEL=… npx tsx bench/memory/runner.mts`.
+
 ## Skills A/B — what a page of procedure is worth (2026-07-26)
 
 2.0 adds file-based skills: procedural knowledge as markdown, one index line

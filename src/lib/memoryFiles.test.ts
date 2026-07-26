@@ -68,6 +68,10 @@ describe("rememberFact", () => {
     await rememberFact(fs, "Ports", "dev server owns 1420", "en");
     const idx = fs.files.get(MEMORY_INDEX)!;
     expect(idx.indexOf("[Ports]")).toBeLessThan(idx.indexOf("[Build rule]"));
+    // The link must be a path read_file can resolve from the workspace root —
+    // the bare filename made the model's read silently miss (M4 crash).
+    expect(idx).toContain(`](${MEMORY_DIR}/build-rule.md)`);
+    expect(idx).not.toMatch(/\]\(build-rule\.md\)/);
     // Same title again ⇒ update in place, no duplicate line.
     await rememberFact(fs, "Build rule", "gate.sh THEN tag", "en");
     const idx2 = fs.files.get(MEMORY_INDEX)!;

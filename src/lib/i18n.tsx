@@ -173,6 +173,11 @@ export const T = {
   cmMcpCmdPh: { zh: "命令 或 https:// URL", en: "command or https:// URL" },
   cmMcpTokenPh: { zh: "Bearer 令牌(可选,仅 HTTP)", en: "Bearer token (optional, HTTP only)" },
   cmMcpTrusted: { zh: "信任", en: "trusted" },
+  cmMemory: { zh: "项目记忆", en: "Project memory" },
+  cmMemoryHint: {
+    zh: "让智能体把对后续会话有用的非显而易见发现存进 <工作区>/.chaty/memory/(纯 Markdown,人可编辑,永不上云);新会话开始时把索引带进上下文。关掉则不加载也不提供记忆工具。",
+    en: "Let the agent save non-obvious findings future sessions need into <workspace>/.chaty/memory/ (plain markdown, human-editable, never leaves the machine); the index rides into context at the start of a new session. Off = no index loaded and no memory tool offered.",
+  },
   cmMcpStore: { zh: "精选服务器", en: "Curated servers" },
   cmMcpStoreHint: {
     zh: "每个条目版本钉死、权限透明,并通过 Chaty 的实连认证(cargo store_cert)。添加后可在上方列表里启停。",

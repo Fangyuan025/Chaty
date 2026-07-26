@@ -484,6 +484,7 @@ export function CodeMode({
   autoRunReadOnly = true,
   skills = [],
   disabledSkills = [],
+  memoryEnabled = true,
   allowedCommands = [],
   sendKey = "enter",
   autoTitle = true,
@@ -507,6 +508,9 @@ export function CodeMode({
   skills?: { name: string; prompt: string }[];
   /** Names of built-in skills the user turned off (Settings → Code). */
   disabledSkills?: string[];
+  /** Project memory on (default): load the index + offer `remember`
+   *  (Settings → Code). Off ⇒ neither, byte-identical prompt. */
+  memoryEnabled?: boolean;
   /** Persistent command prefixes that never need approval (Settings → Code). */
   allowedCommands?: string[];
   /** Composer send shortcut (Settings → General). */
@@ -1122,7 +1126,9 @@ export function CodeMode({
     // each turn so a skill the user just wrote is live immediately. A missing
     // home dir (or a glob that can't reach it) just means no global skills.
     const home = await homeDir().catch(() => undefined);
-    const memoryIndex = await loadMemoryIndex({ readFile: (fp) => agentReadFile(fp) }).catch(() => "");
+    const memoryIndex = memoryEnabled
+      ? await loadMemoryIndex({ readFile: (fp) => agentReadFile(fp) }).catch(() => "")
+      : undefined;
     const skills = await loadSkills(
       agentGlob,
       (fp) => agentReadFile(fp),

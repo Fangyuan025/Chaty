@@ -1,5 +1,65 @@
 # Changelog
 
+## v2.0.0 — A local agent platform (2026-07-26)
+
+v1.9 made the case that on a small local model the intelligence has to live in
+the tools. 2.0 opens the platform: **bring your own tools, your own procedures,
+your own memory — and it still fits a 16K model.** Everything below runs
+entirely on one machine; nothing leaves it.
+
+### MCP: connect any tool server
+
+- **Model Context Protocol client**, hand-written in Rust — stdio and
+  Streamable HTTP transports, one in-flight call per server, hard timeouts so a
+  wedged server can't wedge the agent. Add servers in **Settings → Code**: a
+  command (stdio) or an `https://` URL (HTTP, optional bearer token).
+- **A curated store** of version-pinned servers (GitHub, filesystem, memory,
+  the reference server), each **live-certified** against Chaty's own client —
+  the badge is a passing probe, not a promise. One click to add; entries that
+  need a directory or token ask inline.
+- **Lean by design for small models.** Community MCP schemas run to thousands
+  of tokens; Chaty synthesizes a one-line doc per tool and holds the full
+  schema back until it's needed. A server bringing more than the core-tier
+  limit collapses into a single index line, so the prompt stays flat no matter
+  how many tools you connect.
+- **Safe by default.** Every MCP result is treated as untrusted content
+  (injection-defended), and every call needs your approval unless you mark the
+  server trusted. Proven on **ChatyMCP-Bench** — the agent drives real servers
+  (filesystem / knowledge-graph memory / reference) end to end, graded on
+  server state.
+
+### Skills: procedural knowledge as files
+
+- **`SKILL.md` files** — a page of steps the model loads only when it's
+  relevant. One index line per skill rides in the prompt; the body loads on
+  demand via `use_skill`. Put them in `~/.chaty/skills/` (global) or
+  `<project>/.chaty/skills/` (project, which shadows global).
+- Three official skills ship enabled (verify-before-push, debug-by-mechanism,
+  investigate-first), each toggleable in **Settings → Code**.
+- Measured on quick15: skills don't raise the ceiling much, but on tasks both
+  sides solve the skilled agent wandered far less (roughly half the steps).
+
+### Memory: facts that outlive the session
+
+- **`remember` writes non-obvious findings** to `<workspace>/.chaty/memory/` —
+  plain markdown you can read and edit, that never leaves the machine. A capped
+  index rides in the prompt; the model reads a fact only when a line looks
+  relevant. On by default; toggle in **Settings → Code**. The value scales
+  with how expensive a fact is to re-derive — a large codebase, or a gotcha
+  learned the hard way — so it earns its keep on real projects more than on
+  toy ones.
+
+### Under the hood
+
+- **One tool registry** — natives, MCP tools, and skills all register through a
+  single source of truth, with permission classes and a context budget. The
+  system prompt is byte-for-byte unchanged for anyone using none of the above.
+- **Linux** joins macOS and Windows: an AppImage now ships on every release.
+- A round of reinvented-wheel cleanup (one size formatter, one toggle style,
+  one HTTP client factory, one bilingual macro) and several real bugs found by
+  the benchmarks along the way — a timed-out shell command no longer leaks a
+  runaway process, and the MLX sidecar always loads its Metal bundle.
+
 ## v1.9.1 — Browser tools for every model (2026-07-24)
 
 A small release with one big unlock and a set of browser-agent fixes, all

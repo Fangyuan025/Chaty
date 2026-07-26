@@ -5,7 +5,7 @@
 // relevant. Plain markdown, human-editable, never leaves the machine.
 //
 // Layout:
-//   .chaty/memory/MEMORY.md        — the index: "- [title](file.md) — hook"
+//   .chaty/memory/MEMORY.md        — index: "- [title](.chaty/memory/file.md) — hook"
 //   .chaty/memory/<slug>.md        — one fact per file
 //
 // Writing goes through the `remember` tool (registered only when the
@@ -92,10 +92,13 @@ export async function rememberFact(
   } catch {
     /* first fact — fresh index */
   }
-  const line = `- [${t}](${file}) — ${hook}`;
+  // Link the FULL workspace-relative path, not the bare filename — the model
+  // reads it with read_file relative to the workspace root, so a bare
+  // "note.md" resolves to the wrong place and the read silently misses.
+  const line = `- [${t}](${MEMORY_DIR}/${file}) — ${hook}`;
   const kept = index
     .split("\n")
-    .filter((l) => l.trim() && !l.includes(`](${file})`));
+    .filter((l) => l.trim() && !l.includes(`/${file})`) && !l.includes(`](${file})`));
   // Newest first: the cap in memoryIndexDoc drops the OLDEST lines.
   const next = [line, ...kept].join("\n") + "\n";
   await fs.writeFile(MEMORY_INDEX, next);

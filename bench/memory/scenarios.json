@@ -1,0 +1,58 @@
+[
+  {
+    "id": "test-command",
+    "instruction": "Run this project's unit tests and tell me in your final answer how many tests passed. Do NOT guess — run them.",
+    "files": {
+      "README.md": "# widgetlib\n\nA small utility library. See src/ for the code.\n",
+      "src/widget.py": "def add(a, b):\n    return a + b\n\ndef mul(a, b):\n    return a * b\n",
+      "tests/test_widget.py": "import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))\nfrom widget import add, mul\n\ndef test_add():\n    assert add(2, 3) == 5\n\ndef test_mul():\n    assert mul(2, 3) == 6\n\ndef test_add_neg():\n    assert add(-1, 1) == 0\n",
+      "Makefile": "# The tests live under tests/ but pytest can't collect them by default\n# because src/ isn't on the path — use this target, which sets PYTHONPATH.\ncheck:\n\tPYTHONPATH=src python3 -m pytest tests/ -q\n"
+    },
+    "seedFact": {
+      "title": "how to run tests",
+      "fact": "Tests only collect via `make check` (it sets PYTHONPATH=src). Running pytest directly from the root fails to import the widget module."
+    },
+    "grade": { "kind": "answer", "expect": "3" }
+  },
+  {
+    "id": "magic-timeout",
+    "instruction": "What timeout value (in seconds) does the uploader use, and why that specific number? Answer with the number and the reason.",
+    "files": {
+      "README.md": "# uploader\n\nUploads files to the store. Config in src/uploader.py.\n",
+      "src/uploader.py": "import time\n\n# The store's load balancer drops idle connections at 47s (measured, not\n# documented by the vendor), so we cap just under it to fail fast with a\n# clean error instead of a mid-transfer reset.\nUPLOAD_TIMEOUT = 45\n\ndef upload(data):\n    return {'ok': True, 'timeout': UPLOAD_TIMEOUT, 'bytes': len(data)}\n",
+      "src/util.py": "def chunk(seq, n):\n    return [seq[i:i+n] for i in range(0, len(seq), n)]\n"
+    },
+    "seedFact": {
+      "title": "uploader timeout",
+      "fact": "UPLOAD_TIMEOUT is 45s, set just under the store load balancer's undocumented 47s idle-connection drop so transfers fail fast with a clean error."
+    },
+    "grade": { "kind": "answer-all", "expect": ["45", "47"] }
+  },
+  {
+    "id": "config-gotcha",
+    "instruction": "A user reports that setting CACHE_DIR in the environment has no effect. In your final answer, explain the exact condition under which CACHE_DIR is honored.",
+    "files": {
+      "README.md": "# app config\n\nEnvironment-driven configuration. See src/config.py.\n",
+      "src/config.py": "import os\n\ndef load():\n    cfg = {}\n    # CACHE_DIR is deliberately ignored unless ENABLE_CACHE=1 is ALSO set —\n    # a half-configured cache dir caused silent disk fills in production, so\n    # both must be present or caching stays off entirely.\n    if os.environ.get('ENABLE_CACHE') == '1':\n        cfg['cache_dir'] = os.environ.get('CACHE_DIR', '/tmp/cache')\n    return cfg\n"
+    },
+    "seedFact": {
+      "title": "CACHE_DIR gotcha",
+      "fact": "CACHE_DIR is ignored unless ENABLE_CACHE=1 is also set — config.load() only reads CACHE_DIR inside the ENABLE_CACHE branch. Both env vars are required for caching."
+    },
+    "grade": { "kind": "answer", "expect": "enable_cache" }
+  },
+  {
+    "id": "port-owner",
+    "instruction": "Which port does the dev server bind to, and where is that value defined? Give the port number in your final answer.",
+    "files": {
+      "README.md": "# dev server\n\nRun `python src/serve.py` to start. Port is configured centrally.\n",
+      "src/serve.py": "from settings import DEV_PORT\n\ndef main():\n    print(f'listening on {DEV_PORT}')\n\nif __name__ == '__main__':\n    main()\n",
+      "src/settings.py": "# Not 8000 (taken by the legacy PHP app on shared dev boxes) and not 3000\n# (the frontend). 8137 was picked to avoid both.\nDEV_PORT = 8137\n"
+    },
+    "seedFact": {
+      "title": "dev server port",
+      "fact": "The dev server binds DEV_PORT = 8137, defined in src/settings.py. Chosen to avoid 8000 (legacy PHP) and 3000 (frontend)."
+    },
+    "grade": { "kind": "answer", "expect": "8137" }
+  }
+]

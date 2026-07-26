@@ -2444,6 +2444,7 @@ export default function App() {
         autoRunReadOnly={settings.codeAutoRunReadOnly}
         skills={settings.codeSkills}
         disabledSkills={settings.codeDisabledSkills}
+        memoryEnabled={settings.codeMemory}
         allowedCommands={settings.codeAllowedCommands}
         sendKey={settings.sendKey}
         autoTitle={settings.autoTitle}
