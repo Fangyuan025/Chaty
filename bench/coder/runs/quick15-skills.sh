@@ -27,11 +27,17 @@ q=json.load(open('bench/coder/quick15.json'))
   # dead run. Reap before moving on.
   pkill -f "binaries/chaty-mlx" 2>/dev/null; pkill -f "target/release/chaty-headless" 2>/dev/null
   sleep 3
-  # Only accept a row from a file the runner wrote DURING this task — an
-  # `ls -t` without the freshness check happily folds in a stale row from an
-  # earlier campaign and reports a pass that never happened (observed).
-  NEWEST=$(find "$RUNS" -name '2026-*.jsonl' -newermt "@$START" 2>/dev/null | head -1)
-  ROW=$([ -n "$NEWEST" ] && grep "\"task\":\"$task\"" "$NEWEST" | tail -1)
+  # Only accept a row from a file the runner wrote DURING this task — a stale
+  # row from an earlier campaign once reported a pass that never happened.
+  # BSD-portable: `find -newermt @epoch` is GNU-only, and the interactive
+  # shell's find wrapper masked that (script must be tested under the shell
+  # it runs in — this exact line silently matched nothing under bash).
+  NEWEST=$(ls -t "$RUNS"/2026-*.jsonl 2>/dev/null | head -1)
+  if [ -n "$NEWEST" ] && [ "$(stat -f %m "$NEWEST" 2>/dev/null || echo 0)" -ge "$START" ]; then
+    ROW=$(grep "\"task\":\"$task\"" "$NEWEST" | tail -1)
+  else
+    ROW=""
+  fi
   if [ -n "$ROW" ]; then echo "$ROW" >> "$OUT"; else echo "{\"task\":\"$task\",\"resolved\":false,\"why\":\"runner died rc=$RC\"}" >> "$OUT"; fi
   R=$(echo "$ROW" | grep -o '"resolved":true')
   echo "$([ -n "$R" ] && echo ✓ || echo ✗) $task (rc=$RC)" >> "$LOG"
