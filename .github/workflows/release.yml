@@ -182,13 +182,20 @@ jobs:
             libasound2-dev libssl-dev ninja-build vulkan-sdk libfuse2
       - run: npm ci
       - name: Build AppImage (Vulkan)
-        run: npm run tauri build -- --bundles appimage
+        run: npm run tauri build -- --verbose --bundles appimage
         env:
           # linuxdeploy is itself an AppImage; runners have no FUSE by
           # default (round two of the first Linux release found this).
           # libfuse2 above covers mounting; this covers it even without.
           APPIMAGE_EXTRACT_AND_RUN: "1"
           NO_STRIP: "true"
+      - name: Forensics when linuxdeploy dies silently
+        if: failure()
+        run: |
+          set -x
+          ls -la ~/.cache/tauri 2>/dev/null || true
+          for f in ~/.cache/tauri/linuxdeploy*; do file "$f" || true; done
+          APPIMAGE_EXTRACT_AND_RUN=1 ~/.cache/tauri/linuxdeploy-x86_64.AppImage --version || true
       - uses: actions/upload-artifact@v5
         with:
           name: linux-appimage
