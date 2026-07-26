@@ -16,3 +16,11 @@ describe("fmt — the ONE size/count formatter", () => {
     expect(fmtCount(230)).toBe("230");
   });
 });
+
+describe("fmtGbFromMb — the family the first audit pass missed", () => {
+  test("one decimal everywhere (the 21.29-vs-21.3 split is dead)", async () => {
+    const { fmtGbFromMb } = await import("./fmt");
+    expect(fmtGbFromMb(21800)).toBe("21.3 GB");
+    expect(fmtGbFromMb(0)).toBe("");
+  });
+});

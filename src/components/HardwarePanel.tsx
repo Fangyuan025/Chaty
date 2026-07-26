@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { fmtGbFromMb } from "../lib/fmt";
 import { useI18n } from "../lib/i18n";
 import {
   getGpuUsage,
@@ -73,12 +74,12 @@ export function HardwarePanel({
             </div>
             <div className="hw-row">
               <span className="hw-k">{t("hwRam")}</span>
-              <span className="hw-v">{(hw.ramMb / 1024).toFixed(1)} GB</span>
+              <span className="hw-v">{fmtGbFromMb(hw.ramMb)}</span>
             </div>
             <div className="hw-row">
               <span className="hw-k">{t("hwGpu")}</span>
               <span className="hw-v">
-                {hw.gpu ? `${hw.gpu.name} · ${(hw.gpu.vramMb / 1024).toFixed(1)} GB` : t("hwNoGpu")}
+                {hw.gpu ? `${hw.gpu.name} · ${fmtGbFromMb(hw.gpu.vramMb)}` : t("hwNoGpu")}
               </span>
             </div>
             {usage && usage.totalMb > 0 && (
@@ -86,7 +87,7 @@ export function HardwarePanel({
                 <div className="hw-usage-head">
                   <span className="hw-k">{t("hwVram")}</span>
                   <span className="hw-v">
-                    {(usage.usedMb / 1024).toFixed(1)} / {(usage.totalMb / 1024).toFixed(1)} GB
+                    {(usage.usedMb / 1024).toFixed(1)} / {fmtGbFromMb(usage.totalMb)}
                   </span>
                 </div>
                 <div className="hw-bar">

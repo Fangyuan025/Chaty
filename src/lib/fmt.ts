@@ -20,3 +20,11 @@ export function fmtCount(n: number): string {
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
   return String(Math.round(n));
 }
+
+/** Backend-reported megabyte figures (model sizeMb, ramMb, vramMb) → "X.X GB".
+ *  One rounding convention: the info panel used 2 decimals while every other
+ *  surface used 1, so the same model read "21.29 GB" and "21.3 GB" at once. */
+export function fmtGbFromMb(mb: number): string {
+  if (!Number.isFinite(mb) || mb <= 0) return "";
+  return `${(mb / 1024).toFixed(1)} GB`;
+}

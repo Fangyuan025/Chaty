@@ -1,6 +1,7 @@
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import type { ModelInfo } from "../lib/ipc";
+import { fmtGbFromMb } from "../lib/fmt";
 
 /** Top-right popover with the probed GGUF metadata for the loaded model. */
 export function ModelInfoPanel({
@@ -49,7 +50,7 @@ export function ModelInfoPanel({
             {model.sizeMb != null && (
               <div className="hw-row">
                 <span className="hw-k">{t("miSize")}</span>
-                <span className="hw-v">{(model.sizeMb / 1024).toFixed(2)} GB</span>
+                <span className="hw-v">{fmtGbFromMb(model.sizeMb)}</span>
               </div>
             )}
             <div className="hw-row">

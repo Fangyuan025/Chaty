@@ -61,6 +61,7 @@ import { syncMcpServers } from "../lib/mcp";
 import { loadSkills } from "../lib/skillFiles";
 import { loadMemoryIndex } from "../lib/memoryFiles";
 import { homeDir } from "@tauri-apps/api/path";
+import { fmtBytes } from "../lib/fmt";
 
 interface CodeMsg {
   id: string;
@@ -1363,7 +1364,7 @@ export function CodeMode({
               <span className="cm-spin" /> ⬇ {downloads.length}
               {downloads[0].total
                 ? ` · ${Math.min(100, Math.round((downloads[0].downloaded / downloads[0].total) * 100))}%`
-                : ` · ${(downloads[0].downloaded / 1024 / 1024).toFixed(1)} MB`}
+                : ` · ${fmtBytes(downloads[0].downloaded)}`}
             </span>
           )}
           {bgJobs.length > 0 && (

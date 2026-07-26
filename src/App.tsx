@@ -89,6 +89,7 @@ import {
   type UpdateInfo,
 } from "./lib/ipc";
 import "./App.css";
+import { fmtGbFromMb } from "./lib/fmt";
 
 interface UiMessage extends ChatMessage {
   id: string;
@@ -2097,7 +2098,7 @@ export default function App() {
       .map((m) => ({
         id: `model:${m.path}`,
         label: t("cmdkLoadModel", { name: m.name }),
-        hint: m.sizeMb ? `${(m.sizeMb / 1024).toFixed(1)} GB` : undefined,
+        hint: m.sizeMb ? fmtGbFromMb(m.sizeMb) : undefined,
         keywords: `model 模型 ${m.name}`,
         run: () => void switchModel(m.path),
       })),
@@ -2189,7 +2190,7 @@ export default function App() {
                   <span className="chip-meta">{model.paramsB.toFixed(1)}B</span>
                 ) : null}
                 {model.sizeMb ? (
-                  <span className="chip-meta">{(model.sizeMb / 1024).toFixed(1)} GB</span>
+                  <span className="chip-meta">{fmtGbFromMb(model.sizeMb)}</span>
                 ) : null}
               </>
             ) : loadingModel ? (
@@ -2244,7 +2245,7 @@ export default function App() {
                             </span>
                           ) : null}
                           {m.sizeMb ? (
-                            <span className="mm-size">{(m.sizeMb / 1024).toFixed(1)} GB</span>
+                            <span className="mm-size">{fmtGbFromMb(m.sizeMb)}</span>
                           ) : null}
                         </button>
                         <span className="mm-trail">

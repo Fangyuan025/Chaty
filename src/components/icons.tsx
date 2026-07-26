@@ -66,10 +66,10 @@ export const IconMic = ({ size, style }: P) => (
 // copies had already drifted apart (M7 11 here vs M7 10 there — the same
 // arrow, one pixel different, in one app). These delegate so each shape has
 // exactly ONE definition; the wrappers stay for the call sites' sake.
-export const IconSearch = ({ size, style }: P) => <Icon name="search" size={size} style={style} />;
+export const IconSearch = ({ size = 16, style }: P) => <Icon name="search" size={size} style={style} />; // 16 = this file's historical default; Icon's own default is 14
 
 /** Download / export. */
-export const IconDownload = ({ size, style }: P) => <Icon name="download" size={size} style={style} />;
+export const IconDownload = ({ size = 16, style }: P) => <Icon name="download" size={size} style={style} />;
 
 /** Refresh / regenerate. */
 export const IconRefresh = ({ size, style }: P) => (
