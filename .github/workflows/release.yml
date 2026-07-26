@@ -200,7 +200,7 @@ jobs:
             |---|---|
             | **Windows x64** | `Chaty_*_x64-setup.exe` — per-user installer, no admin |
             | **macOS (Apple Silicon)** | `Chaty_*_aarch64.dmg` |
-            | **Linux x64** | `Chaty_*_amd64.AppImage` — `chmod +x` and run |
+            | **Linux x64 (beta)** | `Chaty_*_amd64.AppImage` — `chmod +x` and run. First Linux release — please report anything odd |
 
             ### ⚠️ macOS first launch — "Apple could not verify…" / "damaged"
 

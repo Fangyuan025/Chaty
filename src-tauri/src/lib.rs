@@ -224,7 +224,39 @@ pub fn run() {
                 // That is the behavior a close-to-tray should have here.
                 #[cfg(target_os = "macos")]
                 if window.is_fullscreen().unwrap_or(false) {
+                    // One catch: macOS sometimes REFUSES to hide a fullscreen
+                    // app (the system greys out Hide in certain fullscreen
+                    // states), so a single fire-and-forget hide() occasionally
+                    // does nothing — observed as "close button dead once in a
+                    // while". Verify, retry, and if the OS keeps refusing,
+                    // fall back to leaving fullscreen and hiding after the
+                    // Space transition lands: a visible transition in the
+                    // rare case beats a dead button.
                     let _ = window.app_handle().hide();
+                    let w = window.clone();
+                    std::thread::spawn(move || {
+                        use std::time::Duration;
+                        for _ in 0..3 {
+                            std::thread::sleep(Duration::from_millis(250));
+                            if !w.is_visible().unwrap_or(false) {
+                                return; // hidden — the normal path
+                            }
+                            let _ = w.app_handle().hide();
+                        }
+                        if w.is_visible().unwrap_or(false) {
+                            let _ = w.set_fullscreen(false);
+                            for _ in 0..30 {
+                                std::thread::sleep(Duration::from_millis(60));
+                                if !w.is_fullscreen().unwrap_or(false) {
+                                    break;
+                                }
+                            }
+                            // Hiding mid-transition gets dropped by AppKit —
+                            // let the collapse land first.
+                            std::thread::sleep(Duration::from_millis(450));
+                            let _ = w.hide();
+                        }
+                    });
                     return;
                 }
                 let _ = window.hide();
