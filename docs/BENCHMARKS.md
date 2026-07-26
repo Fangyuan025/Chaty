@@ -111,6 +111,28 @@ lost to a runner crash at grading and rerun solo; both retries scored ✗.
 Artifacts: `runs/ab-final45-v19-2026-07-22.jsonl`,
 `runs/ab-final45-old184-2026-07-22.jsonl`.
 
+## Skills A/B — what a page of procedure is worth (2026-07-26)
+
+2.0 adds file-based skills: procedural knowledge as markdown, one index line
+per skill in the prompt, the body loaded only on use. Same 15-task screen,
+same code, same binary — the only variable is `CHATY_BENCH_SKILLS`:
+
+| quick15 subset | Resolved | Steps on commonly-solved tasks |
+| --- | --- | --- |
+| **Skills on** (3 official skills) | **6/15** | **62** |
+| Skills off (control) | 5/15 | 135 |
+
+Read the resolve delta honestly: +1 at N=15 is within single-run variance.
+The step numbers are the finding — on the four tasks both sides solved, the
+skilled side needed **2.2× fewer steps** (django-16333: 4 vs 23;
+sympy-23950: 30 vs 92), and both skills-only solves were endurance wins the
+control gave up on (django-16901 at 10 steps) or timed out of (sympy-15345
+at 78). Procedure doesn't make the model smarter; it stops it wandering.
+
+Cost: the index is ~4 prompt lines. Bodies never load unless invoked.
+
+Reproduce: `bench/coder/runs/quick15-skills.sh {skills|noskills}`.
+
 ## ChatyMCP-Bench — do MCP servers work in a small model's hands? (2026-07-25)
 
 Connecting to an MCP server is table stakes. The question that decides whether
