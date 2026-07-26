@@ -198,6 +198,11 @@ jobs:
           # libfuse2 above covers mounting; this covers it even without.
           APPIMAGE_EXTRACT_AND_RUN: "1"
           NO_STRIP: "true"
+          # sherpa-rs (voice) emits libsherpa-onnx-c-api.so & friends into
+          # target/release — the binary links fine, but linuxdeploy resolves
+          # dependencies from standard paths only and died on exactly this
+          # ('Could not find dependency', round six's verbose forensics).
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src-tauri/target/release
       - name: Forensics when linuxdeploy dies silently
         if: failure()
         run: |
