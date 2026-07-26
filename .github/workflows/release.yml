@@ -177,12 +177,18 @@ jobs:
           sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
             https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
           sudo apt-get update
+          # The runner preinstalls libunwind-14-dev, which is mutually
+          # exclusive with the libunwind-dev that gstreamer's DEV packages
+          # drag in ("held broken packages", round five). The bundling
+          # plugin only COPIES runtime libraries, so dev packages aren't
+          # needed at all — install the runtime set, and drop the conflicting
+          # preinstall for good measure.
+          sudo apt-get remove -y 'libunwind-14-dev' || true
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             libasound2-dev libssl-dev ninja-build vulkan-sdk libfuse2 \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-gl
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-gl
       - run: npm ci
       - name: Build AppImage (Vulkan)
         run: npm run tauri build -- --verbose --bundles appimage
