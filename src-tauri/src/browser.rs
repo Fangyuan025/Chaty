@@ -43,10 +43,10 @@ enum BrowserCmd {
     Close,
 }
 
-/// Session-language pick for model-visible browser strings (WS2 单语化 —
-/// this module was the one surface that missed the v1.8.5 pass).
-// Bilingual formatting comes from agent.rs's `trf!` — this file used to
-// declare `btr!`, a byte-identical second copy of the same three lines.
+// Model-visible browser strings pick their language per session (WS2 单语化;
+// this module was the one surface that missed the v1.8.5 pass). The
+// formatting itself comes from agent.rs's `trf!` — this file used to declare
+// `btr!`, a byte-identical second copy of the same three lines.
 
 /// JS that returns a compact list of the page's interactive elements, so the
 /// model clicks/types against real visible text rather than guessed selectors.
