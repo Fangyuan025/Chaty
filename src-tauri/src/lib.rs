@@ -29,14 +29,22 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 use state::AppState;
 
+/// Generation counter for pending close-from-fullscreen hides: showing the
+/// window (tray / Dock / shortcut) bumps it, which cancels any hide still
+/// waiting for macOS's permission — otherwise a reopen during the wait would
+/// get yanked back down the moment the OS relented.
+#[cfg(target_os = "macos")]
+static HIDE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Bring the main window to the foreground.
 fn show_main_window(app: &tauri::AppHandle) {
-    // macOS: closing from fullscreen hides the whole app (see the
-    // CloseRequested handler), so undo that first — otherwise `show()` on the
-    // window alone leaves an app-level hide in place and nothing appears.
-    // Unhiding slides back into the fullscreen Space, window still fullscreen.
     #[cfg(target_os = "macos")]
-    let _ = app.show();
+    {
+        HIDE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Undo the app-level hide (⌘H-style) the close path uses; unhiding
+        // slides back into the fullscreen Space, window still fullscreen.
+        let _ = app.show();
+    }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
@@ -224,28 +232,37 @@ pub fn run() {
                 // That is the behavior a close-to-tray should have here.
                 #[cfg(target_os = "macos")]
                 if window.is_fullscreen().unwrap_or(false) {
-                    // macOS sometimes REFUSES to hide a fullscreen app (the
-                    // system greys out Hide in certain fullscreen states), so
-                    // a lone hide() is occasionally a dead click. Verify and
-                    // retry — but the verification signal must be
-                    // NSApp.isHidden: window.is_visible() stays TRUE for a
-                    // hidden app's windows, and trusting it made an earlier
-                    // fallback "rescue" every successful hide by yanking the
-                    // window out of fullscreen (owner-visible state mangling).
+                    // The ⌘H slide is the ONE exit the owner accepted — but
+                    // macOS refuses NSApp.hide the whole time the fullscreen
+                    // menu bar is revealed, and clicking the red X requires
+                    // the mouse to be up there revealing it (measured:
+                    // NSApp.isHidden stays false while the cursor rests on
+                    // top, flips the moment it leaves). Exiting fullscreen
+                    // instead trades that for system animations the owner
+                    // rejected twice (windowed flash; ghost-titlebar shrink).
                     //
-                    // No un-fullscreen fallback, ever: the state contract is
-                    // fullscreen-close → reopen still fullscreen. If the OS
-                    // refuses past the retry window, leave the window exactly
-                    // as it is — a click that needs repeating beats a window
-                    // that comes back in the wrong shape.
+                    // So: be patient. Keep asking to hide — with the honest
+                    // NSApp.isHidden signal, on the main thread — until the
+                    // menu bar retracts (people move the mouse within moments
+                    // of clicking) or a minute passes. Reopening meanwhile
+                    // bumps HIDE_EPOCH, which cancels the pending hide so a
+                    // fresh window can't be yanked back down.
+                    let my_epoch = HIDE_EPOCH
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        + 1;
                     let _ = window.app_handle().hide();
                     let w = window.clone();
                     std::thread::spawn(move || {
+                        use std::sync::atomic::Ordering;
                         use std::time::Duration;
-                        for _ in 0..12 {
+                        for _ in 0..240 {
                             std::thread::sleep(Duration::from_millis(250));
+                            if HIDE_EPOCH.load(Ordering::SeqCst) != my_epoch {
+                                return; // reopened — stand down
+                            }
                             let (tx, rx) = std::sync::mpsc::channel::<bool>();
                             let wh = w.clone();
+                            let epoch = my_epoch;
                             if w
                                 .run_on_main_thread(move || {
                                     let hidden = objc2::MainThreadMarker::new()
@@ -254,7 +271,7 @@ pub fn run() {
                                                 .isHidden()
                                         })
                                         .unwrap_or(false);
-                                    if !hidden {
+                                    if !hidden && HIDE_EPOCH.load(Ordering::SeqCst) == epoch {
                                         let _ = wh.app_handle().hide();
                                     }
                                     let _ = tx.send(hidden);
@@ -264,9 +281,11 @@ pub fn run() {
                                 return;
                             }
                             if rx.recv_timeout(Duration::from_secs(1)).unwrap_or(false) {
-                                return; // hide landed
+                                return; // hide landed with the proper slide
                             }
                         }
+                        // A minute with the cursor parked on the menu bar —
+                        // give up quietly; the window stays exactly as it is.
                     });
                     return;
                 }
