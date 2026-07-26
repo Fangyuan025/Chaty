@@ -224,37 +224,48 @@ pub fn run() {
                 // That is the behavior a close-to-tray should have here.
                 #[cfg(target_os = "macos")]
                 if window.is_fullscreen().unwrap_or(false) {
-                    // One catch: macOS sometimes REFUSES to hide a fullscreen
-                    // app (the system greys out Hide in certain fullscreen
-                    // states), so a single fire-and-forget hide() occasionally
-                    // does nothing — observed as "close button dead once in a
-                    // while". Verify, retry, and if the OS keeps refusing,
-                    // fall back to leaving fullscreen and hiding after the
-                    // Space transition lands: a visible transition in the
-                    // rare case beats a dead button.
+                    // macOS sometimes REFUSES to hide a fullscreen app (the
+                    // system greys out Hide in certain fullscreen states), so
+                    // a lone hide() is occasionally a dead click. Verify and
+                    // retry — but the verification signal must be
+                    // NSApp.isHidden: window.is_visible() stays TRUE for a
+                    // hidden app's windows, and trusting it made an earlier
+                    // fallback "rescue" every successful hide by yanking the
+                    // window out of fullscreen (owner-visible state mangling).
+                    //
+                    // No un-fullscreen fallback, ever: the state contract is
+                    // fullscreen-close → reopen still fullscreen. If the OS
+                    // refuses past the retry window, leave the window exactly
+                    // as it is — a click that needs repeating beats a window
+                    // that comes back in the wrong shape.
                     let _ = window.app_handle().hide();
                     let w = window.clone();
                     std::thread::spawn(move || {
                         use std::time::Duration;
-                        for _ in 0..3 {
+                        for _ in 0..12 {
                             std::thread::sleep(Duration::from_millis(250));
-                            if !w.is_visible().unwrap_or(false) {
-                                return; // hidden — the normal path
+                            let (tx, rx) = std::sync::mpsc::channel::<bool>();
+                            let wh = w.clone();
+                            if w
+                                .run_on_main_thread(move || {
+                                    let hidden = objc2::MainThreadMarker::new()
+                                        .map(|mtm| {
+                                            objc2_app_kit::NSApplication::sharedApplication(mtm)
+                                                .isHidden()
+                                        })
+                                        .unwrap_or(false);
+                                    if !hidden {
+                                        let _ = wh.app_handle().hide();
+                                    }
+                                    let _ = tx.send(hidden);
+                                })
+                                .is_err()
+                            {
+                                return;
                             }
-                            let _ = w.app_handle().hide();
-                        }
-                        if w.is_visible().unwrap_or(false) {
-                            let _ = w.set_fullscreen(false);
-                            for _ in 0..30 {
-                                std::thread::sleep(Duration::from_millis(60));
-                                if !w.is_fullscreen().unwrap_or(false) {
-                                    break;
-                                }
+                            if rx.recv_timeout(Duration::from_secs(1)).unwrap_or(false) {
+                                return; // hide landed
                             }
-                            // Hiding mid-transition gets dropped by AppKit —
-                            // let the collapse land first.
-                            std::thread::sleep(Duration::from_millis(450));
-                            let _ = w.hide();
                         }
                     });
                     return;

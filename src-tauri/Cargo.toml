@@ -96,6 +96,10 @@ metal = "0.29"
 cpal = "0.15"
 objc2 = "0.6"
 objc2-foundation = "0.3"
+# NSApplication.isHidden — the only trustworthy "did the app-hide land" signal
+# (window.is_visible() stays true for a hidden app's windows and misled the
+# close-from-fullscreen logic into mangling window state).
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
 block2 = "0.6"
 objc2-av-foundation = { version = "0.3", default-features = false, features = [
     "AVCaptureDevice",
