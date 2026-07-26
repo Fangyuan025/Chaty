@@ -59,6 +59,7 @@ import {
 import { isReadOnlyCommand } from "../lib/readOnlyCmd";
 import { syncMcpServers } from "../lib/mcp";
 import { loadSkills } from "../lib/skillFiles";
+import { loadMemoryIndex } from "../lib/memoryFiles";
 import { homeDir } from "@tauri-apps/api/path";
 
 interface CodeMsg {
@@ -1120,6 +1121,7 @@ export function CodeMode({
     // each turn so a skill the user just wrote is live immediately. A missing
     // home dir (or a glob that can't reach it) just means no global skills.
     const home = await homeDir().catch(() => undefined);
+    const memoryIndex = await loadMemoryIndex({ readFile: (fp) => agentReadFile(fp) }).catch(() => "");
     const skills = await loadSkills(
       agentGlob,
       (fp) => agentReadFile(fp),
@@ -1185,6 +1187,7 @@ export function CodeMode({
       bashTimeout,
       projectDoc,
       skills,
+      memoryIndex,
       visionReady: model.visionReady,
       // No vision encoder → still expose the browser suite, minus the two
       // screenshot tools: browser_read's digest is the model's eyes.

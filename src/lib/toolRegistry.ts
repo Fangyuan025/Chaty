@@ -24,7 +24,7 @@ import {
 
 /** Where a tool comes from. Natives are compiled in; mcp/skill arrive at
  *  runtime via registerTool (M1/M3). */
-export type ToolSource = "native" | "mcp" | "skill";
+export type ToolSource = "native" | "mcp" | "skill" | "memory";
 
 /** Coarse permission class, the vocabulary of the M1 permission UI.
  *  Orthogonal to `mutating` (the approval gate): web_download is network AND
@@ -222,6 +222,27 @@ export function setSkillToolEnabled(on: boolean, names: string[] = []): void {
     },
     requiredArgs: ["name"],
     argExample: `{"name":"${names[0]}"}`,
+  });
+}
+
+/** M4: `remember` exists only when the workspace has memory enabled — same
+ *  byte-identical-prompt contract as use_skill. Writes are confined to
+ *  .chaty/memory/ by the handler, so it stays approval-free like update_plan. */
+export function setMemoryToolEnabled(on: boolean): void {
+  unregisterTool("remember");
+  if (!on) return;
+  registerTool({
+    name: "remember",
+    source: "memory",
+    suite: "core",
+    perm: "write",
+    tier: "core",
+    docLine: {
+      zh: `- remember: 把一条对后续会话有用的事实存进项目记忆(自动建档并更新索引)。args: { "title": string, "fact": string }`,
+      en: `- remember: save one fact future sessions will need into project memory (file + index handled for you). args: { "title": string, "fact": string }`,
+    },
+    requiredArgs: ["title", "fact"],
+    argExample: '{"title":"build rule","fact":"run scripts/gate.sh before any release"}',
   });
 }
 
