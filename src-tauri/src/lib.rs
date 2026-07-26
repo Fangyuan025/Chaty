@@ -1,3 +1,7 @@
+// #[macro_use]: agent.rs declares `trf!` (bilingual format), which browser.rs
+// and any later module use — declaring it once here beats each module keeping
+// its own copy under a different name (browser.rs had `btr!`).
+#[macro_use]
 pub mod agent;
 pub mod attach;
 pub mod browser;
@@ -7,6 +11,7 @@ pub mod rag;
 mod commands;
 pub mod download;
 pub mod gpu;
+pub mod http;
 pub mod inference;
 pub mod mcp;
 pub mod ocr;

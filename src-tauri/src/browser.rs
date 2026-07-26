@@ -45,11 +45,8 @@ enum BrowserCmd {
 
 /// Session-language pick for model-visible browser strings (WS2 单语化 —
 /// this module was the one surface that missed the v1.8.5 pass).
-macro_rules! btr {
-    ($zh:literal, $en:literal $(, $arg:expr)* $(,)?) => {
-        if crate::agent::lang_is_en() { format!($en $(, $arg)*) } else { format!($zh $(, $arg)*) }
-    };
-}
+// Bilingual formatting comes from agent.rs's `trf!` — this file used to
+// declare `btr!`, a byte-identical second copy of the same three lines.
 
 /// JS that returns a compact list of the page's interactive elements, so the
 /// model clicks/types against real visible text rather than guessed selectors.
@@ -349,14 +346,14 @@ fn ensure() -> Result<Sender<BrowserCmd>, String> {
     std::thread::Builder::new()
         .name("chaty-browser".into())
         .spawn(move || actor(rx, init_tx))
-        .map_err(|e| btr!("无法启动浏览器线程:{}", "failed to start the browser thread: {}", e))?;
+        .map_err(|e| trf!("无法启动浏览器线程:{}", "failed to start the browser thread: {}", e))?;
     match init_rx.recv() {
         Ok(Ok(())) => {
             *guard = Some(tx.clone());
             Ok(tx)
         }
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(btr!("浏览器线程初始化失败", "the browser thread failed to initialize")),
+        Err(_) => Err(trf!("浏览器线程初始化失败", "the browser thread failed to initialize")),
     }
 }
 
@@ -600,7 +597,7 @@ impl BrowserSession {
             let frame = match self.ws.read() {
                 Ok(Message::Text(t)) => t.to_string(),
                 Ok(Message::Binary(_)) | Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
-                Ok(Message::Close(_)) => return Err(btr!("CDP 连接已关闭", "the CDP connection closed")),
+                Ok(Message::Close(_)) => return Err(trf!("CDP 连接已关闭", "the CDP connection closed")),
                 Ok(Message::Frame(_)) => continue,
                 Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     return Err("CDP 读取超时 (CDP read timed out)".into());
@@ -731,7 +728,7 @@ impl BrowserSession {
         let title = self.eval("document.title").unwrap_or_default().trim_matches('"').to_string();
         let final_url = self.eval("location.href").unwrap_or_default().trim_matches('"').to_string();
         let rich = self.rich_digest(4000)?;
-        Ok(btr!(
+        Ok(trf!(
             "已打开:{}\n标题:{}\n\n{}",
             "Loaded: {}\nTitle: {}\n\n{}",
             final_url,
@@ -836,14 +833,14 @@ impl BrowserSession {
                 .eval(&NEAR_TEXT_JS.replace("__NEARCAP__", "1400"))
                 .unwrap_or_default();
             if t.trim().len() > 1 {
-                near = btr!(
+                near = trf!(
                     "\n\n刚操作的元素所在区域(长页面已截断,这里是重点):\n{}",
                     "\n\nThe region around the element you just used (the page text above was truncated — this is the part that matters):\n{}",
                     t.trim()
                 );
             }
         }
-        Ok(btr!(
+        Ok(trf!(
             "页面可见文字(替代截图,直接读这个):\n{}{}\n\n可交互元素(按可见文字点击/向这些输入):\n{}",
             "Visible text (read this instead of screenshotting):\n{}{}\n\nInteractive elements (click by text / type into these):\n{}",
             text,
@@ -914,7 +911,7 @@ impl BrowserSession {
         // Surface any newly-revealed text/elements (lazy-load) so the model
         // reads what appeared without a screenshot.
         let rich = self.rich_digest(3500).unwrap_or_default();
-        Ok(btr!(
+        Ok(trf!(
             "已滚动,位置 scrollY: {}\n\n{}",
             "Scrolled, scrollY: {}\n\n{}",
             pos.trim_matches('"'),
@@ -969,7 +966,7 @@ impl BrowserSession {
         let label = self.click_once(selector, text)?;
         let where_ = self.eval("document.title+' — '+location.href").unwrap_or_default();
         let rich = self.rich_digest(3500).unwrap_or_default();
-        Ok(btr!(
+        Ok(trf!(
             "已点击:{}\n点击后当前页面:{}\n\n{}",
             "Clicked: {}\nPage after the click: {}\n\n{}",
             label,
@@ -989,7 +986,7 @@ impl BrowserSession {
                 Ok(label) => done.push(label),
                 Err(e) => {
                     let rich = self.rich_digest(3000).unwrap_or_default();
-                    return Ok(btr!(
+                    return Ok(trf!(
                         "顺序点击:成功 {} 步 [{}],第 {} 步失败:{}\n\n{}",
                         "Click sequence: {} succeeded [{}], step {} failed: {}\n\n{}",
                         done.len(),
@@ -1002,7 +999,7 @@ impl BrowserSession {
             }
         }
         let rich = self.rich_digest(3500).unwrap_or_default();
-        Ok(btr!(
+        Ok(trf!(
             "已依次点击 {} 处:{}\n\n{}",
             "Clicked {} targets in order: {}\n\n{}",
             done.len(),
@@ -1067,7 +1064,7 @@ impl BrowserSession {
         let label = text.filter(|t| !t.is_empty()).unwrap_or_else(|| selector.unwrap_or(""));
         if label.is_empty() {
             let d = self.digest().unwrap_or_default();
-            return Err(btr!(
+            return Err(trf!(
                 "browser_click 需要 \"text\"(优先,按可见文字)或 \"selector\"。当前页面可点击的元素:\n{}",
                 "browser_click needs \"text\" (preferred — the visible label) or \"selector\". Clickable elements on this page:\n{}",
                 d
@@ -1128,7 +1125,7 @@ impl BrowserSession {
                 // on sites with scroll-reveal animations, whose class toggles
                 // fire on every scroll.)
                 if let Some(bad) = pre_blockers {
-                    return Ok(btr!(
+                    return Ok(trf!(
                         "{}(注意:该表单未通过浏览器校验,提交没有真正发出。先修正这些字段再点提交 → {})",
                         "{} (note: this form fails browser validation, so the submit never fired. Fix these fields, then click submit again → {})",
                         label,
@@ -1137,14 +1134,14 @@ impl BrowserSession {
                 }
                 Ok(label.to_string())
             }
-            "IS_SELECT" => Err(btr!(
+            "IS_SELECT" => Err(trf!(
                 "这是下拉框,点击不会展开选项。改用 browser_type 选择:{{\"selector\":\"{}\",\"text\":\"<选项的可见文字>\"}}",
                 "That's a <select> — clicking won't open it. Choose with browser_type instead: {{\"selector\":\"{}\",\"text\":\"<the option's visible label>\"}}",
                 label
             )),
             _ => {
                 let d = self.digest().unwrap_or_default();
-                Err(btr!(
+                Err(trf!(
                     "未找到可点击的元素:{}。用下面清单里的准确文字重试:\n{}",
                     "No clickable element matched: {}. Retry with the exact text from this list:\n{}",
                     label,
@@ -1159,7 +1156,7 @@ impl BrowserSession {
     fn type_text(&mut self, selector: Option<&str>, text: &str, label: Option<&str>) -> Result<String, String> {
         let what = self.type_once(selector, text, label)?;
         let rich = self.rich_digest(3500).unwrap_or_default();
-        Ok(btr!("已输入 → {}\n\n{}", "Typed → {}\n\n{}", what, rich))
+        Ok(trf!("已输入 → {}\n\n{}", "Typed → {}\n\n{}", what, rich))
     }
 
     /// Fill a SEQUENCE of fields in one call (a whole form at once). Stops at the
@@ -1171,7 +1168,7 @@ impl BrowserSession {
                 Ok(what) => done.push(what),
                 Err(e) => {
                     let rich = self.rich_digest(3000).unwrap_or_default();
-                    return Ok(btr!(
+                    return Ok(trf!(
                         "顺序输入:成功 {} 个字段 [{}],第 {} 个失败:{}\n\n{}",
                         "Type sequence: {} fields filled [{}], field {} failed: {}\n\n{}",
                         done.len(),
@@ -1184,7 +1181,7 @@ impl BrowserSession {
             }
         }
         let rich = self.rich_digest(3500).unwrap_or_default();
-        Ok(btr!(
+        Ok(trf!(
             "已依次填写 {} 个字段:{}\n\n{}",
             "Filled {} fields in order: {}\n\n{}",
             done.len(),
@@ -1264,7 +1261,7 @@ impl BrowserSession {
         } else if let Some(opts) = r.strip_prefix("NO_OPTION:") {
             // A <select> was found but no option matched — list the options so
             // the model retries with an exact one.
-            Err(btr!(
+            Err(trf!(
                 "下拉框「{}」里没有匹配「{}」的选项。可选项:{}",
                 "Dropdown \"{}\" has no option matching \"{}\". Options: {}",
                 what,
@@ -1273,7 +1270,7 @@ impl BrowserSession {
             ))
         } else {
             let d = self.digest().unwrap_or_default();
-            Err(btr!(
+            Err(trf!(
                 "未找到输入框:{}。可用输入框见清单:\n{}",
                 "No input field matched: {}. Available fields:\n{}",
                 what,
@@ -1366,7 +1363,7 @@ where
 {
     let tx = ensure()?;
     let (reply, rx) = std::sync::mpsc::channel();
-    tx.send(build(reply)).map_err(|_| btr!("浏览器已关闭", "the browser is closed"))?;
+    tx.send(build(reply)).map_err(|_| trf!("浏览器已关闭", "the browser is closed"))?;
     rx.recv().map_err(|_| "浏览器无响应 (browser did not respond)".to_string())?
 }
 

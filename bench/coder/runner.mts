@@ -34,44 +34,9 @@ import { createInterface, type Interface } from "node:readline";
 import { mkdtempSync, cpSync, rmSync, readFileSync, appendFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Bridge, type Json } from "../lib/bridge.mts";
 
-type Json = Record<string, unknown>;
 
-/** stdio JSON-lines client for the chaty-headless Rust binary. */
-class Bridge {
-  private proc: ChildProcess;
-  private rl: Interface;
-  private nextId = 1;
-  // reject carries the RAW error string (not an Error) — Tauri command
-  // rejections are plain strings and agentLoop matches markers like
-  // NEED_DIR_GRANT against them verbatim.
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void; onEvent?: (ev: unknown) => void }>();
-
-  constructor(bin: string) {
-    this.proc = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
-    this.rl = createInterface({ input: this.proc.stdout! });
-    this.rl.on("line", (line) => {
-      let msg: Json;
-      try { msg = JSON.parse(line); } catch { return; }
-      const p = this.pending.get(msg.id as number);
-      if (!p) return;
-      if (msg.type === "event") { p.onEvent?.(msg.event); return; }
-      this.pending.delete(msg.id as number);
-      if (msg.type === "error") p.reject(msg.message);
-      else p.resolve(msg.result);
-    });
-  }
-
-  call(cmd: string, args: Json = {}, onEvent?: (ev: unknown) => void): Promise<unknown> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, onEvent });
-      this.proc.stdin!.write(JSON.stringify({ id, cmd, args }) + "\n");
-    });
-  }
-
-  kill() { this.proc.kill(); }
-}
 
 interface TaskResult {
   task: string; resolved: boolean; steps: number; turns: number;
@@ -95,13 +60,7 @@ async function main() {
 
   // The real production loop + IPC layer, loaded AFTER window/mock are ready.
   const { mockIPC } = await import("@tauri-apps/api/mocks");
-  mockIPC(async (cmd: string, args?: Json) => {
-    if (cmd === "generate") {
-      const ch = (args as Json)?.onEvent as { onmessage?: (ev: unknown) => void } | undefined;
-      return bridge.call("generate", { request: (args as Json)?.request }, (ev) => ch?.onmessage?.(ev));
-    }
-    return bridge.call(cmd, args ?? {});
-  });
+  mockIPC((cmd: string, args?: Json) => bridge.ipc(cmd, args));
   const loop = await import("../../src/lib/agentLoop");
   const { runAgentTurn } = loop;
   // CHATY_EDIT_ANCHORS=1: hashline A/B — docs side here, Rust side reads the

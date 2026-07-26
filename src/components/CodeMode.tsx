@@ -320,7 +320,7 @@ function PlanPanel({ plan, label }: { plan: PlanItem[]; label: string }) {
   return (
     <div className="cm-plan">
       <div className="cm-plan-head">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01" /></svg>
+        <Icon name="lines" size={13} />
         <span className="cm-plan-label">{label}</span>
         <span className="cm-plan-count">{done}/{plan.length}</span>
       </div>
@@ -1307,7 +1307,7 @@ export function CodeMode({
                   title={t("deleteConv")}
                   onClick={(e) => { e.stopPropagation(); void deleteSession(s.id); }}
                 >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                  <Icon name="x" size={11} strokeWidth={2.4} />
                 </button>
               </div>
             ))
@@ -1330,14 +1330,14 @@ export function CodeMode({
       <main className="code-main">
         <div className="code-head">
           <button className="cm-ws" onClick={() => void pickWorkspace()} disabled={running} title={workspace ?? ""}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>
+            <Icon name="folder" size={14} />
             {wsName ? <span className="cm-ws-name">{wsName}</span> : <span className="cm-ws-pick">{t("cmOpenFolder")}</span>}
           </button>
           {(dirGrants.length > 0 || workspace) && (
             <div className="cm-grants">
               {dirGrants.map((d) => (
                 <span key={d} className="cm-grant-chip" title={d}>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>
+                  <Icon name="folder" size={11} />
                   <span className="cm-grant-name">{d.split("/").filter(Boolean).pop()}</span>
                   <button className="cm-grant-del" title={t("cmGrantRevoke")} onClick={() => void revokeDir(d)}>
                     <Icon name="x" size={10} strokeWidth={2.2} />

@@ -12,8 +12,8 @@ import { createInterface } from "node:readline";
 import { mkdtempSync, cpSync, rmSync, readFileSync, appendFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Bridge, type Json } from "../lib/bridge.mts";
 
-type Json = Record<string, unknown>;
 
 const SYS = `You are a coding agent working in a repository checkout. You have ONE tool:
 - bash: run a shell command in the workspace. args: {"command": string}
@@ -26,30 +26,6 @@ Rules:
 - Write files with heredocs (cat > file <<'EOF' ... EOF).
 - When the task is fully done, reply with a short summary and NO tool call.`;
 
-class Bridge {
-  private proc: ChildProcess;
-  private nextId = 1;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void; onEvent?: (ev: Json) => void }>();
-  constructor(bin: string) {
-    this.proc = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
-    createInterface({ input: this.proc.stdout! }).on("line", (line) => {
-      let m: Json; try { m = JSON.parse(line); } catch { return; }
-      const p = this.pending.get(m.id as number);
-      if (!p) return;
-      if (m.type === "event") { p.onEvent?.(m.event as Json); return; }
-      this.pending.delete(m.id as number);
-      m.type === "error" ? p.reject(m.message) : p.resolve(m.result);
-    });
-  }
-  call(cmd: string, args: Json = {}, onEvent?: (ev: Json) => void): Promise<unknown> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, onEvent });
-      this.proc.stdin!.write(JSON.stringify({ id, cmd, args }) + "\n");
-    });
-  }
-  kill() { this.proc.kill(); }
-}
 
 const TOOL_RE = /<tool_call>\s*(\{[\s\S]*?\})\s*(?:<\/tool_call>|$)/;
 const THINK_RE = /<think>[\s\S]*?(?:<\/think>|$)/g;

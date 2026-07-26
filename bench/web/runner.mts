@@ -35,43 +35,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startServer, resetState, getState, DEFAULT_PORT } from "./server.mts";
 import { GRADERS } from "./graders.mts";
+import { Bridge, type Json } from "../lib/bridge.mts";
 
-type Json = Record<string, unknown>;
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.CHATY_WEBBENCH_PORT) || DEFAULT_PORT;
 const BASE = `http://127.0.0.1:${PORT}`;
 
-class Bridge {
-  private proc: ChildProcess;
-  private rl: Interface;
-  private nextId = 1;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void; onEvent?: (ev: unknown) => void }>();
-  constructor(bin: string) {
-    this.proc = spawn(bin, [], {
-      stdio: ["pipe", "pipe", "inherit"],
-      env: { ...process.env, CHATY_BROWSER_HEADLESS: "1" },
-    });
-    this.rl = createInterface({ input: this.proc.stdout! });
-    this.rl.on("line", (line) => {
-      let msg: Json;
-      try { msg = JSON.parse(line); } catch { return; }
-      const p = this.pending.get(msg.id as number);
-      if (!p) return;
-      if (msg.type === "event") { p.onEvent?.(msg.event); return; }
-      this.pending.delete(msg.id as number);
-      if (msg.type === "error") p.reject(msg.message);
-      else p.resolve(msg.result);
-    });
-  }
-  call(cmd: string, args: Json = {}, onEvent?: (ev: unknown) => void): Promise<unknown> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, onEvent });
-      this.proc.stdin!.write(JSON.stringify({ id, cmd, args }) + "\n");
-    });
-  }
-  kill() { this.proc.kill(); }
-}
 
 type Task = {
   id: string;
@@ -99,13 +68,7 @@ async function main() {
   console.log(`model loaded: ${JSON.stringify(info).slice(0, 160)}`);
 
   const { mockIPC } = await import("@tauri-apps/api/mocks");
-  mockIPC(async (cmd: string, args?: Json) => {
-    if (cmd === "generate") {
-      const ch = (args as Json)?.onEvent as { onmessage?: (ev: unknown) => void } | undefined;
-      return bridge.call("generate", { request: (args as Json)?.request }, (ev) => ch?.onmessage?.(ev));
-    }
-    return bridge.call(cmd, args ?? {});
-  });
+  mockIPC((cmd: string, args?: Json) => bridge.ipc(cmd, args));
   const { runAgentTurn } = await import("../../src/lib/agentLoop");
 
   const runsDir = path.join(DIR, "runs");

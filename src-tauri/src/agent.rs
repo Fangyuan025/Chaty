@@ -74,6 +74,7 @@ pub(crate) fn tr(zh: &str, en: &str) -> String {
 }
 
 /// `tr` for format-heavy call sites: `trf!("已写入 {}", "wrote {}", path)`.
+/// Crate-wide: browser.rs used to keep an identical copy under another name.
 macro_rules! trf {
     ($zh:literal, $en:literal $(, $arg:expr)* $(,)?) => {
         if crate::agent::lang_is_en() {
@@ -423,7 +424,7 @@ pub async fn agent_web_download(url: String, path: String) -> Result<String, Str
             });
         };
         let client = match reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15")
+            .user_agent(crate::http::BROWSER_UA)
             .timeout(std::time::Duration::from_secs(600))
             .build()
         {

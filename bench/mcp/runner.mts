@@ -11,9 +11,9 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Bridge, type Json, norm } from "../lib/bridge.mts";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
-type Json = Record<string, unknown>;
 
 // agentLoop pulls in the Tauri IPC layer, which wants a window; the MCP
 // bridge wants localStorage. Both must exist BEFORE any of that is imported.
@@ -38,44 +38,7 @@ interface Task {
     | { kind: "answer"; expect: string };
 }
 
-/** chaty-headless stdio bridge (same protocol as the web bench). */
-class Bridge {
-  private proc: ChildProcess;
-  private buf = "";
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; onEvent?: (ev: unknown) => void }>();
-  private nextId = 1;
-  constructor(bin: string) {
-    this.proc = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
-    this.proc.stdout!.on("data", (chunk: Buffer) => {
-      this.buf += chunk.toString();
-      let nl: number;
-      while ((nl = this.buf.indexOf("\n")) >= 0) {
-        const line = this.buf.slice(0, nl);
-        this.buf = this.buf.slice(nl + 1);
-        if (!line.trim()) continue;
-        let msg: Json;
-        try { msg = JSON.parse(line); } catch { continue; }
-        const id = msg.id as number;
-        const p = this.pending.get(id);
-        if (!p) continue;
-        if (msg.event) { p.onEvent?.(msg.event); continue; }
-        this.pending.delete(id);
-        if (msg.error) p.reject(new Error(String(msg.error)));
-        else p.resolve(msg.result);
-      }
-    });
-  }
-  call(cmd: string, args: Json, onEvent?: (ev: unknown) => void): Promise<unknown> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, onEvent });
-      this.proc.stdin!.write(JSON.stringify({ id, cmd, args }) + "\n");
-    });
-  }
-  kill() { this.proc.kill(); }
-}
 
-const norm = (s: string) => s.toLowerCase().replace(/[*_`]/g, "").replace(/\s+/g, " ");
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -95,13 +58,7 @@ async function main() {
   console.log(`model loaded: ${JSON.stringify(info).slice(0, 160)}`);
 
   const { mockIPC } = await import("@tauri-apps/api/mocks");
-  mockIPC(async (cmd: string, args?: Json) => {
-    if (cmd === "generate") {
-      const ch = (args as Json)?.onEvent as { onmessage?: (ev: unknown) => void } | undefined;
-      return bridge.call("generate", { request: (args as Json)?.request }, (ev) => ch?.onmessage?.(ev));
-    }
-    return bridge.call(cmd, args ?? {});
-  });
+  mockIPC((cmd: string, args?: Json) => bridge.ipc(cmd, args));
   const { runAgentTurn } = await import("../../src/lib/agentLoop");
   const { syncMcpServers } = await import("../../src/lib/mcp");
 

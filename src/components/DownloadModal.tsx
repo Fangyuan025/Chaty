@@ -4,6 +4,7 @@ import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
+import { fmtBytes, fmtCount } from "../lib/fmt";
 import { OrgAvatar } from "./VendorIcon";
 import {
   hfSearch,
@@ -28,18 +29,10 @@ const IS_MACOS = (() => {
   }
 })();
 
-function fmtSize(n: number): string {
-  if (!n) return "";
-  if (n >= 1 << 30) return `${(n / (1 << 30)).toFixed(2)} GB`;
-  if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(0)} MB`;
-  return `${(n / 1024).toFixed(0)} KB`;
-}
-
-function fmtCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
+// Sizes were formatted binary here (1<<30) while Settings divided by 1e9 —
+// the same model read ~7% smaller in this screen. One shared decimal
+// formatter now (lib/fmt.ts); the k/M count style rides along with it.
+const fmtSize = fmtBytes;
 
 function daysAgo(iso: string, t: ReturnType<typeof useI18n>["t"]): string {
   const ms = Date.parse(iso);

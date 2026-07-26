@@ -545,7 +545,7 @@ pub async fn hf_author_avatar(author: String) -> Result<Option<String>, String> 
     {
         return Ok(hit.clone());
     }
-    let client = reqwest::Client::builder().user_agent(UA).build().map_err(|e| e.to_string())?;
+    let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
     let mut url: Option<String> = None;
     for kind in ["organizations", "users"] {
         let resp = client
@@ -597,7 +597,7 @@ pub async fn hf_search(
     if !q.is_empty() {
         url.push_str(&format!("&search={}", percent_encoding::utf8_percent_encode(q, percent_encoding::NON_ALPHANUMERIC)));
     }
-    let client = reqwest::Client::builder().user_agent(UA).build().map_err(|e| e.to_string())?;
+    let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("搜索失败 (search failed): HTTP {}", resp.status()));
@@ -647,7 +647,7 @@ pub async fn hf_model_detail(
     if repo.is_empty() || !repo.contains('/') {
         return Err("请输入有效的 HuggingFace 仓库（owner/name）".into());
     }
-    let client = reqwest::Client::builder().user_agent(UA).build().map_err(|e| e.to_string())?;
+    let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
 
     // tags (vision/arch) — tolerate failure, the tree is the critical part
     let tags: Vec<String> = match client

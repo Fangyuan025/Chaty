@@ -1,6 +1,12 @@
+import { Icon } from "./Icon";
 // Small, consistent stroke icons — replace emoji across the UI so nothing
 // platform-renders an inline picture-glyph that breaks the visual grade.
 // All inherit color + scale from the parent (currentColor, 1.7 stroke).
+//
+// Division of labour with Icon.tsx: single-stroke glyphs live there as PATHS
+// entries; this file is for multi-element or filled art that a single path
+// can't express (play/stop triangles, filled pin). A glyph that exists in
+// both must delegate — see IconSearch/IconDownload below.
 
 function Svg({
   size = 16,
@@ -56,19 +62,14 @@ export const IconMic = ({ size, style }: P) => (
 );
 
 /** Magnifier / search. */
-export const IconSearch = ({ size, style }: P) => (
-  <Svg size={size} style={style}>
-    <circle cx="11" cy="11" r="7" />
-    <path d="M21 21l-4.3-4.3" />
-  </Svg>
-);
+// search and download exist in Icon.tsx's PATHS too, and the two download
+// copies had already drifted apart (M7 11 here vs M7 10 there — the same
+// arrow, one pixel different, in one app). These delegate so each shape has
+// exactly ONE definition; the wrappers stay for the call sites' sake.
+export const IconSearch = ({ size, style }: P) => <Icon name="search" size={size} style={style} />;
 
 /** Download / export. */
-export const IconDownload = ({ size, style }: P) => (
-  <Svg size={size} style={style}>
-    <path d="M12 3v12M7 11l5 5 5-5M5 21h14" />
-  </Svg>
-);
+export const IconDownload = ({ size, style }: P) => <Icon name="download" size={size} style={style} />;
 
 /** Refresh / regenerate. */
 export const IconRefresh = ({ size, style }: P) => (

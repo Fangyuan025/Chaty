@@ -8,6 +8,7 @@
  * in the final message.
  */
 import type { seedState } from "./server.mts";
+import { norm } from "../lib/bridge.mts";
 
 type State = ReturnType<typeof seedState>;
 export type Verdict = { pass: boolean; why: string };
@@ -16,11 +17,7 @@ type Grader = (state: State, finalText: string) => Verdict;
 const ok: Verdict = { pass: true, why: "ok" };
 const fail = (why: string): Verdict => ({ pass: false, why });
 
-/** Lowercase and strip markdown emphasis/backticks — models bold the key
- *  number ("maximum of **5** days") and plain substring matching slides off. */
-function norm(s: string): string {
-  return s.toLowerCase().replace(/[*_`]/g, "");
-}
+
 /** All `needles` present (case-insensitive) in the final message. */
 function answerHas(finalText: string, needles: string[]): Verdict {
   const t = norm(finalText);

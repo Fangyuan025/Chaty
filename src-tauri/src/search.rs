@@ -16,7 +16,7 @@ const PER_PAGE_CHARS: usize = 900;
 // A current browser UA. DuckDuckGo started returning an HTTP-202 anomaly /
 // verification page to the old Chrome/124 GET requests, which broke web search
 // for every Chaty user. A fresh UA + POST gets real results again.
-const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15";
+use crate::http::BROWSER_UA as UA;
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -42,11 +42,7 @@ pub struct WebResearch {
 }
 
 fn build_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .user_agent(UA)
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(|e| e.to_string())
+    crate::http::client_secs(UA, 12)
 }
 
 /// Just the result list (titles/urls/snippets).

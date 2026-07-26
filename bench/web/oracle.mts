@@ -19,13 +19,13 @@ import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { startServer, resetState, getState, DEFAULT_PORT } from "./server.mts";
 import { GRADERS } from "./graders.mts";
+import { Bridge, type Json } from "../lib/bridge.mts";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(DIR, "../..");
 const PORT = Number(process.env.CHATY_WEBBENCH_PORT) || DEFAULT_PORT;
 const BASE = `http://127.0.0.1:${PORT}`;
 
-type Json = Record<string, unknown>;
 type Task = {
   id: string;
   site: string;
@@ -44,54 +44,6 @@ function headlessBin(): string {
   throw new Error("chaty-headless not built — run: cargo build --bin chaty-headless");
 }
 
-class Bridge {
-  private proc: ChildProcess;
-  private nextId = 1;
-  private pending = new Map<number, (v: { result?: unknown; error?: string }) => void>();
-  constructor(bin: string) {
-    this.proc = spawn(bin, [], {
-      stdio: ["pipe", "pipe", "inherit"],
-      env: { ...process.env, CHATY_BROWSER_HEADLESS: "1" },
-    });
-    let buf = "";
-    this.proc.stdout!.on("data", (d: Buffer) => {
-      buf += d.toString();
-      let i;
-      while ((i = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, i);
-        buf = buf.slice(i + 1);
-        if (!line.trim()) continue;
-        try {
-          const m = JSON.parse(line);
-          const cb = this.pending.get(m.id);
-          if (cb && (m.type === "result" || m.error !== undefined)) {
-            this.pending.delete(m.id);
-            cb(m);
-          }
-        } catch {
-          /* progress noise */
-        }
-      }
-    });
-  }
-  call(cmd: string, args: Json = {}, timeoutMs = 60_000): Promise<unknown> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      const t = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`${cmd} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      this.pending.set(id, (m) => {
-        clearTimeout(t);
-        m.error !== undefined ? reject(new Error(String(m.error))) : resolve(m.result);
-      });
-      this.proc.stdin!.write(JSON.stringify({ id, cmd, args }) + "\n");
-    });
-  }
-  kill() {
-    this.proc.kill();
-  }
-}
 
 function withBase(v: unknown): unknown {
   if (typeof v === "string") return v.replaceAll("{BASE}", BASE);

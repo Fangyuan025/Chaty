@@ -21,7 +21,7 @@ use url::Url;
 
 use crate::search::{engine_search, SearchResult};
 
-const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15";
+use crate::http::BROWSER_UA as UA;
 /// Character budget for returned text — the agent has its own read budget,
 /// anything bigger just burns context.
 const TEXT_CAP: usize = 60_000;
@@ -64,11 +64,7 @@ pub struct PageEx {
 }
 
 fn client(secs: u64) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .user_agent(UA)
-        .timeout(Duration::from_secs(secs))
-        .build()
-        .map_err(|e| e.to_string())
+    crate::http::client_secs(UA, secs)
 }
 
 fn cap(s: &str, max: usize) -> (String, bool) {
@@ -402,11 +398,7 @@ fn youtube_video_id(url: &str) -> Option<String> {
 /// (with periodic [mm:ss] markers), via the innertube player API and the
 /// caption track it hands out. Works for auto-generated captions too.
 async fn fetch_youtube(video_id: &str) -> Result<PageEx, String> {
-    let c = reqwest::Client::builder()
-        .user_agent(YT_UA)
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let c = crate::http::client_secs(YT_UA, 20)?;
     let body = serde_json::json!({
         "context": {"client": {
             "clientName": "ANDROID", "clientVersion": "20.10.38",
@@ -489,11 +481,7 @@ const BILI_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebK
 /// no cookie — a Referer header is all it wants). Returns structured videos
 /// with title / author / duration / view count.
 async fn bilibili_search(query: &str) -> Result<Vec<SiteResult>, String> {
-    let c = reqwest::Client::builder()
-        .user_agent(BILI_UA)
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let c = crate::http::client_secs(BILI_UA, 12)?;
     let url = format!(
         "https://api.bilibili.com/x/web-interface/wbi/search/type?search_type=video&keyword={}&page=1",
         urlencoding(query)
@@ -569,11 +557,7 @@ fn bilibili_bvid(url: &str) -> Option<String> {
 /// Bilibili video metadata (title / UP / views / likes / description) via the
 /// public web-interface/view API.
 async fn fetch_bilibili(bvid: &str) -> Result<PageEx, String> {
-    let c = reqwest::Client::builder()
-        .user_agent(BILI_UA)
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let c = crate::http::client_secs(BILI_UA, 12)?;
     let url = format!("https://api.bilibili.com/x/web-interface/view?bvid={bvid}");
     let body = c
         .get(&url)

@@ -25,6 +25,7 @@ import { BUILTIN_SKILLS } from "../lib/skills";
 import { loadMcpServers, saveMcpServers, syncMcpServers, type McpServerCfg } from "../lib/mcp";
 import catalog from "../lib/mcpStore.catalog.json";
 import { disabledSkills, officialSkills, setDisabledSkills } from "../lib/skillFiles";
+import { fmtBytes } from "../lib/fmt";
 import logoUrl from "../assets/logo.png";
 
 export interface PromptPreset {
@@ -191,12 +192,7 @@ const CAT_ICONS: Record<CatId, string> = {
 /** Modifier-key glyph for the current platform (send-shortcut labels). */
 const MOD_KEY = /mac/i.test(navigator.platform ?? navigator.userAgent) ? "⌘" : "Ctrl +";
 
-function fmtBytes(n: number): string {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
-  if (n >= 1e3) return `${Math.round(n / 1e3)} KB`;
-  return `${n} B`;
-}
+
 
 /** Aggregated numbers behind the Data-category statistics tiles. */
 interface StatsView {

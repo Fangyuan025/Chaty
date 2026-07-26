@@ -2028,8 +2028,13 @@ body.resizing-x {
   border-radius: 50%;
   border: 1px solid var(--border-strong);
 }
-/* Toggle switch (same recipe as .skill-row-toggle for family consistency). */
-.set-switch {
+/* ---- The app's ONE toggle switch ----
+   .set-switch is the canonical class; .skill-row-toggle (skill rows, MCP
+   server rows) is an alias on every rule rather than a second family, which
+   is what it used to be — same 30x17 track and 12px knob maintained twice,
+   free to drift apart on the next tweak. */
+.set-switch,
+.skill-row-toggle {
   flex: none;
   width: 30px;
   height: 17px;
@@ -2041,11 +2046,13 @@ body.resizing-x {
   cursor: pointer;
   transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
 }
-.set-switch.on {
+.set-switch.on,
+.skill-row.on .skill-row-toggle {
   background: var(--accent);
   border-color: transparent;
 }
-.set-knob {
+.set-knob,
+.skill-row-knob {
   position: absolute;
   top: 1.5px;
   left: 2px;
@@ -2055,7 +2062,8 @@ body.resizing-x {
   background: #fff;
   transition: transform var(--t-fast) var(--ease);
 }
-.set-switch.on .set-knob {
+.set-switch.on .set-knob,
+.skill-row.on .skill-row-knob {
   transform: translateX(13px);
 }
 /* Data-category statistics tiles. */
@@ -5841,33 +5849,7 @@ a:focus-visible,
 .skill-row:not(.on) .skill-row-desc {
   color: var(--text-faint);
 }
-.skill-row-toggle {
-  flex: none;
-  width: 30px;
-  height: 17px;
-  border-radius: var(--r-full);
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  position: relative;
-  transition: background 0.15s, border-color 0.15s;
-}
-.skill-row.on .skill-row-toggle {
-  background: var(--accent);
-  border-color: transparent;
-}
-.skill-row-knob {
-  position: absolute;
-  top: 1.5px;
-  left: 2px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: #fff;
-  transition: transform 0.15s;
-}
-.skill-row.on .skill-row-knob {
-  transform: translateX(13px);
-}
+/* Toggle visuals live in the shared switch family above. */
 
 /* ---- continue button (after a step-limit pause) ---- */
 .cm-continue {
