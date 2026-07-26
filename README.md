@@ -54,6 +54,8 @@ itself — every step shown live, every change behind an approval + diff.
 - 🧠 **Tools that do the thinking** — `understand_repo` orients in one call, `search_code` ranks files by relevance, `read_file` lifts a single symbol plus its call sites, `validate_change` runs just the tests the change touches. Small models spend their steps on decisions, not grunt work.
 - ✏️ **Precise edits, real shell** — exact-string patches behind a diff preview with a **syntax gate**, plus commands and long **background jobs** (dev servers, builds) sandboxed to the workspace.
 - ⏪ **You stay in control** — per-action approval, a command allowlist, prompt-injection defense on everything it reads, and **one-click checkpoint rewind** that restores files *and* rolls back the conversation.
+- 🔌 **MCP, sized for small models** — connect any Model Context Protocol server (stdio or streamable HTTP), or one-click a **curated, version-pinned store entry** that's live-certified against Chaty's own client. Tool docs are synthesized lean so a 16K context fits as many servers as you like; every result is injection-defended and untrusted servers need per-call approval.
+- 📚 **Skills & project memory** — drop a `SKILL.md` of procedural steps in `~/.chaty/skills/` (or per-project) and the agent loads it only when relevant; `remember` saves non-obvious findings to `.chaty/memory/` so the next session starts knowing them. Plain markdown, human-editable, never leaves the machine.
 
 <details>
 <summary>More Code-mode details</summary>

@@ -755,7 +755,7 @@ dependencies = [
 
 [[package]]
 name = "chaty"
-version = "1.9.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",

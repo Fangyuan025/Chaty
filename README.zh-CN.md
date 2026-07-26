@@ -53,6 +53,8 @@ Deep Research 与免手语音。
 - 🧠 **会思考的工具** —— `understand_repo` 一次摸清仓库、`search_code` 按相关度排序、`read_file` 只取一个符号加全部调用处、`validate_change` 只跑与改动相关的测试。粗活下沉进工具,小模型只做决策。
 - ✏️ **精确编辑 + 真 shell** —— 带 diff 预览与**语法门**的精确文本补丁,以及沙箱限定在工作区内的命令与长时**后台任务**(dev server、构建)。
 - ⏪ **一切由你掌控** —— 逐条审批、命令白名单、对读到的一切内容做防注入,以及**检查点一键回滚**:恢复文件*并*回退对话。
+- 🔌 **为小模型定制的 MCP** —— 连接任意 Model Context Protocol 服务器(stdio 或 Streamable HTTP),或一键添加**版本钉死、经真连认证的精选商店条目**。工具文档自动瘦身,16K 上下文也装得下任意多服务器;所有结果过防注入,未信任服务器逐次审批。
+- 📚 **技能与项目记忆** —— 把一页步骤写成 `SKILL.md` 放进 `~/.chaty/skills/`(或项目级),智能体只在相关时加载;`remember` 把非显而易见的发现存进 `.chaty/memory/`,下一个会话开局即知。纯 Markdown、人可编辑、永不离开本机。
 
 <details>
 <summary>更多 Code 模式细节</summary>
