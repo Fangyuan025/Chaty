@@ -25,7 +25,12 @@ export class Bridge {
   constructor(bin: string, env?: Record<string, string>) {
     this.proc = spawn(bin, [], {
       stdio: ["pipe", "pipe", "inherit"],
-      env: env ? { ...process.env, ...env } : process.env,
+      // Benches must NEVER pop a visible Chrome in the user's face — the
+      // original web runner set this and the extraction dropped it, which
+      // put a browser window on the owner's screen every oracle task until
+      // they complained. Default here so every runner inherits it; a caller
+      // can still override explicitly.
+      env: { ...process.env, CHATY_BROWSER_HEADLESS: "1", ...env },
     });
     this.proc.stdout!.on("data", (chunk: Buffer) => {
       this.buf += chunk.toString();
