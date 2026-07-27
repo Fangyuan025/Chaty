@@ -949,6 +949,10 @@ export async function agentResolveImage(path: string): Promise<string> {
 export async function browserNavigate(url: string): Promise<string> {
   return await invoke<string>("browser_navigate", { url });
 }
+/** Reload the current page, cache ignored — the local-dev verb. */
+export async function browserRefresh(): Promise<string> {
+  return await invoke<string>("browser_refresh");
+}
 /** Full-page screenshot (auto-scrolls to trigger lazy content) → temp PNG path. */
 export async function browserScreenshot(): Promise<string> {
   return await invoke<string>("browser_screenshot");

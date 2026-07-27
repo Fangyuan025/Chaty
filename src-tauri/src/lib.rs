@@ -360,6 +360,7 @@ pub fn run() {
             agent::agent_outline,
             agent::agent_resolve_image,
             agent::browser_navigate,
+            agent::browser_refresh,
             agent::browser_screenshot,
             agent::browser_snapshot,
             agent::browser_scroll,

@@ -39,6 +39,7 @@ enum BrowserCmd {
     Type { selector: Option<String>, label: Option<String>, text: String, reply: Sender<Result<String, String>> },
     TypeSeq { steps: Vec<(Option<String>, Option<String>, String)>, reply: Sender<Result<String, String>> },
     Console { reply: Sender<Result<String, String>> },
+    Refresh { reply: Sender<Result<String, String>> },
     Read { reply: Sender<Result<String, String>> },
     Close,
 }
@@ -495,6 +496,10 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
                 let r = run(&mut session, headless, |s| s.type_seq(&steps));
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
+            BrowserCmd::Refresh { reply } => {
+                let r = run(&mut session, headless, |s| s.refresh());
+                let _ = reply.send(with_console_errors(&mut session, r));
+            }
             BrowserCmd::Console { reply } => {
                 let _ = reply.send(run(&mut session, headless, |s| Ok(s.drain_console())));
             }
@@ -830,6 +835,36 @@ impl BrowserSession {
                 return Err(format!("导航失败 (navigation failed): {err}"));
             }
         }
+        let (final_url, title, rich) = self.settle_and_digest()?;
+        Ok(trf!(
+            "已打开:{}\n标题:{}\n\n{}",
+            "Loaded: {}\nTitle: {}\n\n{}",
+            final_url,
+            title,
+            rich
+        ))
+    }
+
+    /// True reload of the current page, cache ignored — the local-dev verb.
+    /// The webapp walkthrough caught the 35B "refreshing" by re-screenshotting
+    /// the STALE render after editing files; without a reload the page can't
+    /// show the new code, no matter how it is observed.
+    fn refresh(&mut self) -> Result<String, String> {
+        let sid = self.session_id.clone();
+        self.call(Some(&sid), "Page.reload", json!({"ignoreCache": true}))?;
+        let (final_url, title, rich) = self.settle_and_digest()?;
+        Ok(trf!(
+            "已刷新(忽略缓存):{}\n标题:{}\n\n{}",
+            "Reloaded (cache ignored): {}\nTitle: {}\n\n{}",
+            final_url,
+            title,
+            rich
+        ))
+    }
+
+    /// Shared post-load tail: settle, re-arm the async watcher, read back
+    /// url/title, and build the text digest.
+    fn settle_and_digest(&mut self) -> Result<(String, String, String), String> {
         // Give the page a moment to load + settle (SPA JS, first paint), then
         // arm the async-work watcher for the interactions that follow.
         std::thread::sleep(Duration::from_millis(1200));
@@ -839,13 +874,7 @@ impl BrowserSession {
         let final_url = self.eval("location.href").unwrap_or_default().trim_matches('"').to_string();
         self.current_url = final_url.clone();
         let rich = self.rich_digest(4000)?;
-        Ok(trf!(
-            "已打开:{}\n标题:{}\n\n{}",
-            "Loaded: {}\nTitle: {}\n\n{}",
-            final_url,
-            title,
-            rich
-        ))
+        Ok((final_url, title, rich))
     }
 
     /// Install the async-work watcher (idempotent, best-effort).
@@ -1483,6 +1512,10 @@ pub fn navigate(url: &str) -> Result<String, String> {
     dispatch(|reply| BrowserCmd::Navigate { url, reply })
 }
 
+pub fn refresh() -> Result<String, String> {
+    dispatch(|reply| BrowserCmd::Refresh { reply })
+}
+
 pub fn screenshot() -> Result<Vec<u8>, String> {
     dispatch(|reply| BrowserCmd::Screenshot { reply })
 }
@@ -1673,6 +1706,33 @@ mod tests {
         ] {
             assert!(!BrowserSession::is_local_page_url(u), "{u} should NOT be local");
         }
+    }
+
+    // The exact walkthrough failure: edit a local file, "refresh" by
+    // re-screenshotting → stale render. browser_refresh must show the NEW
+    // content. Real Chrome; ignored by default.
+    // Run: cargo test -p chaty refresh_shows -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn refresh_shows_edited_local_file() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("chaty-refresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("page.html");
+        std::fs::write(&f, "<title>r</title><body><h1>VERSION-ONE-77</h1></body>").unwrap();
+        let url = format!("file://{}", f.display());
+        let nav = navigate(&url).expect("navigate");
+        assert!(nav.contains("VERSION-ONE-77"), "{nav}");
+        // Edit on disk — the loaded DOM is now stale.
+        std::fs::write(&f, "<title>r</title><body><h1>VERSION-TWO-88</h1></body>").unwrap();
+        let re = refresh().expect("refresh");
+        assert!(re.contains("VERSION-TWO-88"), "refresh must show the new content: {re}");
+        assert!(!re.contains("VERSION-ONE-77"), "stale content must be gone: {re}");
+        shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // Interaction results must auto-attach NEW error-class console lines

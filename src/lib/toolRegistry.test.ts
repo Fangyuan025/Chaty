@@ -39,6 +39,7 @@ describe("derived sets match the pre-M0 literals", () => {
   test("REPEAT_EXEMPT", () => {
     expect(new Set(REPEAT_EXEMPT)).toEqual(
       new Set([
+        "browser_refresh",
         "browser_scroll",
         "browser_screenshot",
         "browser_snapshot",
@@ -55,6 +56,7 @@ describe("derived sets match the pre-M0 literals", () => {
         "web_fetch",
         "web_search",
         "browser_navigate",
+        "browser_refresh",
         "browser_read",
         "browser_console",
         "browser_click",

@@ -314,6 +314,7 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
 
         // ---- browser tools (automation Chrome; set CHATY_BROWSER_HEADLESS=1
         // so bench sessions never open a visible window) ----
+        "browser_refresh" => res(ag::browser_refresh().await),
         "browser_navigate" => match req_s(&args, "url") {
             Ok(u) => res(ag::browser_navigate(u).await),
             Err(e) => Err(e),

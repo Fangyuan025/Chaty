@@ -122,6 +122,10 @@ export const DOC_LINES: Record<string, Bi> = {
     zh: "- browser_close: 关闭浏览器。args: {}",
     en: "- browser_close: close the browser. args: {}",
   },
+  browser_refresh: {
+    zh: "- browser_refresh: 重新加载当前页(忽略缓存);本地改完代码必用,不刷新看到的是旧页面。args: {}",
+    en: "- browser_refresh: reload the current page (cache ignored); required after local code edits — without it you see the stale page. args: {}",
+  },
   browser_console: {
     zh: "- browser_console: 读取页面 JS 控制台输出与异常。args: {}",
     en: "- browser_console: read the page's JS console output and exceptions. args: {}",

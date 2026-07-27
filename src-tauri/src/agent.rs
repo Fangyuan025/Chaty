@@ -1480,6 +1480,15 @@ pub async fn browser_navigate(url: String) -> Result<String, String> {
         .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
 
+/// Reload the current page, cache ignored — after editing local files the
+/// loaded DOM is stale and re-screenshotting it proves nothing.
+#[tauri::command]
+pub async fn browser_refresh() -> Result<String, String> {
+    tokio::task::spawn_blocking(crate::browser::refresh)
+        .await
+        .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
+}
+
 /// Full-page screenshot (auto-scrolls to trigger lazy content). Returns a temp
 /// PNG path the agent loop attaches to the model's next turn (like view_image).
 #[tauri::command]

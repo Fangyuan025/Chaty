@@ -7,6 +7,7 @@
 
 import {
   agentBash,
+  browserRefresh,
   agentBashBg,
   agentBgKill,
   agentBgOutput,
@@ -854,6 +855,9 @@ async function execTool(
       const url = asStr(a.url);
       if (!url) return { result: missingArg("url", '{"url":"https://example.com"}') };
       return { result: await browserNavigate(url) };
+    }
+    case "browser_refresh": {
+      return { result: await browserRefresh() };
     }
     case "browser_console":
       return { result: await browserConsole() };
