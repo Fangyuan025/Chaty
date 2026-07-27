@@ -183,17 +183,17 @@ function withShims(html: string, nonce: string): string {
   const shims =
     `<script>window.__CV_NONCE=${JSON.stringify(nonce)};</script>` +
     COMPAT_SHIM + CONSOLE_SHIM + ERROR_SHIM + NAV_GUARD + INSPECT_SHIM + SCROLL_SCHEME_SHIM;
-  const head = html.match(/<head[^>]*>/i);
-  if (head && head.index !== undefined) {
-    const at = head.index + head[0].length;
-    return html.slice(0, at) + shims + html.slice(at);
-  }
-  const tag = html.match(/<html[^>]*>/i);
-  if (tag && tag.index !== undefined) {
-    const at = tag.index + tag[0].length;
-    return html.slice(0, at) + shims + html.slice(at);
-  }
-  return shims + html;
+  // Inject at the very TOP of the document (only the doctype may precede us,
+  // or it would flip the page into quirks mode). Injecting "after <head>" by
+  // regex trusted the DOCUMENT's structure: models produce html like
+  // `<html lang="zh-CN"` with the closing > missing, whose tokenizer recovery
+  // eats the literal <head> — and the shims injected beside it — so NOTHING
+  // was instrumented and the console stayed silent no matter how broken the
+  // page was. Scripts between doctype and <html> are spec-legal; the parser
+  // hoists them into the implied head and later merges the real tag.
+  const dt = html.match(/^\s*<!doctype[^>]*>/i);
+  const at = dt && dt.index !== undefined ? dt.index + dt[0].length : 0;
+  return html.slice(0, at) + shims + html.slice(at);
 }
 
 export function CanvasPanel({
