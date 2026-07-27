@@ -81,7 +81,7 @@ const CONSOLE_SHIM = `<script>(function(){
   });
   window.addEventListener('error', function(e){
     if (e && e.target && (e.target.src || e.target.href)) send('error', ['Failed to load resource: ' + (e.target.src || e.target.href)]);
-    else if (e && e.message) send('error', [e.message + ' (' + (e.filename||'') + ':' + (e.lineno||0) + ')' + (e.error && e.error.stack ? '\n' + e.error.stack : '')]);
+    else if (e && e.message) send('error', [e.message + ' (' + (e.filename||'') + ':' + (e.lineno||0) + ')' + (e.error && e.error.stack ? '\\n' + e.error.stack : '')]);
   }, true);
   window.addEventListener('unhandledrejection', function(e){
     var r = e && e.reason; send('error', ['Unhandled rejection: ' + ((r && r.message) || String(r))]);
@@ -104,7 +104,7 @@ const ERROR_SHIM = `<script>(function(){
     if (e && e.target && (e.target.src || e.target.href)) {
       send('resource', 'Failed to load ' + (e.target.src || e.target.href), e.target.tagName);
     } else if (e && e.message) {
-      send('error', e.message, (e.filename||'') + ':' + (e.lineno||0) + ':' + (e.colno||0) + (e.error && e.error.stack ? '\n' + e.error.stack : ''));
+      send('error', e.message, (e.filename||'') + ':' + (e.lineno||0) + ':' + (e.colno||0) + (e.error && e.error.stack ? '\\n' + e.error.stack : ''));
     }
   }, true);
   window.addEventListener('unhandledrejection', function(e){
@@ -175,6 +175,19 @@ const SCROLL_SCHEME_SHIM = `<script>(function(){
 })()<\/script>`;
 
 /** Inject the shims right after <head> so they install before page scripts. */
+/** Every inline shim, exported for the syntax-gate regression test: a bad
+ *  template escape ('\n' becoming a REAL newline inside a shim's quoted
+ *  string) once killed the console+error shims wholesale — a SyntaxError in
+ *  generated code is invisible until nothing reports errors anymore. */
+export const PREVIEW_SHIMS: Record<string, string> = {
+  COMPAT_SHIM,
+  CONSOLE_SHIM,
+  ERROR_SHIM,
+  NAV_GUARD,
+  INSPECT_SHIM,
+  SCROLL_SCHEME_SHIM,
+};
+
 function withShims(html: string, nonce: string): string {
   // The nonce ties every message from this document generation to the
   // srcDoc that produced it: WKWebView can start reparsing (and posting
@@ -238,6 +251,10 @@ export function CanvasPanel({
   const [muted, setMuted] = useState(false);
   const [view, setView] = useState<"code" | "diff" | "console">("code");
   const [consoleLog, setConsoleLog] = useState<{ level: string; text: string; nonce?: string }[]>([]);
+  // DEV-only pipeline diagnostics: how many console messages ARRIVED vs were
+  // kept, and why the last one was dropped — reads the fault location off the
+  // screen instead of guessing (the empty-console hunt).
+  const [conDiag, setConDiag] = useState({ raw: 0, dropped: "" });
   // Bumping remounts the iframe: scripts re-run from scratch (page refresh).
   const [reloadNonce, setReloadNonce] = useState(0);
   // Inspect selection: cv ids the user clicked (⌘/Ctrl toggles membership).
@@ -339,8 +356,13 @@ export function CanvasPanel({
       };
       const con = (data as { __chatyCvConsole?: { level: string; text: string; nonce?: string } })
         ?.__chatyCvConsole;
-      if (con && (!con.nonce || con.nonce === nonceRef.current)) {
-        setConsoleLog((prev) => (prev.length >= 300 ? prev : [...prev, con]));
+      if (con) {
+        if (import.meta.env.DEV) setConDiag((d) => ({ ...d, raw: d.raw + 1 }));
+        if (!con.nonce || con.nonce === nonceRef.current) {
+          setConsoleLog((prev) => (prev.length >= 300 ? prev : [...prev, con]));
+        } else if (import.meta.env.DEV) {
+          setConDiag((d) => ({ ...d, dropped: `${con.nonce}≠${nonceRef.current}` }));
+        }
       }
       if (data?.__chatyCanvasError && !muted) {
         const d = data.__chatyCanvasError as CanvasError & { nonce?: string };
@@ -823,6 +845,12 @@ export function CanvasPanel({
                 </div>
               ) : view === "console" ? (
                 <div className="cvp-code cvp-console">
+                  {import.meta.env.DEV && (
+                    <div className="cvp-scan-note">
+                      [diag] gen={frameNonce} raw={conDiag.raw} kept={consoleLog.length}
+                      {conDiag.dropped ? ` lastDrop=${conDiag.dropped}` : ""}
+                    </div>
+                  )}
                   {consoleLog.length === 0 ? (
                     <div className="cvp-scan-note">{t("canvasConsoleEmpty")}</div>
                   ) : (

@@ -911,6 +911,11 @@ export default function App() {
     setCanvasKey(html);
     setCanvasOpen(true);
   }
+  // DEV hook: drive the full canvas stack from the console/harness without a
+  // model round-trip (the console-pipeline hunt needed exactly this).
+  if (import.meta.env.DEV) {
+    (window as unknown as { __openCanvas?: (raw: string) => void }).__openCanvas = openInCanvas;
+  }
 
   /** Parse `<<<<<<< SEARCH / ======= / >>>>>>> REPLACE` edit blocks. */
   function parseEdits(text: string): { search: string; replace: string }[] {
