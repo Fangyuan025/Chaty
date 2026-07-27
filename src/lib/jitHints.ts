@@ -37,6 +37,16 @@ const ANCHOR_READ_HINT: Record<"zh" | "en", string> = {
 
 const ANCHOR_LINE_RE = /^\d+:[a-z]{2,4}→/m;
 
+// A local dev server just came up (bash/bash_bg/bg_output printed a local
+// origin). This is the moment webapp discipline is decided — say it now, not
+// in the every-step system prompt.
+const WEB_FLOW_HINT: Record<"zh" | "en", string> = {
+  zh: `[Webapp 提示] 本地 server 在跑。开发闭环:每次改完代码 → browser_navigate/browser_read 打开或刷新页面**亲眼验证**,不要凭代码推断;交互结果里的 [console] 段就是页面报错,出现了必须先修掉再继续。长驻命令(dev server、watch)一律用 bash_bg,前台 bash 会卡住;server 日志用 bg_output 查。交付前把改动涉及的页面路径实际走查一遍。`,
+  en: `[Webapp hint] A local server is running. The loop: after EVERY code change → browser_navigate/browser_read to open or refresh the page and verify with your own eyes — never infer from code; a [console] section in interaction results IS the page erroring — fix it before anything else. Long-running commands (dev server, watch) always go through bash_bg — foreground bash stalls; check server logs with bg_output. Before delivering, actually walk the pages your change touches.`,
+};
+
+const LOCAL_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?/i;
+
 /** Returns a hint to append to this tool result, or "" — and marks it shown. */
 export function jitHintFor(
   name: string,
@@ -51,6 +61,14 @@ export function jitHintFor(
   if (name === "understand_repo" && !shown.has("afterOrient")) {
     shown.add("afterOrient");
     return AFTER_ORIENT_HINT[lang];
+  }
+  if (
+    (name === "bash" || name === "bash_bg" || name === "bg_output") &&
+    !shown.has("webFlow") &&
+    LOCAL_URL_RE.test(resultText)
+  ) {
+    shown.add("webFlow");
+    return WEB_FLOW_HINT[lang];
   }
   if (name === "read_file" && !shown.has("anchorRead") && ANCHOR_LINE_RE.test(resultText.slice(0, 400))) {
     shown.add("anchorRead");

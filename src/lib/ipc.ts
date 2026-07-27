@@ -216,6 +216,9 @@ export interface AgentBashResult {
   stderr: string;
   code: number;
   timedOut: boolean;
+  /** Set when a still-running dev server was auto-moved to the background:
+   *  the background job's id (see agent.rs run_bash). */
+  bgId?: number;
 }
 
 export async function agentSetWorkspace(path: string): Promise<string> {

@@ -35,6 +35,24 @@ describe("jitHintFor", () => {
     expect(jitHintFor("read_file", "…", "en", new Set())).toBe("");
   });
 
+  test("a local server URL in bash output triggers the webapp-flow hint once", () => {
+    const shown = new Set<HintKey>();
+    const banner = "VITE ready in 300ms\n➜ Local: http://localhost:5173/\n[已自动转入后台 #3]";
+    const h = jitHintFor("bash", banner, "zh", shown);
+    expect(h).toContain("[Webapp 提示]");
+    expect(h).toContain("bash_bg");
+    // Once per turn, across the whole bash family.
+    expect(jitHintFor("bg_output", "#3 running… http://localhost:5173/", "zh", shown)).toBe("");
+    expect(jitHintFor("bash_bg", "listening on http://127.0.0.1:8000", "en", new Set())).toContain(
+      "[Webapp hint]",
+    );
+  });
+
+  test("bash output without a local URL does not trigger the webapp hint", () => {
+    expect(jitHintFor("bash", "compiled 12 files, done\n[exit 0]", "zh", new Set())).toBe("");
+    expect(jitHintFor("bash", "fetched https://registry.npmjs.org/react", "en", new Set())).toBe("");
+  });
+
   test("anchored read_file appends the edit_lines bridge once", () => {
     const shown = new Set<Parameters<typeof jitHintFor>[3] extends Set<infer K> ? K : never>();
     const anchored = '1:gaj→"""HTML utilities."""\n2:ddg→\n3:vua→import html';

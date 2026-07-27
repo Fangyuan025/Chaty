@@ -54,6 +54,7 @@ import {
 } from "./ipc";
 import { normalizeChannels } from "./voiceText";
 import { jitHintFor, type HintKey } from "./jitHints";
+import { wrapupNudge, planEcho, isWebSourceFile, devServerUrlFrom } from "./wrapupGate";
 import { diffLines } from "./diff";
 import { platform } from "@tauri-apps/plugin-os";
 
@@ -710,6 +711,17 @@ async function execTool(
       const parts: string[] = [];
       if (r.stdout) parts.push(r.stdout);
       if (r.stderr) parts.push(`[stderr]\n${r.stderr}`);
+      if (r.bgId != null) {
+        // The backend saw a dev-server banner and MOVED the still-running
+        // command to the background instead of blocking to the timeout and
+        // killing it. Tell the model exactly how to continue.
+        parts.push(
+          isZh()
+            ? `[已自动转入后台 #${r.bgId}] 检测到 dev server,命令仍在运行(上面是到目前为止的输出)。server 已可用——直接继续下一步,例如 browser_navigate 打开它输出的地址;之后用 bg_output {"id":${r.bgId}} 看最新日志,bg_kill 结束它。`
+            : `[auto-moved to background #${r.bgId}] dev-server detected; the command is still running (output so far above). The server is available — continue with your next step, e.g. browser_navigate to the URL it printed; later use bg_output {"id":${r.bgId}} for fresh logs and bg_kill to stop it.`,
+        );
+        return { result: parts.join("\n") };
+      }
       parts.push(`[exit ${r.code}${r.timedOut ? (isZh() ? " · 超时" : " · timed out") : ""}]`);
       return { result: parts.join("\n") };
     }
@@ -1243,6 +1255,14 @@ export async function runAgentTurn(
   // of its own completed work and redoes it.
   let memoryFlushed = false;
   const editedFiles = new Set<string>();
+  // ── Wrap-up gate state (webapp audit): what the turn promised and what it
+  // verified. Drives the one-shot delivery check in the no-tool-call branch.
+  let currentPlan: { content: string; status: string }[] = [];
+  let lastWebEditStep = -1;
+  let lastBrowserActionStep = -1;
+  let serverCtx = false;
+  let devServerUrl: string | undefined;
+  let wrapNudged = false;
   // Search flail breaker: consecutive web_search calls, ANY query. When the
   // search backend degrades into irrelevant results, models keep rephrasing
   // the query forever instead of failing over to web_fetch / the browser —
@@ -1453,6 +1473,32 @@ export async function runAgentTurn(
           );
           continue;
         }
+        // ── Wrap-up gate (webapp audit) ── the model is about to END the
+        // turn. Once per turn, catch the two audited cut-corner patterns:
+        // a todo list it wrote and abandoned, and page edits it never looked
+        // at in the browser. One corrective nudge, then its next answer
+        // stands either way.
+        if (answer && step < maxSteps - 2) {
+          const nudge = wrapupNudge(
+            {
+              plan: currentPlan,
+              lastWebEditStep,
+              lastBrowserActionStep,
+              serverCtx,
+              devServerUrl,
+              nudged: wrapNudged,
+            },
+            lang,
+          );
+          if (nudge) {
+            wrapNudged = true;
+            messages.push({ role: "assistant", content: answer });
+            pushUser(nudge);
+            cb.onThinking("");
+            cb.onAssistantText("");
+            continue;
+          }
+        }
         cb.onFinal(answer, thinking);
         return;
       }
@@ -1538,6 +1584,14 @@ export async function runAgentTurn(
               ? lang === "zh"
                 ? "调用被拦截:上一次同样的点击/输入之后页面没有变化。这通常意味着操作**已经生效**(例如表单已提交、成功提示在别处),或者这个元素此刻不起作用。切勿再点一次——提交类按钮重复点击会重复提交。请先用 browser_read 核实页面当前文字(找确认信息),再决定下一步。"
                 : "Intercepted: the page did not change after your previous identical click/type. That usually means the action ALREADY took effect (the form was submitted, the confirmation is elsewhere on the page), or this element does nothing right now. Do NOT click it again — repeating a submit button posts duplicates. Read the current page text with browser_read first (look for a confirmation), then decide."
+              : call.name === "update_plan"
+                ? lang === "zh"
+                  ? "调用被拦截:这份计划刚刚已经记录过,原样重发没有意义。不要再发 update_plan——现在直接开始执行计划里第一件未完成的事(用具体工具:read_file、edit_file、bash 等)。"
+                  : "Intercepted: this exact plan was already recorded — re-sending it does nothing. Do NOT call update_plan again; start EXECUTING the first unfinished item now, with concrete tools (read_file, edit_file, bash, …)."
+              : call.name === "bg_kill"
+                ? lang === "zh"
+                  ? "调用被拦截:这个后台任务已经处理过了(上一次调用已终止它或它早已结束),不需要再杀。如果任务都收尾了,直接给出最终答复。"
+                  : "Intercepted: that background job was already handled (the previous call killed it, or it had already finished) — no need to kill it again. If everything is wrapped up, give your final answer now."
               : lang === "zh"
               ? "调用被拦截:这和上一步完全相同,结果不会变化。请换一种做法——传入具体的子目录/文件路径(如 list_dir {\"path\":\"src\"}、read_file \"src/app.ts\")、换个工具,或用 update_plan 重新梳理。提醒:没有持久的工作目录,cd 不会保留。"
               : 'Intercepted: this call is identical to the previous one — the result cannot change. Do something different: pass a concrete subdirectory/file path (list_dir {"path":"src"}, read_file "src/app.ts"), use another tool, or re-plan with update_plan. Reminder: there is no persistent cwd.';
@@ -1569,8 +1623,11 @@ export async function runAgentTurn(
       // update_plan renders as a dedicated live plan panel, not a step card.
       if (call.name === "update_plan") {
         const todos = parsePlan(call.args);
+        currentPlan = todos;
         cb.onPlan?.(todos);
-        pushUser(toolResultMsg("update_plan", lang === "zh" ? "计划已更新。" : "Plan updated."));
+        // Echo the statuses back: the panel is for the user — this line is
+        // the only way the plan re-enters the MODEL's context.
+        pushUser(toolResultMsg("update_plan", planEcho(todos, lang)));
         continue;
       }
       // view_image: works on ANY model. Vision-ready → attach the pixels
@@ -1778,7 +1835,18 @@ export async function runAgentTurn(
         stepObj.diff = out.diff;
         if (["edit_file", "edit_lines", "multi_edit", "write_file"].includes(call.name)) {
           const p = asStr(call.args?.path);
-          if (p && !resultText.startsWith("ERROR")) editedFiles.add(p);
+          if (p && !resultText.startsWith("ERROR")) {
+            editedFiles.add(p);
+            if (isWebSourceFile(p, serverCtx)) lastWebEditStep = step;
+          }
+        }
+        if (call.name.startsWith("browser_")) lastBrowserActionStep = step;
+        if (["bash", "bash_bg", "bg_output"].includes(call.name)) {
+          const url = devServerUrlFrom(resultText);
+          if (url) {
+            serverCtx = true;
+            devServerUrl ??= url;
+          }
         }
       } catch (e) {
         resultText = `ERROR: ${e instanceof Error ? e.message : String(e)}`;

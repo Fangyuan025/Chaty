@@ -417,10 +417,53 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
         f(session)
     }
 
+    // Text-returning interactions carry any NEW error-class console lines —
+    // the model shouldn't have to remember to ask whether the page it just
+    // touched blew up. Cursor-based: each line rides along exactly once.
+    // Screenshot/snapshot (image payloads) and browser_console (the explicit
+    // full view) stay untouched.
+    fn with_console_errors(
+        session: &mut BrowserSession,
+        r: Result<String, String>,
+    ) -> Result<String, String> {
+        let mut text = match r {
+            Ok(t) => t,
+            Err(e) => return Err(e),
+        };
+        // Always advance the cursor (mark lines as seen), but only ATTACH on
+        // pages the developer owns — localhost / local files. On someone
+        // else's website the console is third-party noise; it stays available
+        // via an explicit browser_console call.
+        let mut errs = session.unsurfaced_errors();
+        if !BrowserSession::is_local_page_url(&session.current_url) {
+            return Ok(text);
+        }
+        if errs.is_empty() {
+            return Ok(text);
+        }
+        if errs.len() > 8 {
+            let dropped = errs.len() - 8;
+            errs.drain(..dropped);
+            errs.insert(0, trf!("(另有 {dropped} 条更早的报错)", "({dropped} earlier errors omitted)"));
+        }
+        let mut block = errs.join("\n");
+        if block.len() > 1500 {
+            let cut = block.len() - 1500;
+            block = block[block.char_indices().map(|(i, _)| i).find(|&i| i >= cut).unwrap_or(0)..].to_string();
+        }
+        text.push_str(&trf!(
+            "\n\n[console] 页面在这次操作前后新增的报错(自动附带):\n{}",
+            "\n\n[console] page errors since the last action (auto-attached):\n{}",
+            block
+        ));
+        Ok(text)
+    }
+
     while let Ok(cmd) = rx.recv() {
         match cmd {
             BrowserCmd::Navigate { url, reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| s.navigate(&url)));
+                let r = run(&mut session, headless, |s| s.navigate(&url));
+                let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Screenshot { reply } => {
                 let _ = reply.send(run(&mut session, headless, |s| s.screenshot()));
@@ -429,28 +472,35 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
                 let _ = reply.send(run(&mut session, headless, |s| s.snapshot()));
             }
             BrowserCmd::Scroll { to, by, reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| s.scroll(to.as_deref(), by)));
+                let r = run(&mut session, headless, |s| s.scroll(to.as_deref(), by));
+                let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Eval { expr, reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| s.eval(&expr)));
+                let r = run(&mut session, headless, |s| s.eval(&expr));
+                let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Click { selector, text, reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| s.click(selector.as_deref(), text.as_deref())));
+                let r = run(&mut session, headless, |s| s.click(selector.as_deref(), text.as_deref()));
+                let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::ClickSeq { steps, reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| s.click_seq(&steps)));
+                let r = run(&mut session, headless, |s| s.click_seq(&steps));
+                let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Type { selector, label, text, reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| s.type_text(selector.as_deref(), &text, label.as_deref())));
+                let r = run(&mut session, headless, |s| s.type_text(selector.as_deref(), &text, label.as_deref()));
+                let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::TypeSeq { steps, reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| s.type_seq(&steps)));
+                let r = run(&mut session, headless, |s| s.type_seq(&steps));
+                let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Console { reply } => {
                 let _ = reply.send(run(&mut session, headless, |s| Ok(s.drain_console())));
             }
             BrowserCmd::Read { reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| s.rich_digest(12000)));
+                let r = run(&mut session, headless, |s| s.rich_digest(12000));
+                let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Close => break,
         }
@@ -466,6 +516,13 @@ struct BrowserSession {
     next_id: i64,
     /// Buffered console API calls + exceptions since the last `drain_console`.
     console: Vec<String>,
+    /// How many buffered lines were already auto-attached to an interaction
+    /// result (the cursor keeps repeats out; `drain_console` resets it).
+    surfaced: usize,
+    /// Main-frame URL, kept fresh by navigate() and Page.frameNavigated —
+    /// gates console auto-attach to LOCAL pages only (real websites are full
+    /// of third-party console noise the model must not drown in).
+    current_url: String,
     /// Throwaway profile guard (deletes on drop); `None` for a persistent profile.
     _profile: Option<tempdir::Guard>,
 }
@@ -563,7 +620,7 @@ impl BrowserSession {
             return Err("CDP 会话附加失败 (failed to attach CDP session)".into());
         }
 
-        let mut s = BrowserSession { child, ws, session_id, next_id, console: Vec::new(), _profile: _guard };
+        let mut s = BrowserSession { child, ws, session_id, next_id, console: Vec::new(), surfaced: 0, current_url: String::new(), _profile: _guard };
         // Enable the domains we consume. Runtime.enable surfaces console API
         // calls + uncaught exceptions; Log.enable surfaces browser log entries.
         let sid = s.session_id.clone();
@@ -624,6 +681,16 @@ impl BrowserSession {
         let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let p = v.get("params").cloned().unwrap_or(Value::Null);
         match method {
+            "Page.frameNavigated" => {
+                // Main frame only (no parentId): clicks and redirects move the
+                // page without a navigate() call.
+                let frame = &p["frame"];
+                if frame.get("parentId").and_then(|v| v.as_str()).is_none() {
+                    if let Some(u) = frame["url"].as_str() {
+                        self.current_url = u.to_string();
+                    }
+                }
+            }
             "Runtime.consoleAPICalled" => {
                 let level = p["type"].as_str().unwrap_or("log");
                 let args: Vec<String> = p["args"]
@@ -678,6 +745,48 @@ impl BrowserSession {
         }
     }
 
+    /// Is this a page whose console the developer OWNS — a dev server or a
+    /// local file — as opposed to someone else's website? Console auto-attach
+    /// is gated on this: real sites routinely spew third-party errors
+    /// (analytics, CSP, ad scripts) that would pollute every interaction.
+    fn is_local_page_url(url: &str) -> bool {
+        let u = url.trim().to_ascii_lowercase();
+        if u.starts_with("file://") || u.starts_with("data:") || u.starts_with("about:") {
+            return true;
+        }
+        let rest = match u.strip_prefix("http://").or_else(|| u.strip_prefix("https://")) {
+            Some(r) => r,
+            None => return false,
+        };
+        let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+        let host = host.strip_prefix('[').map(|h| h.split(']').next().unwrap_or(h)).unwrap_or_else(
+            || host.split(':').next().unwrap_or(""),
+        );
+        host == "localhost"
+            || host.ends_with(".localhost")
+            || host == "127.0.0.1"
+            || host == "0.0.0.0"
+            || host == "::1"
+    }
+
+    /// Error-class console lines the model hasn't seen yet ([error] /
+    /// [exception] / [dialog]) — auto-attached to interaction results so a
+    /// broken page is impossible to miss. Advances the cursor; info/log lines
+    /// stay buffered for an explicit browser_console call.
+    fn unsurfaced_errors(&mut self) -> Vec<String> {
+        self.pump_pending();
+        let from = self.surfaced.min(self.console.len());
+        let errs: Vec<String> = self.console[from..]
+            .iter()
+            .filter(|l| {
+                l.starts_with("[error]") || l.starts_with("[exception]") || l.starts_with("[dialog]")
+            })
+            .cloned()
+            .collect();
+        self.surfaced = self.console.len();
+        errs
+    }
+
     fn push_console(&mut self, line: String) {
         if self.console.len() < 200 {
             self.console.push(line);
@@ -693,6 +802,7 @@ impl BrowserSession {
         }
         let out = self.console.join("\n");
         self.console.clear();
+        self.surfaced = 0;
         out
     }
 
@@ -727,6 +837,7 @@ impl BrowserSession {
         self.install_settle();
         let title = self.eval("document.title").unwrap_or_default().trim_matches('"').to_string();
         let final_url = self.eval("location.href").unwrap_or_default().trim_matches('"').to_string();
+        self.current_url = final_url.clone();
         let rich = self.rich_digest(4000)?;
         Ok(trf!(
             "已打开:{}\n标题:{}\n\n{}",
@@ -1533,6 +1644,83 @@ mod tests {
 
     // A page alert() freezes the JS engine; the event-pump handler must
     // auto-dismiss it, unblock the in-flight eval, and surface the text in
+    /// Console auto-attach must stay inside the developer's own world:
+    /// dev servers and local files yes, other people's websites no.
+    #[test]
+    fn local_page_gate_matches_dev_origins_only() {
+        for u in [
+            "http://localhost:5173/",
+            "http://localhost/app",
+            "https://localhost:8443/x?q=1",
+            "http://127.0.0.1:8000/index.html",
+            "http://0.0.0.0:3000",
+            "http://[::1]:9000/page",
+            "http://app.localhost:3000/",
+            "file:///Users/dev/site/index.html",
+            "data:text/html,<h1>x</h1>",
+            "about:blank",
+        ] {
+            assert!(BrowserSession::is_local_page_url(u), "{u} should be local");
+        }
+        for u in [
+            "https://example.com/",
+            "https://github.com/Fangyuan025/Chaty",
+            "http://192.168.1.20:8080/",
+            "https://localhost.evil.com/phish",
+            "https://mylocalhost.com/",
+            "",
+            "chrome://settings",
+        ] {
+            assert!(!BrowserSession::is_local_page_url(u), "{u} should NOT be local");
+        }
+    }
+
+    // Interaction results must auto-attach NEW error-class console lines
+    // (the model kept shipping broken pages because it never asked), exactly
+    // once each — and info-level lines must stay out of the way but remain
+    // available to an explicit browser_console. Real Chrome; ignored by
+    // default. Run: cargo test -p chaty console_autoattach -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn console_autoattach_errors_ride_interactions_once() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        // Page whose script throws at load AND logs an info line.
+        // Markers are CONCATENATED in the page script so the URL echo in the
+        // navigate result can never contain them verbatim.
+        let broken = "data:text/html,<title>boom</title><body>x</body><script>console.log('fyi'+'-note-77');throw new Error('boot'+'-crash-77')</script>";
+        let nav = navigate(broken).expect("navigate");
+        assert!(
+            nav.contains("[console]") && nav.contains("boot-crash-77"),
+            "load-time exception must ride the navigate result: {nav}"
+        );
+        assert!(!nav.contains("fyi-note-77"), "info lines must NOT auto-attach: {nav}");
+
+        // A follow-up interaction on a now-quiet page: no repeat of old errors.
+        let out = eval("1+1").expect("eval");
+        assert!(
+            !out.contains("boot-crash-77"),
+            "already-surfaced errors must not repeat: {out}"
+        );
+
+        // A fresh error caused BY the interaction rides ITS result.
+        let out = eval("console.error('click'+'-broke-77'); 7").expect("eval2");
+        assert!(
+            out.contains("[console]") && out.contains("click-broke-77"),
+            "new error must ride the interaction that caused it: {out}"
+        );
+
+        // The explicit console view still holds the full history (incl. info).
+        let full = console().unwrap_or_default();
+        assert!(
+            full.contains("fyi-note-77") && full.contains("boot-crash-77"),
+            "browser_console must keep the full buffer: {full}"
+        );
+        shutdown();
+    }
+
     // the console. Run: cargo test -p chaty dialog_ -- --ignored --nocapture
     #[test]
     #[ignore]

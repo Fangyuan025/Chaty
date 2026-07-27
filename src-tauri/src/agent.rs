@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -738,7 +738,7 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
     let timeout = Duration::from_secs(180);
     let run_cmd = |title: &str, cmd: String, out: &mut String| {
         out.push_str(&format!("\n$ {cmd}\n"));
-        match run_bash(&root, &cmd, timeout, None, true) {
+        match run_bash(&root, &cmd, timeout, None, true, None) {
             Ok(r) => {
                 let merged = format!("{}\n{}", r.stdout, r.stderr);
                 // Failure digest: the lines a human would read first.
@@ -2553,6 +2553,12 @@ pub struct BashResult {
     pub stderr: String,
     pub code: i32,
     pub timed_out: bool,
+    /// Set when the still-running command was auto-moved to the background
+    /// (dev-server signature in its output): the background job's id. The
+    /// old behavior — wait out the full timeout, then KILL the server the
+    /// model just started — cost the whole timeout AND the server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bg_id: Option<u64>,
 }
 
 /// macOS seatbelt profile: allow everything by default, then deny all writes and
@@ -2615,32 +2621,97 @@ fn augmented_path() -> String {
     path.join(":")
 }
 
-fn read_capped(mut r: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+/// Stream a pipe into a shared, tail-capped buffer — incremental on purpose:
+/// the run_bash poll loop can inspect output WHILE the command runs, which is
+/// what makes dev-server detection and mid-run background conversion possible.
+/// `truncated` flips the first time old bytes are dropped to honor the cap.
+fn shared_stream(
+    mut r: impl Read + Send + 'static,
+    buf: Arc<Mutex<Vec<u8>>>,
+    truncated: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = r.read_to_end(&mut buf);
-        buf
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = r.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            let mut b = buf.lock().unwrap();
+            b.extend_from_slice(&chunk[..n]);
+            if b.len() > MAX_OUTPUT_BYTES {
+                let cut = b.len() - MAX_OUTPUT_BYTES;
+                b.drain(..cut);
+                truncated.store(true, Ordering::Relaxed);
+            }
+        }
     })
 }
 
-fn cap_utf8(bytes: Vec<u8>) -> String {
-    let truncated = bytes.len() > MAX_OUTPUT_BYTES;
-    let slice = &bytes[..bytes.len().min(MAX_OUTPUT_BYTES)];
-    // Chinese-locale Windows consoles emit the ANSI codepage (GBK), not
-    // UTF-8 — `dir`, error messages etc. turned to mojibake under a plain
-    // lossy conversion. Valid UTF-8 passes through; otherwise decode as GBK.
+/// Decode captured console bytes for the model. Valid UTF-8 passes through;
+/// on Chinese-locale Windows consoles (`dir`, error messages) the ANSI
+/// codepage (GBK) would turn to mojibake under a plain lossy conversion, so
+/// non-UTF-8 decodes as GBK there.
+fn decode_console_bytes(slice: &[u8]) -> String {
     #[cfg(windows)]
-    let s = match std::str::from_utf8(slice) {
+    return match std::str::from_utf8(slice) {
         Ok(ok) => ok.to_owned(),
         Err(_) => encoding_rs::GBK.decode(slice).0.into_owned(),
     };
     #[cfg(not(windows))]
-    let s = String::from_utf8_lossy(slice).into_owned();
+    String::from_utf8_lossy(slice).into_owned()
+}
+
+fn cap_utf8(bytes: Vec<u8>) -> String {
+    let truncated = bytes.len() > MAX_OUTPUT_BYTES;
+    let s = decode_console_bytes(&bytes[..bytes.len().min(MAX_OUTPUT_BYTES)]);
     if truncated {
         trf!("{s}\n… (输出已截断)", "{s}\n… (output truncated)")
     } else {
         s
     }
+}
+
+/// Final decode of a shared (already tail-capped) buffer. The buffer keeps the
+/// TAIL on overflow — for shell output that's the right end to keep (the error
+/// is at the bottom), and the tool registry's cap policy for bash agrees.
+fn shared_cap_decode(buf: &Arc<Mutex<Vec<u8>>>, truncated: &Arc<AtomicBool>) -> String {
+    let s = decode_console_bytes(&buf.lock().unwrap());
+    if truncated.load(Ordering::Relaxed) {
+        trf!("… (前面输出已截断)\n{s}", "… (earlier output truncated)\n{s}")
+    } else {
+        s
+    }
+}
+
+/// Last few KB of a live shared buffer as text — the window the dev-server
+/// signature check reads. Small on purpose: it runs inside the poll loop.
+fn shared_tail(buf: &Arc<Mutex<Vec<u8>>>) -> String {
+    let b = buf.lock().unwrap();
+    let start = b.len().saturating_sub(6 * 1024);
+    String::from_utf8_lossy(&b[start..]).into_owned()
+}
+
+/// Dev-server heartbeat in command output: a local origin URL or an explicit
+/// "listening" line. High-precision on purpose — a false positive would steal
+/// a foreground command into the background.
+fn server_signature(tail: &str) -> bool {
+    let t = tail.to_ascii_lowercase();
+    const URLS: [&str; 5] = [
+        "http://localhost",
+        "https://localhost",
+        "http://127.0.0.1",
+        "http://0.0.0.0",
+        "http://[::1]",
+    ];
+    const PHRASES: [&str; 6] = [
+        "listening on",
+        "serving http",
+        "accepting connections",
+        "development server running",
+        "server running at",
+        "uvicorn running on",
+    ];
+    URLS.iter().any(|u| t.contains(u)) || PHRASES.iter().any(|p| t.contains(p))
 }
 
 /// Does this shell command invoke `sudo` (as a command word, not a substring
@@ -2671,6 +2742,11 @@ fn run_bash(
     // the seatbelt write-jail anyway).
     stdin: Option<String>,
     sandboxed: bool,
+    // Some(grace): after this long, a still-running command whose output shows
+    // a dev-server signature is MOVED to the background registry instead of
+    // blocking to the timeout and then being killed. None disables conversion
+    // (validate_change, sudo runs).
+    bg_convert: Option<Duration>,
 ) -> Result<BashResult, String> {
     let mut cmd = build_command(root, command, sandboxed);
     cmd.current_dir(root)
@@ -2697,14 +2773,50 @@ fn run_bash(
             // drop `sink` → EOF, so `sudo -S` stops waiting for more input.
         }
     }
-    let out_h = read_capped(child.stdout.take().unwrap());
-    let err_h = read_capped(child.stderr.take().unwrap());
+    let out_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let err_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let out_trunc = Arc::new(AtomicBool::new(false));
+    let err_trunc = Arc::new(AtomicBool::new(false));
+    let out_h = shared_stream(child.stdout.take().unwrap(), out_buf.clone(), out_trunc.clone());
+    let err_h = shared_stream(child.stderr.take().unwrap(), err_buf.clone(), err_trunc.clone());
 
     let started = Instant::now();
+    let mut tick: u32 = 0;
+    let mut convert = bg_convert;
     let (code, timed_out) = loop {
         match child.try_wait() {
             Ok(Some(status)) => break (status.code().unwrap_or(-1), false),
             Ok(None) => {
+                // Dev-server check: ~1 Hz once the grace period has passed. A
+                // running command that already printed a server banner is not
+                // going to exit — waiting longer only stalls the agent, and
+                // the old timeout path would then KILL the very server the
+                // model was asked to start.
+                if let Some(grace) = convert {
+                    if started.elapsed() >= grace
+                        && tick % 25 == 0
+                        && (server_signature(&shared_tail(&out_buf))
+                            || server_signature(&shared_tail(&err_buf)))
+                    {
+                        match convert_running_to_bg(child, command, started, &out_buf, &err_buf) {
+                            Ok(id) => {
+                                return Ok(BashResult {
+                                    stdout: shared_cap_decode(&out_buf, &out_trunc),
+                                    stderr: shared_cap_decode(&err_buf, &err_trunc),
+                                    code: 0,
+                                    timed_out: false,
+                                    bg_id: Some(id),
+                                });
+                            }
+                            Err(back) => {
+                                // Registry full — child handed back; fall back
+                                // to plain timeout semantics for this run.
+                                child = back;
+                                convert = None;
+                            }
+                        }
+                    }
+                }
                 if started.elapsed() >= timeout {
                     // Kill the GROUP (negative pid), not just the shell.
                     kill_tree(child.id());
@@ -2712,14 +2824,22 @@ fn run_bash(
                     let _ = child.wait();
                     break (-1, true);
                 }
+                tick = tick.wrapping_add(1);
                 std::thread::sleep(Duration::from_millis(40));
             }
             Err(e) => return Err(trf!("等待命令失败: {e}", "wait failed: {e}")),
         }
     };
-    let stdout = cap_utf8(out_h.join().unwrap_or_default());
-    let stderr = cap_utf8(err_h.join().unwrap_or_default());
-    Ok(BashResult { stdout, stderr, code, timed_out })
+    // Join the readers so the final chunks are in before decoding.
+    let _ = out_h.join();
+    let _ = err_h.join();
+    Ok(BashResult {
+        stdout: shared_cap_decode(&out_buf, &out_trunc),
+        stderr: shared_cap_decode(&err_buf, &err_trunc),
+        code,
+        timed_out,
+        bg_id: None,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -2791,7 +2911,10 @@ pub async fn agent_bash(
         (command, None, true)
     };
     let piped_password = stdin.is_some();
-    let mut res = tokio::task::spawn_blocking(move || run_bash(&root, &command, timeout, stdin, sandboxed))
+    let convert = if piped_password { None } else { Some(Duration::from_secs(10)) };
+    let mut res = tokio::task::spawn_blocking(move || {
+        run_bash(&root, &command, timeout, stdin, sandboxed, convert)
+    })
         .await
         .map_err(|e| trf!("命令任务异常: {e}", "command task panicked: {e}"))??;
     // sudo's retry loop hits end-of-input after a rejected password, so its
@@ -2813,14 +2936,33 @@ pub async fn agent_bash(
 struct BgJob {
     command: String,
     started: Instant,
-    /// Live, capped, merged stdout+stderr.
+    /// Live, capped output. bash_bg-born jobs merge stdout+stderr here; jobs
+    /// converted from a foreground bash carry stdout here and stderr in
+    /// `stderr_extra` (their reader threads were already attached per-pipe).
     output: Arc<Mutex<Vec<u8>>>,
+    /// Converted jobs only: the live stderr buffer.
+    stderr_extra: Option<Arc<Mutex<Vec<u8>>>>,
     /// Exit code once the process ends (`None` while running).
     code: Option<i32>,
     /// The finished result was already handed to the agent loop.
     reported: bool,
     /// For `bg_kill`: the child's pid (the sandbox wrapper's process group).
     pid: u32,
+}
+
+impl BgJob {
+    /// Model-facing tail of the job's output (both channels for converted jobs).
+    fn tail(&self) -> String {
+        let mut t = bg_tail(&self.output);
+        if let Some(err) = &self.stderr_extra {
+            let e = bg_tail(err);
+            if !e.trim().is_empty() {
+                t.push_str("\n[stderr]\n");
+                t.push_str(&e);
+            }
+        }
+        t
+    }
 }
 
 static BG_JOBS: Mutex<Option<HashMap<u64, BgJob>>> = Mutex::new(None);
@@ -2834,27 +2976,10 @@ fn bg_tail(buf: &Arc<Mutex<Vec<u8>>>) -> String {
     String::from_utf8_lossy(&b[start..]).into_owned()
 }
 
-fn bg_append(buf: &Arc<Mutex<Vec<u8>>>, chunk: &[u8]) {
-    let mut b = buf.lock().unwrap();
-    b.extend_from_slice(chunk);
-    // Keep memory bounded: retain only the most recent window.
-    let cap = MAX_OUTPUT_BYTES;
-    if b.len() > cap {
-        let cut = b.len() - cap;
-        b.drain(..cut);
-    }
-}
-
-fn bg_stream(mut r: impl Read + Send + 'static, buf: Arc<Mutex<Vec<u8>>>) {
-    std::thread::spawn(move || {
-        let mut chunk = [0u8; 4096];
-        while let Ok(n) = r.read(&mut chunk) {
-            if n == 0 {
-                break;
-            }
-            bg_append(&buf, &chunk[..n]);
-        }
-    });
+fn bg_stream(r: impl Read + Send + 'static, buf: Arc<Mutex<Vec<u8>>>) {
+    // Same streaming/cap mechanics as foreground bash; bg jobs don't need the
+    // truncation flag (their tail view never claims completeness).
+    let _ = shared_stream(r, buf, Arc::new(AtomicBool::new(false)));
 }
 
 #[derive(Serialize, Clone)]
@@ -2912,11 +3037,25 @@ pub fn agent_bash_bg(command: String) -> Result<u64, String> {
     let id = BG_NEXT_ID.fetch_add(1, Ordering::Relaxed);
     jobs.insert(
         id,
-        BgJob { command, started: Instant::now(), output, code: None, reported: false, pid },
+        BgJob {
+            command,
+            started: Instant::now(),
+            output,
+            stderr_extra: None,
+            code: None,
+            reported: false,
+            pid,
+        },
     );
     drop(reg);
 
-    // Monitor thread: record the exit code when the process ends.
+    spawn_bg_monitor(id, child);
+    Ok(id)
+}
+
+/// Monitor thread shared by bash_bg-born and converted jobs: record the exit
+/// code in the registry when the process ends (agent_bg_reap reports it).
+fn spawn_bg_monitor(id: u64, mut child: std::process::Child) {
     std::thread::spawn(move || {
         let status = child.wait();
         let code = status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
@@ -2926,6 +3065,39 @@ pub fn agent_bash_bg(command: String) -> Result<u64, String> {
             }
         }
     });
+}
+
+/// Move a still-running foreground bash child into the background registry
+/// (dev-server signature seen). Hands the child back when the registry is
+/// full so the caller can keep waiting with plain timeout semantics.
+fn convert_running_to_bg(
+    child: std::process::Child,
+    command: &str,
+    started: Instant,
+    out_buf: &Arc<Mutex<Vec<u8>>>,
+    err_buf: &Arc<Mutex<Vec<u8>>>,
+) -> Result<u64, std::process::Child> {
+    let mut reg = BG_JOBS.lock().unwrap();
+    let jobs = reg.get_or_insert_with(HashMap::new);
+    if jobs.values().filter(|j| j.code.is_none()).count() >= BG_MAX_JOBS {
+        return Err(child);
+    }
+    let pid = child.id();
+    let id = BG_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    jobs.insert(
+        id,
+        BgJob {
+            command: command.to_string(),
+            started,
+            output: out_buf.clone(),
+            stderr_extra: Some(err_buf.clone()),
+            code: None,
+            reported: false,
+            pid,
+        },
+    );
+    drop(reg);
+    spawn_bg_monitor(id, child);
     Ok(id)
 }
 
@@ -2943,7 +3115,7 @@ pub fn agent_bg_output(id: u64) -> Result<BgInfo, String> {
         running: job.code.is_none(),
         code: job.code,
         elapsed_secs: job.started.elapsed().as_secs(),
-        tail: bg_tail(&job.output),
+        tail: job.tail(),
     })
 }
 
@@ -3015,7 +3187,7 @@ pub fn agent_bg_reap() -> Vec<BgInfo> {
                     running: false,
                     code: job.code,
                     elapsed_secs: job.started.elapsed().as_secs(),
-                    tail: bg_tail(&job.output),
+                    tail: job.tail(),
                 });
             }
         }
@@ -3050,6 +3222,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn bash_timeout_kills_grandchildren_too() {
+        let _g = serial();
         let dir = std::env::temp_dir().join(format!("chaty-killtree-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         set_ws(&dir);
@@ -3058,7 +3231,7 @@ mod tests {
         // Grandchild: a detached shell that keeps touching a file. If it
         // survives the timeout it goes on updating the marker.
         let cmd = format!("sh -c 'while true; do touch {m}; sleep 0.2; done' & sleep 30");
-        let res = run_bash(&dir, &cmd, Duration::from_secs(2), None, false).expect("run");
+        let res = run_bash(&dir, &cmd, Duration::from_secs(2), None, false, None).expect("run");
         assert!(res.timed_out, "command should have timed out");
 
         std::fs::remove_file(&marker).ok();
@@ -3072,6 +3245,108 @@ mod tests {
 
     fn set_ws(dir: &Path) {
         *WORKSPACE.lock().unwrap() = Some(dir.canonicalize().unwrap());
+    }
+
+    /// A foreground command that prints a dev-server banner and keeps running
+    /// must be MOVED to the background registry (not killed, not waited out):
+    /// the caller gets output-so-far + a job id, the process stays alive and
+    /// reachable via bg_output/bg_kill.
+    #[cfg(unix)]
+    #[test]
+    fn foreground_server_autoconverts_to_bg() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-autobg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let cmd = "echo 'Dev server ready — Local: http://localhost:9317/'; sleep 60";
+        let t0 = Instant::now();
+        let res = run_bash(
+            &dir,
+            cmd,
+            Duration::from_secs(30),
+            None,
+            false,
+            Some(Duration::from_secs(1)),
+        )
+        .expect("run");
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "conversion should return well before the timeout"
+        );
+        assert!(!res.timed_out);
+        let id = res.bg_id.expect("server run should convert to a bg job");
+        assert!(res.stdout.contains("http://localhost:9317"), "output-so-far is returned");
+
+        // The job is alive in the registry, with the SAME live output buffer.
+        let info = agent_bg_output(id).expect("job exists");
+        assert!(info.running, "server must still be running after conversion");
+        assert!(info.tail.contains("http://localhost:9317"));
+
+        // And bg_kill takes down the process tree, as for any bg job.
+        agent_bg_kill(id).expect("kill");
+        std::thread::sleep(Duration::from_millis(300));
+        let info = agent_bg_output(id).expect("job still listed");
+        assert!(!info.running, "killed job must not be running");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Commands WITHOUT a server banner keep exact old semantics: normal runs
+    /// return normally, hangs still hit the timeout kill.
+    #[cfg(unix)]
+    #[test]
+    fn non_server_commands_keep_foreground_semantics() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-nofg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        // Normal command: completes, no conversion.
+        let res = run_bash(
+            &dir,
+            "sleep 2; echo done",
+            Duration::from_secs(30),
+            None,
+            false,
+            Some(Duration::from_secs(1)),
+        )
+        .expect("run");
+        assert_eq!(res.bg_id, None);
+        assert!(res.stdout.contains("done"));
+        assert_eq!(res.code, 0);
+        // Hang without a banner: timeout kill, no conversion.
+        let res = run_bash(
+            &dir,
+            "sleep 30",
+            Duration::from_secs(2),
+            None,
+            false,
+            Some(Duration::from_secs(1)),
+        )
+        .expect("run");
+        assert!(res.timed_out);
+        assert_eq!(res.bg_id, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Overflowing output keeps the TAIL (where the error is) and says so.
+    #[cfg(unix)]
+    #[test]
+    fn bash_output_overflow_keeps_tail() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-tailcap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let cmd = "i=0; while [ $i -lt 4000 ]; do echo \"padding_line_$i xxxxxxxxxxxxxxxxxxxx\"; i=$((i+1)); done; echo THE_REAL_ERROR_AT_THE_END";
+        let res = run_bash(&dir, cmd, Duration::from_secs(30), None, false, None).expect("run");
+        assert!(
+            res.stdout.contains("THE_REAL_ERROR_AT_THE_END"),
+            "tail must survive the cap"
+        );
+        assert!(
+            res.stdout.contains("输出已截断") || res.stdout.contains("output truncated"),
+            "truncation must be labeled"
+        );
+        assert!(!res.stdout.contains("padding_line_0 "), "head is what gets dropped");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3990,7 +4265,7 @@ mod tests {
         let cmd = ensure_sudo_stdin("sudo -k whoami");
         assert!(cmd.starts_with("sudo -S "), "rewrite: {cmd}");
         let out =
-            run_bash(&tmp, &cmd, Duration::from_secs(10), Some("definitely-wrong\n".into()), false)
+            run_bash(&tmp, &cmd, Duration::from_secs(10), Some("definitely-wrong\n".into()), false, None)
                 .unwrap();
         let all = format!("{}\n{}", out.stdout, out.stderr);
         assert!(
@@ -4015,12 +4290,12 @@ mod tests {
         let (echo1, echo2) = ("findstr /r /c:.", "findstr /r /c:.");
         #[cfg(not(windows))]
         let (echo1, echo2) = ("cat", "cat -");
-        let out = run_bash(&tmp, echo1, Duration::from_secs(5), Some("s3cret\n".into()), true).unwrap();
+        let out = run_bash(&tmp, echo1, Duration::from_secs(5), Some("s3cret\n".into()), true, None).unwrap();
         assert_eq!(out.stdout.trim(), "s3cret", "stdin must reach the child process");
 
         // Proof the password is NOT in the command string / argv: a sandboxed
         // run of a sudo-shaped echo would only echo what's in argv.
-        let echoed = run_bash(&tmp, echo2, Duration::from_secs(5), Some("hunter2\n".into()), true).unwrap();
+        let echoed = run_bash(&tmp, echo2, Duration::from_secs(5), Some("hunter2\n".into()), true, None).unwrap();
         assert_eq!(echoed.stdout.trim(), "hunter2");
 
         std::fs::remove_dir_all(&tmp).ok();
