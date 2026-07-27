@@ -66,25 +66,25 @@ const COMPAT_SHIM = `<script>(function(){
  */
 const CONSOLE_SHIM = `<script>(function(){
   var count = 0;
-  function send(level, args){
+  function send(level, args, fault){
     if (count >= 300) return; count++;
     var text = '';
     try { text = Array.prototype.map.call(args, function(a){
       if (typeof a === 'string') return a;
       try { return JSON.stringify(a); } catch(_) { return String(a); }
     }).join(' '); } catch(_) { text = '[unserializable]'; }
-    try { parent.postMessage({ __chatyCvConsole: { level: level, text: String(text).slice(0, level === 'error' ? 2000 : 600), nonce: window.__CV_NONCE || '' } }, '*'); } catch(_){}
+    try { parent.postMessage({ __chatyCvConsole: { level: level, text: String(text).slice(0, level === 'error' ? 2000 : 600), nonce: window.__CV_NONCE || '', fault: !!fault } }, '*'); } catch(_){}
   }
   ['log','info','warn','error','debug'].forEach(function(l){
     var orig = console[l] && console[l].bind(console);
     console[l] = function(){ send(l === 'info' || l === 'debug' ? 'log' : l, arguments); if (orig) orig.apply(null, arguments); };
   });
   window.addEventListener('error', function(e){
-    if (e && e.target && (e.target.src || e.target.href)) send('error', ['Failed to load resource: ' + (e.target.src || e.target.href)]);
-    else if (e && e.message) send('error', [e.message + ' (' + (e.filename||'') + ':' + (e.lineno||0) + ')' + (e.error && e.error.stack ? '\\n' + e.error.stack : '')]);
+    if (e && e.target && (e.target.src || e.target.href)) send('error', ['Failed to load resource: ' + (e.target.src || e.target.href)], true);
+    else if (e && e.message) send('error', [e.message + ' (' + (e.filename||'') + ':' + (e.lineno||0) + ')' + (e.error && e.error.stack ? '\\n' + e.error.stack : '')], true);
   }, true);
   window.addEventListener('unhandledrejection', function(e){
-    var r = e && e.reason; send('error', ['Unhandled rejection: ' + ((r && r.message) || String(r))]);
+    var r = e && e.reason; send('error', ['Unhandled rejection: ' + ((r && r.message) || String(r))], true);
   });
 })();</script>`;
 
@@ -250,7 +250,7 @@ export function CanvasPanel({
   const [error, setError] = useState<CanvasError | null>(null);
   const [muted, setMuted] = useState(false);
   const [view, setView] = useState<"code" | "diff" | "console">("code");
-  const [consoleLog, setConsoleLog] = useState<{ level: string; text: string; nonce?: string }[]>([]);
+  const [consoleLog, setConsoleLog] = useState<{ level: string; text: string; nonce?: string; fault?: boolean }[]>([]);
   // DEV-only pipeline diagnostics: how many console messages ARRIVED vs were
   // kept, and why the last one was dropped — reads the fault location off the
   // screen instead of guessing (the empty-console hunt).
@@ -360,7 +360,7 @@ export function CanvasPanel({
         __chatyCvHover?: string;
         __chatyCvPick?: string;
       };
-      const con = (data as { __chatyCvConsole?: { level: string; text: string; nonce?: string } })
+      const con = (data as { __chatyCvConsole?: { level: string; text: string; nonce?: string; fault?: boolean } })
         ?.__chatyCvConsole;
       if (con) {
         if (import.meta.env.DEV) setConDiag((d) => ({ ...d, raw: d.raw + 1 }));
@@ -732,7 +732,9 @@ export function CanvasPanel({
                 >
                   {t("canvasConsole")}
                   {(() => {
-                    const errs = consoleLog.filter((c) => c.level === "error").length + precheckErrs.length;
+                    // A console.error() PRINT is an error-level log, not a fault — pages that
+                    // work fine must not light the red badge (owner call).
+                    const errs = consoleLog.filter((c) => c.fault).length + precheckErrs.length;
                     const warns = consoleLog.filter((c) => c.level === "warn").length;
                     return errs + warns > 0 ? (
                       <span className={`cvp-conbadge ${errs ? "err" : "warn"}`}>
@@ -920,7 +922,7 @@ export function CanvasPanel({
                   onFix(
                     buildFixPayload(
                       `${error.message}${error.detail ? ` (${error.detail})` : ""}`,
-                      [...precheckErrs, ...consoleLog.filter((c) => c.level === "error").map((c) => c.text)],
+                      [...precheckErrs, ...consoleLog.filter((c) => c.fault).map((c) => c.text)],
                       lang as "zh" | "en",
                     ),
                   );
