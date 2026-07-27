@@ -2700,6 +2700,21 @@ fn shared_tail(buf: &Arc<Mutex<Vec<u8>>>) -> String {
     String::from_utf8_lossy(&b[start..]).into_owned()
 }
 
+/// Any live members left in the command's process group? A shell that exits
+/// after `server &` leaves the server running in the group — untracked, it
+/// becomes a port-squatting zombie that survives the session (live-app bug).
+fn group_alive(pgid: u32) -> bool {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(pgid as i32), 0) == 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pgid;
+        false
+    }
+}
+
 /// Ground truth for "this command is a server": its process group holds a
 /// LISTENING TCP socket. Output banners are only the fast path — the live-app
 /// walkthrough caught `python3 -m http.server` block-buffering its banner
@@ -2812,6 +2827,7 @@ fn run_bash(
     let err_h = shared_stream(child.stderr.take().unwrap(), err_buf.clone(), err_trunc.clone());
 
     let started = Instant::now();
+    let pid_for_group = child.id();
     let mut tick: u32 = 0;
     let mut convert = bg_convert;
     let (code, timed_out) = loop {
@@ -2865,15 +2881,60 @@ fn run_bash(
             Err(e) => return Err(trf!("等待命令失败: {e}", "wait failed: {e}")),
         }
     };
-    // Join the readers so the final chunks are in before decoding.
-    let _ = out_h.join();
-    let _ = err_h.join();
+    // Orphan adoption: the shell exited, but `cmd &` children it detached
+    // live on in the process group — with OUR pipe fds, so the shared buffers
+    // keep streaming. Untracked they become port-squatting zombies that
+    // outlive the session (live-app bug: stale servers kept old workspaces'
+    // content on 8080/8081/8098). Register the survivors as a background job
+    // so workspace switch / app exit reaps them like everything else.
+    // NOTE: don't join the readers first — the orphans still hold the write
+    // ends, so the reader threads only finish when the orphans die.
+    let mut bg_id = None;
+    if !timed_out && convert.is_some() && group_alive(pid_for_group) {
+        // Reuse the conversion plumbing: a synthetic "job" holding the same
+        // live buffers, killable by group id.
+        let mut reg = BG_JOBS.lock().unwrap();
+        let jobs = reg.get_or_insert_with(HashMap::new);
+        if jobs.values().filter(|j| j.code.is_none()).count() < BG_MAX_JOBS {
+            let id = BG_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            jobs.insert(
+                id,
+                BgJob {
+                    command: format!("[detached] {command}"),
+                    started,
+                    output: out_buf.clone(),
+                    stderr_extra: Some(err_buf.clone()),
+                    code: None,
+                    reported: false,
+                    pid: pid_for_group,
+                },
+            );
+            drop(reg);
+            // Monitor: poll the group until it empties, then mark finished.
+            std::thread::spawn(move || {
+                while group_alive(pid_for_group) {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
+                    if let Some(job) = jobs.get_mut(&id) {
+                        job.code = Some(0);
+                    }
+                }
+            });
+            bg_id = Some(id);
+        }
+    }
+    if bg_id.is_none() {
+        // No survivors (the common case): safe to wait for the readers.
+        let _ = out_h.join();
+        let _ = err_h.join();
+    }
     Ok(BashResult {
         stdout: shared_cap_decode(&out_buf, &out_trunc),
         stderr: shared_cap_decode(&err_buf, &err_trunc),
         code,
         timed_out,
-        bg_id: None,
+        bg_id,
     })
 }
 
@@ -3322,6 +3383,46 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         let info = agent_bg_output(id).expect("job still listed");
         assert!(!info.running, "killed job must not be running");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The zombie-server bug: `server &` detaches from the exiting shell and
+    /// used to survive the session untracked, squatting its port. Survivors
+    /// must be ADOPTED as a background job — visible, killable, reaped on
+    /// workspace switch like everything else.
+    #[cfg(unix)]
+    #[test]
+    fn detached_server_is_adopted_not_orphaned() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-adopt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let t0 = Instant::now();
+        let res = run_bash(
+            &dir,
+            "python3 -m http.server 29613 >/dev/null 2>&1 & echo started",
+            Duration::from_secs(30),
+            None,
+            false,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("run");
+        assert!(t0.elapsed() < Duration::from_secs(8), "shell exits immediately");
+        assert_eq!(res.code, 0);
+        assert!(res.stdout.contains("started"));
+        let id = res.bg_id.expect("detached survivor must be adopted as a bg job");
+        let info = agent_bg_output(id).expect("job exists");
+        assert!(info.running, "adopted server should be alive");
+        assert!(info.command.starts_with("[detached]"), "{}", info.command);
+        // The reaper path frees the port — no zombie survives the session.
+        agent_bg_kill(id).expect("kill");
+        std::thread::sleep(Duration::from_millis(400));
+        let still = std::process::Command::new("lsof")
+            .args(["-t", "-iTCP:29613", "-sTCP:LISTEN"])
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false);
+        assert!(!still, "port 29613 must be free after bg_kill");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -1708,6 +1708,41 @@ mod tests {
         }
     }
 
+    // Same contract over HTTP (the real dev-server flow, python http.server
+    // with zero cache headers): edit the served file on disk → refresh must
+    // show the new content. Proves ignoreCache reaches CDP and the reload is
+    // a true hard refresh, not a cache read.
+    // Run: cargo test -p chaty refresh_hard -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn refresh_hard_reloads_over_http() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("chaty-httprefresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<title>h</title><body><h1>HTTP-VER-ONE-55</h1></body>").unwrap();
+        let mut srv = std::process::Command::new("python3")
+            .args(["-m", "http.server", "29513", "--directory"])
+            .arg(&dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn http.server");
+        std::thread::sleep(Duration::from_millis(1200));
+        let nav = navigate("http://127.0.0.1:29513/").expect("navigate");
+        assert!(nav.contains("HTTP-VER-ONE-55"), "{nav}");
+        std::fs::write(dir.join("index.html"), "<title>h</title><body><h1>HTTP-VER-TWO-66</h1></body>").unwrap();
+        let re = refresh().expect("refresh");
+        let _ = srv.kill();
+        let _ = srv.wait();
+        assert!(re.contains("HTTP-VER-TWO-66"), "hard refresh must fetch the new file: {re}");
+        assert!(!re.contains("HTTP-VER-ONE-55"), "stale content must be gone: {re}");
+        shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // The exact walkthrough failure: edit a local file, "refresh" by
     // re-screenshotting → stale render. browser_refresh must show the NEW
     // content. Real Chrome; ignored by default.
