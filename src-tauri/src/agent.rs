@@ -2700,9 +2700,31 @@ fn shared_tail(buf: &Arc<Mutex<Vec<u8>>>) -> String {
     String::from_utf8_lossy(&b[start..]).into_owned()
 }
 
+/// Ground truth for "this command is a server": its process group holds a
+/// LISTENING TCP socket. Output banners are only the fast path — the live-app
+/// walkthrough caught `python3 -m http.server` block-buffering its banner
+/// under a pipe, so the text never arrives and a banner-only detector waits
+/// out the full timeout and kills the server.
+fn listening_socket(pgid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("lsof")
+            .args(["-t", "-a", "-g", &pgid.to_string(), "-iTCP", "-sTCP:LISTEN"])
+            .stdin(Stdio::null())
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pgid;
+        false
+    }
+}
+
 /// Dev-server heartbeat in command output: a local origin URL or an explicit
-/// "listening" line. High-precision on purpose — a false positive would steal
-/// a foreground command into the background.
+/// "listening" line. The FAST path only (vite/next print instantly);
+/// `listening_socket` is the authoritative check for banner-silent servers.
 fn server_signature(tail: &str) -> bool {
     let t = tail.to_ascii_lowercase();
     const URLS: [&str; 5] = [
@@ -2805,7 +2827,11 @@ fn run_bash(
                     if started.elapsed() >= grace
                         && tick % 25 == 0
                         && (server_signature(&shared_tail(&out_buf))
-                            || server_signature(&shared_tail(&err_buf)))
+                            || server_signature(&shared_tail(&err_buf))
+                            // Every ~3s ask the OS directly: banner-silent
+                            // servers (buffered python http.server, custom
+                            // node listeners) never print anything we match.
+                            || (tick % 75 == 0 && listening_socket(child.id())))
                     {
                         match convert_running_to_bg(child, command, started, &out_buf, &err_buf) {
                             Ok(id) => {
@@ -3296,6 +3322,37 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         let info = agent_bg_output(id).expect("job still listed");
         assert!(!info.running, "killed job must not be running");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The live-app catch: `python3 -m http.server` block-buffers its banner
+    /// under a pipe — NOTHING arrives in the output buffers — yet it must
+    /// still convert, via the listening-socket probe.
+    #[cfg(unix)]
+    #[test]
+    fn banner_silent_server_converts_via_socket_probe() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-silentbg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let t0 = Instant::now();
+        let res = run_bash(
+            &dir,
+            "python3 -m http.server 29411",
+            Duration::from_secs(60),
+            None,
+            false,
+            Some(Duration::from_secs(1)),
+        )
+        .expect("run");
+        assert!(
+            t0.elapsed() < Duration::from_secs(20),
+            "socket probe should convert well before the timeout"
+        );
+        let id = res.bg_id.expect("buffered server must still convert to bg");
+        let info = agent_bg_output(id).expect("job exists");
+        assert!(info.running, "server must be alive after conversion");
+        agent_bg_kill(id).expect("kill");
         std::fs::remove_dir_all(&dir).ok();
     }
 

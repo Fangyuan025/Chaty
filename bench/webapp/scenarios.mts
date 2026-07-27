@@ -31,7 +31,7 @@ export interface WebappScenario {
 }
 
 const pkg = () =>
-  JSON.stringify({ name: "bench-app", scripts: { dev: "python3 -u -m http.server {PORT}" } }, null, 2);
+  JSON.stringify({ name: "bench-app", scripts: { dev: "python3 -m http.server {PORT}" } }, null, 2);
 
 export const SCENARIOS: WebappScenario[] = [
   {
