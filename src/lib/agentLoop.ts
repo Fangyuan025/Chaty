@@ -402,7 +402,36 @@ function parseNeedDirGrant(e: unknown): string | null {
 
 /** Pull the first tool call out of model output. Tolerant of the closing tag
  *  being cut by the stop sequence, and of ```json fences. */
-function parseToolCall(text: string): ToolCall | null {
+/** Close a JSON object the model left unterminated — ONLY when every string
+ *  is terminated and just closing braces/brackets are missing (the 35B ends
+ *  its turn right after the content string, skipping the outer brace and
+ *  `</tool_call>`). A payload cut off MID-STRING is never repaired: silently
+ *  completing it would write a corrupted file. */
+export function repairUnclosedJson(body: string): string | null {
+  const stack: string[] = [];
+  let inStr = false;
+  let esc = false;
+  for (const ch of body) {
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") stack.push("}");
+    else if (ch === "[") stack.push("]");
+    else if (ch === "}" || ch === "]") {
+      if (stack.pop() !== ch) return null; // mismatched — don't touch it
+    }
+  }
+  if (inStr || stack.length === 0) return null;
+  return body + stack.reverse().join("");
+}
+
+/** Exported for the write-stall regression tests: the parser must survive the
+ *  tool-call shapes real local models actually emit. */
+export function parseToolCall(text: string): ToolCall | null {
   const open = text.indexOf("<tool_call>");
   if (open === -1) return null;
   let body = text.slice(open + "<tool_call>".length);
@@ -411,21 +440,43 @@ function parseToolCall(text: string): ToolCall | null {
   body = body.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
   // Grab the outermost {...}
   const s = body.indexOf("{");
+  if (s === -1) return null;
   const e = body.lastIndexOf("}");
-  if (s === -1 || e === -1 || e < s) return null;
-  try {
-    const obj = JSON.parse(body.slice(s, e + 1)) as Record<string, unknown>;
-    if (obj && typeof obj.name === "string") {
-      // Accept "arguments" or "parameters"; else treat the rest as the args.
-      let args = obj.arguments ?? obj.parameters;
-      if (!args || typeof args !== "object") {
-        const { name: _n, ...rest } = obj;
+  let obj: Record<string, unknown> | null = null;
+  if (e > s) {
+    try {
+      obj = JSON.parse(body.slice(s, e + 1)) as Record<string, unknown>;
+    } catch {
+      /* fall through to the unterminated-object repair */
+    }
+  }
+  if (!obj) {
+    // The 35B write-stall autopsy: a COMPLETE content string but the model
+    // ended its turn without the outer brace (or with it swallowed by a
+    // missing </tool_call>). Repair pure missing-closers; never mid-string.
+    const repaired = repairUnclosedJson(body.slice(s));
+    if (repaired) {
+      try {
+        obj = JSON.parse(repaired) as Record<string, unknown>;
+      } catch {
+        /* malformed → handled by the caller (retry) */
+      }
+    }
+  }
+  if (obj && typeof obj.name === "string") {
+    // Accept "arguments" or "parameters"; else treat the rest as the args.
+    // An EMPTY arguments object must not shadow flat fields: the 35B emits
+    // {"name":"write_file","path":…,"content":…,"arguments":{}} — taking the
+    // {} at face value turned every such write into a missing-path retry
+    // loop (the reported html write stall).
+    let args = obj.arguments ?? obj.parameters;
+    if (!args || typeof args !== "object" || Object.keys(args).length === 0) {
+      const { name: _n, arguments: _a, parameters: _p, ...rest } = obj;
+      if (Object.keys(rest).length > 0 || !args || typeof args !== "object") {
         args = rest;
       }
-      return { name: obj.name as AgentToolName, args: args as Record<string, unknown> };
     }
-  } catch {
-    /* malformed → handled by the caller (retry) */
+    return { name: obj.name as AgentToolName, args: args as Record<string, unknown> };
   }
   return null;
 }
