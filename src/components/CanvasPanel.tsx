@@ -239,6 +239,11 @@ export function CanvasPanel({
   const [selected, setSelected] = useState<number[]>([]);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  // Caret's current line in the manual editor — drives the backdrop's
+  // active-line stripe (the textarea itself is transparent).
+  const [editLine, setEditLine] = useState(0);
+  const caretLine = (el: HTMLTextAreaElement) =>
+    el.value.slice(0, el.selectionStart ?? 0).split("\n").length - 1;
   const editHlRef = useRef<HTMLPreElement>(null);
   const [inspect, setInspect] = useState(false);
   const [hotLine, setHotLine] = useState<number | null>(null);
@@ -705,14 +710,29 @@ export function CanvasPanel({
                     <div className="cvp-editstack">
                       <pre className="cvp-edit-hl hljs" ref={editHlRef} aria-hidden="true">
                         {highlightLines(draft).map((h, i) => (
-                          <div key={i} dangerouslySetInnerHTML={{ __html: h || "&nbsp;" }} />
+                          <div
+                            key={i}
+                            className={i === editLine ? "cvp-edit-line active" : "cvp-edit-line"}
+                            dangerouslySetInnerHTML={{ __html: h || "&nbsp;" }}
+                          />
                         ))}
                       </pre>
+                      {/* wrap="off": WKWebView soft-wraps textareas regardless
+                          of white-space:pre — one wrapped long line shifts
+                          every later line off its highlight (the reported
+                          selection drift). */}
                       <textarea
                         className="cvp-editor overlay"
                         value={draft}
+                        wrap="off"
                         spellCheck={false}
-                        onChange={(e) => setDraft(e.target.value)}
+                        onChange={(e) => {
+                          setDraft(e.target.value);
+                          setEditLine(caretLine(e.currentTarget));
+                        }}
+                        onSelect={(e) => setEditLine(caretLine(e.currentTarget))}
+                        onKeyUp={(e) => setEditLine(caretLine(e.currentTarget))}
+                        onClick={(e) => setEditLine(caretLine(e.currentTarget))}
                         onScroll={(e) => {
                           const el = editHlRef.current;
                           if (el) {
@@ -726,6 +746,7 @@ export function CanvasPanel({
                     <textarea
                       className="cvp-editor"
                       value={draft}
+                      wrap="off"
                       spellCheck={false}
                       onChange={(e) => setDraft(e.target.value)}
                     />

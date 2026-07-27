@@ -3007,7 +3007,12 @@ body.resizing-x {
   padding: 10px 12px;
   font-family: var(--font-mono);
   font-size: 12.5px;
-  line-height: 1.55;
+  /* INTEGER line height, shared with the backdrop: fractional heights
+     (1.55 × 12.5px = 19.375px) round differently between textarea line
+     boxes and backdrop divs, and the drift compounds per line — the
+     reported selection-off-by-a-line on long documents. 19px matches
+     .cvp-code's row height. */
+  line-height: 19px;
   color: var(--text);
   background: var(--panel);
   border: none;
@@ -3029,14 +3034,20 @@ body.resizing-x {
   padding: 10px 12px;
   font-family: var(--font-mono);
   font-size: 12.5px;
-  line-height: 1.55;
+  line-height: 19px;
   background: var(--panel);
   overflow: auto;
   pointer-events: none;
 }
 .cvp-edit-hl div {
   white-space: pre;
-  min-height: 1.55em;
+  min-height: 19px;
+  /* Full-width stripe even when longer lines scroll the pre sideways. */
+  width: fit-content;
+  min-width: 100%;
+}
+.cvp-edit-line.active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .cvp-editor.overlay {
   position: absolute;
