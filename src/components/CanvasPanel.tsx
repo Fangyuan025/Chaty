@@ -735,12 +735,9 @@ export function CanvasPanel({
                     // A console.error() PRINT is an error-level log, not a fault — pages that
                     // work fine must not light the red badge (owner call).
                     const errs = consoleLog.filter((c) => c.fault).length + precheckErrs.length;
-                    const warns = consoleLog.filter((c) => c.level === "warn").length;
-                    return errs + warns > 0 ? (
-                      <span className={`cvp-conbadge ${errs ? "err" : "warn"}`}>
-                        {errs || warns}
-                      </span>
-                    ) : null;
+                    // Warnings never badge either (owner call): the badge is a
+                    // "the page is broken" signal, nothing softer.
+                    return errs > 0 ? <span className="cvp-conbadge err">{errs}</span> : null;
                   })()}
                 </button>
               </div>
