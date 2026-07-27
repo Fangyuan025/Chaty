@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { jitHintFor, type HintKey } from "./jitHints";
+import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
 
 describe("jitHintFor", () => {
   test("first browser_* result gets the hint once per turn", () => {
@@ -70,5 +70,35 @@ describe("jitHintFor", () => {
     expect(h).toContain('search_code {"query"');
     expect(h).not.toMatch(/[一-鿿]/);
     expect(jitHintFor("understand_repo", "…", "en", shown)).toBe("");
+  });
+});
+
+describe("missingArgLadder", () => {
+  const at = (n: number, lang: "zh" | "en" = "zh") =>
+    missingArgLadder("search_code", "query", '{"query":"where login auth is handled"}', n, lang);
+
+  test("every rung adds NEW information — three distinct texts", () => {
+    const [a, b, c] = [at(1), at(2), at(3)];
+    expect(new Set([a, b, c]).size).toBe(3);
+    // 1: fill the argument, with the example
+    expect(a).toContain('{"query":"where login auth is handled"}');
+    // 2: break the tool fixation — concrete ALTERNATIVE actions
+    expect(b).toContain("list_dir");
+    expect(b).toContain("read_file");
+    expect(b).toContain("grep");
+    // 3: the tool is off the table
+    expect(c).toContain("停用");
+    expect(c).not.toContain("重发");
+  });
+
+  test("rung 4 keeps the disable framing", () => {
+    expect(at(4)).toContain("停用");
+    expect(at(4)).toContain("4");
+  });
+
+  test("single-language per lang", () => {
+    expect(at(2, "en")).not.toMatch(/[一-鿿]/);
+    expect(at(3, "en")).toContain("DISABLED");
+    expect(at(2, "zh")).not.toMatch(/Stop using/);
   });
 });

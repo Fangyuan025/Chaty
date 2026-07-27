@@ -37,6 +37,37 @@ const ANCHOR_READ_HINT: Record<"zh" | "en", string> = {
 
 const ANCHOR_LINE_RE = /^\d+:[a-z]{2,4}→/m;
 
+/** Escalating correction for a tool call with a missing required argument —
+ *  the quick15 sympy-12419 autopsy: repeating ONE identical correction let a
+ *  no-think model re-send `search_code {}` six times straight into the pause.
+ *  Each attempt must add NEW information: 1 = fill the argument (an example);
+ *  2 = break the tool fixation (name concrete ALTERNATIVE actions);
+ *  3 = the tool is disabled for the rest of the turn (the loop enforces it).
+ *  Empty-args calls are never executed — recording one plants the exemplar
+ *  no-think models then imitate (the original A/B-1 spiral). */
+export function missingArgLadder(
+  name: string,
+  arg: string,
+  example: string,
+  attempt: number,
+  lang: "zh" | "en",
+): string {
+  const zh = lang === "zh";
+  if (attempt <= 1) {
+    return zh
+      ? `ERROR: 缺少 "${arg}" 参数——请带上它重发 ${name},例如 arguments: ${example}`
+      : `ERROR: missing "${arg}" — re-issue ${name} WITH it, e.g. arguments: ${example}`;
+  }
+  if (attempt === 2) {
+    return zh
+      ? `ERROR: 你已连续两次发出没有 "${arg}" 的 ${name}。先停下这个工具。如果还不知道 ${arg} 该填什么,就换一个具体动作推进:list_dir {"path":"."} 看目录结构,或 read_file 打开一个具体文件,或 grep {"pattern":"关键词"}。想再用 ${name},必须带上 ${arg},例如 ${example}。`
+      : `ERROR: that is the second ${name} in a row without "${arg}". Stop using this tool for a moment. If you don't know what ${arg} should be, make a DIFFERENT concrete move instead: list_dir {"path":"."} to see the layout, read_file on a specific file, or grep {"pattern":"a keyword"}. To use ${name} again, you MUST include ${arg}, e.g. ${example}.`;
+  }
+  return zh
+    ? `${name} 本回合已停用(连续 ${attempt} 次空参数)。不要再调它。用 list_dir / read_file / grep 等带具体参数的工具继续完成任务。`
+    : `${name} is now DISABLED for this turn (${attempt} empty-argument calls in a row). Do not call it again. Continue the task with list_dir / read_file / grep and concrete arguments.`;
+}
+
 // A local dev server just came up (bash/bash_bg/bg_output printed a local
 // origin). This is the moment webapp discipline is decided — say it now, not
 // in the every-step system prompt.

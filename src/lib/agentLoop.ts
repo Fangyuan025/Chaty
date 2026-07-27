@@ -53,7 +53,7 @@ import {
   type ChatMessage,
 } from "./ipc";
 import { normalizeChannels } from "./voiceText";
-import { jitHintFor, type HintKey } from "./jitHints";
+import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
 import { wrapupNudge, planEcho, isWebSourceFile, devServerUrlFrom } from "./wrapupGate";
 import { diffLines } from "./diff";
 import { platform } from "@tauri-apps/plugin-os";
@@ -1248,7 +1248,12 @@ export async function runAgentTurn(
   let uiRepeatChangedPage = true;
   // Format slips (missing required arg) corrected without entering the
   // record; bounded so a stuck model still reaches the normal error path.
-  let argRetries = 0;
+  // Per-tool empty-required-args slips (the sympy-12419 ladder): each slip
+  // gets a DIFFERENT correction, none is ever executed (recording one plants
+  // the exemplar no-think models imitate), and a valid call clears its
+  // tool's counter. Slip 5 pauses — guarded calls never reach the repeat
+  // breaker, so the ladder carries its own backstop.
+  const argSlips = new Map<string, number>();
   // Pre-compaction memory flush: once per turn, just before the first
   // compaction, the files already edited get pinned into a plain user note —
   // compaction digests tool results, and without this the model loses track
@@ -1508,17 +1513,40 @@ export async function runAgentTurn(
       // ── Required-args guard ──
       // A call missing a required argument is a format slip, not an action:
       // executing it would record the model's own empty-arguments call, which
-      // no-think models then imitate into a spiral (A/B-1 autopsy). Keep the
-      // bad call OUT of the record, correct with a filled-in example, retry —
-      // temperature bump on the 2nd slip, normal error path after the 3rd.
+      // no-think models then imitate into a spiral (A/B-1 autopsy; seen again
+      // in the sympy-12419 guard autopsy, where one identical correction
+      // repeated 3× failed to break the attractor). Escalating ladder:
+      // example → tool-diversion → disable notice; hotter sampling from the
+      // 2nd slip; visible error step from the 3rd; pause at the 5th.
       const missing = (REQUIRED_ARGS[call.name] ?? []).filter((k) => !asStr(call.args?.[k]));
-      if (missing.length && argRetries < 3) {
-        argRetries++;
-        if (argRetries >= 2) hotNext = true;
+      if (missing.length) {
+        const n = (argSlips.get(call.name) ?? 0) + 1;
+        argSlips.set(call.name, n);
+        if (n >= 2) hotNext = true;
+        if (n >= 5) {
+          cb.onFinal(
+            lang === "zh"
+              ? `检测到模型连续 ${n} 次发出缺参数的 ${call.name} 调用,已暂停以免空转。可点「继续」重试,或把任务拆得更具体。`
+              : `The model issued ${n} ${call.name} calls in a row with missing arguments — paused to avoid spinning. Hit "Continue" to retry, or break the task into more concrete steps.`,
+            undefined,
+            "steps",
+          );
+          return;
+        }
+        const note = missingArgLadder(
+          call.name,
+          missing[0],
+          ARG_EXAMPLE[call.name] ?? `{"${missing[0]}":"…"}`,
+          n,
+          lang,
+        );
+        // From the 3rd slip the stuck state deserves a visible card.
+        if (n >= 3) cb.onStep({ id: uid(), call, status: "error", result: note });
         messages.push({ role: "assistant", content: proseOnly(raw) });
-        pushUser(missingArg(missing[0], ARG_EXAMPLE[call.name] ?? `{"${missing[0]}":"…"}`));
+        pushUser(note);
         continue;
       }
+      argSlips.delete(call.name);
 
       // Record the assistant turn (its reasoning + the tool call, tag restored).
       const withClose = raw.includes("</tool_call>") ? raw : `${raw}</tool_call>`;
