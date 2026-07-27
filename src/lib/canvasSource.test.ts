@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from "vitest";
-import { annotate, buildFixPayload, highlightLines } from "./canvasSource";
+import { annotate, buildFixPayload, highlightLines, precheckScripts } from "./canvasSource";
 
 describe("annotate", () => {
   test("tags real elements with data-cv and records their lines", () => {
@@ -95,11 +95,41 @@ describe("buildFixPayload", () => {
     const p = buildFixPayload("Error 0: same thing (f.js:0:1)", errs);
     expect(p.split("\n").length).toBeLessThanOrEqual(12);
     const long = Array.from({ length: 12 }, (_, i) => `E${i} ${"y".repeat(900)}`);
-    expect(buildFixPayload("banner " + "z".repeat(900), long).length).toBeLessThanOrEqual(6000);
+    expect(buildFixPayload("banner " + "z".repeat(900), long).length).toBeLessThanOrEqual(6400);
   });
 
   it("ignores blank lines and survives an empty console", () => {
     expect(buildFixPayload("", [])).toBe("");
     expect(buildFixPayload("  ", ["only console error (x.js:1:1)"])).toBe("only console error (x.js:1:1)");
+  });
+});
+
+describe("precheckScripts", () => {
+  it("recovers the real SyntaxError WebKit muzzles, with the block index", () => {
+    const html = '<script>let a = 1;</script><script>sayHello(</script><script src="x.js"></script>';
+    const errs = precheckScripts(html, "en");
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain("script block 2");
+    expect(errs[0]).toContain("SyntaxError");
+  });
+  it("clean pages and src-only scripts yield nothing", () => {
+    expect(precheckScripts('<script>console.log(1)</script>', "en")).toHaveLength(0);
+    expect(precheckScripts('<script src="a.js"></script>', "en")).toHaveLength(0);
+    expect(precheckScripts("<p>no scripts</p>", "en")).toHaveLength(0);
+  });
+});
+
+describe("buildFixPayload muzzle note", () => {
+  it("counts anonymized errors and says they are likely several bugs", () => {
+    const p = buildFixPayload(
+      "Script error. (:0)",
+      ["Script error. (:0)", "Script error. (:0)", "Failed to load resource: x.js"],
+      "zh",
+    );
+    expect(p).toContain("3 次");
+    expect(p).toContain("不要只修一处");
+  });
+  it("no note when nothing was muzzled", () => {
+    expect(buildFixPayload("TypeError: x", [], "zh")).toBe("TypeError: x");
   });
 });

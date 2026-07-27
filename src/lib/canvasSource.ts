@@ -239,7 +239,16 @@ export const INSPECT_SHIM = `<script>(function(){
  *  (same first-200-chars = same error re-thrown) and bounded. Numbered only
  *  when there are several, so the single-error payload stays byte-compatible
  *  with the old behavior. */
-export function buildFixPayload(banner: string, consoleErrors: string[]): string {
+export function buildFixPayload(
+  banner: string,
+  consoleErrors: string[],
+  lang: "zh" | "en" = "zh",
+): string {
+  // WebKit anonymizes sandboxed-frame errors to "Script error." — several
+  // DISTINCT bugs collapse into identical, information-free lines (and then
+  // into one after dedupe). Count them and say so, or the model fixes one
+  // thing and honestly believes it fixed everything.
+  const muzzled = [banner, ...consoleErrors].filter((t) => /^Script error\.?/.test(t.trim())).length;
   const seen = new Set<string>();
   const uniq: string[] = [];
   for (const t of [banner, ...consoleErrors]) {
@@ -251,6 +260,39 @@ export function buildFixPayload(banner: string, consoleErrors: string[]): string
     uniq.push(trimmed);
     if (uniq.length >= 12) break;
   }
-  if (uniq.length <= 1) return uniq[0] ?? "";
-  return uniq.map((t, i) => `${i + 1}. ${t}`).join("\n").slice(0, 6000);
+  const note =
+    muzzled > 0
+      ? lang === "zh"
+        ? `\n注意:其中 "Script error." 出现 ${muzzled} 次——这是浏览器把沙箱内的不同错误匿名化的结果,它们很可能是多个不同的运行时错误。请通读页面全部脚本逻辑逐一排查,不要只修一处。`
+        : `\nNote: "Script error." appeared ${muzzled} time(s) — the browser anonymizes distinct sandboxed errors into this one line, so they are likely SEVERAL different runtime bugs. Audit all script logic on the page; do not stop at one fix.`
+      : "";
+  if (uniq.length <= 1) return (uniq[0] ?? "") + note;
+  return (uniq.map((t, i) => `${i + 1}. ${t}`).join("\n") + note).slice(0, 6400);
+}
+
+/** Parent-side syntax gate for the preview's inline scripts. WebKit muzzles
+ *  every error inside a sandboxed null-origin srcdoc to "Script error." —
+ *  but the Canvas HOLDS the source, so syntax errors can be recovered here
+ *  in the parent context with real messages. new Function compiles without
+ *  executing. (Function-body context: a stray top-level `return` slips
+ *  through — acceptable for a diagnostic tier.) */
+export function precheckScripts(html: string, lang: "zh" | "en" = "zh"): string[] {
+  const out: string[] = [];
+  let i = 0;
+  for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+    i++;
+    const body = m[1];
+    if (!body.trim()) continue;
+    try {
+      new Function(body);
+    } catch (e) {
+      const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      out.push(
+        lang === "zh"
+          ? `语法预检(第 ${i} 个 script 块): ${msg}`
+          : `Syntax precheck (script block ${i}): ${msg}`,
+      );
+    }
+  }
+  return out;
 }

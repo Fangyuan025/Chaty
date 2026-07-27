@@ -5,7 +5,7 @@ import { useConfirm } from "./ConfirmModal";
 import { Icon } from "./Icon";
 import { withStorageShim } from "./Markdown";
 import { IconDownload, IconEdit } from "./icons";
-import { annotate, buildFixPayload, highlightLines, INSPECT_SHIM } from "../lib/canvasSource";
+import { annotate, buildFixPayload, highlightLines, INSPECT_SHIM, precheckScripts } from "../lib/canvasSource";
 import { diffLines } from "../lib/diff";
 import { buildScanView } from "../lib/canvasStream";
 
@@ -245,7 +245,7 @@ export function CanvasPanel({
   onOpenExternal: (html: string) => void;
   onClose: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [instruction, setInstruction] = useState("");
   const [error, setError] = useState<CanvasError | null>(null);
   const [muted, setMuted] = useState(false);
@@ -316,6 +316,12 @@ export function CanvasPanel({
     [annotated, frameNonce],
   );
   const codeLines = useMemo(() => (current ? highlightLines(current.html) : []), [current]);
+  // Parent-context syntax gate: recovers the REAL SyntaxError text WebKit
+  // muzzles inside the sandboxed frame ("Script error.").
+  const precheckErrs = useMemo(
+    () => (current ? precheckScripts(current.html, lang as "zh" | "en") : []),
+    [current, lang],
+  );
   const diff = useMemo(
     () => (index > 0 && current ? diffLines(versions[index - 1].html, current.html) : null),
     [versions, index, current],
@@ -726,7 +732,7 @@ export function CanvasPanel({
                 >
                   {t("canvasConsole")}
                   {(() => {
-                    const errs = consoleLog.filter((c) => c.level === "error").length;
+                    const errs = consoleLog.filter((c) => c.level === "error").length + precheckErrs.length;
                     const warns = consoleLog.filter((c) => c.level === "warn").length;
                     return errs + warns > 0 ? (
                       <span className={`cvp-conbadge ${errs ? "err" : "warn"}`}>
@@ -851,9 +857,15 @@ export function CanvasPanel({
                       {conDiag.dropped ? ` lastDrop=${conDiag.dropped}` : ""}
                     </div>
                   )}
-                  {consoleLog.length === 0 ? (
+                  {precheckErrs.map((p, i) => (
+                    <div key={`pc${i}`} className="cvp-con-row error">
+                      <span className="cvp-con-lv">error</span>
+                      {p}
+                    </div>
+                  ))}
+                  {consoleLog.length === 0 && precheckErrs.length === 0 ? (
                     <div className="cvp-scan-note">{t("canvasConsoleEmpty")}</div>
-                  ) : (
+                  ) : consoleLog.length === 0 ? null : (
                     consoleLog.map((c, i) => (
                       <div key={i} className={`cvp-con-row ${c.level}`}>
                         <span className="cvp-con-lv">{c.level}</span>
@@ -908,7 +920,8 @@ export function CanvasPanel({
                   onFix(
                     buildFixPayload(
                       `${error.message}${error.detail ? ` (${error.detail})` : ""}`,
-                      consoleLog.filter((c) => c.level === "error").map((c) => c.text),
+                      [...precheckErrs, ...consoleLog.filter((c) => c.level === "error").map((c) => c.text)],
+                      lang as "zh" | "en",
                     ),
                   );
                   setError(null);
