@@ -233,3 +233,24 @@ export const INSPECT_SHIM = `<script>(function(){
     }
   });
 })();</script>`;
+
+/** Everything the model needs to fix the page in ONE round: the heal-banner
+ *  error plus every error-level console line of the current version, deduped
+ *  (same first-200-chars = same error re-thrown) and bounded. Numbered only
+ *  when there are several, so the single-error payload stays byte-compatible
+ *  with the old behavior. */
+export function buildFixPayload(banner: string, consoleErrors: string[]): string {
+  const seen = new Set<string>();
+  const uniq: string[] = [];
+  for (const t of [banner, ...consoleErrors]) {
+    const trimmed = t.trim();
+    if (!trimmed) continue;
+    const key = trimmed.slice(0, 200);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniq.push(trimmed);
+    if (uniq.length >= 12) break;
+  }
+  if (uniq.length <= 1) return uniq[0] ?? "";
+  return uniq.map((t, i) => `${i + 1}. ${t}`).join("\n").slice(0, 6000);
+}

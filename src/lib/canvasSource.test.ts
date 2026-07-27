@@ -1,5 +1,5 @@
-import { describe, expect, test } from "vitest";
-import { annotate, highlightLines } from "./canvasSource";
+import { describe, expect, it, test } from "vitest";
+import { annotate, buildFixPayload, highlightLines } from "./canvasSource";
 
 describe("annotate", () => {
   test("tags real elements with data-cv and records their lines", () => {
@@ -68,5 +68,38 @@ describe("highlightLines", () => {
   test("escapes plain text when highlighting fails", () => {
     const lines = highlightLines("a & b < c");
     expect(lines.join("")).toContain("&amp;");
+  });
+});
+
+describe("buildFixPayload", () => {
+  it("single error stays byte-compatible with the old banner payload", () => {
+    expect(buildFixPayload("ReferenceError: x is not defined (app.js:3:1)", [])).toBe(
+      "ReferenceError: x is not defined (app.js:3:1)",
+    );
+  });
+
+  it("bundles the banner AND every console error, numbered", () => {
+    const p = buildFixPayload("TypeError: a is null (a.js:1:1)", [
+      "TypeError: a is null (a.js:1:1)", // dup of the banner → dropped
+      "ReferenceError: b is not defined (b.js:2:2)",
+      "Failed to load resource: http://localhost/x.png",
+    ]);
+    expect(p.split("\n")).toHaveLength(3);
+    expect(p).toContain("1. TypeError: a is null");
+    expect(p).toContain("2. ReferenceError: b");
+    expect(p).toContain("3. Failed to load resource");
+  });
+
+  it("dedupes re-thrown errors and bounds count and size", () => {
+    const errs = Array.from({ length: 40 }, (_, i) => `Error ${i % 5}: same thing (f.js:${i % 5}:1)`);
+    const p = buildFixPayload("Error 0: same thing (f.js:0:1)", errs);
+    expect(p.split("\n").length).toBeLessThanOrEqual(12);
+    const long = Array.from({ length: 12 }, (_, i) => `E${i} ${"y".repeat(900)}`);
+    expect(buildFixPayload("banner " + "z".repeat(900), long).length).toBeLessThanOrEqual(6000);
+  });
+
+  it("ignores blank lines and survives an empty console", () => {
+    expect(buildFixPayload("", [])).toBe("");
+    expect(buildFixPayload("  ", ["only console error (x.js:1:1)"])).toBe("only console error (x.js:1:1)");
   });
 });

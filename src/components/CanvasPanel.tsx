@@ -5,7 +5,7 @@ import { useConfirm } from "./ConfirmModal";
 import { Icon } from "./Icon";
 import { withStorageShim } from "./Markdown";
 import { IconDownload, IconEdit } from "./icons";
-import { annotate, highlightLines, INSPECT_SHIM } from "../lib/canvasSource";
+import { annotate, buildFixPayload, highlightLines, INSPECT_SHIM } from "../lib/canvasSource";
 import { diffLines } from "../lib/diff";
 import { buildScanView } from "../lib/canvasStream";
 
@@ -73,7 +73,7 @@ const CONSOLE_SHIM = `<script>(function(){
       if (typeof a === 'string') return a;
       try { return JSON.stringify(a); } catch(_) { return String(a); }
     }).join(' '); } catch(_) { text = '[unserializable]'; }
-    try { parent.postMessage({ __chatyCvConsole: { level: level, text: String(text).slice(0, 600) } }, '*'); } catch(_){}
+    try { parent.postMessage({ __chatyCvConsole: { level: level, text: String(text).slice(0, level === 'error' ? 2000 : 600) } }, '*'); } catch(_){}
   }
   ['log','info','warn','error','debug'].forEach(function(l){
     var orig = console[l] && console[l].bind(console);
@@ -81,7 +81,7 @@ const CONSOLE_SHIM = `<script>(function(){
   });
   window.addEventListener('error', function(e){
     if (e && e.target && (e.target.src || e.target.href)) send('error', ['Failed to load resource: ' + (e.target.src || e.target.href)]);
-    else if (e && e.message) send('error', [e.message + ' (' + (e.filename||'') + ':' + (e.lineno||0) + ')']);
+    else if (e && e.message) send('error', [e.message + ' (' + (e.filename||'') + ':' + (e.lineno||0) + ')' + (e.error && e.error.stack ? '\n' + e.error.stack : '')]);
   }, true);
   window.addEventListener('unhandledrejection', function(e){
     var r = e && e.reason; send('error', ['Unhandled rejection: ' + ((r && r.message) || String(r))]);
@@ -98,13 +98,13 @@ const ERROR_SHIM = `<script>(function(){
   function send(kind, msg, detail){
     var sig = kind + '|' + msg + '|' + (detail||'');
     if (seen[sig]) return; seen[sig] = 1;
-    try { parent.postMessage({ __chatyCanvasError: { kind: kind, message: String(msg).slice(0,400), detail: String(detail||'').slice(0,400) } }, '*'); } catch(_){}
+    try { parent.postMessage({ __chatyCanvasError: { kind: kind, message: String(msg).slice(0,1000), detail: String(detail||'').slice(0,2000) } }, '*'); } catch(_){}
   }
   window.addEventListener('error', function(e){
     if (e && e.target && (e.target.src || e.target.href)) {
       send('resource', 'Failed to load ' + (e.target.src || e.target.href), e.target.tagName);
     } else if (e && e.message) {
-      send('error', e.message, (e.filename||'') + ':' + (e.lineno||0) + ':' + (e.colno||0));
+      send('error', e.message, (e.filename||'') + ':' + (e.lineno||0) + ':' + (e.colno||0) + (e.error && e.error.stack ? '\n' + e.error.stack : ''));
     }
   }, true);
   window.addEventListener('unhandledrejection', function(e){
@@ -859,7 +859,15 @@ export function CanvasPanel({
                 className="canvas-heal-fix"
                 disabled={busy}
                 onClick={() => {
-                  onFix(`${error.message}${error.detail ? ` (${error.detail})` : ""}`);
+                  // One click hands the model EVERY current error, not just
+                  // the banner's — fixing them one round-trip at a time was
+                  // the reported multi-error grind.
+                  onFix(
+                    buildFixPayload(
+                      `${error.message}${error.detail ? ` (${error.detail})` : ""}`,
+                      consoleLog.filter((c) => c.level === "error").map((c) => c.text),
+                    ),
+                  );
                   setError(null);
                 }}
               >
