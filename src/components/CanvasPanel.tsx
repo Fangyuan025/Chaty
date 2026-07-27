@@ -73,7 +73,7 @@ const CONSOLE_SHIM = `<script>(function(){
       if (typeof a === 'string') return a;
       try { return JSON.stringify(a); } catch(_) { return String(a); }
     }).join(' '); } catch(_) { text = '[unserializable]'; }
-    try { parent.postMessage({ __chatyCvConsole: { level: level, text: String(text).slice(0, level === 'error' ? 2000 : 600) } }, '*'); } catch(_){}
+    try { parent.postMessage({ __chatyCvConsole: { level: level, text: String(text).slice(0, level === 'error' ? 2000 : 600), nonce: window.__CV_NONCE || '' } }, '*'); } catch(_){}
   }
   ['log','info','warn','error','debug'].forEach(function(l){
     var orig = console[l] && console[l].bind(console);
@@ -98,7 +98,7 @@ const ERROR_SHIM = `<script>(function(){
   function send(kind, msg, detail){
     var sig = kind + '|' + msg + '|' + (detail||'');
     if (seen[sig]) return; seen[sig] = 1;
-    try { parent.postMessage({ __chatyCanvasError: { kind: kind, message: String(msg).slice(0,1000), detail: String(detail||'').slice(0,2000) } }, '*'); } catch(_){}
+    try { parent.postMessage({ __chatyCanvasError: { kind: kind, message: String(msg).slice(0,1000), detail: String(detail||'').slice(0,2000), nonce: window.__CV_NONCE || '' } }, '*'); } catch(_){}
   }
   window.addEventListener('error', function(e){
     if (e && e.target && (e.target.src || e.target.href)) {
@@ -175,8 +175,13 @@ const SCROLL_SCHEME_SHIM = `<script>(function(){
 })()<\/script>`;
 
 /** Inject the shims right after <head> so they install before page scripts. */
-function withShims(html: string): string {
+function withShims(html: string, nonce: string): string {
+  // The nonce ties every message from this document generation to the
+  // srcDoc that produced it: WKWebView can start reparsing (and posting
+  // errors) BEFORE React's post-commit clear effect runs, so a timing-based
+  // clear silently ate early errors — generation filtering is order-proof.
   const shims =
+    `<script>window.__CV_NONCE=${JSON.stringify(nonce)};</script>` +
     COMPAT_SHIM + CONSOLE_SHIM + ERROR_SHIM + NAV_GUARD + INSPECT_SHIM + SCROLL_SCHEME_SHIM;
   const head = html.match(/<head[^>]*>/i);
   if (head && head.index !== undefined) {
@@ -232,7 +237,7 @@ export function CanvasPanel({
   const [error, setError] = useState<CanvasError | null>(null);
   const [muted, setMuted] = useState(false);
   const [view, setView] = useState<"code" | "diff" | "console">("code");
-  const [consoleLog, setConsoleLog] = useState<{ level: string; text: string }[]>([]);
+  const [consoleLog, setConsoleLog] = useState<{ level: string; text: string; nonce?: string }[]>([]);
   // Bumping remounts the iframe: scripts re-run from scratch (page refresh).
   const [reloadNonce, setReloadNonce] = useState(0);
   // Inspect selection: cv ids the user clicked (⌘/Ctrl toggles membership).
@@ -283,9 +288,15 @@ export function CanvasPanel({
   // preview renders the annotated html, the code pane renders the ORIGINAL
   // (what the model wrote — annotations are plumbing, not content).
   const annotated = useMemo(() => (current ? annotate(current.html) : null), [current]);
-  const srcDoc = useMemo(
-    () => (annotated ? withShims(withStorageShim(annotated.html)) : ""),
+  const frameNonce = useMemo(
+    () => (annotated ? Math.random().toString(36).slice(2, 10) : ""),
     [annotated],
+  );
+  const nonceRef = useRef(frameNonce);
+  nonceRef.current = frameNonce;
+  const srcDoc = useMemo(
+    () => (annotated ? withShims(withStorageShim(annotated.html), frameNonce) : ""),
+    [annotated, frameNonce],
   );
   const codeLines = useMemo(() => (current ? highlightLines(current.html) : []), [current]);
   const diff = useMemo(
@@ -306,7 +317,10 @@ export function CanvasPanel({
   useEffect(() => {
     setError(null);
     setHotLine(null);
-    setConsoleLog([]);
+    // Keep entries from the CURRENT document generation: on WKWebView the
+    // new srcdoc can post its first errors before this effect runs, and a
+    // blind wipe ate them (the reported "console shows nothing" file).
+    setConsoleLog((prev) => prev.filter((c) => c.nonce && c.nonce === nonceRef.current));
     setSelected([]);
     setEditing(false);
     if (index === 0 && view === "diff") setView("code");
@@ -323,13 +337,14 @@ export function CanvasPanel({
         __chatyCvHover?: string;
         __chatyCvPick?: string;
       };
-      const con = (data as { __chatyCvConsole?: { level: string; text: string } })?.__chatyCvConsole;
-      if (con) {
+      const con = (data as { __chatyCvConsole?: { level: string; text: string; nonce?: string } })
+        ?.__chatyCvConsole;
+      if (con && (!con.nonce || con.nonce === nonceRef.current)) {
         setConsoleLog((prev) => (prev.length >= 300 ? prev : [...prev, con]));
       }
       if (data?.__chatyCanvasError && !muted) {
-        const d = data.__chatyCanvasError;
-        setError((prev) => prev ?? d);
+        const d = data.__chatyCanvasError as CanvasError & { nonce?: string };
+        if (!d.nonce || d.nonce === nonceRef.current) setError((prev) => prev ?? d);
       }
       const sel = (data as { __chatyCvSelect?: { cv: string; multi: boolean } })?.__chatyCvSelect;
       if (sel && annotated) {
