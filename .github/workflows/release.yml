@@ -166,7 +166,14 @@ jobs:
         with: { node-version: 20, cache: npm }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with: { workspaces: src-tauri }
+        # cache-targets: false for the same reason as build-macos: rust-cache
+        # prunes the sherpa-onnx/onnxruntime shared libs that sherpa-rs-sys'
+        # build script drops into target/release while keeping the script
+        # "fresh", so the SECOND release run (first with a warm cache) dies at
+        # link time with "unable to find library -lonnxruntime". Windows is
+        # naturally immune: CARGO_TARGET_DIR=C:\ct sits outside the cached
+        # workspace, so its target is never cached in the first place.
+        with: { workspaces: src-tauri, cache-targets: false }
       - name: System deps (Tauri v2 + Vulkan for llama.cpp)
         run: |
           # glslc is NOT in Ubuntu 22.04's own archive (first Linux release
