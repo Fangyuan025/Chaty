@@ -521,15 +521,21 @@ fn run_generation(
                     super::Role::Assistant => "assistant",
                 },
                 "content": m.content,
-                // Same 2 MP vision cap as the GGUF engine: raw 2x full-page
-                // screenshots (15+ MP) either blow past Metal limits inside
-                // the sidecar's mlx_eval (fatalError → "sidecar exited
-                // unexpectedly") or explode into more image tokens than the
-                // context holds. Downscaled JPEGs are cached and keyed by
+                // Vision cap, TIGHTER than the GGUF engine's 2 MP: raw 2x
+                // full-page screenshots (15+ MP) either blow past Metal
+                // limits inside the sidecar's mlx_eval (fatalError →
+                // "sidecar exited unexpectedly") or explode into more image
+                // tokens than the context holds — and on a 48 GB box with a
+                // 35 GB model resident, even the 2 MP encode's transient
+                // activations are headroom the machine doesn't have (the
+                // owner reproduced sidecar deaths reading its own
+                // screenshots). 1 MP ≈ a thousand image tokens: screenshots
+                // stay perfectly legible, the ViT transient halves twice.
+                // Downscaled JPEGs are cached and keyed by
                 // source path+size+mtime, so the sidecar's image KV cache
                 // still hits across turns.
                 "images": m.images.iter()
-                    .map(|p| super::llama::downscale_for_vision(p))
+                    .map(|p| super::llama::downscale_for_vision_capped(p, 1_000_000))
                     .collect::<Vec<_>>(),
             })
         })

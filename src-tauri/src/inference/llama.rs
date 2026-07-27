@@ -1251,19 +1251,34 @@ fn prefill_media(
 /// pre-shrunk copy is pure speed (and it caps visual tokens / context use).
 const MAX_VISION_PIXELS: u64 = 2_000_000;
 
-/// Return a path whose image is at most `MAX_VISION_PIXELS`: the original
-/// path if it's already small enough (or unreadable — let mtmd report that),
-/// else a cached downscaled JPEG in the temp dir keyed by path+size+mtime.
+/// Return a path whose image is at most `max_pixels`: the original path if
+/// it's already small enough (or unreadable — let mtmd report that), else a
+/// cached downscaled JPEG in the temp dir keyed by path+size+mtime.
+///
+/// Ordering is the point (owner-reported memory spikes): the size check
+/// reads only the file HEADER, and the cache key needs only fs metadata —
+/// so the full pixel decode (a 41 MP screenshot costs ~120 MB of transient
+/// RSS, paid inside the same process the GGUF model lives in) happens ONLY
+/// on a true cache miss. The agent re-sends its attached screenshots on
+/// every step; decoding them anew each step stacked transient spikes onto an
+/// already-full machine and got the MLX sidecar jetsammed.
 pub(crate) fn downscale_for_vision(path: &str) -> String {
-    let Ok(img) = image::open(path) else { return path.to_string() };
-    let (w, h) = (img.width() as u64, img.height() as u64);
-    if w * h <= MAX_VISION_PIXELS {
+    downscale_for_vision_capped(path, MAX_VISION_PIXELS)
+}
+
+pub(crate) fn downscale_for_vision_capped(path: &str, max_pixels: u64) -> String {
+    // 1. Header-only dimensions — no pixel decode.
+    let Ok((w32, h32)) = image::image_dimensions(path) else { return path.to_string() };
+    let (w, h) = (w32 as u64, h32 as u64);
+    if w * h <= max_pixels {
         return path.to_string();
     }
+    // 2. Cache lookup from fs metadata alone — still no decode.
     use std::hash::{Hash, Hasher};
     let meta = std::fs::metadata(path).ok();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut hasher);
+    max_pixels.hash(&mut hasher);
     meta.as_ref().map(|m| m.len()).unwrap_or(0).hash(&mut hasher);
     meta.and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -1276,7 +1291,9 @@ pub(crate) fn downscale_for_vision(path: &str) -> String {
     if out.is_file() {
         return out.to_string_lossy().to_string();
     }
-    let scale = ((MAX_VISION_PIXELS as f64) / ((w * h) as f64)).sqrt();
+    // 3. True miss — decode once, downscale, cache.
+    let Ok(img) = image::open(path) else { return path.to_string() };
+    let scale = ((max_pixels as f64) / ((w * h) as f64)).sqrt();
     let nw = ((img.width() as f64 * scale) as u32).max(1);
     let nh = ((img.height() as f64 * scale) as u32).max(1);
     let resized = img.resize(nw, nh, image::imageops::FilterType::Triangle);
@@ -4077,6 +4094,56 @@ mod vision_speed_tests {
             .unwrap();
         assert_eq!(downscale_for_vision(&small.to_string_lossy()), small.to_string_lossy());
 
+        // The MLX cap is TIGHTER: the same 3 MP image under a 1 MP cap must
+        // produce a DIFFERENT (smaller) cached file than the 2 MP one — the
+        // cap is part of the cache key, or the two engines would poison each
+        // other's caches.
+        let fed_mlx = downscale_for_vision_capped(&big.to_string_lossy(), 1_000_000);
+        assert_ne!(fed_mlx, fed, "per-cap cache keys must differ");
+        let out_mlx = image::open(&fed_mlx).unwrap();
+        let px_mlx = (out_mlx.width() as u64) * (out_mlx.height() as u64);
+        assert!(px_mlx <= 1_000_000, "mlx-capped to {px_mlx} px");
+        // And a 1.5 MP image: passes the GGUF cap untouched, shrinks for MLX.
+        let mid = dir.join("mid.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(1500, 1000, image::Rgb([30, 30, 200])))
+            .save(&mid)
+            .unwrap();
+        assert_eq!(downscale_for_vision(&mid.to_string_lossy()), mid.to_string_lossy());
+        assert_ne!(
+            downscale_for_vision_capped(&mid.to_string_lossy(), 1_000_000),
+            mid.to_string_lossy()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The size gate must be header-only: a file whose header parses but
+    /// whose pixel data is corrupt still passes through when under the cap
+    /// (no decode happened), and still resolves from the cache when a cached
+    /// copy exists — the every-step re-decode was the memory-spike bug.
+    #[test]
+    fn downscale_size_gate_reads_header_not_pixels() {
+        let dir = std::env::temp_dir().join(format!("chaty-dsh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A valid small PNG, then truncate the pixel data: header (IHDR) is
+        // intact, full decode would fail.
+        let p = dir.join("truncated.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(640, 480, image::Rgb([9, 9, 9])))
+            .save(&p)
+            .unwrap();
+        let bytes = std::fs::read(&p).unwrap();
+        std::fs::write(&p, &bytes[..64]).unwrap(); // IHDR survives, IDAT gone
+        assert_eq!(
+            image::image_dimensions(&p).unwrap(),
+            (640, 480),
+            "header must still parse"
+        );
+        assert!(image::open(&p).is_err(), "full decode must fail");
+        // Under-cap → returned as-is WITHOUT decoding (decode would error).
+        assert_eq!(
+            downscale_for_vision(&p.to_string_lossy()),
+            p.to_string_lossy()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
