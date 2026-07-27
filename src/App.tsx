@@ -26,6 +26,7 @@ import { KnowledgePanel } from "./components/KnowledgePanel";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import { Icon } from "./components/Icon";
 import { CanvasPanel, type CanvasVersion } from "./components/CanvasPanel";
+import { fixInstruction } from "./lib/canvasSource";
 import { CanvasOpenContext, CodeCollapseContext } from "./components/Markdown";
 import { useConfirm } from "./components/ConfirmModal";
 import { IconPin, IconPinFilled, IconEdit } from "./components/icons";
@@ -982,8 +983,8 @@ export default function App() {
           ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n请实现以下修改${how}：${payload}`
           : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nApply this change ${how}: ${payload}`
         : lang === "zh"
-          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n它在浏览器中运行时报错：${payload}\n请修复这个错误${how}。`
-          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\nIt throws this runtime error: ${payload}\nFix this error ${how}.`;
+          ? `当前页面的完整 HTML：\n\`\`\`html\n${base}\n\`\`\`\n${fixInstruction(payload, "zh", how)}`
+          : `Current full HTML:\n\`\`\`html\n${base}\n\`\`\`\n${fixInstruction(payload, "en", how)}`;
     const note =
       (kind === "edit" ? `${t("canvasEdit")}：${payload}` : `${t("canvasFix")}：${payload}`).slice(
         0,

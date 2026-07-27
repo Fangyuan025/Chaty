@@ -296,3 +296,28 @@ export function precheckScripts(html: string, lang: "zh" | "en" = "zh"): string[
   }
   return out;
 }
+
+/** The Fix flow's user-message tail. The old text said "fix THIS error" —
+ *  singular — while buildFixPayload was handing over a NUMBERED LIST; small
+ *  models obeyed the verb, patched one item and stopped (the "Fix didn't fix
+ *  everything" report). Plural payloads now get an explicit all-N contract
+ *  with a self-check clause; big lists nudge toward a full rewrite (legal in
+ *  both edit modes).
+ */
+export function fixInstruction(payload: string, lang: "zh" | "en", how: string): string {
+  const n = (payload.match(/^\d+\. /gm) || []).length;
+  if (n < 2) {
+    return lang === "zh"
+      ? `它在浏览器中运行时报错：${payload}\n请修复这个错误${how}。`
+      : `It throws this runtime error: ${payload}\nFix this error ${how}.`;
+  }
+  const rewriteNudge =
+    n >= 3
+      ? lang === "zh"
+        ? "问题较多时,直接返回完整修正后的 HTML 更稳妥。"
+        : "With this many issues, returning the complete corrected HTML is the safer route."
+      : "";
+  return lang === "zh"
+    ? `它在浏览器中运行时报出以下 ${n} 个问题：\n${payload}\n请一次性修复全部 ${n} 个问题${how}——逐项对照编号处理,输出前自查每一项都已解决,不要只修其中一项。${rewriteNudge}`
+    : `It reports the following ${n} problems at runtime:\n${payload}\nFix ALL ${n} of them in this single pass ${how} — work through the numbered list item by item, and before answering verify each one is resolved; do not fix just one. ${rewriteNudge}`;
+}

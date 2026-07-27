@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from "vitest";
-import { annotate, buildFixPayload, highlightLines, precheckScripts } from "./canvasSource";
+import { annotate, buildFixPayload, fixInstruction, highlightLines, precheckScripts } from "./canvasSource";
 
 describe("annotate", () => {
   test("tags real elements with data-cv and records their lines", () => {
@@ -131,5 +131,29 @@ describe("buildFixPayload muzzle note", () => {
   });
   it("no note when nothing was muzzled", () => {
     expect(buildFixPayload("TypeError: x", [], "zh")).toBe("TypeError: x");
+  });
+});
+
+describe("fixInstruction", () => {
+  it("single error keeps the old singular phrasing", () => {
+    const s = fixInstruction("TypeError: x is null", "zh", "（how）");
+    expect(s).toContain("修复这个错误");
+    expect(s).not.toContain("一次性");
+  });
+  it("a numbered list gets the all-N contract with self-check", () => {
+    const p = "1. A\n2. B\n3. C\nNote: extra tail";
+    const zh = fixInstruction(p, "zh", "（how）");
+    expect(zh).toContain("3 个问题");
+    expect(zh).toContain("一次性修复全部 3 个问题");
+    expect(zh).toContain("不要只修其中一项");
+    expect(zh).toContain("完整修正后的 HTML");
+    const en = fixInstruction(p, "en", "(how)");
+    expect(en).toContain("ALL 3");
+    expect(en).not.toMatch(/[一-鿿]/);
+  });
+  it("two items demand both but skip the rewrite nudge", () => {
+    const s = fixInstruction("1. A\n2. B", "zh", "");
+    expect(s).toContain("全部 2 个问题");
+    expect(s).not.toContain("完整修正后的 HTML 更稳妥");
   });
 });
