@@ -1,5 +1,60 @@
 # Changelog
 
+## v2.0.1 — The webapp workshop (2026-07-28)
+
+A patch release focused on one thing: making Code mode genuinely good at
+building and debugging local web pages. Every fix below came out of live
+walkthroughs — reported, reproduced, fixed, and re-verified the same night.
+
+### The agent stops stalling on dev servers
+
+- **Foreground dev servers auto-move to the background.** Start a server with
+  plain `bash` and ~10s later it's a tracked background job — output so far,
+  job id, and how to continue, instead of a 120s stall that ended with the
+  server killed. Detection is two-track: server banners are the fast path, a
+  listening-socket probe is the ground truth (banner-silent servers like a
+  piped `python3 -m http.server` are caught too).
+- **No more zombie servers.** A shell that exits after `server &` used to
+  leave the server squatting its port forever. Survivors of the command's
+  process group are now adopted as `[detached]` background jobs — visible,
+  killable, and reaped on workspace switch or app exit.
+- **`browser_refresh`** — the missing reload verb. True hard refresh
+  (cache ignored) with the same page digest as navigate; after editing local
+  files, re-screenshotting the stale DOM proves nothing and the agent now
+  knows it.
+- **Page errors come to the model by themselves.** On pages you own
+  (localhost / local files), browser interactions auto-attach new console
+  errors, exceptions and dialogs to the tool result — deduplicated, and
+  labeled honestly (a dialog your click triggered is not an "error"). Other
+  people's websites stay noise-free; `browser_console` still shows everything.
+- **Plans stop being decoration.** `update_plan` echoes live statuses back to
+  the model, and a one-shot wrap-up check bounces a premature final answer
+  when todos are unfinished or page edits were never walked in the browser.
+- **Fewer stuck loops.** Empty-argument tool calls get an escalating
+  correction ladder (example → switch tools → tool disabled this turn) and are
+  never executed; repeat-intercept advice no longer suggests the very tool
+  being repeated; the tool-call parser survives real local-model output shapes
+  (flat fields with an empty `arguments`, missing closing brace) instead of
+  burning rounds on them.
+
+### Canvas: a debugger you can trust
+
+- **The console pipeline reports again** — a regression that silently killed
+  error capture inside the preview is fixed, with a syntax gate on every
+  injected shim so that class of bug can't return.
+- **Complete errors, one honest Fix.** Error entries carry full stacks; the
+  Fix button bundles every distinct problem as a numbered list and instructs
+  the model to fix all of them in one pass. A parent-side syntax precheck
+  recovers the real SyntaxError text (with the script-block index) that
+  WebKit anonymizes to "Script error." inside the sandboxed preview.
+- **The red badge means broken.** Uncaught exceptions, unhandled rejections,
+  failed resources and syntax-precheck hits light it; `console.error()` /
+  `console.warn()` prints render in the tab but never badge.
+- **Hand-editing feels right.** Selection no longer drifts off the glyphs on
+  long documents (integer line metrics, no soft-wrap), and the caret's line
+  carries a highlight stripe.
+
+
 ## v2.0.0 — A local agent platform (2026-07-26)
 
 v1.9 made the case that on a small local model the intelligence has to live in
