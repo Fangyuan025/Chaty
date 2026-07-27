@@ -452,11 +452,29 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
             let cut = block.len() - 1500;
             block = block[block.char_indices().map(|(i, _)| i).find(|&i| i >= cut).unwrap_or(0)..].to_string();
         }
-        text.push_str(&trf!(
-            "\n\n[console] 页面在这次操作前后新增的报错(自动附带):\n{}",
-            "\n\n[console] page errors since the last action (auto-attached):\n{}",
-            block
-        ));
+        // A dialog fired by the page (alert after a click, confirm on submit)
+        // is expected behavior, not an error — labeling it "报错" sent the
+        // model (and the user) hunting for a bug that isn't there.
+        let has_error = errs.iter().any(|l| !l.starts_with("[dialog]"));
+        let has_dialog = errs.iter().any(|l| l.starts_with("[dialog]"));
+        let head = if has_error && has_dialog {
+            trf!(
+                "\n\n[console] 页面在这次操作前后新增的报错与弹窗(自动附带):\n",
+                "\n\n[console] page errors and dialogs since the last action (auto-attached):\n"
+            )
+        } else if has_dialog {
+            trf!(
+                "\n\n[console] 页面弹窗(已自动处理,附带告知,非报错):\n",
+                "\n\n[console] page dialog (auto-handled, attached for awareness — not an error):\n"
+            )
+        } else {
+            trf!(
+                "\n\n[console] 页面在这次操作前后新增的报错(自动附带):\n",
+                "\n\n[console] page errors since the last action (auto-attached):\n"
+            )
+        };
+        text.push_str(&head);
+        text.push_str(&block);
         Ok(text)
     }
 
@@ -1805,6 +1823,19 @@ mod tests {
         assert!(
             out.contains("[console]") && out.contains("click-broke-77"),
             "new error must ride the interaction that caused it: {out}"
+        );
+
+        // A dialog caused by the interaction rides along labeled as a DIALOG,
+        // not an error (expected page behavior, e.g. alert on button click).
+        let out = eval("alert('ding'+'-77'); 1").expect("eval3");
+        assert!(out.contains("[console]") && out.contains("[dialog]"), "{out}");
+        assert!(
+            out.contains("非报错") || out.contains("not an error"),
+            "dialog-only attach must be labeled as a dialog: {out}"
+        );
+        assert!(
+            !out.contains("新增的报错") && !out.contains("page errors since"),
+            "dialog-only attach must NOT be labeled as errors: {out}"
         );
 
         // The explicit console view still holds the full history (incl. info).
