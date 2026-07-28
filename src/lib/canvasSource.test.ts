@@ -117,6 +117,22 @@ describe("precheckScripts", () => {
     expect(precheckScripts('<script src="a.js"></script>', "en")).toHaveLength(0);
     expect(precheckScripts("<p>no scripts</p>", "en")).toHaveLength(0);
   });
+  it("non-classic script types are never compiled — valid pages, not faults", () => {
+    expect(precheckScripts('<script type="module">import * as t from "./x.js"; export const a = 1;</script>', "en")).toHaveLength(0);
+    expect(precheckScripts('<script type="application/json">{"rows":[1,2,3]}</script>', "en")).toHaveLength(0);
+    expect(precheckScripts('<script type="importmap">{"imports":{"a":"./a.js"}}</script>', "en")).toHaveLength(0);
+    expect(precheckScripts("<script type='text/template'><div>{{name}}</div></script>", "en")).toHaveLength(0);
+  });
+  it("explicit classic types still compile, and skipped blocks keep their index", () => {
+    const bad = '<script type="text/javascript">sayHello(</script>';
+    expect(precheckScripts(bad, "en")[0]).toContain("SyntaxError");
+    // json block is block 1, broken classic block is block 2 — the index the
+    // model counts in the source must survive the skip.
+    const mixed = '<script type="application/json">{"a":1}</script><script>oops(</script>';
+    const errs = precheckScripts(mixed, "en");
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain("script block 2");
+  });
 });
 
 describe("buildFixPayload muzzle note", () => {

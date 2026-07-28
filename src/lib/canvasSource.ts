@@ -276,13 +276,25 @@ export function buildFixPayload(
  *  in the parent context with real messages. new Function compiles without
  *  executing. (Function-body context: a stray top-level `return` slips
  *  through — acceptable for a diagnostic tier.) */
+const CLASSIC_SCRIPT_TYPE = /^(text|application)\/(x-)?(java|ecma)script$/;
+
 export function precheckScripts(html: string, lang: "zh" | "en" = "zh"): string[] {
   const out: string[] = [];
   let i = 0;
-  for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+  for (const m of html.matchAll(/<script\b((?:[^>"']|"[^"]*"|'[^']*')*)>([\s\S]*?)<\/script>/gi)) {
+    const attrs = m[1];
+    if (/\bsrc\s*=/i.test(attrs)) continue;
     i++;
-    const body = m[1];
+    const body = m[2];
     if (!body.trim()) continue;
+    // Only CLASSIC scripts compile under new Function. type="module"
+    // (import/export), JSON/importmap data blocks and text/* templates are
+    // legitimate pages — compiling them here produced FALSE syntax faults
+    // (badge lit, bogus entry in the Fix payload). A module's real syntax
+    // error still surfaces at runtime through the error shim's fault path.
+    const tm = /\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
+    const t = (tm?.[1] ?? tm?.[2] ?? tm?.[3] ?? "").trim().toLowerCase();
+    if (t && !CLASSIC_SCRIPT_TYPE.test(t)) continue;
     try {
       new Function(body);
     } catch (e) {
