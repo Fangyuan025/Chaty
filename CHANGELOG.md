@@ -53,6 +53,13 @@ walkthroughs — reported, reproduced, fixed, and re-verified the same night.
 - **Hand-editing feels right.** Selection no longer drifts off the glyphs on
   long documents (integer line metrics, no soft-wrap), and the caret's line
   carries a highlight stripe.
+- **Close means clean.** Reopening a canvas no longer stacks duplicate
+  console entries — closing the panel resets its console state.
+
+### Small fixes
+
+- The MCP server toggle knob sits correctly on its track again (Settings →
+  Code).
 
 
 ## v2.0.0 — A local agent platform (2026-07-26)
