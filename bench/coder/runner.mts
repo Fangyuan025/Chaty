@@ -57,6 +57,13 @@ async function main() {
   const bridge = new Bridge(bin);
   const info = (await bridge.call("load_model", { path: model, nCtx: 16384 })) as Json;
   console.log(`model loaded: ${JSON.stringify(info)}`);
+  // A missing/unloadable model must kill the run LOUDLY. The v201-full45
+  // launch ran 12 tasks against a deleted model dir: load came back without
+  // a usable reply, every task "finished" in 4s with 0 steps, and one even
+  // graded ✓ on the unmodified repo. Zero-step rows are not results.
+  if (!info || info.loaded !== true) {
+    throw new Error(`model did not load (reply: ${JSON.stringify(info)}) — check CHATY_BENCH_MODEL`);
+  }
 
   // The real production loop + IPC layer, loaded AFTER window/mock are ready.
   const { mockIPC } = await import("@tauri-apps/api/mocks");
