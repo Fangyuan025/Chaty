@@ -7216,11 +7216,13 @@ body,
   cursor: default;
 }
 .mcp-row .skill-row-toggle {
-  background: none;
-  border: none;
-  padding: 0;
+  /* It's a real <button> here — reset UA chrome only. The old
+     background/border:none also stripped the TRACK: the 1px border is part
+     of the 30x17 geometry the knob offsets are calibrated against, so the
+     knob sat visibly off its pill (owner report). */
+  appearance: none;
+  font: inherit;
   cursor: pointer;
-  flex: none;
 }
 .mcp-trust {
   flex: none;

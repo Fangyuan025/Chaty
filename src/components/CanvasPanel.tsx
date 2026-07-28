@@ -350,6 +350,19 @@ export function CanvasPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index, current?.html]);
 
+  // The panel stays MOUNTED while closed (open=false renders nothing), so
+  // console state survived a close — and reopening re-parses the same doc
+  // (same generation nonce), stacking duplicate entries on top (owner
+  // report). Closing wipes the per-open console state.
+  useEffect(() => {
+    if (!open) {
+      setConsoleLog([]);
+      setError(null);
+      setConDiag({ raw: 0, dropped: "" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   // Messages from the sandboxed (null-origin) preview: runtime errors + the
   // inspect shim's hover/pick reports.
   useEffect(() => {
