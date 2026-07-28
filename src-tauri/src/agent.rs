@@ -2614,7 +2614,12 @@ fn augmented_path() -> String {
     let nvm = PathBuf::from(format!("{home}/.nvm/versions/node"));
     if let Ok(entries) = std::fs::read_dir(&nvm) {
         let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-        versions.sort();
+        // Numeric, not lexicographic: as strings "v9.x" sorts AFTER "v20.x".
+        versions.sort_by_key(|p| {
+            let name = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let mut parts = name.trim_start_matches('v').split('.').map(|s| s.parse::<u64>().unwrap_or(0));
+            (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0))
+        });
         if let Some(latest) = versions.last() {
             dirs.push(latest.join("bin").to_string_lossy().to_string());
         }
