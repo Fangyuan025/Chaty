@@ -60,6 +60,11 @@ walkthroughs — reported, reproduced, fixed, and re-verified the same night.
 
 - The MCP server toggle knob sits correctly on its track again (Settings →
   Code).
+- The Canvas syntax precheck now compiles only classic scripts —
+  `type="module"`, JSON and template blocks are pages, not faults, and no
+  longer light a phantom badge or feed bogus entries to Fix.
+- The agent's PATH resolves the newest nvm Node numerically instead of
+  alphabetically (v20 beats v9 again).
 
 
 ## v2.0.0 — A local agent platform (2026-07-26)
