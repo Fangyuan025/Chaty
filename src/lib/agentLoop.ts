@@ -55,7 +55,8 @@ import {
 } from "./ipc";
 import { normalizeChannels } from "./voiceText";
 import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
-import { wrapupNudge, planEcho, isWebSourceFile, devServerUrlFrom } from "./wrapupGate";
+import { wrapupNudge, planEcho, isWebSourceFile, isSourceCodeFile, devServerUrlFrom } from "./wrapupGate";
+import { isReadOnlyCommand } from "./readOnlyCmd";
 import { diffLines } from "./diff";
 import { platform } from "@tauri-apps/plugin-os";
 
@@ -1330,6 +1331,9 @@ export async function runAgentTurn(
   let serverCtx = false;
   let devServerUrl: string | undefined;
   let wrapNudged = false;
+  // Run-check ledger: source edits since the last qualifying execution.
+  // Non-read-only bash / bash_bg / validate_change clear it; `ls` does not.
+  const codeEditsSinceExec = { files: new Set<string>(), lines: 0 };
   // Search flail breaker: consecutive web_search calls, ANY query. When the
   // search backend degrades into irrelevant results, models keep rephrasing
   // the query forever instead of failing over to web_fetch / the browser —
@@ -1554,6 +1558,10 @@ export async function runAgentTurn(
               lastBrowserActionStep,
               serverCtx,
               devServerUrl,
+              codeEditsSinceExec: {
+                files: [...codeEditsSinceExec.files],
+                lines: codeEditsSinceExec.lines,
+              },
               nudged: wrapNudged,
             },
             lang,
@@ -1929,9 +1937,25 @@ export async function runAgentTurn(
           if (p && !resultText.startsWith("ERROR")) {
             editedFiles.add(p);
             if (isWebSourceFile(p, serverCtx)) lastWebEditStep = step;
+            if (isSourceCodeFile(p)) {
+              codeEditsSinceExec.files.add(p);
+              // Rough volume: newlines in the args ≈ changed lines. Edit tools
+              // count old+new text — an overestimate is fine, the bar is coarse.
+              codeEditsSinceExec.lines += (JSON.stringify(call.args).match(/\\n/g) ?? []).length + 1;
+            }
           }
         }
         if (call.name.startsWith("browser_")) lastBrowserActionStep = step;
+        // A qualifying RUN clears the run-check ledger. Read-only bash (ls,
+        // cat, grep…) is observation, not verification, and leaves it intact.
+        if (
+          call.name === "validate_change" ||
+          call.name === "bash_bg" ||
+          (call.name === "bash" && !isReadOnlyCommand(asStr(call.args?.command)))
+        ) {
+          codeEditsSinceExec.files.clear();
+          codeEditsSinceExec.lines = 0;
+        }
         if (["bash", "bash_bg", "bg_output"].includes(call.name)) {
           const url = devServerUrlFrom(resultText);
           if (url) {

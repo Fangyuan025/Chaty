@@ -22,9 +22,28 @@ export interface WrapupState {
   serverCtx: boolean;
   /** The dev server's URL when one was seen in command output. */
   devServerUrl?: string;
+  /** Source-code edits since the last QUALIFYING execution (non-read-only
+   *  bash, bash_bg, validate_change): file paths + rough changed-line volume.
+   *  `ls`/`cat` after an edit is not verification — only running something is.
+   *  The loop clears this on every qualifying execution. */
+  codeEditsSinceExec: { files: string[]; lines: number };
   /** The gate already fired this turn. */
   nudged: boolean;
 }
+
+/** Files whose edits deserve a "did you actually run it?" check. Docs and
+ *  config are deliberately out — nudging a README edit is pure friction. */
+export function isSourceCodeFile(path: string): boolean {
+  return /\.(py|rs|go|ts|tsx|js|jsx|mjs|cjs|c|cc|cpp|h|hpp|java|rb|php|sh|bash|zsh|swift|kt|kts|scala|lua|pl|r|m|vue|svelte)$/i.test(
+    path,
+  );
+}
+
+/** The delivery bar for the run-check nudge: a single small edit stays
+ *  frictionless; real work (multiple files, or ~a screenful of new code)
+ *  earns exactly one "run it before you ship it". */
+const RUN_CHECK_MIN_FILES = 2;
+const RUN_CHECK_MIN_LINES = 30;
 
 /** Files whose edits are expected to be verifiable in a browser. Plain
  *  .ts/.js only count when a dev server is around — a CLI project's sources
@@ -90,16 +109,36 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
   // Web edits with no browser look AFTERWARDS — only when there demonstrably
   // is something to look at (a live dev server, or the browser was already in
   // use this turn).
-  if (
+  const webNote =
     st.lastWebEditStep >= 0 &&
     st.lastWebEditStep > st.lastBrowserActionStep &&
-    (st.serverCtx || st.lastBrowserActionStep >= 0)
-  ) {
+    (st.serverCtx || st.lastBrowserActionStep >= 0);
+  if (webNote) {
     const target = st.devServerUrl;
     notes.push(
       zh
         ? `- 页面代码在最近的改动之后没有经过浏览器走查。用 browser_navigate 打开${target ? ` ${target}` : " dev server 的页面"},把改动涉及的路径实际点一遍,确认没有 [console] 报错再交付。`
         : `- The page code changed after the last browser check. browser_navigate to ${target ?? "the dev server"}, walk the paths your change touches, and confirm there are no [console] errors before delivering.`,
+    );
+  }
+
+  // Code edits with no RUN afterwards (the non-web sibling of the check
+  // above). One nudge, never a gate: below the volume bar it stays silent so
+  // trivial tasks keep their flow, and the message itself offers the honest
+  // way out — say why a run isn't needed. When the browser note already
+  // fired, files it covers don't count twice.
+  const codeFiles = webNote
+    ? st.codeEditsSinceExec.files.filter((f) => !isWebSourceFile(f, st.serverCtx))
+    : st.codeEditsSinceExec.files;
+  if (
+    codeFiles.length > 0 &&
+    (codeFiles.length >= RUN_CHECK_MIN_FILES || st.codeEditsSinceExec.lines >= RUN_CHECK_MIN_LINES)
+  ) {
+    const shown = codeFiles.slice(0, 3).join(", ") + (codeFiles.length > 3 ? ", …" : "");
+    notes.push(
+      zh
+        ? `- 代码(${shown})在最近的改动之后没有任何运行验证——只读命令不算。至少做一样:用 validate_change 验证改动文件、直接运行它、或跑相关测试/最小冒烟;确认真的能跑再交付。如果确属无需运行的琐碎改动,在答复里说明原因。`
+        : `- Code (${shown}) changed after the last run — read-only commands don't count as verification. Do at least one: validate_change the edited files, execute them directly, or run the relevant tests / a minimal smoke; confirm it actually runs before delivering. If it genuinely needs no run, say why in your answer.`,
     );
   }
 

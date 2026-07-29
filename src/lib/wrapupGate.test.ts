@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { devServerUrlFrom, isWebSourceFile, planEcho, wrapupNudge, type WrapupState } from "./wrapupGate";
+import {
+  devServerUrlFrom,
+  isSourceCodeFile,
+  isWebSourceFile,
+  planEcho,
+  wrapupNudge,
+  type WrapupState,
+} from "./wrapupGate";
 
 const base: WrapupState = {
   plan: [],
@@ -7,6 +14,7 @@ const base: WrapupState = {
   lastBrowserActionStep: -1,
   serverCtx: false,
   devServerUrl: undefined,
+  codeEditsSinceExec: { files: [], lines: 0 },
   nudged: false,
 };
 
@@ -100,6 +108,74 @@ describe("wrapupNudge", () => {
     const st = { ...base, plan: [{ content: "x", status: "pending" }] };
     expect(wrapupNudge(st, "zh")).not.toMatch(/todo list|wrap-up/i);
     expect(wrapupNudge(st, "en")).not.toMatch(/[一-鿿]/);
+  });
+
+  // ── The run-check note (non-web sibling of the browser walk) ──
+
+  it("stays silent below the bar: one small unrun edit keeps its flow", () => {
+    const n = wrapupNudge(
+      { ...base, codeEditsSinceExec: { files: ["util.py"], lines: 12 } },
+      "zh",
+    );
+    expect(n).toBeNull();
+  });
+
+  it("fires on a screenful of unrun code and names the file", () => {
+    const n = wrapupNudge(
+      { ...base, codeEditsSinceExec: { files: ["cli.py"], lines: 80 } },
+      "zh",
+    )!;
+    expect(n).toContain("运行验证");
+    expect(n).toContain("cli.py");
+    expect(n).toContain("validate_change");
+  });
+
+  it("fires on multiple unrun files even when each is small", () => {
+    const n = wrapupNudge(
+      { ...base, codeEditsSinceExec: { files: ["a.rs", "b.rs"], lines: 14 } },
+      "en",
+    )!;
+    expect(n).toContain("read-only commands don't count");
+    expect(n).toContain("a.rs");
+  });
+
+  it("does not double-bark: files the browser note covers are excluded", () => {
+    const n = wrapupNudge(
+      {
+        ...base,
+        lastWebEditStep: 6,
+        lastBrowserActionStep: 2,
+        serverCtx: true,
+        codeEditsSinceExec: { files: ["src/App.tsx"], lines: 90 },
+      },
+      "en",
+    )!;
+    expect(n).toContain("browser_navigate");
+    expect(n).not.toContain("read-only commands");
+  });
+
+  it("still names genuinely non-web files alongside the browser note", () => {
+    const n = wrapupNudge(
+      {
+        ...base,
+        lastWebEditStep: 6,
+        lastBrowserActionStep: 2,
+        serverCtx: true,
+        codeEditsSinceExec: { files: ["src/App.tsx", "tools/gen.py"], lines: 90 },
+      },
+      "en",
+    )!;
+    expect(n).toContain("browser_navigate");
+    expect(n).toContain("tools/gen.py");
+    expect(n).not.toContain("App.tsx, ");
+  });
+});
+
+describe("isSourceCodeFile", () => {
+  it("counts code, skips docs and config", () => {
+    for (const f of ["a.py", "b.rs", "c.sh", "d.go", "e.tsx"]) expect(isSourceCodeFile(f), f).toBe(true);
+    for (const f of ["README.md", "conf.yaml", "data.json", "notes.txt", "Cargo.toml"])
+      expect(isSourceCodeFile(f), f).toBe(false);
   });
 });
 
