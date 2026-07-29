@@ -423,7 +423,41 @@ export function repairXmlBleed(body: string): string {
   // {"name":"tool","arguments>{…}  →  ,"arguments":{…}  (sympy-23950 dumps —
   // the same XML-bracket bleed landing on the arguments key instead).
   b = b.replace(/^(\{"name":"[\w.-]+"\s*,\s*)"arguments>\s*/, '$1"arguments":');
+  // django-13925 dumps, three more of the family:
+  // {"name{"name":"bash"…            — stuttered opener
+  b = b.replace(/^\{"name\{"name":/, '{"name":');
+  // {"name":"x",arguments":{…}       — opening quote dropped on the key
+  b = b.replace(/^(\{"name":"[\w.-]+"\s*,\s*)arguments"\s*:/, '$1"arguments":');
+  // {"name":"grep">\n{"pattern":…}   — args as a SEPARATE object after the tag
+  b = b.replace(/^(\{"name":"[\w.-]+")>\s*\{/, '$1,"arguments":{');
   return b;
+}
+
+/** Cut a body at the point where its outermost object/array CLOSES —
+ *  string-aware. Recovers `{…}}` (extra trailing brace: the update_plan
+ *  raw in the 13925 dump ended `]}}`) and valid JSON followed by prose.
+ *  Returns null when the payload never closes (that's repairUnclosedJson's
+ *  territory instead). */
+export function balancedSlice(body: string): string | null {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0) return body.slice(0, i + 1);
+    }
+  }
+  return null;
 }
 
 /** Pull the first tool call out of model output. Tolerant of the closing tag
@@ -486,6 +520,8 @@ export function parseToolCall(text: string): ToolCall | null {
       bled !== src ? bled : null,
       repairUnclosedJson(src),
       bled !== src ? repairUnclosedJson(bled) : null,
+      balancedSlice(src),
+      bled !== src ? balancedSlice(bled) : null,
     ];
     for (const cand of candidates) {
       if (!cand) continue;

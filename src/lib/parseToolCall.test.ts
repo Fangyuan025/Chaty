@@ -51,6 +51,36 @@ describe("repairXmlBleed — Qwen3.6 name= attractor (quick15 baseline, pytest-7
     expect(c.args.command).toBe("echo hi");
   });
 
+  it('parses the stuttered opener {"name{"name":… (django-13925 dump)', () => {
+    const c = parseToolCall(
+      '<tool_call>{"name{"name":"bash","arguments":{"command": "cd /var/folders/_v/_6qzxmld2rq3dckt3rps_9km0000gn/T/chaty-bench-django__django-13925-2vniqS && /Users/stevenlin/Desktop/Chaty-repo/bench/coder/swebench/envs/django__django-13925/bin/python -m django test check_framework.test_model_checks --settings=test_sqlite -v 2 2>&1 | tail -40"}}',
+    )!;
+    expect(c.name).toBe("bash");
+    expect(c.args.command).toContain("test_model_checks");
+  });
+
+  it('parses the dropped-quote key {"name":"x",arguments":{…} (django-13925 dump)', () => {
+    const c = parseToolCall(
+      '<tool_call>{"name":"search_code",arguments":{"query":"models.W042 auto-created primary key check warning"}}\n',
+    )!;
+    expect(c.name).toBe("search_code");
+    expect(c.args.query).toContain("W042");
+  });
+
+  it('parses args as a separate object after the tag: {"name="grep">\\n{"pattern":…} (django-13925 dump)', () => {
+    const c = parseToolCall('<tool_call>{"name="grep">\n{"pattern":"W042"}\n')!;
+    expect(c.name).toBe("grep");
+    expect(c.args.pattern).toBe("W042");
+  });
+
+  it("recovers an extra trailing brace via balancedSlice (update_plan raw ended ]}} )", () => {
+    const c = parseToolCall(
+      '<tool_call>{"name":"update_plan","todos":[{"content":"Implement the fix","status":"pending"},{"content":"Run tests to verify","status":"pending"}]}}',
+    )!;
+    expect(c.name).toBe("update_plan");
+    expect(Array.isArray(c.args.todos)).toBe(true);
+  });
+
   it("never rewrites content that merely CONTAINS the pattern mid-string", () => {
     const html = '<div name="x">ok</div>';
     const c = parseToolCall(
