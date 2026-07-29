@@ -37,6 +37,20 @@ describe("repairXmlBleed — Qwen3.6 name= attractor (quick15 baseline, pytest-7
     expect(c.args.name).toBe("investigate-first");
   });
 
+  it('parses {"name":"bash","arguments>{…}} — the bleed landing on the arguments key (sympy-23950 dump)', () => {
+    const c = parseToolCall(
+      '<tool_call>{"name":"bash","arguments>{"command": "ls /Users/stevenlin/Desktop/Chaty-repo/bench/coder/sympy__sympy-23950/bin/python"}}\n',
+    )!;
+    expect(c.name).toBe("bash");
+    expect(c.args.command).toContain("bin/python");
+  });
+
+  it("parses both bleeds stacked (name= plus arguments>)", () => {
+    const c = parseToolCall('<tool_call>{"name="bash","arguments>{"command": "echo hi"}}')!;
+    expect(c.name).toBe("bash");
+    expect(c.args.command).toBe("echo hi");
+  });
+
   it("never rewrites content that merely CONTAINS the pattern mid-string", () => {
     const html = '<div name="x">ok</div>';
     const c = parseToolCall(

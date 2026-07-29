@@ -420,6 +420,9 @@ export function repairXmlBleed(body: string): string {
   b = b.replace(/^(\{"name":"[\w.-]+")>\s*"?(\w+"\s*:)/, '$1,"$2');
   // {"name":"tool">  with nothing usable after → a bare, argument-less call.
   b = b.replace(/^(\{"name":"[\w.-]+")>\s*$/, "$1}");
+  // {"name":"tool","arguments>{…}  →  ,"arguments":{…}  (sympy-23950 dumps —
+  // the same XML-bracket bleed landing on the arguments key instead).
+  b = b.replace(/^(\{"name":"[\w.-]+"\s*,\s*)"arguments>\s*/, '$1"arguments":');
   return b;
 }
 
