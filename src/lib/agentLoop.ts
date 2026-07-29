@@ -1344,6 +1344,12 @@ export async function runAgentTurn(
   // Think gate state: consecutive stuck-thinking steps, and a one-shot flag to
   // physically disable reasoning on the recovery step.
   let stuckThinkCount = 0;
+  // Empty-completion streak: a model occasionally returns ZERO tokens after a
+  // tool result (seen on the 3.6 MoE — quick15 baseline, sympy-12419: raw ""
+  // accepted as the final answer killed the task at 8 of 120 steps). An empty
+  // completion is never an answer; the agents45 third-party shim already
+  // established the fix shape — retry hotter, bounded.
+  let emptyStreak = 0;
   let forceNoThinkNext = false;
   let compactNotified = false;
   const noteCompacted = () => {
@@ -1490,6 +1496,25 @@ export async function runAgentTurn(
       cb.onPrefill?.(null);
       if (opts.signal.cancelled) return;
       cb.onTrace?.({ kind: "raw", text: raw });
+      // ── Empty-completion breaker ── zero tokens is a sampling glitch, not a
+      // finish: retry hotter (same lever as the repeat breaker), and pause for
+      // the user after three in a row instead of silently ending the task.
+      if (raw.trim() === "") {
+        emptyStreak++;
+        if (emptyStreak >= 3) {
+          cb.onFinal(
+            lang === "zh"
+              ? "模型连续返回空输出,已暂停以免无声结束任务。点「继续」重试,或换个说法重新描述当前步骤。"
+              : 'The model returned empty output three times in a row — paused instead of silently ending the task. Hit "Continue" to retry, or rephrase the current step.',
+            undefined,
+            "steps",
+          );
+          return;
+        }
+        hotNext = true;
+        continue;
+      }
+      emptyStreak = 0;
       const thinking = thinkPart(raw);
 
       const call = parseToolCall(raw);
