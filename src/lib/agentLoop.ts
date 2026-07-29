@@ -408,6 +408,21 @@ function parseNeedDirGrant(e: unknown): string | null {
   return msg.split("\t")[1] || null;
 }
 
+/** XML-attribute bleed (Qwen3.6 MoE, quick15 baseline pytest-7571: 15+ rounds
+ *  of ONE task): the model fuses `<tool_call name="x">` XML with the JSON
+ *  body and emits `{"name="search_code", …}` / `{"name="x">arguments": {…}}`.
+ *  The generic "re-issue valid JSON" correction failed to break the attractor
+ *  17 rounds straight — so parse the shape instead. Anchored to the object
+ *  head; only ever tried AFTER a normal parse failed. */
+export function repairXmlBleed(body: string): string {
+  let b = body.replace(/^\{\s*"name=/, '{"name":');
+  // {"name":"tool">arguments": …  (or >"arguments": …) → ,"arguments": …
+  b = b.replace(/^(\{"name":"[\w.-]+")>\s*"?(\w+"\s*:)/, '$1,"$2');
+  // {"name":"tool">  with nothing usable after → a bare, argument-less call.
+  b = b.replace(/^(\{"name":"[\w.-]+")>\s*$/, "$1}");
+  return b;
+}
+
 /** Pull the first tool call out of model output. Tolerant of the closing tag
  *  being cut by the stop sequence, and of ```json fences. */
 /** Close a JSON object the model left unterminated — ONLY when every string
@@ -459,15 +474,23 @@ export function parseToolCall(text: string): ToolCall | null {
     }
   }
   if (!obj) {
-    // The 35B write-stall autopsy: a COMPLETE content string but the model
-    // ended its turn without the outer brace (or with it swallowed by a
-    // missing </tool_call>). Repair pure missing-closers; never mid-string.
-    const repaired = repairUnclosedJson(body.slice(s));
-    if (repaired) {
+    // Repair tiers, all from REAL raw dumps: XML-attribute bleed
+    // ({"name="x"…}), pure missing-closers (the 35B write-stall shape), and
+    // the two stacked. Never mid-string; first parse that succeeds wins.
+    const src = body.slice(s);
+    const bled = repairXmlBleed(src);
+    const candidates = [
+      bled !== src ? bled : null,
+      repairUnclosedJson(src),
+      bled !== src ? repairUnclosedJson(bled) : null,
+    ];
+    for (const cand of candidates) {
+      if (!cand) continue;
       try {
-        obj = JSON.parse(repaired) as Record<string, unknown>;
+        obj = JSON.parse(cand) as Record<string, unknown>;
+        break;
       } catch {
-        /* malformed → handled by the caller (retry) */
+        /* next tier; malformed beyond repair → caller retries */
       }
     }
   }

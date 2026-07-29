@@ -1,5 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { parseToolCall, repairUnclosedJson } from "./agentLoop";
+import { parseToolCall, repairUnclosedJson, repairXmlBleed } from "./agentLoop";
+
+describe("repairXmlBleed — Qwen3.6 name= attractor (quick15 baseline, pytest-7571 raw dumps)", () => {
+  it('parses {"name="tool","arguments":{…}} — colon written as equals', () => {
+    const c = parseToolCall(
+      '<tool_call>{"name="search_code","arguments":{"query":"caplog fixture log level restoration teardown"}}\n',
+    )!;
+    expect(c.name).toBe("search_code");
+    expect(c.args.query).toContain("caplog");
+  });
+
+  it('parses the bare no-args variant {"name="tool"}', () => {
+    const c = parseToolCall('<tool_call>{"name="search_code"}')!;
+    expect(c.name).toBe("search_code");
+    expect(Object.keys(c.args)).toHaveLength(0);
+  });
+
+  it('parses the XML-tag variant {"name="tool">', () => {
+    const c = parseToolCall('<tool_call>{"name="search_code">')!;
+    expect(c.name).toBe("search_code");
+  });
+
+  it('parses the fused variant {"name="tool">arguments": {…}}', () => {
+    const c = parseToolCall(
+      '<tool_call>{"name="search_code">arguments": {"query": "caplog fixture log level restore teardown"}}\n',
+    )!;
+    expect(c.name).toBe("search_code");
+    expect(c.args.query).toContain("caplog");
+  });
+
+  it("inner name-valued arguments stay untouched (use_skill investigate-first)", () => {
+    const c = parseToolCall(
+      '<tool_call>{"name="use_skill","arguments":{"name":"investigate-first"}}',
+    )!;
+    expect(c.name).toBe("use_skill");
+    expect(c.args.name).toBe("investigate-first");
+  });
+
+  it("never rewrites content that merely CONTAINS the pattern mid-string", () => {
+    const html = '<div name="x">ok</div>';
+    const c = parseToolCall(
+      `<tool_call>{"name":"write_file","arguments":{"path":"a.html","content":"${html.replace(/"/g, '\\"')}"}}</tool_call>`,
+    )!;
+    expect(c.name).toBe("write_file");
+    expect(c.args.content).toContain('name="x"');
+    // And the repair itself is a no-op on well-formed bodies.
+    const fine = '{"name":"bash","arguments":{"command":"ls"}}';
+    expect(repairXmlBleed(fine)).toBe(fine);
+  });
+});
 
 /** The write-stall autopsy (35B + html): ten straight wasted rounds because
  *  the parser mishandled the shapes the model actually emits. These fixtures
