@@ -161,6 +161,13 @@ async function main() {
               if (s.status !== "running") trace({ ev: "step", call: s.call, status: s.status, result: s.result?.slice(0, 4000) });
             },
             onFinal: (text, _think, reason) => { trace({ ev: "final", reason: reason ?? "done", text }); finalText = text; pausedAtSteps = reason === "steps"; resolve(); },
+            // Spin forensics: raw model output per round + injected corrections.
+            // Tool results are already captured via onStep — skip their inject
+            // echo to keep transcripts lean.
+            onTrace: (ev) => {
+              if (ev.kind === "inject" && ev.text.startsWith("<tool_result")) return;
+              trace({ ev: ev.kind, t: ev.kind === "raw" ? ev.text.slice(0, 6000) : ev.text.slice(0, 2000) });
+            },
             onError: (m) => { error = m; resolve(); },
             onAskUser: async (_q, options) => options[0] ?? "continue",
           });

@@ -167,6 +167,12 @@ export interface AgentCallbacks {
    *  when the turn paused at the step limit rather than truly finishing. */
   onFinal: (text: string, thinking?: string, reason?: "done" | "steps") => void;
   onError: (message: string) => void;
+  /** Diagnostic instrument (bench transcripts): the RAW model output of each
+   *  round before parsing, and every injected correction/user-side message.
+   *  Optional and side-effect-free — the app never passes it. Failed calls
+   *  that produce no step card (parse retries, missing-arg ladder rungs 1-2,
+   *  repeat intercepts) are only observable through this. */
+  onTrace?: (ev: { kind: "raw" | "inject"; text: string }) => void;
 }
 
 export interface AgentOptions {
@@ -1278,6 +1284,7 @@ export async function runAgentTurn(
     const m: ChatMessage = { role: "user", content: content + noThinkSuffix };
     messages.push(m);
     if (meta) toolMeta.set(m, meta);
+    cb.onTrace?.({ kind: "inject", text: content });
     return m;
   };
 
@@ -1478,6 +1485,7 @@ export async function runAgentTurn(
       // Safety: a cancelled/errored step may end mid-prefill — clear the ring.
       cb.onPrefill?.(null);
       if (opts.signal.cancelled) return;
+      cb.onTrace?.({ kind: "raw", text: raw });
       const thinking = thinkPart(raw);
 
       const call = parseToolCall(raw);
