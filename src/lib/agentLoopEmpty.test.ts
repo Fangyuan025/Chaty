@@ -68,6 +68,20 @@ describe("empty-completion breaker", () => {
     expect(final).toContain("empty output");
   });
 
+  it("an empty THINK BLOCK with nothing else is empty too — never an onFinal('')", async () => {
+    // Dev repro: thinking off pre-fills the block, 3.6 stops right after it.
+    const { final, reason, temps } = await runRounds(["<think>\n\n</think>\n", "Recovered for real."]);
+    expect(final).toContain("Recovered");
+    expect(reason).not.toBe("steps");
+    expect(temps[1]).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it("three empty-think rounds pause with a MESSAGE — silence is not an ending", async () => {
+    const { final, reason } = await runRounds(["<think></think>", "<think>\n</think>", "<think></think>"]);
+    expect(reason).toBe("steps");
+    expect(final.length).toBeGreaterThan(10);
+  });
+
   it("a non-empty round resets the streak (empties around real work never sum to a pause)", async () => {
     const tool = '<tool_call>{"name":"bash","arguments":{"command":"echo hi"}}</tool_call>';
     const { final, reason } = await runRounds(["", tool, "", tool, "", "All finished now."]);

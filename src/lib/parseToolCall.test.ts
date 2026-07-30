@@ -110,6 +110,24 @@ describe("repairXmlBleed — Qwen3.6 name= attractor (quick15 baseline, pytest-7
     expect(c.args.path).toBe("src/_pytest/logging.py");
   });
 
+  it("sibling objects: closed name object + args object — args must NOT be eaten", () => {
+    // Reconstructed from the dev-repro mechanism (the app doesn't trace raws
+    // yet): balancedSlice used to win with the bare name object and the
+    // ladder blamed the model for an empty call it never made.
+    const c = parseToolCall('<tool_call>{"name":"grep"}\n{"pattern":"localStorage"}')!;
+    expect(c.name).toBe("grep");
+    expect(c.args.pattern).toBe("localStorage");
+    const c2 = parseToolCall('<tool_call>{"name":"bash"} {"command": "python3 log_stats.py demo.log"}')!;
+    expect(c2.name).toBe("bash");
+    expect(c2.args.command).toContain("log_stats");
+  });
+
+  it("a genuinely bare call still parses args-less (list_dir with trailing junk)", () => {
+    const c = parseToolCall('<tool_call>{"name":"list_dir"}}')!;
+    expect(c.name).toBe("list_dir");
+    expect(Object.keys(c.args)).toHaveLength(0);
+  });
+
   it("never rewrites content that merely CONTAINS the pattern mid-string", () => {
     const html = '<div name="x">ok</div>';
     const c = parseToolCall(

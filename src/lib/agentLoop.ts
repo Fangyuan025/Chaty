@@ -438,6 +438,12 @@ export function repairXmlBleed(body: string): string {
   b = b.replace(/^\{"name\{"([\w.-]+)"\s*,/, '{"name":"$1",');
   // {"name":"grep", {"pattern":…}}    — the arguments KEY dropped entirely
   b = b.replace(/^(\{"name":"[\w.-]+"\s*,\s*)\{/, '$1"arguments":{');
+  // {"name":"grep"}\n{"pattern":…}    — name object CLOSED, args as a sibling
+  // object. Without this, balancedSlice "successfully" returns the bare name
+  // object and the arguments are silently dropped — the model then gets
+  // blamed for an empty-args call it never made (owner dev repro: grep/bash
+  // ladder spam while read_file args passed fine).
+  b = b.replace(/^(\{"name":"[\w.-]+")\}\s*\{/, '$1,"arguments":{');
   return b;
 }
 
@@ -531,15 +537,29 @@ export function parseToolCall(text: string): ToolCall | null {
       balancedSlice(src),
       bled !== src ? balancedSlice(bled) : null,
     ];
+    // Prefer the first candidate that recovers ARGUMENTS. A repair that
+    // "succeeds" with a bare {"name":"x"} while the raw still holds an args
+    // object has silently eaten the arguments — the ladder then blames the
+    // model for an empty call it never made (owner dev repro: grep/bash
+    // empty-args spam while read_file args passed fine).
+    let argless: Record<string, unknown> | null = null;
     for (const cand of candidates) {
       if (!cand) continue;
       try {
-        obj = JSON.parse(cand) as Record<string, unknown>;
-        break;
+        const parsed = JSON.parse(cand) as Record<string, unknown>;
+        const { name: _n, arguments: _a, parameters: _p, ...rest } = parsed;
+        const packed = (v: unknown) =>
+          typeof v === "object" && v !== null && Object.keys(v).length > 0;
+        if (packed(parsed.arguments) || packed(parsed.parameters) || Object.keys(rest).length > 0) {
+          obj = parsed;
+          break;
+        }
+        argless ??= parsed;
       } catch {
         /* next tier; malformed beyond repair → caller retries */
       }
     }
+    obj ??= argless;
   }
   if (obj && typeof obj.name === "string") {
     // Accept "arguments" or "parameters"; else treat the rest as the args.
@@ -1569,7 +1589,12 @@ export async function runAgentTurn(
       // ── Empty-completion breaker ── zero tokens is a sampling glitch, not a
       // finish: retry hotter (same lever as the repeat breaker), and pause for
       // the user after three in a row instead of silently ending the task.
-      if (raw.trim() === "") {
+      // "Empty" includes an EMPTY THINK BLOCK and nothing else (`<think>\n
+      // </think>` + EOS): with thinking off the engine pre-fills the block and
+      // 3.6 sometimes stops right after — the raw is non-blank but there is
+      // no answer in it, and it used to sail through to onFinal("") (the
+      // owner's dev repro: turns ending in silence with empty text).
+      if (raw.trim() === "" || (stripThink(raw).trim() === "" && thinkPart(raw).trim() === "")) {
         emptyStreak++;
         if (emptyStreak >= 3) {
           cb.onFinal(
