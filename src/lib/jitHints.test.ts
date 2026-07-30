@@ -98,7 +98,7 @@ describe("missingArgLadder", () => {
 
   test("single-language per lang", () => {
     expect(at(2, "en")).not.toMatch(/[一-鿿]/);
-    expect(at(3, "en")).toContain("DISABLED");
+    expect(at(3, "en")).toContain("temporarily disabled");
     expect(at(2, "zh")).not.toMatch(/Stop using/);
   });
 });
