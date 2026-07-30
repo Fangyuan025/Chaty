@@ -85,6 +85,16 @@ describe("derived sets match the pre-M0 literals", () => {
       grep: ["pattern"],
       bash: ["command"],
       bash_bg: ["command"],
+      // Empty-args sweep (2026-07-29): tools whose mandatory args previously
+      // had only an in-tool error — no ladder — now register them. Entries
+      // with "|" are alias groups: any alternative satisfies the guard.
+      outline: ["path"],
+      glob: ["pattern"],
+      bg_output: ["id"],
+      bg_kill: ["id"],
+      browser_click: ["text|label|selector|sel|steps"],
+      browser_type: ["text|value|steps"],
+      browser_eval: ["expression|expr|code"],
     });
   });
 

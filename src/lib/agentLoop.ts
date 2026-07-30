@@ -1764,7 +1764,12 @@ export async function runAgentTurn(
       // repeated 3× failed to break the attractor). Escalating ladder:
       // example → tool-diversion → disable notice; hotter sampling from the
       // 2nd slip; visible error step from the 3rd; pause at the 5th.
-      const missing = (REQUIRED_ARGS[call.name] ?? []).filter((k) => !asStr(call.args?.[k]));
+      // Alias-aware: an entry like "expression|expr|code" is satisfied by ANY
+      // alternative — tools with flexible arg names must not ladder a call
+      // that used a legitimate alias.
+      const missing = (REQUIRED_ARGS[call.name] ?? []).filter(
+        (k) => !k.split("|").some((alt) => asStr(call.args?.[alt])),
+      );
       if (missing.length) {
         // Cooldown re-arm (owner call, dev walkthrough): a hard "disabled for
         // this turn" punished models that recovered and did real work with
@@ -1787,10 +1792,11 @@ export async function runAgentTurn(
           );
           return;
         }
+        const argShown = missing[0].split("|")[0];
         const note = missingArgLadder(
           call.name,
-          missing[0],
-          ARG_EXAMPLE[call.name] ?? `{"${missing[0]}":"…"}`,
+          argShown,
+          ARG_EXAMPLE[call.name] ?? `{"${argShown}":"…"}`,
           n,
           lang,
         );
