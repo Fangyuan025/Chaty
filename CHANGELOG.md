@@ -1,5 +1,51 @@
 # Changelog
 
+## v2.0.2 — Spin control (2026-07-29)
+
+A patch release about wasted rounds. We instrumented the agent loop, ran the
+current model against real tasks, and fixed every failure shape the raw
+transcripts showed — plus the delivery habit the webapp release didn't cover.
+
+### The agent stops spinning
+
+- **The parser now reads eleven more real-world tool-call shapes.** Local
+  models fuse XML attributes into JSON (`{"name="grep"…}`), drop the
+  `arguments` key, stutter the opener, ship the arguments as a second object —
+  or as a whole second `<tool_call>` block. Every shape came from a raw
+  transcript dump; every one now parses with the arguments intact. A sweep
+  test drives all shapes across every tool with required arguments, so no
+  repair is tuned to one lucky tool.
+- **An empty completion is a glitch, not an answer.** Zero tokens — or an
+  empty think block and nothing else — used to end the task silently with a
+  blank reply. Now it retries hotter; three in a row pause with a real
+  message and a working Continue.
+- **The missing-argument ladder learned to forgive.** A tool disabled after
+  empty-argument calls re-arms once the model makes real progress with other
+  tools — with a total cap so the second chance can't become an infinite one.
+  Seven more tools (outline, glob, bg_output, bg_kill, browser_click,
+  browser_type, browser_eval) join the guarded set, with alias awareness so a
+  legitimate `code`/`expr`/`expression` never gets blamed.
+
+### Run it before you ship it
+
+- **Code that was never run gets one honest question.** Ending the turn after
+  writing real code (two files, or about a screenful) with zero execution —
+  and `ls` does not count as execution — earns exactly one nudge: validate,
+  run it, or say why a run isn't needed. Small single-file edits, docs and
+  config never trigger it; it fires once, then your answer stands.
+
+### Your budgets, your rules
+
+- **Think budget (Settings → Code).** A hard per-step ceiling on thinking
+  tokens. Over budget the think block closes gracefully: the reasoning stays
+  in context and the model acts on it — nothing discarded. The old built-in
+  3000-token cutoff that beheaded legitimate long reasoning is gone; if you
+  want a ceiling, it's yours to set.
+- **Per-step output limit (Settings → Code).** The generation budget per
+  agent step is now yours too: 0 = auto by think depth, any value clamped to
+  the context window.
+
+
 ## v2.0.1 — The webapp workshop (2026-07-28)
 
 A patch release focused on one thing: making Code mode genuinely good at
