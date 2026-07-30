@@ -623,13 +623,6 @@ function isThinkOnly(raw: string): boolean {
   return proseAfter(raw).trim() === "";
 }
 
-/** Degenerate looping: a short chunk repeated ≥3× back-to-back at the tail
- *  ("I need to check… I need to check… I need to check…"). Very unlikely in
- *  legitimate prose or code, so a positive is a reliable stuck signal. */
-function isDegenerateRepeat(raw: string): boolean {
-  return /([\s\S]{16,90}?)\1\1/.test(raw.slice(-320));
-}
-
 const asStr = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
 
 // Models sometimes name arguments differently (path/file_path/filename…) —
@@ -1362,12 +1355,11 @@ export async function runAgentTurn(
   const nCtx = opts.nCtx ?? 8192;
   const budget = opts.thinkMode === "deep" ? 8192 : opts.thinkMode === "normal" ? 6144 : 4096;
   const maxTokens = Math.min(budget, Math.max(1024, Math.floor(nCtx * 0.75)));
-  // Think gate: uninterrupted reasoning past this many tokens with no tool call
-  // and no answer = the model is looping in its own head. Deep mode gets more
-  // headroom; still far below maxTokens so a genuine long reason isn't cut.
-  const thinkCap = opts.thinkMode === "deep" ? 5000 : 3000;
-  // User think budget: a HARD per-round ceiling with a graceful close (the
-  // reasoning is kept and acted on) — checked before the runaway gate.
+  // User think budget: the ONLY mid-stream thinking ceiling (owner call — the
+  // old built-in 3000/5000 runaway cut kept beheading legitimate long
+  // reasoning; a user who wants a cap sets one). Unset ⇒ a round is bounded
+  // by maxTokens, and a think-only round still lands in the no-output
+  // recovery below.
   const thinkBudget = opts.thinkBudget && opts.thinkBudget > 0 ? opts.thinkBudget : 0;
   // read_file budget: use most of the real context window for one read so even
   // long files come back in a single call (the #1 agent frustration). We leave
@@ -1549,7 +1541,6 @@ export async function runAgentTurn(
 
       let raw = "";
       let liveTokens = 0;
-      let thinkGateTripped = false;
       let budgetTripped = false;
       let prefillShown = false;
       const t0 = performance.now();
@@ -1598,23 +1589,13 @@ export async function runAgentTurn(
             // ── Think gate (mid-stream) ── stop a runaway before it fills the
             // whole budget: too much uninterrupted reasoning with no output, or
             // degenerate looping. Checked periodically to stay cheap.
-            if (!thinkGateTripped && !budgetTripped && liveTokens % 48 === 0) {
-              // User budget first: a graceful close, not a discard.
+            // The user think budget is the only mid-stream thinking ceiling
+            // (the old built-in runaway/looping cuts are gone — owner call:
+            // set a budget if you want a cap). Graceful close, not a discard.
+            if (!budgetTripped && liveTokens % 48 === 0) {
               if (thinkBudget && liveTokens > thinkBudget && isThinkOnly(raw)) {
                 budgetTripped = true;
                 void cancelGeneration().catch(() => {});
-              } else {
-                // With a user budget set, the budget IS the ceiling — the
-                // built-in runaway cap must not overrule a larger allowance
-                // (it fired at 3000 against a 4000 budget and discarded the
-                // very reasoning the user paid for). Degenerate LOOPING still
-                // cuts under budget: circling in place deserves the discard.
-                const runaway = !thinkBudget && liveTokens > thinkCap && isThinkOnly(raw);
-                const looping = liveTokens > 400 && isThinkOnly(raw) && isDegenerateRepeat(raw);
-                if (runaway || looping) {
-                  thinkGateTripped = true;
-                  void cancelGeneration().catch(() => {});
-                }
               }
             }
           } else if (ev.type === "done") {
@@ -1675,12 +1656,12 @@ export async function runAgentTurn(
       const call = parseToolCall(raw);
       if (!call) {
         const answer = proseAfter(raw).trim() || stripThink(raw).trim();
-        // ── Think gate (post-generation) ── the step produced only reasoning:
-        // either we cut a runaway mid-stream, or it finished with no tool call
-        // and an empty answer despite thinking. Don't accept that as "done" —
-        // force reasoning off, sample hotter, and demand an action. Bounded so
-        // the recovery itself can't spin: a 3rd stuck step pauses for the user.
-        const stuckThinking = thinkGateTripped || (answer === "" && thinking.trim() !== "");
+        // ── No-output recovery ── the round finished with ONLY reasoning: no
+        // tool call, no answer. This stays even though the built-in mid-stream
+        // cuts are gone — without it a think-only round becomes a silent empty
+        // final. Force reasoning off, sample hotter, demand an action; a 3rd
+        // stuck round pauses for the user.
+        const stuckThinking = answer === "" && thinking.trim() !== "";
         if (stuckThinking && step < maxSteps - 1) {
           stuckThinkCount++;
           if (stuckThinkCount >= 3) {

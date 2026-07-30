@@ -67,11 +67,9 @@ describe("think budget", () => {
     expect(final).toContain("42");
   });
 
-  it("a budget ABOVE the built-in cap disarms the runaway discard (the two must not fight)", async () => {
-    // 3200 think tokens: past the 3000 runaway cap, under the 4000 budget.
-    // The old gate used to fire at 3000 and DISCARD reasoning the user had
-    // explicitly allowed. Degenerate-loop detection stays armed (distinct
-    // token texts here, so it must not fire either).
+  it("long thinking under budget streams uncut (the built-in runaway cap is gone)", async () => {
+    // 3200 think tokens against a 4000 budget: the deleted built-in gate used
+    // to behead this at 3000 and discard reasoning the user had allowed.
     const rounds: Ev[][] = [
       [
         { type: "token", text: "<think>" },
@@ -109,6 +107,43 @@ describe("think budget", () => {
     expect(cancels).toBe(0);
     expect(injects.some((i) => i.includes("budget reached"))).toBe(false);
     expect(final).toContain("shipping the answer");
+  });
+
+  it("no budget set: thinking is never cut mid-stream at all (owner call — cap is opt-in)", async () => {
+    const rounds: Ev[][] = [
+      [
+        { type: "token", text: "<think>" },
+        ...Array.from({ length: 3500 }, (_, i) => ({ type: "token", text: `x${i} ` })),
+        { type: "token", text: "</think>Long thought, clean landing." },
+        { type: "done", stats: { completionTokens: 3502, tokensPerSecond: 50, promptTokens: 10 } },
+      ],
+    ];
+    let cancels = 0;
+    mockIPC(async (cmd, args) => {
+      if (cmd === "generate") {
+        const ch = (args as { onEvent: Chan }).onEvent;
+        for (const ev of rounds.shift() ?? []) ch.onmessage?.(ev);
+        return null;
+      }
+      if (cmd === "cancel_generation") { cancels++; return null; }
+      return null;
+    });
+    let final = "";
+    await runAgentTurn(
+      "solve it", [], "/tmp/ws", "en",
+      {
+        thinkMode: "normal", maxSteps: 8,
+        signal: { cancelled: false },
+        approve: async () => true, approveDir: async () => false, approveSudo: async () => ({ ok: false }),
+      } as never,
+      {
+        onThinking: () => {}, onAssistantText: () => {}, onStep: () => {},
+        onFinal: (t) => { final = t; },
+        onError: (m) => { throw new Error(m); },
+      },
+    );
+    expect(cancels).toBe(0);
+    expect(final).toContain("clean landing");
   });
 
   it("budget 0 (auto) never trips the graceful close on ordinary thinking", async () => {
