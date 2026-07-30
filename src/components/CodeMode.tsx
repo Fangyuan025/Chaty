@@ -480,6 +480,7 @@ export function CodeMode({
   maxSteps,
   bashTimeout,
   temperature,
+  thinkBudget = 0,
   autoApproveEdits = false,
   autoRunReadOnly = true,
   skills = [],
@@ -499,6 +500,8 @@ export function CodeMode({
   bashTimeout?: number;
   /** Sampling temperature for agent steps (Settings → Code). */
   temperature?: number;
+  /** Hard per-round think-token ceiling, 0 = auto (Settings → Code). */
+  thinkBudget?: number;
   /** Auto-approve file edits — write/edit/multi_edit run without asking
    *  (Settings → Code; checkpoints still allow rollback). */
   autoApproveEdits?: boolean;
@@ -1191,6 +1194,7 @@ export function CodeMode({
       nCtx: model.nCtx ?? undefined,
       maxSteps,
       temperature,
+      thinkBudget,
       bashTimeout,
       projectDoc,
       skills,

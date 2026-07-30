@@ -128,6 +128,22 @@ describe("repairXmlBleed — Qwen3.6 name= attractor (quick15 baseline, pytest-7
     expect(Object.keys(c.args)).toHaveLength(0);
   });
 
+  it("adopts args shipped in a SECOND tool_call block (dev repro: empty-args spam at temp 0.7)", () => {
+    const c = parseToolCall(
+      '<tool_call>{"name":"grep"}</tool_call>\n<tool_call>{"pattern":"localStorage"}</tool_call>',
+    )!;
+    expect(c.name).toBe("grep");
+    expect(c.args.pattern).toBe("localStorage");
+  });
+
+  it("a second block WITH its own name is a separate call, never merged as args", () => {
+    const c = parseToolCall(
+      '<tool_call>{"name":"list_dir"}</tool_call>\n<tool_call>{"name":"grep","arguments":{"pattern":"x"}}</tool_call>',
+    )!;
+    expect(c.name).toBe("list_dir");
+    expect(Object.keys(c.args)).toHaveLength(0);
+  });
+
   it("never rewrites content that merely CONTAINS the pattern mid-string", () => {
     const html = '<div name="x">ok</div>';
     const c = parseToolCall(

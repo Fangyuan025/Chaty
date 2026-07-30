@@ -2446,6 +2446,7 @@ export default function App() {
         maxSteps={settings.codeMaxSteps}
         bashTimeout={settings.codeBashTimeout}
         temperature={settings.codeTemperature}
+        thinkBudget={settings.codeThinkBudget}
         autoApproveEdits={settings.codeAutoApproveEdits}
         autoRunReadOnly={settings.codeAutoRunReadOnly}
         skills={settings.codeSkills}

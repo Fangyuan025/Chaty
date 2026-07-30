@@ -64,8 +64,8 @@ export function missingArgLadder(
       : `ERROR: that is the second ${name} in a row without "${arg}". Stop using this tool for a moment. If you don't know what ${arg} should be, make a DIFFERENT concrete move instead: list_dir {"path":"."} to see the layout, read_file on a specific file, or grep {"pattern":"a keyword"}. To use ${name} again, you MUST include ${arg}, e.g. ${example}.`;
   }
   return zh
-    ? `${name} 本回合已停用(连续 ${attempt} 次空参数)。不要再调它。用 list_dir / read_file / grep 等带具体参数的工具继续完成任务。`
-    : `${name} is now DISABLED for this turn (${attempt} empty-argument calls in a row). Do not call it again. Continue the task with list_dir / read_file / grep and concrete arguments.`;
+    ? `${name} 已暂时停用(连续 ${attempt} 次空参数)。先用 list_dir / read_file 等带具体参数的工具实际推进几步;之后再用 ${name} 时必须带上 ${arg},例如 ${example}。`
+    : `${name} is temporarily disabled (${attempt} empty-argument calls in a row). Make real progress with other tools first (list_dir / read_file with concrete arguments); when you come back to ${name}, you MUST include ${arg}, e.g. ${example}.`;
 }
 
 // A local dev server just came up (bash/bash_bg/bg_output printed a local

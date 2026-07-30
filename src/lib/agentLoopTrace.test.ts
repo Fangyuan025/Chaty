@@ -88,4 +88,31 @@ describe("agentLoop onTrace instrument", () => {
     expect(injects.some((i) => i.text.includes("search_code"))).toBe(true);
     expect(steps.some((s) => s.startsWith("search_code"))).toBe(false);
   });
+
+  it("ladder cooldown: real progress with other tools re-arms a slipped tool at rung 1", async () => {
+    const bash = (n: number) => `<tool_call>{"name":"bash","arguments":{"command":"echo ${n}"}}</tool_call>`;
+    const empty = '<tool_call>{"name":"search_code","arguments":{}}</tool_call>';
+    rounds.push(empty, empty, bash(1), bash(2), bash(3), bash(4), empty, "All wrapped up.");
+    const traces: { kind: string; text: string }[] = [];
+    await runAgentTurn(
+      "explore the repo", [], "/tmp/ws", "en",
+      {
+        thinkMode: "off", maxSteps: 12,
+        signal: { cancelled: false },
+        approve: async () => true, approveDir: async () => false, approveSudo: async () => ({ ok: false }),
+      } as never,
+      {
+        onThinking: () => {}, onAssistantText: () => {}, onStep: () => {},
+        onFinal: () => {},
+        onError: (m) => { throw new Error(`loop errored: ${m}`); },
+        onTrace: (ev) => traces.push(ev),
+      },
+    );
+    const slips = traces.filter((t) => t.kind === "inject" && t.text.includes("search_code"));
+    // Third slip lands AFTER four productive rounds → rung 1 again (concrete
+    // example), not the disable notice.
+    const last = slips[slips.length - 1].text;
+    expect(last).toContain("re-issue");
+    expect(last).not.toContain("temporarily disabled");
+  });
 });

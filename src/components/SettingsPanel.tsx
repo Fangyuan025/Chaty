@@ -65,6 +65,10 @@ export interface GenSettings {
   codeBashTimeout: number;
   /** Code mode: sampling temperature for agent steps (0–1). */
   codeTemperature: number;
+  /** Code mode: hard ceiling on thinking tokens per agent round (0 = auto).
+   *  Over budget the think block closes gracefully — reasoning kept, model
+   *  told to act on it. */
+  codeThinkBudget: number;
   /** Code mode: file edits (write/edit/multi_edit) run without approval. */
   codeAutoApproveEdits: boolean;
   /** Code mode: obviously read-only bash commands run without approval. */
@@ -126,6 +130,7 @@ export const defaultSettings: GenSettings = {
   codeMaxSteps: 32,
   codeBashTimeout: 60,
   codeTemperature: 0.3,
+  codeThinkBudget: 0,
   codeAutoApproveEdits: false,
   codeAutoRunReadOnly: true,
   codeBrowserHeadless: false,
@@ -848,6 +853,22 @@ export function SettingsPanel({
                 />
               </label>
               <div className="settings-hint">{t("cmTempHint")}</div>
+
+              <label className="field">
+                <span>
+                  {t("cmThinkBudget")}{" "}
+                  <b>{value.codeThinkBudget > 0 ? value.codeThinkBudget : t("cmThinkBudgetOff")}</b>
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={6000}
+                  step={250}
+                  value={value.codeThinkBudget}
+                  onChange={(e) => set("codeThinkBudget", Number(e.target.value))}
+                />
+              </label>
+              <div className="settings-hint">{t("cmThinkBudgetHint")}</div>
 
               <SetRow label={t("cmAutoEdits")} hint={t("cmAutoEditsHint")}>
                 <Switch

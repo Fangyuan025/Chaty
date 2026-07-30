@@ -110,6 +110,12 @@ export const T = {
     zh: "Code 模式每步生成的采样温度。低 = 更稳定可复现(默认 0.3),高 = 更有创造性但更容易跑偏。",
     en: "Sampling temperature for each agent step. Lower = steadier and more reproducible (default 0.3); higher = more creative but less predictable.",
   },
+  cmThinkBudget: { zh: "思考预算 (tokens)", en: "Think budget (tokens)" },
+  cmThinkBudgetOff: { zh: "自动", en: "auto" },
+  cmThinkBudgetHint: {
+    zh: "每步思考的 token 上限。超出后思考块被温和收束:已有思考保留在上下文里,模型基于它直接行动——不丢内容、不断连贯。0 = 用内置的自动上限。低温下容易无限思考的模型建议设 1000-2000。",
+    en: "Hard per-step ceiling on thinking tokens. Over budget the think block closes gracefully: the reasoning stays in context and the model acts on it — nothing discarded, coherence kept. 0 = built-in auto caps. For models that loop in thought at low temperature, 1000-2000 works well.",
+  },
   cmAutoEdits: { zh: "自动批准文件编辑", en: "Auto-approve file edits" },
   cmAutoEditsHint: {
     zh: "写入/编辑文件不再逐次询问(命令仍需批准)。每轮开始有检查点,可随时回滚。",

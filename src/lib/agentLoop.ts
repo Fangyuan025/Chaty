@@ -179,6 +179,12 @@ export interface AgentCallbacks {
 export interface AgentOptions {
   /** Reasoning depth: off = no thinking, normal = default, deep = thorough. */
   thinkMode: ThinkMode;
+  /** User-set hard ceiling on thinking tokens per round (0/undefined = the
+   *  built-in caps). Over budget the think block is CLOSED gracefully: the
+   *  reasoning so far stays in context and the model is told to act on it —
+   *  unlike the runaway gate, nothing is discarded (owner call: a 35B at low
+   *  temperature loops in thought; cutting must not cost coherence). */
+  thinkBudget?: number;
   /** From ModelInfo — picks the right no-think mechanism per model family
    *  (Qwen3 soft switch vs. Qwen3.5+/Gemma think-flag), mirroring chat mode. */
   supportsThinking?: boolean;
@@ -572,6 +578,29 @@ export function parseToolCall(text: string): ToolCall | null {
       const { name: _n, arguments: _a, parameters: _p, ...rest } = obj;
       if (Object.keys(rest).length > 0 || !args || typeof args !== "object") {
         args = rest;
+      }
+    }
+    // Still empty? The 3.6 sometimes ships the args OUTSIDE the first block —
+    // a second <tool_call> holding just the args object (owner dev repro:
+    // grep spammed "empty args" at temp 0.7, so not a sampling attractor).
+    // Adopt a nearby nameless object as the args; an object WITH "name" is a
+    // distinct second call and stays untouched.
+    if (Object.keys(args as Record<string, unknown>).length === 0) {
+      const firstEnd = text.indexOf("</tool_call>", open);
+      const rest = (firstEnd === -1 ? "" : text.slice(firstEnd + "</tool_call>".length)).slice(0, 400);
+      const brace = rest.indexOf("{");
+      if (brace !== -1) {
+        const cand = balancedSlice(rest.slice(brace));
+        if (cand) {
+          try {
+            const extra = JSON.parse(cand) as Record<string, unknown>;
+            if (extra && typeof extra === "object" && !("name" in extra) && Object.keys(extra).length > 0) {
+              args = extra;
+            }
+          } catch {
+            /* not JSON — leave args empty, the ladder handles it */
+          }
+        }
       }
     }
     return { name: obj.name as AgentToolName, args: args as Record<string, unknown> };
@@ -1337,6 +1366,9 @@ export async function runAgentTurn(
   // and no answer = the model is looping in its own head. Deep mode gets more
   // headroom; still far below maxTokens so a genuine long reason isn't cut.
   const thinkCap = opts.thinkMode === "deep" ? 5000 : 3000;
+  // User think budget: a HARD per-round ceiling with a graceful close (the
+  // reasoning is kept and acted on) — checked before the runaway gate.
+  const thinkBudget = opts.thinkBudget && opts.thinkBudget > 0 ? opts.thinkBudget : 0;
   // read_file budget: use most of the real context window for one read so even
   // long files come back in a single call (the #1 agent frustration). We leave
   // ~5k tokens of headroom for the system prompt + room to act, then ~3 chars/
@@ -1406,7 +1438,7 @@ export async function runAgentTurn(
   // the exemplar no-think models imitate), and a valid call clears its
   // tool's counter. Slip 5 pauses — guarded calls never reach the repeat
   // breaker, so the ladder carries its own backstop.
-  const argSlips = new Map<string, number>();
+  const argSlips = new Map<string, { n: number; atStep: number; total: number }>();
   // Pre-compaction memory flush: once per turn, just before the first
   // compaction, the files already edited get pinned into a plain user note —
   // compaction digests tool results, and without this the model loses track
@@ -1518,6 +1550,7 @@ export async function runAgentTurn(
       let raw = "";
       let liveTokens = 0;
       let thinkGateTripped = false;
+      let budgetTripped = false;
       let prefillShown = false;
       const t0 = performance.now();
       // After an intercepted repeat, sample hotter once to escape the pattern.
@@ -1565,12 +1598,18 @@ export async function runAgentTurn(
             // ── Think gate (mid-stream) ── stop a runaway before it fills the
             // whole budget: too much uninterrupted reasoning with no output, or
             // degenerate looping. Checked periodically to stay cheap.
-            if (!thinkGateTripped && liveTokens % 48 === 0) {
-              const runaway = liveTokens > thinkCap && isThinkOnly(raw);
-              const looping = liveTokens > 400 && isThinkOnly(raw) && isDegenerateRepeat(raw);
-              if (runaway || looping) {
-                thinkGateTripped = true;
+            if (!thinkGateTripped && !budgetTripped && liveTokens % 48 === 0) {
+              // User budget first: a graceful close, not a discard.
+              if (thinkBudget && liveTokens > thinkBudget && isThinkOnly(raw)) {
+                budgetTripped = true;
                 void cancelGeneration().catch(() => {});
+              } else {
+                const runaway = liveTokens > thinkCap && isThinkOnly(raw);
+                const looping = liveTokens > 400 && isThinkOnly(raw) && isDegenerateRepeat(raw);
+                if (runaway || looping) {
+                  thinkGateTripped = true;
+                  void cancelGeneration().catch(() => {});
+                }
               }
             }
           } else if (ev.type === "done") {
@@ -1611,6 +1650,22 @@ export async function runAgentTurn(
       }
       emptyStreak = 0;
       const thinking = thinkPart(raw);
+
+      // ── Think budget (user setting) ── the round was cut at the ceiling.
+      // Graceful close: the reasoning STAYS in context (capped) and the model
+      // is told to act on it — coherence preserved, unlike the runaway gate
+      // which discards a pathological loop on purpose.
+      if (budgetTripped) {
+        const kept = thinking.length > 2400 ? `…${thinking.slice(-2400)}` : thinking;
+        messages.push({ role: "assistant", content: `<think>\n${kept}\n</think>` });
+        pushUser(
+          lang === "zh"
+            ? "思考预算已用完。以上思考已保留——现在基于它直接执行下一步(发工具调用或给出答案),不要再展开思考。"
+            : "Think budget reached. Your reasoning above is kept — act on it NOW (issue the tool call or give the answer); do not reason further.",
+        );
+        forceNoThinkNext = true;
+        continue;
+      }
 
       const call = parseToolCall(raw);
       if (!call) {
@@ -1711,14 +1766,22 @@ export async function runAgentTurn(
       // 2nd slip; visible error step from the 3rd; pause at the 5th.
       const missing = (REQUIRED_ARGS[call.name] ?? []).filter((k) => !asStr(call.args?.[k]));
       if (missing.length) {
-        const n = (argSlips.get(call.name) ?? 0) + 1;
-        argSlips.set(call.name, n);
+        // Cooldown re-arm (owner call, dev walkthrough): a hard "disabled for
+        // this turn" punished models that recovered and did real work with
+        // other tools in between. If ≥3 rounds passed since the last slip,
+        // the ladder restarts at rung 1 — but a TOTAL cap still pauses a
+        // model that keeps coming back empty, so the escape hatch can't spin.
+        const prev = argSlips.get(call.name);
+        const rearmed = prev !== undefined && step - prev.atStep >= 4;
+        const n = rearmed ? 1 : (prev?.n ?? 0) + 1;
+        const total = (prev?.total ?? 0) + 1;
+        argSlips.set(call.name, { n, atStep: step, total });
         if (n >= 2) hotNext = true;
-        if (n >= 5) {
+        if (n >= 5 || total >= 8) {
           cb.onFinal(
             lang === "zh"
-              ? `检测到模型连续 ${n} 次发出缺参数的 ${call.name} 调用,已暂停以免空转。可点「继续」重试,或把任务拆得更具体。`
-              : `The model issued ${n} ${call.name} calls in a row with missing arguments — paused to avoid spinning. Hit "Continue" to retry, or break the task into more concrete steps.`,
+              ? `检测到模型累计 ${total} 次发出缺参数的 ${call.name} 调用,已暂停以免空转。可点「继续」重试,或把任务拆得更具体。`
+              : `The model issued ${total} ${call.name} calls with missing arguments — paused to avoid spinning. Hit "Continue" to retry, or break the task into more concrete steps.`,
             undefined,
             "steps",
           );
