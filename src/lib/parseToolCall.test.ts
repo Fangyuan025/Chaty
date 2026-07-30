@@ -81,6 +81,35 @@ describe("repairXmlBleed — Qwen3.6 name= attractor (quick15 baseline, pytest-7
     expect(Array.isArray(c.args.todos)).toBe(true);
   });
 
+  it('parses the dropped arguments KEY: {"name":"grep", {"pattern":…}} (postfix rerun dumps)', () => {
+    const c = parseToolCall('<tool_call>{"name":"grep", {"pattern": "def urlize"}}\n')!;
+    expect(c.name).toBe("grep");
+    expect(c.args.pattern).toBe("def urlize");
+    const c2 = parseToolCall('<tool_call>{"name":"search_files", {"query": "urlize"}}\n')!;
+    expect(c2.name).toBe("search_files");
+    expect(c2.args.query).toBe("urlize");
+  });
+
+  it('parses the dropped value-quote: {"name=read_file"… (postfix 15814 dump)', () => {
+    const c = parseToolCall(
+      '<tool_call>{"name=read_file","arguments":{"path": "django/db/models/sql/compiler.py"}}',
+    )!;
+    expect(c.name).toBe("read_file");
+    expect(c.args.path).toContain("compiler.py");
+  });
+
+  it('parses the value-fused stutter: {"name{"bash",… (postfix 15814 dump)', () => {
+    const c = parseToolCall('<tool_call>{"name{"bash","command": "echo ok"}}')!;
+    expect(c.name).toBe("bash");
+    expect(c.args.command).toBe("echo ok");
+  });
+
+  it("name= combined with dropped arguments key parses too (postfix 7571 dump)", () => {
+    const c = parseToolCall('<tool_call>{"name="read_file", {"path": "src/_pytest/logging.py"}}\n')!;
+    expect(c.name).toBe("read_file");
+    expect(c.args.path).toBe("src/_pytest/logging.py");
+  });
+
   it("never rewrites content that merely CONTAINS the pattern mid-string", () => {
     const html = '<div name="x">ok</div>';
     const c = parseToolCall(

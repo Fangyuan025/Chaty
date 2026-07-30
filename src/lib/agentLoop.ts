@@ -415,7 +415,10 @@ function parseNeedDirGrant(e: unknown): string | null {
  *  17 rounds straight — so parse the shape instead. Anchored to the object
  *  head; only ever tried AFTER a normal parse failed. */
 export function repairXmlBleed(body: string): string {
-  let b = body.replace(/^\{\s*"name=/, '{"name":');
+  // Specific before general: {"name=read_file"… (value's opening quote
+  // dropped) must be caught before the plain name= rule eats the equals.
+  let b = body.replace(/^\{"name=([\w.-]+)"/, '{"name":"$1"');
+  b = b.replace(/^\{\s*"name=/, '{"name":');
   // {"name":"tool">arguments": …  (or >"arguments": …) → ,"arguments": …
   b = b.replace(/^(\{"name":"[\w.-]+")>\s*"?(\w+"\s*:)/, '$1,"$2');
   // {"name":"tool">  with nothing usable after → a bare, argument-less call.
@@ -430,6 +433,11 @@ export function repairXmlBleed(body: string): string {
   b = b.replace(/^(\{"name":"[\w.-]+"\s*,\s*)arguments"\s*:/, '$1"arguments":');
   // {"name":"grep">\n{"pattern":…}   — args as a SEPARATE object after the tag
   b = b.replace(/^(\{"name":"[\w.-]+")>\s*\{/, '$1,"arguments":{');
+  // postfix-round escapees (quick15@3.6 rerun dumps), same family:
+  // {"name{"bash",…                   — stutter fused with the VALUE
+  b = b.replace(/^\{"name\{"([\w.-]+)"\s*,/, '{"name":"$1",');
+  // {"name":"grep", {"pattern":…}}    — the arguments KEY dropped entirely
+  b = b.replace(/^(\{"name":"[\w.-]+"\s*,\s*)\{/, '$1"arguments":{');
   return b;
 }
 
