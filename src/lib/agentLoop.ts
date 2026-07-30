@@ -1604,7 +1604,12 @@ export async function runAgentTurn(
                 budgetTripped = true;
                 void cancelGeneration().catch(() => {});
               } else {
-                const runaway = liveTokens > thinkCap && isThinkOnly(raw);
+                // With a user budget set, the budget IS the ceiling — the
+                // built-in runaway cap must not overrule a larger allowance
+                // (it fired at 3000 against a 4000 budget and discarded the
+                // very reasoning the user paid for). Degenerate LOOPING still
+                // cuts under budget: circling in place deserves the discard.
+                const runaway = !thinkBudget && liveTokens > thinkCap && isThinkOnly(raw);
                 const looping = liveTokens > 400 && isThinkOnly(raw) && isDegenerateRepeat(raw);
                 if (runaway || looping) {
                   thinkGateTripped = true;

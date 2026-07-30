@@ -67,6 +67,50 @@ describe("think budget", () => {
     expect(final).toContain("42");
   });
 
+  it("a budget ABOVE the built-in cap disarms the runaway discard (the two must not fight)", async () => {
+    // 3200 think tokens: past the 3000 runaway cap, under the 4000 budget.
+    // The old gate used to fire at 3000 and DISCARD reasoning the user had
+    // explicitly allowed. Degenerate-loop detection stays armed (distinct
+    // token texts here, so it must not fire either).
+    const rounds: Ev[][] = [
+      [
+        { type: "token", text: "<think>" },
+        ...Array.from({ length: 3200 }, (_, i) => ({ type: "token", text: `t${i} ` })),
+        { type: "token", text: "</think>Considered everything: shipping the answer." },
+        { type: "done", stats: { completionTokens: 3202, tokensPerSecond: 50, promptTokens: 10 } },
+      ],
+    ];
+    let cancels = 0;
+    mockIPC(async (cmd, args) => {
+      if (cmd === "generate") {
+        const ch = (args as { onEvent: Chan }).onEvent;
+        for (const ev of rounds.shift() ?? []) ch.onmessage?.(ev);
+        return null;
+      }
+      if (cmd === "cancel_generation") { cancels++; return null; }
+      return null;
+    });
+    const injects: string[] = [];
+    let final = "";
+    await runAgentTurn(
+      "solve it", [], "/tmp/ws", "en",
+      {
+        thinkMode: "normal", thinkBudget: 4000, maxSteps: 8,
+        signal: { cancelled: false },
+        approve: async () => true, approveDir: async () => false, approveSudo: async () => ({ ok: false }),
+      } as never,
+      {
+        onThinking: () => {}, onAssistantText: () => {}, onStep: () => {},
+        onFinal: (t) => { final = t; },
+        onError: (m) => { throw new Error(m); },
+        onTrace: (ev) => { if (ev.kind === "inject") injects.push(ev.text); },
+      },
+    );
+    expect(cancels).toBe(0);
+    expect(injects.some((i) => i.includes("budget reached"))).toBe(false);
+    expect(final).toContain("shipping the answer");
+  });
+
   it("budget 0 (auto) never trips the graceful close on ordinary thinking", async () => {
     const rounds: Ev[][] = [
       [
