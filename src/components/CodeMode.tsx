@@ -1234,6 +1234,18 @@ export function CodeMode({
         return new Promise<boolean>((resolve) => setApproval({ call, resolve }));
       },
     }, {
+      // DEV forensics: keep the last 200 raw rounds + injected corrections on
+      // window.__agentTrace — `copy(window.__agentTrace)` in devtools dumps
+      // the evidence the bench transcripts get via the same instrument.
+      ...(import.meta.env.DEV
+        ? {
+            onTrace: (ev: { kind: string; text: string }) => {
+              const w = window as unknown as { __agentTrace?: { kind: string; text: string }[] };
+              (w.__agentTrace ??= []).push({ kind: ev.kind, text: ev.text.slice(0, 4000) });
+              if (w.__agentTrace.length > 200) w.__agentTrace.shift();
+            },
+          }
+        : {}),
       onThinking: (t) => update((m) => ({ ...m, liveThinking: t })),
       onStats: (tokens, tps) => setStats({ tokens, tps }),
       onContext: (used) => setCtxUsed(used),
