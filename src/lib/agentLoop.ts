@@ -179,12 +179,16 @@ export interface AgentCallbacks {
 export interface AgentOptions {
   /** Reasoning depth: off = no thinking, normal = default, deep = thorough. */
   thinkMode: ThinkMode;
-  /** User-set hard ceiling on thinking tokens per round (0/undefined = the
-   *  built-in caps). Over budget the think block is CLOSED gracefully: the
-   *  reasoning so far stays in context and the model is told to act on it —
-   *  unlike the runaway gate, nothing is discarded (owner call: a 35B at low
-   *  temperature loops in thought; cutting must not cost coherence). */
+  /** User-set hard ceiling on thinking tokens per round (0/undefined = no
+   *  mid-stream ceiling). Over budget the think block is CLOSED gracefully:
+   *  the reasoning so far stays in context and the model is told to act on
+   *  it — nothing is discarded (owner call: a 35B at low temperature loops
+   *  in thought; cutting must not cost coherence). */
   thinkBudget?: number;
+  /** User-set per-round generation budget in tokens (0/undefined = the
+   *  per-thinkMode default). Always clamped to what the context window can
+   *  actually hold, floored at 512 so a tool call still fits. */
+  maxGenTokens?: number;
   /** From ModelInfo — picks the right no-think mechanism per model family
    *  (Qwen3 soft switch vs. Qwen3.5+/Gemma think-flag), mirroring chat mode. */
   supportsThinking?: boolean;
@@ -1353,7 +1357,16 @@ export async function runAgentTurn(
   // A generous token budget so a long reasoning block can't bury the tool call,
   // but never so large that generation crowds the prompt out of the window.
   const nCtx = opts.nCtx ?? 8192;
-  const budget = opts.thinkMode === "deep" ? 8192 : opts.thinkMode === "normal" ? 6144 : 4096;
+  // User override first (0 = auto per-thinkMode default), floored at 512 so a
+  // tool call still fits, always clamped to what the window can hold.
+  const budget =
+    opts.maxGenTokens && opts.maxGenTokens > 0
+      ? Math.max(512, opts.maxGenTokens)
+      : opts.thinkMode === "deep"
+        ? 8192
+        : opts.thinkMode === "normal"
+          ? 6144
+          : 4096;
   const maxTokens = Math.min(budget, Math.max(1024, Math.floor(nCtx * 0.75)));
   // User think budget: the ONLY mid-stream thinking ceiling (owner call — the
   // old built-in 3000/5000 runaway cut kept beheading legitimate long

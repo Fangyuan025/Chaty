@@ -17,6 +17,54 @@ const { runAgentTurn } = await import("./agentLoop");
 type Ev = { type: string; [k: string]: unknown };
 type Chan = { onmessage?: (ev: Ev) => void };
 
+describe("per-round generation budget (maxGenTokens)", () => {
+  afterEach(() => clearMocks());
+
+  async function capturedMaxTokens(opts: Record<string, unknown>): Promise<number> {
+    let seen = 0;
+    mockIPC(async (cmd, args) => {
+      if (cmd === "generate") {
+        const a = args as { request: { params: { maxTokens: number } }; onEvent: Chan };
+        seen = a.request.params.maxTokens;
+        a.onEvent.onmessage?.({ type: "token", text: "Done." });
+        a.onEvent.onmessage?.({ type: "done", stats: { completionTokens: 1, tokensPerSecond: 1, promptTokens: 1 } });
+        return null;
+      }
+      return null;
+    });
+    await runAgentTurn(
+      "quick", [], "/tmp/ws", "en",
+      {
+        thinkMode: "off", maxSteps: 4,
+        signal: { cancelled: false },
+        approve: async () => true, approveDir: async () => false, approveSudo: async () => ({ ok: false }),
+        ...opts,
+      } as never,
+      {
+        onThinking: () => {}, onAssistantText: () => {}, onStep: () => {},
+        onFinal: () => {}, onError: (m) => { throw new Error(m); },
+      },
+    );
+    return seen;
+  }
+
+  it("a user value rides straight into the request", async () => {
+    expect(await capturedMaxTokens({ maxGenTokens: 2048, nCtx: 16384 })).toBe(2048);
+  });
+
+  it("zero keeps the per-thinkMode default", async () => {
+    expect(await capturedMaxTokens({ maxGenTokens: 0, nCtx: 16384 })).toBe(4096);
+  });
+
+  it("an oversized value is clamped to the context window", async () => {
+    expect(await capturedMaxTokens({ maxGenTokens: 30000, nCtx: 8192 })).toBe(6144);
+  });
+
+  it("a tiny value is floored so a tool call still fits", async () => {
+    expect(await capturedMaxTokens({ maxGenTokens: 100, nCtx: 16384 })).toBe(512);
+  });
+});
+
 describe("think budget", () => {
   afterEach(() => clearMocks());
 

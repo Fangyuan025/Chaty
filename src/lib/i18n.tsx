@@ -116,6 +116,12 @@ export const T = {
     zh: "每步思考的 token 上限。超出后思考块被温和收束:已有思考保留在上下文里,模型基于它直接行动——不丢内容、不断连贯。0 = 不限制(单步生成上限自然封顶)。低温下容易无限思考的模型建议设 1000-2000。",
     en: "Hard per-step ceiling on thinking tokens. Over budget the think block closes gracefully: the reasoning stays in context and the model acts on it — nothing discarded, coherence kept. 0 = no ceiling (the per-step generation limit still bounds it). For models that loop in thought at low temperature, 1000-2000 works well.",
   },
+  cmMaxTokens: { zh: "单步生成上限 (tokens)", en: "Per-step output limit (tokens)" },
+  cmMaxTokensAuto: { zh: "自动", en: "auto" },
+  cmMaxTokensHint: {
+    zh: "每个 agent 步骤的生成 token 上限。0 = 按思考深度自动(关 4096 / 标准 6144 / 深度 8192);任何值都会被上下文窗口自动收紧。调低可以防长跑,调高给长思考和大文件写入留空间。",
+    en: "Generation cap per agent step. 0 = auto by think depth (off 4096 / normal 6144 / deep 8192); any value is clamped to the context window. Lower it to bound runaways, raise it for long reasoning and big file writes.",
+  },
   cmAutoEdits: { zh: "自动批准文件编辑", en: "Auto-approve file edits" },
   cmAutoEditsHint: {
     zh: "写入/编辑文件不再逐次询问(命令仍需批准)。每轮开始有检查点,可随时回滚。",

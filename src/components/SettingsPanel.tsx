@@ -69,6 +69,9 @@ export interface GenSettings {
    *  Over budget the think block closes gracefully — reasoning kept, model
    *  told to act on it. */
   codeThinkBudget: number;
+  /** Code mode: per-round generation budget in tokens (0 = auto by think
+   *  depth; always clamped to the context window). */
+  codeMaxTokens: number;
   /** Code mode: file edits (write/edit/multi_edit) run without approval. */
   codeAutoApproveEdits: boolean;
   /** Code mode: obviously read-only bash commands run without approval. */
@@ -131,6 +134,7 @@ export const defaultSettings: GenSettings = {
   codeBashTimeout: 60,
   codeTemperature: 0.3,
   codeThinkBudget: 0,
+  codeMaxTokens: 0,
   codeAutoApproveEdits: false,
   codeAutoRunReadOnly: true,
   codeBrowserHeadless: false,
@@ -869,6 +873,22 @@ export function SettingsPanel({
                 />
               </label>
               <div className="settings-hint">{t("cmThinkBudgetHint")}</div>
+
+              <label className="field">
+                <span>
+                  {t("cmMaxTokens")}{" "}
+                  <b>{value.codeMaxTokens > 0 ? value.codeMaxTokens : t("cmMaxTokensAuto")}</b>
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={12288}
+                  step={512}
+                  value={value.codeMaxTokens}
+                  onChange={(e) => set("codeMaxTokens", Number(e.target.value))}
+                />
+              </label>
+              <div className="settings-hint">{t("cmMaxTokensHint")}</div>
 
               <SetRow label={t("cmAutoEdits")} hint={t("cmAutoEditsHint")}>
                 <Switch

@@ -481,6 +481,7 @@ export function CodeMode({
   bashTimeout,
   temperature,
   thinkBudget = 0,
+  maxGenTokens = 0,
   autoApproveEdits = false,
   autoRunReadOnly = true,
   skills = [],
@@ -502,6 +503,8 @@ export function CodeMode({
   temperature?: number;
   /** Hard per-round think-token ceiling, 0 = auto (Settings → Code). */
   thinkBudget?: number;
+  /** Per-round generation budget in tokens, 0 = auto (Settings → Code). */
+  maxGenTokens?: number;
   /** Auto-approve file edits — write/edit/multi_edit run without asking
    *  (Settings → Code; checkpoints still allow rollback). */
   autoApproveEdits?: boolean;
@@ -1195,6 +1198,7 @@ export function CodeMode({
       maxSteps,
       temperature,
       thinkBudget,
+      maxGenTokens,
       bashTimeout,
       projectDoc,
       skills,
