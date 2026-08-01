@@ -1702,24 +1702,23 @@ export default function App() {
       );
 
     const sys = settings.systemPrompt.trim();
-    const sent: ChatMessage[] = [
-      ...(needsDate
-        ? [{ role: "system" as const, content: t("todayNote", { date: formatDate(lang) }) }]
-        : []),
-      ...(webDesign ? [{ role: "system" as const, content: WEBDESIGN_PROMPT }] : []),
-      ...(sys ? [{ role: "system" as const, content: sys }] : []),
+    // ONE system message, always. Qwen3.5/3.6 chat templates assert the
+    // system turn is single and first — stacking fragments as separate
+    // system messages threw TemplateException("System message must be at
+    // the beginning.") the moment two were active at once (owner repro:
+    // attachment + web-design mode). Merge every fragment instead.
+    const sysParts = [
+      ...(needsDate ? [t("todayNote", { date: formatDate(lang) })] : []),
+      ...(webDesign ? [WEBDESIGN_PROMPT] : []),
+      ...(sys ? [sys] : []),
       ...(attachment && attachment.kind !== "vision"
-        ? [
-            {
-              role: "system" as const,
-              content:
-                t("attachInstruction", { name: attachment.name }) +
-                attachment.text.slice(0, 9000),
-            },
-          ]
+        ? [t("attachInstruction", { name: attachment.name }) + attachment.text.slice(0, 9000)]
         : []),
-      ...(webContext ? [{ role: "system" as const, content: webContext }] : []),
-      ...(summaryNote ? [{ role: "system" as const, content: summaryNote }] : []),
+      ...(webContext ? [webContext] : []),
+      ...(summaryNote ? [summaryNote] : []),
+    ];
+    const sent: ChatMessage[] = [
+      ...(sysParts.length ? [{ role: "system" as const, content: sysParts.join("\n\n") }] : []),
       ...modelHistory,
     ];
 
