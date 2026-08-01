@@ -55,6 +55,15 @@ transcripts showed — plus the delivery habit the webapp release didn't cover.
   custom system prompt / web search together failed on MLX with
   "System message must be at the beginning" — the fragments merge now
   (and GGUF models get a cleaner, standard prompt out of it too).
+- An MLX runtime error no longer kills the engine. Metal-level failures
+  (out-of-memory on a big model, mid-eval errors) used to crash the whole
+  sidecar ("MLX 引擎意外退出"); they now surface as a plain per-round
+  "generation failed" with the real reason, the model stays loaded, and a
+  retry just works.
+- Screenshots respect the model's appetite. On models of 24 GB and up the
+  vision pixel budget halves to 0.5 MP: the same screenshot round measured
+  43% faster with element reading intact, and the encode transient that
+  pushed a 35 GB model over the memory line halves with it.
 
 
 ## v2.0.1 — The webapp workshop (2026-07-28)
