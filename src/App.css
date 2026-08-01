@@ -2220,6 +2220,15 @@ body.resizing-x {
   position: relative;
   display: inline-flex;
 }
+/* The settings pane-in animation (fill: both) leaves every card a PERSISTENT
+ * stacking context, so a menu's z-index can't escape its own card — later
+ * sibling cards painted right over an open dropdown (owner report: the voice
+ * picker buried under the speech-rate card). Lift whichever card currently
+ * holds an open menu above its siblings. */
+.settings-pane-body > *:has(.csel.open) {
+  position: relative;
+  z-index: 75;
+}
 .csel-trigger {
   display: inline-flex;
   align-items: center;
