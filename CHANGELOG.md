@@ -60,10 +60,13 @@ transcripts showed — plus the delivery habit the webapp release didn't cover.
   sidecar ("MLX 引擎意外退出"); they now surface as a plain per-round
   "generation failed" with the real reason, the model stays loaded, and a
   retry just works.
-- Screenshots respect the model's appetite. On models of 24 GB and up the
-  vision pixel budget halves to 0.5 MP: the same screenshot round measured
-  43% faster with element reading intact, and the encode transient that
-  pushed a 35 GB model over the memory line halves with it.
+- Screenshots respect the memory you actually have left. When the Metal
+  working-set ceiling minus the loaded weights leaves under 8 GB, the vision
+  pixel budget halves to 0.5 MP — the same screenshot round measured 43%
+  faster with element reading intact, and the encode transient that pushed a
+  35 GB model over the line on a 48 GB box halves with it. The same model on
+  a bigger machine keeps the full budget; a mid-size model on a small box is
+  protected too.
 
 
 ## v2.0.1 — The webapp workshop (2026-07-28)

@@ -374,7 +374,10 @@ impl MlxEngine {
         let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
         {
             let stdin = stdin.clone();
-            let vision_cap = vision_cap_for(info.size_mb.unwrap_or(0));
+            let vision_cap = vision_cap_for(
+                info.size_mb.unwrap_or(0),
+                crate::gpu::detect_gpu().map(|g| g.vram_mb),
+            );
             std::thread::spawn(move || actor(jobs_rx, line_rx, stdin, vision_cap));
         }
         Ok((Self { jobs: jobs_tx, child, stdin }, info))
@@ -456,14 +459,21 @@ impl InferenceBackend for MlxEngine {
 // Actor: owns the sidecar conversation, one job at a time
 // ---------------------------------------------------------------------------
 
-/// Vision pixel budget by MODEL WEIGHT. The flat 1 MP cap kept screenshots
-/// legible, but on a 48 GB box a ≥24 GB model leaves so little headroom that
-/// even a capped encode's transient can be the last straw (owner crash
-/// 2026-08-01: 35.5 GB model died on the round after a screenshot). Layout,
-/// colors and structure survive 0.5 MP fine — and pixel-reading body text was
-/// never the right tool anyway (browser_read exists).
-fn vision_cap_for(size_mb: u64) -> u64 {
-    if size_mb >= 24_000 { 500_000 } else { 1_000_000 }
+/// Vision pixel budget by RUNTIME HEADROOM — the Metal working-set ceiling
+/// minus the resident weights — not by model size alone (owner call: a 35 GB
+/// model on a 128 GB Studio has tens of GB spare and deserves the full
+/// budget; the same model on a 48 GB box leaves ~5 GB, where the 1 MP encode
+/// transient was the last straw — 2026-08-01 crash). Under 8 GB of headroom
+/// the budget halves to 0.5 MP: layout, colors and structure survive fine,
+/// and pixel-reading body text was never the right tool (browser_read
+/// exists). Ceiling unknown ⇒ conservative weight heuristic.
+fn vision_cap_for(size_mb: u64, metal_ceiling_mb: Option<u64>) -> u64 {
+    const TIGHT_HEADROOM_MB: u64 = 8_000;
+    let tight = match metal_ceiling_mb {
+        Some(ceiling) => ceiling.saturating_sub(size_mb) < TIGHT_HEADROOM_MB,
+        None => size_mb >= 24_000,
+    };
+    if tight { 500_000 } else { 1_000_000 }
 }
 
 fn actor(
@@ -656,15 +666,22 @@ fn run_generation(
 #[cfg(test)]
 mod tests {
 
-    /// The vision pixel budget shrinks with model weight: a ≥24 GB model on a
-    /// 48 GB box has no headroom for a 1 MP encode transient (owner crash
-    /// 2026-08-01); smaller models keep the full budget.
+    /// The vision pixel budget follows HEADROOM (Metal ceiling − weights):
+    /// tight boxes halve to 0.5 MP regardless of model size, roomy boxes keep
+    /// the full megapixel — a big model on a big machine is not punished.
     #[test]
-    fn vision_cap_scales_with_model_size() {
-        assert_eq!(super::vision_cap_for(35_500), 500_000);
-        assert_eq!(super::vision_cap_for(24_000), 500_000);
-        assert_eq!(super::vision_cap_for(17_000), 1_000_000);
-        assert_eq!(super::vision_cap_for(0), 1_000_000);
+    fn vision_cap_follows_runtime_headroom() {
+        // The 2026-08-01 crash config: 35.5 GB weights, 40.2 GB ceiling.
+        assert_eq!(super::vision_cap_for(35_500, Some(40_200)), 500_000);
+        // Same model on a 128 GB Studio (~100 GB ceiling): full budget.
+        assert_eq!(super::vision_cap_for(35_500, Some(100_000)), 1_000_000);
+        // Mid model on a small box: tight even though the model is "small".
+        assert_eq!(super::vision_cap_for(12_000, Some(17_000)), 500_000);
+        // Comfortable headroom exactly at / above the line.
+        assert_eq!(super::vision_cap_for(17_000, Some(40_200)), 1_000_000);
+        // Ceiling unknown → conservative weight fallback.
+        assert_eq!(super::vision_cap_for(35_500, None), 500_000);
+        assert_eq!(super::vision_cap_for(17_000, None), 1_000_000);
     }
 
     /// A sidecar copy without its Metal resource bundle dies at startup with
