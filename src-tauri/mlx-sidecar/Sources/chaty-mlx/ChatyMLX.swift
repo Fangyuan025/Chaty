@@ -303,14 +303,18 @@ final class Engine: @unchecked Sendable {
             // vision_config, e.g. the whole Qwen3.5+ family) are registered
             // only in the VLM factory — load them there; chat stays
             // text-only until Chaty grows MLX vision.
-            let container: ModelContainer
-            if meta.multimodal {
-                healProcessorConfig(dir: dir)
-                container = try await VLMModelFactory.shared.loadContainer(
-                    from: dir, using: #huggingFaceTokenizerLoader())
-            } else {
-                container = try await LLMModelFactory.shared.loadContainer(
-                    from: dir, using: #huggingFaceTokenizerLoader())
+            // withError: C-level MLX failures during weight load (Metal OOM
+            // on a too-big model) must surface as a load error, not kill the
+            // sidecar — same boxing as the generate path.
+            let container: ModelContainer = try await withError {
+                if meta.multimodal {
+                    healProcessorConfig(dir: dir)
+                    return try await VLMModelFactory.shared.loadContainer(
+                        from: dir, using: #huggingFaceTokenizerLoader())
+                } else {
+                    return try await LLMModelFactory.shared.loadContainer(
+                        from: dir, using: #huggingFaceTokenizerLoader())
+                }
             }
             self.container = container
             let trained = meta.nCtxTrain ?? 4096
@@ -345,17 +349,29 @@ final class Engine: @unchecked Sendable {
         }
         cancelFlag.reset()
         do {
-            try await container.perform { context in
-                try await self.run(context: context, messages: messages, params: params)
+            // withError: box MLX's C-level runtime errors (Metal allocation
+            // failures, shape errors) into thrown Swift errors. Without it the
+            // GLOBAL handler fires — and its default is assertionFailure,
+            // which killed the whole sidecar mid-task ("MLX 引擎意外退出",
+            // owner crash report 2026-08-01: _mlx_error during eval on the
+            // vision round after a screenshot). A generation must be able to
+            // fail without taking the engine down with it.
+            try await withError {
+                try await container.perform { context in
+                    try await self.run(context: context, messages: messages, params: params)
+                }
             }
         } catch {
             // A failure can leave half-evaluated KV behind — drop the cache
-            // so the next turn starts from a clean slate.
+            // so the next turn starts from a clean slate. After a Metal-level
+            // error, also return scratch buffers to the OS so a post-OOM
+            // retry starts with headroom.
             kvCache = nil
             kvTokens = []
             kvImageKeys = []
             kvState = nil
             kvEvaluated = 0
+            Memory.clearCache()
             out.error("生成失败 (generation failed): \(error)")
         }
     }
