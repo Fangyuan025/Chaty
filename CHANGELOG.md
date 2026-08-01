@@ -45,6 +45,12 @@ transcripts showed — plus the delivery habit the webapp release didn't cover.
   agent step is now yours too: 0 = auto by think depth, any value clamped to
   the context window.
 
+### Small fixes
+
+- An open dropdown in Settings no longer hides under the cards below it (the
+  pane entrance animation trapped its stacking order — the voice picker was
+  the visible victim).
+
 
 ## v2.0.1 — The webapp workshop (2026-07-28)
 
