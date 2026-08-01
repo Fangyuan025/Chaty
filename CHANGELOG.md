@@ -50,6 +50,11 @@ transcripts showed — plus the delivery habit the webapp release didn't cover.
 - An open dropdown in Settings no longer hides under the cards below it (the
   pane entrance animation trapped its stacking order — the voice picker was
   the visible victim).
+- Chat now always sends ONE system message. Qwen3.5/3.6 chat templates
+  reject a second system turn, so any two of attachment / web-design mode /
+  custom system prompt / web search together failed on MLX with
+  "System message must be at the beginning" — the fragments merge now
+  (and GGUF models get a cleaner, standard prompt out of it too).
 
 
 ## v2.0.1 — The webapp workshop (2026-07-28)
