@@ -374,7 +374,8 @@ impl MlxEngine {
         let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
         {
             let stdin = stdin.clone();
-            std::thread::spawn(move || actor(jobs_rx, line_rx, stdin));
+            let vision_cap = vision_cap_for(info.size_mb.unwrap_or(0));
+            std::thread::spawn(move || actor(jobs_rx, line_rx, stdin, vision_cap));
         }
         Ok((Self { jobs: jobs_tx, child, stdin }, info))
     }
@@ -455,12 +456,27 @@ impl InferenceBackend for MlxEngine {
 // Actor: owns the sidecar conversation, one job at a time
 // ---------------------------------------------------------------------------
 
-fn actor(jobs: Receiver<Job>, lines: Receiver<String>, stdin: Arc<Mutex<Option<ChildStdin>>>) {
+/// Vision pixel budget by MODEL WEIGHT. The flat 1 MP cap kept screenshots
+/// legible, but on a 48 GB box a ≥24 GB model leaves so little headroom that
+/// even a capped encode's transient can be the last straw (owner crash
+/// 2026-08-01: 35.5 GB model died on the round after a screenshot). Layout,
+/// colors and structure survive 0.5 MP fine — and pixel-reading body text was
+/// never the right tool anyway (browser_read exists).
+fn vision_cap_for(size_mb: u64) -> u64 {
+    if size_mb >= 24_000 { 500_000 } else { 1_000_000 }
+}
+
+fn actor(
+    jobs: Receiver<Job>,
+    lines: Receiver<String>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    vision_cap: u64,
+) {
     for job in jobs {
         match job {
             Job::Generate { req, sink, cancel, done } => {
                 let sink2 = sink.clone();
-                let res = run_generation(&req, &lines, &stdin, &cancel, |ev| {
+                let res = run_generation(&req, &lines, &stdin, &cancel, vision_cap, |ev| {
                     let _ = sink2.send(ev);
                 });
                 let _ = match res {
@@ -474,7 +490,7 @@ fn actor(jobs: Receiver<Job>, lines: Receiver<String>, stdin: Arc<Mutex<Option<C
             Job::Collect { req, cancel, done } => {
                 let text = Arc::new(Mutex::new(String::new()));
                 let text2 = text.clone();
-                let res = run_generation(&req, &lines, &stdin, &cancel, move |ev| {
+                let res = run_generation(&req, &lines, &stdin, &cancel, vision_cap, move |ev| {
                     if let StreamEvent::Token { text } = ev {
                         if let Ok(mut t) = text2.lock() {
                             t.push_str(&text);
@@ -506,6 +522,7 @@ fn run_generation(
     lines: &Receiver<String>,
     stdin: &Arc<Mutex<Option<ChildStdin>>>,
     cancel: &Arc<AtomicBool>,
+    vision_cap: u64,
     mut emit: impl FnMut(StreamEvent),
 ) -> Result<()> {
     emit(StreamEvent::Started);
@@ -535,7 +552,7 @@ fn run_generation(
                 // source path+size+mtime, so the sidecar's image KV cache
                 // still hits across turns.
                 "images": m.images.iter()
-                    .map(|p| super::llama::downscale_for_vision_capped(p, 1_000_000))
+                    .map(|p| super::llama::downscale_for_vision_capped(p, vision_cap))
                     .collect::<Vec<_>>(),
             })
         })
@@ -638,6 +655,17 @@ fn run_generation(
 
 #[cfg(test)]
 mod tests {
+
+    /// The vision pixel budget shrinks with model weight: a ≥24 GB model on a
+    /// 48 GB box has no headroom for a 1 MP encode transient (owner crash
+    /// 2026-08-01); smaller models keep the full budget.
+    #[test]
+    fn vision_cap_scales_with_model_size() {
+        assert_eq!(super::vision_cap_for(35_500), 500_000);
+        assert_eq!(super::vision_cap_for(24_000), 500_000);
+        assert_eq!(super::vision_cap_for(17_000), 1_000_000);
+        assert_eq!(super::vision_cap_for(0), 1_000_000);
+    }
 
     /// A sidecar copy without its Metal resource bundle dies at startup with
     /// an unhelpful "sidecar exited unexpectedly"; the search must prefer a
