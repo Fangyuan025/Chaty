@@ -107,12 +107,12 @@ export const DOC_LINES: Record<string, Bi> = {
     en: "- browser_read: all visible text of the current page + element list (incl. current input values). Use for content/text/state. args: {}",
   },
   browser_screenshot: {
-    zh: "- browser_screenshot: 整页截图并用视觉查看(自动滚动触发懒加载)。要判断\"长什么样\"时用它。args: {}",
-    en: "- browser_screenshot: full-page screenshot, seen with vision (auto-scrolls for lazy content). Use to judge how the page LOOKS. args: {}",
+    zh: "- browser_screenshot: 整页截图(长页自动分段,较重)。首次全局查看用它;之后复查用 browser_snapshot。args: {}",
+    en: "- browser_screenshot: FULL-page shot (tall pages auto-segment; heavy). First look only — re-checks: browser_snapshot. args: {}",
   },
   browser_snapshot: {
-    zh: "- browser_snapshot: 当前视口截图(即时,不滚动)。args: {}",
-    en: "- browser_snapshot: current-viewport screenshot (instant, no scrolling). args: {}",
+    zh: "- browser_snapshot: 当前视口截图(即时,轻量)。复查改动、滚动后看局部,优先用它。args: {}",
+    en: "- browser_snapshot: viewport shot (instant, light). PREFER for re-checks and after scrolling. args: {}",
   },
   browser_scroll: {
     zh: "- browser_scroll: 滚动以加载更多内容。args: { \"to\"?: \"bottom\"|\"top\", \"by\"?: number }",

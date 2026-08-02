@@ -1408,8 +1408,13 @@ export async function runAgentTurn(
   // result with a digest that still names the file/command it came from.
   const toolMeta = new WeakMap<ChatMessage, { name: string; args: Record<string, unknown> }>();
   const jitShown = new Set<HintKey>(); // per-turn: hints re-arm next turn
-  const pushUser = (content: string, meta?: { name: string; args: Record<string, unknown> }) => {
+  const pushUser = (
+    content: string,
+    meta?: { name: string; args: Record<string, unknown> },
+    images?: string[],
+  ) => {
     const m: ChatMessage = { role: "user", content: content + noThinkSuffix };
+    if (images?.length) m.images = images;
     messages.push(m);
     if (meta) toolMeta.set(m, meta);
     cb.onTrace?.({ kind: "inject", text: content });
@@ -1983,23 +1988,32 @@ export async function runAgentTurn(
           continue;
         }
         try {
-          const abs =
+          const raw =
             call.name === "browser_snapshot" ? await browserSnapshot() : await browserScreenshot();
+          // A tall full-page screenshot arrives as SEGMENTS (newline-joined
+          // paths, top to bottom) — every pixel of the page, each segment
+          // legible. Normal pages stay a single image.
+          const shots = raw.split("\n").filter(Boolean);
           stepObj.status = "done";
-          stepObj.result = lang === "zh" ? "已截取当前页面" : "Captured the current page";
-          stepObj.image = abs;
+          stepObj.result =
+            shots.length > 1
+              ? lang === "zh"
+                ? `已截取整页(分 ${shots.length} 段)`
+                : `Captured the full page (${shots.length} segments)`
+              : lang === "zh"
+                ? "已截取当前页面"
+                : "Captured the current page";
+          stepObj.image = shots[0];
           cb.onStep(stepObj);
-          messages.push({
-            role: "user",
-            content:
-              toolResultMsg(
-                "browser_screenshot",
-                lang === "zh"
-                  ? "这是当前网页的截图,请查看后继续验证/操作。"
-                  : "Screenshot of the current page below — look and continue.",
-              ) + noThinkSuffix,
-            images: [abs],
-          });
+          const note =
+            shots.length > 1
+              ? lang === "zh"
+                ? `页面较长,整页截图按自上而下分为 ${shots.length} 段(无遗漏)。逐段查看后继续;之后只需复查当前视口时,用 browser_snapshot 更快。`
+                : `Tall page — the full-page capture below is split top-to-bottom into ${shots.length} segments (nothing omitted). Review them in order; for later re-checks of just the current viewport, browser_snapshot is faster.`
+              : lang === "zh"
+                ? "这是当前网页的截图,请查看后继续验证/操作。"
+                : "Screenshot of the current page below — look and continue.";
+          pushUser(toolResultMsg("browser_screenshot", note), undefined, shots);
         } catch (e) {
           const msg = `ERROR: ${e instanceof Error ? e.message : String(e)}`;
           stepObj.status = "error";

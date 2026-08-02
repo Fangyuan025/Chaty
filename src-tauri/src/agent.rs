@@ -1489,14 +1489,75 @@ pub async fn browser_refresh() -> Result<String, String> {
         .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
 
-/// Full-page screenshot (auto-scrolls to trigger lazy content). Returns a temp
-/// PNG path the agent loop attaches to the model's next turn (like view_image).
+/// Tall full-page captures get SEGMENTED, never squeezed: a 1:4 page pushed
+/// through a total-pixel vision budget lands at ~350 px wide — the model
+/// misread prices and invented a product off exactly that strip (owner
+/// walkthrough, the Hello-Kitty page). Tiles are viewport-proportioned so
+/// each one downscales to a fully legible image, and EVERY pixel of the page
+/// stays in the set — full-page semantics, zero information loss. Encode
+/// transients also shrink: N small ViT passes replace one giant one.
+/// Returns the tile bounds (y, height) top-to-bottom.
+fn tile_bounds(width: u32, height: u32) -> Vec<(u32, u32)> {
+    // ~one 2x viewport per tile; a page up to 1.35 tiles stays a single image
+    // (normal pages keep the old behavior byte-for-byte).
+    let tile_h = ((width as f64) * 0.72) as u32;
+    if height as f64 <= tile_h as f64 * 1.35 {
+        return vec![(0, height)];
+    }
+    let mut out = Vec::new();
+    let mut y = 0u32;
+    while y < height {
+        let remaining = height - y;
+        // Fold a trailing sliver (<40% of a tile) into the previous tile so
+        // the last image isn't an illegible ribbon.
+        let h = if remaining < tile_h + (tile_h * 2) / 5 { remaining } else { tile_h };
+        out.push((y, h));
+        y += h;
+    }
+    out
+}
+
+/// Full-page screenshot (auto-scrolls to trigger lazy content). Returns one
+/// temp PNG path per SEGMENT (newline-joined, top to bottom) — one path for
+/// normal pages, several for tall ones. The agent loop attaches them all.
 #[tauri::command]
 pub async fn browser_screenshot() -> Result<String, String> {
     let png = tokio::task::spawn_blocking(crate::browser::screenshot)
         .await
         .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))??;
-    write_shot(png)
+    let img = match image::load_from_memory(&png) {
+        Ok(i) => i,
+        // Undecodable capture: hand it over untouched rather than failing.
+        Err(_) => return write_shot(png),
+    };
+    let (w, h) = (img.width(), img.height());
+    let tiles = tile_bounds(w, h);
+    if tiles.len() == 1 {
+        return write_shot(png);
+    }
+    let mut paths = Vec::new();
+    for (i, (y, th)) in tiles.iter().enumerate() {
+        let tile = img.crop_imm(0, *y, w, *th);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        tile.to_rgb8()
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .map_err(|e| trf!("截图分段失败: {e}", "screenshot tiling failed: {e}"))?;
+        // Distinct suffix per tile — write_shot's nanosecond name can collide
+        // inside a tight loop.
+        let path = std::env::temp_dir().join(format!(
+            "chaty-browser-shot-{}-{}-t{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0),
+            i
+        ));
+        std::fs::write(&path, buf.into_inner())
+            .map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
+        paths.push(path.to_string_lossy().to_string());
+    }
+    Ok(paths.join("\n"))
 }
 
 /// Snapshot of just the current viewport (immediate) — for lazy-load pages,
@@ -3315,6 +3376,30 @@ pub fn bg_kill_all() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Full-page tiling: normal pages stay ONE image (old behavior intact);
+    /// tall pages split into viewport-proportioned tiles that cover every
+    /// pixel with no overlap; a trailing sliver folds into the last tile.
+    #[test]
+    fn screenshot_tiles_cover_everything_and_spare_normal_pages() {
+        // Normal 2x viewport (2560x1800): single image.
+        assert_eq!(tile_bounds(2560, 1800), vec![(0, 1800)]);
+        // Slightly tall (≤1.35 tiles) still single.
+        assert_eq!(tile_bounds(2560, 2400), vec![(0, 2400)]);
+        // The owner's Hello-Kitty page: 2560x10780 → several tiles, gapless,
+        // ordered, no sliver at the end.
+        let tiles = tile_bounds(2560, 10780);
+        assert!(tiles.len() >= 5, "tall page must segment: {tiles:?}");
+        let mut y = 0;
+        for (ty, th) in &tiles {
+            assert_eq!(*ty, y, "gapless and ordered");
+            y += th;
+        }
+        assert_eq!(y, 10780, "every pixel covered");
+        let tile_h = (2560f64 * 0.72) as u32;
+        let last = tiles.last().unwrap().1;
+        assert!(last >= (tile_h * 2) / 5, "no illegible trailing ribbon: {last}");
+    }
 
     /// A timed-out command must take its whole tree down. Killing only the
     /// direct child leaves grandchildren (the `python -c` a model just ran)
