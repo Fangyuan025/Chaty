@@ -132,20 +132,15 @@ const NAV_GUARD = `<script>(function(){
 })()<\/script>`;
 
 /**
- * Scrollbar that matches the previewed page. With "show scrollbars: always"
- * (or a mouse plugged in) the UA paints a light track+gutter in the srcdoc
- * frame, which glares beside the dark pages models like to build — WebKit only
- * draws a dark scrollbar when the document declares a `color-scheme`.
- *
- * So declare one FOR the page, inferred from what it actually renders, and let
- * the UA draw its own native scrollbar. Deliberately not `::-webkit-scrollbar`
- * rules: styling those switches the engine to a custom scrollbar whose gutter
- * is backed by the white canvas, not by the page's background — a transparent
- * track then reads as PURE WHITE (measured: rgb(255,255,255)), which is worse
- * than the bug. Setting color-scheme also darkens that canvas base, so the
- * gutter stops glowing at all.
- *
- * A page that declares its own color-scheme is left completely alone.
+ * In-page native-widget scheme (form controls, popups), inferred from what
+ * the page renders. NOT the scrollbar fix it was originally written as:
+ * WKWebView paints a sandboxed subframe's scrollbar by the TOP document's
+ * color-scheme — probe-measured, nothing declared INSIDE the frame (static
+ * or dynamic scheme, ::-webkit-scrollbar, scrollbar-color) moves it, which
+ * is why the preview scrollbar stayed white through two fix rounds. The
+ * scrollbar is now governed by the app root's `color-scheme` (App.css,
+ * theme-matched). This shim still earns its keep for the page's own
+ * controls; a page that declares its own color-scheme is left alone.
  */
 const SCROLL_SCHEME_SHIM = `<script>(function(){
   function bright(c){

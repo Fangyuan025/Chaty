@@ -78,15 +78,27 @@
      light themes override — the old rgba(255,255,255,…) washed out on light. */
   --ink-soft: rgba(255, 255, 255, 0.1);
   --ink-faint: rgba(255, 255, 255, 0.05);
+  /* Native-widget scheme for the WHOLE webview. WKWebView paints a SUBFRAME's
+     classic scrollbar by the TOP document's color-scheme — the canvas preview
+     (sandboxed srcdoc) can declare whatever it wants and its scrollbar stays
+     LIGHT unless we declare dark here (probe-measured: inner static/dynamic
+     color-scheme, ::-webkit-scrollbar, scrollbar-color, and iframe-element
+     color-scheme all had zero effect; only the top document's scheme flips
+     it). This is why the preview scrollbar glared white on dark pages for
+     two fix attempts. Residual: light app theme + dark preview page still
+     shows a light bar — no per-subframe lever exists in WebKit. */
+  color-scheme: dark;
 }
 :root[data-theme="light"] {
   --ink-soft: rgba(60, 50, 35, 0.08);
   --ink-faint: rgba(60, 50, 35, 0.045);
+  color-scheme: light;
 }
 @media (prefers-color-scheme: light) {
   :root[data-theme="system"] {
     --ink-soft: rgba(60, 50, 35, 0.08);
     --ink-faint: rgba(60, 50, 35, 0.045);
+    color-scheme: light;
   }
 }
 
