@@ -67,6 +67,17 @@ transcripts showed — plus the delivery habit the webapp release didn't cover.
   35 GB model over the line on a 48 GB box halves with it. The same model on
   a bigger machine keeps the full budget; a mid-size model on a small box is
   protected too.
+- Tall pages arrive in legible pieces, not one blurry strip. A full-page
+  screenshot of a many-screen page used to squeeze into ~350 px of width —
+  the model misread prices off it. It now splits into viewport-sized
+  segments (boundaries seek the blank gaps between sections, so nothing is
+  ever cut in half), every pixel kept, each segment sharp. Snapshot gets its
+  proper billing for quick viewport re-checks.
+- The camera waits for the page to finish appearing. Reveal-on-scroll
+  animations raced the capture and whole sections photographed blank — the
+  model then faithfully reported content that "wasn't there". Animations are
+  frozen at their end state before the shot; on the page that exposed all of
+  this, element extraction went from partial to perfect.
 
 
 ## v2.0.1 — The webapp workshop (2026-07-28)
