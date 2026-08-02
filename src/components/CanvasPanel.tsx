@@ -142,6 +142,19 @@ const NAV_GUARD = `<script>(function(){
  * theme-matched). This shim still earns its keep for the page's own
  * controls; a page that declares its own color-scheme is left alone.
  */
+/** Deterministic scrollbar paint. Native subframe scrollbars proved
+ *  ungovernable across three rounds (page color-scheme, top-document scheme,
+ *  stage backing — each fixed a probe and left the real window white), so the
+ *  frame paints its OWN: track = the page's actual background, thumb =
+ *  translucent ink picked by the page's brightness. Injected FIRST, so a page
+ *  that styles its own scrollbars still wins. */
+const SCROLLBAR_PAINT_SHIM = `<style id="__cv_sb">
+::-webkit-scrollbar{width:12px;height:12px}
+::-webkit-scrollbar-track{background:var(--cv-sb-track,transparent)}
+::-webkit-scrollbar-thumb{background:var(--cv-sb-thumb,rgba(128,128,128,.45));border-radius:6px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-corner{background:var(--cv-sb-track,transparent)}
+</style>`;
+
 const SCROLL_SCHEME_SHIM = `<script>(function(){
   function bright(c){
     var m=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?/.exec(c||'');
@@ -163,10 +176,14 @@ const SCROLL_SCHEME_SHIM = `<script>(function(){
         dark = t!==null && t > 128;
       }
       de.style.colorScheme = dark ? 'dark' : 'light';
-      // The parent needs the verdict too: the dark-scheme subframe scrollbar
-      // WebKit draws (governed by the TOP document) has a TRANSPARENT track —
-      // over the stage's white backing it read as a blank white gutter with
-      // an invisible thumb. The stage flips dark behind dark pages instead.
+      // Feed the deterministic scrollbar paint: track = the page's own
+      // background, thumb = translucent ink for the page's brightness.
+      var track=getComputedStyle(b).backgroundColor;
+      if(!track||track==='rgba(0, 0, 0, 0)') track=getComputedStyle(de).backgroundColor;
+      if(track&&track!=='rgba(0, 0, 0, 0)') de.style.setProperty('--cv-sb-track',track);
+      de.style.setProperty('--cv-sb-thumb', dark?'rgba(255,255,255,.32)':'rgba(0,0,0,.35)');
+      // The parent needs the verdict too: the stage behind the (transparent-
+      // backed) frame flips dark behind dark pages.
       try{parent.postMessage({__chatyCvScheme:dark?'dark':'light',nonce:window.__CV_NONCE},'*');}catch(_){}
     }catch(_){}
   }
@@ -186,6 +203,7 @@ export const PREVIEW_SHIMS: Record<string, string> = {
   NAV_GUARD,
   INSPECT_SHIM,
   SCROLL_SCHEME_SHIM,
+  SCROLLBAR_PAINT_SHIM,
 };
 
 function withShims(html: string, nonce: string): string {
@@ -195,6 +213,7 @@ function withShims(html: string, nonce: string): string {
   // clear silently ate early errors — generation filtering is order-proof.
   const shims =
     `<script>window.__CV_NONCE=${JSON.stringify(nonce)};</script>` +
+    SCROLLBAR_PAINT_SHIM +
     COMPAT_SHIM + CONSOLE_SHIM + ERROR_SHIM + NAV_GUARD + INSPECT_SHIM + SCROLL_SCHEME_SHIM;
   // Inject at the very TOP of the document (only the doctype may precede us,
   // or it would flip the page into quirks mode). Injecting "after <head>" by

@@ -10,7 +10,12 @@ describe("canvas preview shims", () => {
   for (const [name, tag] of Object.entries(PREVIEW_SHIMS)) {
     it(`${name} generates syntactically valid JS`, () => {
       const bodies = [...tag.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-      expect(bodies.length).toBeGreaterThan(0);
+      // Style-only shims (the scrollbar paint) carry no script — they must at
+      // least carry a style block; script-bearing shims must all compile.
+      if (bodies.length === 0) {
+        expect(tag).toMatch(/<style[\s>]/);
+        return;
+      }
       for (const body of bodies) {
         expect(() => new Function(body)).not.toThrow();
       }
