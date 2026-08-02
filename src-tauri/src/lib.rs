@@ -315,6 +315,8 @@ pub fn run() {
             commands::open_models_dir,
             commands::open_data_dir,
             commands::open_html_report,
+            commands::canvas_session_save,
+            commands::canvas_session_load,
             commands::open_external,
             commands::set_ui_zoom,
             commands::set_tray_language,

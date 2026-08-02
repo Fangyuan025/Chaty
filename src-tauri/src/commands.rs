@@ -1,7 +1,7 @@
 //! Tauri command surface exposed to the frontend.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -764,6 +764,66 @@ pub fn open_html_report(
     Ok(p)
 }
 
+/// Canvas sessions (version history per opened document) live as one JSON
+/// file per session under app-data/canvas-sessions/. The in-memory map alone
+/// meant every iteration was gone after an app restart (owner report) — the
+/// chat message only carries v1.
+fn canvas_sessions_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("canvas-sessions");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Keep the newest `keep` session files; delete the rest. Sorted by mtime.
+fn prune_canvas_sessions(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| {
+            let m = e.metadata().ok()?.modified().ok()?;
+            Some((m, e.path()))
+        })
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    for (_, p) in files.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Persist one canvas session (key = content hash chosen by the frontend).
+#[tauri::command]
+pub fn canvas_session_save(app: tauri::AppHandle, key: String, data: String) -> Result<(), String> {
+    // The key is a frontend-computed hex hash — refuse anything path-like.
+    if key.is_empty() || key.len() > 64 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("bad canvas session key".into());
+    }
+    let dir = canvas_sessions_dir(&app)?;
+    std::fs::write(dir.join(format!("{key}.json")), data).map_err(|e| e.to_string())?;
+    prune_canvas_sessions(&dir, 100);
+    Ok(())
+}
+
+/// Load one canvas session; Ok(None) when there is none.
+#[tauri::command]
+pub fn canvas_session_load(app: tauri::AppHandle, key: String) -> Result<Option<String>, String> {
+    if key.is_empty() || key.len() > 64 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("bad canvas session key".into());
+    }
+    let dir = canvas_sessions_dir(&app)?;
+    match std::fs::read_to_string(dir.join(format!("{key}.json"))) {
+        Ok(s) => Ok(Some(s)),
+        Err(_) => Ok(None),
+    }
+}
+
 /// List `.gguf` models discovered in the scanned directories, for the in-app
 /// hot-swap picker.
 #[tauri::command]
@@ -1253,6 +1313,31 @@ pub async fn synthesize(
 
 #[cfg(test)]
 mod tests {
+    /// Session pruning keeps the NEWEST files and never deletes below the cap.
+    #[test]
+    fn canvas_session_prune_keeps_newest() {
+        let tmp = std::env::temp_dir().join(format!("chaty-cv-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        for i in 0..5 {
+            std::fs::write(tmp.join(format!("{i:02x}.json")), "{}").unwrap();
+            // Distinct mtimes, oldest first (APFS keeps sub-second precision).
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        super::prune_canvas_sessions(&tmp, 3);
+        let mut left: Vec<String> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["02.json", "03.json", "04.json"], "newest three survive");
+        // Below the cap: untouched.
+        super::prune_canvas_sessions(&tmp, 10);
+        assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 3);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn folder_resolves_to_main_gguf() {
         let tmp = std::env::temp_dir().join(format!("chaty-folder-load-{}", std::process::id()));

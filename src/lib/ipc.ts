@@ -419,6 +419,15 @@ export async function openHtmlReport(html: string, name?: string): Promise<strin
   return invoke<string>("open_html_report", { html, name });
 }
 
+/** Canvas session persistence: one JSON per opened document (key = content
+ *  hash), so version history survives an app restart. */
+export async function canvasSessionSave(key: string, data: string): Promise<void> {
+  await invoke("canvas_session_save", { key, data });
+}
+export async function canvasSessionLoad(key: string): Promise<string | null> {
+  return invoke<string | null>("canvas_session_load", { key });
+}
+
 /** Open a URL/file in the default browser. Routed through Rust (fork-free
  *  posix_spawn) instead of the opener plugin, which forks and crashes libmalloc
  *  in this multithreaded WebKit process on macOS. */

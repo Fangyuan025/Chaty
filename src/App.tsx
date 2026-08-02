@@ -71,6 +71,8 @@ import {
   exportTextFile,
   exportHtmlFile,
   openHtmlReport,
+  canvasSessionSave,
+  canvasSessionLoad,
   saveConversation,
   saveMessage,
   setTrayLanguage,
@@ -708,10 +710,16 @@ export default function App() {
     el.dataset.light = settings.lightScheme;
   }, [settings.theme, settings.darkScheme, settings.lightScheme]);
 
-  // Keep each reply's canvas session current (cheap: refs into state).
+  // Keep each reply's canvas session current (cheap: refs into state), and
+  // mirror it to disk — the in-memory map alone lost every iteration on app
+  // restart (the chat message only carries v1). Fire-and-forget: persistence
+  // failing must never break the canvas itself.
   useEffect(() => {
     if (canvasKey && canvasVersions.length) {
       canvasSessions.current.set(canvasKey, { versions: canvasVersions, index: canvasIndex });
+      void canvasKeyHash(canvasKey).then((h) =>
+        canvasSessionSave(h, JSON.stringify({ versions: canvasVersions, index: canvasIndex })),
+      ).catch(() => {});
     }
   }, [canvasKey, canvasVersions, canvasIndex]);
 
@@ -897,6 +905,13 @@ export default function App() {
     return html.trim();
   }
 
+  /** Stable disk key for a canvas session: SHA-256 of the ORIGINAL html the
+   *  canvas was opened with (same key the in-memory map uses). */
+  async function canvasKeyHash(html: string): Promise<string> {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(html));
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
   /** Open an HTML snippet (e.g. from a chat message) in the Canvas studio. */
   function openInCanvas(raw: string) {
     const html = extractHtml(raw) || raw.trim();
@@ -908,6 +923,20 @@ export default function App() {
     } else {
       setCanvasVersions([{ html, note: t("canvasInitial") }]);
       setCanvasIndex(0);
+      // Memory miss ⇒ maybe a restart wiped the map: hydrate from disk. Only
+      // apply if the user hasn't already iterated past the fresh v1 (their
+      // new work wins over history).
+      void canvasKeyHash(html)
+        .then((h) => canvasSessionLoad(h))
+        .then((s) => {
+          if (!s) return;
+          const saved = JSON.parse(s) as { versions: CanvasVersion[]; index: number };
+          if (!saved.versions?.length || saved.versions.length < 2) return;
+          canvasSessions.current.set(html, saved);
+          setCanvasVersions((cur) => (cur.length <= 1 ? saved.versions : cur));
+          setCanvasIndex((cur) => (cur === 0 ? Math.min(saved.index, saved.versions.length - 1) : cur));
+        })
+        .catch(() => {});
     }
     setCanvasKey(html);
     setCanvasOpen(true);
