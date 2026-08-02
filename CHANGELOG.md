@@ -78,6 +78,13 @@ transcripts showed — plus the delivery habit the webapp release didn't cover.
   model then faithfully reported content that "wasn't there". Animations are
   frozen at their end state before the shot; on the page that exposed all of
   this, element extraction went from partial to perfect.
+- The canvas preview scrollbar finally matches the page. Native subframe
+  scrollbars answer to the top document's color scheme, the window, and the
+  stage behind them — never to the previewed page — so a dark page kept a
+  glaring white bar through two earlier fixes. The preview now paints its
+  own: track in the page's background, thumb in translucent ink, on any
+  page, in any theme. The app also declares a proper color-scheme per theme,
+  so native widgets everywhere stop assuming light mode.
 
 
 ## v2.0.1 — The webapp workshop (2026-07-28)
