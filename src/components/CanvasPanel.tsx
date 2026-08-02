@@ -163,6 +163,11 @@ const SCROLL_SCHEME_SHIM = `<script>(function(){
         dark = t!==null && t > 128;
       }
       de.style.colorScheme = dark ? 'dark' : 'light';
+      // The parent needs the verdict too: the dark-scheme subframe scrollbar
+      // WebKit draws (governed by the TOP document) has a TRANSPARENT track —
+      // over the stage's white backing it read as a blank white gutter with
+      // an invisible thumb. The stage flips dark behind dark pages instead.
+      try{parent.postMessage({__chatyCvScheme:dark?'dark':'light',nonce:window.__CV_NONCE},'*');}catch(_){}
     }catch(_){}
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',apply); else apply();
@@ -250,6 +255,10 @@ export function CanvasPanel({
   // kept, and why the last one was dropped — reads the fault location off the
   // screen instead of guessing (the empty-console hunt).
   const [conDiag, setConDiag] = useState({ raw: 0, dropped: "" });
+  // Inferred scheme of the PREVIEWED page (shim postMessage). Drives the
+  // stage backing: WebKit's dark-scheme subframe scrollbar has a transparent
+  // track, so a white stage behind a dark page read as a blank white gutter.
+  const [previewScheme, setPreviewScheme] = useState<"light" | "dark">("light");
   // Bumping remounts the iframe: scripts re-run from scratch (page refresh).
   const [reloadNonce, setReloadNonce] = useState(0);
   // Inspect selection: cv ids the user clicked (⌘/Ctrl toggles membership).
@@ -335,6 +344,7 @@ export function CanvasPanel({
   useEffect(() => {
     setError(null);
     setHotLine(null);
+    setPreviewScheme("light");
     // Keep entries from the CURRENT document generation: on WKWebView the
     // new srcdoc can post its first errors before this effect runs, and a
     // blind wipe ate them (the reported "console shows nothing" file).
@@ -354,6 +364,7 @@ export function CanvasPanel({
       setConsoleLog([]);
       setError(null);
       setConDiag({ raw: 0, dropped: "" });
+      setPreviewScheme("light");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -377,6 +388,11 @@ export function CanvasPanel({
         } else if (import.meta.env.DEV) {
           setConDiag((d) => ({ ...d, dropped: `${con.nonce}≠${nonceRef.current}` }));
         }
+      }
+      const scheme = (data as { __chatyCvScheme?: "light" | "dark"; nonce?: string })?.__chatyCvScheme;
+      if (scheme) {
+        const n = (data as { nonce?: string }).nonce;
+        if (!n || n === nonceRef.current) setPreviewScheme(scheme);
       }
       if (data?.__chatyCanvasError && !muted) {
         const d = data.__chatyCanvasError as CanvasError & { nonce?: string };
@@ -658,7 +674,10 @@ export function CanvasPanel({
             onPointerDown={startDrag("rail")}
             onDoubleClick={() => setRailW(150)}
           />
-          <div className="canvas-stage split">
+          <div
+            className="canvas-stage split"
+            style={previewScheme === "dark" ? { background: "#161616" } : undefined}
+          >
             <div className="canvas-pane preview" style={{ flex: `1 1 ${100 - codePct}%` }}>
               <iframe
                 key={`${index}-${reloadNonce}`}
