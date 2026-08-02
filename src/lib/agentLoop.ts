@@ -2008,8 +2008,8 @@ export async function runAgentTurn(
           const note =
             shots.length > 1
               ? lang === "zh"
-                ? `页面较长,整页截图按自上而下分为 ${shots.length} 段(无遗漏)。逐段查看后继续;之后只需复查当前视口时,用 browser_snapshot 更快。`
-                : `Tall page — the full-page capture below is split top-to-bottom into ${shots.length} segments (nothing omitted). Review them in order; for later re-checks of just the current viewport, browser_snapshot is faster.`
+                ? `页面较长,整页截图按自上而下分为 ${shots.length} 段(无遗漏、不重叠)。逐段查看后继续;之后只需复查当前视口时,用 browser_snapshot 更快。`
+                : `Tall page — the full-page capture below is split top-to-bottom into ${shots.length} segments (nothing omitted, no overlap). Review them in order; for later re-checks of just the current viewport, browser_snapshot is faster.`
               : lang === "zh"
                 ? "这是当前网页的截图,请查看后继续验证/操作。"
                 : "Screenshot of the current page below — look and continue.";

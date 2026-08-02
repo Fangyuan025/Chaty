@@ -231,6 +231,20 @@ const AUTOSCROLL_JS: &str = r#"new Promise(function(done){
   },50);
 })"#;
 
+/// Freeze CSS motion at its END state before a full-page capture: reveal-on-
+/// scroll pages (IntersectionObserver + transition) raced the shot — the
+/// autoscroll passes a 6-screen page in ~0.4s, every staggered 0.5-0.8s
+/// transition is mid-flight or unstarted, and whole sections captured BLANK
+/// (owner walkthrough: the Hello-Kitty featured-products grid photographed
+/// empty; the model faithfully reported products that "weren't there").
+/// Zeroing durations makes any triggered reveal land instantly; idempotent.
+const FREEZE_ANIMATIONS_JS: &str = r#"(function(){
+  if(document.getElementById('__chaty_freeze'))return 'ok';
+  var s=document.createElement('style');s.id='__chaty_freeze';
+  s.textContent='*,*::before,*::after{animation-duration:0s!important;animation-delay:0s!important;transition-duration:0s!important;transition-delay:0s!important}';
+  (document.head||document.documentElement).appendChild(s);return 'ok';
+})()"#;
+
 /// Process-wide handle to the browser actor thread. Lazily started.
 static BROWSER: Mutex<Option<Sender<BrowserCmd>>> = Mutex::new(None);
 /// Persistent profile dir for the interactive browser (set once at startup, so
@@ -1018,8 +1032,13 @@ impl BrowserSession {
     /// lazy-loaded images/sections), then returns to the top and captures the
     /// whole document — so nothing below the fold is missed or blank.
     fn screenshot(&mut self) -> Result<Vec<u8>, String> {
+        // Order matters: freeze first, so reveals triggered by the scroll
+        // land at their end state instantly instead of racing the capture.
+        let _ = self.eval(FREEZE_ANIMATIONS_JS);
         let _ = self.eval(AUTOSCROLL_JS); // best-effort; ignore if it errors
-        std::thread::sleep(Duration::from_millis(300));
+        // Settle for timer-driven DOM work (typed-in content, staged inserts)
+        // — CSS is already frozen, this only covers JS setTimeout chains.
+        std::thread::sleep(Duration::from_millis(500));
         self.capture(true)
     }
 

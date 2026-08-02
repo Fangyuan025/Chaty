@@ -1500,6 +1500,21 @@ pub async fn browser_refresh() -> Result<String, String> {
 fn tile_bounds(width: u32, height: u32) -> Vec<(u32, u32)> {
     // ~one 2x viewport per tile; a page up to 1.35 tiles stays a single image
     // (normal pages keep the old behavior byte-for-byte).
+    tile_bounds_with(width, height, None)
+}
+
+/// Same as `tile_bounds`, with an optional content-aware boundary chooser:
+/// given a candidate cut row, return the FLATTEST row nearby (whitespace
+/// between page sections). A hard cut at a fixed offset halved a product
+/// card and the model saw it in NEITHER half; overlapping tiles duplicated
+/// content and diluted multi-image attention (both measured on the owner's
+/// Hello-Kitty page). Cutting in section gaps splits nothing and adds
+/// nothing.
+fn tile_bounds_with(
+    width: u32,
+    height: u32,
+    pick_cut: Option<&dyn Fn(u32) -> u32>,
+) -> Vec<(u32, u32)> {
     let tile_h = ((width as f64) * 0.72) as u32;
     if height as f64 <= tile_h as f64 * 1.35 {
         return vec![(0, height)];
@@ -1508,13 +1523,49 @@ fn tile_bounds(width: u32, height: u32) -> Vec<(u32, u32)> {
     let mut y = 0u32;
     while y < height {
         let remaining = height - y;
-        // Fold a trailing sliver (<40% of a tile) into the previous tile so
-        // the last image isn't an illegible ribbon.
-        let h = if remaining < tile_h + (tile_h * 2) / 5 { remaining } else { tile_h };
-        out.push((y, h));
-        y += h;
+        // Trailing sliver (<40% of a tile) folds into the final tile.
+        if remaining < tile_h + (tile_h * 2) / 5 {
+            out.push((y, remaining));
+            break;
+        }
+        let target = y + tile_h;
+        let cut = pick_cut.map(|f| f(target)).unwrap_or(target).clamp(y + tile_h / 2, height);
+        out.push((y, cut - y));
+        y = cut;
     }
     out
+}
+
+/// The flattest row (lowest horizontal variance ≈ blank/gap) within ±20% of
+/// a tile around `target` — sampled sparsely, cost is negligible even on a
+/// 27 MP capture.
+fn flattest_row_near(img: &image::DynamicImage, target: u32, window: u32) -> u32 {
+    use image::GenericImageView;
+    let (w, h) = (img.width(), img.height());
+    let lo = target.saturating_sub(window).max(1);
+    let hi = (target + window).min(h - 1);
+    let mut best = (u64::MAX, target);
+    let mut row = lo;
+    while row <= hi {
+        let mut sum = 0u64;
+        let mut sum2 = 0u64;
+        let mut n = 0u64;
+        let mut x = 0u32;
+        while x < w {
+            let p = img.get_pixel(x, row);
+            let lum = (p[0] as u64 + p[1] as u64 + p[2] as u64) / 3;
+            sum += lum;
+            sum2 += lum * lum;
+            n += 1;
+            x += 16;
+        }
+        let var = sum2 / n - (sum / n) * (sum / n);
+        if var < best.0 {
+            best = (var, row);
+        }
+        row += 6;
+    }
+    best.1
 }
 
 /// Full-page screenshot (auto-scrolls to trigger lazy content). Returns one
@@ -1531,7 +1582,10 @@ pub async fn browser_screenshot() -> Result<String, String> {
         Err(_) => return write_shot(png),
     };
     let (w, h) = (img.width(), img.height());
-    let tiles = tile_bounds(w, h);
+    let tile_h = ((w as f64) * 0.72) as u32;
+    let window = tile_h / 5;
+    let picker = |target: u32| flattest_row_near(&img, target, window);
+    let tiles = tile_bounds_with(w, h, Some(&picker));
     if tiles.len() == 1 {
         return write_shot(png);
     }
@@ -3378,27 +3432,37 @@ mod tests {
     use super::*;
 
     /// Full-page tiling: normal pages stay ONE image (old behavior intact);
-    /// tall pages split into viewport-proportioned tiles that cover every
-    /// pixel with no overlap; a trailing sliver folds into the last tile.
+    /// tall pages split gaplessly, boundaries may shift toward flat rows
+    /// (section gaps) but never below half a tile, and the set always covers
+    /// every pixel with no ribbon at the end.
     #[test]
     fn screenshot_tiles_cover_everything_and_spare_normal_pages() {
         // Normal 2x viewport (2560x1800): single image.
         assert_eq!(tile_bounds(2560, 1800), vec![(0, 1800)]);
         // Slightly tall (≤1.35 tiles) still single.
         assert_eq!(tile_bounds(2560, 2400), vec![(0, 2400)]);
-        // The owner's Hello-Kitty page: 2560x10780 → several tiles, gapless,
-        // ordered, no sliver at the end.
+        // The owner's Hello-Kitty page: 2560x10780, fixed cuts.
         let tiles = tile_bounds(2560, 10780);
         assert!(tiles.len() >= 5, "tall page must segment: {tiles:?}");
+        let tile_h = (2560f64 * 0.72) as u32;
         let mut y = 0;
         for (ty, th) in &tiles {
-            assert_eq!(*ty, y, "gapless and ordered");
+            assert_eq!(*ty, y, "gapless and ordered: {tiles:?}");
+            assert!(*th >= tile_h / 2, "no ribbon tiles: {tiles:?}");
             y += th;
         }
         assert_eq!(y, 10780, "every pixel covered");
-        let tile_h = (2560f64 * 0.72) as u32;
-        let last = tiles.last().unwrap().1;
-        assert!(last >= (tile_h * 2) / 5, "no illegible trailing ribbon: {last}");
+        // A content-aware picker shifts boundaries but coverage must hold —
+        // even against an adversarial picker that always answers "later".
+        let shove = |t: u32| t + tile_h / 5;
+        let smart = tile_bounds_with(2560, 10780, Some(&shove));
+        let mut y = 0;
+        for (ty, th) in &smart {
+            assert_eq!(*ty, y);
+            assert!(*th >= tile_h / 2);
+            y += th;
+        }
+        assert_eq!(y, 10780);
     }
 
     /// A timed-out command must take its whole tree down. Killing only the
