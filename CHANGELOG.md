@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.0.3 — Cards on the table (2026-08-02)
+
+A small release with two very tangible things: the agent learns a new craft,
+and the canvas stops forgetting.
+
+### New official skill: cardlet
+
+- **Text in, carousel cards out.** The `cardlet` skill turns notes, threads,
+  or an article into polished social-media card images (小红书 / Instagram /
+  square / story sizes) through the Cardlet HTTP API — plain bash + curl, no
+  browser involved, PNGs saved straight into the workspace. Ships enabled;
+  toggle it in Settings → Code → Skill files. Free tier renders with a small
+  watermark; a Cardlet Pro code removes it and unlocks the extra templates.
+- The `use_skill` correction example now names a skill that actually exists —
+  the made-up example taught small models to call a tool that wasn't there.
+
+### The canvas remembers
+
+- **Canvas version history survives an app restart.** Every design-canvas
+  session (v1, v2, …) now mirrors to disk as you iterate; reopening the same
+  document after a restart brings the whole version rail back. The newest
+  hundred sessions are kept; persistence failures never interrupt the canvas
+  itself.
+
+
 ## v2.0.2 — Spin control (2026-07-29)
 
 A patch release about wasted rounds. We instrumented the agent loop, ran the
