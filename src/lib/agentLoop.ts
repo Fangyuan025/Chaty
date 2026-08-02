@@ -1063,7 +1063,13 @@ async function execTool(
       }
       if ((call.name as string) === "use_skill") {
         const want = asStr(a.name).trim();
-        if (!want) return { result: missingArg("name", '{"name":"release"}') };
+        // The correction example must name a skill that EXISTS — a made-up
+        // "release" taught a small model to call a tool that isn't there
+        // (cardlet plumbing e2e, 0.8B).
+        if (!want) {
+          const ex = turnSkills[0]?.name ?? "…";
+          return { result: missingArg("name", `{"name":"${ex}"}`) };
+        }
         const hit =
           turnSkills.find((sk) => sk.name === want) ??
           turnSkills.find((sk) => sk.name.toLowerCase() === want.toLowerCase());
