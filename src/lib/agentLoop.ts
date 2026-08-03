@@ -56,7 +56,7 @@ import {
 import { normalizeChannels } from "./voiceText";
 import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
 import { wrapupNudge, planEcho, isWebSourceFile, isSourceCodeFile, devServerUrlFrom } from "./wrapupGate";
-import { isReadOnlyCommand } from "./readOnlyCmd";
+import { isReadOnlyCommand, isSymbolicCheck } from "./readOnlyCmd";
 import { diffLines } from "./diff";
 import { platform } from "@tauri-apps/plugin-os";
 
@@ -1468,10 +1468,18 @@ export async function runAgentTurn(
   let lastBrowserActionStep = -1;
   let serverCtx = false;
   let devServerUrl: string | undefined;
-  let wrapNudged = false;
-  // Run-check ledger: source edits since the last qualifying execution.
-  // Non-read-only bash / bash_bg / validate_change clear it; `ls` does not.
+  let wrapNudgeCount = 0;
+  let symbolicHintsShown = 0;
+  // Run-check ledger: source edits since the last qualifying SUCCESSFUL
+  // execution. A qualifying run must (a) actually exercise something —
+  // read-only bash and symbolic probes (`--version`, `swiftc -parse`) don't —
+  // and (b) exit 0: a failed build is a debt, not a receipt. (CalendarApp
+  // audit: three failed xcodebuilds plus a syntax-only parse each cleared the
+  // old ledger while the project didn't compile.)
   const codeEditsSinceExec = { files: new Set<string>(), lines: 0 };
+  // The most recent run/validation that FAILED and was never followed by a
+  // green one — drives the harder "don't deliver on a red build" wrap-up.
+  let lastFailedRun: string | null = null;
   // Search flail breaker: consecutive web_search calls, ANY query. When the
   // search backend degrades into irrelevant results, models keep rephrasing
   // the query forever instead of failing over to web_fetch / the browser —
@@ -1501,6 +1509,19 @@ export async function runAgentTurn(
   try {
     for (let step = 0; step < maxSteps; step++) {
       if (opts.signal.cancelled) return;
+
+      // ── Wind-down warning ── two steps before the ceiling, stop OPENING
+      // work. Both CalendarApp repro buzzer-beaters (rounds 4 & 7) broke a
+      // verified-green tree with one last unverified write at maxSteps and
+      // the forced final skipped every gate. Delivering the smaller verified
+      // state beats gambling it on new code.
+      if (step === maxSteps - 2 && step > 0) {
+        pushUser(
+          lang === "zh"
+            ? "[步数预警] 本轮只剩 2 步,之后会被强制暂停。现在起不要再写新文件或加新功能。只做收尾:如果最近的改动还没验证过,用一步验证(validate_change 或构建命令);然后交付最终答复。宁可交付已验证的当前状态,也不要用未验证的新改动去赌。"
+            : "[step warning] Only 2 steps remain before this turn is force-paused. Do NOT start new files or features now. Wrap up: if your latest edits are unverified, spend one step verifying (validate_change or a build command), then deliver your final answer. Ship the verified current state rather than gambling it on unverified new code.",
+        );
+      }
 
       // Background commands that finished since the last step → tell the model
       // (and show a completion card), then it can react on this very step.
@@ -1747,12 +1768,15 @@ export async function runAgentTurn(
                 files: [...codeEditsSinceExec.files],
                 lines: codeEditsSinceExec.lines,
               },
-              nudged: wrapNudged,
+              lastFailedRun,
+              // Normally the gate fires at most once; an outstanding RED
+              // build earns one extra push-back before the answer stands.
+              nudged: wrapNudgeCount >= (lastFailedRun ? 2 : 1),
             },
             lang,
           );
           if (nudge) {
-            wrapNudged = true;
+            wrapNudgeCount++;
             messages.push({ role: "assistant", content: answer });
             pushUser(nudge);
             cb.onThinking("");
@@ -1869,7 +1893,12 @@ export async function runAgentTurn(
         // the next generation sample hotter to break the attractor. A repeat
         // of a call that just ERRORED gets targeted advice: fix the arguments
         // (generic "go explore" advice here derails the task — A/B-1 autopsy).
+        // Reasoning off for the retry too: identical-call loops (like the
+        // stuck-thinking spiral) are usually reasoning-driven attractors, and
+        // heat alone didn't break the post-compaction one in the CalendarApp
+        // repro — the model re-issued the same call and hit the pause.
         hotNext = true;
+        if (!uiRepeatOk) forceNoThinkNext = true;
         const note = lastResultErrored
           ? lang === "zh"
             ? "调用被拦截:这个调用刚刚已经报错,原样重发不会有不同结果。请按上面错误信息修正 arguments 后重发同一个工具。"
@@ -2156,13 +2185,31 @@ export async function runAgentTurn(
         if (call.name.startsWith("browser_")) lastBrowserActionStep = step;
         // A qualifying RUN clears the run-check ledger. Read-only bash (ls,
         // cat, grep…) is observation, not verification, and leaves it intact.
-        if (
-          call.name === "validate_change" ||
-          call.name === "bash_bg" ||
-          (call.name === "bash" && !isReadOnlyCommand(asStr(call.args?.command)))
-        ) {
+        // Beyond that, only SUCCESS clears: a validate_change that found
+        // nothing to run is a no-op, and a bash whose build failed (or whose
+        // command was a symbolic probe) leaves the debt — plus a note that
+        // the last verification is red, for the wrap-up gate.
+        const clearLedger = () => {
           codeEditsSinceExec.files.clear();
           codeEditsSinceExec.lines = 0;
+          lastFailedRun = null;
+        };
+        if (call.name === "validate_change") {
+          const ran = resultText.includes("\n$ ");
+          const failed = resultText.includes("✗") || resultText.includes("⏱");
+          if (ran && !failed) clearLedger();
+          else if (failed) lastFailedRun = "validate_change";
+        } else if (call.name === "bash_bg") {
+          // Long-running starts (dev servers, watch builds) can't report an
+          // exit yet — starting one still counts as engaging with the code.
+          clearLedger();
+        } else if (call.name === "bash") {
+          const cmd = asStr(call.args?.command);
+          if (!isReadOnlyCommand(cmd) && !isSymbolicCheck(cmd)) {
+            const code = /\[exit (-?\d+)(?: · [^\]]*)?\]\s*$/.exec(resultText);
+            if (code && code[1] === "0") clearLedger();
+            else if (code) lastFailedRun = cmd.slice(0, 120);
+          }
         }
         if (["bash", "bash_bg", "bg_output"].includes(call.name)) {
           const url = devServerUrlFrom(resultText);
@@ -2190,6 +2237,22 @@ export async function runAgentTurn(
           lang === "zh"
             ? `\n\n[系统提示] 这已是连续第 ${searchStreak} 次搜索。若以上结果仍与问题无关,说明搜索源此刻不可靠——不要再换措辞重搜,改用 web_fetch 直接抓取最可能的页面(官方文档/GitHub/项目官网),或用 browser_navigate 打开搜索引擎/目标站点查找。`
             : `\n\n[system note] This is consecutive web_search #${searchStreak}. If the results above are still irrelevant, the search backend is unreliable right now — do NOT rephrase and search again; web_fetch the most likely page directly (official docs / GitHub / project site), or open a search engine or the target site with browser_navigate.`;
+      }
+      // Symbolic-check hint (CalendarApp audit): `--version` / `swiftc
+      // -parse` exit 0 on a project that doesn't even compile, and the model
+      // reads that 0 as green. Say so at the exact moment it happens and
+      // point at the real verifier — twice max, then it's noise.
+      if (
+        symbolicHintsShown < 2 &&
+        call.name === "bash" &&
+        codeEditsSinceExec.files.size > 0 &&
+        isSymbolicCheck(asStr(call.args?.command))
+      ) {
+        symbolicHintsShown++;
+        resultText +=
+          lang === "zh"
+            ? "\n\n[系统提示] 这条命令只是版本/语法探测(-parse 不做类型检查),exit 0 不代表代码能编译。要验证改动,调用 validate_change——它会跑真实的测试/构建(Swift 项目自动走 xcodebuild 或全量 typecheck),失败输出会直接给你。"
+            : "\n\n[system note] That command is only a version/syntax probe (-parse skips type checking) — exit 0 does not mean the code compiles. To verify the change, call validate_change: it runs real tests/builds (Swift projects get xcodebuild or a whole-set typecheck) and hands you the failure output.";
       }
       {
         // JIT hints: situational guidance rides in only when its situation

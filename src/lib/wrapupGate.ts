@@ -25,9 +25,13 @@ export interface WrapupState {
   /** Source-code edits since the last QUALIFYING execution (non-read-only
    *  bash, bash_bg, validate_change): file paths + rough changed-line volume.
    *  `ls`/`cat` after an edit is not verification — only running something is.
-   *  The loop clears this on every qualifying execution. */
+   *  The loop clears this on every qualifying SUCCESSFUL execution. */
   codeEditsSinceExec: { files: string[]; lines: number };
-  /** The gate already fired this turn. */
+  /** The most recent run/build/validation that failed with no green run
+   *  after it (command or tool name) — escalates the run-check note into a
+   *  hard "don't deliver on a red build". */
+  lastFailedRun?: string | null;
+  /** The gate already fired this turn (as many times as allowed). */
   nudged: boolean;
 }
 
@@ -135,11 +139,22 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
     (codeFiles.length >= RUN_CHECK_MIN_FILES || st.codeEditsSinceExec.lines >= RUN_CHECK_MIN_LINES)
   ) {
     const shown = codeFiles.slice(0, 3).join(", ") + (codeFiles.length > 3 ? ", …" : "");
-    notes.push(
-      zh
-        ? `- 代码(${shown})在最近的改动之后没有任何运行验证——只读命令不算。至少做一样:用 validate_change 验证改动文件、直接运行它、或跑相关测试/最小冒烟;确认真的能跑再交付。如果确属无需运行的琐碎改动,在答复里说明原因。`
-        : `- Code (${shown}) changed after the last run — read-only commands don't count as verification. Do at least one: validate_change the edited files, execute them directly, or run the relevant tests / a minimal smoke; confirm it actually runs before delivering. If it genuinely needs no run, say why in your answer.`,
-    );
+    if (st.lastFailedRun) {
+      // A red build outranks everything: the model ran verification, saw it
+      // fail, and is trying to deliver anyway. Name the failing run and
+      // demand green — "syntax passed" / "--version worked" is not green.
+      notes.push(
+        zh
+          ? `- 最近一次运行验证是失败的(${st.lastFailedRun}),之后没有任何一次成功的运行。不允许带着编译/构建错误交付:读失败输出、修复错误,重新运行同样的验证直到通过(exit 0)。语法检查(-parse)和 --version 不算验证。如果失败纯属环境问题,在答复里给出证据。`
+          : `- Your most recent verification FAILED (${st.lastFailedRun}) and no successful run followed. Do not deliver with compile/build errors: read the failure output, fix it, and re-run the same verification until it passes (exit 0). Syntax-only checks (-parse) and --version are not verification. If the failure is genuinely environmental, show the evidence in your answer.`,
+      );
+    } else {
+      notes.push(
+        zh
+          ? `- 代码(${shown})在最近的改动之后没有任何运行验证——只读命令不算。至少做一样:用 validate_change 验证改动文件、直接运行它、或跑相关测试/最小冒烟;确认真的能跑再交付。如果确属无需运行的琐碎改动,在答复里说明原因。`
+          : `- Code (${shown}) changed after the last run — read-only commands don't count as verification. Do at least one: validate_change the edited files, execute them directly, or run the relevant tests / a minimal smoke; confirm it actually runs before delivering. If it genuinely needs no run, say why in your answer.`,
+      );
+    }
   }
 
   if (!notes.length) return null;

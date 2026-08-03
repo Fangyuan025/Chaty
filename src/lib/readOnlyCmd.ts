@@ -87,6 +87,40 @@ function argsAreReadOnly(cmd: string, args: string[]): boolean {
   }
 }
 
+/** Executions that prove nothing about whether the code WORKS: version/help
+ *  probes and syntax-only parses. They exit 0 on a project that doesn't even
+ *  compile — the CalendarApp audit's `swift --version` + `swiftc -parse`
+ *  combo — so they must not count as run-verification. Read-only segments
+ *  (`cd`, `echo`…) are neutral; every remaining segment must be symbolic for
+ *  the whole command to be. */
+export function isSymbolicCheck(cmd: string): boolean {
+  if (/[`>]|\$\(|<\(/.test(cmd)) return false; // unparsed shapes: fail closed
+  const segments = cmd.trim().split(/\|\||&&|;|\||\n|&/);
+  let sawSymbolic = false;
+  for (const seg of segments) {
+    let s = seg.trim();
+    if (!s) continue;
+    if (isReadOnlyCommand(s)) continue; // neutral scaffolding, e.g. `cd proj`
+    s = s.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "");
+    let words = s.split(/\s+/);
+    // `xcrun [--sdk X] tool …` runs the tool — judge the tool itself.
+    if ((words[0] ?? "").split("/").pop() === "xcrun") {
+      words = words.slice(1);
+      while (words[0]?.startsWith("-")) words = words.slice(words[0].includes("=") ? 1 : 2);
+    }
+    const bin = (words[0] ?? "").split("/").pop() ?? "";
+    const args = words.slice(1);
+    const versionProbe =
+      args.length > 0 && args.every((a) => /^--?(version|help|V|v)$/.test(a));
+    const parseOnly =
+      /^swiftc?$/.test(bin) &&
+      args.some((a) => a === "-parse" || a === "-dump-parse" || a === "-dump-ast");
+    if (!versionProbe && !parseOnly) return false;
+    sawSymbolic = true;
+  }
+  return sawSymbolic;
+}
+
 export function isReadOnlyCommand(cmd: string, opts?: { windows?: boolean }): boolean {
   // v1 doesn't model cmd.exe semantics — never auto-approve on Windows.
   if (opts?.windows) return false;

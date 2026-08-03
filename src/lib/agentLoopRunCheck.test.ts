@@ -32,7 +32,20 @@ async function runRounds(rounds: string[]): Promise<{ injects: string[]; final: 
       return null;
     }
     if (cmd === "agent_write_file") return "written";
-    if (cmd === "agent_bash") return { stdout: "ok", stderr: "", code: 0, timedOut: false, bgId: null };
+    if (cmd === "agent_bash") {
+      // Commands containing "fail" exit 1 — lets scripts exercise the
+      // red-build path without a second mock.
+      const c = String((args as { command?: string }).command ?? "");
+      return c.includes("fail")
+        ? { stdout: "", stderr: "error: build failed", code: 1, timedOut: false, bgId: null }
+        : { stdout: "ok", stderr: "", code: 0, timedOut: false, bgId: null };
+    }
+    if (cmd === "agent_validate_change") {
+      const f = String(((args as { files?: string[] }).files ?? []).join(","));
+      if (f.includes("red")) return "验证目标: red.py\n\n$ pytest red\n✗ 失败 (exit 1)\nFAILED red";
+      if (f.includes("green")) return "验证目标: green.py\n\n$ pytest green\n✓ 通过\n";
+      return "验证目标: tool.py\n\n没有发现与改动相关的测试(按 test_*.py 约定查找)。";
+    }
     if (cmd === "agent_read_file") throw new Error("no such file");
     return null;
   });
@@ -103,5 +116,82 @@ describe("run-check through the real loop", () => {
     ]);
     expect(injects.some((i) => i.includes(RUN_MARK))).toBe(false);
     expect(final).toContain("one-liner");
+  });
+
+  // ── CalendarApp audit scenarios: the exploits that shipped a project ──
+  // ── that didn't compile must each still end in a nudge.              ──
+
+  it("failed build + symbolic checks (the audit's exact combo) → red-build nudge", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "app.swift", content: BIG_PY }),
+      call("bash", { command: "xcodebuild build # fail" }),
+      call("bash", { command: "swift --version" }),
+      call("bash", { command: "cd CalendarApp && swiftc -parse a.swift b.swift" }),
+      "All done, project delivered.",
+      "Final: shipping anyway.",
+      "Final final.",
+    ]);
+    const red = injects.filter((i) => i.includes("FAILED") && i.includes("until it passes"));
+    expect(red.length).toBeGreaterThanOrEqual(1);
+    expect(red.length).toBeLessThanOrEqual(2); // one extra push-back max
+  });
+
+  it("symbolic probe after edits → in-flight hint pointing at validate_change, twice max", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "app.swift", content: BIG_PY }),
+      call("bash", { command: "swift --version" }),
+      call("bash", { command: "swiftc -parse app.swift" }),
+      call("bash", { command: "swiftc -parse app.swift 2>&1 | head -5" }),
+      "All done.",
+      "Final.",
+    ]);
+    const hints = injects.filter((i) => i.includes("version/syntax probe"));
+    expect(hints).toHaveLength(2);
+  });
+
+  it("failed build then a real green run → silence", async () => {
+    const { injects, final } = await runRounds([
+      call("write_file", { path: "app.swift", content: BIG_PY }),
+      call("bash", { command: "xcodebuild build # fail" }),
+      call("bash", { command: "xcodebuild build" }),
+      "All done, build is green.",
+    ]);
+    expect(injects.some((i) => i.includes(RUN_MARK) || i.includes("FAILED"))).toBe(false);
+    expect(final).toContain("green");
+  });
+
+  it("validate_change that found nothing to run is a no-op → still nudged", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "tool.py", content: BIG_PY }),
+      call("validate_change", { files: ["tool.py"] }),
+      "All done.",
+      "Final.",
+    ]);
+    expect(injects.filter((i) => i.includes(RUN_MARK))).toHaveLength(1);
+  });
+
+  it("wind-down warning fires once, two steps before the ceiling", async () => {
+    const rounds = Array.from({ length: 11 }, (_, i) =>
+      call("write_file", { path: `f${i}.py`, content: "print(1)" }),
+    );
+    const { injects } = await runRounds([...rounds, "Done."]);
+    expect(injects.filter((i) => i.includes("step warning"))).toHaveLength(1);
+  });
+
+  it("validate_change reporting ✗ → red-build nudge; ✓ → silence", async () => {
+    const failed = await runRounds([
+      call("write_file", { path: "red.py", content: BIG_PY }),
+      call("validate_change", { files: ["red.py"] }),
+      "All done.",
+      "Final.",
+      "Final final.",
+    ]);
+    expect(failed.injects.some((i) => i.includes("FAILED"))).toBe(true);
+    const passed = await runRounds([
+      call("write_file", { path: "green.py", content: BIG_PY }),
+      call("validate_change", { files: ["green.py"] }),
+      "All done.",
+    ]);
+    expect(passed.injects.some((i) => i.includes(RUN_MARK) || i.includes("FAILED"))).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { isReadOnlyCommand } from "./readOnlyCmd";
+import { isReadOnlyCommand, isSymbolicCheck } from "./readOnlyCmd";
 
 const PASS: string[] = [
   "ls",
@@ -111,4 +111,37 @@ describe("isReadOnlyCommand", () => {
     expect(isReadOnlyCommand("dir", { windows: true })).toBe(false);
     expect(isReadOnlyCommand("ls", { windows: true })).toBe(false);
   });
+});
+
+describe("isSymbolicCheck", () => {
+  const SYMBOLIC = [
+    "swift --version",
+    "swiftc --version",
+    "node -v",
+    "python3 --help",
+    "cd CalendarApp && swiftc -parse a.swift b.swift",
+    "xcrun swiftc -parse Views/App.swift",
+    "swiftc -dump-parse main.swift",
+    "swift --version && swiftc -parse x.swift",
+  ];
+  const REAL = [
+    "xcodebuild -project X.xcodeproj build",
+    "swiftc -typecheck a.swift",
+    "python3 tool.py",
+    "cargo build",
+    "npm test",
+    "swift build",
+    "ls -la", // read-only, not symbolic — different classifier
+    "swiftc -parse a.swift > out.txt", // unparsed shape: fail closed
+  ];
+  for (const cmd of SYMBOLIC) {
+    test(`symbolic: ${JSON.stringify(cmd)}`, () => {
+      expect(isSymbolicCheck(cmd)).toBe(true);
+    });
+  }
+  for (const cmd of REAL) {
+    test(`real: ${JSON.stringify(cmd)}`, () => {
+      expect(isSymbolicCheck(cmd)).toBe(false);
+    });
+  }
 });

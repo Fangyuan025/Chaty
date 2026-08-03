@@ -677,11 +677,27 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
         }
     }
     targets.retain(|p| p.is_file());
+    // Empty journal (fresh session, restarted app, or a caller that passed
+    // nothing) must not dead-end: Swift verification is whole-project anyway,
+    // so when the workspace has Swift sources, validate those instead of
+    // bouncing the model back to hand-rolled bash (CalendarApp repro round 2).
+    let mut swift_fallback = false;
     if targets.is_empty() {
-        return Ok(tr(
-            "本轮还没有记录到文件改动;可传 files 参数明确指定要验证的文件",
-            "no tracked changes this turn — pass files explicitly to validate them",
-        ));
+        swift_fallback = walkdir::WalkDir::new(&root)
+            .max_depth(4)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            .flatten()
+            .any(|e| {
+                e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "swift")
+            });
+        if !swift_fallback {
+            return Ok(tr(
+                "本轮还没有记录到文件改动;可传 files 参数明确指定要验证的文件",
+                "no tracked changes this turn — pass files explicitly to validate them",
+            ));
+        }
     }
     let stems: Vec<String> = targets
         .iter()
@@ -734,7 +750,14 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
     }
 
     let mut ran_any = false;
-    let mut out = trf!("验证目标: {}\n", "validating: {}\n", rels.join(", "));
+    let mut out = if swift_fallback {
+        tr(
+            "验证目标: (本轮无改动记录——验证工作区全部 Swift 源)\n",
+            "validating: (no tracked changes — validating all Swift sources in the workspace)\n",
+        )
+    } else {
+        trf!("验证目标: {}\n", "validating: {}\n", rels.join(", "))
+    };
     let timeout = Duration::from_secs(180);
     let run_cmd = |title: &str, cmd: String, out: &mut String| {
         out.push_str(&format!("\n$ {cmd}\n"));
@@ -750,6 +773,7 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
                             || t.starts_with("✗") || t.starts_with("×") || t.contains("FAIL ")
                             || (t.contains("failed") && t.contains("passed"))
                             || t.starts_with("test result:")
+                            || t.contains("error:") || t.contains("BUILD FAILED")
                     })
                     .take(14)
                     .collect();
@@ -828,6 +852,96 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
             &mut out,
         );
         ran_any = true;
+    }
+
+    // Swift: no test-file convention covers it, and the CalendarApp audit
+    // showed what happens without a real checker here — the model falls back
+    // to `swiftc -parse` (syntax only; type errors sail through) and ships
+    // code that doesn't compile. Prefer a real xcodebuild when a project file
+    // exists (catches pbxproj mistakes too); else `swift build` for SwiftPM;
+    // else whole-set `swiftc -typecheck` (Swift type errors are cross-file,
+    // so checking only the changed files would miss most of them).
+    if swift_fallback
+        || targets.iter().any(|p| p.extension().is_some_and(|e| e == "swift"))
+        || rels.iter().any(|r| r.contains(".xcodeproj"))
+    {
+        let bin_ok = |bin: &str, flag: &str| -> bool {
+            let mut c = Command::new(bin);
+            c.arg(flag).stdout(Stdio::null()).stderr(Stdio::null());
+            hide_console(&mut c);
+            #[cfg(unix)]
+            c.env("PATH", augmented_path());
+            c.status().map(|s| s.success()).unwrap_or(false)
+        };
+        let xcodeproj: Option<PathBuf> = walkdir::WalkDir::new(&root)
+            .max_depth(2)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            .flatten()
+            .find(|e| {
+                e.file_type().is_dir() && e.path().extension().is_some_and(|x| x == "xcodeproj")
+            })
+            .map(|e| e.into_path());
+        if let Some(proj) =
+            xcodeproj.filter(|_| cfg!(target_os = "macos") && bin_ok("xcodebuild", "-version"))
+        {
+            let proj_rel = rel_display(&root, &proj);
+            run_cmd(
+                "xcodebuild",
+                format!(
+                    "xcodebuild -project \"{proj_rel}\" -alltargets -configuration Debug build CODE_SIGNING_ALLOWED=NO"
+                ),
+                &mut out,
+            );
+            ran_any = true;
+        } else if root.join("Package.swift").is_file()
+            && root.join("Sources").is_dir()
+            && bin_ok("swift", "--version")
+        {
+            // --disable-sandbox is required: SwiftPM tries to apply its OWN
+            // sandbox to manifest compilation, and nested sandboxing is
+            // forbidden ("sandbox_apply: Operation not permitted") inside the
+            // agent's seatbelt jail — which remains the actual boundary.
+            run_cmd("swift build", "swift build --disable-sandbox".into(), &mut out);
+            ran_any = true;
+        } else if bin_ok("swiftc", "--version") {
+            // Skip *Tests dirs: XCTest isn't importable by bare swiftc, and a
+            // false "no such module 'XCTest'" would teach the model to distrust
+            // the tool.
+            let mut swifts: Vec<String> = Vec::new();
+            for entry in walkdir::WalkDir::new(&root)
+                .follow_links(false)
+                .into_iter()
+                .filter_entry(|e| {
+                    let name = e.file_name().to_string_lossy();
+                    !(name.starts_with('.') && e.depth() > 0)
+                        && !(e.file_type().is_dir()
+                            && (SKIP_DIRS.contains(&name.as_ref()) || name.ends_with("Tests")))
+                })
+                .flatten()
+            {
+                if swifts.len() >= 120 {
+                    break;
+                }
+                // Package manifests import PackageDescription, which only the
+                // SwiftPM toolchain provides — bare swiftc reports a phantom
+                // "no such module" on perfectly fine projects.
+                let name = entry.file_name().to_string_lossy();
+                if entry.file_type().is_file()
+                    && entry.path().extension().is_some_and(|x| x == "swift")
+                    && !(name == "Package.swift" || name.starts_with("Package@swift-"))
+                {
+                    swifts.push(rel_display(&root, entry.path()));
+                }
+            }
+            if !swifts.is_empty() {
+                let files =
+                    swifts.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(" ");
+                run_cmd("swiftc -typecheck", format!("swiftc -typecheck {files}"), &mut out);
+                ran_any = true;
+            }
+        }
     }
 
     if !ran_any {
@@ -2698,9 +2812,25 @@ fn seatbelt_profile(root: &Path) -> String {
         .iter()
         .map(|d| format!(" (subpath \"{}\")", d.display()))
         .collect();
+    // Build caches that live OUTSIDE the workspace: xcodebuild unconditionally
+    // writes DerivedData + its log store under ~/Library/Developer, so without
+    // these every xcodebuild dies on "You don't have permission to save
+    // 'Build' in the folder 'Logs'" and the model degrades to syntax-only
+    // checks (CalendarApp audit). SwiftPM keeps its caches under ~/Library too.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let build_caches = if home.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " (subpath \"{home}/Library/Developer\") \
+             (subpath \"{home}/Library/Caches/com.apple.dt.Xcode\") \
+             (subpath \"{home}/Library/Caches/org.swift.swiftpm\") \
+             (subpath \"{home}/Library/org.swift.swiftpm\")"
+        )
+    };
     format!(
         "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* \
-         (subpath \"{root}\"){grants} (subpath \"/private/tmp\") (subpath \"/tmp\") \
+         (subpath \"{root}\"){grants}{build_caches} (subpath \"/private/tmp\") (subpath \"/tmp\") \
          (subpath \"/private/var/folders\") (subpath \"/var/folders\") \
          (literal \"/dev/null\") (literal \"/dev/stdout\") (literal \"/dev/stderr\") \
          (literal \"/dev/dtracehelper\") (literal \"/dev/tty\"))",
@@ -3072,6 +3202,7 @@ fn build_command(root: &Path, command: &str, sandboxed: bool) -> Command {
         c
     };
     cmd.env("PATH", augmented_path());
+    redirect_tool_caches(&mut cmd);
     cmd
 }
 
@@ -3081,7 +3212,27 @@ fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c").arg(command);
     cmd.env("PATH", augmented_path());
+    redirect_tool_caches(&mut cmd);
     cmd
+}
+
+/// Package-manager caches live OUTSIDE the workspace (`~/.npm`,
+/// `~/Library/Caches/electron`), where the seatbelt denies writes — so a
+/// plain `npm install` (or electron's postinstall download) can never work
+/// in-sandbox, and the CalendarApp repro watched the model burn steps
+/// discovering that with EPERMs. Redirect them to temp dirs the profile
+/// already allows. Always override: any inherited value points outside the
+/// jail (npx itself injects npm_config_cache=~/.npm into child env), which
+/// in-sandbox is a guaranteed EPERM — a user who really wants a custom cache
+/// can still env-prefix the command itself, which the shell applies last.
+#[cfg(unix)]
+fn redirect_tool_caches(cmd: &mut Command) {
+    for (var, dir) in [
+        ("npm_config_cache", "chaty-npm-cache"),
+        ("ELECTRON_CACHE", "chaty-electron-cache"),
+    ] {
+        cmd.env(var, std::env::temp_dir().join(dir));
+    }
 }
 
 #[cfg(windows)]
@@ -4288,6 +4439,82 @@ mod tests {
         let out = rt.block_on(agent_validate_change(None)).expect("validate 3");
         assert!(out.contains("没有记录到文件改动"), "empty-state message missing: {out}");
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// validate_change on a Swift workspace: a TYPE error (which `swiftc
+    /// -parse` would wave through — the exact CalendarApp-audit failure) must
+    /// be caught by the whole-set typecheck, and the fixed version must pass.
+    /// Files under *Tests dirs are skipped (bare swiftc can't import XCTest).
+    #[test]
+    fn validate_change_typechecks_swift() {
+        let _g = serial();
+        if std::process::Command::new("swiftc")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            eprintln!("SKIP: swiftc not available");
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-vcs-{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("AppTests")).unwrap();
+        set_ws(&tmp);
+        // Parses fine, fails typecheck — the class of error -parse can't see.
+        std::fs::write(tmp.join("main.swift"), "let x: Int = \"no\"\n").unwrap();
+        // Must be skipped: would fail with "no such module 'XCTest'".
+        std::fs::write(tmp.join("AppTests").join("t.swift"), "import XCTest\n").unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let out = rt
+            .block_on(agent_validate_change(Some(vec!["main.swift".into()])))
+            .expect("validate swift");
+        eprintln!("{out}");
+        assert!(out.contains("swiftc -typecheck"), "typecheck not run:\n{out}");
+        assert!(out.contains("✗ 失败"), "type error not reported:\n{out}");
+        assert!(out.contains("error:"), "compiler error line not surfaced:\n{out}");
+        assert!(!out.contains("XCTest"), "Tests dir must be skipped:\n{out}");
+
+        std::fs::write(tmp.join("main.swift"), "let x: Int = 1\nprint(x)\n").unwrap();
+        let out = rt
+            .block_on(agent_validate_change(Some(vec!["main.swift".into()])))
+            .expect("validate swift 2");
+        assert!(out.contains("✓ 通过"), "fixed code must pass:\n{out}");
+
+        // Package manifest must be excluded from the bare-swiftc set (it
+        // imports PackageDescription, a SwiftPM-only module), and an EMPTY
+        // journal must fall back to whole-workspace Swift validation instead
+        // of bouncing the model (CalendarApp repro round 2).
+        std::fs::write(tmp.join("Package.swift"), "import PackageDescription\n").unwrap();
+        cp_clear();
+        let out = rt.block_on(agent_validate_change(None)).expect("validate swift 3");
+        assert!(out.contains("全部 Swift 源"), "empty-journal fallback missing:\n{out}");
+        assert!(out.contains("✓ 通过"), "fallback must pass on clean sources:\n{out}");
+        assert!(
+            !out.contains("PackageDescription"),
+            "Package.swift must be excluded from bare typecheck:\n{out}"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Agent shells must point npm/electron caches at writable temp dirs —
+    /// the default locations are outside the seatbelt write allowlist, so
+    /// installs would EPERM (CalendarApp repro round 4).
+    #[test]
+    fn agent_shell_redirects_package_caches() {
+        let cmd = build_command(Path::new("/tmp"), "true", true);
+        let envs: Vec<(String, String)> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((k.to_string_lossy().into_owned(), v?.to_string_lossy().into_owned()))
+            })
+            .collect();
+        for var in ["npm_config_cache", "ELECTRON_CACHE"] {
+            assert!(
+                envs.iter().any(|(k, v)| k == var && v.contains("chaty-")),
+                "{var} not redirected: {envs:?}"
+            );
+        }
     }
 
     /// understand_repo must assemble README lede, manifest line, tree,
