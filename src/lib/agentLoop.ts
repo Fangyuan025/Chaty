@@ -38,6 +38,7 @@ import {
   agentListGrants,
   agentSearchFiles,
   agentListDir,
+  agentListFiles,
   agentReadFile,
   agentReadDoc,
   agentValidateChange,
@@ -55,7 +56,7 @@ import {
 } from "./ipc";
 import { normalizeChannels } from "./voiceText";
 import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
-import { wrapupNudge, planEcho, isWebSourceFile, isSourceCodeFile, devServerUrlFrom } from "./wrapupGate";
+import { wrapupNudge, planEcho, isWebSourceFile, isSourceCodeFile, devServerUrlFrom, runCheckAboveBar } from "./wrapupGate";
 import { isReadOnlyCommand, isSymbolicCheck } from "./readOnlyCmd";
 import { diffLines } from "./diff";
 import { platform } from "@tauri-apps/plugin-os";
@@ -745,7 +746,29 @@ async function execTool(
       };
     }
     case "list_dir": {
-      const entries = await agentListDir(a.path ? asStr(a.path) : undefined);
+      const base = a.path ? asStr(a.path) : undefined;
+      const entries = await agentListDir(base);
+      // A listing that is ONLY a couple of folders is nearly information-free
+      // ("📁 CalendarApp/" — now what?), and the model's answer to it is to
+      // re-issue the same call hoping for more, straight into the repeat
+      // breaker (repro rounds 3 & 10). Descend one level up front so the
+      // first call already answers the question the repeat would have asked.
+      if (entries.length > 0 && entries.length <= 3 && entries.every((e) => e.isDir)) {
+        const lines: string[] = [];
+        for (const e of entries) {
+          lines.push(`📁 ${e.name}/`);
+          try {
+            const kids = await agentListDir(base ? `${base}/${e.name}` : e.name);
+            for (const k of kids.slice(0, 20)) {
+              lines.push(`   ${k.isDir ? "📁 " : "📄 "}${k.name}${k.isDir ? "/" : ""}`);
+            }
+            if (kids.length > 20) lines.push(`   … (${kids.length - 20} more)`);
+          } catch {
+            /* unreadable subdir: keep the bare folder line */
+          }
+        }
+        return { result: lines.join("\n") };
+      }
       const body =
         entries.map((e) => `${e.isDir ? "📁 " : "📄 "}${e.name}${e.isDir ? "/" : ""}`).join("\n") ||
         "(空目录 / empty)";
@@ -1769,14 +1792,32 @@ export async function runAgentTurn(
                 lines: codeEditsSinceExec.lines,
               },
               lastFailedRun,
-              // Normally the gate fires at most once; an outstanding RED
-              // build earns one extra push-back before the answer stands.
-              nudged: wrapNudgeCount >= (lastFailedRun ? 2 : 1),
+              // Normally the gate fires at most once. Two things earn one
+              // extra push-back before the answer stands: an outstanding RED
+              // build, and a run-check ledger the model left completely
+              // untouched after the first nudge (round-9 escape: it ticked
+              // todos and re-delivered with zero verification attempts).
+              nudged:
+                wrapNudgeCount >=
+                (lastFailedRun ||
+                runCheckAboveBar(codeEditsSinceExec.files.size, codeEditsSinceExec.lines)
+                  ? 2
+                  : 1),
+              attempt: wrapNudgeCount + 1,
             },
             lang,
           );
           if (nudge) {
             wrapNudgeCount++;
+            // A model that ignored one correction tends to ignore its
+            // verbatim sibling. Heat alone here backfired (round 12: hot
+            // sampling with reasoning ON leaked think-prose as the final
+            // answer) — use the proven stuck-think combo: reasoning off for
+            // the retry AND hotter sampling, so the next output is an action.
+            if (wrapNudgeCount >= 2) {
+              hotNext = true;
+              forceNoThinkNext = true;
+            }
             messages.push({ role: "assistant", content: answer });
             pushUser(nudge);
             cb.onThinking("");
@@ -1875,7 +1916,11 @@ export async function runAgentTurn(
         (call.name === "browser_click" || call.name === "browser_type") &&
         !lastResultErrored &&
         uiRepeatChangedPage;
-      const pauseAt = uiRepeatOk ? 5 : 2;
+      // update_plan repeats are harmless no-ops (nothing mutates), and the
+      // model that re-sends a plan needs TEACHING more than a trapdoor —
+      // give it one extra intercept before the pause (rounds 13/14 died at
+      // 2-49s to this exact loop).
+      const pauseAt = uiRepeatOk ? 5 : call.name === "update_plan" ? 3 : 2;
       const warnAt = uiRepeatOk ? 4 : 1;
       if (repeatCount >= pauseAt) {
         // One past the warning — pause instead of spinning to the step limit.
@@ -1897,8 +1942,12 @@ export async function runAgentTurn(
         // stuck-thinking spiral) are usually reasoning-driven attractors, and
         // heat alone didn't break the post-compaction one in the CalendarApp
         // repro — the model re-issued the same call and hit the pause.
+        // EXCEPT update_plan: picking "the first concrete action" needs a
+        // little reasoning, and a no-think retry just replays the last
+        // successful-looking call (round 14: plan → plan → plan → pause in
+        // 49s). Keep its retry hot but thinking.
         hotNext = true;
-        if (!uiRepeatOk) forceNoThinkNext = true;
+        if (!uiRepeatOk && call.name !== "update_plan") forceNoThinkNext = true;
         const note = lastResultErrored
           ? lang === "zh"
             ? "调用被拦截:这个调用刚刚已经报错,原样重发不会有不同结果。请按上面错误信息修正 arguments 后重发同一个工具。"
@@ -1912,9 +1961,14 @@ export async function runAgentTurn(
                 ? "调用被拦截:上一次同样的点击/输入之后页面没有变化。这通常意味着操作**已经生效**(例如表单已提交、成功提示在别处),或者这个元素此刻不起作用。切勿再点一次——提交类按钮重复点击会重复提交。请先用 browser_read 核实页面当前文字(找确认信息),再决定下一步。"
                 : "Intercepted: the page did not change after your previous identical click/type. That usually means the action ALREADY took effect (the form was submitted, the confirmation is elsewhere on the page), or this element does nothing right now. Do NOT click it again — repeating a submit button posts duplicates. Read the current page text with browser_read first (look for a confirmation), then decide."
               : call.name === "update_plan"
-                ? lang === "zh"
-                  ? "调用被拦截:这份计划刚刚已经记录过,原样重发没有意义。不要再发 update_plan——现在直接开始执行计划里第一件未完成的事(用具体工具:read_file、edit_file、bash 等)。"
-                  : "Intercepted: this exact plan was already recorded — re-sending it does nothing. Do NOT call update_plan again; start EXECUTING the first unfinished item now, with concrete tools (read_file, edit_file, bash, …)."
+                ? (() => {
+                    // Name the concrete next move — "go execute" alone did not
+                    // break the plan→plan→plan loop (rounds 13/14).
+                    const first = currentPlan.find((t) => t.status !== "done")?.content;
+                    return lang === "zh"
+                      ? `调用被拦截:这份计划刚刚已经记录过,原样重发没有意义。不要再发 update_plan——现在就动手执行第一件未完成的事${first ? `:「${first}」` : ""}。第一步通常是 write_file 写出第一个文件,或 bash 建目录;直接发那个工具调用。`
+                      : `Intercepted: this exact plan was already recorded — re-sending it does nothing. Do NOT call update_plan again; start executing the first unfinished item now${first ? `: "${first}"` : ""}. The first move is usually write_file for the first file, or bash to create directories — issue that tool call directly.`;
+                  })()
               : call.name === "bg_kill"
                 ? lang === "zh"
                   ? "调用被拦截:这个后台任务已经处理过了(上一次调用已终止它或它早已结束),不需要再杀。如果任务都收尾了,直接给出最终答复。"
@@ -2237,6 +2291,36 @@ export async function runAgentTurn(
           lang === "zh"
             ? `\n\n[系统提示] 这已是连续第 ${searchStreak} 次搜索。若以上结果仍与问题无关,说明搜索源此刻不可靠——不要再换措辞重搜,改用 web_fetch 直接抓取最可能的页面(官方文档/GitHub/项目官网),或用 browser_navigate 打开搜索引擎/目标站点查找。`
             : `\n\n[system note] This is consecutive web_search #${searchStreak}. If the results above are still irrelevant, the search backend is unreliable right now — do NOT rephrase and search again; web_fetch the most likely page directly (official docs / GitHub / project site), or open a search engine or the target site with browser_navigate.`;
+      }
+      // Self-deletion audit: an `rm` that swallowed files the model itself
+      // wrote this turn deserves an immediate, explicit accounting (repro
+      // round 13: a cleanup `rm -rf` wiped the whole 7-file delivery, the
+      // model rewrote one file and shipped a hollow tree that still
+      // typechecked). Deleted files also leave the run-check ledger — debt
+      // for code that no longer exists would demand verifying ghosts.
+      if (
+        call.name === "bash" &&
+        /\brm\b/.test(asStr(call.args?.command)) &&
+        editedFiles.size > 0 &&
+        !resultText.startsWith("ERROR")
+      ) {
+        try {
+          const alive = new Set(await agentListFiles(undefined, 4000));
+          const gone = [...editedFiles].filter((f) => !alive.has(f));
+          if (gone.length) {
+            for (const f of gone) {
+              editedFiles.delete(f);
+              codeEditsSinceExec.files.delete(f);
+            }
+            const shown = gone.slice(0, 4).join(", ") + (gone.length > 4 ? ", …" : "");
+            resultText +=
+              lang === "zh"
+                ? `\n\n[警告] 这条命令删除了你本轮已写入的 ${gone.length} 个文件(${shown})。它们不会自动恢复——如果交付还需要这些内容,现在就逐个重新写入;如果确属有意清理,重新梳理计划并继续。`
+                : `\n\n[warning] That command deleted ${gone.length} file(s) you wrote this turn (${shown}). They will not come back on their own — if the delivery still needs them, re-write each one now; if the cleanup was intentional, re-plan and continue.`;
+          }
+        } catch {
+          /* listing unavailable: skip the audit rather than fail the step */
+        }
       }
       // Symbolic-check hint (CalendarApp audit): `--version` / `swiftc
       // -parse` exit 0 on a project that doesn't even compile, and the model

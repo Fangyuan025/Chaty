@@ -130,7 +130,11 @@ export const defaultSettings: GenSettings = {
   voiceSpeed: 1.0,
   gpuLayers: -1,
   contextLength: 0,
-  codeMaxSteps: 32,
+  // 64, was 32: the CalendarApp repro showed 32 starves app-scale one-shots,
+  // and 48 still cut the model off ONE error from green (round 16: mid-fix
+  // on a duplicate-struct error at the buzzer). Simple tasks end early
+  // anyway, so the higher ceiling only costs anything when real work is left.
+  codeMaxSteps: 64,
   codeBashTimeout: 60,
   codeTemperature: 0.3,
   codeThinkBudget: 0,

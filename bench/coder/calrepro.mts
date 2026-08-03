@@ -19,7 +19,7 @@ g.localStorage ??= {
 g.navigator ??= { userAgent: "chaty-bench" };
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdtempSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Bridge, type Json } from "../lib/bridge.mts";
@@ -39,13 +39,15 @@ function walk(dir: string, depth: number, hit: (p: string) => void) {
 
 function grade(ws: string): { compiles: boolean; errors: string[]; how: string } {
   let xcodeproj: string | undefined;
-  let hasPackage = false;
-  let hasSources = false;
+  let packageDir: string | undefined;
   const swifts: string[] = [];
   walk(ws, 4, (p) => {
     if (p.endsWith(".xcodeproj") && statSync(p).isDirectory()) xcodeproj ??= p;
-    if (path.basename(p) === "Package.swift") hasPackage = true;
-    if (path.basename(p) === "Sources" && statSync(p).isDirectory()) hasSources = true;
+    // Track the manifest's own directory: `swift build` must run THERE.
+    // Running it at the ws root walks UP the parent chain for a manifest —
+    // round 17 "passed" by silently building a stale package that round 1
+    // had left in the shared temp ROOT, two directories above the delivery.
+    if (path.basename(p) === "Package.swift") packageDir ??= path.dirname(p);
     // Package manifests need the SwiftPM toolchain; bare swiftc reports a
     // phantom "no such module 'PackageDescription'" on fine projects.
     if (p.endsWith(".swift") && !/Tests\//.test(p) && !/\/Package(@swift-[^/]*)?\.swift$/.test(p))
@@ -62,6 +64,17 @@ function grade(ws: string): { compiles: boolean; errors: string[]; how: string }
   };
   const errLines = (out: string) =>
     [...new Set(out.split("\n").filter((l) => / error: |^error: /.test(l)))].slice(0, 20);
+  // Substance floor (round 13: a cleanup rm -rf left ONE typecheck-clean
+  // file and the compile check waved the hollow tree through): an app
+  // delivery needs an entry point and more than a fragment of source.
+  const hollow = (why: string) => ({ compiles: false, errors: [why], how: "substance" });
+  if (swifts.length) {
+    const hasMain = swifts.some((p) => {
+      try { return readFileSync(p, "utf8").includes("@main"); } catch { return false; }
+    });
+    if (!hasMain) return hollow("no @main entry point in delivered Swift sources");
+    if (swifts.length < 3) return hollow(`only ${swifts.length} Swift source file(s) delivered — not an app`);
+  }
   if (xcodeproj) {
     const r = run("xcodebuild", [
       "-project", xcodeproj, "-alltargets", "-configuration", "Debug",
@@ -69,32 +82,54 @@ function grade(ws: string): { compiles: boolean; errors: string[]; how: string }
     ]);
     return { compiles: r.code === 0 && r.out.includes("BUILD SUCCEEDED"), errors: errLines(r.out), how: "xcodebuild" };
   }
-  if (hasPackage && hasSources) {
-    const r = run("swift", ["build"]);
+  if (packageDir && existsSync(path.join(packageDir, "Sources"))) {
+    const r = run("swift", ["build", "--package-path", packageDir]);
     return { compiles: r.code === 0, errors: errLines(r.out), how: "swift build" };
   }
   if (swifts.length) {
     const r = run("swiftc", ["-typecheck", ...swifts]);
     return { compiles: r.code === 0, errors: errLines(r.out), how: "swiftc -typecheck" };
   }
-  // Node/TS delivery (the model may legitimately pick Electron/Tauri for a
-  // "mac desktop app"): compile-check every tsconfig, then the bundler build.
-  if (existsSync(path.join(ws, "package.json"))) {
-    const tsconfigs = readdirSync(ws).filter((f) => /^tsconfig.*\.json$/.test(f));
+  // Node/TS delivery (the model may legitimately pick Electron/Vue/Tauri for
+  // a "mac desktop app"): find the project dir (round 18 shipped in a
+  // subdirectory and the root-only check called a green delivery "nothing"),
+  // then prefer the project's OWN build script — that is the honest "does it
+  // compile" for whatever stack it chose; tsc/vite are the fallback.
+  let pkgDir: string | undefined;
+  walk(ws, 3, (p) => {
+    if (path.basename(p) === "package.json" && !p.includes("node_modules")) pkgDir ??= path.dirname(p);
+  });
+  if (pkgDir) {
+    const dir = pkgDir;
+    const runIn = (bin: string, args: string[]) => {
+      try {
+        const out = execFileSync(bin, args, { cwd: dir, timeout: 300_000, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+        return { code: 0, out };
+      } catch (e) {
+        const err = e as { status?: number; stdout?: string; stderr?: string };
+        return { code: err.status ?? 1, out: `${err.stdout ?? ""}\n${err.stderr ?? ""}` };
+      }
+    };
     const tsErr = (out: string) => [...new Set(out.split("\n").filter((l) => /error TS\d+:/.test(l)))].slice(0, 20);
-    if (!existsSync(path.join(ws, "node_modules"))) {
-      const i = run("npm", ["install", "--no-audit", "--no-fund"]);
+    if (!existsSync(path.join(dir, "node_modules"))) {
+      const i = runIn("npm", ["install", "--no-audit", "--no-fund"]);
       if (i.code !== 0) return { compiles: false, errors: ["npm install failed", ...i.out.split("\n").slice(-5)], how: "npm install" };
     }
+    const scripts = (JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8")).scripts ?? {}) as Record<string, string>;
+    if (scripts.build) {
+      const r = runIn("npm", ["run", "build"]);
+      return { compiles: r.code === 0, errors: errLines(r.out).concat(tsErr(r.out)).slice(0, 20), how: "npm run build" };
+    }
+    const tsconfigs = readdirSync(dir).filter((f) => /^tsconfig.*\.json$/.test(f));
     for (const tc of tsconfigs) {
-      const r = run("npx", ["tsc", "--noEmit", "-p", tc]);
+      const r = runIn("npx", ["tsc", "--noEmit", "-p", tc]);
       if (r.code !== 0) return { compiles: false, errors: tsErr(r.out), how: `tsc -p ${tc}` };
     }
-    if (existsSync(path.join(ws, "vite.config.ts")) || existsSync(path.join(ws, "vite.config.js"))) {
-      const r = run("npx", ["vite", "build"]);
+    if (existsSync(path.join(dir, "vite.config.ts")) || existsSync(path.join(dir, "vite.config.js"))) {
+      const r = runIn("npx", ["vite", "build"]);
       if (r.code !== 0) return { compiles: false, errors: errLines(r.out).concat(tsErr(r.out)).slice(0, 20), how: "vite build" };
     }
-    return { compiles: true, errors: [], how: `tsc ×${tsconfigs.length}+vite` };
+    return { compiles: tsconfigs.length > 0, errors: tsconfigs.length ? [] : ["no build script, no tsconfig — nothing verifiable"], how: `tsc ×${tsconfigs.length}` };
   }
   return { compiles: false, errors: ["no compilable sources delivered at all"], how: "none" };
 }
@@ -133,7 +168,10 @@ async function main() {
   const t0 = Date.now();
 
   await new Promise<void>((resolve) => {
-    const watchdog = setTimeout(() => { error = "watchdog: 2700s"; resolve(); }, 2_700_000);
+    // 90 min: a 48-step turn with thinking + real xcodebuild cycles can pass
+    // 45 min while converging (round 11 was cut mid-repair at 2700s with one
+    // error left) — the app has no wall clock, so neither should the bench.
+    const watchdog = setTimeout(() => { error = "watchdog: 5400s"; resolve(); }, 5_400_000);
     runAgentTurn(
       "写一个mac 桌面端日历应用",
       [] as never,
@@ -141,7 +179,9 @@ async function main() {
       "zh",
       {
         // App-default settings — the exact conditions of the audited session.
-        thinkMode: "normal", nCtx, maxSteps: 32, temperature: 0.3,
+        // maxSteps 64 mirrors the raised default (32 starved rounds 7/8;
+        // 48 cut round 16 one error from green).
+        thinkMode: "normal", nCtx, maxSteps: 64, temperature: 0.3,
         bashTimeout: 60, browserTextMode: true,
         signal: { cancelled: false } as never,
         approve: async () => true,
@@ -151,6 +191,11 @@ async function main() {
       {
         onThinking: () => {},
         onAssistantText: () => {},
+        // A hands-off user: the audited session got zero guidance, so the
+        // bench answers stack questions decisively instead of orphaning the
+        // turn (round 15 died in 2 steps re-asking its own question).
+        onAskUser: async (_q: string, options: string[]) =>
+          options[0] ?? "你来决定:选你认为最合适的方案,直接完整实现整个应用,不要再问我。",
         onStep: (st: { id: string; call?: { name: string; args?: Json }; status?: string; result?: string }) => {
           let row = byId.get(st.id);
           if (!row) {

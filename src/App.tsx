@@ -288,7 +288,15 @@ function estimateTokens(text: string): number {
 function loadSettings(): GenSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) return { ...defaultSettings, ...JSON.parse(raw) };
+    if (raw) {
+      const stored = JSON.parse(raw);
+      // Migration: 32 was the old codeMaxSteps default. A stored 32 almost
+      // certainly means "never touched" (deliberate-32 is indistinguishable,
+      // and the new default exists because 32 starved app-scale deliveries),
+      // so drop it and let the new default through.
+      if (stored.codeMaxSteps === 32) delete stored.codeMaxSteps;
+      return { ...defaultSettings, ...stored };
+    }
   } catch {
     /* ignore */
   }

@@ -47,6 +47,15 @@ async function runRounds(rounds: string[]): Promise<{ injects: string[]; final: 
       return "验证目标: tool.py\n\n没有发现与改动相关的测试(按 test_*.py 约定查找)。";
     }
     if (cmd === "agent_read_file") throw new Error("no such file");
+    if (cmd === "agent_list_files") return ["kept.py"];
+    if (cmd === "agent_list_dir") {
+      const p = (args as { path?: string }).path;
+      if (!p) return [{ name: "CalendarApp", isDir: true, size: 0 }];
+      return [
+        { name: "App.swift", isDir: false, size: 100 },
+        { name: "Views", isDir: true, size: 0 },
+      ];
+    }
     return null;
   });
   const injects: string[] = [];
@@ -79,14 +88,16 @@ describe("run-check through the real loop", () => {
   beforeEach(() => {});
   afterEach(() => clearMocks());
 
-  it("write big code, deliver without running → one nudge, then the answer stands", async () => {
+  it("write big code, keep delivering without a single run → two nudges (2nd sharpened), then stands", async () => {
     const { injects, final } = await runRounds([
       call("write_file", { path: "tool.py", content: BIG_PY }),
       "All done, tool.py is ready.",
       "Final: shipped without a run, as instructed.",
+      "Truly final.",
     ]);
     expect(injects.filter((i) => i.includes(RUN_MARK))).toHaveLength(1);
-    expect(final).toContain("Final");
+    expect(injects.filter((i) => i.includes("Second reminder"))).toHaveLength(1);
+    expect(final).toContain("Truly final");
   });
 
   it("write big code, actually run it → no nudge", async () => {
@@ -99,14 +110,28 @@ describe("run-check through the real loop", () => {
     expect(final).toContain("All done");
   });
 
-  it("a read-only command is not verification → still nudged", async () => {
+  it("a read-only command is not verification → still nudged (both shots)", async () => {
     const { injects } = await runRounds([
       call("write_file", { path: "tool.py", content: BIG_PY }),
       call("bash", { command: "ls -la" }),
       "All done.",
       "Final.",
+      "Final final.",
     ]);
     expect(injects.filter((i) => i.includes(RUN_MARK))).toHaveLength(1);
+    expect(injects.filter((i) => i.includes("Second reminder"))).toHaveLength(1);
+  });
+
+  it("nudge answered with a real green run → no second reminder", async () => {
+    const { injects, final } = await runRounds([
+      call("write_file", { path: "tool.py", content: BIG_PY }),
+      "All done.",
+      call("bash", { command: "python3 tool.py" }),
+      "Verified and done.",
+    ]);
+    expect(injects.filter((i) => i.includes(RUN_MARK))).toHaveLength(1);
+    expect(injects.some((i) => i.includes("Second reminder"))).toBe(false);
+    expect(final).toContain("Verified");
   });
 
   it("small single edit stays frictionless — no nudge below the bar", async () => {
@@ -166,8 +191,36 @@ describe("run-check through the real loop", () => {
       call("validate_change", { files: ["tool.py"] }),
       "All done.",
       "Final.",
+      "Final final.",
     ]);
     expect(injects.filter((i) => i.includes(RUN_MARK))).toHaveLength(1);
+    expect(injects.filter((i) => i.includes("Second reminder"))).toHaveLength(1);
+  });
+
+  it("rm that swallowed own-written files → immediate accounting warning", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "kept.py", content: BIG_PY }),
+      call("write_file", { path: "gone.py", content: BIG_PY }),
+      call("bash", { command: "rm -rf gone.py" }),
+      "Done.",
+      "Final.",
+      "Final final.",
+    ]);
+    const warn = injects.find((i) => i.includes("[warning]"));
+    expect(warn).toBeTruthy();
+    expect(warn).toContain("gone.py");
+    expect(warn).not.toContain("kept.py,");
+  });
+
+  it("lonely-folder listing auto-descends one level — the repeat bait is gone", async () => {
+    const { injects } = await runRounds([
+      call("list_dir", {}),
+      "Done looking.",
+    ]);
+    const listing = injects.find((i) => i.includes("list_dir") && i.includes("CalendarApp/"));
+    expect(listing).toBeTruthy();
+    expect(listing).toContain("App.swift");
+    expect(listing).toContain("Views/");
   });
 
   it("wind-down warning fires once, two steps before the ceiling", async () => {

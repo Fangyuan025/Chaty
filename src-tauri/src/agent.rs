@@ -887,10 +887,16 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
             xcodeproj.filter(|_| cfg!(target_os = "macos") && bin_ok("xcodebuild", "-version"))
         {
             let proj_rel = rel_display(&root, &proj);
+            // -disable-sandbox everywhere Swift compiles in here: the macro
+            // plugin server (SwiftData @Model, @Observable…) applies its OWN
+            // sandbox, and nested sandboxing inside the agent's seatbelt dies
+            // with "sandbox_apply: Operation not permitted" → phantom
+            // "external macro implementation could not be found" errors on
+            // perfectly valid code. The seatbelt remains the real boundary.
             run_cmd(
                 "xcodebuild",
                 format!(
-                    "xcodebuild -project \"{proj_rel}\" -alltargets -configuration Debug build CODE_SIGNING_ALLOWED=NO"
+                    "xcodebuild -project \"{proj_rel}\" -alltargets -configuration Debug build CODE_SIGNING_ALLOWED=NO ENABLE_USER_SCRIPT_SANDBOXING=NO OTHER_SWIFT_FLAGS=-disable-sandbox"
                 ),
                 &mut out,
             );
@@ -903,7 +909,11 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
             // sandbox to manifest compilation, and nested sandboxing is
             // forbidden ("sandbox_apply: Operation not permitted") inside the
             // agent's seatbelt jail — which remains the actual boundary.
-            run_cmd("swift build", "swift build --disable-sandbox".into(), &mut out);
+            run_cmd(
+                "swift build",
+                "swift build --disable-sandbox -Xswiftc -disable-sandbox".into(),
+                &mut out,
+            );
             ran_any = true;
         } else if bin_ok("swiftc", "--version") {
             // Skip *Tests dirs: XCTest isn't importable by bare swiftc, and a
@@ -938,7 +948,11 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
             if !swifts.is_empty() {
                 let files =
                     swifts.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(" ");
-                run_cmd("swiftc -typecheck", format!("swiftc -typecheck {files}"), &mut out);
+                run_cmd(
+                    "swiftc -typecheck",
+                    format!("swiftc -typecheck -disable-sandbox {files}"),
+                    &mut out,
+                );
                 ran_any = true;
             }
         }
@@ -4480,6 +4494,39 @@ mod tests {
             .block_on(agent_validate_change(Some(vec!["main.swift".into()])))
             .expect("validate swift 2");
         assert!(out.contains("✓ 通过"), "fixed code must pass:\n{out}");
+
+        // Macro-using code (SwiftData @Model) must not false-red: the
+        // compiler's plugin server self-sandboxes and dies inside the
+        // seatbelt unless -disable-sandbox is passed (round-12 phantom
+        // "external macro implementation could not be found"). Probe the
+        // toolchain outside the agent path first — old Xcodes without
+        // SwiftData skip the assertion instead of failing it.
+        let sd_src = "import SwiftData\n@Model final class Item { var n: Int = 0\n  init() {} }\n";
+        let probe_file = tmp.join("sd_probe_outside.swift");
+        std::fs::write(&probe_file, sd_src).unwrap();
+        let toolchain_ok = std::process::Command::new("swiftc")
+            .args(["-typecheck", probe_file.to_str().unwrap()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        std::fs::remove_file(&probe_file).ok();
+        if toolchain_ok {
+            std::fs::write(tmp.join("Store.swift"), sd_src).unwrap();
+            let out = rt
+                .block_on(agent_validate_change(Some(vec![
+                    "main.swift".into(),
+                    "Store.swift".into(),
+                ])))
+                .expect("validate swift macros");
+            assert!(
+                !out.contains("could not be found") && !out.contains("malformed response"),
+                "macro plugin false-red is back:\n{out}"
+            );
+            assert!(out.contains("✓ 通过"), "macro code must pass in-sandbox:\n{out}");
+            std::fs::remove_file(tmp.join("Store.swift")).ok();
+        } else {
+            eprintln!("SKIP: toolchain lacks SwiftData — macro assertion skipped");
+        }
 
         // Package manifest must be excluded from the bare-swiftc set (it
         // imports PackageDescription, a SwiftPM-only module), and an EMPTY

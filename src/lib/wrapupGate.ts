@@ -33,6 +33,9 @@ export interface WrapupState {
   lastFailedRun?: string | null;
   /** The gate already fired this turn (as many times as allowed). */
   nudged: boolean;
+  /** Which firing this is (1-based). A repeat of the run-check note must not
+   *  be verbatim — identical corrections don't break attractors (A/B-1). */
+  attempt?: number;
 }
 
 /** Files whose edits deserve a "did you actually run it?" check. Docs and
@@ -45,9 +48,17 @@ export function isSourceCodeFile(path: string): boolean {
 
 /** The delivery bar for the run-check nudge: a single small edit stays
  *  frictionless; real work (multiple files, or ~a screenful of new code)
- *  earns exactly one "run it before you ship it". */
+ *  earns a "run it before you ship it". */
 const RUN_CHECK_MIN_FILES = 2;
 const RUN_CHECK_MIN_LINES = 30;
+
+/** Whether the un-verified edit volume clears the nudge bar — exported so the
+ *  loop can grant the run-check note a second shot when the model ignored the
+ *  first one entirely (CalendarApp repro round 9: it "handled" the nudge by
+ *  ticking todos and re-delivering, still with zero runs). */
+export function runCheckAboveBar(files: number, lines: number): boolean {
+  return files > 0 && (files >= RUN_CHECK_MIN_FILES || lines >= RUN_CHECK_MIN_LINES);
+}
 
 /** Files whose edits are expected to be verifiable in a browser. Plain
  *  .ts/.js only count when a dev server is around — a CLI project's sources
@@ -147,6 +158,16 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
         zh
           ? `- 最近一次运行验证是失败的(${st.lastFailedRun}),之后没有任何一次成功的运行。不允许带着编译/构建错误交付:读失败输出、修复错误,重新运行同样的验证直到通过(exit 0)。语法检查(-parse)和 --version 不算验证。如果失败纯属环境问题,在答复里给出证据。`
           : `- Your most recent verification FAILED (${st.lastFailedRun}) and no successful run followed. Do not deliver with compile/build errors: read the failure output, fix it, and re-run the same verification until it passes (exit 0). Syntax-only checks (-parse) and --version are not verification. If the failure is genuinely environmental, show the evidence in your answer.`,
+      );
+    } else if ((st.attempt ?? 1) >= 2) {
+      // Second firing with the ledger untouched: the model "handled" the
+      // first nudge without attempting a single run (repro round 9: ticked
+      // todos, re-delivered). Verbatim repeats don't land — name the refusal
+      // and give one concrete order.
+      notes.push(
+        zh
+          ? `- 这是第二次提醒:上一次收尾检查之后你仍然没有执行过任何验证,更新计划状态或补写文档都不算。现在就发一条 validate_change(不带参数即可)——它会自动构建/类型检查你写的代码并给出错误清单。除非你能在答复里给出确凿理由说明这些代码无法在本机验证,否则不要直接交付。`
+          : `- Second reminder: since the last wrap-up check you still have not executed a single verification — updating plan status or writing docs does not count. Issue one validate_change call right now (no arguments needed) — it will build/type-check what you wrote and hand you the error list. Do not deliver without it unless your answer gives a concrete reason these files cannot be verified on this machine.`,
       );
     } else {
       notes.push(

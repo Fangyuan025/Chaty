@@ -262,3 +262,18 @@ describe("wrapupNudge · red build escalation", () => {
     ).toBeNull();
   });
 });
+
+describe("wrapupNudge · second-attempt sharpening", () => {
+  const edited = { files: ["a.py", "b.py"], lines: 100 };
+  it("attempt 2 with untouched ledger → the sharpened order, not the verbatim note", () => {
+    const n = wrapupNudge({ ...base, codeEditsSinceExec: edited, attempt: 2 }, "en");
+    expect(n).toContain("Second reminder");
+    expect(n).not.toContain("read-only commands don't count");
+    const zh = wrapupNudge({ ...base, codeEditsSinceExec: edited, attempt: 2 }, "zh");
+    expect(zh).toContain("第二次提醒");
+  });
+  it("attempt 1 keeps the standard wording", () => {
+    const n = wrapupNudge({ ...base, codeEditsSinceExec: edited, attempt: 1 }, "en");
+    expect(n).toContain("read-only commands don't count");
+  });
+});
