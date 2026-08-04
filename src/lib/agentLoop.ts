@@ -1999,15 +1999,26 @@ export async function runAgentTurn(
       // all failed (rounds 14/21 died in <80s). So repeats get a SOFT LOCK —
       // step-consuming rejections that keep the turn alive — and only a long
       // streak (8) pauses. Everything else keeps the tight trapdoor.
-      const pauseAt = uiRepeatOk ? 5 : call.name === "update_plan" ? 8 : 2;
+      // No-op-safe repeats (update_plan re-sends, write_file with byte-equal
+      // content) get a SOFT LOCK: step-consuming rejections with a concrete
+      // redirect, and only a long streak pauses. This model pattern-locks on
+      // exact re-emissions at low temperature (rounds 14/21: plan×N; calc1:
+      // the same file written three times) and teaching+heat alone don't
+      // break it — but the turn must survive.
+      const softLockable = call.name === "update_plan" || call.name === "write_file";
+      const pauseAt = uiRepeatOk ? 5 : call.name === "update_plan" ? 8 : call.name === "write_file" ? 6 : 2;
       const warnAt = uiRepeatOk ? 4 : 1;
-      if (call.name === "update_plan" && repeatCount >= 2 && repeatCount < pauseAt) {
+      if (softLockable && repeatCount >= 2 && repeatCount < pauseAt) {
         hotNext = true;
         const first = currentPlan.find((t) => t.status !== "done")?.content;
         const note =
-          lang === "zh"
-            ? `update_plan 已锁定:这份计划已重复发送 ${repeatCount + 1} 次,在你执行一个实质动作(write_file / bash / read_file)之前它不会再被受理。${first ? `现在就做:「${first}」。` : ""}`
-            : `update_plan is LOCKED: this identical plan has now been sent ${repeatCount + 1} times — it will not be accepted again until you perform a concrete action (write_file / bash / read_file).${first ? ` Do this now: "${first}".` : ""}`;
+          call.name === "update_plan"
+            ? lang === "zh"
+              ? `update_plan 已锁定:这份计划已重复发送 ${repeatCount + 1} 次,在你执行一个实质动作(write_file / bash / read_file)之前它不会再被受理。${first ? `现在就做:「${first}」。` : ""}`
+              : `update_plan is LOCKED: this identical plan has now been sent ${repeatCount + 1} times — it will not be accepted again until you perform a concrete action (write_file / bash / read_file).${first ? ` Do this now: "${first}".` : ""}`
+            : lang === "zh"
+              ? `这份文件内容已经原样写入过了(第 ${repeatCount + 1} 次重复,一字未变)——它已经在磁盘上,重写不会有任何变化。继续下一步:写下一个文件,或用 validate_change 验证已写的代码。${first ? `计划里的下一项:「${first}」。` : ""}`
+              : `This exact file content is already on disk (repeat #${repeatCount + 1}, byte-identical) — rewriting changes nothing. Move on: write the NEXT file, or run validate_change on what exists.${first ? ` Next plan item: "${first}".` : ""}`;
         stepObj.status = "error";
         stepObj.result = note;
         cb.onStep(stepObj);

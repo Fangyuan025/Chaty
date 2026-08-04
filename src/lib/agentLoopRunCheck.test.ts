@@ -273,6 +273,20 @@ describe("run-check through the real loop", () => {
     expect(injects.filter((i) => i.includes("[skill hint]"))).toHaveLength(1);
   });
 
+  it("byte-identical write_file repeats → soft-locked with a move-on order, turn survives", async () => {
+    const w = call("write_file", { path: "same.py", content: "print(1)" });
+    const { injects, final } = await runRounds([
+      w,
+      w,
+      w,
+      w,
+      call("bash", { command: "python3 same.py" }),
+      "Recovered and done.",
+    ]);
+    expect(injects.filter((i) => i.includes("already on disk"))).toHaveLength(2);
+    expect(final).toContain("Recovered");
+  });
+
   it("update_plan pattern-lock → soft-locked rejections, turn survives to a real final", async () => {
     const plan = { todos: [{ content: "step one", status: "pending" }] };
     const { injects, final } = await runRounds([

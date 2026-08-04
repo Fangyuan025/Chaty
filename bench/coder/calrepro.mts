@@ -113,7 +113,14 @@ function gradeCompile(ws: string): { compiles: boolean; errors: string[]; how: s
       try { return readFileSync(p, "utf8").includes("@main"); } catch { return false; }
     });
     if (!hasMain) return hollow("no @main entry point in delivered Swift sources");
-    if (swifts.length < 3) return hollow(`only ${swifts.length} Swift source file(s) delivered — not an app`);
+    // Volume, not file COUNT: a complete calculator fits in two files (calc2
+    // false-flag), while the round-13 rm-wiped tree was a single 80-line
+    // fragment with no entry point — @main plus a modest line floor tells
+    // them apart.
+    const totalLines = swifts.reduce((n, p) => {
+      try { return n + readFileSync(p, "utf8").split("\n").length; } catch { return n; }
+    }, 0);
+    if (totalLines < 100) return hollow(`only ${totalLines} Swift source lines delivered — not an app`);
   }
   if (xcodeproj) {
     const r = run("xcodebuild", [
