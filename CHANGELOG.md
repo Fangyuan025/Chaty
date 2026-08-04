@@ -64,6 +64,28 @@ built the incremental way, on every stack.
 - A second call to a busy MCP server now says "busy — retry", not the
   misleading "not connected" that sent models off reconnecting.
 
+### The sandbox was innocent (audit follow-up)
+
+- **Permission errors get correct attribution.** When a command hits
+  "Operation not permitted", the loop now explains on the spot what the
+  sandbox actually restricts (writes outside the workspace — nothing else)
+  and that screen capture / automation denials are macOS privacy
+  authorization, not the sandbox — so the model adapts instead of declaring
+  the task impossible and switching stacks.
+- **A blank browser refuses to play system camera.** `browser_screenshot` /
+  `browser_snapshot` with no page open now return a teaching error: browser
+  captures show the embedded web page only, never native windows — verify a
+  native GUI with the launch + stay-alive check.
+- **Parallel half-implementations get called out.** Starting a second app
+  stack while the first is still in the tree triggers a warning: fix the
+  existing one, or state why and delete it — one complete implementation per
+  delivery.
+- **Byte-identical rewrites soft-lock instead of killing the turn**, with a
+  "that file is already on disk — move on" redirect.
+- **A failing session save is no longer silent.** If the transcript cannot
+  be written to disk you now get one clear warning instead of discovering
+  the loss later.
+
 ## v2.0.3 — Cards on the table (2026-08-02)
 
 A small release with two very tangible things: the agent learns a new craft,
