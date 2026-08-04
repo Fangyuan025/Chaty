@@ -1523,6 +1523,12 @@ export async function runAgentTurn(
   let obsStreak = 0;
   let obsHintsShown = 0;
   let planProseIntercepted = false;
+  let permHintsShown = 0;
+  // App stacks this turn has STARTED (swift/electron/pywebview…). A second
+  // parallel stack is the flail signature of the calculator-session audit:
+  // one workspace ended up holding three half-implementations.
+  const appStacks = new Set<string>();
+  let stackHintShown = false;
   // Search flail breaker: consecutive web_search calls, ANY query. When the
   // search backend degrades into irrelevant results, models keep rephrasing
   // the query forever instead of failing over to web_fetch / the browser —
@@ -2335,6 +2341,27 @@ export async function runAgentTurn(
             // A macOS-app delivery in progress? (SwiftUI @main entry, or an
             // electron manifest.) Arms the packaged-.app delivery check.
             const body = asStr(call.args?.content) + asStr(call.args?.new_string);
+            // Which app stack does this file belong to? Starting a SECOND
+            // one mid-task is the flail signature — call it out once.
+            const stack =
+              /@main/.test(body) && /some Scene|SwiftUI/.test(body)
+                ? "swift"
+                : p.endsWith("package.json") && body.includes('"electron"')
+                  ? "electron"
+                  : p.endsWith(".py") && /import webview|pywebview/.test(body)
+                    ? "pywebview"
+                    : null;
+            if (stack) {
+              appStacks.add(stack);
+              if (appStacks.size >= 2 && !stackHintShown) {
+                stackHintShown = true;
+                const others = [...appStacks].filter((s) => s !== stack).join("/");
+                resultText +=
+                  lang === "zh"
+                    ? `\n\n[技术栈提醒] 你刚开始了第二套实现(${stack}),而 ${others} 的实现还留在工作区。不要平行堆多套半成品:要么回去修好原有栈,要么明确说明换栈理由并删除旧栈文件——最终交付物只能有一套完整实现。`
+                    : `\n\n[stack warning] You just started a second implementation (${stack}) while the ${others} one is still in the workspace. Do not pile up parallel half-implementations: either go back and fix the existing stack, or state why you are switching and DELETE the old stack's files — the delivery must contain exactly one complete implementation.`;
+              }
+            }
             if (
               !wroteMacAppEntry &&
               ((/@main/.test(body) && /some Scene|SwiftUI/.test(body)) ||
@@ -2440,6 +2467,21 @@ export async function runAgentTurn(
         } catch {
           /* listing unavailable: skip the audit rather than fail the step */
         }
+      }
+      // Permission-error attribution (calculator-session audit): the model
+      // reads ANY "Operation not permitted" as "the sandbox forbids this",
+      // declares the task impossible, and pivots stacks. Say precisely what
+      // the sandbox does and does not restrict, at the moment of the error.
+      if (
+        permHintsShown < 2 &&
+        call.name === "bash" &&
+        /Operation not permitted|Permission denied|EPERM|not permitted/i.test(resultText)
+      ) {
+        permHintsShown++;
+        resultText +=
+          lang === "zh"
+            ? "\n\n[权限说明] 上面的权限错误不等于「沙箱禁止此操作」。本沙箱只限制一件事:往工作区之外写文件(读取、网络、启动进程、运行构建都开放;npm/pip/electron 缓存已自动重定向)。写路径被拒 → 改写进工作区;截屏/系统自动化被拒 → 那是 macOS 隐私授权(TCC),与沙箱无关——不要因此放弃任务或更换技术栈,改用不需要该权限的验证方式(如进程启动存活检查)。"
+            : "\n\n[permissions] The error above does not mean \"the sandbox forbids this\". This sandbox restricts exactly ONE thing: writing files OUTSIDE the workspace (reads, network, launching processes, and builds are all allowed; npm/pip/electron caches are auto-redirected). Write denied → write inside the workspace instead. Screen capture / system automation denied → that is macOS privacy authorization (TCC), unrelated to the sandbox — do not abandon the task or switch stacks over it; verify another way (e.g. a launch + stay-alive check).";
       }
       // Observation-wandering breaker: five consecutive look-only steps with
       // zero workspace changes means the model is reassuring itself instead

@@ -177,6 +177,9 @@ function gradeCompile(ws: string): { compiles: boolean; errors: string[]; how: s
 async function main() {
   const argv = process.argv.slice(2);
   const tag = argv.includes("--tag") ? argv[argv.indexOf("--tag") + 1] : "cur";
+  const prompt = argv.includes("--prompt")
+    ? argv[argv.indexOf("--prompt") + 1]
+    : "写一个mac 桌面端日历应用";
   const bin = process.env.CHATY_HEADLESS_BIN ?? path.join(DIR, "../../src-tauri/target/release/chaty-headless");
   const model = process.env.CHATY_BENCH_MODEL;
   if (!model) throw new Error("set CHATY_BENCH_MODEL");
@@ -213,7 +216,7 @@ async function main() {
     // error left) — the app has no wall clock, so neither should the bench.
     const watchdog = setTimeout(() => { error = "watchdog: 5400s"; resolve(); }, 5_400_000);
     runAgentTurn(
-      "写一个mac 桌面端日历应用",
+      prompt,
       [] as never,
       ws,
       "zh",

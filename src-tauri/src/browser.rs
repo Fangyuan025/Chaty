@@ -499,10 +499,22 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Screenshot { reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| s.screenshot()));
+                let r = run(&mut session, headless, |s| {
+                    if !page_loaded(&s.current_url) {
+                        return Err(no_page_error());
+                    }
+                    s.screenshot()
+                });
+                let _ = reply.send(r);
             }
             BrowserCmd::Snapshot { reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| s.snapshot()));
+                let r = run(&mut session, headless, |s| {
+                    if !page_loaded(&s.current_url) {
+                        return Err(no_page_error());
+                    }
+                    s.snapshot()
+                });
+                let _ = reply.send(r);
             }
             BrowserCmd::Scroll { to, by, reply } => {
                 let r = run(&mut session, headless, |s| s.scroll(to.as_deref(), by));
@@ -1553,6 +1565,21 @@ pub fn refresh() -> Result<String, String> {
     dispatch(|reply| BrowserCmd::Refresh { reply })
 }
 
+/// A capture only makes sense once a page is loaded. Models reach for
+/// browser_screenshot to "verify" NATIVE app windows (session audit: a
+/// calculator delivery tried it as a system-level screenshot) — the lazy
+/// blank session must teach, not hand back an empty white capture.
+pub(crate) fn page_loaded(url: &str) -> bool {
+    !(url.is_empty() || url == "about:blank")
+}
+
+fn no_page_error() -> String {
+    crate::agent::tr(
+        "浏览器还没有打开任何页面。浏览器截图/快照只能拍到内嵌浏览器里的网页,拍不到系统屏幕或原生应用窗口——原生 GUI 的验证用「启动 + 存活检查」(见 mac-app 技能);网页则先 browser_navigate 打开页面再截。",
+        "The browser has no page open. Browser screenshot/snapshot capture ONLY the embedded browser's web page — never the system screen or native app windows. Verify a native GUI with a launch + stay-alive check (see the mac-app skill); for web pages, browser_navigate first, then capture.",
+    )
+}
+
 pub fn screenshot() -> Result<Vec<u8>, String> {
     dispatch(|reply| BrowserCmd::Screenshot { reply })
 }
@@ -1678,6 +1705,16 @@ mod tempdir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Blank lazy sessions must not hand a "capture" of nothing back to a
+    /// model that thinks it is taking a system screenshot.
+    #[test]
+    fn capture_requires_a_loaded_page() {
+        assert!(!page_loaded(""));
+        assert!(!page_loaded("about:blank"));
+        assert!(page_loaded("http://localhost:5173/"));
+        assert!(page_loaded("https://example.com"));
+    }
 
     /// Discovery must agree with the file system: when any known browser is
     /// installed (incl. Windows per-user %LOCALAPPDATA% Chrome — the usual

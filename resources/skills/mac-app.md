@@ -43,6 +43,19 @@ foreground briefly to read the crash text.
 `loadFile('dist/index.html')` — verify AFTER `vite build`, not against the
 dev server only.
 
+## Verification truths (don't learn these the hard way)
+
+- **Browser screenshot ≠ system screenshot.** `browser_screenshot` captures
+  the embedded browser's web page only — it can never show a native window.
+  Native GUI proof = the launch + stay-alive check above.
+- **"Operation not permitted" is usually NOT the sandbox.** The sandbox only
+  blocks writes outside the workspace. Screen recording (`screencapture`)
+  and app automation (`osascript` → other apps) fail on macOS *privacy
+  authorization* (TCC) — do not abandon the task or switch stacks over it;
+  verify without that permission instead.
+- **One stack, start to finish.** If you must switch stacks, say why and
+  delete the old implementation — never leave two half-apps in the tree.
+
 ## Delivery checklist (all four, in the answer)
 
 - build green (real build, not `-parse`/`--version`)

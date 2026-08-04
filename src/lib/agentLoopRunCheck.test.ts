@@ -38,9 +38,11 @@ async function runRounds(rounds: string[]): Promise<{ injects: string[]; final: 
       return "written";
     }
     if (cmd === "agent_bash") {
-      // Commands containing "fail" exit 1 — lets scripts exercise the
-      // red-build path without a second mock.
+      // Commands containing "fail" exit 1; "eperm" produces a permission
+      // error — lets scripts exercise those paths without a second mock.
       const c = String((args as { command?: string }).command ?? "");
+      if (c.includes("eperm"))
+        return { stdout: "", stderr: "rm: /Users/x/.npm: Operation not permitted", code: 1, timedOut: false, bgId: null };
       return c.includes("fail")
         ? { stdout: "", stderr: "error: build failed", code: 1, timedOut: false, bgId: null }
         : { stdout: "ok", stderr: "", code: 0, timedOut: false, bgId: null };
@@ -233,6 +235,33 @@ describe("run-check through the real loop", () => {
     ]);
     expect(injects.some((i) => i.includes("planning/inner monologue"))).toBe(true);
     expect(final).toContain("Done: wrote a.py");
+  });
+
+  it("permission error → sandbox-vs-TCC attribution note, twice max", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "a.py", content: "print(1)" }),
+      call("bash", { command: "rm -rf ~/.npm # eperm" }),
+      call("bash", { command: "screencapture x.png # eperm" }),
+      call("bash", { command: "codesign y # eperm" }),
+      "Done.",
+      "Final.",
+    ]);
+    expect(injects.filter((i) => i.includes("[permissions]"))).toHaveLength(2);
+  });
+
+  it("second parallel app stack → one stack warning naming both", async () => {
+    const swiftApp = "import SwiftUI\n@main\nstruct A: App { var body: some Scene { WindowGroup { Text(\"x\") } } }";
+    const { injects } = await runRounds([
+      call("write_file", { path: "App.swift", content: swiftApp }),
+      call("write_file", { path: "calculator.py", content: "import webview\nwebview.create_window('c','x')" }),
+      call("write_file", { path: "calc2.py", content: "import webview\n# more pywebview" }),
+      "Done.",
+      "Final.",
+    ]);
+    const warn = injects.filter((i) => i.includes("[stack warning]"));
+    expect(warn).toHaveLength(1);
+    expect(warn[0]).toContain("pywebview");
+    expect(warn[0]).toContain("swift");
   });
 
   it("mac-app entry write → immediate use_skill hint", async () => {

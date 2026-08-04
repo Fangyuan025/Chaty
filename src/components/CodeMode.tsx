@@ -710,12 +710,29 @@ export function CodeMode({
    *  over the first-message fallback on every later persist. */
   const titlesRef = useRef(new Map<string, string>());
 
+  /** Sessions already warned about a failing save — one alert, not a storm. */
+  const saveFailWarnedRef = useRef(new Set<string>());
+
   const persist = useCallback((next: CodeMsg[], ws: string | null, id: string) => {
     const firstUser = next.find((m) => m.role === "user");
     const fallback =
       (firstUser?.text ?? "New session").replace(/\s+/g, " ").trim().slice(0, 48) || "New session";
     const title = titlesRef.current.get(id) ?? fallback;
-    codeSessionSave(id, title, ws, JSON.stringify(next)).then(refreshSessions).catch(() => {});
+    codeSessionSave(id, title, ws, JSON.stringify(next))
+      .then(refreshSessions)
+      .catch((e) => {
+        // A silently-swallowed save failure is invisible data loss — the
+        // calculator-session audit ended with a transcript the owner thought
+        // was kept and no row in the database. Log loudly; once per session,
+        // tell the user their transcript is not persisting.
+        console.error("code session save FAILED", id, e);
+        if (!saveFailWarnedRef.current.has(id)) {
+          saveFailWarnedRef.current.add(id);
+          alert(
+            "会话保存失败——当前对话记录没有写入磁盘,重启后会丢失。请检查磁盘空间/权限。\n(Session save failed — this transcript is NOT persisting to disk.)",
+          );
+        }
+      });
   }, [refreshSessions]);
 
   /** Ask the model for a concise session title after the first turn —
