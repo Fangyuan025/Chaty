@@ -4567,6 +4567,9 @@ mod tests {
     /// validate_change on a TS project WITHOUT tests: `tsc --noEmit` is the
     /// compile truth (vitest transpiles without typechecking). Uses the
     /// repo's own node_modules for tsc via symlink — skipped when absent.
+    /// Unix-only: the symlink setup has no Windows equivalent worth the cfg
+    /// dance, and the branch under test is platform-independent.
+    #[cfg(unix)]
     #[test]
     fn validate_change_typechecks_ts() {
         let _g = serial();

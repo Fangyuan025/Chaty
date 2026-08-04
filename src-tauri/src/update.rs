@@ -27,9 +27,14 @@ pub struct UpdateInfo {
     pub notes: Option<String>,
 }
 
-/// Parse a version like "v0.3.3" / "0.3.3" into a comparable tuple.
-fn ver_tuple(s: &str) -> (u64, u64, u64) {
+/// Parse a version like "v0.3.3" / "0.3.3" / "2.0.4-beta.1" into a comparable
+/// key. The 4th element ranks release-ness: a prerelease suffix ("-beta",
+/// "-rc.1") sorts BELOW the plain release of the same triple, so "2.0.4" is
+/// offered as an upgrade to a user on "2.0.4-beta.1" — the old triple-only
+/// compare saw them as equal.
+fn ver_tuple(s: &str) -> (u64, u64, u64, u8) {
     let s = s.trim().trim_start_matches('v');
+    let is_release = !s.contains('-');
     let mut parts = s.split('.').map(|p| {
         p.chars()
             .take_while(|c| c.is_ascii_digit())
@@ -41,6 +46,7 @@ fn ver_tuple(s: &str) -> (u64, u64, u64) {
         parts.next().unwrap_or(0),
         parts.next().unwrap_or(0),
         parts.next().unwrap_or(0),
+        u8::from(is_release),
     )
 }
 
@@ -138,4 +144,22 @@ pub async fn run_update(app: tauri::AppHandle, url: String) -> Result<(), String
     std::thread::sleep(std::time::Duration::from_millis(400));
     app.exit(0);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ver_tuple;
+
+    /// Prerelease suffixes sort below the plain release of the same triple —
+    /// and plain triples keep their ordinary ordering (incl. the two-digit
+    /// components a lexicographic compare would garble).
+    #[test]
+    fn version_compare_handles_prerelease_and_digits() {
+        assert!(ver_tuple("2.0.4") > ver_tuple("2.0.4-beta.1"));
+        assert!(ver_tuple("v2.0.4-rc.2") > ver_tuple("2.0.3"));
+        assert!(ver_tuple("2.0.10") > ver_tuple("2.0.9"));
+        assert!(ver_tuple("2.1.0") > ver_tuple("2.0.99"));
+        assert_eq!(ver_tuple("v1.2.3"), ver_tuple("1.2.3"));
+        assert!(!(ver_tuple("2.0.4-beta.1") > ver_tuple("2.0.4-beta.1")));
+    }
 }

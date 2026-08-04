@@ -12,7 +12,6 @@
 //!    walk into sub-pages.
 //! Everything is key-less and talks to the sites directly (no proxy service).
 
-use std::time::Duration;
 
 use scraper::{Html, Selector};
 use serde::Serialize;

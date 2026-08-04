@@ -1,5 +1,69 @@
 # Changelog
 
+## v2.0.4 — Ship something that runs (2026-08-04)
+
+A release about the difference between "it compiles" and "it works". We took
+one real failed delivery — a calendar app that shipped with compile errors
+after the model waved itself through with a syntax check — reproduced it
+twenty-four times against the live model, and turned every failure into a
+mechanism. The bar at the end: a **packaged app that actually launches**,
+built the incremental way, on every stack.
+
+### The deliverable is a running app
+
+- **New official skill: `mac-app`.** The full recipe for macOS app delivery:
+  scaffold → verify → feature → verify, SwiftPM-to-`.app` packaging, and a
+  launch check that must print `LAUNCH OK` before the turn may end. The loop
+  surfaces it the moment an app entry point is written, and the wrap-up gate
+  refuses an app delivery with no `.app` bundle in the tree.
+- **Feature → verify → next feature.** After four unverified source files the
+  loop reminds once; after a red result it names exactly the files edited
+  since the last green check ("suspect these — don't touch what already
+  passed"). Small tasks never see either.
+- **`validate_change` now speaks Swift, TypeScript, and Go.** Xcode projects
+  get a real `xcodebuild`, SwiftPM gets `swift build`, bare Swift gets a
+  whole-set typecheck; TS projects without tests get `tsc --noEmit` (vitest
+  transpiles without typechecking); Go modules get `go build ./...`. Package
+  manifests and `*Tests` are excluded from bare typechecks — no more phantom
+  errors on healthy projects.
+- **Verification can't be faked.** A failed build is a debt, not a receipt:
+  only a green run clears the run-check ledger. Syntax-only probes
+  (`swiftc -parse`, `node --check`, `py_compile`, `ruby -c`, `php -l`) and
+  `--version` calls don't count, and the model is told so the moment it tries.
+  Re-sending a failed build verbatim gets the honest advice: the error lives
+  in the code at the file:line named, not in the arguments.
+
+### The sandbox stops sabotaging builds
+
+- **Xcode, SwiftPM, and macro builds work inside the agent sandbox.**
+  DerivedData writes are allowed, SwiftPM and the Swift macro plugin server
+  no longer die on nested sandboxing (`SwiftData` / `@Observable` code used
+  to false-red with "external macro implementation could not be found"), and
+  npm/electron caches are redirected to writable temp dirs — `npm install`
+  and electron's postinstall download now succeed on the first try.
+
+### The agent wastes fewer turns
+
+- **Default step budget: 32 → 64.** App-scale one-shots kept dying one error
+  from green at the old ceiling; existing installs on the old default are
+  migrated automatically. Two steps before the ceiling the loop orders a
+  wind-down: verify and deliver, don't start new files.
+- **Trance breakers.** Plan-echo now shows a literal first-action call;
+  re-sending an identical plan soft-locks the tool instead of killing the
+  turn; five consecutive look-only steps get an "act now" break; a
+  near-identical full-file rewrite is accepted with a tip instead of bounced;
+  an `rm` that swallows files written this turn triggers an immediate
+  accounting; and an "answer" that opens with planning prose ("让我先…" /
+  "The user wants me to…") is intercepted once — act, or write a real
+  summary.
+
+### Small fixes that rode along
+
+- The updater now ranks `2.0.4-beta` below `2.0.4` instead of equal to it.
+- MCP over HTTP parses SSE events whose JSON spans multiple `data:` lines.
+- A second call to a busy MCP server now says "busy — retry", not the
+  misleading "not connected" that sent models off reconnecting.
+
 ## v2.0.3 — Cards on the table (2026-08-02)
 
 A small release with two very tangible things: the agent learns a new craft,

@@ -83,6 +83,10 @@ static MCP_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// only consulted SERVERS couldn't kill the child — this map can, and killing
 /// the child collapses the pipe, which wakes the blocked reader immediately.
 static NAME_PIDS: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
+/// Servers with a call in flight (taken out of SERVERS for the duration).
+/// Lets a concurrent second call get an honest "busy — retry" instead of the
+/// misleading "not connected" (which sends models off to reconnect).
+static IN_FLIGHT: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Kill every stdio MCP server. Called from the app's exit path, which skips
 /// destructors (`libc::_exit`) — without this, quitting orphans the servers.
@@ -138,18 +142,33 @@ fn stdio_notify(conn: &mut StdioConn, body: &Value) -> Result<(), String> {
 }
 
 /// Parse a Streamable-HTTP response body: plain JSON, or an SSE stream where
-/// each `data:` line carries one JSON-RPC message — the reply is the one
+/// an event's `data:` may span SEVERAL lines (the SSE spec joins them with
+/// newlines; servers that pretty-print JSON do this) — the reply is the event
 /// whose id matches.
 fn parse_http_body(body: &str, content_type: &str, id: u64) -> Result<Value, String> {
     if content_type.contains("text/event-stream") {
+        let try_match = |buf: &str| -> Option<Value> {
+            serde_json::from_str::<Value>(buf.trim())
+                .ok()
+                .filter(|v| v.get("id").and_then(Value::as_u64) == Some(id))
+        };
+        let mut buf = String::new();
         for line in body.lines() {
             if let Some(data) = line.strip_prefix("data:") {
-                if let Ok(v) = serde_json::from_str::<Value>(data.trim()) {
-                    if v.get("id").and_then(Value::as_u64) == Some(id) {
-                        return Ok(v);
-                    }
+                if !buf.is_empty() {
+                    buf.push('\n');
                 }
+                buf.push_str(data.strip_prefix(' ').unwrap_or(data));
+            } else if line.is_empty() && !buf.is_empty() {
+                // Blank line = end of event.
+                if let Some(v) = try_match(&buf) {
+                    return Ok(v);
+                }
+                buf.clear();
             }
+        }
+        if let Some(v) = try_match(&buf) {
+            return Ok(v);
         }
         return Err("MCP HTTP: no matching reply in event stream".into());
     }
@@ -452,7 +471,14 @@ pub async fn mcp_call(server: String, tool: String, args: Value) -> Result<Strin
         .unwrap()
         .as_mut()
         .and_then(|m| m.remove(&server))
-        .ok_or_else(|| format!("MCP server `{server}` is not connected"))?;
+        .ok_or_else(|| {
+            if IN_FLIGHT.lock().unwrap().contains(&server) {
+                format!("MCP server `{server}` is busy with another in-flight call — wait for it to finish, then retry (do NOT reconnect)")
+            } else {
+                format!("MCP server `{server}` is not connected")
+            }
+        })?;
+    IN_FLIGHT.lock().unwrap().push(server.clone());
     let (s, res) = request(
         s,
         "tools/call",
@@ -473,10 +499,11 @@ pub async fn mcp_call(server: String, tool: String, args: Value) -> Result<Strin
             .lock()
             .unwrap()
             .get_or_insert_with(HashMap::new)
-            .insert(server, s);
+            .insert(server.clone(), s);
     } else {
         kill_server(s); // reap the Child handle; the process is already dead
     }
+    IN_FLIGHT.lock().unwrap().retain(|n| n != &server);
     let result = res?;
     let text = content_text(&result);
     if result.get("isError").and_then(Value::as_bool) == Some(true) {
@@ -691,6 +718,37 @@ for line in sys.stdin:
         assert_eq!(v["result"]["n"], 1);
 
         assert!(parse_http_body(sse, "text/event-stream", 8).is_err());
+
+        // SSE spec: one event's data may span several `data:` lines, joined
+        // with newlines — pretty-printing servers do exactly this.
+        let multi = "event: message\ndata: {\ndata:   \"jsonrpc\": \"2.0\",\ndata:   \"id\": 9,\ndata:   \"result\": {\"n\": 2}\ndata: }\n\n";
+        let v = parse_http_body(multi, "text/event-stream", 9).unwrap();
+        assert_eq!(v["result"]["n"], 2);
+
+        // Two events in one stream: the match is in the second.
+        let two = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"n\":3}}\n\n";
+        let v = parse_http_body(two, "text/event-stream", 9).unwrap();
+        assert_eq!(v["result"]["n"], 3);
+    }
+
+    /// A second call to a server whose first call is still in flight must say
+    /// BUSY (retry), not "not connected" (which sends models reconnecting).
+    #[test]
+    fn concurrent_call_reports_busy_not_disconnected() {
+        IN_FLIGHT.lock().unwrap().push("busy-srv".into());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt
+            .block_on(mcp_call("busy-srv".into(), "t".into(), json!({})))
+            .unwrap_err();
+        assert!(err.contains("busy"), "wrong error: {err}");
+        assert!(!err.contains("not connected"), "wrong error: {err}");
+        IN_FLIGHT.lock().unwrap().retain(|n| n != "busy-srv");
+
+        let rt2 = tokio::runtime::Runtime::new().unwrap();
+        let err = rt2
+            .block_on(mcp_call("ghost-srv".into(), "t".into(), json!({})))
+            .unwrap_err();
+        assert!(err.contains("not connected"), "wrong error: {err}");
     }
 
     #[test]
