@@ -18,7 +18,7 @@ g.localStorage ??= {
 };
 g.navigator ??= { userAgent: "chaty-bench" };
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -37,7 +37,47 @@ function walk(dir: string, depth: number, hit: (p: string) => void) {
   }
 }
 
-function grade(ws: string): { compiles: boolean; errors: string[]; how: string } {
+/** Owner bar v2: compile green is only step one — the deliverable is a
+ *  packaged .app that LAUNCHES and stays alive for 4 seconds. */
+async function grade(ws: string): Promise<{ compiles: boolean; packaged: boolean; runs: boolean; errors: string[]; how: string }> {
+  const c = gradeCompile(ws);
+  if (!c.compiles) return { ...c, packaged: false, runs: false };
+  // Find delivered .app bundles — excluding node_modules (the stock
+  // Electron.app inside the dependency is NOT the delivery) and .build.
+  const bundles: string[] = [];
+  walk(ws, 6, (p) => {
+    if (
+      p.endsWith(".app") &&
+      !p.includes("node_modules") &&
+      !p.includes("/.build/") &&
+      statSync(p).isDirectory() &&
+      existsSync(path.join(p, "Contents", "MacOS"))
+    )
+      bundles.push(p);
+  });
+  if (!bundles.length) {
+    return { ...c, packaged: false, runs: false, errors: ["compile green but no packaged .app bundle delivered"], how: c.how + "+no-bundle" };
+  }
+  // Launch check: the bundle's main binary must survive 4 seconds.
+  const macos = path.join(bundles[0], "Contents", "MacOS");
+  const bin = readdirSync(macos).find((f) => { try { return (statSync(path.join(macos, f)).mode & 0o111) !== 0; } catch { return false; } });
+  if (!bin) return { ...c, packaged: true, runs: false, errors: ["bundle has no executable in Contents/MacOS"], how: c.how + "+launch" };
+  const child = spawn(path.join(macos, bin), [], { stdio: "ignore", detached: true });
+  let dead = false;
+  child.on("exit", () => { dead = true; });
+  await new Promise((r) => setTimeout(r, 4000));
+  const runs = !dead;
+  try { if (child.pid) process.kill(-child.pid); } catch { try { child.kill(); } catch { /* already gone */ } }
+  return {
+    ...c,
+    packaged: true,
+    runs,
+    errors: runs ? c.errors : [`launch check failed: ${path.basename(bundles[0])} exited within 4s`],
+    how: c.how + "+launch",
+  };
+}
+
+function gradeCompile(ws: string): { compiles: boolean; errors: string[]; how: string } {
   let xcodeproj: string | undefined;
   let packageDir: string | undefined;
   const swifts: string[] = [];
@@ -220,17 +260,18 @@ async function main() {
   for (const i of injects) console.log(`  · ${i.slice(0, 160).replaceAll("\n", " ")}`);
 
   console.log(`\n[grade] compiling delivered project…`);
-  const verdict = grade(ws);
-  console.log(`[grade:${verdict.how}] compiles=${verdict.compiles}`);
+  const verdict = await grade(ws);
+  const pass = verdict.compiles && verdict.packaged && verdict.runs;
+  console.log(`[grade:${verdict.how}] compiles=${verdict.compiles} packaged=${verdict.packaged} runs=${verdict.runs} PASS=${pass}`);
   for (const e of verdict.errors) console.log(`  ✗ ${e}`);
 
-  appendFileSync(OUT, JSON.stringify({ tag, ws, steps, secs, error, compiles: verdict.compiles, how: verdict.how, errors: verdict.errors, injects: injects.length, final: finalText.slice(0, 400), stepNames: stepLog.map((s) => s.name) }) + "\n");
+  appendFileSync(OUT, JSON.stringify({ tag, ws, steps, secs, error, compiles: verdict.compiles, packaged: verdict.packaged, runs: verdict.runs, how: verdict.how, errors: verdict.errors, injects: injects.length, final: finalText.slice(0, 400), stepNames: stepLog.map((s) => s.name) }) + "\n");
   console.log(`\nworkspace kept at: ${ws}\nlog: ${OUT}`);
   bridge.kill();
   // Reap anything the turn left running against this workspace (dev servers,
   // an Electron window) — detached groups outlive the bridge teardown.
   try { execFileSync("pkill", ["-f", ws], { stdio: "ignore" }); } catch { /* none alive */ }
-  process.exit(verdict.compiles ? 0 : 1);
+  process.exit(pass ? 0 : 1);
 }
 
 main().catch((e) => { console.error(e); process.exit(2); });

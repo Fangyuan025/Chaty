@@ -841,6 +841,26 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
             )),
         }
     }
+    // TypeScript without tests still deserves a COMPILE check — "no related
+    // tests found" on a tsx project bounces the model to hand-rolled bash
+    // (or worse, syntax-only probes). Same pattern as the Swift branch:
+    // whole-project, the project's own config.
+    if !ran_any
+        && targets.iter().any(|p| {
+            p.extension().is_some_and(|e| e == "ts" || e == "tsx" || e == "mts" || e == "cts")
+        })
+        && root.join("tsconfig.json").is_file()
+    {
+        run_cmd("tsc", "npx tsc --noEmit -p tsconfig.json".into(), &mut out);
+        ran_any = true;
+    }
+    // Go: `go build` is cheap and is the compile truth for the module.
+    if targets.iter().any(|p| p.extension().is_some_and(|e| e == "go"))
+        && root.join("go.mod").is_file()
+    {
+        run_cmd("go build", "go build ./...".into(), &mut out);
+        ran_any = true;
+    }
     if root.join("Cargo.toml").is_file()
         && targets.iter().any(|p| p.extension().is_some_and(|e| e == "rs"))
     {
@@ -4541,6 +4561,45 @@ mod tests {
             !out.contains("PackageDescription"),
             "Package.swift must be excluded from bare typecheck:\n{out}"
         );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// validate_change on a TS project WITHOUT tests: `tsc --noEmit` is the
+    /// compile truth (vitest transpiles without typechecking). Uses the
+    /// repo's own node_modules for tsc via symlink — skipped when absent.
+    #[test]
+    fn validate_change_typechecks_ts() {
+        let _g = serial();
+        let repo_nm = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("node_modules");
+        if !repo_nm.join(".bin").join("tsc").exists() {
+            eprintln!("SKIP: repo node_modules/.bin/tsc not found");
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-vct-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::os::unix::fs::symlink(&repo_nm, tmp.join("node_modules")).unwrap();
+        set_ws(&tmp);
+        std::fs::write(
+            tmp.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":true,"noEmit":true,"target":"ES2020","lib":["ES2020"],"types":[]},"include":["*.ts"]}"#,
+        )
+        .unwrap();
+        std::fs::write(tmp.join("app.ts"), "const n: number = \"not a number\";\n").unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let out = rt
+            .block_on(agent_validate_change(Some(vec!["app.ts".into()])))
+            .expect("validate ts");
+        eprintln!("{out}");
+        assert!(out.contains("tsc"), "tsc branch not taken:\n{out}");
+        assert!(out.contains("✗ 失败"), "type error not caught:\n{out}");
+
+        std::fs::write(tmp.join("app.ts"), "const n: number = 1;\nexport const m = n + 1;\n").unwrap();
+        let out = rt
+            .block_on(agent_validate_change(Some(vec!["app.ts".into()])))
+            .expect("validate ts 2");
+        assert!(out.contains("✓ 通过"), "fixed ts must pass:\n{out}");
         std::fs::remove_dir_all(&tmp).ok();
     }
 

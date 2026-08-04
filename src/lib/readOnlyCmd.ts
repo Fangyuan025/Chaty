@@ -112,9 +112,16 @@ export function isSymbolicCheck(cmd: string): boolean {
     const args = words.slice(1);
     const versionProbe =
       args.length > 0 && args.every((a) => /^--?(version|help|V|v)$/.test(a));
+    // Syntax-only probes across ecosystems: they pass on code that cannot
+    // run (missing imports, type errors, absent deps) — same class as
+    // `swiftc -parse`, and models reach for whichever their stack offers.
     const parseOnly =
-      /^swiftc?$/.test(bin) &&
-      args.some((a) => a === "-parse" || a === "-dump-parse" || a === "-dump-ast");
+      (/^swiftc?$/.test(bin) &&
+        args.some((a) => a === "-parse" || a === "-dump-parse" || a === "-dump-ast")) ||
+      (bin === "node" && args.includes("--check")) ||
+      (/^python3?$/.test(bin) && args.join(" ").includes("-m py_compile")) ||
+      (bin === "ruby" && args.includes("-c")) ||
+      (bin === "php" && args.includes("-l"));
     if (!versionProbe && !parseOnly) return false;
     sawSymbolic = true;
   }

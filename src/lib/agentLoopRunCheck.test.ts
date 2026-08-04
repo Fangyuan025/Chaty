@@ -24,6 +24,7 @@ const call = (name: string, args: Record<string, unknown>) =>
 
 async function runRounds(rounds: string[]): Promise<{ injects: string[]; final: string }> {
   const script = [...rounds];
+  const files = new Map<string, string>();
   mockIPC(async (cmd, args) => {
     if (cmd === "generate") {
       const ch = (args as { onEvent: Chan }).onEvent;
@@ -31,7 +32,11 @@ async function runRounds(rounds: string[]): Promise<{ injects: string[]; final: 
       ch.onmessage?.({ type: "done", stats: { completionTokens: 8, tokensPerSecond: 50, promptTokens: 100 } });
       return null;
     }
-    if (cmd === "agent_write_file") return "written";
+    if (cmd === "agent_write_file") {
+      const a = args as { path?: string; content?: string };
+      files.set(String(a.path), String(a.content ?? ""));
+      return "written";
+    }
     if (cmd === "agent_bash") {
       // Commands containing "fail" exit 1 — lets scripts exercise the
       // red-build path without a second mock.
@@ -46,8 +51,16 @@ async function runRounds(rounds: string[]): Promise<{ injects: string[]; final: 
       if (f.includes("green")) return "验证目标: green.py\n\n$ pytest green\n✓ 通过\n";
       return "验证目标: tool.py\n\n没有发现与改动相关的测试(按 test_*.py 约定查找)。";
     }
-    if (cmd === "agent_read_file") throw new Error("no such file");
-    if (cmd === "agent_list_files") return ["kept.py"];
+    if (cmd === "agent_read_file") {
+      const p = String((args as { path?: string }).path);
+      if (files.has(p)) return files.get(p);
+      throw new Error("no such file");
+    }
+    if (cmd === "agent_list_files") {
+      const q = String((args as { query?: string }).query ?? "");
+      if (q.includes(".app/Contents")) return []; // no packaged bundle in tests
+      return ["kept.py"];
+    }
     if (cmd === "agent_list_dir") {
       const p = (args as { path?: string }).path;
       if (!p) return [{ name: "CalendarApp", isDir: true, size: 0 }];
@@ -195,6 +208,122 @@ describe("run-check through the real loop", () => {
     ]);
     expect(injects.filter((i) => i.includes(RUN_MARK))).toHaveLength(1);
     expect(injects.filter((i) => i.includes("Second reminder"))).toHaveLength(1);
+  });
+
+  it("re-sending a failed build verbatim → code-fix advice, not args advice", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "a.swift", content: BIG_PY }),
+      call("bash", { command: "swift build # fail" }),
+      call("bash", { command: "swift build # fail" }),
+      call("edit_file", { path: "a.swift", old_string: "x", new_string: "y" }),
+      "Done.",
+      "Final.",
+      "Final final.",
+    ]);
+    const advice = injects.find((i) => i.includes("cannot go green"));
+    expect(advice).toBeTruthy();
+    expect(advice).toContain("edit_file");
+  });
+
+  it("plan-prose 'final' is intercepted once; a real summary passes through", async () => {
+    const { injects, final } = await runRounds([
+      call("write_file", { path: "a.py", content: "print(1)" }),
+      "Let me check the project structure first, I need to...",
+      "Done: wrote a.py, verified by running it.",
+    ]);
+    expect(injects.some((i) => i.includes("planning/inner monologue"))).toBe(true);
+    expect(final).toContain("Done: wrote a.py");
+  });
+
+  it("mac-app entry write → immediate use_skill hint", async () => {
+    const swiftApp = "import SwiftUI\n@main\nstruct A: App { var body: some Scene { WindowGroup { Text(\"x\") } } }";
+    const { injects } = await runRounds([
+      call("write_file", { path: "App.swift", content: swiftApp }),
+      "Done.",
+    ]);
+    expect(injects.filter((i) => i.includes("[skill hint]"))).toHaveLength(1);
+  });
+
+  it("update_plan pattern-lock → soft-locked rejections, turn survives to a real final", async () => {
+    const plan = { todos: [{ content: "step one", status: "pending" }] };
+    const { injects, final } = await runRounds([
+      call("update_plan", plan),
+      call("update_plan", plan),
+      call("update_plan", plan),
+      call("update_plan", plan),
+      call("write_file", { path: "a.py", content: "print(1)" }),
+      "Recovered and done.",
+      "Truly done.", // the unfinished-todo wrap-up note consumes one answer
+    ]);
+    expect(injects.filter((i) => i.includes("LOCKED"))).toHaveLength(2);
+    expect(final).toContain("Truly done");
+  });
+
+  it("near-identical full rewrite is accepted with a tip; a real partial regen still bounces", async () => {
+    const tweaked = BIG_PY.replace("print(0)", "print(999)");
+    const partial = BIG_PY.split("\n").map((l, i) => (i % 6 === 0 ? l + " # x" : l)).join("\n");
+    const { injects } = await runRounds([
+      call("write_file", { path: "tool.py", content: BIG_PY }),
+      call("write_file", { path: "tool.py", content: tweaked }),
+      call("write_file", { path: "tool.py", content: partial }),
+      call("bash", { command: "python3 tool.py" }),
+      "Done.",
+    ]);
+    const tip = injects.find((i) => i.includes("prefer edit_file next time"));
+    expect(tip).toBeTruthy();
+    const bounce = injects.find((i) => i.includes("not written"));
+    expect(bounce).toBeTruthy();
+  });
+
+  it("five consecutive pure-observation steps → act-now breaker", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "a.py", content: "print(1)" }),
+      call("list_dir", { path: "x" }),
+      call("list_dir", { path: "y" }),
+      call("list_dir", { path: "x" }),
+      call("list_dir", { path: "y" }),
+      call("list_dir", { path: "x" }),
+      "Done.",
+    ]);
+    expect(injects.filter((i) => i.includes("[act now]"))).toHaveLength(1);
+  });
+
+  it("4th unverified source file → one incremental-cadence hint", async () => {
+    const rounds = [1, 2, 3, 4, 5].map((i) => call("write_file", { path: `f${i}.py`, content: "print(1)" }));
+    const { injects } = await runRounds([...rounds, call("bash", { command: "python3 f1.py" }), "Done."]);
+    expect(injects.filter((i) => i.includes("[incremental]"))).toHaveLength(1);
+  });
+
+  it("red result after a green point → regression hint naming the edits since green", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "core.py", content: BIG_PY }),
+      call("bash", { command: "python3 core.py" }),
+      call("write_file", { path: "extra.py", content: BIG_PY }),
+      call("bash", { command: "python3 fail.py # fail" }),
+      "Done.",
+      "Final.",
+      "Final final.",
+    ]);
+    const reg = injects.find((i) => i.includes("[regression]"));
+    expect(reg).toBeTruthy();
+    expect(reg).toContain("extra.py");
+    expect(reg).not.toContain("core.py,");
+  });
+
+  it("mac-app entry written but no packaged .app → delivery demands the bundle, twice max", async () => {
+    const swiftApp = "import SwiftUI\n@main\nstruct CalApp: App { var body: some Scene { WindowGroup { Text(\"hi\") } } }\n" + BIG_PY;
+    const { injects, final } = await runRounds([
+      call("write_file", { path: "Sources/App/CalApp.swift", content: swiftApp }),
+      call("write_file", { path: "Sources/App/Views.swift", content: BIG_PY }),
+      call("bash", { command: "swift build" }),
+      "All done, app is ready.",
+      "Final: delivering without packaging.",
+      "Final final.",
+    ]);
+    const demands = injects.filter((i) => i.includes("Contents/MacOS") && i.includes("mac-app"));
+    expect(demands.length).toBeGreaterThanOrEqual(1);
+    expect(demands.length).toBeLessThanOrEqual(2);
+    expect(final).toContain("Final final");
   });
 
   it("rm that swallowed own-written files → immediate accounting warning", async () => {

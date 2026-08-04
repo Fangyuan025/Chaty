@@ -123,6 +123,10 @@ describe("isSymbolicCheck", () => {
     "xcrun swiftc -parse Views/App.swift",
     "swiftc -dump-parse main.swift",
     "swift --version && swiftc -parse x.swift",
+    "node --check app.js",
+    "python3 -m py_compile tool.py",
+    "ruby -c script.rb",
+    "php -l index.php",
   ];
   const REAL = [
     "xcodebuild -project X.xcodeproj build",
@@ -131,6 +135,9 @@ describe("isSymbolicCheck", () => {
     "cargo build",
     "npm test",
     "swift build",
+    "node app.js",
+    "python3 tool.py --check-data",
+    "npx tsc --noEmit -p tsconfig.json",
     "ls -la", // read-only, not symbolic — different classifier
     "swiftc -parse a.swift > out.txt", // unparsed shape: fail closed
   ];

@@ -829,11 +829,17 @@ async function execTool(
       // edit, not a full rewrite. write_file overwrites everything, so when the
       // model regenerates a big file just to tweak a few lines it risks dropping
       // content it didn't retype. Intercept the clear cases and steer to edit.
+      let tinyRewriteNote = "";
       if (before) {
         const oldLines = before.split("\n").length;
         const { added, removed } = diffLines(before, after);
         const changed = added + removed;
-        if (oldLines >= 40 && changed > 0 && changed < oldLines * 0.5) {
+        // A near-identical full rewrite (≤3 changed lines of a full-length
+        // file) is harmless — accept it with a steering note instead of
+        // bouncing. The round-20 autopsy watched a bounce here derail the
+        // model for the rest of the turn. Truncated regens still intercept:
+        // dropping lines counts as `removed`, which blows past 3.
+        if (oldLines >= 40 && changed > 3 && changed < oldLines * 0.5) {
           return {
             result:
               `未写入 (not written)。这是对已有文件的局部改动(约 ${changed} 行,文件共 ${oldLines} 行)——请改用 edit_file(改一处给 old_string/new_string,改多处给 edits 数组)精确替换。` +
@@ -841,9 +847,13 @@ async function execTool(
               ` (This is a partial change to an existing file — use edit_file instead of a full write_file rewrite, which can drop content you didn't retype.)`,
           };
         }
+        if (oldLines >= 40 && changed > 0 && changed <= 3) {
+          tinyRewriteNote =
+            "\n(提示:这次只改了几行——下次这类小改动请用 edit_file,不必整篇重写。/ tip: for a few-line change, prefer edit_file next time.)";
+        }
       }
       const result = await agentWriteFile(path, after);
-      return { result, diff: { path, before, after } };
+      return { result: result + tinyRewriteNote, diff: { path, before, after } };
     }
     // One edit tool: a single replacement (old_string/new_string) OR several
     // at once (edits array) — both applied atomically. `multi_edit` is kept as
@@ -1503,6 +1513,16 @@ export async function runAgentTurn(
   // The most recent run/validation that FAILED and was never followed by a
   // green one — drives the harder "don't deliver on a red build" wrap-up.
   let lastFailedRun: string | null = null;
+  // Incremental-delivery discipline (owner spec: feature → verify → next
+  // feature; deliverable for mac-app tasks is a packaged, launch-verified
+  // .app; never break code that already passed).
+  let lastGreenStep = -1;
+  const editedSinceGreen = new Set<string>();
+  let regressionHintsShown = 0;
+  let wroteMacAppEntry = false;
+  let obsStreak = 0;
+  let obsHintsShown = 0;
+  let planProseIntercepted = false;
   // Search flail breaker: consecutive web_search calls, ANY query. When the
   // search backend degrades into irrelevant results, models keep rephrasing
   // the query forever instead of failing over to web_fetch / the browser —
@@ -1774,14 +1794,54 @@ export async function runAgentTurn(
           );
           continue;
         }
+        // ── Plan-prose final breaker ── an "answer" that opens with
+        // first-person process narration is leaked deliberation, not a
+        // deliverable (rounds 12/19/20/22: "用户选择…我需要…/The user wants
+        // me to…/让我先…" shipped as the final). Intercept once: act or
+        // rewrite as a real summary. Before the wrap-up gate, so gate shots
+        // aren't spent on a non-answer.
+        if (
+          answer &&
+          !planProseIntercepted &&
+          step < maxSteps - 1 &&
+          /^(用户(选择|提醒|要求|想)|让我|我需要|我现在|接下来我(要|将)|The user (wants|chose|asked)|Let me|I need to|I will now)/.test(
+            answer.trim().slice(0, 40),
+          )
+        ) {
+          planProseIntercepted = true;
+          hotNext = true;
+          forceNoThinkNext = true;
+          messages.push({ role: "assistant", content: answer.slice(0, 300) });
+          pushUser(
+            lang === "zh"
+              ? "你刚输出的是计划/内心过程,不是给用户的答复。二选一并立即执行:① 直接发一行 <tool_call> 执行你计划的第一步;② 如果任务确实已完成,重新给出最终总结(说明做了什么、如何验证的),不要出现「让我/我需要/用户选择」这类过程性句子。"
+              : 'What you just wrote is planning/inner monologue, not an answer to the user. Do ONE of these right now: ① issue a single <tool_call> line executing the first step of that plan; ② if the task is genuinely complete, rewrite it as a final summary (what was done, how it was verified) with no process narration like "let me / I need to".',
+          );
+          cb.onThinking("");
+          cb.onAssistantText("");
+          continue;
+        }
         // ── Wrap-up gate (webapp audit) ── the model is about to END the
         // turn. Once per turn, catch the two audited cut-corner patterns:
         // a todo list it wrote and abandoned, and page edits it never looked
         // at in the browser. One corrective nudge, then its next answer
         // stands either way.
         if (answer && step < maxSteps - 2) {
+          // macOS-app delivery check: app-entry sources were written this
+          // turn — is there a packaged .app in the tree? (Cheap listing,
+          // only on delivery attempts of app-shaped turns.)
+          let macAppMissingBundle = false;
+          if (wroteMacAppEntry) {
+            try {
+              macAppMissingBundle =
+                (await agentListFiles(".app/Contents/MacOS", 3)).length === 0;
+            } catch {
+              /* listing unavailable — don't block delivery on it */
+            }
+          }
           const nudge = wrapupNudge(
             {
+              macAppMissingBundle,
               plan: currentPlan,
               lastWebEditStep,
               lastBrowserActionStep,
@@ -1792,14 +1852,16 @@ export async function runAgentTurn(
                 lines: codeEditsSinceExec.lines,
               },
               lastFailedRun,
-              // Normally the gate fires at most once. Two things earn one
+              // Normally the gate fires at most once. Three things earn one
               // extra push-back before the answer stands: an outstanding RED
-              // build, and a run-check ledger the model left completely
+              // build, a run-check ledger the model left completely
               // untouched after the first nudge (round-9 escape: it ticked
-              // todos and re-delivered with zero verification attempts).
+              // todos and re-delivered with zero verification attempts), and
+              // a mac-app delivery still missing its packaged .app.
               nudged:
                 wrapNudgeCount >=
                 (lastFailedRun ||
+                macAppMissingBundle ||
                 runCheckAboveBar(codeEditsSinceExec.files.size, codeEditsSinceExec.lines)
                   ? 2
                   : 1),
@@ -1894,6 +1956,16 @@ export async function runAgentTurn(
       // fresh observation: scrolling 300px twice moves further; re-taking a
       // screenshot / re-reading the page / polling a job / re-navigating are all
       // valid. The breaker only guards degenerate no-op repeats (ls ., etc.).
+      // Observation-wandering tracker: near-repeat listings/searches drift
+      // past the identical-call breaker (round 20: six list_dir calls over
+      // two directories, then a plan-prose "final"). Count consecutive
+      // pure-observation steps — including intercepted ones — and break the
+      // trance with an act-now hint at 5.
+      const isObservationCall =
+        ["list_dir", "glob", "grep"].includes(call.name) ||
+        (call.name === "bash" && isReadOnlyCommand(asStr(call.args?.command)));
+      obsStreak = isObservationCall ? obsStreak + 1 : 0;
+
       const callKey = `${call.name}:${JSON.stringify(call.args)}`;
       const exemptFromRepeat = REPEAT_EXEMPT.has(call.name);
       if (exemptFromRepeat) {
@@ -1916,12 +1988,26 @@ export async function runAgentTurn(
         (call.name === "browser_click" || call.name === "browser_type") &&
         !lastResultErrored &&
         uiRepeatChangedPage;
-      // update_plan repeats are harmless no-ops (nothing mutates), and the
-      // model that re-sends a plan needs TEACHING more than a trapdoor —
-      // give it one extra intercept before the pause (rounds 13/14 died at
-      // 2-49s to this exact loop).
-      const pauseAt = uiRepeatOk ? 5 : call.name === "update_plan" ? 3 : 2;
+      // update_plan repeats are harmless no-ops (nothing mutates), and this
+      // model can pattern-lock on them hard: teaching + heat + extra chances
+      // all failed (rounds 14/21 died in <80s). So repeats get a SOFT LOCK —
+      // step-consuming rejections that keep the turn alive — and only a long
+      // streak (8) pauses. Everything else keeps the tight trapdoor.
+      const pauseAt = uiRepeatOk ? 5 : call.name === "update_plan" ? 8 : 2;
       const warnAt = uiRepeatOk ? 4 : 1;
+      if (call.name === "update_plan" && repeatCount >= 2 && repeatCount < pauseAt) {
+        hotNext = true;
+        const first = currentPlan.find((t) => t.status !== "done")?.content;
+        const note =
+          lang === "zh"
+            ? `update_plan 已锁定:这份计划已重复发送 ${repeatCount + 1} 次,在你执行一个实质动作(write_file / bash / read_file)之前它不会再被受理。${first ? `现在就做:「${first}」。` : ""}`
+            : `update_plan is LOCKED: this identical plan has now been sent ${repeatCount + 1} times — it will not be accepted again until you perform a concrete action (write_file / bash / read_file).${first ? ` Do this now: "${first}".` : ""}`;
+        stepObj.status = "error";
+        stepObj.result = note;
+        cb.onStep(stepObj);
+        pushUser(toolResultMsg(call.name, note));
+        continue;
+      }
       if (repeatCount >= pauseAt) {
         // One past the warning — pause instead of spinning to the step limit.
         cb.onFinal(
@@ -1948,7 +2034,16 @@ export async function runAgentTurn(
         // 49s). Keep its retry hot but thinking.
         hotNext = true;
         if (!uiRepeatOk && call.name !== "update_plan") forceNoThinkNext = true;
-        const note = lastResultErrored
+        // A failed BUILD/TEST command re-sent verbatim is hoping, not
+        // verifying (round 23: three identical `swift build`s after a red).
+        // The fix lives in the CODE at the file:line the error names.
+        const failedBuildRepeat =
+          call.name === "bash" && /\[exit (?!0\])\d+/.test(lastResultText);
+        const note = failedBuildRepeat
+          ? lang === "zh"
+            ? "调用被拦截:同样的命令刚刚已经失败,原样重跑不会变绿。错误在代码里——按上面输出的 文件:行号 打开出错文件(read_file),修复那个错误(edit_file),然后再运行构建。"
+            : "Intercepted: this exact command just FAILED — re-running it unchanged cannot go green. The error lives in the code: open the file at the file:line the output names (read_file), fix that error (edit_file), then run the build again."
+          : lastResultErrored
           ? lang === "zh"
             ? "调用被拦截:这个调用刚刚已经报错,原样重发不会有不同结果。请按上面错误信息修正 arguments 后重发同一个工具。"
             : "Intercepted: this exact call just returned an ERROR — re-sending it unchanged cannot succeed. Fix the arguments per the error message above, then re-issue the same tool."
@@ -2196,6 +2291,7 @@ export async function runAgentTurn(
 
       cb.onStep(stepObj);
       let resultText: string;
+      let unverifiedWriteCount = 0;
       try {
         let out: Awaited<ReturnType<typeof execTool>>;
         try {
@@ -2230,9 +2326,28 @@ export async function runAgentTurn(
             if (isWebSourceFile(p, serverCtx)) lastWebEditStep = step;
             if (isSourceCodeFile(p)) {
               codeEditsSinceExec.files.add(p);
+              editedSinceGreen.add(p);
+              unverifiedWriteCount = codeEditsSinceExec.files.size;
               // Rough volume: newlines in the args ≈ changed lines. Edit tools
               // count old+new text — an overestimate is fine, the bar is coarse.
               codeEditsSinceExec.lines += (JSON.stringify(call.args).match(/\\n/g) ?? []).length + 1;
+            }
+            // A macOS-app delivery in progress? (SwiftUI @main entry, or an
+            // electron manifest.) Arms the packaged-.app delivery check.
+            const body = asStr(call.args?.content) + asStr(call.args?.new_string);
+            if (
+              !wroteMacAppEntry &&
+              ((/@main/.test(body) && /some Scene|SwiftUI/.test(body)) ||
+                (p.endsWith("package.json") && body.includes('"electron"')))
+            ) {
+              wroteMacAppEntry = true;
+              // Surface the recipe NOW, while the budget is fresh — round 22
+              // reached the packaging demand only at wrap-up, with no steps
+              // left to follow it.
+              resultText +=
+                lang === "zh"
+                  ? '\n\n[技能提示] 检测到 macOS 应用开发任务。交付标准是能启动的 .app,不只是能编译的源码。现在调用 use_skill {"name":"mac-app"} 获取增量开发、打包 .app 和启动验证的完整配方。'
+                  : '\n\n[skill hint] macOS app task detected. The deliverable bar is a launchable .app, not just sources that compile. Call use_skill {"name":"mac-app"} now for the full recipe: incremental development, .app packaging, and launch verification.';
             }
           }
         }
@@ -2247,6 +2362,10 @@ export async function runAgentTurn(
           codeEditsSinceExec.files.clear();
           codeEditsSinceExec.lines = 0;
           lastFailedRun = null;
+          // This step is the new "green point": regressions from here on are
+          // attributed to files edited after it.
+          lastGreenStep = step;
+          editedSinceGreen.clear();
         };
         if (call.name === "validate_change") {
           const ran = resultText.includes("\n$ ");
@@ -2321,6 +2440,46 @@ export async function runAgentTurn(
         } catch {
           /* listing unavailable: skip the audit rather than fail the step */
         }
+      }
+      // Observation-wandering breaker: five consecutive look-only steps with
+      // zero workspace changes means the model is reassuring itself instead
+      // of working. Same recipe as the other trance-breakers: name it, order
+      // the next concrete action, heat the retry.
+      if (obsStreak >= 5 && obsHintsShown < 2) {
+        obsHintsShown++;
+        obsStreak = 0;
+        hotNext = true;
+        resultText +=
+          lang === "zh"
+            ? "\n\n[行动提示] 你已连续 5 步只在观察(list/搜索/只读命令),工作区没有任何变化。信息已经足够——现在就执行下一个实质动作:写下一个文件,或运行构建/验证。"
+            : "\n\n[act now] Five consecutive steps of pure observation (listing/searching/read-only commands) with zero workspace changes. You have enough information — take the next concrete action now: write the next file, or run the build/verification.";
+      }
+      // Incremental cadence (owner spec: feature → verify → next feature):
+      // at the 4th and 8th unverified source file, remind once each. Piling
+      // up a dozen files and debugging them as one tangle is how failures
+      // interleave; small tasks never reach 4 files and stay untouched.
+      if (unverifiedWriteCount === 4 || unverifiedWriteCount === 8) {
+        resultText +=
+          lang === "zh"
+            ? `\n\n[增量提示] 已连续写入 ${unverifiedWriteCount} 个源文件而没有任何验证。按增量流程走:先用 validate_change(或构建命令)确认当前已写的部分能编译,再继续下一个功能。一次堆太多再统一调试,错误会互相纠缠。`
+            : `\n\n[incremental] You have written ${unverifiedWriteCount} source files in a row with no verification. Work incrementally: validate_change (or a build command) to confirm what exists compiles, then move to the next feature. Piling up files and debugging them as one batch makes the failures tangle.`;
+      }
+      // Green-point regression hint: a red result right after edits that
+      // followed a PASSING check should point suspicion at exactly those
+      // edits — and warn against "improving" code that already passed.
+      if (
+        lastFailedRun !== null &&
+        regressionHintsShown < 2 &&
+        lastGreenStep >= 0 &&
+        editedSinceGreen.size > 0 &&
+        (call.name === "bash" || call.name === "validate_change")
+      ) {
+        regressionHintsShown++;
+        const shown = [...editedSinceGreen].slice(0, 4).join(", ") + (editedSinceGreen.size > 4 ? ", …" : "");
+        resultText +=
+          lang === "zh"
+            ? `\n\n[回归提示] 上一次验证是通过的;那之后你改动了:${shown}。这个失败优先怀疑这些改动——找到改坏的那处恢复原样,不要顺手再动其他已经跑通的代码。`
+            : `\n\n[regression] The previous check PASSED; since then you edited: ${shown}. Suspect those edits first — restore the one that broke it, and do not touch other code that was already working.`;
       }
       // Symbolic-check hint (CalendarApp audit): `--version` / `swiftc
       // -parse` exit 0 on a project that doesn't even compile, and the model

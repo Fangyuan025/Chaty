@@ -36,6 +36,9 @@ export interface WrapupState {
   /** Which firing this is (1-based). A repeat of the run-check note must not
    *  be verbatim — identical corrections don't break attractors (A/B-1). */
   attempt?: number;
+  /** A macOS-app delivery (SwiftUI @main / electron entry written this turn)
+   *  with no packaged .app bundle anywhere in the workspace. */
+  macAppMissingBundle?: boolean;
 }
 
 /** Files whose edits deserve a "did you actually run it?" check. Docs and
@@ -82,12 +85,21 @@ export function planEcho(todos: TodoLike[], lang: "zh" | "en"): string {
   const cur = todos.find((t) => t.status === "in_progress");
   const pending = todos.filter((t) => t.status === "pending");
   const unfinished = todos.length - done;
+  // A fresh plan (nothing done yet) gets a literal example call — the
+  // strongest known steering for small models (missing-args ladder lesson);
+  // "go execute" prose alone left them re-sending the plan (rounds 14/21).
+  const first = todos.find((t) => t.status !== "done");
+  const kick =
+    done === 0 && first
+      ? `<tool_call>{"name":"bash","arguments":{"command":"mkdir -p <项目目录>"}}</tool_call>`
+      : "";
   if (lang === "zh") {
     let s = `计划已更新(已记录,无需重发):${done}/${todos.length} 完成`;
     if (cur) s += `;进行中:${cur.content}`;
     if (pending.length) s += `;待办 ${pending.length} 项`;
     s += "。";
     if (unfinished > 0) s += "下一步:直接用具体工具执行未完成事项,不要再调 update_plan,除非状态有变化。";
+    if (kick) s += `现在就发第一个动作调用(建目录/写文件),格式如:${kick}`;
     return s;
   }
   let s = `Plan updated (recorded — no need to re-send): ${done}/${todos.length} done`;
@@ -95,6 +107,7 @@ export function planEcho(todos: TodoLike[], lang: "zh" | "en"): string {
   if (pending.length) s += `; ${pending.length} pending`;
   s += ".";
   if (unfinished > 0) s += " Next: execute the unfinished items with concrete tools; only call update_plan again when a status changes.";
+  if (kick) s += ` Issue the first action call now (mkdir / write the first file), e.g.: ${kick}`;
   return s;
 }
 
@@ -176,6 +189,17 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
           : `- Code (${shown}) changed after the last run — read-only commands don't count as verification. Do at least one: validate_change the edited files, execute them directly, or run the relevant tests / a minimal smoke; confirm it actually runs before delivering. If it genuinely needs no run, say why in your answer.`,
       );
     }
+  }
+
+  // macOS-app deliverable: the bar is a packaged .app that launches, not
+  // sources that compile (owner spec). Independent of the run-check note —
+  // a build can be green while nothing was ever packaged.
+  if (st.macAppMissingBundle) {
+    notes.push(
+      zh
+        ? `- 这是 macOS 应用任务:交付物是打包好的 .app 且启动验证过,但工作区里没有任何 .app(找不到 */Contents/MacOS)。构建 → 组装 .app → 启动确认存活(打印 LAUNCH OK)→ 再交付。完整配方:use_skill {"name":"mac-app"}。`
+        : `- This is a macOS app task: the deliverable is a packaged .app you have launch-verified, but the workspace has no .app bundle (no */Contents/MacOS). Build → assemble the .app → launch it and confirm it stays alive (LAUNCH OK) → then deliver. Full recipe: use_skill {"name":"mac-app"}.`,
+    );
   }
 
   if (!notes.length) return null;
