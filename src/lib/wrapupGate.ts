@@ -20,6 +20,9 @@ export interface WrapupState {
   lastBrowserActionStep: number;
   /** A local dev server is known to be running (bash_bg / auto-converted). */
   serverCtx: boolean;
+  /** An .html file was delivered this turn — the page is walkable even with
+   *  no dev server (serve it or open it), so the browser note applies. */
+  htmlEdited?: boolean;
   /** The dev server's URL when one was seen in command output. */
   devServerUrl?: string;
   /** Source-code edits since the last QUALIFYING execution (non-read-only
@@ -39,6 +42,10 @@ export interface WrapupState {
   /** A macOS-app delivery (SwiftUI @main / electron entry written this turn)
    *  with no packaged .app bundle anywhere in the workspace. */
   macAppMissingBundle?: boolean;
+  /** App-scale delivery whose functions were never EXECUTED: zero test runs,
+   *  zero real invocations, zero browser walkthroughs. Compiling and
+   *  launching is the entry ticket, not the bar (owner spec, all stacks). */
+  functionalUnverified?: boolean;
 }
 
 /** Files whose edits deserve a "did you actually run it?" check. Docs and
@@ -140,7 +147,7 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
   const webNote =
     st.lastWebEditStep >= 0 &&
     st.lastWebEditStep > st.lastBrowserActionStep &&
-    (st.serverCtx || st.lastBrowserActionStep >= 0);
+    (st.serverCtx || st.lastBrowserActionStep >= 0 || st.htmlEdited === true);
   if (webNote) {
     const target = st.devServerUrl;
     notes.push(
@@ -191,6 +198,15 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
     }
   }
 
+  // Functional bar, every stack: a build can be green and the app can even
+  // launch while every actual FUNCTION is broken. Demand executed proof.
+  if (st.functionalUnverified) {
+    notes.push(
+      zh
+        ? `- 编译通过/能启动只是及格线:这次交付还没有任何一条基本功能被真正执行过——没有跑测试,没有用真实输入实跑程序,也没有浏览器走查。逐条执行核心功能并留证:核心逻辑测试(swift test / pytest / cargo test / npm test)、CLI 真实输入实跑、curl 探每个接口、或浏览器点一遍每个功能;方法参考 use_skill {"name":"debug-playbook"}。全部跑通再交付,答复里写明每条功能各自的验证方式。`
+        : `- Compiling and launching is the entry ticket, not the bar: not one basic function of this delivery has actually been EXECUTED — no test run, no real-input invocation, no browser walkthrough. Exercise each core function and keep the proof: core-logic tests (swift test / pytest / cargo test / npm test), real CLI runs, curl on every endpoint, or a browser click-through of every feature; see use_skill {"name":"debug-playbook"}. Deliver only when they all pass, and name each function's proof in your answer.`,
+    );
+  }
   // macOS-app deliverable: the bar is a packaged .app that launches, not
   // sources that compile (owner spec). Independent of the run-check note —
   // a build can be green while nothing was ever packaged.

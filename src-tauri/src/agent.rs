@@ -1017,6 +1017,20 @@ pub(crate) fn syntax_check(abs: &Path) -> Option<Result<(), String>> {
             let text = std::fs::read_to_string(abs).ok()?;
             Some(serde_json::from_str::<serde_json::Value>(&text).map(|_| ()).map_err(|e| e.to_string()))
         }
+        // Syntax-ONLY parse as a post-edit gate (appbench wave 3: an edit
+        // left an extraneous `}` and the turn capped before any build could
+        // catch it). `-parse` is banned as VERIFICATION — as a brace-balance
+        // tripwire it is exactly right. Declaration files parse as library
+        // (an @main file is not a "main file"); `main.swift` keeps top-level
+        // code semantics.
+        "swift" => {
+            let file = abs.to_string_lossy();
+            if abs.file_name().is_some_and(|n| n == "main.swift") {
+                run("swiftc", &["-parse", &file])
+            } else {
+                run("swiftc", &["-parse-as-library", "-parse", &file])
+            }
+        }
         "toml" => {
             let text = std::fs::read_to_string(abs).ok()?;
             Some(text.parse::<toml::Value>().map(|_| ()).map_err(|e| e.to_string()))
@@ -4529,6 +4543,30 @@ mod tests {
         cp_clear();
         let out = rt.block_on(agent_validate_change(None)).expect("validate 3");
         assert!(out.contains("没有记录到文件改动"), "empty-state message missing: {out}");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The post-edit syntax gate must catch a brace-broken Swift file the
+    /// moment it is written (wave 3: an extraneous `}` shipped because no
+    /// gate covered .swift), while @main declaration files and top-level
+    /// main.swift both stay clean.
+    #[test]
+    fn syntax_gate_covers_swift() {
+        if std::process::Command::new("swiftc").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
+            eprintln!("SKIP: swiftc not available");
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-sgs-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let broken = tmp.join("View.swift");
+        std::fs::write(&broken, "struct V {\n}\n}\n").unwrap();
+        assert!(matches!(syntax_check(&broken), Some(Err(_))), "extra brace must fail");
+        let entry = tmp.join("App.swift");
+        std::fs::write(&entry, "import SwiftUI\n@main struct A: App { var body: some Scene { WindowGroup { Text(\"x\") } } }\n").unwrap();
+        assert!(matches!(syntax_check(&entry), Some(Ok(()))), "@main entry must pass");
+        let script = tmp.join("main.swift");
+        std::fs::write(&script, "print(\"hi\")\n").unwrap();
+        assert!(matches!(syntax_check(&script), Some(Ok(()))), "top-level main.swift must pass");
         std::fs::remove_dir_all(&tmp).ok();
     }
 

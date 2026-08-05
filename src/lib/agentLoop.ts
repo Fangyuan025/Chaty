@@ -1524,6 +1524,18 @@ export async function runAgentTurn(
   let obsHintsShown = 0;
   let planProseIntercepted = false;
   let permHintsShown = 0;
+  // Functional receipts (owner spec: compiling + launching is the entry
+  // ticket, not the bar — every basic function must be EXECUTED before
+  // delivery, on every stack). Counted: green test runs, real invocations
+  // of the built thing (CLI runs, curl probes), green validate_change.
+  // Browser walkthroughs are judged at the gate from the existing step
+  // markers. Never reset — receipts accumulate across the turn.
+  let functionalReceipts = 0;
+  const sourceFilesTouched = new Set<string>();
+  // A delivered .html IS an app the browser can walk — a single-file page
+  // slipped every gate in wave 1 (html isn't "source code" for the
+  // run-check, and the browser note required a server or prior browser use).
+  let htmlEdited = false;
   // App stacks this turn has STARTED (swift/electron/pywebview…). A second
   // parallel stack is the flail signature of the calculator-session audit:
   // one workspace ended up holding three half-implementations.
@@ -1810,7 +1822,7 @@ export async function runAgentTurn(
           answer &&
           !planProseIntercepted &&
           step < maxSteps - 1 &&
-          /^(用户(选择|提醒|要求|想)|让我|我需要|我现在|接下来我(要|将)|The user (wants|chose|asked)|Let me|I need to|I will now)/.test(
+          /^(用户(选择|提醒|要求|想)|让我|我需要|我现在|接下来我(要|将)|当前(的)?(编译错误|问题|错误)|解决方案|剩余(的)?(问题|错误)|The user (wants|chose|asked)|Let me|I need to|I will now|The (problem|issue|error) (is|here)|Currently,)/.test(
             answer.trim().slice(0, 40),
           )
         ) {
@@ -1845,9 +1857,20 @@ export async function runAgentTurn(
               /* listing unavailable — don't block delivery on it */
             }
           }
+          // Functional bar (all stacks): an app-scale delivery (mac-app
+          // entry, or 3+ source files) with a clean build but ZERO executed
+          // proof of its functions — no test run, no real invocation, no
+          // browser walkthrough — is not done.
+          const webWalked =
+            lastBrowserActionStep >= 0 && lastBrowserActionStep > lastWebEditStep;
+          const functionalUnverified =
+            (wroteMacAppEntry || htmlEdited || sourceFilesTouched.size >= 3) &&
+            functionalReceipts === 0 &&
+            !webWalked;
           const nudge = wrapupNudge(
             {
               macAppMissingBundle,
+              functionalUnverified,
               plan: currentPlan,
               lastWebEditStep,
               lastBrowserActionStep,
@@ -1858,6 +1881,7 @@ export async function runAgentTurn(
                 lines: codeEditsSinceExec.lines,
               },
               lastFailedRun,
+              htmlEdited,
               // Normally the gate fires at most once. Three things earn one
               // extra push-back before the answer stands: an outstanding RED
               // build, a run-check ledger the model left completely
@@ -1868,6 +1892,7 @@ export async function runAgentTurn(
                 wrapNudgeCount >=
                 (lastFailedRun ||
                 macAppMissingBundle ||
+                functionalUnverified ||
                 runCheckAboveBar(codeEditsSinceExec.files.size, codeEditsSinceExec.lines)
                   ? 2
                   : 1),
@@ -2341,9 +2366,11 @@ export async function runAgentTurn(
           if (p && !resultText.startsWith("ERROR")) {
             editedFiles.add(p);
             if (isWebSourceFile(p, serverCtx)) lastWebEditStep = step;
+            if (/\.html?$/i.test(p)) htmlEdited = true;
             if (isSourceCodeFile(p)) {
               codeEditsSinceExec.files.add(p);
               editedSinceGreen.add(p);
+              sourceFilesTouched.add(p);
               unverifiedWriteCount = codeEditsSinceExec.files.size;
               // Rough volume: newlines in the args ≈ changed lines. Edit tools
               // count old+new text — an overestimate is fine, the bar is coarse.
@@ -2408,8 +2435,10 @@ export async function runAgentTurn(
         if (call.name === "validate_change") {
           const ran = resultText.includes("\n$ ");
           const failed = resultText.includes("✗") || resultText.includes("⏱");
-          if (ran && !failed) clearLedger();
-          else if (failed) lastFailedRun = "validate_change";
+          if (ran && !failed) {
+            clearLedger();
+            functionalReceipts++;
+          } else if (failed) lastFailedRun = "validate_change";
         } else if (call.name === "bash_bg") {
           // Long-running starts (dev servers, watch builds) can't report an
           // exit yet — starting one still counts as engaging with the code.
@@ -2422,8 +2451,16 @@ export async function runAgentTurn(
             // exits 0 through tail — minesweeper audit) — an exit 0 whose
             // output carries compiler-failure signatures is NOT a receipt.
             const looksFailed = /(^|\n)\s*error(\[|:)|BUILD FAILED|Invalid manifest/i.test(resultText);
-            if (code && code[1] === "0" && !looksFailed) clearLedger();
-            else if (code && code[1] !== "0") lastFailedRun = cmd.slice(0, 120);
+            if (code && code[1] === "0" && !looksFailed) {
+              clearLedger();
+              // Compile receipts are not FUNCTIONAL receipts — only running
+              // tests or actually invoking the built thing counts.
+              const testRun =
+                /\b(swift test|pytest|py\.test|cargo test|go test|npm test|npx (vitest|jest)|bun test|ctest|mvn test|gradle test|rspec|phpunit)\b/.test(cmd);
+              const invocation =
+                /(^|&&|;|\|)\s*(\.\/\S+|python3?\s+\S+\.py\b|node\s+\S+\.m?js\b|swift run\b|cargo run\b|go run\b|npm start\b|npm run (?!build\b)\S+|npx tsx?\s+\S+|bun run \S+|curl\s)/.test(cmd);
+              if (testRun || invocation) functionalReceipts++;
+            } else if (code && code[1] !== "0") lastFailedRun = cmd.slice(0, 120);
             else if (code && looksFailed) lastFailedRun = cmd.slice(0, 120);
           }
         }

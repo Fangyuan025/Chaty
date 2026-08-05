@@ -20,6 +20,10 @@ that merely compiles is half the job. Work in this exact rhythm:
 ## SwiftUI + SwiftPM (recommended for native)
 
 Layout: `Package.swift` + `Sources/<Name>/…` with an `@main` SwiftUI `App`.
+Declare the platform UP FRONT — `platforms: [.macOS(.v14)]` — modern SwiftUI
+APIs (`ContentUnavailableView`, …) are macOS 14+, and an availability error
+discovered late forces a rewrite you have no budget for. If one still
+appears, RAISE the platform version; never rewrite working views around it.
 Build, package, and launch-check:
 
 ```bash
@@ -43,6 +47,26 @@ foreground briefly to read the crash text.
 `loadFile('dist/index.html')` — verify AFTER `vite build`, not against the
 dev server only.
 
+## SwiftUI patterns that break small models (copy these, don't improvise)
+
+**Editable list items** — inside `List`/`ForEach` the element is a VALUE
+copy; you cannot make a `Binding` from it. Iterate the binding collection:
+
+```swift
+List { ForEach($store.notes) { $note in
+    TextField("标题", text: $note.title)   // $note IS a Binding
+} .onDelete { store.notes.remove(atOffsets: $0) } }
+```
+
+**Master–detail editor** — select by id, edit through a computed binding:
+
+```swift
+List(store.notes, selection: $selectedID) { note in Text(note.title) }
+if let i = store.notes.firstIndex(where: { $0.id == selectedID }) {
+    NoteEditor(note: $store.notes[i])
+}
+```
+
 ## Verification truths (don't learn these the hard way)
 
 - **Browser screenshot ≠ system screenshot.** `browser_screenshot` captures
@@ -56,9 +80,26 @@ dev server only.
 - **One stack, start to finish.** If you must switch stacks, say why and
   delete the old implementation — never leave two half-apps in the tree.
 
-## Delivery checklist (all four, in the answer)
+## Functional bar: launching is not "working"
+
+Structure for testability from the first file: **core logic in plain types**
+(state machines, stores, calculations — no SwiftUI imports), views thin.
+Add a test target and exercise every basic function:
+
+```
+Tests/<Name>Tests/CoreTests.swift   // import XCTest + @testable import <Name>
+swift test 2>&1 | tail -3           // must end "0 failures"
+```
+
+Package.swift needs `.testTarget(name: "<Name>Tests", dependencies: ["<Name>"])`.
+Test the real flows: add → edit → delete → reload/persist round-trip, plus
+one edge case each (empty input, missing file). A feature without a passing
+test or an executed proof is not done.
+
+## Delivery checklist (all five, in the answer)
 
 - build green (real build, not `-parse`/`--version`)
+- `swift test` green with the core functions covered
 - `.app` bundle exists in the workspace
 - launch check printed `LAUNCH OK`
-- features you claim were each verified when added
+- each claimed feature names its proof (test name or executed command)

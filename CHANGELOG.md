@@ -1,5 +1,48 @@
 # Changelog
 
+## v2.0.5 — Functions or it didn't happen (2026-08-05)
+
+v2.0.4 made the agent ship an app that launches. This release makes it ship
+an app that **works**: every basic function must be executed — tested,
+clicked, or invoked with real inputs — before the turn may end, on every
+stack. Proven the hard way: a six-wave, five-stack matrix of real-model
+deliveries (SwiftUI desktop, browser app, Python CLI, Node API, Rust CLI),
+each product rebuilt, launched, and function-tested by hand.
+
+### The functional bar
+
+- **Executed proof or it isn't done.** An app-scale delivery with a green
+  build but zero test runs, zero real invocations, and zero browser
+  walkthroughs is stopped at the door — twice if needed. Green test suites,
+  real CLI runs, `curl` probes, and browser click-throughs count; compile
+  receipts don't.
+- **A single-file page is an app too.** Delivering an `.html` now asks for
+  the browser walkthrough even with no dev server running — the wave-1
+  escape (a 387-line todo app shipped sight-unseen in two steps) turned into
+  wave-2's model clicking through every feature and reloading to prove
+  persistence, unprompted.
+- **New official skill: `debug-playbook`.** The right debug method per
+  symptom — compile errors by file:line, crashes by stack frame, logic bugs
+  by failing-test-first — plus per-stack functional verification recipes,
+  the `curl -f` 404 trap, route-params-are-strings, and a cleanup rule so
+  test data doesn't ship.
+- **The mac-app skill grew a functional chapter.** Core logic in plain
+  testable types, an XCTest target wired into `Package.swift`, platform
+  pinned to macOS 14 up front, and the two SwiftUI patterns small models
+  reliably fumble (editable list bindings, master–detail selection) as
+  copy-ready snippets.
+- **Swift joins the post-edit syntax gate.** A brace-broken file now warns
+  the moment it is written — syntax-only parsing is banned as verification
+  but is exactly right as a tripwire.
+
+### Delivery discipline tune-ups
+
+- Leaked planning prose ("当前编译错误…解决方案…") is intercepted before it
+  can pose as a final answer — widened trigger set from live transcripts.
+- Functional receipts, walkthrough detection, and the second-shot gate all
+  ride the same wrap-up machinery; small tasks stay entirely friction-free
+  (verified: a simple script task runs 6 steps, zero interventions).
+
 ## v2.0.4 — Ship something that runs (2026-08-04)
 
 A release about the difference between "it compiles" and "it works". We took

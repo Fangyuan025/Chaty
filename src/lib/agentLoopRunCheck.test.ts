@@ -214,6 +214,72 @@ describe("run-check through the real loop", () => {
     expect(injects.filter((i) => i.includes("Second reminder"))).toHaveLength(1);
   });
 
+  it("app-scale build green but zero executed functions → functional bar nudge, twice max", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "a.py", content: BIG_PY }),
+      call("write_file", { path: "b.py", content: BIG_PY }),
+      call("write_file", { path: "c.py", content: BIG_PY }),
+      call("bash", { command: "make build" }),
+      "All done.",
+      "Final.",
+      "Final final.",
+    ]);
+    const bar = injects.filter((i) => i.includes("entry ticket"));
+    expect(bar.length).toBeGreaterThanOrEqual(1);
+    expect(bar.length).toBeLessThanOrEqual(2);
+  });
+
+  it("single-file html app with zero walkthrough → both web and functional notes fire", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "index.html", content: "<html><body><input><button>add</button></body></html>" }),
+      "All done, todo app delivered.",
+      "Final.",
+      "Final final.",
+    ]);
+    expect(injects.some((i) => i.includes("entry ticket"))).toBe(true);
+    expect(injects.some((i) => i.includes("browser"))).toBe(true);
+  });
+
+  it("html app followed by a browser walkthrough → silent", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "index.html", content: "<html><body>app</body></html>" }),
+      call("browser_navigate", { url: "http://127.0.0.1:8000/index.html" }),
+      call("browser_click", { text: "add" }),
+      "All done, walked through.",
+    ]);
+    expect(injects.some((i) => i.includes("entry ticket"))).toBe(false);
+  });
+
+  it("a green test run is a functional receipt → silent", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "a.py", content: BIG_PY }),
+      call("write_file", { path: "b.py", content: BIG_PY }),
+      call("write_file", { path: "c.py", content: BIG_PY }),
+      call("bash", { command: "pytest -q" }),
+      "All done.",
+    ]);
+    expect(injects.some((i) => i.includes("entry ticket"))).toBe(false);
+  });
+
+  it("really invoking the built thing (CLI run / curl) is a functional receipt → silent", async () => {
+    const invoked = await runRounds([
+      call("write_file", { path: "a.js", content: BIG_PY }),
+      call("write_file", { path: "b.js", content: BIG_PY }),
+      call("write_file", { path: "c.js", content: BIG_PY }),
+      call("bash", { command: "node a.js --input sample.txt" }),
+      "All done.",
+    ]);
+    expect(invoked.injects.some((i) => i.includes("entry ticket"))).toBe(false);
+    const curled = await runRounds([
+      call("write_file", { path: "a.py", content: BIG_PY }),
+      call("write_file", { path: "b.py", content: BIG_PY }),
+      call("write_file", { path: "s.py", content: BIG_PY }),
+      call("bash", { command: "curl -s http://127.0.0.1:8123/api/books" }),
+      "All done.",
+    ]);
+    expect(curled.injects.some((i) => i.includes("entry ticket"))).toBe(false);
+  });
+
   it("exit 0 with compiler-failure output (pipe-swallowed code) is not a receipt", async () => {
     const { injects } = await runRounds([
       call("write_file", { path: "a.swift", content: BIG_PY }),
