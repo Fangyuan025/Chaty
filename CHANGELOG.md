@@ -85,6 +85,17 @@ built the incremental way, on every stack.
 - **A failing session save is no longer silent.** If the transcript cannot
   be written to disk you now get one clear warning instead of discovering
   the loss later.
+- **Raw `swift build` / `swiftc` now just work in the agent shell.** The
+  nested-sandbox defusal that `validate_change` already used is applied to
+  the model's own commands too — no more "SwiftPM has sandbox issues, let me
+  try Electron" defections.
+- **Sessions exist from the first message.** Sending the first message now
+  writes the session to disk, names it, and shows it in the sidebar
+  immediately; every step persists (debounced) during the run — a paused or
+  crashed first turn no longer loses the whole transcript.
+- **A pipe can't launder a failed build anymore.** `swift build | tail`
+  exits 0 through the pipe; an exit 0 whose output carries compiler-failure
+  signatures no longer counts as verification.
 
 ## v2.0.3 — Cards on the table (2026-08-02)
 

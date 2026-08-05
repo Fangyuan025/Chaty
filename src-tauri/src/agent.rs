@@ -3222,11 +3222,32 @@ fn run_bash(
     })
 }
 
+/// SwiftPM and the Swift compiler apply their OWN sandbox to child processes,
+/// and nested sandboxing inside the agent's seatbelt dies with
+/// "sandbox_apply: Operation not permitted" — a raw `swift build` can never
+/// succeed in the jail. validate_change already passes the disable flags;
+/// the model's own bash commands deserve the same ground truth (minesweeper
+/// session audit: the model concluded "the sandbox forbids Swift" and
+/// defected to Electron). The outer seatbelt remains the security boundary.
+#[cfg(target_os = "macos")]
+pub(crate) fn defuse_nested_sandbox(command: &str) -> String {
+    // A command that already carries any disable-sandbox flag is left alone —
+    // the model (or a skill recipe) made its own arrangements.
+    if command.contains("disable-sandbox") {
+        return command.to_string();
+    }
+    let spm = regex::Regex::new(r"\bswift\s+(build|run|test|package)\b").unwrap();
+    let out = spm.replace_all(command, "swift $1 --disable-sandbox").into_owned();
+    let swiftc = regex::Regex::new(r"\bswiftc\s").unwrap();
+    swiftc.replace_all(&out, "swiftc -disable-sandbox ").into_owned()
+}
+
 #[cfg(target_os = "macos")]
 fn build_command(root: &Path, command: &str, sandboxed: bool) -> Command {
     let mut cmd = if sandboxed {
+        let command = defuse_nested_sandbox(command);
         let mut c = Command::new("/usr/bin/sandbox-exec");
-        c.arg("-p").arg(seatbelt_profile(root)).arg("/bin/sh").arg("-c").arg(command);
+        c.arg("-p").arg(seatbelt_profile(root)).arg("/bin/sh").arg("-c").arg(&command);
         c
     } else {
         // Un-sandboxed (approved sudo): a privileged action can't run in the
@@ -4604,6 +4625,34 @@ mod tests {
             .expect("validate ts 2");
         assert!(out.contains("✓ 通过"), "fixed ts must pass:\n{out}");
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Raw `swift build` / `swiftc` in agent bash must get the nested-sandbox
+    /// defusal automatically — models don't know the flag, conclude "the
+    /// sandbox forbids Swift", and defect to another stack.
+    #[test]
+    fn swift_commands_get_sandbox_defusal() {
+        assert_eq!(
+            defuse_nested_sandbox("swift build -c release 2>&1 | tail -5"),
+            "swift build --disable-sandbox -c release 2>&1 | tail -5"
+        );
+        assert_eq!(
+            defuse_nested_sandbox("cd App && swift test && swift run"),
+            "cd App && swift test --disable-sandbox && swift run --disable-sandbox"
+        );
+        assert_eq!(
+            defuse_nested_sandbox("swiftc -typecheck a.swift b.swift"),
+            "swiftc -disable-sandbox -typecheck a.swift b.swift"
+        );
+        assert_eq!(
+            defuse_nested_sandbox("swift package init --type executable"),
+            "swift package --disable-sandbox init --type executable"
+        );
+        // Untouched: no swift, version probes, explicit flags.
+        assert_eq!(defuse_nested_sandbox("npm run build"), "npm run build");
+        assert_eq!(defuse_nested_sandbox("swift --version"), "swift --version");
+        let explicit = "swift build --disable-sandbox";
+        assert_eq!(defuse_nested_sandbox(explicit), explicit);
     }
 
     /// Agent shells must point npm/electron caches at writable temp dirs —

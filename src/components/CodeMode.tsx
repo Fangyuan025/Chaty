@@ -735,6 +735,25 @@ export function CodeMode({
       });
   }, [refreshSessions]);
 
+  /** Debounced mid-run persist: trailing 2s, drops when the session moved. */
+  const persistTimerRef = useRef<number | null>(null);
+  const persistSoon = useCallback(
+    (id: string) => {
+      if (persistTimerRef.current !== null) return;
+      persistTimerRef.current = window.setTimeout(() => {
+        persistTimerRef.current = null;
+        if (bodyRef.current.sid !== id) return;
+        setMsgs((cur) => {
+          persist(cur, bodyRef.current.workspace, id);
+          return cur;
+        });
+      }, 2000);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+
   /** Ask the model for a concise session title after the first turn —
    *  mirrors the chat side's makeTitle (no-think, low temperature). */
   async function makeSessionTitle(id: string, firstMsg: string) {
@@ -1198,6 +1217,12 @@ export function CodeMode({
     // The session this turn belongs to — if the user deletes it mid-run the
     // live sid moves on, and the turn's results must not be written anywhere.
     const turnSid = bodyRef.current.sid;
+    // First message = the session EXISTS: on disk, in the sidebar, named
+    // (fallback title from the message text; the model-polished title still
+    // lands after the turn). Persisting only at turn end meant a paused or
+    // crashed first turn left ZERO rows — the calculator and minesweeper
+    // audits both lost their transcripts to exactly that.
+    persist(base, bodyRef.current.workspace, turnSid);
 
     const signal = new AgentSignal();
     signalRef.current = signal;
@@ -1284,7 +1309,7 @@ export function CodeMode({
           setAsk({ question, options, resolve });
         }),
       onAssistantText: (full) => update((m) => ({ ...m, text: full })),
-      onStep: (step) =>
+      onStep: (step) => {
         update((m) => {
           const steps = [...m.steps];
           const i = steps.findIndex((s) => s.id === step.id);
@@ -1292,7 +1317,12 @@ export function CodeMode({
           else steps.push(step);
           // the reasoning is now captured on the step → clear the live buffer
           return { ...m, steps, liveThinking: "" };
-        }),
+        });
+        // Mid-run durability: every step lands on disk (debounced), so a
+        // pause + quit — or a crash — loses at most the last two seconds,
+        // not the whole transcript.
+        persistSoon(turnSid);
+      },
       onFinal: (final, thinking, reason) =>
         update((m) => ({
           ...m,

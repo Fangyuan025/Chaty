@@ -43,6 +43,8 @@ async function runRounds(rounds: string[]): Promise<{ injects: string[]; final: 
       const c = String((args as { command?: string }).command ?? "");
       if (c.includes("eperm"))
         return { stdout: "", stderr: "rm: /Users/x/.npm: Operation not permitted", code: 1, timedOut: false, bgId: null };
+      if (c.includes("pipeswallow"))
+        return { stdout: "error: Invalid manifest\nsandbox-exec: sandbox_apply: Operation not permitted", stderr: "", code: 0, timedOut: false, bgId: null };
       return c.includes("fail")
         ? { stdout: "", stderr: "error: build failed", code: 1, timedOut: false, bgId: null }
         : { stdout: "ok", stderr: "", code: 0, timedOut: false, bgId: null };
@@ -210,6 +212,18 @@ describe("run-check through the real loop", () => {
     ]);
     expect(injects.filter((i) => i.includes(RUN_MARK))).toHaveLength(1);
     expect(injects.filter((i) => i.includes("Second reminder"))).toHaveLength(1);
+  });
+
+  it("exit 0 with compiler-failure output (pipe-swallowed code) is not a receipt", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "a.swift", content: BIG_PY }),
+      call("write_file", { path: "b.swift", content: BIG_PY }),
+      call("bash", { command: "swift build 2>&1 | tail -5 # pipeswallow" }),
+      "All done.",
+      "Final.",
+      "Final final.",
+    ]);
+    expect(injects.some((i) => i.includes("FAILED") && i.includes("until it passes"))).toBe(true);
   });
 
   it("re-sending a failed build verbatim → code-fix advice, not args advice", async () => {

@@ -2418,8 +2418,13 @@ export async function runAgentTurn(
           const cmd = asStr(call.args?.command);
           if (!isReadOnlyCommand(cmd) && !isSymbolicCheck(cmd)) {
             const code = /\[exit (-?\d+)(?: · [^\]]*)?\]\s*$/.exec(resultText);
-            if (code && code[1] === "0") clearLedger();
-            else if (code) lastFailedRun = cmd.slice(0, 120);
+            // A pipe swallows the build's exit code (`swift build | tail -5`
+            // exits 0 through tail — minesweeper audit) — an exit 0 whose
+            // output carries compiler-failure signatures is NOT a receipt.
+            const looksFailed = /(^|\n)\s*error(\[|:)|BUILD FAILED|Invalid manifest/i.test(resultText);
+            if (code && code[1] === "0" && !looksFailed) clearLedger();
+            else if (code && code[1] !== "0") lastFailedRun = cmd.slice(0, 120);
+            else if (code && looksFailed) lastFailedRun = cmd.slice(0, 120);
           }
         }
         if (["bash", "bash_bg", "bg_output"].includes(call.name)) {
