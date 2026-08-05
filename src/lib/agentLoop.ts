@@ -1522,7 +1522,7 @@ export async function runAgentTurn(
   let wroteMacAppEntry = false;
   let obsStreak = 0;
   let obsHintsShown = 0;
-  let planProseIntercepted = false;
+  let planProseIntercepts = 0;
   let permHintsShown = 0;
   // Functional receipts (owner spec: compiling + launching is the entry
   // ticket, not the bar — every basic function must be EXECUTED before
@@ -1532,6 +1532,18 @@ export async function runAgentTurn(
   // markers. Never reset — receipts accumulate across the turn.
   let functionalReceipts = 0;
   const sourceFilesTouched = new Set<string>();
+  // Artifact staleness (minesweeper audit): the model edited GameLogic,
+  // ran only `swift test` (which freshens DEBUG), then packaged the OLD
+  // release binary and "verified" its launch. Consuming a built artifact —
+  // packaging an .app, copying from .build/release, running target/… or
+  // dist/ — is only valid if the matching build ran AFTER the last
+  // app-source edit (test-file edits don't stale the artifact).
+  let appSourceEditStep = -1;
+  let artifactBuildStep = -1;
+  let releaseBuildStep = -1;
+  let lastPackageStep = -1;
+  let staleHintsShown = 0;
+  let pbxprojHintShown = false;
   // A delivered .html IS an app the browser can walk — a single-file page
   // slipped every gate in wave 1 (html isn't "source code" for the
   // run-check, and the browser note required a server or prior browser use).
@@ -1820,13 +1832,13 @@ export async function runAgentTurn(
         // aren't spent on a non-answer.
         if (
           answer &&
-          !planProseIntercepted &&
+          planProseIntercepts < 2 &&
           step < maxSteps - 1 &&
           /^(用户(选择|提醒|要求|想)|让我|我需要|我现在|接下来我(要|将)|当前(的)?(编译错误|问题|错误)|解决方案|剩余(的)?(问题|错误)|The user (wants|chose|asked)|Let me|I need to|I will now|The (problem|issue|error) (is|here)|Currently,)/.test(
             answer.trim().slice(0, 40),
           )
         ) {
-          planProseIntercepted = true;
+          planProseIntercepts++;
           hotNext = true;
           forceNoThinkNext = true;
           messages.push({ role: "assistant", content: answer.slice(0, 300) });
@@ -1867,9 +1879,14 @@ export async function runAgentTurn(
             (wroteMacAppEntry || htmlEdited || sourceFilesTouched.size >= 3) &&
             functionalReceipts === 0 &&
             !webWalked;
+          // Packaged before the final source edits = the delivered .app is
+          // not the delivered code (minesweeper audit).
+          const macAppStaleBundle =
+            wroteMacAppEntry && lastPackageStep >= 0 && appSourceEditStep > lastPackageStep;
           const nudge = wrapupNudge(
             {
               macAppMissingBundle,
+              macAppStaleBundle,
               functionalUnverified,
               plan: currentPlan,
               lastWebEditStep,
@@ -1892,6 +1909,7 @@ export async function runAgentTurn(
                 wrapNudgeCount >=
                 (lastFailedRun ||
                 macAppMissingBundle ||
+                macAppStaleBundle ||
                 functionalUnverified ||
                 runCheckAboveBar(codeEditsSinceExec.files.size, codeEditsSinceExec.lines)
                   ? 2
@@ -2030,20 +2048,46 @@ export async function runAgentTurn(
       // exact re-emissions at low temperature (rounds 14/21: plan×N; calc1:
       // the same file written three times) and teaching+heat alone don't
       // break it — but the turn must survive.
-      const softLockable = call.name === "update_plan" || call.name === "write_file";
-      const pauseAt = uiRepeatOk ? 5 : call.name === "update_plan" ? 8 : call.name === "write_file" ? 6 : 2;
+      // A verbatim re-send of a bash command whose previous run FAILED can
+      // never change anything either — hoping is not a method (wave 7: three
+      // identical failed builds paused the turn at 11 steps).
+      const failedBashRepeat =
+        call.name === "bash" && /\[exit (?!0\])-?\d+/.test(lastResultText);
+      // Re-reading an unchanged file is a no-op too (wave 9: read_file ×3
+      // killed the turn right before packaging).
+      const softLockable =
+        call.name === "update_plan" ||
+        call.name === "write_file" ||
+        call.name === "read_file" ||
+        failedBashRepeat;
+      const pauseAt = uiRepeatOk
+        ? 5
+        : call.name === "update_plan"
+          ? 8
+          : call.name === "write_file" || call.name === "read_file" || failedBashRepeat
+            ? 6
+            : 2;
       const warnAt = uiRepeatOk ? 4 : 1;
       if (softLockable && repeatCount >= 2 && repeatCount < pauseAt) {
         hotNext = true;
+        if (failedBashRepeat) forceNoThinkNext = true;
         const first = currentPlan.find((t) => t.status !== "done")?.content;
         const note =
           call.name === "update_plan"
             ? lang === "zh"
               ? `update_plan 已锁定:这份计划已重复发送 ${repeatCount + 1} 次,在你执行一个实质动作(write_file / bash / read_file)之前它不会再被受理。${first ? `现在就做:「${first}」。` : ""}`
               : `update_plan is LOCKED: this identical plan has now been sent ${repeatCount + 1} times — it will not be accepted again until you perform a concrete action (write_file / bash / read_file).${first ? ` Do this now: "${first}".` : ""}`
-            : lang === "zh"
-              ? `这份文件内容已经原样写入过了(第 ${repeatCount + 1} 次重复,一字未变)——它已经在磁盘上,重写不会有任何变化。继续下一步:写下一个文件,或用 validate_change 验证已写的代码。${first ? `计划里的下一项:「${first}」。` : ""}`
-              : `This exact file content is already on disk (repeat #${repeatCount + 1}, byte-identical) — rewriting changes nothing. Move on: write the NEXT file, or run validate_change on what exists.${first ? ` Next plan item: "${first}".` : ""}`;
+            : call.name === "write_file"
+              ? lang === "zh"
+                ? `这份文件内容已经原样写入过了(第 ${repeatCount + 1} 次重复,一字未变)——它已经在磁盘上,重写不会有任何变化。继续下一步:写下一个文件,或用 validate_change 验证已写的代码。${first ? `计划里的下一项:「${first}」。` : ""}`
+                : `This exact file content is already on disk (repeat #${repeatCount + 1}, byte-identical) — rewriting changes nothing. Move on: write the NEXT file, or run validate_change on what exists.${first ? ` Next plan item: "${first}".` : ""}`
+            : call.name === "read_file"
+              ? lang === "zh"
+                ? `这个文件你刚读过且内容没有变化(第 ${repeatCount + 1} 次重复)——再读一遍不会出现新信息。直接行动:编辑它、构建、或继续下一步。${first ? `计划里的下一项:「${first}」。` : ""}`
+                : `You just read this file and it has not changed (repeat #${repeatCount + 1}) — reading again reveals nothing new. Act instead: edit it, build, or move to the next step.${first ? ` Next plan item: "${first}".` : ""}`
+              : lang === "zh"
+                ? `命令已锁定:同一条失败的命令已重发 ${repeatCount + 1} 次——错误在代码里,不在命令里。按上面输出的 文件:行号 打开文件(read_file),修复那个错误(edit_file),然后再运行。修复之前这条命令不会被执行。`
+                : `Command LOCKED: this identical FAILED command has now been sent ${repeatCount + 1} times — the error lives in the code, not the command. Open the file at the file:line the output names (read_file), fix it (edit_file), then run again. It will not execute until something changes.`;
         stepObj.status = "error";
         stepObj.result = note;
         cb.onStep(stepObj);
@@ -2371,10 +2415,24 @@ export async function runAgentTurn(
               codeEditsSinceExec.files.add(p);
               editedSinceGreen.add(p);
               sourceFilesTouched.add(p);
+              // Test files exercise the artifact; they don't go INTO it.
+              if (!/(^|\/)tests?\//i.test(p) && !/(test|spec)s?\.\w+$/i.test(p)) {
+                appSourceEditStep = step;
+              }
               unverifiedWriteCount = codeEditsSinceExec.files.size;
               // Rough volume: newlines in the args ≈ changed lines. Edit tools
               // count old+new text — an overestimate is fine, the bar is coarse.
               codeEditsSinceExec.lines += (JSON.stringify(call.args).match(/\\n/g) ?? []).length + 1;
+            }
+            // Hand-writing a pbxproj is a recurring death (rounds 1/16 and
+            // matrix wave 8: malformed, unreadable, wrong refs) — steer to
+            // SwiftPM at the exact moment of the sin, once.
+            if (p.endsWith("project.pbxproj") && !pbxprojHintShown) {
+              pbxprojHintShown = true;
+              resultText +=
+                lang === "zh"
+                  ? "\n\n[脚手架提醒] 你在手写 project.pbxproj——手搓的 Xcode 工程文件几乎必定格式损坏(xcodebuild 无法读取/文件引用错误)。从零开发 macOS 应用请改用 SwiftPM:先 `rm -rf` 刚写的 .xcodeproj 残骸,再用 Package.swift + Sources/ 布局,swift build 即可构建,打包配方见 use_skill {\"name\":\"mac-app\"}。仅当项目本来就带 Xcode 工程时才该编辑此文件。"
+                  : '\n\n[scaffold] You are hand-writing project.pbxproj — hand-made Xcode project files are almost always malformed (unreadable by xcodebuild, broken file refs). For a from-scratch macOS app use SwiftPM instead: `rm -rf` the .xcodeproj husk you just wrote, then Package.swift + Sources/, built with swift build; packaging recipe via use_skill {"name":"mac-app"}. Only edit this file when the project already ships an Xcode project.';
             }
             // A macOS-app delivery in progress? (SwiftUI @main entry, or an
             // electron manifest.) Arms the packaged-.app delivery check.
@@ -2452,14 +2510,45 @@ export async function runAgentTurn(
             // output carries compiler-failure signatures is NOT a receipt.
             const looksFailed = /(^|\n)\s*error(\[|:)|BUILD FAILED|Invalid manifest/i.test(resultText);
             if (code && code[1] === "0" && !looksFailed) {
-              clearLedger();
+              // Artifact-staleness bookkeeping: which builds ran, and is
+              // this command CONSUMING a stale artifact?
+              const isBuild =
+                /\b(swift build|xcodebuild|cargo build|go build|vite build|npm run build|electron-builder|make(\s|$)|swift run|cargo run|go run)\b/.test(cmd);
+              const isReleaseBuild =
+                isBuild && /\brelease\b|xcodebuild|vite build|npm run build|electron-builder/.test(cmd);
+              if (isBuild) {
+                artifactBuildStep = step;
+                if (isReleaseBuild) releaseBuildStep = step;
+              }
+              const consumesRelease = /\.build\/release|target\/release/.test(cmd);
+              const consumesArtifact =
+                consumesRelease ||
+                /\S*\.app\b|target\/debug\/|(^|[\s;&|])dist\/|(^|[\s;&|])\.\/[\w-]+(\s|$)/.test(cmd);
+              const staleAgainst = consumesRelease ? releaseBuildStep : artifactBuildStep;
+              const staleConsume =
+                !isBuild && consumesArtifact && appSourceEditStep >= 0 && appSourceEditStep > staleAgainst;
+              if (/\S*\.app\b/.test(cmd) && !staleConsume) lastPackageStep = step;
+              if (staleConsume) {
+                // The OLD artifact ran fine — that proves nothing about the
+                // code as it exists NOW. No ledger clear, no receipt.
+                if (staleHintsShown < 2) {
+                  staleHintsShown++;
+                  resultText +=
+                    lang === "zh"
+                      ? `\n\n[过期产物] 这条命令使用/打包/启动的是旧构建产物:你在上一次${consumesRelease ? " release " : ""}构建之后又改过源码。它跑得通只能证明旧版本没问题——先重新构建(${consumesRelease ? "swift build -c release / cargo build --release 等,注意 swift test 只刷新 debug 产物" : "对应的构建命令"}),再重新打包/运行/验证。`
+                      : `\n\n[stale artifact] This command used/packaged/launched an OLD build product: sources changed after the last${consumesRelease ? " release" : ""} build. It working proves the OLD version worked — rebuild first (${consumesRelease ? "swift build -c release / cargo build --release …; note swift test only refreshes DEBUG products" : "the matching build command"}), then re-package/run/verify.`;
+                }
+              } else {
+                clearLedger();
+              }
               // Compile receipts are not FUNCTIONAL receipts — only running
-              // tests or actually invoking the built thing counts.
+              // tests or actually invoking the built thing counts (and a
+              // stale invocation counts for nothing).
               const testRun =
                 /\b(swift test|pytest|py\.test|cargo test|go test|npm test|npx (vitest|jest)|bun test|ctest|mvn test|gradle test|rspec|phpunit)\b/.test(cmd);
               const invocation =
                 /(^|&&|;|\|)\s*(\.\/\S+|python3?\s+\S+\.py\b|node\s+\S+\.m?js\b|swift run\b|cargo run\b|go run\b|npm start\b|npm run (?!build\b)\S+|npx tsx?\s+\S+|bun run \S+|curl\s)/.test(cmd);
-              if (testRun || invocation) functionalReceipts++;
+              if ((testRun || invocation) && !staleConsume) functionalReceipts++;
             } else if (code && code[1] !== "0") lastFailedRun = cmd.slice(0, 120);
             else if (code && looksFailed) lastFailedRun = cmd.slice(0, 120);
           }

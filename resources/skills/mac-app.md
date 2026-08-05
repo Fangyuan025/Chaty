@@ -17,7 +17,13 @@ that merely compiles is half the job. Work in this exact rhythm:
    that already passed — no renames, no restructuring, no style edits of
    working files.
 
-## SwiftUI + SwiftPM (recommended for native)
+## SwiftUI + SwiftPM (the ONLY supported scaffold here)
+
+**Never hand-write an `.xcodeproj`.** A hand-made `project.pbxproj` is
+almost always malformed — unreadable by xcodebuild, wrong file references,
+broken resource paths (this audit hit all three). SwiftPM gives you build,
+tests, and packaging with zero project files; editing an .xcodeproj is only
+for projects that already ship one.
 
 Layout: `Package.swift` + `Sources/<Name>/…` with an `@main` SwiftUI `App`.
 Declare the platform UP FRONT — `platforms: [.macOS(.v14)]` — modern SwiftUI
@@ -91,10 +97,36 @@ Tests/<Name>Tests/CoreTests.swift   // import XCTest + @testable import <Name>
 swift test 2>&1 | tail -3           // must end "0 failures"
 ```
 
-Package.swift needs `.testTarget(name: "<Name>Tests", dependencies: ["<Name>"])`.
+**Use THREE targets** — tests must depend on a library, never on the
+executable (linking an `@main` target into tests duplicates `_main`):
+
+```swift
+// swift-tools-version:5.9
+import PackageDescription
+let package = Package(
+    name: "<Name>", platforms: [.macOS(.v14)],
+    targets: [
+        .target(name: "<Name>Core"),                                // logic — testable
+        .executableTarget(name: "<Name>", dependencies: ["<Name>Core"]), // @main + views
+        .testTarget(name: "<Name>CoreTests", dependencies: ["<Name>Core"]),
+    ]
+)
+```
+
+Two rules make the split work — missing either is the #1 multi-target
+failure ("cannot find 'X' in scope"):
+1. **Everything in Core is `public`**: `public struct Note`, `public class
+   NoteStore`, `public init(...)`, `public func …`, `@Published public var …`.
+2. **Every file in the executable target starts with `import <Name>Core`.**
 Test the real flows: add → edit → delete → reload/persist round-trip, plus
 one edge case each (empty input, missing file). A feature without a passing
 test or an executed proof is not done.
+
+**After your LAST source edit, the packaging pipeline runs AGAIN** —
+rebuild (`swift build -c release`; `swift test` only refreshes DEBUG
+products, never the release binary) → re-copy into the `.app` → re-run the
+launch check. An `.app` packaged before your final fix ships the bug you
+just fixed.
 
 ## Delivery checklist (all five, in the answer)
 

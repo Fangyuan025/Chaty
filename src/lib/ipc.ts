@@ -1136,3 +1136,12 @@ export function isVisionImagePath(path: string): boolean {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   return VISION_IMAGE_EXTS.includes(ext);
 }
+
+/** Append a front-end error to the user-attachable error log. */
+export async function logAppError(kind: string, detail: string): Promise<void> {
+  await invoke("log_app_error", { kind, detail });
+}
+/** Open logs/chaty-error.log in the OS default viewer. */
+export async function openErrorLog(): Promise<void> {
+  await invoke("open_error_log");
+}

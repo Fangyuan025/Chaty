@@ -599,7 +599,7 @@ pub fn ensure_models_dir(app: &tauri::AppHandle) {
 /// `Command::spawn` goes through `posix_spawn`, which is atomic and fork-free, so
 /// it's both safe and fast. A short reaper thread `wait()`s the launcher child
 /// (which exits in milliseconds) so we don't leak zombies.
-fn open_default(target: &str) -> Result<(), String> {
+pub(crate) fn open_default(target: &str) -> Result<(), String> {
     #[allow(unused_mut)]
     let mut cmd;
     #[cfg(target_os = "macos")]

@@ -13,6 +13,7 @@ pub mod download;
 pub mod gpu;
 pub mod http;
 pub mod inference;
+pub mod errlog;
 pub mod mcp;
 pub mod ocr;
 pub mod search;
@@ -68,6 +69,12 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Panics land in the user-attachable error log from the first instant.
+    crate::errlog::install_panic_hook();
+    // GPU crash guard (issue #5): if the previous model load took the whole
+    // process down (broken Vulkan driver aborts mid-load), block GPU offload
+    // for this run BEFORE any llama/ggml init touches the driver.
+    let _gpu_blocked = crate::inference::llama::apply_gpu_crash_guard();
     // ggml's Metal backend keeps every weight buffer in an MTLResidencySet
     // when built against the macOS 15+ SDK, which shows up as a wired-memory
     // balloon the size of the model (and froze machines on big models with
@@ -294,6 +301,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::load_model,
+            errlog::log_app_error,
+            errlog::open_error_log,
             commands::eject_model,
             commands::get_model,
             commands::get_hardware_info,

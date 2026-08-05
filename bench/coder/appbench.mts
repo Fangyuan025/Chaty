@@ -19,6 +19,7 @@ import { appendFileSync, existsSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Bridge, type Json } from "../lib/bridge.mts";
+import { officialSkills } from "../../src/lib/skillFiles.ts";
 import { grade, walk } from "./applib.mts";
 
 const DIR = path.dirname(new URL(import.meta.url).pathname);
@@ -208,7 +209,8 @@ async function main() {
     await new Promise<void>((resolve) => {
       const watchdog = setTimeout(() => { error = "watchdog: 5400s"; resolve(); }, 5_400_000);
       runAgentTurn(task.prompt, [] as never, ws, "zh",
-        { thinkMode: "normal", nCtx, maxSteps: 64, temperature: 0.3, bashTimeout: 60, browserTextMode: true,
+        { thinkMode: "normal", nCtx, maxSteps: 64, temperature: 0.3,
+          skills: officialSkills(), bashTimeout: 60, browserTextMode: true,
           signal: { cancelled: false } as never, approve: async () => true, approveDir: async () => false,
           approveSudo: async () => ({ ok: false }) } as never,
         { onThinking: () => {}, onAssistantText: () => {},
@@ -223,6 +225,11 @@ async function main() {
       );
     });
     const secs = Math.round((Date.now() - t0) / 1000);
+    // The model's own dev server may still hold the pinned port — the probe
+    // must own a clean world (wave 14: probe curls hit the model's leftover
+    // server, its self-test data made DELETE look broken).
+    try { execFileSync("pkill", ["-f", ws], { stdio: "ignore" }); } catch { /* none */ }
+    await new Promise((r) => setTimeout(r, 800));
     let verdict: Verdict;
     try {
       verdict = await task.probe(ws);

@@ -23,6 +23,7 @@ import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, sta
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Bridge, type Json } from "../lib/bridge.mts";
+import { officialSkills } from "../../src/lib/skillFiles.ts";
 import { grade } from "./applib.mts";
 
 const DIR = path.dirname(new URL(import.meta.url).pathname);
@@ -79,6 +80,7 @@ async function main() {
         // maxSteps 64 mirrors the raised default (32 starved rounds 7/8;
         // 48 cut round 16 one error from green).
         thinkMode: "normal", nCtx, maxSteps: 64, temperature: 0.3,
+          skills: officialSkills(),
         bashTimeout: 60, browserTextMode: true,
         signal: { cancelled: false } as never,
         approve: async () => true,

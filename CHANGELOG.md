@@ -35,6 +35,35 @@ each product rebuilt, launched, and function-tested by hand.
   the moment it is written — syntax-only parsing is banned as verification
   but is exactly right as a tripwire.
 
+### The delivered app must be the delivered code
+
+- **Stale artifacts stop counting.** Editing sources after the last build
+  and then packaging/launching the OLD binary (the minesweeper session:
+  `swift test` refreshes debug, the release binary in the bundle stayed
+  old) now draws an immediate warning, clears nothing, and the wrap-up gate
+  demands rebuild → re-package → re-launch before delivery — release paths
+  require a release-flavored build, test-file edits don't stale anything.
+- **No-op repeats soft-lock instead of killing the turn.** Identical
+  re-sends of a failed command, an unchanged file write, or an unchanged
+  file read get step-consuming redirections (fix the code at the file:line /
+  move on / act) — the turn survives to actually finish.
+- **Hand-rolled `.xcodeproj` gets intercepted at the keystroke** and steered
+  to SwiftPM (with husk cleanup); the mac-app skill now carries the
+  three-target `Package.swift` template (Core lib + executable + tests),
+  the `public`/`import` cross-module rules, and the platform pin — the
+  recurring Swift scaffold deaths, each mechanized away.
+
+### Windows: a broken GPU driver no longer takes the app with it
+
+- **Crash-marker fallback (issue #5).** A model load that kills the process
+  (Vulkan driver abort) is detected on the next start; GPU offload is
+  blocked persistently, the load reruns on CPU, and a notice explains what
+  happened. One crash maximum, then it just works.
+- **Automatic error log.** Panics, front-end errors, and crash post-mortems
+  are recorded to `logs/chaty-error.log` (size-capped): open it from
+  Settings → General, and the new GitHub issue template asks reporters to
+  attach it.
+
 ### Delivery discipline tune-ups
 
 - Leaked planning prose ("当前编译错误…解决方案…") is intercepted before it

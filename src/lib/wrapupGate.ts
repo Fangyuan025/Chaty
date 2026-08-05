@@ -42,6 +42,10 @@ export interface WrapupState {
   /** A macOS-app delivery (SwiftUI @main / electron entry written this turn)
    *  with no packaged .app bundle anywhere in the workspace. */
   macAppMissingBundle?: boolean;
+  /** The .app was packaged BEFORE the last app-source edit — the delivered
+   *  bundle is not the delivered code (minesweeper audit: `swift test`
+   *  refreshed debug, the release binary in the bundle stayed old). */
+  macAppStaleBundle?: boolean;
   /** App-scale delivery whose functions were never EXECUTED: zero test runs,
    *  zero real invocations, zero browser walkthroughs. Compiling and
    *  launching is the entry ticket, not the bar (owner spec, all stacks). */
@@ -205,6 +209,13 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
       zh
         ? `- 编译通过/能启动只是及格线:这次交付还没有任何一条基本功能被真正执行过——没有跑测试,没有用真实输入实跑程序,也没有浏览器走查。逐条执行核心功能并留证:核心逻辑测试(swift test / pytest / cargo test / npm test)、CLI 真实输入实跑、curl 探每个接口、或浏览器点一遍每个功能;方法参考 use_skill {"name":"debug-playbook"}。全部跑通再交付,答复里写明每条功能各自的验证方式。`
         : `- Compiling and launching is the entry ticket, not the bar: not one basic function of this delivery has actually been EXECUTED — no test run, no real-input invocation, no browser walkthrough. Exercise each core function and keep the proof: core-logic tests (swift test / pytest / cargo test / npm test), real CLI runs, curl on every endpoint, or a browser click-through of every feature; see use_skill {"name":"debug-playbook"}. Deliver only when they all pass, and name each function's proof in your answer.`,
+    );
+  }
+  if (st.macAppStaleBundle) {
+    notes.push(
+      zh
+        ? `- 打包的 .app 早于你最后的源码改动——工作区里的应用不包含你最新的修改,之前的启动验证验的是旧版本。现在:重新构建(注意 swift test 只刷新 debug 产物,release 包需要 swift build -c release)→ 重新打包 .app → 重新启动确认 LAUNCH OK,然后再交付。`
+        : `- The packaged .app predates your last source edits — the bundle in the workspace does not contain your latest changes, and the earlier launch check verified the OLD version. Now: rebuild (note swift test only refreshes DEBUG products; a release bundle needs swift build -c release) → re-package the .app → re-launch for LAUNCH OK → then deliver.`,
     );
   }
   // macOS-app deliverable: the bar is a packaged .app that launches, not

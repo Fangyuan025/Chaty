@@ -105,7 +105,13 @@ function gradeCompile(ws: string): { compiles: boolean; errors: string[]; how: s
       "-project", xcodeproj, "-alltargets", "-configuration", "Debug",
       "build", "CODE_SIGNING_ALLOWED=NO",
     ]);
-    return { compiles: r.code === 0 && r.out.includes("BUILD SUCCEEDED"), errors: errLines(r.out), how: "xcodebuild" };
+    // A hand-rolled unreadable husk must not mask a working SwiftPM package
+    // beside it (wave 9: the model pivoted to SwiftPM mid-turn but left the
+    // broken .xcodeproj behind) — fall through and grade what really builds.
+    const unreadableHusk = /Unable to read project/.test(r.out) && packageDir !== undefined;
+    if (!unreadableHusk) {
+      return { compiles: r.code === 0 && r.out.includes("BUILD SUCCEEDED"), errors: errLines(r.out), how: "xcodebuild" };
+    }
   }
   if (packageDir && existsSync(path.join(packageDir, "Sources"))) {
     const r = run("swift", ["build", "--package-path", packageDir]);

@@ -837,6 +837,16 @@ export const T = {
     en: "Low VRAM — GPU offload reduced to {a}/{b} layers",
   },
   oomCpu: { zh: "显存不足，已回退到 CPU 运行", en: "Low VRAM — fell back to CPU" },
+  errorLog: { zh: "错误日志", en: "Error log" },
+  errorLogHint: {
+    zh: "应用异常会自动记录到 chaty-error.log。提 issue 时请附上这个文件，能大幅加快定位。",
+    en: "App errors are recorded to chaty-error.log automatically. Please attach it when filing an issue — it speeds up diagnosis a lot.",
+  },
+  errorLogOpen: { zh: "打开错误日志", en: "Open error log" },
+  gpuCrashCpu: {
+    zh: "上次加载模型时 GPU 驱动导致程序崩溃，本次已改用 CPU 运行（速度较慢但稳定）。更新显卡驱动后可尝试恢复 GPU。",
+    en: "The GPU driver crashed the app during the last model load — running on CPU this time (slower but stable). Update your GPU driver to try GPU again.",
+  },
   ctxClamped: {
     zh: "上下文已按内存自动调整为 {n}（模型权重 + KV 缓存需放入统一内存）",
     en: "Context auto-fitted to {n} (weights + KV cache must fit in unified memory)",

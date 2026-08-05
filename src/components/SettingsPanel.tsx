@@ -13,6 +13,7 @@ import {
   ragStatus,
   ragClearAll,
   openModelsDir,
+  openErrorLog,
   openExternal,
   synthesize,
   type UpdateInfo,
@@ -477,6 +478,13 @@ export function SettingsPanel({
           <div className="settings-pane-body">
           {cat === "general" && (
             <>
+              <SetRow label={t("errorLog")} hint={t("errorLogHint")}>
+                <div className="lang-switch">
+                  <button type="button" onClick={() => { void openErrorLog().catch(() => {}); }}>
+                    {t("errorLogOpen")}
+                  </button>
+                </div>
+              </SetRow>
               <SetRow label={t("language")}>
                 <div className="lang-switch">
                   <button type="button" className={lang === "zh" ? "active" : ""} onClick={() => setLang("zh")}>中文</button>

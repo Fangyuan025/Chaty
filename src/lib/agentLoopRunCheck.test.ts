@@ -214,6 +214,77 @@ describe("run-check through the real loop", () => {
     expect(injects.filter((i) => i.includes("Second reminder"))).toHaveLength(1);
   });
 
+  it("identical read_file repeats → soft-locked act-instead notes, turn survives", async () => {
+    const rd = call("read_file", { path: "kept.py" });
+    const { injects, final } = await runRounds([
+      call("write_file", { path: "kept.py", content: "print(1)" }),
+      rd,
+      rd,
+      rd,
+      rd,
+      call("bash", { command: "python3 kept.py" }),
+      "Acted and done.",
+    ]);
+    expect(injects.filter((i) => i.includes("reading again reveals nothing new"))).toHaveLength(2);
+    expect(final).toContain("Acted and done");
+  });
+
+  it("hand-writing project.pbxproj → one scaffold steer to SwiftPM", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "X.xcodeproj/project.pbxproj", content: "// !$*UTF8*$!\n{}" }),
+      call("write_file", { path: "X.xcodeproj/project.pbxproj", content: "// !$*UTF8*$!\n{ objects = {}; }" }),
+      "Done.",
+    ]);
+    expect(injects.filter((i) => i.includes("[scaffold]"))).toHaveLength(1);
+  });
+
+  it("minesweeper shape: edit after release build, package+launch old binary → stale warning, ledger stays dirty", async () => {
+    const swiftApp = "import SwiftUI\n@main\nstruct M: App { var body: some Scene { WindowGroup { Text(\"x\") } } }";
+    const { injects } = await runRounds([
+      call("write_file", { path: "Sources/M/App.swift", content: swiftApp }),
+      call("write_file", { path: "Sources/M/GameLogic.swift", content: BIG_PY }),
+      call("bash", { command: "swift build -c release" }),
+      call("bash", { command: 'mkdir -p M.app/Contents/MacOS && cp .build/release/M M.app/Contents/MacOS/' }),
+      call("edit_file", { path: "Sources/M/GameLogic.swift", old_string: "print(0)", new_string: "print(9)" }),
+      call("bash", { command: "swift test" }),
+      call("bash", { command: 'cp .build/release/M M.app/Contents/MacOS/ && ./M.app/Contents/MacOS/M' }),
+      "All done, LAUNCH OK.",
+      "Final.",
+      "Final final.",
+    ]);
+    expect(injects.some((i) => i.includes("[stale artifact]"))).toBe(true);
+    expect(injects.some((i) => i.includes("predates your last source edits"))).toBe(true);
+  });
+
+  it("edit then rebuild then repackage → fresh, silent", async () => {
+    const swiftApp = "import SwiftUI\n@main\nstruct M: App { var body: some Scene { WindowGroup { Text(\"x\") } } }";
+    const { injects } = await runRounds([
+      call("write_file", { path: "Sources/M/App.swift", content: swiftApp }),
+      call("bash", { command: "swift build -c release" }),
+      call("edit_file", { path: "Sources/M/App.swift", old_string: "x", new_string: "y" }),
+      call("bash", { command: "swift build -c release" }),
+      call("bash", { command: "swift test" }),
+      call("bash", { command: 'cp .build/release/M M.app/Contents/MacOS/ && ./M.app/Contents/MacOS/M' }),
+      "All done.",
+    ]);
+    expect(injects.some((i) => i.includes("[stale artifact]"))).toBe(false);
+    expect(injects.some((i) => i.includes("predates"))).toBe(false);
+  });
+
+  it("test-file edits don't stale the artifact", async () => {
+    const swiftApp = "import SwiftUI\n@main\nstruct M: App { var body: some Scene { WindowGroup { Text(\"x\") } } }";
+    const { injects } = await runRounds([
+      call("write_file", { path: "Sources/M/App.swift", content: swiftApp }),
+      call("bash", { command: "swift build -c release" }),
+      call("bash", { command: 'mkdir -p M.app/Contents/MacOS && cp .build/release/M M.app/Contents/MacOS/' }),
+      call("write_file", { path: "Tests/MTests/CoreTests.swift", content: BIG_PY }),
+      call("bash", { command: "swift test" }),
+      call("bash", { command: './M.app/Contents/MacOS/M' }),
+      "All done.",
+    ]);
+    expect(injects.some((i) => i.includes("[stale artifact]"))).toBe(false);
+  });
+
   it("app-scale build green but zero executed functions → functional bar nudge, twice max", async () => {
     const { injects } = await runRounds([
       call("write_file", { path: "a.py", content: BIG_PY }),
@@ -290,6 +361,23 @@ describe("run-check through the real loop", () => {
       "Final final.",
     ]);
     expect(injects.some((i) => i.includes("FAILED") && i.includes("until it passes"))).toBe(true);
+  });
+
+  it("failed bash repeated 4x → soft-locked (not paused), turn survives to fix and finish", async () => {
+    const fb = call("bash", { command: "swift build # fail" });
+    const { injects, final } = await runRounds([
+      call("write_file", { path: "a.swift", content: BIG_PY }),
+      fb,
+      fb,
+      fb,
+      fb,
+      call("edit_file", { path: "a.swift", old_string: "print(0)", new_string: "print(9)" }),
+      call("bash", { command: "swift build" }),
+      call("bash", { command: "swift test" }),
+      "Fixed and done.",
+    ]);
+    expect(injects.filter((i) => i.includes("Command LOCKED"))).toHaveLength(2);
+    expect(final).toContain("Fixed and done");
   });
 
   it("re-sending a failed build verbatim → code-fix advice, not args advice", async () => {

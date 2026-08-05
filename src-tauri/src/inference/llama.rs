@@ -33,6 +33,70 @@ use tauri::ipc::Channel;
 
 use super::{ChatMessage, GenParams, GenRequest, GenStats, InferenceBackend, ModelInfo, Role, StreamEvent};
 
+// ── GPU crash guard (issue #5) ──────────────────────────────────────────────
+// A broken Vulkan driver aborts the whole process DURING model load — no
+// Result to catch, the window just vanishes. The guard turns that one-shot
+// death into a persistent CPU fallback: an `inflight` marker is written just
+// before the load and removed when load() returns (Ok or Err — a clean error
+// is not a crash); if the marker is still there at the NEXT startup, the
+// previous load killed the process, so GPU offload gets blocked for good
+// (GGML_VK_VISIBLE_DEVICES="" → the Vulkan backend registers zero devices)
+// and the UI is told to say so.
+
+const GPU_INFLIGHT: &str = "llama-load.inflight";
+const GPU_BLOCKED: &str = "llama-gpu-blocked";
+
+use crate::errlog::chaty_data_dir;
+
+/// Pure state machine over a base dir (testable): promote a stale inflight
+/// marker to the persistent block, and report whether GPU must stay off.
+fn gpu_guard_check(base: &Path) -> bool {
+    let inflight = base.join(GPU_INFLIGHT);
+    let blocked = base.join(GPU_BLOCKED);
+    if inflight.exists() {
+        let _ = std::fs::write(&blocked, "previous model load crashed the process\n");
+        let _ = std::fs::remove_file(&inflight);
+        crate::errlog::append_error(
+            "gpu-crash-guard",
+            "previous model load crashed the process (likely GPU driver abort, issue #5 class); GPU offload disabled — running CPU-only from now on",
+        );
+    }
+    blocked.exists()
+}
+
+/// Call once at process start, BEFORE any llama backend init. Returns true
+/// when GPU offload was blocked because a previous load crashed the process.
+pub fn apply_gpu_crash_guard() -> bool {
+    let blocked = gpu_guard_check(&chaty_data_dir());
+    if blocked {
+        // Vulkan backend: zero visible devices = never touches the driver's
+        // allocation/pipeline paths again. No-op for Metal/CPU builds.
+        std::env::set_var("GGML_VK_VISIBLE_DEVICES", "");
+    }
+    blocked
+}
+
+/// Whether the guard is currently blocking GPU offload (for the load reply).
+pub fn gpu_crash_blocked() -> bool {
+    chaty_data_dir().join(GPU_BLOCKED).exists()
+}
+
+/// Removes the marker when load() returns — normally OR with an error. Only
+/// a process death leaves it behind, which is exactly the signal we want.
+struct LoadGuard(std::path::PathBuf);
+impl LoadGuard {
+    fn arm() -> Self {
+        let p = chaty_data_dir().join(GPU_INFLIGHT);
+        let _ = std::fs::write(&p, "loading\n");
+        Self(p)
+    }
+}
+impl Drop for LoadGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Process-wide llama.cpp backend. It may only be initialized once.
 static LLAMA_BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
 static INIT_LOCK: Mutex<()> = Mutex::new(());
@@ -244,6 +308,10 @@ impl LlamaEngine {
     /// `gpu_pref`: `None`/negative = auto‑tune by VRAM, `Some(0)` = force CPU,
     /// `Some(n>0)` = offload exactly `n` layers.
     pub fn load(path: &str, gpu_pref: Option<i32>, n_ctx_pref: Option<u32>) -> Result<(Self, ModelInfo)> {
+        // Armed for the whole load: if the process dies in here (Vulkan
+        // driver abort — issue #5), the marker survives and the next start
+        // falls back to CPU instead of dying again.
+        let _crash_guard = LoadGuard::arm();
         let backend = llama_backend()?;
         if !Path::new(path).exists() {
             bail!("model file not found: {path}");
@@ -387,7 +455,11 @@ impl LlamaEngine {
         if let Some(err) = &mtmd_err {
             eprintln!("mmproj load failed (vision disabled): {err}");
         }
-        let warning = if oom_fallback {
+        let warning = if gpu_crash_blocked() {
+            // A previous load crashed the process (issue #5: broken Vulkan
+            // driver aborts mid-load) — this run is CPU-only by the guard.
+            Some("gpu-crash-cpu".to_string())
+        } else if oom_fallback {
             Some("gpu-oom".to_string())
         } else if mtmd_err.is_some() {
             Some("mmproj-failed".to_string())
@@ -1805,6 +1877,33 @@ fn build_sampler(params: &GenParams) -> LlamaSampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The crash-guard state machine (issue #5): a leftover inflight marker
+    /// means the previous load killed the process → promote it to the
+    /// persistent block; a clean dir stays unblocked; the block persists.
+    #[test]
+    fn gpu_crash_guard_state_machine() {
+        let base = std::env::temp_dir().join(format!("chaty-gpu-guard-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        assert!(!gpu_guard_check(&base), "clean dir must not block");
+        std::fs::write(base.join(GPU_INFLIGHT), "loading").unwrap();
+        assert!(gpu_guard_check(&base), "stale inflight must block");
+        assert!(!base.join(GPU_INFLIGHT).exists(), "inflight must be consumed");
+        assert!(base.join(GPU_BLOCKED).exists(), "block must persist");
+        assert!(gpu_guard_check(&base), "block persists across restarts");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// LoadGuard removes its marker on drop — Ok AND Err paths both clean
+    /// up; only a process death leaves it behind.
+    #[test]
+    fn load_guard_cleans_up_on_drop() {
+        let g = LoadGuard::arm();
+        let p = g.0.clone();
+        assert!(p.exists());
+        drop(g);
+        assert!(!p.exists());
+    }
 
     #[test]
     fn strips_a_single_channel_span() {

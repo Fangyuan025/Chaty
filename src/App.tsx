@@ -46,6 +46,7 @@ import {
   listConversations,
   listModels,
   loadModel,
+  logAppError,
   ejectModel,
   deleteModelFile,
   openExternal,
@@ -332,6 +333,21 @@ export default function App() {
     });
   }, []);
   const [settings, setSettings] = useState<GenSettings>(loadSettings);
+
+  // Uncaught front-end errors land in the user-attachable error log
+  // (Settings → 打开错误日志) so issue reports can carry real evidence.
+  useEffect(() => {
+    const onErr = (e: ErrorEvent) =>
+      void logAppError("uncaught", `${e.message}\n${e.filename}:${e.lineno}:${e.colno}\n${(e.error as Error)?.stack ?? ""}`).catch(() => {});
+    const onRej = (e: PromiseRejectionEvent) =>
+      void logAppError("unhandledrejection", String((e.reason as Error)?.stack ?? e.reason)).catch(() => {});
+    window.addEventListener("error", onErr);
+    window.addEventListener("unhandledrejection", onRej);
+    return () => {
+      window.removeEventListener("error", onErr);
+      window.removeEventListener("unhandledrejection", onRej);
+    };
+  }, []);
   const [showSettings, setShowSettings] = useState(false);
   const [showCmdk, setShowCmdk] = useState(false);
   const [canvasOpen, setCanvasOpen] = useState(false);
@@ -1199,6 +1215,8 @@ export default function App() {
       showNotice("warn", t("mmprojFailed"));
     } else if (info.warning === "ctx-clamped" && info.nCtx) {
       showNotice("warn", t("ctxClamped", { n: info.nCtx }));
+    } else if (info.warning === "gpu-crash-cpu") {
+      showNotice("warn", t("gpuCrashCpu"));
     }
   }
 
