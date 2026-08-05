@@ -96,6 +96,16 @@ built the incremental way, on every stack.
 - **A pipe can't launder a failed build anymore.** `swift build | tail`
   exits 0 through the pipe; an exit 0 whose output carries compiler-failure
   signatures no longer counts as verification.
+- **The whole toolchain class is whitelisted, not one victim at a time.**
+  Cargo's registry, rustup, Go modules and build cache, Gradle/Maven, Dart
+  pub, user gems, bun/pnpm/yarn/deno stores, pip/uv/poetry caches,
+  Playwright/Puppeteer browser downloads, node-gyp, CocoaPods, composer —
+  writes to these tool homes and caches are now allowed inside the agent
+  sandbox (live-verified: cold-crate `cargo build` and
+  `gem install --user-install` both worked end to end). Raw `xcodebuild`
+  additionally gets script-phase sandboxing and Swift macro flags threaded
+  through automatically. The hard edge is unchanged: Documents, dotfiles,
+  `~/.ssh`, system paths, and other apps' data stay off limits.
 
 ## v2.0.3 — Cards on the table (2026-08-02)
 

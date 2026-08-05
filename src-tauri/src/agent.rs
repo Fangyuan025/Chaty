@@ -2855,12 +2855,39 @@ fn seatbelt_profile(root: &Path) -> String {
     let build_caches = if home.is_empty() {
         String::new()
     } else {
-        format!(
-            " (subpath \"{home}/Library/Developer\") \
-             (subpath \"{home}/Library/Caches/com.apple.dt.Xcode\") \
-             (subpath \"{home}/Library/Caches/org.swift.swiftpm\") \
-             (subpath \"{home}/Library/org.swift.swiftpm\")"
-        )
+        // The full class, not one victim at a time (calculator/minesweeper
+        // audits): every mainstream toolchain keeps registries/caches under
+        // $HOME, and a denied write there reads as "the sandbox forbids this
+        // language" to a model. Tool HOMES (registries, toolchains, stores)
+        // plus per-tool cache dirs — nothing here holds user documents or
+        // credentials; the hard edge (Documents, dotfiles, ~/.ssh, system
+        // paths, other apps' data) stays denied.
+        let tool_homes = [
+            "Library/Developer",          // Xcode DerivedData/logs
+            "Library/org.swift.swiftpm",  // SwiftPM
+            "Library/pnpm",               // pnpm store
+            ".cargo", ".rustup",          // Rust registry + toolchains
+            "go",                         // Go module cache (~/go/pkg/mod)
+            ".gradle", ".m2",             // JVM builds
+            ".pub-cache",                 // Dart/Flutter
+            ".gem",                       // Ruby user gems
+            ".bun", ".cocoapods", ".composer",
+            ".npm",                       // npm (env-redirected too; belt+braces)
+            ".cache",                     // Linux-convention caches (uv, pre-commit, huggingface…)
+        ];
+        let tool_caches = [
+            "com.apple.dt.Xcode", "org.swift.swiftpm", "pip", "go-build",
+            "Yarn", "deno", "uv", "pypoetry", "composer", "CocoaPods",
+            "ms-playwright", "puppeteer", "node-gyp", "pnpm",
+        ];
+        let mut s = String::new();
+        for d in tool_homes {
+            s.push_str(&format!(" (subpath \"{home}/{d}\")"));
+        }
+        for d in tool_caches {
+            s.push_str(&format!(" (subpath \"{home}/Library/Caches/{d}\")"));
+        }
+        s
     };
     format!(
         "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* \
@@ -3239,7 +3266,16 @@ pub(crate) fn defuse_nested_sandbox(command: &str) -> String {
     let spm = regex::Regex::new(r"\bswift\s+(build|run|test|package)\b").unwrap();
     let out = spm.replace_all(command, "swift $1 --disable-sandbox").into_owned();
     let swiftc = regex::Regex::new(r"\bswiftc\s").unwrap();
-    swiftc.replace_all(&out, "swiftc -disable-sandbox ").into_owned()
+    let out = swiftc.replace_all(&out, "swiftc -disable-sandbox ").into_owned();
+    // xcodebuild: script phases run under Xcode's own sandbox (nested death),
+    // and Swift macro expansion needs the compiler flag threaded through.
+    // Skip when the command already sets either knob itself.
+    if out.contains("ENABLE_USER_SCRIPT_SANDBOXING") || out.contains("OTHER_SWIFT_FLAGS") {
+        return out;
+    }
+    let xcb = regex::Regex::new(r"\bxcodebuild\b").unwrap();
+    xcb.replace_all(&out, "xcodebuild ENABLE_USER_SCRIPT_SANDBOXING=NO OTHER_SWIFT_FLAGS=-disable-sandbox")
+        .into_owned()
 }
 
 #[cfg(target_os = "macos")]
@@ -4630,6 +4666,7 @@ mod tests {
     /// Raw `swift build` / `swiftc` in agent bash must get the nested-sandbox
     /// defusal automatically — models don't know the flag, conclude "the
     /// sandbox forbids Swift", and defect to another stack.
+    #[cfg(target_os = "macos")]
     #[test]
     fn swift_commands_get_sandbox_defusal() {
         assert_eq!(
@@ -4653,6 +4690,35 @@ mod tests {
         assert_eq!(defuse_nested_sandbox("swift --version"), "swift --version");
         let explicit = "swift build --disable-sandbox";
         assert_eq!(defuse_nested_sandbox(explicit), explicit);
+        // xcodebuild gets both knobs — unless the command sets its own.
+        assert_eq!(
+            defuse_nested_sandbox("xcodebuild -project X.xcodeproj build"),
+            "xcodebuild ENABLE_USER_SCRIPT_SANDBOXING=NO OTHER_SWIFT_FLAGS=-disable-sandbox -project X.xcodeproj build"
+        );
+        let own = "xcodebuild build OTHER_SWIFT_FLAGS=-Dfoo";
+        assert_eq!(defuse_nested_sandbox(own), own);
+    }
+
+    /// The seatbelt must whitelist the whole dev-toolchain class — every
+    /// mainstream language keeps registries/caches under $HOME, and a denied
+    /// write there reads as "the sandbox forbids this language" to a model
+    /// (live probes: cargo new-crate fetch and `gem install --user-install`
+    /// both died before this).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_whitelists_toolchain_homes() {
+        let profile = seatbelt_profile(Path::new("/tmp/ws"));
+        for needle in [
+            "/.cargo\"", "/.rustup\"", "/go\"", "/.gradle\"", "/.m2\"",
+            "/.gem\"", "/.pub-cache\"", "/.cache\"",
+            "Library/Caches/go-build", "Library/Caches/pip",
+            "Library/Caches/ms-playwright", "Library/pnpm",
+        ] {
+            assert!(profile.contains(needle), "missing {needle} in profile:\n{profile}");
+        }
+        // The hard edge stays: no blanket HOME, no Documents, no ssh.
+        assert!(!profile.contains("/Documents"));
+        assert!(!profile.contains("/.ssh"));
     }
 
     /// Agent shells must point npm/electron caches at writable temp dirs —
