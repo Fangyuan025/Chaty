@@ -478,13 +478,6 @@ export function SettingsPanel({
           <div className="settings-pane-body">
           {cat === "general" && (
             <>
-              <SetRow label={t("errorLog")} hint={t("errorLogHint")}>
-                <div className="lang-switch">
-                  <button type="button" onClick={() => { void openErrorLog().catch(() => {}); }}>
-                    {t("errorLogOpen")}
-                  </button>
-                </div>
-              </SetRow>
               <SetRow label={t("language")}>
                 <div className="lang-switch">
                   <button type="button" className={lang === "zh" ? "active" : ""} onClick={() => setLang("zh")}>中文</button>
@@ -539,6 +532,13 @@ export function SettingsPanel({
               </SetRow>
               <SetRow label={t("setReduceMotion")} hint={t("setReduceMotionHint")}>
                 <Switch on={value.reduceMotion} onToggle={() => set("reduceMotion", !value.reduceMotion)} />
+              </SetRow>
+              <SetRow label={t("errorLog")} hint={t("errorLogHint")}>
+                <div className="lang-switch">
+                  <button type="button" onClick={() => { void openErrorLog().catch(() => {}); }}>
+                    {t("errorLogOpen")}
+                  </button>
+                </div>
               </SetRow>
             </>
           )}

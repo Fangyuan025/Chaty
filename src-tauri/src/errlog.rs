@@ -72,6 +72,48 @@ pub fn append_error(kind: &str, detail: &str) {
     append_error_to(&error_log_path(), kind, detail);
 }
 
+/// Names of crash reports for OUR app in `dir` modified after `newer_than`
+/// (pure + testable). macOS writes `Chaty-<date>.ips` there when a native
+/// crash (Metal, the MLX sidecar, WebKit) kills the process before any
+/// in-process hook can run.
+fn crash_reports_in(dir: &std::path::Path, newer_than: Option<std::time::SystemTime>) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<String> = rd
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            (name.starts_with("chaty") && (name.ends_with(".ips") || name.ends_with(".crash")))
+                && match (newer_than, e.metadata().and_then(|m| m.modified())) {
+                    (Some(mark), Ok(mtime)) => mtime > mark,
+                    (None, _) => true,
+                    (_, Err(_)) => false,
+                }
+        })
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+/// macOS startup post-mortem: surface new crash reports into the error log
+/// so an issue report can carry the real stack. Watermarked so each report
+/// is mentioned once.
+#[cfg(target_os = "macos")]
+pub fn sweep_native_crash_reports() {
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let dir = std::path::PathBuf::from(home).join("Library/Logs/DiagnosticReports");
+    let mark = chaty_data_dir().join("logs").join("crash-sweep.mark");
+    let last = std::fs::metadata(&mark).and_then(|m| m.modified()).ok();
+    for name in crash_reports_in(&dir, last) {
+        append_error(
+            "native-crash",
+            &format!("macOS 崩溃报告(提 issue 请一并附上): ~/Library/Logs/DiagnosticReports/{name}"),
+        );
+    }
+    let _ = std::fs::create_dir_all(mark.parent().unwrap());
+    let _ = std::fs::write(&mark, "swept\n");
+}
+
 /// Route Rust panics into the log (the default hook still prints to stderr).
 pub fn install_panic_hook() {
     let default = std::panic::take_hook();
@@ -102,6 +144,24 @@ pub fn open_error_log() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The crash-report scan picks OUR reports, respects the watermark, and
+    /// ignores other apps' files.
+    #[test]
+    fn crash_report_scan_filters_and_watermarks() {
+        let dir = std::env::temp_dir().join(format!("chaty-ips-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Chaty-2026-08-05-101010.ips"), "{}").unwrap();
+        std::fs::write(dir.join("chaty-2026-08-05-090909.crash"), "x").unwrap();
+        std::fs::write(dir.join("Safari-2026-08-05.ips"), "{}").unwrap();
+        let all = crash_reports_in(&dir, None);
+        assert_eq!(all.len(), 2, "ours only: {all:?}");
+        assert!(all.iter().all(|n| n.to_lowercase().starts_with("chaty")));
+        // Watermark in the future → nothing new.
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        assert!(crash_reports_in(&dir, Some(future)).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// Entries append with a HUMAN-readable timestamp + separator, rotation
     /// keeps the file bounded — and the test writes ONLY to its own temp

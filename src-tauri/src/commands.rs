@@ -223,6 +223,7 @@ pub async fn load_model(
         });
     }
 
+    let path_for_log = path.clone();
     let result = if is_mlx {
         let chan = on_progress.clone();
         let gate = gate.clone();
@@ -246,8 +247,13 @@ pub async fn load_model(
     // Saturate the mark so a straggling poller tick can't undercut "ready".
     gate.saturate();
     let (backend, mut info) = result
-        .map_err(|e| format!("加载任务异常 (load task panicked): {e}"))?
-        .map_err(|e| format!("{e:#}"))?;
+        .map_err(|e| format!("加载任务异常 (load task panicked): {e}"))
+        .and_then(|r| r.map_err(|e| format!("{e:#}")))
+        .inspect_err(|e| {
+            // Load failures are the #1 thing users report — put the full
+            // error (with the model path) in the attachable log, every OS.
+            crate::errlog::append_error("model-load", &format!("path: {path_for_log}\n{e}"));
+        })?;
     let _ = on_progress.send(LoadProgress { phase: "ready", frac: 1.0 });
 
     info.backend = backend.name().to_string();

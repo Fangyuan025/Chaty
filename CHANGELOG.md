@@ -59,10 +59,13 @@ each product rebuilt, launched, and function-tested by hand.
   (Vulkan driver abort) is detected on the next start; GPU offload is
   blocked persistently, the load reruns on CPU, and a notice explains what
   happened. One crash maximum, then it just works.
-- **Automatic error log.** Panics, front-end errors, and crash post-mortems
-  are recorded to `logs/chaty-error.log` (size-capped): open it from
-  Settings → General, and the new GitHub issue template asks reporters to
-  attach it.
+- **Automatic error log.** Panics, front-end errors, model-load failures
+  (GGUF and MLX sidecar, every OS), and crash post-mortems are recorded to
+  `logs/chaty-error.log` (size-capped): open it from Settings → General,
+  and the new GitHub issue template asks reporters to attach it. On macOS,
+  a native crash that kills the process before any hook can run (Metal,
+  sidecar, WebKit) is picked up on the next start from the system's
+  DiagnosticReports and pointed to from the log.
 
 ### Delivery discipline tune-ups
 

@@ -71,6 +71,10 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 pub fn run() {
     // Panics land in the user-attachable error log from the first instant.
     crate::errlog::install_panic_hook();
+    // Native crashes kill the process before any hook — on macOS, surface
+    // the OS crash reports left behind by the previous run.
+    #[cfg(target_os = "macos")]
+    crate::errlog::sweep_native_crash_reports();
     // GPU crash guard (issue #5): if the previous model load took the whole
     // process down (broken Vulkan driver aborts mid-load), block GPU offload
     // for this run BEFORE any llama/ggml init touches the driver.
