@@ -764,6 +764,7 @@ dependencies = [
  "bzip2",
  "calamine",
  "chaty-gpu-backend",
+ "chrono",
  "cpal",
  "dom_smoothie",
  "encoding_rs",

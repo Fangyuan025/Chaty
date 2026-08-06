@@ -66,34 +66,63 @@ fn gpu_guard_check(base: &Path) -> bool {
 
 /// Call once at process start, BEFORE any llama backend init. Returns true
 /// when GPU offload was blocked because a previous load crashed the process.
+/// Windows-only in effect: the crash class is the Vulkan driver, macOS runs
+/// Metal (which ignores the env), and an active guard off-Windows can only
+/// produce FALSE "gpu crashed" warnings — a cargo-test on the dev Mac once
+/// raced the real app into exactly that.
 pub fn apply_gpu_crash_guard() -> bool {
-    let blocked = gpu_guard_check(&chaty_data_dir());
-    if blocked {
-        // Vulkan backend: zero visible devices = never touches the driver's
-        // allocation/pipeline paths again. No-op for Metal/CPU builds.
-        std::env::set_var("GGML_VK_VISIBLE_DEVICES", "");
+    #[cfg(windows)]
+    {
+        let blocked = gpu_guard_check(&chaty_data_dir());
+        if blocked {
+            // Vulkan backend: zero visible devices = never touches the
+            // driver's allocation/pipeline paths again.
+            std::env::set_var("GGML_VK_VISIBLE_DEVICES", "");
+        }
+        return blocked;
     }
-    blocked
+    #[cfg(not(windows))]
+    {
+        // Hygiene only: a stale inflight marker (crashed dev build, killed
+        // test run) is removed without promoting it to a block.
+        let _ = std::fs::remove_file(chaty_data_dir().join(GPU_INFLIGHT));
+        false
+    }
 }
 
 /// Whether the guard is currently blocking GPU offload (for the load reply).
 pub fn gpu_crash_blocked() -> bool {
-    chaty_data_dir().join(GPU_BLOCKED).exists()
+    #[cfg(windows)]
+    {
+        return chaty_data_dir().join(GPU_BLOCKED).exists();
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 /// Removes the marker when load() returns — normally OR with an error. Only
 /// a process death leaves it behind, which is exactly the signal we want.
-struct LoadGuard(std::path::PathBuf);
+/// Armed on Windows only (see apply_gpu_crash_guard).
+struct LoadGuard(Option<std::path::PathBuf>);
 impl LoadGuard {
-    fn arm() -> Self {
-        let p = chaty_data_dir().join(GPU_INFLIGHT);
+    fn arm_at(base: &Path) -> Self {
+        let p = base.join(GPU_INFLIGHT);
         let _ = std::fs::write(&p, "loading\n");
-        Self(p)
+        Self(Some(p))
+    }
+    fn arm() -> Self {
+        if cfg!(windows) {
+            Self::arm_at(&chaty_data_dir())
+        } else {
+            Self(None)
+        }
     }
 }
 impl Drop for LoadGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        if let Some(p) = &self.0 {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }
 
@@ -1895,14 +1924,19 @@ mod tests {
     }
 
     /// LoadGuard removes its marker on drop — Ok AND Err paths both clean
-    /// up; only a process death leaves it behind.
+    /// up; only a process death leaves it behind. Tested against a TEMP dir:
+    /// the first version armed the REAL app-data dir and raced the running
+    /// app into a false gpu-blocked promotion on the dev machine.
     #[test]
     fn load_guard_cleans_up_on_drop() {
-        let g = LoadGuard::arm();
-        let p = g.0.clone();
+        let base = std::env::temp_dir().join(format!("chaty-loadguard-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let g = LoadGuard::arm_at(&base);
+        let p = g.0.clone().unwrap();
         assert!(p.exists());
         drop(g);
         assert!(!p.exists());
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

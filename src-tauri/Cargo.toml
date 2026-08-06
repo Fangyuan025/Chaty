@@ -48,6 +48,9 @@ anyhow = "1"
 llama-cpp-2 = { version = "0.1.150", features = ["sampler", "mtmd"] }
 chaty-gpu-backend = { path = "gpu-backend", optional = true }
 sysinfo = "0.32"
+# Human-readable local timestamps in the user-attachable error log (already
+# in the tree transitively — zero new weight).
+chrono = "0.4"
 encoding_rs = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
