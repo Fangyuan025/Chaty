@@ -31,6 +31,14 @@
   Refetch got shot-precise (`--scene 3 --shot 2`), and a refetched shot
   remembers the query that chose it, so a hand-picked replacement never
   re-flags against the storyboard's original words.
+- **Pipeline v3 (upstream merge): rhythm and rigor.** Cuts snap to the
+  music's beat grid (measured: 10/10 cuts within 15ms) — BGM can now be
+  style-searched from CC catalogs ("trap", "lofi chill"; ccMixter/Jamendo,
+  rhythm-screened so beatless tracks are skipped) with the classic mood
+  table as default, plus 抖音-signature `spedup`/`slowed` vibes. And a
+  verify-first workflow: every concrete claim in the script must be checked
+  against live sources before writing, with URLs recorded in the storyboard
+  and surfaced in the report for the user to audit.
 - **The off-topic audit fires at fetch time, not just delivery time.**
   `assets.py` prints the same OFF-TOPIC flags the moment assets land —
   before a compose cycle is spent on a wrong pick — and the flags print
