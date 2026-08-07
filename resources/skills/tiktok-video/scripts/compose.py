@@ -79,6 +79,76 @@ def split_frames(frames, n):
     return [base + (1 if k < rem else 0) for k in range(n)]
 
 
+MIN_SHOT = 0.9          # seconds — no shot shorter than this after beat snapping
+MIN_PAD = 0.06          # a scene may end this soon after its VO when snapping back
+
+
+def plan_timeline(sb, timing, manifest, beats_info):
+    """Decide every scene duration and intra-scene shot split up front.
+
+    With a confident beat grid, scene boundaries move onto the nearest beat
+    (never eating into the voiceover: only the breathing pad flexes), and shot
+    cuts inside a scene snap to beats too — the 卡点 effect. Without a grid
+    this reproduces the natural pacing exactly.
+    """
+    fps = sb["fps"]
+    beats = []
+    period = None
+    if beats_info and sb.get("beat_sync", True) and beats_info.get("confidence", 0) >= 2:
+        beats = beats_info["beats"]
+        period = 60.0 / beats_info["bpm"]
+
+    specs = []
+    cum = 0.0
+    n_scenes = len(sb["scenes"])
+    for si in range(1, n_scenes + 1):
+        t = timing[si]
+        vo_trim = min(t["audio_dur"], t["vo_end"] + VO_TAIL)
+        pad = PAD_AFTER + (TAIL_EXTRA if si == n_scenes else 0)
+        natural_end = cum + vo_trim + pad
+        end = natural_end
+        if beats:
+            lo, hi = cum + vo_trim + MIN_PAD, natural_end + period
+            cands = [b for b in beats if lo <= b <= hi]
+            if cands:
+                end = min(cands, key=lambda b: abs(b - natural_end))
+        scene_dur = max(snap(end - cum, fps), snap(vo_trim + MIN_PAD, fps))
+        frames = round(scene_dur * fps)
+
+        n_shots = len(manifest[si])
+        if beats and n_shots > 1:
+            min_f = int(MIN_SHOT * fps)
+            bounds = []
+            prev = 0
+            for k in range(1, n_shots):
+                ideal_abs = cum + scene_dur * k / n_shots
+                lo_f = prev + min_f
+                hi_f = frames - (n_shots - k) * min_f
+                # only beats that keep every remaining shot >= MIN_SHOT qualify;
+                # snapping first and clamping after would land off-beat
+                cands = [round((b - cum) * fps) for b in beats
+                         if cum < b < cum + scene_dur
+                         and lo_f <= round((b - cum) * fps) <= hi_f]
+                ideal_f = round((ideal_abs - cum) * fps)
+                if cands:
+                    f = min(cands, key=lambda x: abs(x - ideal_f))
+                else:
+                    f = max(lo_f, min(ideal_f, hi_f))
+                bounds.append(f)
+                prev = f
+            edges = [0] + bounds + [frames]
+            fsplit = [edges[k + 1] - edges[k] for k in range(n_shots)]
+            if min(fsplit) < 2:  # degenerate (very short scene) — even split
+                fsplit = split_frames(frames, n_shots)
+        else:
+            fsplit = split_frames(frames, n_shots)
+
+        specs.append({"si": si, "scene_dur": scene_dur, "vo_trim": vo_trim,
+                      "fsplit": fsplit, "cut_at": cum})
+        cum += scene_dur
+    return specs, bool(beats)
+
+
 def shot_effects(scene, si, n):
     """Effect per shot: scene effect first (or alternating default), then cycle."""
     if scene["effect"] == "static":
@@ -89,21 +159,18 @@ def shot_effects(scene, si, n):
     return [EFFECT_CYCLE[(idx + k) % len(EFFECT_CYCLE)] for k in range(n)]
 
 
-def render_scene(sb, si, scene, timing, shots, paths, renderer, hook_png=None,
-                 sticky_png=None, badge_png=None):
+def render_scene(sb, si, scene, timing, shots, paths, renderer, scene_dur, fsplit,
+                 hook_png=None, sticky_png=None, badge_png=None):
     W, H = ASPECTS[sb["aspect"]]
     fps = sb["fps"]
-    vo_trim = min(timing["audio_dur"], timing["vo_end"] + VO_TAIL)
-    scene_dur = snap(vo_trim + PAD_AFTER + (TAIL_EXTRA if si == len(sb["scenes"]) else 0), fps)
     frames = round(scene_dur * fps)
     out = paths["work"] / f"scene_{si:02d}.mp4"
 
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
     fc = []
 
-    # ---- shot chain (multiple visuals per scene, hard cuts every ~3s) ----
+    # ---- shot chain (multiple visuals per scene, cuts on the beat grid) ----
     n = len(shots)
-    fsplit = split_frames(frames, n)
     effects = shot_effects(scene, si, n)
     for k, (shot, fk, eff) in enumerate(zip(shots, fsplit, effects)):
         media = paths["media"] / shot["file"]
@@ -178,7 +245,7 @@ def render_scene(sb, si, scene, timing, shots, paths, renderer, hook_png=None,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
             "-pix_fmt", "yuv420p", out]
     run(cmd)
-    return out, scene_dur, vo_trim
+    return out
 
 
 def build_voiceover(paths, scene_specs):
@@ -281,6 +348,11 @@ def main(project_dir):
     for m in json.loads(paths["manifest"].read_text()):
         manifest[m["i"]] = m.get("shots") or [{k: v for k, v in m.items() if k != "i"}]
 
+    beats_info = None
+    beats_file = paths["root"] / "bgm_beats.json"
+    if beats_file.exists():
+        beats_info = json.loads(beats_file.read_text())
+
     W, H = ASPECTS[sb["aspect"]]
     renderer = CaptionRenderer(W, H, sb["lang"], highlight=sb["caption"]["highlight"],
                                uppercase=sb["caption"]["uppercase"])
@@ -297,10 +369,18 @@ def main(project_dir):
             sb["sticky_title"]["text"], sticky_png)
     badge_renderer = BadgeRenderer(W, H, sb["lang"], highlight=highlight)
 
-    scene_specs = []
     for si in range(1, len(sb["scenes"]) + 1):
         if si not in timing or si not in manifest:
             die(f"scene {si}: missing timing or asset — rerun earlier stages")
+    plan, synced = plan_timeline(sb, timing, manifest, beats_info)
+    if synced:
+        log(f"[compose] beat sync ON — {beats_info['bpm']} BPM grid from {beats_info.get('track','bgm')}")
+    elif beats_info:
+        log("[compose] beat grid confidence too low — natural pacing")
+
+    scene_specs = []
+    for spec in plan:
+        si = spec["si"]
         scene = sb["scenes"][si - 1]
         badge_png = None
         if scene.get("badge"):
@@ -308,22 +388,38 @@ def main(project_dir):
             badge_renderer.render_badge(scene["badge"], badge_png)
         log(f"[compose] scene {si}/{len(sb['scenes'])} "
             f"({len(manifest[si])} shots, {sb['caption_style']} captions)")
-        out, scene_dur, vo_trim = render_scene(
+        out = render_scene(
             sb, si, scene, timing[si], manifest[si], paths, renderer,
+            spec["scene_dur"], spec["fsplit"],
             hook_png=hook_png, sticky_png=sticky_png, badge_png=badge_png)
-        scene_specs.append({"file": timing[si]["file"], "scene_dur": scene_dur,
-                            "vo_trim": vo_trim, "mp4": out})
+        scene_specs.append({"file": timing[si]["file"], "scene_dur": spec["scene_dur"],
+                            "vo_trim": spec["vo_trim"], "mp4": out})
 
     concat_txt = paths["work"] / "concat.txt"
     concat_txt.write_text("".join(f"file '{s['mp4'].name}'\n" for s in scene_specs))
     run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0",
          "-i", concat_txt, "-c", "copy", paths["work"] / "video_full.mp4"])
 
+    # timeline of every visual cut, for the check stage's beat-sync report
+    cuts = []
+    cum = 0.0
+    for spec in plan:
+        acc = 0
+        for f in spec["fsplit"][:-1]:
+            acc += f
+            cuts.append(round(cum + acc / sb["fps"], 3))
+        cum += spec["scene_dur"]
+        if spec is not plan[-1]:
+            cuts.append(round(cum, 3))
+    (paths["work"] / "timeline.json").write_text(
+        json.dumps({"cuts": sorted(cuts), "beat_synced": synced}))
+
     log("[compose] assembling voiceover + bgm + sfx + loudness…")
     build_voiceover(paths, scene_specs)
     total = sum(s["scene_dur"] for s in scene_specs)
     final_mux(paths, sb, scene_specs)
-    log(f"[compose] final.mp4 done — {total:.1f}s. Now run scripts/check.py")
+    log(f"[compose] final.mp4 done — {total:.1f}s"
+        + (" (cuts on beat)" if synced else "") + ". Now run scripts/check.py")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,25 @@ import sys
 from common import die, ffprobe_json, load_storyboard, log, project_paths, run, title_audit
 
 
+def beat_sync_lines(paths):
+    """Objective 卡点 report: how far each visual cut lands from the BGM beat grid."""
+    tl_f = paths["work"] / "timeline.json"
+    beats_f = paths["root"] / "bgm_beats.json"
+    if not (tl_f.exists() and beats_f.exists()):
+        return []
+    tl = json.loads(tl_f.read_text())
+    beats = json.loads(beats_f.read_text()).get("beats", [])
+    if not tl.get("cuts") or not beats:
+        return []
+    if not tl.get("beat_synced"):
+        return ["[ ] beat sync was off for this compose (low grid confidence or disabled)"]
+    offs = [min(abs(c - b) for b in beats) for c in tl["cuts"]]
+    avg, worst = sum(offs) / len(offs), max(offs)
+    ok = avg <= 0.045
+    return [f"[{'x' if ok else '!'}] cuts land on the beat "
+            f"(avg {avg*1000:.0f}ms, worst {worst*1000:.0f}ms across {len(offs)} cuts)"]
+
+
 def fps_of(v):
     num, _, den = (v.get("avg_frame_rate") or "30/1").partition("/")
     try:
@@ -100,6 +119,7 @@ def main(project_dir):
         f"[{'x' if a else '!'}] has audio stream",
         f"[{'x' if lufs != '?' and abs(float(lufs) + 15) < 2.5 else '!'}] loudness near target",
         f"[{'x' if not title_flags else '!'}] asset titles match scene keywords",
+        *beat_sync_lines(paths),
         *[
             f'    [!] scene {i} shot {j}: "{t}" looks OFF-TOPIC for its keywords — refetch it:\n'
             f'        {sys.executable} {os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets.py")}'
@@ -110,6 +130,9 @@ def main(project_dir):
         "== attribution (paste into video description) ==",
         bgm_credit,
         *credits,
+        *(["", "== fact-check sources (script claims verified against) =="]
+          + [f"  - {s}" for s in sb.get("sources", [])] if sb.get("sources") else
+          ["", "[!] no fact-check sources recorded — verify script claims before publishing"]),
     ]
     report = "\n".join(lines)
     (paths["review"] / "report.txt").write_text(report)

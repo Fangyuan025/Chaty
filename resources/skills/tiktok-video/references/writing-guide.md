@@ -40,10 +40,25 @@ Total 30–60s. One idea per scene. Never explain — assert.
 - en authoritative/docu: `en-US-ChristopherNeural` +5%
 - en energetic/listicle: `en-US-AriaNeural` +8%,  deep hype: `en-US-GuyNeural`
 
-## BGM moods
+## BGM 选择
 
-mystery(悬念/深海/历史) · upbeat(清单/种草) · funny(搞笑) · inspiring(励志/科技愿景) ·
-tech(科技/数码) · epic(震撼) · chill(生活方式) · sad(情感)
+**默认直接从 `mood` 表选**(upbeat funny inspiring chill tech mystery epic sad
+horror)——这批 Kevin MacLeod 曲子正是无数营销号/faceless 频道在用的"熟脸"配乐,
+观众听着就是"这类视频该有的声音";同一 mood 会按项目随机换曲,不会千篇一律。
+
+**mood 表里没有贴合内容气质的,再用 `bgm.query` 去搜**(ccMixter/Jamendo 数千首
+CC 曲,自动用节拍器筛掉没鼓点的);配合默认开启的 `beat_sync`,切镜自动卡拍:
+
+| 内容类型 | mood 首选 | 表内不合适时 query | vibe 建议 |
+|---|---|---|---|
+| 盘点/悬念/猎奇 | mystery | "trap" / "phonk" | `"spedup"`(节奏更催) |
+| 种草/生活/vlog | chill / upbeat | "lofi chill" / "hip hop" | 不加或 `"slowed"` |
+| 励志/震撼/史诗 | epic / inspiring | "epic cinematic" | 不加 |
+| 科技/数码 | tech | "electronic dance" | 可加 `"spedup"` |
+| 搞笑/整活 | funny | "quirky" | 不加 |
+| 情感/怀旧 | sad / chill | "chill" / "hip hop" | `"slowed"`(slowed+reverb) |
+
+用户指定的热门歌用 `bgm.file`(版权自负)。
 
 ## 视觉 / Visual planning per scene
 
@@ -58,6 +73,8 @@ keywords for a *specific photographable subject*:
 
 ## 质量红线 / Quality bar (reject your own draft if…)
 
+- **任何数字/纪录/"最"字论断没有经过联网核实**(模型记忆会过期、会错;
+  按来源改写文案,核实不了就删,来源 URL 记入 `sources`)
 - Hook 前 3 秒没有制造"必须看下去"的理由
 - 任何场景的画面与文案无关(观众 0.5 秒就会划走)
 - 总时长 > 70s 或 < 20s;字幕一行超过 10 个汉字

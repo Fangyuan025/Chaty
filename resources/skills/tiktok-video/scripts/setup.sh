@@ -20,7 +20,7 @@ if [ ! -x .venv/bin/python ]; then
 fi
 echo "[setup] installing python deps…"
 .venv/bin/pip install -q --upgrade pip
-.venv/bin/pip install -q edge-tts requests pillow
+.venv/bin/pip install -q edge-tts requests pillow numpy
 
 mkdir -p assets/fonts assets/bgm
 FONT=assets/fonts/NotoSansCJKsc-Black.otf

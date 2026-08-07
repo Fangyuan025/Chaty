@@ -6,6 +6,8 @@
   "rate": "+10%",
   "caption_style": "karaoke",
   "bgm": {
+    "query": "trap",
+    "vibe": "spedup",
     "mood": "mystery",
     "gain_db": -16
   },
@@ -87,7 +89,7 @@
       "badge": "第1名"
     },
     {
-      "text": "更可怕的是,人类探索过的深海,还不到百分之五。下一个怪物,可能正在黑暗里看着我们。关注我,带你看更多深海秘密。",
+      "text": "更可怕的是,超过百分之八十的海洋,人类从未探索过。下一个怪物,可能正在黑暗里看着我们。关注我,带你看更多深海秘密。",
       "keywords": [
         "scuba diver silhouette blue",
         "dark ocean abyss"
@@ -98,5 +100,11 @@
       ],
       "effect": "kb_out"
     }
+  ],
+  "sources": [
+    "https://oceanexplorer.noaa.gov/ocean-fact/explored/",
+    "https://www.npr.org/sections/krulwich/2014/02/22/280249001/i-wont-eat-you-cant-make-me-and-they-couldnt",
+    "https://oceanexplorer.noaa.gov/ocean-fact/what-deep-sea-creature-has-the-biggest-teeth/",
+    "https://ocean.si.edu/ocean-life/fish/fangtooth-fish"
   ]
 }

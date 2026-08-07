@@ -37,7 +37,7 @@
       "badge": "No.4"
     },
     {
-      "text": "Number three. Neutron stars spin seven hundred times every single second. One teaspoon of their matter weighs four billion tons.",
+      "text": "Number three. The fastest neutron stars spin over seven hundred times every single second. One teaspoon of their matter weighs billions of tons.",
       "keywords": [
         "magnetar neutron star",
         "pulsar artist concept"
@@ -59,7 +59,7 @@
       "badge": "No.2"
     },
     {
-      "text": "And number one. Astronomers found a planet that may be mostly diamond, orbiting a dead star, and it is five times the size of Earth.",
+      "text": "And number one. Astronomers found a planet that may be one third diamond. It is twice the width of Earth, and eight times heavier.",
       "keywords": [
         "exoplanet artist concept",
         "planet illustration space"
@@ -70,7 +70,7 @@
       "badge": "No.1"
     },
     {
-      "text": "And here is the scary part. We have explored less than one percent of our own galaxy. Imagine what is still hiding out there. Follow for more space secrets.",
+      "text": "And here is the scary part. We have barely begun to explore our own galaxy. Imagine what is still hiding out there. Follow for more space secrets.",
       "keywords": [
         "milky way galaxy",
         "observatory night sky"
@@ -80,5 +80,11 @@
       ],
       "effect": "kb_out"
     }
+  ],
+  "sources": [
+    "https://science.nasa.gov/exoplanet-catalog/55-cancri-e/",
+    "https://www.space.com/18011-super-earth-planet-diamond-world.html",
+    "https://en.wikipedia.org/wiki/PSR_J1748%E2%88%922446ad",
+    "https://science.nasa.gov/venus/venus-facts/"
   ]
 }

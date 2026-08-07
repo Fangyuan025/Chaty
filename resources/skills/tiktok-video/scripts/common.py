@@ -165,8 +165,8 @@ def title_audit(sb: dict, manifest: list) -> list:
         kw = " ".join(scenes[m["i"] - 1].get("keywords", []))
         scene_strong = {t for t in re.findall(r"[a-z]+", kw.lower()) if len(t) >= 3} - TITLE_GENERIC
         for j, s in enumerate(m.get("shots") or [m], 1):
-            if s.get("provider") == "local":
-                continue
+            if s.get("provider") == "local" or s.get("approved"):
+                continue  # user-supplied, or visually confirmed by the agent
             # A refetched shot records the query that actually chose it —
             # judge against that, or the agent's hand-picked override would
             # flag forever against the storyboard's original words.
@@ -235,6 +235,9 @@ def load_storyboard(project_dir) -> dict:
     if hook and not hook.get("text"):
         sb["hook"] = None
     sb.setdefault("sfx", True)          # whoosh on scene transitions
+    srcs = sb.setdefault("sources", [])  # fact-check URLs the script relies on
+    if not (isinstance(srcs, list) and all(isinstance(s, str) for s in srcs)):
+        die("sources must be a list of URLs")
     st = sb.get("sticky_title")
     if st and not st.get("text"):
         sb["sticky_title"] = None

@@ -1,0 +1,61 @@
+{
+  "title": "秘鲁华人175年往事",
+  "lang": "zh",
+  "aspect": "9:16",
+  "voice": "zh-CN-YunjianNeural",
+  "rate": "+10%",
+  "caption_style": "karaoke",
+  "bgm": {"mood": "inspiring", "gain_db": -17},
+  "hook": {"text": "秘鲁华人往事", "seconds": 2.4},
+  "sources": [
+    "https://www.chinadaily.com.cn/a/202411/15/WS6736824fa310f1265a1cd736.html",
+    "https://iberoamericana.se/articles/223/files/submission/proof/223-1-589-5-10-20171128.pdf",
+    "https://www.migrationpolicy.org/article/peru-asian-immigration-history",
+    "https://en.wikipedia.org/wiki/Chifa",
+    "https://www.theworldofchinese.com/2022/03/introducing-chifa-perus-chinese-culinary-tradition/"
+  ],
+  "scenes": [
+    {
+      "text": "你知道吗?每12个秘鲁人里,就可能有1个人有华人血统。这段故事,要从175年前的一艘船说起。",
+      "keywords": ["Lima Peru aerial plaza", "sailing ship painting 19th century"],
+      "providers": ["openverse", "wikimedia"],
+      "effect": "kb_in"
+    },
+    {
+      "text": "1849年10月,一艘丹麦帆船抵达秘鲁卡亚俄港。船上,是75名来自广东的华工,他们在海上整整漂了120天。",
+      "keywords": ["Callao port Peru historical", "clipper ship sea painting"],
+      "providers": ["wikimedia", "openverse"],
+      "badge": "1849"
+    },
+    {
+      "text": "此后25年,约10万华工远渡重洋。他们在甘蔗园、棉花田和鸟粪岛上,背着八年苦力合同,用血汗换生存。",
+      "keywords": ["sugar cane plantation workers historical", "Chincha Islands guano Peru"],
+      "providers": ["wikimedia", "openverse"],
+      "badge": "10万人"
+    },
+    {
+      "text": "1874年,中秘签订天津条约,苦力贸易终结。重获自由的华人,在利马的卡蓬街附近,开起了杂货店和小餐馆。",
+      "keywords": ["Lima Peru street historical photo", "old chinese grocery store"],
+      "providers": ["wikimedia", "openverse"],
+      "badge": "1874"
+    },
+    {
+      "text": "秘鲁人总听见店里喊'吃饭',于是中餐馆有了个新名字:Chifa。粤菜手艺加上秘鲁食材,融出了一个全新菜系。",
+      "keywords": ["chifa restaurant Peru", "lomo saltado peruvian food"],
+      "providers": ["openverse", "wikimedia"],
+      "badge": "CHIFA"
+    },
+    {
+      "text": "今天,Chifa已经写进秘鲁人的日常,利马唐人街的中式牌坊下人来人往,约250万秘鲁人身上流着华人的血。",
+      "keywords": ["Lima chinatown arch", "Barrio chino Lima street"],
+      "providers": ["wikimedia", "openverse"],
+      "badge": "今天"
+    },
+    {
+      "text": "从一艘苦力船,到写进国民日常的美食。175年,华人把他乡活成了故乡。关注我,带你看更多海外华人的故事。",
+      "keywords": ["Peru coast sunset ocean", "Lima city evening lights"],
+      "providers": ["openverse", "wikimedia"],
+      "effect": "kb_out"
+    }
+  ]
+}

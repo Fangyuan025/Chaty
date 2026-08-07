@@ -16,9 +16,11 @@ when: the user asks to create / make / generate a short video(做短视频/抖�
 bash {SKILL_ROOT}/scripts/setup.sh
 ```
 
-## 1. 写文案 + 分镜
+## 1. 先核实,再写文案 + 分镜
 
-先读 `{SKILL_ROOT}/references/writing-guide.md`(hook 公式、节奏、场景结构)。然后在工作区建 `<slug>/storyboard.json`:
+**模型的内部知识可能过期或有错——未经核实的论断禁止进视频。**动笔前用你的联网搜索工具核实文案里每一个具体论断:数字、统计、纪录、价格、日期、排名、一切"第一/最大/唯一/最快",以及任何时效性内容(新闻/产品/版本/"今年/最新"),无论你多有把握。规则:**按来源改写文案**(不是反过来);核实不了就换成能核实的或直接删;把依据的 URL 记入 storyboard 的 `"sources": [...]`(会出现在 report.txt 供用户复核);确实无联网能力时只用教科书级常识、避免具体数字、并向用户声明未核实。
+
+然后读 `{SKILL_ROOT}/references/writing-guide.md`(hook 公式、节奏、场景结构)。然后在工作区建 `<slug>/storyboard.json`:
 
 ```json
 {
@@ -55,7 +57,9 @@ bash {SKILL_ROOT}/scripts/setup.sh
 | `voice` | 任意 edge-tts 音色 | zh: `zh-CN-YunjianNeural`(磁性男) `zh-CN-XiaoxiaoNeural`(女) `zh-CN-YunxiNeural`(阳光男);en: `en-US-ChristopherNeural` `en-US-AriaNeural` |
 | `rate` | 如 `+10%` | 营销号节奏:zh `+8%`~`+15%`,en `+5%`~`+10%` |
 | `caption_style` | `karaoke` \| `pop` \| `none` | karaoke = 逐字高亮(推荐) |
-| `bgm` | `{"mood":…}` \| `{"file":"路径"}` \| `{"mood":"none"}` | mood: upbeat funny inspiring chill tech mystery epic sad horror |
+| `bgm` | `{"query":"风格词"}` \| `{"mood":…}` \| `{"file":"路径"}` \| `{"mood":"none"}` | **默认选 `mood`**:曲表(upbeat funny inspiring chill tech mystery epic sad horror)是无数营销号在用的 MacLeod 熟脸配乐,按项目随机换曲;**表内没有贴合风格的才用 `query` 搜**(ccMixter/Jamendo CC 曲,节拍器自动筛掉没鼓点的):盘点/悬念 `"trap"`、种草 `"lofi chill"`、励志 `"epic cinematic"`、搞笑 `"quirky"`;两者可同设(query 先试、mood 兜底);热门歌用 `file`(版权自负)|
+| `beat_sync` | `true`(默认) \| `false` | BGM 自动节拍分析,所有切镜吸附到节拍上(卡点);人声永不截断,只伸缩场景尾部留白;鼓点弱的曲子会自动跳过 |
+| `bgm.vibe` | `"spedup"` \| `"slowed"` \| 不设 | 抖音标志性音色:spedup ≈1.25×提速升调(卡点/盘点主流),slowed = 减速+混响(情感向);任何 bgm 来源都可加,处理后自动重测节拍 |
 | `hook` | `{"text","seconds"}` | 开头大字标题卡,≤8 字/词 |
 | `sticky_title` | `{"text":…}` | 可选的顶部常驻话题条;默认关,用户要才加 |
 | `sfx` | `true`(默认) \| `false` | 转场 whoosh 音效 |
@@ -85,7 +89,7 @@ bash {SKILL_ROOT}/scripts/setup.sh
    {SKILL_ROOT}/.venv/bin/python {SKILL_ROOT}/scripts/assets.py <slug> --scene 3 --shot 2 --keywords "better english nouns"
    ```
 
-   (重搜自动拉黑被否素材,重复到全部匹配;也可自己下载图片后把场景 `media` 指向它。)
+   (重搜自动拉黑被否素材,重复到全部匹配;也可自己下载图片后把场景 `media` 指向它。)**目检确认**某个被 `[!]` 标记的镜头其实没问题时(如无描述标题的好图),在 `media/manifest.json` 给该 shot 加 `"approved": true` 消除误报——眼见优先于文本审计,严禁盲批。
 
 2. compose+check 后用 `view_image` 看 `<slug>/review/contact_sheet.jpg`:字幕可读且同步、无错帧丑帧、hook 可见。有问题就改 storyboard 重合成,直到像营销号编辑敢发的成片。
 
