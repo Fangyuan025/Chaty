@@ -61,6 +61,13 @@
   registration), i18n key completeness, every non-test `unwrap` in hot
   paths, JSON.parse guards, event-listener balance, async-blocking sleeps,
   store/download error propagation and partial-file handling.
+- **Unit tests can no longer write the real error log.** `append_error`
+  compiles to a no-op under `cargo test` — after a third test run stamped a
+  false "gpu crashed" entry into a real user log, the guarantee moved from
+  discipline to the compiler. The GPU guard's state machine is pure now;
+  its Windows caller does the logging.
+- The video skill's asset fetch dedupes by content hash, so the same image
+  arriving via two different URLs can't appear twice in one video.
 
 ## v2.0.5 — Functions or it didn't happen (2026-08-05)
 
