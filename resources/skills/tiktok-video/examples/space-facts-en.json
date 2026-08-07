@@ -1,0 +1,42 @@
+{
+  "title": "3 Space Facts That Will Break Your Brain",
+  "lang": "en",
+  "aspect": "9:16",
+  "voice": "en-US-ChristopherNeural",
+  "rate": "+6%",
+  "caption_style": "karaoke",
+  "bgm": {"mood": "epic", "gain_db": -17},
+  "hook": {"text": "SPACE IS WEIRD", "seconds": 2.4},
+  "scenes": [
+    {
+      "text": "Three facts about space so strange, scientists still argue about them.",
+      "keywords": ["nebula stars"],
+      "providers": ["nasa"],
+      "effect": "kb_in"
+    },
+    {
+      "text": "Number one. A day on Venus is longer than its entire year.",
+      "keywords": ["venus planet"],
+      "providers": ["nasa"],
+      "effect": "kb_out"
+    },
+    {
+      "text": "Number two. Neutron stars spin seven hundred times every single second.",
+      "keywords": ["neutron star pulsar"],
+      "providers": ["nasa"],
+      "effect": "pan_right"
+    },
+    {
+      "text": "Number three. There is a cloud in space that smells like rum and tastes like raspberries.",
+      "keywords": ["Sagittarius B2 galactic center"],
+      "providers": ["nasa"],
+      "effect": "kb_in"
+    },
+    {
+      "text": "And we have explored less than one percent of our own galaxy. Follow for more space secrets.",
+      "keywords": ["milky way galaxy"],
+      "providers": ["nasa"],
+      "effect": "kb_out"
+    }
+  ]
+}

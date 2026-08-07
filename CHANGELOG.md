@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### New official skill: `tiktok-video` — 一句话出成片
+
+- **One-line brief → finished vertical video.** The coding agent can now
+  deliver complete TikTok/抖音/Shorts videos: it writes the script and
+  storyboard, downloads free stock footage (Openverse, Wikimedia, NASA;
+  Pexels/Pixabay with a key), synthesizes the voiceover (Chinese & English,
+  word-level timestamps), renders karaoke captions, picks CC-BY music, and
+  composes a loudness-normalized 1080×1920 MP4 with ffmpeg — attribution
+  block included. Requires `ffmpeg` + `python3`; zero API keys needed.
+- **Directory-shaped skills.** Official skills can now ship runnable support
+  files (scripts, references) alongside their SKILL.md. The scripts are
+  materialized into `<workspace>/.chaty/skills/<name>/` the first time the
+  skill is used — content-hash keyed, so upgrades refresh and unchanged
+  bundles cost one read — while model context only ever carries the one-page
+  procedure. A user skill with the same name still shadows the whole thing.
+- **Editor-grade review is part of the recipe.** The pipeline halts for a
+  storyboard-vs-assets review (`view_image` on generated contact sheets for
+  vision models), and `check.py` audits every asset's source title against
+  the scene's keywords — an off-topic pick (an oil painting titled nothing
+  like your subject) is flagged with a ready-to-run refetch command, which
+  is how a text-only model reviews footage it cannot see.
+- Proven end-to-end with real-model sessions (35B): skill discovery →
+  use_skill materialization → venv setup → pipeline → delivered 27–41s
+  videos, three for three.
+
 ## v2.0.5 — Functions or it didn't happen (2026-08-05)
 
 v2.0.4 made the agent ship an app that launches. This release makes it ship

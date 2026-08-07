@@ -1,0 +1,42 @@
+{
+  "title": "深海里最诡异的3种生物",
+  "lang": "zh",
+  "aspect": "9:16",
+  "voice": "zh-CN-YunjianNeural",
+  "rate": "+10%",
+  "caption_style": "karaoke",
+  "bgm": {"mood": "mystery", "gain_db": -16},
+  "hook": {"text": "深海禁区", "seconds": 2.3},
+  "scenes": [
+    {
+      "text": "你知道吗?在阳光永远照不到的深海,藏着比科幻电影更诡异的生物。",
+      "keywords": ["deep sea dark ocean underwater"],
+      "providers": ["openverse", "wikimedia"],
+      "effect": "kb_in"
+    },
+    {
+      "text": "第一名,鮟鱇鱼。头顶自带发光灯笼,专门在黑暗里引诱猎物上钩。",
+      "keywords": ["anglerfish deep sea"],
+      "providers": ["wikimedia", "openverse"],
+      "effect": "kb_out"
+    },
+    {
+      "text": "第二名,吸血鬼乌贼。遇到危险直接把自己翻过来,浑身长满尖刺。",
+      "keywords": ["vampire squid"],
+      "providers": ["wikimedia", "openverse"],
+      "effect": "pan_right"
+    },
+    {
+      "text": "第三名,大王具足虫。可以五年不吃任何东西,还能活得好好的。",
+      "keywords": ["giant isopod"],
+      "providers": ["wikimedia", "openverse"],
+      "effect": "kb_in"
+    },
+    {
+      "text": "更可怕的是,人类探索过的深海,还不到百分之五。关注我,带你看更多深海秘密。",
+      "keywords": ["ocean abyss dark blue water"],
+      "providers": ["openverse", "wikimedia"],
+      "effect": "kb_out"
+    }
+  ]
+}

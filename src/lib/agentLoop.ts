@@ -98,7 +98,7 @@ import {
   UNTRUSTED_TOOLS,
 } from "./toolRegistry";
 import { callMcpTool } from "./mcp";
-import { skillBody, skillIndex, type SkillFile } from "./skillFiles";
+import { officialSkillSupport, skillBody, skillIndex, skillRoot, type SkillFile } from "./skillFiles";
 import { MEMORY_DIR, memoryIndexDoc, memoryWriteNudge, rememberFact } from "./memoryFiles";
 export type { AgentToolName } from "./toolRegistry";
 export { MUTATING_TOOLS, REPEAT_EXEMPT } from "./toolRegistry";
@@ -1114,7 +1114,35 @@ async function execTool(
               : `ERROR: no skill named "${want}". Available: ${list}`,
           };
         }
-        return { result: skillBody(hit, isZh() ? "zh" : "en") };
+        let body = skillBody(hit, isZh() ? "zh" : "en");
+        // Directory-shaped official skills carry runnable support files
+        // (scripts, references). Materialize them into the workspace on
+        // first use — keyed by bundle rev so unchanged content is one read,
+        // zero writes — and point the procedure at them. User skills manage
+        // their own files, so a shadowing user skill skips all of this.
+        const support = hit.path.startsWith("official:") ? officialSkillSupport(hit.name) : null;
+        if (support) {
+          const root = skillRoot(hit.name);
+          body = body.replace(/\{SKILL_ROOT\}/g, root);
+          try {
+            const revPath = `${root}/.bundle-rev`;
+            // A missing file REJECTS through Tauri but RESOLVES undefined
+            // through the bench bridge — coerce both to "not installed yet"
+            // (the first real-model run lost all 14 files to this).
+            const onDisk = String((await agentReadFile(revPath).catch(() => "")) ?? "");
+            if (!onDisk.includes(support.rev)) {
+              for (const f of support.files) {
+                await agentWriteFile(`${root}/${f.path}`, f.text);
+              }
+              await agentWriteFile(revPath, `${support.rev}\n`);
+            }
+          } catch (e) {
+            body += isZh()
+              ? `\n\n[警告] 技能脚本安装到 ${root} 失败:${String(e)}。请先解决该问题再执行上述步骤。`
+              : `\n\n[warning] failed to install the skill's scripts to ${root}: ${String(e)}. Resolve this before following the steps above.`;
+          }
+        }
+        return { result: body };
       }
       if (toolSpec(call.name)?.source === "mcp") {
         return { result: await callMcpTool(call.name, a) };

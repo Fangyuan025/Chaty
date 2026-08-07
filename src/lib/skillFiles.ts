@@ -89,7 +89,19 @@ export function skillBody(skill: SkillFile, lang: "zh" | "en"): string {
 
 // ── Discovery ────────────────────────────────────────────────────────────────
 
-import { OFFICIAL_SKILL_FILES } from "./officialSkills";
+import { OFFICIAL_SKILL_FILES, OFFICIAL_SKILL_SUPPORT } from "./officialSkills";
+
+/** Workspace-relative root a directory-shaped skill's support files land in. */
+export function skillRoot(name: string): string {
+  return `.chaty/skills/${name}`;
+}
+
+/** Support files bundled with an official skill (scripts, references) — the
+ *  runnable half of a directory-shaped skill. Empty for knowledge-only skills
+ *  and for user skills (which manage their own files on disk). */
+export function officialSkillSupport(name: string): { rev: string; files: { path: string; text: string }[] } | null {
+  return OFFICIAL_SKILL_SUPPORT[name] ?? null;
+}
 
 const DISABLED_KEY = "chaty.skillsDisabled";
 

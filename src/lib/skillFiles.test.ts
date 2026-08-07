@@ -98,6 +98,28 @@ describe("precedence & discovery", () => {
     }
   });
 
+  test("directory-shaped skill: tiktok-video ships prompt + runnable support", async () => {
+    const { officialSkillSupport, skillRoot } = await import("./skillFiles");
+    const tv = officialSkills().find((s) => s.name === "tiktok-video")!;
+    expect(tv).toBeTruthy();
+    expect(tv.path).toBe("official:tiktok-video/SKILL.md");
+    // The body is the creative procedure — it references scripts via the
+    // placeholder and NEVER inlines script code into model context.
+    expect(tv.body).toContain("{SKILL_ROOT}");
+    expect(tv.body.length).toBeLessThanOrEqual(8000);
+    expect(tv.body).not.toContain("def main(");
+
+    const support = officialSkillSupport("tiktok-video")!;
+    expect(support.rev).toMatch(/^[0-9a-f]{16}$/);
+    const paths = support.files.map((f) => f.path);
+    for (const must of ["scripts/pipeline.py", "scripts/setup.sh", "scripts/compose.py", "references/writing-guide.md"]) {
+      expect(paths).toContain(must);
+    }
+    // Knowledge-only skills have no support files.
+    expect(officialSkillSupport("mac-app")).toBeNull();
+    expect(skillRoot("tiktok-video")).toBe(".chaty/skills/tiktok-video");
+  });
+
   test("user skills shadow official ones; disabled ones drop out", async () => {
     const files: Record<string, string> = {
       ".chaty/skills/verify-before-push.md": SKILL.replace("name: release", "name: verify-before-push").replace("Bump the version", "MY OWN STEPS"),

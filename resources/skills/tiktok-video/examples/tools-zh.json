@@ -1,0 +1,47 @@
+{
+  "title": "3个让你效率翻倍的免费工具",
+  "lang": "zh",
+  "aspect": "9:16",
+  "voice": "zh-CN-XiaoxiaoNeural",
+  "rate": "+8%",
+  "caption_style": "pop",
+  "bgm": {"mood": "upbeat", "gain_db": -17},
+  "hook": {"text": "效率神器🔥", "seconds": 2.2},
+  "scenes": [
+    {
+      "text": "每天加班到深夜?这3个免费工具,能帮你省出两个小时。",
+      "keywords": ["laptop night desk work"],
+      "providers": ["openverse", "wikimedia"],
+      "effect": "kb_in",
+      "emphasis": ["3个免费工具", "两个小时"]
+    },
+    {
+      "text": "第一个,番茄钟。25分钟专注,5分钟休息,大脑效率直接拉满。",
+      "keywords": ["pomodoro timer tomato"],
+      "providers": ["openverse", "wikimedia"],
+      "effect": "kb_out",
+      "emphasis": ["番茄钟", "拉满"]
+    },
+    {
+      "text": "第二个,快捷键。光是复制粘贴换成键盘操作,一年就能省下40个小时。",
+      "keywords": ["keyboard shortcut hands typing"],
+      "providers": ["openverse", "wikimedia"],
+      "effect": "pan_left",
+      "emphasis": ["快捷键", "40个小时"]
+    },
+    {
+      "text": "第三个,清单法。睡前写下明天最重要的3件事,第二天不再纠结先做什么。",
+      "keywords": ["notebook checklist pen writing"],
+      "providers": ["openverse", "wikimedia"],
+      "effect": "kb_in",
+      "emphasis": ["清单法", "3件事"]
+    },
+    {
+      "text": "工具不在多,在用。关注我,每周分享一个效率技巧。",
+      "keywords": ["sunrise office window morning"],
+      "providers": ["openverse", "wikimedia"],
+      "effect": "kb_out",
+      "emphasis": ["关注我"]
+    }
+  ]
+}
