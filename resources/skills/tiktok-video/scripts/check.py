@@ -9,10 +9,11 @@ Usage: python scripts/check.py <project_dir>
 """
 import json
 import math
+import os
 import re
 import sys
 
-from common import die, ffprobe_json, load_storyboard, log, project_paths, run
+from common import die, ffprobe_json, load_storyboard, log, project_paths, run, title_audit
 
 
 def fps_of(v):
@@ -68,29 +69,19 @@ def main(project_dir):
     run(["ffmpeg", "-y", "-loglevel", "error", "-ss", "0.4", "-i", final,
          "-frames:v", "1", paths["review"] / "cover.jpg"])
 
-    # attribution block + title audit. The title audit is the blind-model
-    # lifeline: an off-topic stock pick (a painting, an archival photo) is
-    # visible in its TITLE long before it is visible in pixels.
-    import os
-    generic = {"night", "day", "dark", "light", "lights", "running", "run", "fast", "close",
-               "closeup", "view", "silhouette", "background", "old", "big", "small", "little",
-               "photo", "image", "detail"}
-    scenes = sb.get("scenes", [])
+    # attribution block + title audit (the blind-model lifeline — see
+    # common.title_audit; assets.py flags the same thing earlier).
     credits = []
     title_flags = []
     if paths["manifest"].exists():
-        for mft in json.loads(paths["manifest"].read_text()):
-            if mft["provider"] in ("local",):
-                continue
-            c = f"{mft['title'][:60]}".strip() or mft["file"]
-            credits.append(f"  - {c} — {mft.get('creator','')} ({mft.get('license','')}) {mft.get('source','')}")
-            if 1 <= mft.get("i", 0) <= len(scenes):
-                kw = " ".join(scenes[mft["i"] - 1].get("keywords", []))
-                strong = {t for t in re.findall(r"[a-z]+", kw.lower()) if len(t) >= 3} - generic
-                title = set(re.findall(r"[a-z]+", str(mft.get("title", "")).lower()))
-                hit = any(t.startswith(s) or s.startswith(t) for s in strong for t in title)
-                if strong and not hit:
-                    title_flags.append((mft["i"], str(mft.get("title", ""))[:70]))
+        manifest = json.loads(paths["manifest"].read_text())
+        title_flags = title_audit(sb, manifest)
+        for mft in manifest:
+            for s in mft.get("shots") or [mft]:
+                if s.get("provider") == "local":
+                    continue
+                c = f"{s.get('title','')[:60]}".strip() or s.get("file", "")
+                credits.append(f"  - {c} — {s.get('creator','')} ({s.get('license','')}) {s.get('source','')}")
     bgm_credit = ""
     bc = paths["root"] / "bgm_credit.json"
     if bc.exists():
@@ -110,10 +101,10 @@ def main(project_dir):
         f"[{'x' if lufs != '?' and abs(float(lufs) + 15) < 2.5 else '!'}] loudness near target",
         f"[{'x' if not title_flags else '!'}] asset titles match scene keywords",
         *[
-            f'    [!] scene {i}: "{t}" looks OFF-TOPIC for its keywords — refetch it:\n'
+            f'    [!] scene {i} shot {j}: "{t}" looks OFF-TOPIC for its keywords — refetch it:\n'
             f'        {sys.executable} {os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets.py")}'
-            f' {sys.argv[1]} --scene {i} --keywords "<concrete english nouns>"  # then recompose'
-            for i, t in title_flags
+            f' {sys.argv[1]} --scene {i} --shot {j} --keywords "<concrete english nouns>"  # then recompose'
+            for i, j, t in title_flags
         ],
         "",
         "== attribution (paste into video description) ==",
@@ -128,7 +119,7 @@ def main(project_dir):
     if title_flags:
         log("[check] EVERY [!] line above must be resolved before delivery — if you cannot "
             "actually see images, the OFF-TOPIC title flags ARE your review: refetch those "
-            "scenes with better keywords, then recompose (--skip-tts --skip-assets) and recheck.")
+            "shots with better keywords, then recompose (--skip-tts --skip-assets) and recheck.")
 
 
 if __name__ == "__main__":

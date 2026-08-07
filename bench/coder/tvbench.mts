@@ -2,7 +2,7 @@
  *  session — the model must discover the skill via the index, use_skill,
  *  run setup + pipeline, review, and deliver final.mp4. Probe = ffprobe. */
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdtempSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -32,6 +32,7 @@ async function main() {
   const bin = path.join(REPO, "src-tauri/target/release/chaty-headless");
   const model = process.env.CHATY_BENCH_MODEL;
   if (!model) throw new Error("set CHATY_BENCH_MODEL");
+  if (!existsSync(bin)) throw new Error(`chaty-headless not found at ${bin} — cargo build --release first`);
   const bridge = new Bridge(bin);
   const info = (await bridge.call("load_model", { path: model })) as Record<string, unknown>;
   if (!info || info.loaded !== true) throw new Error(`model did not load: ${JSON.stringify(info)}`);

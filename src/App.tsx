@@ -362,6 +362,21 @@ export default function App() {
   // Set by the canvas Stop button; the generation flow then discards the
   // partial output instead of reporting a "no HTML" error.
   const canvasCancelRef = useRef(false);
+  // Chat history writes fail SILENTLY otherwise — the message sits in the UI,
+  // the user closes the app, the transcript is gone (same invisible-loss
+  // class the code-session audit already fixed). Log to the error log, and
+  // tell the user once per conversation.
+  const chatSaveFailWarnedRef = useRef(new Set<string>());
+  const reportChatSaveFailure = (convId: string, e: unknown) => {
+    console.error("chat save FAILED", convId, e);
+    void logAppError("chat-save-failed", `conversation ${convId}\n${String((e as Error)?.stack ?? e)}`).catch(() => {});
+    if (!chatSaveFailWarnedRef.current.has(convId)) {
+      chatSaveFailWarnedRef.current.add(convId);
+      alert(
+        "对话保存失败——这条对话没有写入磁盘,重启后会丢失。请检查磁盘空间/权限。\n(Saving this conversation FAILED — it will not survive a restart.)",
+      );
+    }
+  };
   const [canvasStream, setCanvasStream] = useState<string | null>(null);
   const canvasStreamRef = useRef<{ acc: string; timer: number | null }>({ acc: "", timer: null });
   const [showHardware, setShowHardware] = useState(false);
@@ -658,7 +673,7 @@ export default function App() {
       await refreshConversations();
       if (fresh) void makeTitle(convId, userText);
     } catch (e) {
-      console.error(e);
+      reportChatSaveFailure(convId, e);
     }
   }
 
@@ -1529,7 +1544,7 @@ export default function App() {
       setStats(null);
       await refreshConversations();
     } catch (e) {
-      console.error(e);
+      reportChatSaveFailure(newId, e);
     }
   }
 
@@ -1885,7 +1900,7 @@ export default function App() {
         if (acc.text.trim()) await saveMessage(asstId, convId, "assistant", acc.text);
         await refreshConversations();
       } catch (e) {
-        console.error(e);
+        reportChatSaveFailure(convId, e);
       }
       // Let the model name a fresh conversation from its first question.
       if (opts.freshConv && acc.text.trim()) void makeTitle(convId, text);
@@ -1944,7 +1959,7 @@ export default function App() {
       await saveMessage(userMsg.id, convId, "user", text, visionImgs);
       await refreshConversations();
     } catch (e) {
-      console.error(e);
+      reportChatSaveFailure(convId, e);
     }
 
     await streamAssistant(history, asstMsg.id, convId, { freshConv });

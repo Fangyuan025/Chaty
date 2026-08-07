@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.0.6 — One sentence in, a finished video out (2026-08-06)
 
 ### New official skill: `tiktok-video` — 一句话出成片
 
@@ -23,9 +23,44 @@
   the scene's keywords — an off-topic pick (an oil painting titled nothing
   like your subject) is flagged with a ready-to-run refetch command, which
   is how a text-only model reviews footage it cannot see.
+- **Pipeline v2 (upstream merge): the videos stop feeling static.** Scenes
+  are now multi-shot — each keyword is one visual and the video cuts every
+  ~3 seconds — with crossfade transitions, a synthesized transition whoosh
+  (`sfx`), stamped listicle badges (`badge: "第1名"`), an opt-in sticky
+  topic bar, and a raised publish bar (45–75s, 6–9 scenes, 2–3 shots each).
+  Refetch got shot-precise (`--scene 3 --shot 2`), and a refetched shot
+  remembers the query that chose it, so a hand-picked replacement never
+  re-flags against the storyboard's original words.
+- **The off-topic audit fires at fetch time, not just delivery time.**
+  `assets.py` prints the same OFF-TOPIC flags the moment assets land —
+  before a compose cycle is spent on a wrong pick — and the flags print
+  ahead of the preview-sheet build so a sheet failure can't eat them.
 - Proven end-to-end with real-model sessions (35B): skill discovery →
   use_skill materialization → venv setup → pipeline → delivered 27–41s
-  videos, three for three.
+  videos, three for three; the bench driver ships as
+  `bench/coder/tvbench.mts`.
+- Audit hardening: the skill bundle is drift-locked by test (edit
+  `resources/skills/` without rebundling → CI red), `__pycache__`/`.pyc`
+  can never ride the bundle again, and the Windows venv path
+  (`.venv/Scripts/python`) is called out in the procedure.
+
+### Full-app audit
+
+- **Orphaned headless browsers are reaped at startup.** Every exit path
+  that skips destructors — the exit handler's `_exit()`, a crash, a killed
+  bench bridge — used to leave the headless Chrome tree running and its
+  profile dir behind (16 helper processes and 14 profile dirs stood on the
+  author's machine when this was found). Startup now kills any browser
+  whose owning Chaty is gone — by creator-pid liveness, so a concurrently
+  running instance keeps its own — and removes the leftover profiles.
+- **Chat history that fails to save says so.** A failed conversation/message
+  write used to vanish into the console; the message sat in the UI and was
+  gone after restart. Now it lands in the error log and warns once per
+  conversation — same treatment code sessions already had.
+- Audited clean: the TS↔Rust IPC contract (three-way: calls, commands,
+  registration), i18n key completeness, every non-test `unwrap` in hot
+  paths, JSON.parse guards, event-listener balance, async-blocking sleeps,
+  store/download error propagation and partial-file handling.
 
 ## v2.0.5 — Functions or it didn't happen (2026-08-05)
 

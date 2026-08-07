@@ -291,6 +291,59 @@ pub fn kill_now() {
     }
 }
 
+/// Profile dirs under `root` whose creator process is gone. The dir name is
+/// `chaty-cdp-<creator pid>-<nanos>` (tempdir::Guard), so liveness of that
+/// pid decides ownership — a concurrent Chaty/headless keeps its own.
+fn orphan_cdp_dirs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(rd) = std::fs::read_dir(root) else { return Vec::new() };
+    rd.flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let Some(rest) = name.strip_prefix("chaty-cdp-") else { return false };
+            // Unparsable pid = malformed debris → orphan.
+            rest.split('-').next().and_then(|s| s.parse::<u32>().ok()).is_none_or(|pid| !pid_alive(pid))
+        })
+        .map(|e| e.path())
+        .collect()
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    // Creators are always our own uid, so ESRCH is the only "gone" signal;
+    // EPERM would mean someone else's process — never ours — count it alive.
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    let mut cmd = std::process::Command::new("tasklist");
+    cmd.args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"]);
+    crate::agent::hide_console(&mut cmd)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!(",\"{pid}\"")))
+        .unwrap_or(true) // can't tell ⇒ assume alive, never kill blind
+}
+
+/// Startup sweep for browsers that outlived their Chaty. Every exit path
+/// that skips destructors — the `_exit()` in the app's exit handler, a
+/// SIGKILLed bench bridge, a crash — leaves the headless Chrome tree running
+/// and its profile dir behind (16 helpers + 14 dirs stood on the author's
+/// machine the day this was written). Kill by profile path, then remove.
+pub fn sweep_orphan_browsers() {
+    for dir in orphan_cdp_dirs(&std::env::temp_dir()) {
+        #[cfg(unix)]
+        {
+            let pat = dir.to_string_lossy().to_string();
+            let _ = std::process::Command::new("pkill").args(["-9", "-f", &pat]).status();
+        }
+        // Windows: no safe kill-by-cmdline; a live Chrome holds the profile
+        // lock so the remove fails and the dir simply waits for the next try.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// Candidate Chrome/Chromium executables by platform.
 fn chrome_path() -> Option<PathBuf> {
     #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
@@ -1705,6 +1758,38 @@ mod tempdir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The orphan sweep must claim dirs whose creator pid is gone (and
+    /// malformed debris), and must NEVER claim a live process's profile —
+    /// the first design pass nearly killed a concurrently-running bench's
+    /// browser.
+    #[test]
+    #[cfg(unix)]
+    fn orphan_sweep_respects_live_creators() {
+        let root = std::env::temp_dir().join(format!("chaty-sweeptest-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // A dead creator: spawn+reap a child so the pid is real but gone.
+        let dead = std::process::Command::new("true").spawn().map(|mut c| {
+            let pid = c.id();
+            let _ = c.wait();
+            pid
+        });
+        let dead = dead.unwrap();
+        let mine = std::process::id();
+        std::fs::create_dir_all(root.join(format!("chaty-cdp-{dead}-111"))).unwrap();
+        std::fs::create_dir_all(root.join(format!("chaty-cdp-{mine}-222"))).unwrap();
+        std::fs::create_dir_all(root.join("chaty-cdp-garbage-333")).unwrap();
+        std::fs::create_dir_all(root.join("unrelated-dir")).unwrap();
+        let got: Vec<String> = orphan_cdp_dirs(&root)
+            .into_iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(got.contains(&format!("chaty-cdp-{dead}-111")), "dead creator must be swept: {got:?}");
+        assert!(got.contains(&"chaty-cdp-garbage-333".to_string()), "malformed debris must be swept");
+        assert!(!got.iter().any(|n| n.contains(&mine.to_string())), "live creator must be kept: {got:?}");
+        assert!(!got.contains(&"unrelated-dir".to_string()), "non-chaty dirs are untouchable");
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// Blank lazy sessions must not hand a "capture" of nothing back to a
     /// model that thinks it is taking a system screenshot.

@@ -1,41 +1,101 @@
 {
-  "title": "深海里最诡异的3种生物",
+  "title": "深海里最诡异的5种生物",
   "lang": "zh",
   "aspect": "9:16",
   "voice": "zh-CN-YunjianNeural",
   "rate": "+10%",
   "caption_style": "karaoke",
-  "bgm": {"mood": "mystery", "gain_db": -16},
-  "hook": {"text": "深海禁区", "seconds": 2.3},
+  "bgm": {
+    "mood": "mystery",
+    "gain_db": -16
+  },
+  "hook": {
+    "text": "深海禁区",
+    "seconds": 2.4
+  },
   "scenes": [
     {
-      "text": "你知道吗?在阳光永远照不到的深海,藏着比科幻电影更诡异的生物。",
-      "keywords": ["deep sea dark ocean underwater"],
-      "providers": ["openverse", "wikimedia"],
+      "text": "你知道吗?人类对深海的了解,还不如对月球表面多。今天带你看5种真实存在的深海怪物,一个比一个离谱。",
+      "keywords": [
+        "deep sea NOAA ocean exploration",
+        "submarine dark ocean"
+      ],
+      "providers": [
+        "openverse",
+        "wikimedia"
+      ],
       "effect": "kb_in"
     },
     {
-      "text": "第一名,鮟鱇鱼。头顶自带发光灯笼,专门在黑暗里引诱猎物上钩。",
-      "keywords": ["anglerfish deep sea"],
-      "providers": ["wikimedia", "openverse"],
-      "effect": "kb_out"
+      "text": "第五名,毒蛇鱼。獠牙长到嘴巴都合不上,只能露在外面,是深海最凶狠的伏击猎手。",
+      "keywords": [
+        "Chauliodus viperfish",
+        "deep sea fish teeth"
+      ],
+      "providers": [
+        "wikimedia",
+        "openverse"
+      ],
+      "badge": "第5名"
     },
     {
-      "text": "第二名,吸血鬼乌贼。遇到危险直接把自己翻过来,浑身长满尖刺。",
-      "keywords": ["vampire squid"],
-      "providers": ["wikimedia", "openverse"],
-      "effect": "pan_right"
+      "text": "第四名,大王具足虫。可以整整五年不吃任何东西,还能活得好好的,堪称深海的省钱冠军。",
+      "keywords": [
+        "giant isopod",
+        "giant isopod aquarium"
+      ],
+      "providers": [
+        "openverse",
+        "wikimedia"
+      ],
+      "badge": "第4名"
     },
     {
-      "text": "第三名,大王具足虫。可以五年不吃任何东西,还能活得好好的。",
-      "keywords": ["giant isopod"],
-      "providers": ["wikimedia", "openverse"],
-      "effect": "kb_in"
+      "text": "第三名,吸血鬼乌贼。遇到危险直接把自己翻过来,浑身尖刺朝外,吓退所有捕食者。",
+      "keywords": [
+        "vampire squid",
+        "deep sea octopus illustration"
+      ],
+      "providers": [
+        "wikimedia",
+        "openverse"
+      ],
+      "badge": "第3名"
     },
     {
-      "text": "更可怕的是,人类探索过的深海,还不到百分之五。关注我,带你看更多深海秘密。",
-      "keywords": ["ocean abyss dark blue water"],
-      "providers": ["openverse", "wikimedia"],
+      "text": "第二名,鮟鱇鱼。头顶自带发光的灯笼,专门在一片漆黑里,引诱猎物自己送上门。",
+      "keywords": [
+        "humpback anglerfish",
+        "anglerfish museum specimen"
+      ],
+      "providers": [
+        "wikimedia",
+        "openverse"
+      ],
+      "badge": "第2名"
+    },
+    {
+      "text": "第一名,尖牙鱼。按身体比例算,它拥有整个海洋里最大的牙齿,但整条鱼只有巴掌那么大。",
+      "keywords": [
+        "fangtooth Anoplogaster",
+        "deep sea fish dark"
+      ],
+      "providers": [
+        "wikimedia",
+        "openverse"
+      ],
+      "badge": "第1名"
+    },
+    {
+      "text": "更可怕的是,人类探索过的深海,还不到百分之五。下一个怪物,可能正在黑暗里看着我们。关注我,带你看更多深海秘密。",
+      "keywords": [
+        "scuba diver silhouette blue",
+        "dark ocean abyss"
+      ],
+      "providers": [
+        "wikimedia",
+        "openverse"
+      ],
       "effect": "kb_out"
     }
   ]

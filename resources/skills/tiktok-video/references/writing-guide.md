@@ -23,9 +23,12 @@ Total 30–60s. One idea per scene. Never explain — assert.
 
 ## 文案节奏 / Pacing rules
 
+- **总时长 45–75 秒,6–9 个场景**。短于 40 秒的视频信息密度不够,不要交付。
 - 短句。一句一个信息点。删掉所有"的话/其实/那么/basically/actually"。
-- zh: 每场景 15–40 字;en: 10–25 words per scene.
-- 清单类用 "第一名/第二名" "Number one" — 制造停留期待。
+- zh: 每场景 20–45 字;en: 14–30 words per scene.
+- 清单类用 "第一名/第二名" "Number one" — 并给对应场景加 `badge`("第1名"/"TOP 1")。
+- 每个场景给 **2–3 个 keywords**(= 2–3 个镜头),画面每 ~3 秒切换一次;
+  只给 1 个 keyword 的长场景会显得单调。
 - 每个场景结尾留半拍悬念,把观众推向下一句。
 - CTA 固定收尾: "关注我,带你看更多XX" / "Follow for more XX you won't believe."
 

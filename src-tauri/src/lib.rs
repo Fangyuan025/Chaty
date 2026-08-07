@@ -75,6 +75,10 @@ pub fn run() {
     // the OS crash reports left behind by the previous run.
     #[cfg(target_os = "macos")]
     crate::errlog::sweep_native_crash_reports();
+    // Browsers whose Chaty died without destructors (the exit handler
+    // `_exit()`s, crashes, killed bench bridges) keep running headless —
+    // reap them before this run launches its own.
+    crate::browser::sweep_orphan_browsers();
     // GPU crash guard (issue #5): if the previous model load took the whole
     // process down (broken Vulkan driver aborts mid-load), block GPU offload
     // for this run BEFORE any llama/ggml init touches the driver.

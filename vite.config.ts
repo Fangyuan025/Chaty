@@ -19,7 +19,7 @@ export default defineConfig(async () => ({
   // explicit include, vitest also sweeps up test files inside bench SWE-bench
   // workspace checkouts (django js_tests etc.).
   test: {
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "scripts/*.test.mts"],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

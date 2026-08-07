@@ -1,41 +1,83 @@
 {
-  "title": "3 Space Facts That Will Break Your Brain",
+  "title": "4 Space Facts That Will Break Your Brain",
   "lang": "en",
   "aspect": "9:16",
   "voice": "en-US-ChristopherNeural",
   "rate": "+6%",
   "caption_style": "karaoke",
-  "bgm": {"mood": "epic", "gain_db": -17},
-  "hook": {"text": "SPACE IS WEIRD", "seconds": 2.4},
+  "bgm": {
+    "mood": "epic",
+    "gain_db": -17
+  },
+  "hook": {
+    "text": "SPACE IS WEIRD",
+    "seconds": 2.4
+  },
   "scenes": [
     {
-      "text": "Three facts about space so strange, scientists still argue about them.",
-      "keywords": ["nebula stars"],
-      "providers": ["nasa"],
+      "text": "We have mapped the entire Moon, but space keeps getting stranger the deeper we look. Here are four facts that will genuinely break your brain.",
+      "keywords": [
+        "nebula stars",
+        "hubble deep field galaxies"
+      ],
+      "providers": [
+        "nasa"
+      ],
       "effect": "kb_in"
     },
     {
-      "text": "Number one. A day on Venus is longer than its entire year.",
-      "keywords": ["venus planet"],
-      "providers": ["nasa"],
-      "effect": "kb_out"
+      "text": "Number four. A single day on Venus lasts longer than its entire year. The planet spins that slowly.",
+      "keywords": [
+        "venus surface volcano",
+        "venus planet clouds"
+      ],
+      "providers": [
+        "nasa"
+      ],
+      "badge": "No.4"
     },
     {
-      "text": "Number two. Neutron stars spin seven hundred times every single second.",
-      "keywords": ["neutron star pulsar"],
-      "providers": ["nasa"],
-      "effect": "pan_right"
+      "text": "Number three. Neutron stars spin seven hundred times every single second. One teaspoon of their matter weighs four billion tons.",
+      "keywords": [
+        "magnetar neutron star",
+        "pulsar artist concept"
+      ],
+      "providers": [
+        "nasa"
+      ],
+      "badge": "No.3"
     },
     {
-      "text": "Number three. There is a cloud in space that smells like rum and tastes like raspberries.",
-      "keywords": ["Sagittarius B2 galactic center"],
-      "providers": ["nasa"],
-      "effect": "kb_in"
+      "text": "Number two. Near the center of our galaxy floats a giant cloud that smells like rum, and tastes like raspberries.",
+      "keywords": [
+        "galactic center infrared",
+        "milky way center stars"
+      ],
+      "providers": [
+        "nasa"
+      ],
+      "badge": "No.2"
     },
     {
-      "text": "And we have explored less than one percent of our own galaxy. Follow for more space secrets.",
-      "keywords": ["milky way galaxy"],
-      "providers": ["nasa"],
+      "text": "And number one. Astronomers found a planet that may be mostly diamond, orbiting a dead star, and it is five times the size of Earth.",
+      "keywords": [
+        "exoplanet artist concept",
+        "planet illustration space"
+      ],
+      "providers": [
+        "nasa"
+      ],
+      "badge": "No.1"
+    },
+    {
+      "text": "And here is the scary part. We have explored less than one percent of our own galaxy. Imagine what is still hiding out there. Follow for more space secrets.",
+      "keywords": [
+        "milky way galaxy",
+        "observatory night sky"
+      ],
+      "providers": [
+        "nasa"
+      ],
       "effect": "kb_out"
     }
   ]

@@ -45,7 +45,7 @@ def group_words(text: str, words: list, lang: str, max_zh_chars=10, max_en_words
         rest = text[end:end + 3]
         nxt = rest.lstrip(" ")[:1]
         hard = bool(nxt) and nxt in tuple(ZH_PUNCT)
-        toks.append({**w, "hard": hard, "sentence_end": nxt in "。!?!?…"})
+        toks.append({**w, "hard": hard, "sentence_end": nxt in "。!?!?….;;"})
         pos = end
 
     lines, cur = [], []
@@ -227,3 +227,52 @@ class HookRenderer(CaptionRenderer):
         self.size = int(W * 0.105)
         self.font = ImageFont.truetype(str(main_font(lang)), self.size)
         self.stroke = max(4, self.size // 8)
+
+
+class BadgeRenderer(CaptionRenderer):
+    """Listicle stamp: bold dark text in a rounded highlight-color box
+    ("第1名" / "TOP 1")."""
+
+    def __init__(self, W, H, lang, highlight="#FFE14D"):
+        super().__init__(W, H, lang, highlight=highlight)
+        self.size = int(W * 0.072)
+        self.font = ImageFont.truetype(str(main_font(lang)), self.size)
+
+    def render_badge(self, text, out_path: Path):
+        probe = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
+        tw = int(probe.textlength(text, font=self.font))
+        pad_x, pad_y = int(self.size * 0.5), int(self.size * 0.26)
+        w, h = tw + pad_x * 2, self.size + pad_y * 2
+        off = int(self.size * 0.10)
+        img = Image.new("RGBA", (w + off, h + off + int(self.size * 0.2)), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        r = int(self.size * 0.30)
+        d.rounded_rectangle([off, off, w + off - 1, h + off - 1], radius=r,
+                            fill=(0, 0, 0, 150))                      # drop shadow
+        d.rounded_rectangle([0, 0, w - 1, h - 1], radius=r, fill=self.highlight)
+        d.text((pad_x, pad_y - int(self.size * 0.10)), text, font=self.font,
+               fill=(20, 18, 8, 255))
+        img.save(out_path)
+        return img.size
+
+
+class StickyRenderer(CaptionRenderer):
+    """Small persistent top bar with the video topic."""
+
+    def __init__(self, W, H, lang, highlight="#FFE14D"):
+        super().__init__(W, H, lang, highlight=highlight)
+        self.size = int(W * 0.040)
+        self.font = ImageFont.truetype(str(main_font(lang)), self.size)
+
+    def render_sticky(self, text, out_path: Path):
+        probe = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
+        tw = int(probe.textlength(text, font=self.font))
+        pad_x, pad_y = int(self.size * 0.55), int(self.size * 0.30)
+        w, h = tw + pad_x * 2, self.size + pad_y * 2
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle([0, 0, w - 1, h - 1], radius=h // 2, fill=(0, 0, 0, 140))
+        d.text((pad_x, pad_y - int(self.size * 0.08)), text, font=self.font,
+               fill=(255, 255, 255, 235))
+        img.save(out_path)
+        return img.size

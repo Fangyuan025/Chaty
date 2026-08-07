@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from common import (ASPECTS, die, download, ensure_dirs, http_get, load_storyboard, log,
-                    media_info, project_paths)
+                    media_info, project_paths, title_audit)
 
 MIN_SHORT_SIDE = 620
 PEXELS_KEY = os.environ.get("PEXELS_API_KEY", "").strip()
@@ -258,32 +258,27 @@ def gather(scene, W, H):
     return sorted(out, key=lambda c: score(c, W, H, scene["keywords"]), reverse=True)
 
 
-def fetch_scene(i, scene, sb, paths, excluded, used_urls):
-    W, H = ASPECTS[sb["aspect"]]
-    # explicit local file override
-    if scene.get("media"):
-        src = Path(scene["media"]).expanduser()
-        if not src.exists():
-            die(f"scene {i}: media override not found: {src}")
-        dest = paths["media"] / f"scene_{i:02d}{src.suffix.lower()}"
-        dest.write_bytes(src.read_bytes())
-        kind, w, h, dur = media_info(dest)
-        return {"i": i, "file": dest.name, "kind": kind, "w": w, "h": h, "dur": dur,
-                "provider": "local", "title": src.name, "creator": "", "license": "user-provided",
-                "source": str(src), "url": ""}
+def shot_name(i, j):
+    return f"{i:02d}{chr(96 + j)}"  # 01a, 01b, …
 
-    cands = gather(scene, W, H)
+
+def fetch_shot(i, j, query, scene, sb, paths, excluded, used_urls):
+    """Fetch one shot (j is 1-based within scene i)."""
+    W, H = ASPECTS[sb["aspect"]]
+    sc = dict(scene)
+    sc["keywords"] = [query]
+    cands = gather(sc, W, H)
     tried = 0
     for c in cands:
-        if c["url"] in excluded or c["url"] in used_urls or score(c, W, H, scene["keywords"]) < 0:
+        if c["url"] in excluded or c["url"] in used_urls or score(c, W, H, sc["keywords"]) < 0:
             continue
         tried += 1
         if tried > 6:
             break
         ext = ".mp4" if c["kind"] == "video" else \
             (".png" if ".png" in c["url"].lower() else ".jpg")
-        dest = paths["media"] / f"scene_{i:02d}{ext}"
-        log(f"  trying [{c['provider']}] {c['title'][:46]!r} {c['w']}x{c['h']}")
+        dest = paths["media"] / f"scene_{shot_name(i, j)}{ext}"
+        log(f"  [{shot_name(i, j)}] trying [{c['provider']}] {c['title'][:46]!r} {c['w']}x{c['h']}")
         if not download(c["url"], dest):
             log("    download failed")
             continue
@@ -299,50 +294,87 @@ def fetch_scene(i, scene, sb, paths, excluded, used_urls):
             excluded.add(c["url"])
             continue
         used_urls.add(c["url"])
-        return {"i": i, "file": dest.name, "kind": kind, "w": w, "h": h, "dur": round(dur, 2),
+        return {"file": dest.name, "kind": kind, "w": w, "h": h, "dur": round(dur, 2), "query": query,
                 **{k: c[k] for k in ("provider", "title", "creator", "license", "source", "url")}}
-    die(f"scene {i}: no usable asset found for keywords={scene['keywords']}. "
-        f"Try different English keywords: python scripts/assets.py <dir> --scene {i} --keywords \"...\"")
+    die(f"scene {i} shot {j}: no usable asset for query '{query}'. Try: "
+        f"python scripts/assets.py <dir> --scene {i} --shot {j} --keywords \"other english nouns\"")
+
+
+def local_shot(i, j, src_path, paths):
+    src = Path(src_path).expanduser()
+    if not src.exists():
+        die(f"scene {i}: media override not found: {src}")
+    dest = paths["media"] / f"scene_{shot_name(i, j)}{src.suffix.lower()}"
+    dest.write_bytes(src.read_bytes())
+    kind, w, h, dur = media_info(dest)
+    return {"file": dest.name, "kind": kind, "w": w, "h": h, "dur": round(dur, 2),
+            "provider": "local", "title": src.name, "creator": "", "license": "user-provided",
+            "source": str(src), "url": ""}
+
+
+def shots_needed(scene, est_dur):
+    """One visual change every ~3.2s, driven by keyword count and VO length."""
+    by_dur = max(1, round(est_dur / 3.2)) if est_dur else 1
+    return min(4, max(len(scene["keywords"]) or 1, by_dur))
 
 
 def build_sheet(manifest, paths, sb):
-    """Grid of numbered thumbnails so the agent can eyeball relevance."""
+    """Grid of labeled shot thumbnails so the agent can eyeball relevance."""
     from PIL import Image, ImageDraw, ImageFont
 
-    from common import main_font
+    from common import main_font, run
     W, H = ASPECTS[sb["aspect"]]
     tw = 300
     th = int(tw * H / W)
-    cols = min(4, max(1, len(manifest)))
-    rows = (len(manifest) + cols - 1) // cols
+    flat = [(m["i"], j + 1, s) for m in manifest for j, s in enumerate(m["shots"])]
+    cols = min(5, max(1, len(flat)))
+    rows = (len(flat) + cols - 1) // cols
     sheet = Image.new("RGB", (cols * tw, rows * (th + 34)), (18, 18, 18))
     font = ImageFont.truetype(str(main_font(sb["lang"])), 24)
-    for idx, m in enumerate(manifest):
-        src = paths["media"] / m["file"]
-        frame = paths["work"] / f"thumb_{m['i']:02d}.jpg"
-        from common import run
-        if m["kind"] == "video":
-            run(["ffmpeg", "-y", "-ss", str(max(0, m["dur"] / 3)), "-i", src,
-                 "-frames:v", "1", "-vf", f"scale={tw}:-2", frame])
-        else:
-            run(["ffmpeg", "-y", "-i", src, "-frames:v", "1", "-vf", f"scale={tw}:-2", frame])
+    for idx, (i, j, s) in enumerate(flat):
+        src = paths["media"] / s["file"]
+        frame = paths["work"] / f"thumb_{shot_name(i, j)}.jpg"
+        seek = ["-ss", str(max(0, s["dur"] / 3))] if s["kind"] == "video" else []
+        run(["ffmpeg", "-y", *seek, "-i", src, "-frames:v", "1",
+             "-vf", f"scale={tw}:-2", frame])
         im = Image.open(frame).convert("RGB")
         im.thumbnail((tw, th))
         x, y = (idx % cols) * tw, (idx // cols) * (th + 34)
         sheet.paste(im, (x + (tw - im.width) // 2, y + (th - im.height) // 2))
         d = ImageDraw.Draw(sheet)
         d.text((x + 8, y + th + 4),
-               f"{m['i']:02d} {m['kind']} {m['provider']}", font=font, fill=(255, 225, 77))
+               f"{shot_name(i, j)} {s['kind']} {s['provider']}", font=font, fill=(255, 225, 77))
     out = paths["media"] / "assets_sheet.jpg"
     sheet.save(out, quality=88)
     log(f"[assets] preview sheet -> {out}")
 
 
+def est_durations(paths, sb):
+    """Per-scene VO length estimates from timing.json (pipeline runs tts first)."""
+    est = {}
+    if paths["timing"].exists():
+        for s in json.loads(paths["timing"].read_text())["scenes"]:
+            est[s["i"]] = s["vo_end"] + 0.36
+    return est
+
+
+def load_manifest(paths):
+    if not paths["manifest"].exists():
+        return {}
+    raw = json.loads(paths["manifest"].read_text())
+    by_i = {}
+    for m in raw:
+        shots = m.get("shots") or [{k: v for k, v in m.items() if k != "i"}]  # legacy
+        by_i[m["i"]] = {"i": m["i"], "shots": shots}
+    return by_i
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("project_dir")
-    ap.add_argument("--scene", type=int, help="refetch a single scene (1-based)")
-    ap.add_argument("--keywords", help="override keywords for --scene")
+    ap.add_argument("--scene", type=int, help="refetch within a single scene (1-based)")
+    ap.add_argument("--shot", type=int, default=1, help="which shot of --scene to refetch")
+    ap.add_argument("--keywords", help="override query for --scene/--shot")
     args = ap.parse_args()
 
     sb = load_storyboard(args.project_dir)
@@ -352,33 +384,55 @@ def main():
     if paths["exclude"].exists():
         excluded = {l.strip() for l in paths["exclude"].read_text().splitlines() if l.strip()}
 
-    manifest = []
-    if paths["manifest"].exists():
-        manifest = json.loads(paths["manifest"].read_text())
-    by_i = {m["i"]: m for m in manifest}
-    used_urls = {m.get("url", "") for m in manifest if m.get("url")}
+    by_i = load_manifest(paths)
+    used_urls = {s.get("url", "") for m in by_i.values() for s in m["shots"] if s.get("url")}
+    est = est_durations(paths, sb)
 
-    targets = [args.scene] if args.scene else list(range(1, len(sb["scenes"]) + 1))
-    for i in targets:
-        scene = dict(sb["scenes"][i - 1])
-        if args.scene and args.keywords:
-            scene["keywords"] = [args.keywords]
-        if args.scene and i in by_i:  # refetch: blacklist the current asset
-            old = by_i[i]
+    if args.scene:
+        i, j = args.scene, args.shot
+        scene = sb["scenes"][i - 1]
+        entry = by_i.setdefault(i, {"i": i, "shots": []})
+        if j <= len(entry["shots"]):        # refetch: blacklist current asset
+            old = entry["shots"][j - 1]
             if old.get("url"):
                 excluded.add(old["url"])
                 used_urls.discard(old["url"])
-        elif not args.scene and i in by_i and (paths["media"] / by_i[i]["file"]).exists():
-            log(f"[assets] scene {i}: already have {by_i[i]['file']}, skipping")
-            continue
-        log(f"[assets] scene {i}: keywords={scene['keywords']}")
-        by_i[i] = fetch_scene(i, scene, sb, paths, excluded, used_urls)
+        query = args.keywords or scene["keywords"][(j - 1) % max(1, len(scene["keywords"]))]
+        log(f"[assets] scene {i} shot {j}: query='{query}'")
+        shot = fetch_shot(i, j, query, scene, sb, paths, excluded, used_urls)
+        while len(entry["shots"]) < j:
+            entry["shots"].append(shot)
+        entry["shots"][j - 1] = shot
+    else:
+        for i in range(1, len(sb["scenes"]) + 1):
+            scene = sb["scenes"][i - 1]
+            entry = by_i.setdefault(i, {"i": i, "shots": []})
+            if scene.get("media") and not entry["shots"]:
+                entry["shots"] = [local_shot(i, 1, scene["media"], paths)]
+                continue
+            need = shots_needed(scene, est.get(i))
+            kws = scene["keywords"] or [scene["text"][:40]]
+            for j in range(len(entry["shots"]) + 1, need + 1):
+                query = kws[(j - 1) % len(kws)]
+                log(f"[assets] scene {i} shot {j}/{need}: query='{query}'")
+                entry["shots"].append(
+                    fetch_shot(i, j, query, scene, sb, paths, excluded, used_urls))
+            if len(entry["shots"]) >= need:
+                log(f"[assets] scene {i}: {len(entry['shots'])} shot(s) ready")
 
     manifest = [by_i[i] for i in sorted(by_i)]
     paths["manifest"].write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
     paths["exclude"].write_text("\n".join(sorted(excluded)))
+    # Flag off-topic picks NOW, before a compose cycle is spent on them —
+    # for a text-only agent these lines ARE the asset review. Before the
+    # sheet build so a sheet failure can never eat the flags.
+    for i, j, t in title_audit(sb, manifest):
+        log(f'[assets] [!] scene {i} shot {j}: "{t}" looks OFF-TOPIC for its keywords — refetch it '
+            f'with --scene {i} --shot {j} --keywords "<concrete english nouns>" before composing')
     build_sheet(manifest, paths, sb)
-    log(f"[assets] done: {len(manifest)} assets. REVIEW media/assets_sheet.jpg before composing!")
+    n = sum(len(m["shots"]) for m in manifest)
+    log(f"[assets] done: {n} shots across {len(manifest)} scenes. "
+        "REVIEW media/assets_sheet.jpg before composing!")
 
 
 if __name__ == "__main__":
