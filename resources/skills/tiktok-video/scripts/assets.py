@@ -23,7 +23,8 @@ from pathlib import Path
 from common import (ASPECTS, die, download, ensure_dirs, http_get, load_storyboard, log,
                     media_info, project_paths, title_audit)
 
-MIN_SHORT_SIDE = 620
+MIN_SHORT_SIDE = 620        # images
+MIN_SHORT_VIDEO = 360       # video clips — motion forgives lower resolution
 PEXELS_KEY = os.environ.get("PEXELS_API_KEY", "").strip()
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
 
@@ -117,6 +118,114 @@ def p_nasa(q, n=10):
         return []
 
 
+def p_wikimedia_video(q, n=10):
+    """Real CC/PD video clips from Wikimedia Commons, using the server-side
+    transcodes (240p/480p/720p/1080p) so downloads stay small."""
+    try:
+        r = http_get("https://commons.wikimedia.org/w/api.php?action=query"
+                     f"&generator=search&gsrsearch=filetype:video {q}&gsrnamespace=6"
+                     f"&gsrlimit={n}&prop=videoinfo&viprop=url|size|mime|derivatives|extmetadata"
+                     "&format=json", timeout=30)
+        pages = (r.json().get("query") or {}).get("pages") or {}
+        out = []
+        for pg in sorted(pages.values(), key=lambda p: p.get("index", 99)):
+            vi = (pg.get("videoinfo") or [{}])[0]
+            derivs = [d for d in (vi.get("derivatives") or [])
+                      if d.get("src") and (d.get("height") or 0) >= 360
+                      and "vp9" in str(d.get("transcodekey", "")) + str(d.get("src", ""))]
+            best = None
+            for d in sorted(derivs, key=lambda d: d.get("height") or 0, reverse=True):
+                if (d.get("height") or 0) <= 1100:
+                    best = d
+                    break
+            if not best and derivs:
+                best = min(derivs, key=lambda d: d.get("height") or 9999)
+            if not best:
+                continue
+            meta = vi.get("extmetadata") or {}
+            out.append({"url": best["src"], "kind": "video",
+                        "w": best.get("width") or 0, "h": best.get("height") or 0, "dur": 0,
+                        "title": strip_tags(pg.get("title", "").replace("File:", "")),
+                        "creator": strip_tags((meta.get("Artist") or {}).get("value", ""))[:80],
+                        "license": strip_tags((meta.get("LicenseShortName") or {}).get("value", "")),
+                        "source": f"https://commons.wikimedia.org/wiki/{pg.get('title','').replace(' ', '_')}",
+                        "provider": "wikimedia_video"})
+        return out
+    except Exception as e:
+        log(f"  [wikimedia_video] error: {e}")
+        return []
+
+
+def p_nasa_video(q, n=6):
+    """NASA video library (public domain) — picks the medium/mobile mp4."""
+    try:
+        r = http_get(f"https://images-api.nasa.gov/search?q={q}&media_type=video", timeout=25)
+        items = (r.json().get("collection") or {}).get("items", [])[:n]
+        out = []
+        for it in items:
+            data = (it.get("data") or [{}])[0]
+            nasa_id = data.get("nasa_id")
+            if not nasa_id:
+                continue
+            try:
+                a = http_get(f"https://images-api.nasa.gov/asset/{nasa_id}", timeout=20)
+                files = [x.get("href", "") for x in (a.json().get("collection") or {}).get("items", [])]
+            except Exception:
+                continue
+            url = next((f for suffix in ("~medium.mp4", "~mobile.mp4", "~small.mp4", "~preview.mp4")
+                        for f in files if f.endswith(suffix)), None)
+            if not url:
+                continue
+            from urllib.parse import quote
+            url = quote(url, safe=":/~.%-_")
+            out.append({"url": url, "kind": "video", "w": 0, "h": 0, "dur": 0,
+                        "title": data.get("title") or "", "creator": data.get("center") or "NASA",
+                        "license": "Public Domain (NASA)",
+                        "source": f"https://images.nasa.gov/details/{nasa_id}",
+                        "provider": "nasa_video"})
+        return out
+    except Exception as e:
+        log(f"  [nasa_video] error: {e}")
+        return []
+
+
+def p_archive_video(q, n=6):
+    """Prelinger Archives (public-domain historical film) via archive.org.
+    Restricted to that curated collection because general archive.org license
+    metadata is user-supplied and often wrong."""
+    try:
+        r = http_get("https://archive.org/advancedsearch.php?q="
+                     f"collection:(prelinger) AND ({q})&fl=identifier,title&rows={n}"
+                     "&sort=-downloads&output=json", timeout=30)
+        out = []
+        for doc in (r.json().get("response") or {}).get("docs", []):
+            ident = doc.get("identifier")
+            if not ident:
+                continue
+            try:
+                meta = http_get(f"https://archive.org/metadata/{ident}", timeout=25).json()
+            except Exception:
+                continue
+            mp4s = [f for f in meta.get("files", [])
+                    if f.get("name", "").endswith(".mp4") and int(f.get("size") or 0) > 1_000_000]
+            if not mp4s:
+                continue
+            best = min(mp4s, key=lambda f: int(f.get("size") or 1 << 40))
+            if int(best.get("size") or 0) > 90_000_000:
+                continue
+            out.append({"url": f"https://archive.org/download/{ident}/{best['name']}",
+                        "kind": "video", "w": 0, "h": 0,
+                        "dur": float(best.get("length") or 0),
+                        "title": str(doc.get("title") or ident)[:80], "creator": "Prelinger Archives",
+                        "license": "Public Domain",
+                        "source": f"https://archive.org/details/{ident}",
+                        "provider": "archive_video"})
+        return out
+    except Exception as e:
+        log(f"  [archive_video] error: {e}")
+        return []
+
+
 def p_pexels_video(q, n=12, portrait=True):
     if not PEXELS_KEY:
         return []
@@ -189,17 +298,20 @@ def p_pixabay_video(q, n=12):
 
 PROVIDERS = {
     "openverse": p_openverse, "wikimedia": p_wikimedia, "nasa": p_nasa,
+    "wikimedia_video": p_wikimedia_video, "nasa_video": p_nasa_video,
+    "archive_video": p_archive_video,
     "pexels_video": p_pexels_video, "pexels_photo": p_pexels_photo,
     "pixabay_video": p_pixabay_video,
 }
-PROVIDER_RANK = {"pexels_video": 5, "pixabay_video": 4, "pexels_photo": 3,
+PROVIDER_RANK = {"pexels_video": 5, "pixabay_video": 4, "wikimedia_video": 4,
+                 "nasa_video": 4, "archive_video": 3, "pexels_photo": 3,
                  "wikimedia": 2, "openverse": 2, "nasa": 2}
 
 
 def default_providers():
     if PEXELS_KEY or PIXABAY_KEY:
         return ["pexels_video", "pixabay_video", "pexels_photo", "openverse", "wikimedia"]
-    return ["openverse", "wikimedia"]
+    return ["wikimedia_video", "openverse", "wikimedia"]
 
 
 # ------------------------------------------------------------------ scoring
@@ -211,7 +323,7 @@ def score(c, W, H, keywords):
     s = 0.0
     short = min(c["w"], c["h"]) if c["w"] and c["h"] else 0
     if short:
-        if short < MIN_SHORT_SIDE:
+        if short < (MIN_SHORT_VIDEO if c["kind"] == "video" else MIN_SHORT_SIDE):
             return -1
         s += min(short, 1600) / 1600 * 1.1
         target = W / H
@@ -229,6 +341,10 @@ def score(c, W, H, keywords):
     s += PROVIDER_RANK.get(c["provider"], 1) * 0.8
     if c["kind"] == "video":
         s += 1.2
+        if c["dur"]:
+            if c["dur"] < 2:
+                return -1
+            s += 0.4 if 4 <= c["dur"] <= 180 else (-0.5 if c["dur"] > 600 else 0)
     return s
 
 
@@ -301,8 +417,13 @@ def fetch_shot(i, j, query, scene, sb, paths, excluded, used_urls, used_hashes):
             log(f"    undecodable: {e}")
             dest.unlink(missing_ok=True)
             continue
-        if min(w, h) < MIN_SHORT_SIDE:
+        if min(w, h) < (MIN_SHORT_VIDEO if kind == "video" else MIN_SHORT_SIDE):
             log(f"    too small after download: {w}x{h}")
+            dest.unlink(missing_ok=True)
+            excluded.add(c["url"])
+            continue
+        if kind == "video" and dur < 1.5:
+            log(f"    video too short: {dur:.1f}s")
             dest.unlink(missing_ok=True)
             excluded.add(c["url"])
             continue

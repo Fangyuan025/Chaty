@@ -1,0 +1,46 @@
+{
+  "title": "大自然最疯狂的3种奇观",
+  "lang": "zh",
+  "aspect": "9:16",
+  "voice": "zh-CN-YunjianNeural",
+  "rate": "+10%",
+  "caption_style": "karaoke",
+  "bgm": {"mood": "epic", "gain_db": -17},
+  "hook": {"text": "地球特效大片", "seconds": 2.4},
+  "sources": [
+    "https://www.britannica.com/science/How-Hot-Can-Lightning-Get",
+    "https://scied.ucar.edu/learning-zone/sun-space-weather/aurora"
+  ],
+  "scenes": [
+    {
+      "text": "地球每天都在上演特效大片,不用一秒钟CGI。今天带你看大自然最疯狂的3种奇观,最后一个,比太阳表面还热5倍。",
+      "keywords": ["storm clouds timelapse", "supercell thunderstorm"],
+      "providers": ["wikimedia_video", "openverse", "wikimedia"],
+      "effect": "kb_in"
+    },
+    {
+      "text": "第三名,极光。太阳吹来的带电粒子,一头撞进地球大气层:氧气发出绿光,氮气发出紫光,整片夜空变成流动的画布。",
+      "keywords": ["aurora borealis timelapse", "aurora northern lights"],
+      "providers": ["wikimedia_video", "openverse", "wikimedia"],
+      "badge": "第3名"
+    },
+    {
+      "text": "第二名,火山喷发。上千度的岩浆冲破地壳,把岩石烧成流动的火河,这是来自地球内部的力量直播。",
+      "keywords": ["volcano eruption lava", "lava flow volcanic"],
+      "providers": ["wikimedia_video", "openverse", "wikimedia"],
+      "badge": "第2名"
+    },
+    {
+      "text": "第一名,闪电。一道闪电能瞬间把空气加热到三万开尔文,大约是太阳表面温度的5倍,你听到的雷声,就是空气被炸开的声音。",
+      "keywords": ["lightning storm night", "lightning strike slow motion"],
+      "providers": ["wikimedia_video", "openverse", "wikimedia"],
+      "badge": "第1名"
+    },
+    {
+      "text": "而这一切,每天都在地球的某个角落免费上演。关注我,带你看更多大自然的疯狂现场。",
+      "keywords": ["earth from space station", "ocean waves aerial drone"],
+      "providers": ["nasa_video", "wikimedia_video", "openverse"],
+      "effect": "kb_out"
+    }
+  ]
+}

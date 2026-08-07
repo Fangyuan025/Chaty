@@ -39,6 +39,12 @@
   verify-first workflow: every concrete claim in the script must be checked
   against live sources before writing, with URLs recorded in the storyboard
   and surfaced in the report for the user to audit.
+- **Real video footage without an API key (upstream merge).** Three keyless
+  motion sources join the providers: Wikimedia Commons video transcodes,
+  NASA's public-domain video library, and the Prelinger historical archive —
+  with negative-word query filtering ("lightning storm -satellite") to dodge
+  the satellite-map flood, and an `"approved": true` manifest override so a
+  hand-verified shot can silence a false title flag (eyes outrank text).
 - **The off-topic audit fires at fetch time, not just delivery time.**
   `assets.py` prints the same OFF-TOPIC flags the moment assets land —
   before a compose cycle is spent on a wrong pick — and the flags print

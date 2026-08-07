@@ -65,7 +65,7 @@ bash {SKILL_ROOT}/scripts/setup.sh
 | `sfx` | `true`(默认) \| `false` | 转场 whoosh 音效 |
 | 场景 `keywords` | **英文、具体名词**的列表 | **每条 = 一个镜头画面**;视频约每 3s 切一镜,场景超过 ~4s 就给 2–3 条(给少了会循环补拍) |
 | 场景 `badge` | 如 `"第1名"` / `"TOP 1"` | 场景开头的大号盖章标签,榜单类必用 |
-| 场景 `providers` | 列表 | 免 key:`openverse` `wikimedia` `nasa`;有 key:`pexels_video` `pexels_photo` `pixabay_video` |
+| 场景 `providers` | 列表 | 免 key 图片:`openverse` `wikimedia` `nasa`;**免 key 实拍视频**:`wikimedia_video`(Commons 视频转码)`nasa_video`(PD 太空/科学)`archive_video`(Prelinger 历史胶片);有 key:`pexels_video` `pexels_photo` `pixabay_video` |
 | 场景 `effect` | `auto` `kb_in` `kb_out` `pan_left` `pan_right` `static` | 第一镜的 Ken Burns 动效,后续镜头自动轮换 |
 | 场景 `media` | 文件路径 | 跳过搜索,用你自己准备的素材 |
 
@@ -103,6 +103,7 @@ bash {SKILL_ROOT}/scripts/setup.sh
 - `wikimedia` 擅长动物/科学/历史/地标;`openverse`(Flickr 等)擅长生活方式/风景/氛围;`nasa` 管太空;有 key 优先 `pexels_video`/`pixabay_video` 实拍。
 - 加语境词消歧:"NOAA"、"museum"、"aquarium"、"macro"。
 - 某场景反复搜不到就换**视觉概念**而不只是换词(讲"仅5%被探索"→拍剪影潜水员,别搜"statistics")。
+- `wikimedia_video` 支持负词过滤——气象/太空搜索会被卫星云图淹没,写 `"lightning storm -CIRA -satellite -JPSS"`;非英语词能挖到更多实拍("Blitz Gewitter"、"tormenta rayos");优先具体名词("Fagradalsfjall lava drone");视频缩略图务必目检:提防内嵌字幕、水印、软件教程和 CGI 宣传片。
 
 ## 排障
 
