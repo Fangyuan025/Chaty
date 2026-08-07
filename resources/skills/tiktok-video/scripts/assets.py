@@ -12,6 +12,7 @@ Writes: media/scene_NN.<ext>, media/manifest.json, media/assets_sheet.jpg
 URLs listed in media/exclude.txt are never used again.
 """
 import argparse
+import hashlib
 import html
 import json
 import os
@@ -262,8 +263,20 @@ def shot_name(i, j):
     return f"{i:02d}{chr(96 + j)}"  # 01a, 01b, …
 
 
-def fetch_shot(i, j, query, scene, sb, paths, excluded, used_urls):
-    """Fetch one shot (j is 1-based within scene i)."""
+def file_sha1(path) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def fetch_shot(i, j, query, scene, sb, paths, excluded, used_urls, used_hashes):
+    """Fetch one shot (j is 1-based within scene i).
+
+    Dedupe happens on two levels: candidate URL (cheap, pre-download) and
+    content sha1 (post-download) — the same picture often lives under several
+    URLs (mirrors, thumb vs original, different landing pages)."""
     W, H = ASPECTS[sb["aspect"]]
     sc = dict(scene)
     sc["keywords"] = [query]
@@ -293,21 +306,33 @@ def fetch_shot(i, j, query, scene, sb, paths, excluded, used_urls):
             dest.unlink(missing_ok=True)
             excluded.add(c["url"])
             continue
+        digest = file_sha1(dest)
+        if digest in used_hashes:
+            log("    duplicate content (same bytes as another shot), skipping")
+            dest.unlink(missing_ok=True)
+            excluded.add(c["url"])
+            continue
         used_urls.add(c["url"])
-        return {"file": dest.name, "kind": kind, "w": w, "h": h, "dur": round(dur, 2), "query": query,
+        used_hashes.add(digest)
+        return {"file": dest.name, "kind": kind, "w": w, "h": h, "dur": round(dur, 2),
+                "sha1": digest, "query": query,
                 **{k: c[k] for k in ("provider", "title", "creator", "license", "source", "url")}}
     die(f"scene {i} shot {j}: no usable asset for query '{query}'. Try: "
         f"python scripts/assets.py <dir> --scene {i} --shot {j} --keywords \"other english nouns\"")
 
 
-def local_shot(i, j, src_path, paths):
+def local_shot(i, j, src_path, paths, used_hashes=None):
     src = Path(src_path).expanduser()
     if not src.exists():
         die(f"scene {i}: media override not found: {src}")
     dest = paths["media"] / f"scene_{shot_name(i, j)}{src.suffix.lower()}"
     dest.write_bytes(src.read_bytes())
     kind, w, h, dur = media_info(dest)
+    digest = file_sha1(dest)
+    if used_hashes is not None:
+        used_hashes.add(digest)
     return {"file": dest.name, "kind": kind, "w": w, "h": h, "dur": round(dur, 2),
+            "sha1": digest,
             "provider": "local", "title": src.name, "creator": "", "license": "user-provided",
             "source": str(src), "url": ""}
 
@@ -388,41 +413,72 @@ def main():
     used_urls = {s.get("url", "") for m in by_i.values() for s in m["shots"] if s.get("url")}
     est = est_durations(paths, sb)
 
-    if args.scene:
-        i, j = args.scene, args.shot
-        scene = sb["scenes"][i - 1]
-        entry = by_i.setdefault(i, {"i": i, "shots": []})
-        if j <= len(entry["shots"]):        # refetch: blacklist current asset
-            old = entry["shots"][j - 1]
-            if old.get("url"):
-                excluded.add(old["url"])
-                used_urls.discard(old["url"])
-        query = args.keywords or scene["keywords"][(j - 1) % max(1, len(scene["keywords"]))]
-        log(f"[assets] scene {i} shot {j}: query='{query}'")
-        shot = fetch_shot(i, j, query, scene, sb, paths, excluded, used_urls)
-        while len(entry["shots"]) < j:
-            entry["shots"].append(shot)
-        entry["shots"][j - 1] = shot
-    else:
-        for i in range(1, len(sb["scenes"]) + 1):
+    # content-level dedupe: hashes of everything already in the video, plus
+    # hashes blacklisted by earlier refetches (persisted across runs)
+    blacklisted_hashes = set()
+    if paths["exclude_hashes"].exists():
+        blacklisted_hashes = {l.strip() for l in paths["exclude_hashes"].read_text().splitlines()
+                              if l.strip()}
+    used_hashes = set(blacklisted_hashes)
+    for m in by_i.values():
+        for s in m["shots"]:
+            if s.get("sha1"):
+                used_hashes.add(s["sha1"])
+            elif (paths["media"] / s["file"]).exists():
+                s["sha1"] = file_sha1(paths["media"] / s["file"])
+                used_hashes.add(s["sha1"])
+
+    def save_state():
+        manifest = [by_i[i] for i in sorted(by_i)]
+        paths["manifest"].write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
+        paths["exclude"].write_text("\n".join(sorted(excluded)))
+        paths["exclude_hashes"].write_text("\n".join(sorted(blacklisted_hashes)))
+        return manifest
+
+    try:
+        if args.scene:
+            i, j = args.scene, args.shot
             scene = sb["scenes"][i - 1]
             entry = by_i.setdefault(i, {"i": i, "shots": []})
-            if scene.get("media") and not entry["shots"]:
-                entry["shots"] = [local_shot(i, 1, scene["media"], paths)]
-                continue
-            need = shots_needed(scene, est.get(i))
-            kws = scene["keywords"] or [scene["text"][:40]]
-            for j in range(len(entry["shots"]) + 1, need + 1):
-                query = kws[(j - 1) % len(kws)]
-                log(f"[assets] scene {i} shot {j}/{need}: query='{query}'")
-                entry["shots"].append(
-                    fetch_shot(i, j, query, scene, sb, paths, excluded, used_urls))
-            if len(entry["shots"]) >= need:
-                log(f"[assets] scene {i}: {len(entry['shots'])} shot(s) ready")
+            if j <= len(entry["shots"]):        # refetch: blacklist current asset
+                old = entry["shots"][j - 1]
+                if old.get("url"):
+                    excluded.add(old["url"])
+                    used_urls.discard(old["url"])
+                if old.get("sha1"):
+                    blacklisted_hashes.add(old["sha1"])
+                    used_hashes.add(old["sha1"])
+            if j > len(entry["shots"]) + 1:
+                die(f"scene {i} has {len(entry['shots'])} shot(s); --shot must be "
+                    f"<= {len(entry['shots']) + 1} (or run a full assets pass to add shots)")
+            query = args.keywords or scene["keywords"][(j - 1) % max(1, len(scene["keywords"]))]
+            log(f"[assets] scene {i} shot {j}: query='{query}'")
+            shot = fetch_shot(i, j, query, scene, sb, paths, excluded, used_urls, used_hashes)
+            if j == len(entry["shots"]) + 1:
+                entry["shots"].append(shot)
+            else:
+                entry["shots"][j - 1] = shot
+        else:
+            for i in range(1, len(sb["scenes"]) + 1):
+                scene = sb["scenes"][i - 1]
+                entry = by_i.setdefault(i, {"i": i, "shots": []})
+                if scene.get("media") and not entry["shots"]:
+                    entry["shots"] = [local_shot(i, 1, scene["media"], paths, used_hashes)]
+                    continue
+                need = shots_needed(scene, est.get(i))
+                kws = scene["keywords"] or [scene["text"][:40]]
+                for j in range(len(entry["shots"]) + 1, need + 1):
+                    query = kws[(j - 1) % len(kws)]
+                    log(f"[assets] scene {i} shot {j}/{need}: query='{query}'")
+                    entry["shots"].append(
+                        fetch_shot(i, j, query, scene, sb, paths, excluded, used_urls, used_hashes))
+                if len(entry["shots"]) >= need:
+                    log(f"[assets] scene {i}: {len(entry['shots'])} shot(s) ready")
+    finally:
+        # keep fetched shots + blacklists even when a later shot fails, so a
+        # rerun (or --scene refetch) resumes instead of redownloading
+        manifest = save_state()
 
-    manifest = [by_i[i] for i in sorted(by_i)]
-    paths["manifest"].write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
-    paths["exclude"].write_text("\n".join(sorted(excluded)))
     # Flag off-topic picks NOW, before a compose cycle is spent on them —
     # for a text-only agent these lines ARE the asset review. Before the
     # sheet build so a sheet failure can never eat the flags.

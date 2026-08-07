@@ -190,6 +190,7 @@ def project_paths(project_dir) -> dict:
         "media": p / "media",
         "manifest": p / "media" / "manifest.json",
         "exclude": p / "media" / "exclude.txt",
+        "exclude_hashes": p / "media" / "exclude_hashes.txt",
         "work": p / "work",
         "review": p / "review",
         "bgm": p / "bgm.mp3",

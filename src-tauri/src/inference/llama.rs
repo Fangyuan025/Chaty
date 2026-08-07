@@ -50,16 +50,16 @@ use crate::errlog::chaty_data_dir;
 
 /// Pure state machine over a base dir (testable): promote a stale inflight
 /// marker to the persistent block, and report whether GPU must stay off.
+/// PURE means no logging — the first version appended to the REAL error log
+/// from in here, so every `cargo test` run stamped a false "gpu crashed"
+/// entry into the dev machine's user log (the errlog-pollution sin, third
+/// occurrence). The production caller logs; the state machine doesn't.
 fn gpu_guard_check(base: &Path) -> bool {
     let inflight = base.join(GPU_INFLIGHT);
     let blocked = base.join(GPU_BLOCKED);
     if inflight.exists() {
         let _ = std::fs::write(&blocked, "previous model load crashed the process\n");
         let _ = std::fs::remove_file(&inflight);
-        crate::errlog::append_error(
-            "gpu-crash-guard",
-            "previous model load crashed the process (likely GPU driver abort, issue #5 class); GPU offload disabled — running CPU-only from now on",
-        );
     }
     blocked.exists()
 }
@@ -73,7 +73,15 @@ fn gpu_guard_check(base: &Path) -> bool {
 pub fn apply_gpu_crash_guard() -> bool {
     #[cfg(windows)]
     {
-        let blocked = gpu_guard_check(&chaty_data_dir());
+        let base = chaty_data_dir();
+        let promoted = base.join(GPU_INFLIGHT).exists();
+        let blocked = gpu_guard_check(&base);
+        if promoted && blocked {
+            crate::errlog::append_error(
+                "gpu-crash-guard",
+                "previous model load crashed the process (likely GPU driver abort, issue #5 class); GPU offload disabled — running CPU-only from now on",
+            );
+        }
         if blocked {
             // Vulkan backend: zero visible devices = never touches the
             // driver's allocation/pipeline paths again.

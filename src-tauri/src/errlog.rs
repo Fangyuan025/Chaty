@@ -69,6 +69,15 @@ fn append_error_to(path: &PathBuf, kind: &str, detail: &str) {
 /// Append one entry. Never panics, never blocks meaningfully; detail is
 /// length-capped so a runaway error can't balloon the file in one write.
 pub fn append_error(kind: &str, detail: &str) {
+    // Unit tests must NEVER reach the real user log — three separate test
+    // runs have stamped false entries into the owner's actual log through
+    // code that called this transitively. Compiled out of existence in
+    // `cargo test`; tests that test appending use append_error_to directly.
+    #[cfg(test)]
+    {
+        let _ = (kind, detail);
+    }
+    #[cfg(not(test))]
     append_error_to(&error_log_path(), kind, detail);
 }
 
