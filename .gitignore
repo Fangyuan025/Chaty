@@ -32,3 +32,7 @@ src-tauri/mlx-sidecar/.build/
 *.sln
 *.sw?
 .preview-dist/
+
+# Python bytecode debris (skill scripts run in place during validation)
+__pycache__/
+*.pyc

@@ -22,7 +22,9 @@ const supportRows: string[] = [];
 function walkFiles(root: string, rel = ""): string[] {
   const out: string[] = [];
   for (const name of readdirSync(path.join(root, rel)).sort()) {
-    if (name === ".DS_Store") continue;
+    // Editor/runtime debris must never ship: a stray .pyc once rode the
+    // bundle into every workspace as mangled UTF-8.
+    if (name === ".DS_Store" || name === "__pycache__" || name.endsWith(".pyc")) continue;
     const r = rel ? `${rel}/${name}` : name;
     if (statSync(path.join(root, r)).isDirectory()) out.push(...walkFiles(root, r));
     else out.push(r);

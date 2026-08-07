@@ -115,6 +115,8 @@ describe("precedence & discovery", () => {
     for (const must of ["scripts/pipeline.py", "scripts/setup.sh", "scripts/compose.py", "references/writing-guide.md"]) {
       expect(paths).toContain(must);
     }
+    // No runtime debris in the bundle — a stray .pyc once shipped.
+    expect(paths.every((p) => !p.includes("__pycache__") && !p.endsWith(".pyc"))).toBe(true);
     // Knowledge-only skills have no support files.
     expect(officialSkillSupport("mac-app")).toBeNull();
     expect(skillRoot("tiktok-video")).toBe(".chaty/skills/tiktok-video");
