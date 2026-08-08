@@ -1,6 +1,6 @@
 <div align="center">
 
-**English** · [简体中文](README.zh-CN.md)
+**English** · [简体中文](README.zh-CN.md) · [Português (BR)](README.pt-BR.md)
 
 <img src="icon.png" width="88" height="88" alt="Chaty" />
 
@@ -119,7 +119,7 @@ Same model, same tasks, same grading, one machine — five agent designs. Chaty 
 - A streaming, foldable **`<think>`** panel that follows the model's reasoning as it generates.
 - **KaTeX** math, tables, **Mermaid** diagrams, per-block code copy, and in-app rendering of single-file HTML — including playable web games.
 - A **⌘K command palette**, pinnable / renameable conversations, drag-and-drop attachments, export (Markdown / JSON), and full-text search.
-- Four palettes (two dark, two light) with system-theme following, native UI zoom, reduced-motion support, and an **English / 简体中文** UI.
+- Four palettes (two dark, two light) with system-theme following, native UI zoom, reduced-motion support, and an **English / 简体中文 / Português (BR)** UI.
 
 <br />
 

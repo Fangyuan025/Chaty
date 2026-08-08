@@ -1,6 +1,6 @@
 <div align="center">
 
-[English](README.md) · **简体中文**
+[English](README.md) · **简体中文** · [Português (BR)](README.pt-BR.md)
 
 <img src="icon.png" width="88" height="88" alt="Chaty" />
 
@@ -118,7 +118,7 @@ Deep Research 与免手语音。
 - 流式、可折叠的 **`<think>`** 面板,随生成自动跟随模型推理。
 - **KaTeX** 数学、表格、**Mermaid** 图、逐块代码复制,以及应用内渲染单文件 HTML —— 含可玩的网页游戏。
 - **⌘K 命令面板**、可置顶/重命名的对话、拖拽附件、导出(Markdown / JSON)与全文搜索。
-- 四套配色(深浅各两款,可跟随系统)、原生界面缩放、减少动态效果支持,以及 **English / 简体中文** 界面。
+- 四套配色(深浅各两款,可跟随系统)、原生界面缩放、减少动态效果支持,以及 **English / 简体中文 / Português (BR)** 界面。
 
 <br />
 
