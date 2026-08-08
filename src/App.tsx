@@ -1232,6 +1232,8 @@ export default function App() {
       showNotice("warn", t("ctxClamped", { n: info.nCtx }));
     } else if (info.warning === "gpu-crash-cpu") {
       showNotice("warn", t("gpuCrashCpu"));
+    } else if (info.warning === "conversion-suspect") {
+      showNotice("warn", t("conversionSuspect"));
     }
   }
 

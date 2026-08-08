@@ -64,6 +64,18 @@ fn gpu_guard_check(base: &Path) -> bool {
     blocked.exists()
 }
 
+/// Model families llama.cpp must load under their OWN architecture to apply
+/// μP-style embedding/logit scaling. A GGUF whose NAME says such a family
+/// but whose metadata declares plain "llama" went through the wrong
+/// converter: the scalers are gone from the file entirely, and the model
+/// degenerates (the MiniCPM5-as-llama case emitted deterministic whitespace
+/// to the token cap). Detection is name-based on purpose — the correct
+/// arch keys are absent from such files, so the name is all that's left.
+fn conversion_suspect(name: &str, arch: &str) -> bool {
+    let n = name.to_lowercase();
+    arch == "llama" && ["minicpm"].iter().any(|f| n.contains(f))
+}
+
 /// Call once at process start, BEFORE any llama backend init. Returns true
 /// when GPU offload was blocked because a previous load crashed the process.
 /// Windows-only in effect: the crash class is the Vulkan driver, macOS runs
@@ -502,6 +514,15 @@ impl LlamaEngine {
             Some("mmproj-failed".to_string())
         } else if n_ctx < n_ctx_wanted {
             Some("ctx-clamped".to_string())
+        } else if conversion_suspect(
+            &format!(
+                "{} {}",
+                Path::new(path).file_name().and_then(|s| s.to_str()).unwrap_or(""),
+                model.meta_val_str("general.name").unwrap_or_default()
+            ),
+            &model.meta_val_str("general.architecture").unwrap_or_default(),
+        ) {
+            Some("conversion-suspect".to_string())
         } else {
             None
         };
@@ -1037,6 +1058,20 @@ fn run_turn(
         }
 
         n_decoded += 1;
+        // ── Degenerate-output watchdog ── a model that has produced 32
+        // tokens of pure whitespace is not thinking, it is broken (the
+        // MiniCPM5-as-llama case: a GGUF converted under the wrong
+        // architecture loses its embed/logit scalers and deterministically
+        // emits spaces until the token cap). Say so instead of streaming a
+        // silent screenful of nothing — the user reads "no answer", when
+        // the truth is "this model file is a bad conversion".
+        if n_decoded == 32 && out.trim().is_empty() {
+            sink.emit(StreamEvent::Token {
+                text: "⚠️ 模型输出退化(连续空白),已中止。该模型文件很可能转换损坏或架构不受支持(例如 MiniCPM 系被按 llama 架构转换,缩放参数丢失)。请换用该模型的其他来源或格式(正确架构的 GGUF / MLX 版)。\n(Model output degenerated into pure whitespace — aborted. The file is likely a broken conversion or unsupported architecture; try a different build of this model.)".to_string(),
+            })?;
+            stop_reason = "degenerate";
+            break;
+        }
         // max_tokens == 0 means "no per-reply cap" (the context window still bounds us).
         if req.params.max_tokens > 0 && n_decoded >= req.params.max_tokens {
             stop_reason = "length";
@@ -1918,6 +1953,17 @@ mod tests {
     /// The crash-guard state machine (issue #5): a leftover inflight marker
     /// means the previous load killed the process → promote it to the
     /// persistent block; a clean dir stays unblocked; the block persists.
+    /// A family that needs its own arch, exported as plain llama, must be
+    /// flagged; legitimate llama models and correctly-converted files not.
+    #[test]
+    fn conversion_suspect_flags_wrong_converter() {
+        assert!(conversion_suspect("MiniCPM5-1B-F16.gguf MiniCPM5 1B", "llama"));
+        assert!(conversion_suspect("minicpm-2b.Q4.gguf ", "llama"));
+        assert!(!conversion_suspect("MiniCPM5-1B.gguf MiniCPM5", "minicpm5"));
+        assert!(!conversion_suspect("Llama-3-8B.gguf Meta Llama 3", "llama"));
+        assert!(!conversion_suspect("Qwen3.5-0.8B.gguf Qwen", "qwen3"));
+    }
+
     #[test]
     fn gpu_crash_guard_state_machine() {
         let base = std::env::temp_dir().join(format!("chaty-gpu-guard-{}", std::process::id()));
