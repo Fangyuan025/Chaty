@@ -350,11 +350,6 @@ export const T = {
   inputPhMod: { zh: "输入消息，⌘/Ctrl+Enter 发送，Enter 换行", en: "Message… (⌘/Ctrl+Enter to send, Enter for newline)" },
   inputPhWeb: { zh: "联网搜索已开启，输入问题…", en: "Web search on — ask anything…" },
   inputPhNoModel: { zh: "先加载一个模型…", en: "Load a model first…" },
-  webOn: { zh: "联网搜索：已开启", en: "Web search: on" },
-  webOff: { zh: "联网搜索：已关闭", en: "Web search: off" },
-  thinkOn: { zh: "思考模式：已开启", en: "Thinking mode: on" },
-  thinkOff: { zh: "思考模式：已关闭", en: "Thinking mode: off" },
-  webDesignOn: { zh: "网页设计模式：已开启（/webdesign 切换）", en: "Web design mode: on (/webdesign to toggle)" },
   webDesignOff: { zh: "网页设计模式：已关闭（/webdesign 切换）", en: "Web design mode: off (/webdesign to toggle)" },
   webDesignChip: { zh: "网页设计模式", en: "Web design mode" },
   inputPhDesign: { zh: "描述你想要的界面，模型会生成单文件 HTML…", en: "Describe the UI you want — get a single-file HTML…" },
@@ -364,10 +359,6 @@ export const T = {
   toolThink: { zh: "思考模式", en: "Thinking mode" },
   toolDesign: { zh: "网页设计模式", en: "Web design mode" },
   thinkUnsupported: { zh: "当前模型不支持思考模式", en: "This model doesn't support thinking" },
-  thinkAuto: {
-    zh: "该模型（Qwen3.5+）由架构自动管理思考，无需手动开关",
-    en: "Thinking is auto-managed by this model (Qwen3.5+); no manual switch",
-  },
   // update banner
   updateAvailable: { zh: "发现新版本 v{v}", en: "Update available — v{v}" },
   updateNow: { zh: "立即更新", en: "Update now" },
@@ -384,8 +375,6 @@ export const T = {
   liveListening: { zh: "聆听中…", en: "Listening…" },
   liveThinking: { zh: "思考中…", en: "Thinking…" },
   liveSpeaking: { zh: "回答中…", en: "Speaking…" },
-  speakOn: { zh: "朗读回复：开", en: "Read replies aloud: on" },
-  speakOff: { zh: "朗读回复：关", en: "Read replies aloud: off" },
   speakAloud: { zh: "朗读回复", en: "Read replies aloud" },
   // context menu
   ctxCut: { zh: "剪切", en: "Cut" },

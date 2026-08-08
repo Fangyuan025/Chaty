@@ -55,10 +55,18 @@
   (load → generate → cancel mid-stream → regenerate), the key-less search
   chain, article extraction, and a full UI walkthrough in English and
   Portuguese (every settings tab, Code mode, Canvas) — all green.
-- Engineering debt swept: 21 dead i18n keys deleted (translators would
-  have translated them for nothing), the last copy-pasted browser UA
-  consolidated, and skills materialized into a workspace now carry a
-  `.gitignore` so derived scripts never pollute the user's repo.
+- Engineering debt swept: 29 dead i18n keys deleted (translators would
+  have translated them for nothing) and a **dead-key CI guard** added — a
+  defined-but-unreferenced key now fails the build, closing the asymmetry
+  that let feature rewrites orphan their strings silently (the guard's
+  first run caught 8 keys the hand audit had waved through). The last
+  copy-pasted browser UA was consolidated, and skills materialized into a
+  workspace now carry a `.gitignore` so derived scripts never pollute the
+  user's repo.
+- **The new platform defenses paid for themselves on their first flight**:
+  Windows CI's first real test run caught the Windows `build_command`
+  skipping the npm/electron cache redirect that macOS and Linux apply —
+  fixed, three platforms now behave identically.
 
 ## v2.0.6 — One sentence in, a finished video out (2026-08-06)
 

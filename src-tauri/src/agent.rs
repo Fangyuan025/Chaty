@@ -3345,6 +3345,11 @@ fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
     let mut cmd = Command::new("cmd");
     cmd.arg("/C").arg(command);
     hide_console(&mut cmd); // every agent step would flash a console otherwise
+    // Same cache redirect the unix variants apply — Windows was the one
+    // platform that forgot, caught the first time this test actually RAN on
+    // a Windows CI runner. Keeps agent npm/electron caches self-contained
+    // under %TEMP% instead of scattered through the user profile.
+    redirect_tool_caches(&mut cmd);
     cmd
 }
 
