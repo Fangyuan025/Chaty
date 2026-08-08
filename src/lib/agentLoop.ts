@@ -1134,6 +1134,9 @@ async function execTool(
               for (const f of support.files) {
                 await agentWriteFile(`${root}/${f.path}`, f.text);
               }
+              // Materialized skills are DERIVED content (bundle-owned, plus
+              // their venv/assets) — keep them out of the user's repo.
+              await agentWriteFile(`${root}/.gitignore`, "*\n");
               await agentWriteFile(revPath, `${support.rev}\n`);
             }
           } catch (e) {

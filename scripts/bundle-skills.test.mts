@@ -11,6 +11,10 @@ import { OFFICIAL_SKILL_FILES, OFFICIAL_SKILL_SUPPORT } from "../src/lib/officia
 
 const dir = "resources/skills";
 
+/** A CRLF checkout (Windows CI/contributors) must not read as drift — the
+ *  bundle was generated from an LF working tree. */
+const lf = (s: string) => s.replace(/\r\n/g, "\n");
+
 function walk(root: string, rel = ""): string[] {
   const out: string[] = [];
   for (const name of readdirSync(path.join(root, rel)).sort()) {
@@ -29,12 +33,12 @@ describe("skill bundle freshness", () => {
       if (e === ".DS_Store") continue;
       const p = path.join(dir, e);
       if (e.endsWith(".md") && statSync(p).isFile()) {
-        expect(byFile.get(e), `${e} drifted`).toBe(readFileSync(p, "utf8"));
+        expect(byFile.get(e), `${e} drifted`).toBe(lf(readFileSync(p, "utf8")));
       } else if (statSync(p).isDirectory()) {
-        expect(byFile.get(`${e}/SKILL.md`), `${e}/SKILL.md drifted`).toBe(readFileSync(path.join(p, "SKILL.md"), "utf8"));
+        expect(byFile.get(`${e}/SKILL.md`), `${e}/SKILL.md drifted`).toBe(lf(readFileSync(path.join(p, "SKILL.md"), "utf8")));
         const hash = createHash("sha256");
         for (const f of walk(p).filter((x) => x !== "SKILL.md")) {
-          hash.update(f).update("\0").update(readFileSync(path.join(p, f), "utf8")).update("\0");
+          hash.update(f).update("\0").update(lf(readFileSync(path.join(p, f), "utf8"))).update("\0");
         }
         expect(OFFICIAL_SKILL_SUPPORT[e]?.rev, `${e} support drifted`).toBe(hash.digest("hex").slice(0, 16));
       }

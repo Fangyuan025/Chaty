@@ -119,7 +119,6 @@ export const T = {
     en: "Used locally only: piped straight to sudo, never shown, logged, saved to history, or sent to the model. Leave blank if your system is passwordless.", pt: "Usado apenas localmente: enviado diretamente para o sudo, nunca exibido, registrado, salvo no histórico ou enviado ao modelo. Deixe em branco se o seu sistema não exige senha.",
   },
   cmGrantRevoke: { zh: "取消该目录的访问授权", en: "Revoke access to this directory", pt: "Revogar acesso a este diretório" },
-  cmGrantAdd: { zh: "添加目录", en: "Add folder", pt: "Adicionar pasta" },
   cmGrantAddTip: {
     zh: "允许本会话访问工作区以外的其他文件夹",
     en: "Allow this session to access another folder outside the workspace", pt: "Permitir que esta sessão acesse outra pasta fora do workspace",
@@ -245,7 +244,6 @@ export const T = {
   noModel: { zh: "未加载模型", en: "No model", pt: "Sem modelo" },
   loadingModel: { zh: "加载中…", en: "Loading…", pt: "Carregando…" },
   changeModel: { zh: "更换模型", en: "Change model", pt: "Trocar modelo" },
-  loadGguf: { zh: "加载模型", en: "Load model", pt: "Carregar modelo" },
   modelsHeader: { zh: "models 文件夹", en: "Models folder", pt: "Pasta de modelos" },
   loadFromFolder: { zh: "从文件夹载入…", en: "Load from folder…", pt: "Carregar da pasta…" },
   noModelsFound: { zh: "models 文件夹中暂无模型", en: "No models in the models folder", pt: "Nenhum modelo na pasta models" },
@@ -328,13 +326,7 @@ export const T = {
     en: 'Permanently delete the model file "{name}"? This cannot be undone.',
   },
   // html preview
-  htmlPreview: { zh: "预览", en: "Preview" },
-  htmlPreviewTitle: { zh: "预览 HTML 渲染效果", en: "Preview rendered HTML" },
-  openInBrowser: { zh: "在浏览器打开", en: "Open in browser" },
   closePreview: { zh: "关闭预览", en: "Close preview" },
-  zoomIn: { zh: "放大（Ctrl +）", en: "Zoom in (Ctrl +)" },
-  zoomOut: { zh: "缩小（Ctrl −）", en: "Zoom out (Ctrl −)" },
-  zoomReset: { zh: "重置缩放（Ctrl 0）", en: "Reset zoom (Ctrl 0)" },
   noConversations: { zh: "暂无历史会话", en: "No conversations yet" },
   deleteConv: { zh: "删除会话", en: "Delete conversation" },
   confirm: { zh: "确认", en: "Confirm" },
@@ -366,7 +358,6 @@ export const T = {
   webDesignOff: { zh: "网页设计模式：已关闭（/webdesign 切换）", en: "Web design mode: off (/webdesign to toggle)" },
   webDesignChip: { zh: "网页设计模式", en: "Web design mode" },
   inputPhDesign: { zh: "描述你想要的界面，模型会生成单文件 HTML…", en: "Describe the UI you want — get a single-file HTML…" },
-  attachTitle: { zh: "添加附件（文档 / PDF / 图片）", en: "Attach a file (document / PDF / image)" },
   toolsMenu: { zh: "工具", en: "Tools" },
   toolAttach: { zh: "添加附件", en: "Attach a file" },
   toolWeb: { zh: "联网搜索", en: "Web search" },
@@ -395,7 +386,6 @@ export const T = {
   liveSpeaking: { zh: "回答中…", en: "Speaking…" },
   speakOn: { zh: "朗读回复：开", en: "Read replies aloud: on" },
   speakOff: { zh: "朗读回复：关", en: "Read replies aloud: off" },
-  voiceMenu: { zh: "语音", en: "Voice" },
   speakAloud: { zh: "朗读回复", en: "Read replies aloud" },
   // context menu
   ctxCut: { zh: "剪切", en: "Cut" },
@@ -436,7 +426,6 @@ export const T = {
   // attachment
   removeAttach: { zh: "移除附件", en: "Remove attachment" },
   visionAttach: { zh: "图片 · 模型将直接查看", en: "Image · the model will see it" },
-  cmAttachImage: { zh: "附加图片让模型查看", en: "Attach an image for the model to see" },
   cmAttachFile: { zh: "附加文件(文档或图片)", en: "Attach a file (document or image)" },
   cmClickPreview: { zh: "点击预览", en: "click to preview" },
   cmSaveImage: { zh: "保存到本地", en: "Save to disk" },
@@ -446,7 +435,6 @@ export const T = {
   visionBadge: { zh: "视觉", en: "Vision" },
   visionBadgeTip: { zh: "支持视觉——加载后可直接理解图片", en: "Vision-capable — understands images once loaded" },
   mlxBadgeTip: { zh: "MLX 文件夹模型，由 Apple Silicon 专用引擎运行", en: "MLX folder model — runs on the Apple-Silicon-native engine" },
-  dlMlxFiles: { zh: "{n} 个文件", en: "{n} files" },
   storeSearchPh: { zh: "搜索模型，或粘贴仓库链接后回车…", en: "Search models, or paste a repo link and press Enter…" },
   storeFormat: { zh: "格式", en: "Format" },
   storeSort: { zh: "排序", en: "Sort" },
@@ -468,9 +456,6 @@ export const T = {
     en: "The vision encoder failed to load — text only this session (images fall back to OCR).",
   },
   miVision: { zh: "视觉", en: "Vision" },
-  dlVisionPair: { zh: "视觉模型：将同时下载视觉编码器 (mmproj)", en: "Vision model: the vision encoder (mmproj) will be downloaded too" },
-  dlVisionTag: { zh: "视觉编码器", en: "vision encoder" },
-  dlPairing: { zh: "正在下载视觉编码器…", en: "Downloading the vision encoder…" },
   setupVision: { zh: "支持看图", en: "Understands images" },
   truncatedSuffix: { zh: " · 已截断", en: " · truncated" },
   charsLabel: { zh: "{n} 字", en: "{n} chars" },
@@ -483,9 +468,6 @@ export const T = {
   exportJson: { zh: "导出为 JSON", en: "Export as JSON" },
   exportFailed: { zh: "导出失败", en: "Export failed" },
   dlTitle: { zh: "下载模型", en: "Download model" },
-  dlRepoPh: { zh: "HuggingFace 仓库，如 Qwen/Qwen3-4B-GGUF", en: "HuggingFace repo, e.g. Qwen/Qwen3-4B-GGUF" },
-  dlSearch: { zh: "查找", en: "Find" },
-  dlSearching: { zh: "查找中…", en: "Finding…" },
   dlHint: {
     zh: "输入 HuggingFace 仓库（owner/name）或其网址，列出其中的模型文件（GGUF / MLX）后下载到模型文件夹。",
     en: "Enter a HuggingFace repo (owner/name) or URL to list its model files (GGUF / MLX) and download into your models folder.",
@@ -534,7 +516,6 @@ export const T = {
   },
   reloadApply: { zh: "重新加载模型以生效", en: "Reload model to apply" },
   // data management
-  dataSection: { zh: "数据", en: "Data" },
   openDataDir: { zh: "打开数据文件夹", en: "Open data folder" },
   clearAllChats: { zh: "清空所有对话", en: "Clear all chats" },
   confirmClearChats: {
@@ -671,10 +652,6 @@ export const T = {
     en: "Clear the entire knowledge base? All indexed documents will be removed (the embedding model is kept). This can't be undone.",
   },
   kbReportTitle: { zh: "知识库报告", en: "Knowledge-base report" },
-  kbReportPh: {
-    zh: "输入报告主题或问题，模型只依据你的知识库文档作答，例如：总结这批合同的关键条款与风险",
-    en: "Enter a report topic or question — grounded only in your KB docs, e.g. summarize the key terms and risks across these contracts",
-  },
   kbReportEmpty: {
     zh: "正在根据你的知识库内容生成概览报告……",
     en: "Generating an overview report from your knowledge base…",
@@ -732,10 +709,6 @@ export const T = {
   // deep research
   toolDeepResearch: { zh: "深度研究", en: "Deep Research" },
   drTitle: { zh: "深度研究", en: "Deep Research" },
-  drSub: {
-    zh: "多轮联网检索 + 推理，生成含来源的深度报告",
-    en: "Multi-round web search + reasoning → an in-depth, cited report",
-  },
   drTopicPh: {
     zh: "输入研究主题，例如：固态电池的最新进展与商业化前景",
     en: "Enter a topic, e.g. the state of solid-state batteries and commercialization outlook",

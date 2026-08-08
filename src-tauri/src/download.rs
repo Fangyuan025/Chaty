@@ -289,10 +289,9 @@ pub fn clear_stale_xet_tmp(app: &tauri::AppHandle) {
 /// Full recursive file listing of a HuggingFace repo: `(path, size)` pairs.
 async fn repo_tree(repo: &str, base: &str) -> Result<Vec<(String, u64)>, String> {
     let api = format!("{base}/api/models/{repo}/tree/main?recursive=true");
-    let client = reqwest::Client::builder()
-        .user_agent(UA)
-        .build()
-        .map_err(|e| e.to_string())?;
+    // Metadata call — a whole-request timeout is right here; without one a
+    // hung connection kept the "preparing download" spinner up forever.
+    let client = crate::http::client_secs(UA, 30)?;
     let resp = client.get(&api).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("未找到仓库 (repo not found): {repo}"));
@@ -840,10 +839,7 @@ async fn download_mlx_repo_inner(
 
     let cancel = register_cancel(&name);
     let result = async {
-        let client = reqwest::Client::builder()
-            .user_agent(UA)
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = crate::http::download_client(UA)?;
         let total: u64 = files.iter().map(|(_, s)| *s).sum();
         let mut downloaded: u64 = 0;
         let mut last = std::time::Instant::now();
@@ -977,10 +973,7 @@ async fn download_inner(
     let dest = dir.join(&safe);
     let tmp = dir.join(format!("{safe}.part"));
 
-    let client = reqwest::Client::builder()
-        .user_agent(UA)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::http::download_client(UA)?;
     let mut resp = client.get(url).send().await.map_err(|e| e.to_string())?;
     if resp.status() == reqwest::StatusCode::FORBIDDEN {
         // Network-level CDN block (cas-bridge 403) — retry over xet. Only

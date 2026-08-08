@@ -52,7 +52,9 @@ fn ver_tuple(s: &str) -> (u64, u64, u64, u8) {
 
 async fn fetch_latest() -> anyhow::Result<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION").to_string();
-    let client = reqwest::Client::builder().user_agent(UA).build()?;
+    // Without a timeout an unreachable GitHub held the About panel's check
+    // in "checking…" forever.
+    let client = crate::http::client(UA, std::time::Duration::from_secs(15)).map_err(anyhow::Error::msg)?;
     let body = client
         .get(format!("https://api.github.com/repos/{REPO}/releases/latest"))
         .send()
@@ -106,10 +108,10 @@ pub async fn check_update() -> UpdateInfo {
 /// Download the installer for `url`, launch it, and quit so it can replace files.
 #[tauri::command]
 pub async fn run_update(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .user_agent(UA)
-        .build()
-        .map_err(|e| e.to_string())?;
+    // Streaming-flavored timeouts: installers are tens of MB, so no
+    // whole-request cap — but a silent CDN must error out, not hang the
+    // "updating…" state forever.
+    let client = crate::http::download_client(UA)?;
     let bytes = client
         .get(&url)
         .send()

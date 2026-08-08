@@ -21,7 +21,13 @@ concurrency:
 jobs:
   frontend:
     name: Frontend build & type-check
-    runs-on: ubuntu-latest
+    # Windows in the matrix: the dev machine is a Mac, so path separators,
+    # CRLF checkouts, and case handling in the frontend/test tooling only
+    # ever meet Windows here — before a release, not after.
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -33,6 +39,12 @@ jobs:
       # surface at release time inside `tauri build`.
       - name: Build frontend
         run: npm run build
+      # The frontend unit suite (agent-loop harness, wrap-up gates, i18n
+      # contract, skill-bundle drift lock). This was MISSING from CI for its
+      # whole life — 577 tests, including guards designed specifically to
+      # turn CI red, ran only on the dev machine.
+      - name: Unit tests (vitest)
+        run: npx vitest run
 
   backend:
     name: Lint & unit tests (backend)
@@ -83,9 +95,12 @@ jobs:
       # Same guard the Windows job gives cfg(windows) code: catch cfg(unix) /
       # cfg(target_os="linux") paths the macOS jobs compile differently (and
       # anything gated NOT-macos, which only Linux and Windows ever see).
-      - name: cargo check (no GPU, all targets)
+      # RUN the tests, don't just compile them — development happens on a Mac
+      # with no Linux hardware, so this is the only place cfg(unix)/linux
+      # behavior actually executes before a release tag.
+      - name: cargo test (no GPU)
         working-directory: src-tauri
-        run: cargo check --no-default-features --lib --bins --tests
+        run: cargo test --no-default-features --lib --bins
 
   windows-check:
     name: Windows compile check (CPU)
@@ -103,11 +118,11 @@ jobs:
       - name: Install Ninja
         run: choco install ninja -y
       - uses: ilammy/msvc-dev-cmd@v1 # load MSVC env so CMake can find cl.exe
-      # Compile-check every Windows target WITHOUT the Vulkan SDK (`--no-default-
-      # features` drops GPU). This is the cheap guard for `cfg(windows)` code
-      # that the macOS jobs can't even see — the class of bug (e.g. a Windows-
-      # only fn referenced under the wrong cfg) that previously slipped through
-      # to a release tag. Covers the chaty-headless bin too; examples are dev-only
-      - name: cargo check (no GPU, all targets)
+      # Build and RUN the tests WITHOUT the Vulkan SDK (`--no-default-features`
+      # drops GPU). Development happens on a Mac with no Windows hardware, so
+      # this job is where cfg(windows) code (tasklist-based pid checks, APPDATA
+      # paths, taskkill trees, the GPU crash guard) actually executes before a
+      # release tag — a compile check alone let behavioral bugs through.
+      - name: cargo test (no GPU)
         working-directory: src-tauri
-        run: cargo check --no-default-features --lib --bins --tests
+        run: cargo test --no-default-features --lib --bins

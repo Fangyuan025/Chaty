@@ -1263,10 +1263,7 @@ pub async fn rag_download_model(
         .map(|u| u.replace(crate::download::HF_OFFICIAL, &base))
         .collect();
 
-    let client = reqwest::Client::builder()
-        .user_agent("Chaty-RAG")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::http::download_client("Chaty-RAG")?;
     let mut last_err = String::new();
     for url in &urls {
         let resp = match client.get(url).send().await.and_then(|r| r.error_for_status()) {
@@ -1361,6 +1358,39 @@ pub async fn rag_download_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Real-embedder semantic probe (the knowledge base's core signal path,
+    /// which nothing else on a CI runner can exercise):
+    ///   CHATY_TEST_EMBED_GGUF=<bge-m3 .gguf> \
+    ///   cargo test --lib rag_embedder_semantic_probe -- --ignored
+    #[test]
+    #[ignore]
+    fn rag_embedder_semantic_probe() {
+        let model = std::env::var("CHATY_TEST_EMBED_GGUF").expect("set CHATY_TEST_EMBED_GGUF");
+        let emb = embedder_start(&PathBuf::from(model)).expect("embedder start");
+        let (rtx, rrx) = std::sync::mpsc::channel();
+        emb.tx
+            .send(EmbedJob::Embed {
+                texts: vec![
+                    "a small kitten playing".into(),
+                    "a young cat".into(),
+                    "a carburetor engine part".into(),
+                ],
+                reply: rtx,
+            })
+            .unwrap();
+        let vs = rrx.recv().unwrap().expect("embed batch");
+        assert_eq!(vs.len(), 3, "one vector per text");
+        assert!(vs[0].len() >= 256, "real embedding dims, got {}", vs[0].len());
+        let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+        let kitten_cat = dot(&vs[0], &vs[1]);
+        let kitten_carb = dot(&vs[0], &vs[2]);
+        assert!(
+            kitten_cat > kitten_carb + 0.05,
+            "semantic order broken: kitten~cat {kitten_cat} vs kitten~carburetor {kitten_carb}"
+        );
+        drop(emb); // exercises the worker-shutdown path
+    }
 
     #[test]
     fn chunking_overlaps_and_respects_min_len() {

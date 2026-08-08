@@ -1,5 +1,65 @@
 # Changelog
 
+## v2.0.7 — Falado em português, auditado por completo (2026-08-08)
+
+### The UI speaks Brazilian Portuguese
+
+- **Community-contributed pt-BR localization** by [@magisph](https://github.com/magisph)
+  (#6, #7): 194 UI strings covering the core UI, settings, Code mode and
+  Canvas — with a new locale architecture where community languages are
+  optional per key and fall back to English, so partial coverage never
+  shows a blank. The language switch is now table-driven; the agent/model
+  layer deliberately stays zh/en (prompt quality follows model training
+  data, not the UI language). `npx tsx scripts/l10n-status.mts pt` shows
+  what's left, and the README now ships in Portuguese too.
+
+### A full-app audit, before users could find any of it
+
+- **Downloads can no longer hang forever.** Six HTTP clients (model
+  downloads, the repo-metadata call, the embedding-model fetch, the update
+  check, the installer download) had **no timeout at all** — a stalled CDN
+  read as "download stuck at 43%" until restart, an unreachable GitHub
+  held "checking for updates…" indefinitely. Streaming paths now use a
+  connect + between-chunks timeout (a big model on a slow line is still
+  fine; a silent connection errors out), metadata calls a plain one.
+- **The frontend test suite finally runs in CI.** 577 unit tests — the
+  agent-loop harness, the wrap-up gates, the i18n contract, the
+  skill-bundle drift lock — had never been wired into CI; guards designed
+  to turn CI red only ever ran on the dev machine.
+- **Windows and Linux now RUN the tests before a release, not just compile
+  them.** Development happens on a Mac; the platform jobs executed nothing.
+  Both now run the full no-GPU test suite (the Windows job exercises the
+  tasklist pid checks, APPDATA paths and the GPU crash guard for real),
+  the frontend job builds and tests on Windows too, and a new
+  Windows-native orphan-browser sweep test covers what the Mac can't.
+  Line endings are pinned so a CRLF checkout can't fake a drift failure.
+- **Images inside Chrome-made PDFs finally extract.** Every PDF produced by
+  Chromium's "print to PDF" (web receipts, statements, saved articles — a
+  huge share of real documents) had its embedded images silently dropped:
+  the PDF library's own decompressor rejects those streams. Chaty now
+  inflates them itself, so the knowledge base and chat attachments can see
+  charts inside such files. Found by finally running the repo's
+  real-machine test suite — 60 ignored integration tests across web fetch
+  (13 live sites), search, downloads (xet fallback + cancel), MCP (live
+  server + store certification), browser CDP, llama agent E2E, MLX
+  (8 sidecar lifecycle/vision tests), PDF/OCR — all green after fixes.
+- **The knowledge base and voice pipelines got their first real tests
+  ever**: a semantic probe through the actual bge-m3 embedder (kitten≈cat
+  must beat kitten≈carburetor) and a full Kokoro-TTS → Whisper-STT
+  round-trip — both green, both staying in the suite.
+- **Headless-browser hardening for new Chrome**: the standard
+  anti-throttling launch flags plus CDP focus emulation (the same defaults
+  Puppeteer ships), guarding screenshot capture against Chrome ≥150's
+  frame-parking on static pages.
+- **Real-surface smokes now part of the audit**: the GGUF/llama.cpp path
+  (load → generate → cancel mid-stream → regenerate), the key-less search
+  chain, article extraction, and a full UI walkthrough in English and
+  Portuguese (every settings tab, Code mode, Canvas) — all green.
+- Engineering debt swept: 21 dead i18n keys deleted (translators would
+  have translated them for nothing), the last copy-pasted browser UA
+  consolidated, and skills materialized into a workspace now carry a
+  `.gitignore` so derived scripts never pollute the user's repo.
+
 ## v2.0.6 — One sentence in, a finished video out (2026-08-06)
 
 ### New official skill: `tiktok-video` — 一句话出成片

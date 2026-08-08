@@ -474,7 +474,9 @@ async fn fetch_youtube(video_id: &str) -> Result<PageEx, String> {
 
 // ---------------------------------------------------------------- bilibili
 
-const BILI_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15";
+// Bilibili wants a plain browser — same identity http.rs already ships
+// (this was the last surviving copy-paste of the Safari string).
+const BILI_UA: &str = crate::http::BROWSER_UA;
 
 /// Bilibili in-site video search via the public web-interface API (no key,
 /// no cookie — a Referer header is all it wants). Returns structured videos

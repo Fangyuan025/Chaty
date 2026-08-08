@@ -135,7 +135,31 @@ fn extract_pdf(path: &str, cap: usize, out: &mut Vec<String>) {
                 }
             }
             b"FlateDecode" => {
-                let Ok(data) = stream.decompressed_content() else { continue };
+                // lopdf's decompressed_content() rejects perfectly ordinary
+                // image streams (every Chrome/Chromium print-to-PDF lands
+                // here with Error::Type) — inflate the raw bytes ourselves.
+                // Predictor'd streams (PNG row filters) stay skipped:
+                // reversing those is a different job than inflating.
+                let has_predictor = dict
+                    .get(b"DecodeParms")
+                    .ok()
+                    .and_then(|o| o.as_dict().ok())
+                    .and_then(|d| d.get(b"Predictor").ok())
+                    .and_then(|p| p.as_i64().ok())
+                    .is_some_and(|p| p > 1);
+                if has_predictor {
+                    continue;
+                }
+                let mut data = Vec::new();
+                {
+                    use std::io::Read as _;
+                    if flate2::read::ZlibDecoder::new(stream.content.as_slice())
+                        .read_to_end(&mut data)
+                        .is_err()
+                    {
+                        continue;
+                    }
+                }
                 let (Some(w), Some(h)) = (
                     dict.get(b"Width").ok().and_then(|o| o.as_i64().ok()),
                     dict.get(b"Height").ok().and_then(|o| o.as_i64().ok()),
@@ -289,3 +313,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+

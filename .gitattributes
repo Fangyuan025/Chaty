@@ -1,0 +1,5 @@
+# Keep the skill bundle's inputs and its generated output byte-stable across
+# platforms: the drift lock compares them, and a CRLF checkout must not turn
+# an in-sync bundle into a red build (or ship CRLF scripts into workspaces).
+resources/skills/** text eol=lf
+src/lib/officialSkills.ts text eol=lf

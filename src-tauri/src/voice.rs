@@ -238,3 +238,34 @@ fn resample_to_16k(samples: &[f32], sr: u32) -> Vec<f32> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Full voice loop on the real CPU engines (Kokoro TTS → Whisper STT),
+    /// using the app's downloaded voice models:
+    ///   CHATY_TEST_VOICE_DIR="$HOME/Library/Application Support/com.chaty.desktop/voice-models" \
+    ///   cargo test --lib voice_tts_stt_roundtrip -- --ignored
+    #[test]
+    #[ignore]
+    fn voice_tts_stt_roundtrip() {
+        let dir = std::path::PathBuf::from(
+            std::env::var("CHATY_TEST_VOICE_DIR").expect("set CHATY_TEST_VOICE_DIR"),
+        );
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (samples, rate) = rt
+            .block_on(synthesize(dir.clone(), "hello world, this is a voice test".into(), 1.0, 0))
+            .expect("kokoro synthesis");
+        assert!(rate >= 16000, "sane sample rate: {rate}");
+        assert!(samples.len() as u32 > rate, "at least a second of audio: {}", samples.len());
+        let text = rt
+            .block_on(transcribe(dir, samples, rate))
+            .expect("whisper transcription");
+        let low = text.to_lowercase();
+        assert!(
+            low.contains("hello") && low.contains("world"),
+            "roundtrip lost the words: {text}"
+        );
+    }
+}
