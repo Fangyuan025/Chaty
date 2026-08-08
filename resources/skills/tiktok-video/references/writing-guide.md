@@ -67,6 +67,8 @@ keywords for a *specific photographable subject*:
 
 - ❌ "success mindset" → ✅ "sunrise mountain climber silhouette"
 - ❌ "AI technology" → ✅ "server room blue lights" / "robot arm factory"
+- 中国街景/城市生活:用 "Walking China 城市名" / "Riding a street in Shanghai" /
+  `incategory:"Videos of Beijing"` 这类漫步视频体裁词(素材是英文标题,中文搜不到)
 - Alternate effects: kb_in → kb_out → pan; use `static` for text-heavy art.
 - Illustration/vintage-poster images are fine and even stylish for
   history/science topics (wikimedia has many).

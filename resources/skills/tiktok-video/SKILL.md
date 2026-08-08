@@ -104,6 +104,7 @@ bash {SKILL_ROOT}/scripts/setup.sh
 - 加语境词消歧:"NOAA"、"museum"、"aquarium"、"macro"。
 - 某场景反复搜不到就换**视觉概念**而不只是换词(讲"仅5%被探索"→拍剪影潜水员,别搜"statistics")。
 - `wikimedia_video` 支持负词过滤——气象/太空搜索会被卫星云图淹没,写 `"lightning storm -CIRA -satellite -JPSS"`;非英语词能挖到更多实拍("Blitz Gewitter"、"tormenta rayos");优先具体名词("Fagradalsfjall lava drone");视频缩略图务必目检:提防内嵌字幕、水印、软件教程和 CGI 宣传片。
+- **中国街景配方**:Commons 有整个城市漫步视频体裁——搜 `"Walking China 城市名"`、`"Riding a street in Shanghai"` 或具体地点(`"Huaqiangbei electronics market"`),分类检索 `incategory:"Videos of Shanghai"` 也可用;这些素材都是英文标题,中文查询几乎搜不到。
 
 ## 排障
 

@@ -37,7 +37,12 @@ async function main() {
   const info = (await bridge.call("load_model", { path: model })) as Record<string, unknown>;
   if (!info || info.loaded !== true) throw new Error(`model did not load: ${JSON.stringify(info)}`);
   const nCtx = Number(info.nCtx) || 16384;
-  console.log(`[tv] model loaded, nCtx=${nCtx}`);
+  // Vision parity with the real app (CodeMode passes model.visionReady) —
+  // the first four waves ran a vision-capable model BLIND because this
+  // driver never forwarded the flag, and the whole "can't see the assets
+  // sheet" ceiling was self-inflicted.
+  const vision = info.vision === true;
+  console.log(`[tv] model loaded, nCtx=${nCtx}, vision=${vision}`);
   const { mockIPC } = await import("@tauri-apps/api/mocks");
   mockIPC((cmd: string, args?: Json) => bridge.ipc(cmd, args));
   const { runAgentTurn } = await import(path.join(REPO, "src/lib/agentLoop.ts"));
@@ -53,7 +58,8 @@ async function main() {
     const watchdog = setTimeout(() => { error = "watchdog: 5400s"; resolve(); }, 5_400_000);
     runAgentTurn(PROMPT, [] as never, ws, "zh",
       { thinkMode: "normal", nCtx, maxSteps: 64, temperature: 0.3,
-        skills: officialSkills(), bashTimeout: 300, browserTextMode: true,
+        skills: officialSkills(), bashTimeout: 300,
+        visionReady: vision, browserTextMode: !vision,
         signal: { cancelled: false } as never, approve: async () => true, approveDir: async () => false,
         approveSudo: async () => ({ ok: false }) } as never,
       { onThinking: () => {}, onAssistantText: () => {},
