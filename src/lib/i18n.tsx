@@ -8,11 +8,30 @@ import {
   type ReactNode,
 } from "react";
 
-export type Lang = "zh" | "en";
+/// UI locales. zh/en are the app's native pair and REQUIRED on every entry
+/// (compiler-enforced); community locales are optional per-key and fall back
+/// to English, so partial coverage never breaks a build or blanks a label.
+/// The agent/model layer stays zh|en by design — map with `agentLang()` at
+/// that boundary (prompt quality follows model training data, not the UI).
+export type Lang = "zh" | "en" | "pt";
+
+/// What the agent/model layer speaks. Community UI locales ride the English
+/// prompt path.
+export function agentLang(lang: Lang): "zh" | "en" {
+  return lang === "zh" ? "zh" : "en";
+}
+
+/// Selector metadata for the language switch — add a row here (and the
+/// optional field in Entry) to introduce a locale.
+export const LANGS: { id: Lang; label: string }[] = [
+  { id: "zh", label: "中文" },
+  { id: "en", label: "English" },
+  { id: "pt", label: "Português (BR)" },
+];
 
 const LANG_KEY = "chaty.lang";
 
-type Entry = { zh: string; en: string };
+type Entry = { zh: string; en: string; pt?: string };
 
 export const T = {
   // titlebar / sidebar
@@ -698,9 +717,11 @@ export const T = {
     zh: "脚本生成失败，请重试或更换模型",
     en: "Could not produce a usable script — try again or switch models",
   },
+  // Rendered only for zh UI users (the panel gates on lang) — the en text
+  // exists to keep the "en is the universal fallback" invariant airtight.
   podcastFootZh: {
     zh: "提示：播客内容为英文，适合用于英语听力与学习。",
-    en: "",
+    en: "Note: podcast output is in English.",
   },
   toolKb: { zh: "知识库检索", en: "Knowledge base" },
   toolKbManage: { zh: "管理知识库…", en: "Manage knowledge base…" },
@@ -886,13 +907,25 @@ export type TKey = keyof typeof T;
 function detectLang(): Lang {
   try {
     const saved = localStorage.getItem(LANG_KEY);
-    if (saved === "zh" || saved === "en") return saved;
+    if (LANGS.some((l) => l.id === saved)) return saved as Lang;
   } catch {
     /* ignore */
   }
   // Default first language is English (voice features are English-only and are
   // hidden when the user explicitly switches to Chinese).
   return "en";
+}
+
+/// Pure resolution (testable without the provider). Community locales are
+/// allowed to be partial — a missing translation shows English, never a
+/// blank or a raw key.
+export function lookup(key: TKey, lang: Lang, vars?: Record<string, string | number>): string {
+  const e: Entry | undefined = T[key];
+  let s: string = e?.[lang] ?? e?.en ?? key;
+  if (vars) {
+    for (const k of Object.keys(vars)) s = s.replace(`{${k}}`, String(vars[k]));
+  }
+  return s;
 }
 
 interface I18n {
@@ -915,13 +948,7 @@ export function LangProvider({ children }: { children: ReactNode }) {
   }, [lang]);
 
   const t = useCallback(
-    (key: TKey, vars?: Record<string, string | number>) => {
-      let s: string = T[key]?.[lang] ?? key;
-      if (vars) {
-        for (const k of Object.keys(vars)) s = s.replace(`{${k}}`, String(vars[k]));
-      }
-      return s;
-    },
+    (key: TKey, vars?: Record<string, string | number>) => lookup(key, lang, vars),
     [lang],
   );
 

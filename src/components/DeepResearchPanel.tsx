@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useI18n } from "../lib/i18n";
+import { agentLang, useI18n } from "../lib/i18n";
 import { exportTextFile, openHtmlReport, type ModelInfo } from "../lib/ipc";
 import { Markdown } from "./Markdown";
 import { Select } from "./Select";
@@ -119,7 +119,7 @@ export function DeepResearchPanel({
 
     if (kb) {
       const opts: KBReportOptions = {
-        lang,
+        lang: agentLang(lang),
         think,
         thinkSwitch: model.thinkSwitch,
         nCtx: model.nCtx ?? undefined,
@@ -130,7 +130,7 @@ export function DeepResearchPanel({
       const opts: DROptions = {
         topic: topic.trim(),
         rounds: depth,
-        lang,
+        lang: agentLang(lang),
         think,
         thinkSwitch: model.thinkSwitch,
         nCtx: model.nCtx ?? undefined,

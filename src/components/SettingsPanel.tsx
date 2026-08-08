@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { useI18n } from "../lib/i18n";
+import { LANGS, useI18n } from "../lib/i18n";
 import { useExitTransition } from "../lib/useExit";
 import { Icon } from "./Icon";
 import {
@@ -480,8 +480,11 @@ export function SettingsPanel({
             <>
               <SetRow label={t("language")}>
                 <div className="lang-switch">
-                  <button type="button" className={lang === "zh" ? "active" : ""} onClick={() => setLang("zh")}>中文</button>
-                  <button type="button" className={lang === "en" ? "active" : ""} onClick={() => setLang("en")}>English</button>
+                  {LANGS.map((l) => (
+                    <button key={l.id} type="button" className={lang === l.id ? "active" : ""} onClick={() => setLang(l.id)}>
+                      {l.label}
+                    </button>
+                  ))}
                 </div>
               </SetRow>
               <SetRow label={t("theme")}>

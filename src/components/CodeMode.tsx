@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useI18n } from "../lib/i18n";
+import { agentLang, useI18n } from "../lib/i18n";
 import { diffLines } from "../lib/diff";
 import { useConfirm } from "./ConfirmModal";
 import { BUILTIN_SKILLS } from "../lib/skills";
@@ -1232,7 +1232,7 @@ export function CodeMode({
     const turnImages = visionImgs;
     setCodeAttachments([]);
     const modelInput = attachCtx ? `${attachCtx}\n\n${text}` : text;
-    await runAgentTurn(modelInput, history, workspace, lang, {
+    await runAgentTurn(modelInput, history, workspace, agentLang(lang), {
       thinkMode,
       supportsThinking: model.supportsThinking,
       thinkSwitch: model.thinkSwitch,
