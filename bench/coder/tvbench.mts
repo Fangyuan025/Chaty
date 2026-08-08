@@ -41,7 +41,7 @@ async function main() {
   // the first four waves ran a vision-capable model BLIND because this
   // driver never forwarded the flag, and the whole "can't see the assets
   // sheet" ceiling was self-inflicted.
-  const vision = info.vision === true;
+  const vision = info.visionReady === true;
   console.log(`[tv] model loaded, nCtx=${nCtx}, vision=${vision}`);
   const { mockIPC } = await import("@tauri-apps/api/mocks");
   mockIPC((cmd: string, args?: Json) => bridge.ipc(cmd, args));

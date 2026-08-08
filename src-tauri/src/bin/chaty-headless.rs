@@ -362,6 +362,10 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
             let tool = match req_s(&args, "tool") { Ok(x) => x, Err(e) => return reply(id, Err(e)) };
             res(chaty_lib::mcp::mcp_call(server, tool, args.get("args").cloned().unwrap_or_default()).await)
         }
+        "agent_resolve_image" => match req_s(&args, "path") {
+            Ok(p) => res(ag::agent_resolve_image(p)),
+            Err(e) => Err(e),
+        },
         _ => Err(format!("unsupported in headless bench: {cmd}")),
     };
     reply(id, r);

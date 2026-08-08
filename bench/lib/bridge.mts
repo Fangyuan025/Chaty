@@ -52,8 +52,14 @@ export class Bridge {
           continue;
         }
         this.pending.delete(msg.id as number);
-        if (msg.error) p.reject(new Error(String(msg.error)));
-        else p.resolve(msg.result);
+        // The headless error reply is {type:"error", message:…} — this used
+        // to test `msg.error` (always absent), so EVERY backend error
+        // resolved as undefined instead of rejecting. That silent undefined
+        // cost a materialization wave (14 files skipped) and a vision wave
+        // (view_image "succeeded" with images:[null] → zero-token EOS).
+        if (msg.type === "error" || msg.error !== undefined) {
+          p.reject(new Error(String(msg.message ?? msg.error)));
+        } else p.resolve(msg.result);
       }
     });
   }

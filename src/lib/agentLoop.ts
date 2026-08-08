@@ -2226,6 +2226,10 @@ export async function runAgentTurn(
         const rel = argPath(call.args);
         try {
           const abs = await agentResolveImage(rel);
+          // A resolver that "succeeds" with nothing must not smuggle a null
+          // into the images array — the sidecar answers a pixel-less image
+          // placeholder with an instant EOS (the empty-output repro).
+          if (!abs) throw new Error(`image path did not resolve: ${rel}`);
           if (opts.visionReady) {
             stepObj.status = "done";
             stepObj.result = (lang === "zh" ? "已查看图片:" : "Viewed image: ") + rel;
