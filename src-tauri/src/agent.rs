@@ -3330,7 +3330,8 @@ fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
 /// jail (npx itself injects npm_config_cache=~/.npm into child env), which
 /// in-sandbox is a guaranteed EPERM — a user who really wants a custom cache
 /// can still env-prefix the command itself, which the shell applies last.
-#[cfg(unix)]
+// Portable (std env + temp_dir only) — the cfg(unix) gate it used to carry
+// is exactly why Windows silently skipped the redirect for its whole life.
 fn redirect_tool_caches(cmd: &mut Command) {
     for (var, dir) in [
         ("npm_config_cache", "chaty-npm-cache"),
