@@ -64,16 +64,30 @@ fn gpu_guard_check(base: &Path) -> bool {
     blocked.exists()
 }
 
-/// Model families llama.cpp must load under their OWN architecture to apply
-/// μP-style embedding/logit scaling. A GGUF whose NAME says such a family
-/// but whose metadata declares plain "llama" went through the wrong
-/// converter: the scalers are gone from the file entirely, and the model
-/// degenerates (the MiniCPM5-as-llama case emitted deterministic whitespace
-/// to the token cap). Detection is name-based on purpose — the correct
-/// arch keys are absent from such files, so the name is all that's left.
-fn conversion_suspect(name: &str, arch: &str) -> bool {
+/// Known bad-conversion tells, per model family. Two cases so far:
+/// * MiniCPM5 is plain llama-arch BY DESIGN — its tell is the tokenizer:
+///   official conversions declare `tokenizer.ggml.pre = "minicpm5"`, while
+///   files made with pre-MiniCPM5 convert scripts fall back to "llama-bpe"
+///   and degenerate (the owner's two downloads: deterministic whitespace on
+///   zh prompts, token salad on en — both with a textbook-perfect prompt).
+/// * MiniCPM 1–3 DO need their own architecture (µP scalers live in the
+///   arch handling), so those exported as plain "llama" are broken.
+fn conversion_suspect(name: &str, arch: &str, tokenizer_pre: &str) -> bool {
+    let _ = tokenizer_pre;
     let n = name.to_lowercase();
-    arch == "llama" && ["minicpm"].iter().any(|f| n.contains(f))
+    // MiniCPM5: even the OFFICIAL GGUF (llama arch, llama-bpe pre) degenerates
+    // on the llama.cpp this build bundles — upstream b10330 runs the same file
+    // fine, so the support gap is in the engine version, not any one file.
+    // Flag the whole family until the bundled engine catches up; the MLX
+    // build runs perfectly through the sidecar meanwhile.
+    if n.contains("minicpm5") {
+        return true;
+    }
+    // MiniCPM 1-3 need their own arch (µP scalers); plain-llama exports are broken.
+    if n.contains("minicpm") {
+        return arch == "llama";
+    }
+    false
 }
 
 /// Call once at process start, BEFORE any llama backend init. Returns true
@@ -521,6 +535,7 @@ impl LlamaEngine {
                 model.meta_val_str("general.name").unwrap_or_default()
             ),
             &model.meta_val_str("general.architecture").unwrap_or_default(),
+            &model.meta_val_str("tokenizer.ggml.pre").unwrap_or_default(),
         ) {
             Some("conversion-suspect".to_string())
         } else {
@@ -1067,7 +1082,7 @@ fn run_turn(
         // the truth is "this model file is a bad conversion".
         if n_decoded == 32 && out.trim().is_empty() {
             sink.emit(StreamEvent::Token {
-                text: "⚠️ 模型输出退化(连续空白),已中止。该模型文件很可能转换损坏或架构不受支持(例如 MiniCPM 系被按 llama 架构转换,缩放参数丢失)。请换用该模型的其他来源或格式(正确架构的 GGUF / MLX 版)。\n(Model output degenerated into pure whitespace — aborted. The file is likely a broken conversion or unsupported architecture; try a different build of this model.)".to_string(),
+                text: "⚠️ 模型输出退化(连续空白),已中止。该模型文件很可能转换损坏(常见:预分词器或架构元数据声明错误,如 MiniCPM5 被标成 llama-bpe 预分词)。请改用该模型的官方 GGUF 或 MLX 版本。\n(Model output degenerated into pure whitespace — aborted. The file is likely a broken conversion — commonly a wrong tokenizer-pre or architecture declaration. Use the model's official GGUF or MLX build.)".to_string(),
             })?;
             stop_reason = "degenerate";
             break;
@@ -1953,15 +1968,21 @@ mod tests {
     /// The crash-guard state machine (issue #5): a leftover inflight marker
     /// means the previous load killed the process → promote it to the
     /// persistent block; a clean dir stays unblocked; the block persists.
-    /// A family that needs its own arch, exported as plain llama, must be
-    /// flagged; legitimate llama models and correctly-converted files not.
+    /// Broken conversions must be flagged; official files and ordinary
+    /// llama models must not. MiniCPM5's tell is the pre-tokenizer (its
+    /// llama arch is legitimate); MiniCPM 1–3's tell is the arch itself.
     #[test]
     fn conversion_suspect_flags_wrong_converter() {
-        assert!(conversion_suspect("MiniCPM5-1B-F16.gguf MiniCPM5 1B", "llama"));
-        assert!(conversion_suspect("minicpm-2b.Q4.gguf ", "llama"));
-        assert!(!conversion_suspect("MiniCPM5-1B.gguf MiniCPM5", "minicpm5"));
-        assert!(!conversion_suspect("Llama-3-8B.gguf Meta Llama 3", "llama"));
-        assert!(!conversion_suspect("Qwen3.5-0.8B.gguf Qwen", "qwen3"));
+        // MiniCPM5 GGUFs (official included) degenerate on the bundled
+        // engine — the whole family is flagged until the engine catches up.
+        assert!(conversion_suspect("MiniCPM5-1B-F16.gguf MiniCPM5 1B", "llama", "llama-bpe"));
+        assert!(conversion_suspect("MiniCPM5-1B-F16.gguf MiniCPM5 1B", "llama", "minicpm5"));
+        // Older MiniCPM families need their own arch.
+        assert!(conversion_suspect("minicpm-2b.Q4.gguf ", "llama", "llama-bpe"));
+        assert!(!conversion_suspect("MiniCPM3-4B.gguf MiniCPM3", "minicpm3", "minicpm3"));
+        // Ordinary models never flag.
+        assert!(!conversion_suspect("Llama-3-8B.gguf Meta Llama 3", "llama", "llama-bpe"));
+        assert!(!conversion_suspect("Qwen3.5-0.8B.gguf Qwen", "qwen3", "qwen2"));
     }
 
     #[test]

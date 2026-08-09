@@ -827,8 +827,8 @@ export const T = {
   },
   errorLogOpen: { zh: "打开错误日志", en: "Open error log" },
   conversionSuspect: {
-    zh: "该模型文件疑似用错误的转换器导出(按 llama 架构转换,家族专属的缩放参数会丢失),输出可能异常。若回复退化为空白/乱码,请换用正确架构的 GGUF 或 MLX 版本。",
-    en: "This model file looks converted under the wrong architecture (exported as plain llama — the family's scaling parameters are lost). If replies degenerate into blanks or noise, use a correctly-converted GGUF or the MLX build.",
+    zh: "该模型家族与当前内置引擎的兼容性存在已知问题(转换元数据或引擎版本尚未跟上),回复可能退化为空白或乱码。macOS 上请改用该模型的 MLX 版本(运行正常);GGUF 需等待后续版本升级引擎。",
+    en: "This model family has known compatibility issues with the bundled engine (conversion metadata or engine version lag) — replies may degenerate into blanks or noise. On macOS use the model's MLX build (works well); GGUF support awaits an engine upgrade.",
   },
   gpuCrashCpu: {
     zh: "上次加载模型时 GPU 驱动导致程序崩溃，本次已改用 CPU 运行（速度较慢但稳定）。更新显卡驱动后可尝试恢复 GPU。",
