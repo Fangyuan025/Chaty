@@ -60,6 +60,17 @@
   warning at load that points macOS users to the MLX builds, which run
   perfectly. Traced end-to-end against upstream llama.cpp with the owner's
   own downloads; healthy models verified unaffected.
+- **A vision model missing its processor config now heals itself.**
+  Community MLX quants sometimes ship a VLM checkpoint without
+  `preprocessor_config.json` — the load died with a bare
+  `configurationFileError` and the model was unusable. For families whose
+  preprocessing values are architecture constants (Qwen3-VL, and now the
+  whole Gemma 4 line) the sidecar synthesizes a minimal config next to the
+  weights and vision simply works — verified end-to-end on a real 26B
+  Gemma 4 quant that used to fail: it now loads in seconds and answers
+  both text and image questions correctly. Families without a healing
+  recipe degrade to text-only chat with a plain-language notice instead of
+  refusing to load.
 - **Real-surface smokes now part of the audit**: the GGUF/llama.cpp path
   (load → generate → cancel mid-stream → regenerate), the key-less search
   chain, article extraction, and a full UI walkthrough in English and
