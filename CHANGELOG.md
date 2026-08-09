@@ -51,6 +51,15 @@
   anti-throttling launch flags plus CDP focus emulation (the same defaults
   Puppeteer ships), guarding screenshot capture against Chrome ≥150's
   frame-parking on static pages.
+- **A mute model now explains itself.** A generation that degenerates into
+  pure whitespace (the broken-conversion signature) is aborted after 32
+  tokens with a plain-language diagnosis streamed into the chat, instead
+  of a silent screenful of nothing — and model families with known engine
+  compatibility gaps (MiniCPM5 GGUFs: even the official file degenerates
+  on the bundled llama.cpp; MiniCPM 1–3 exported as plain llama) get a
+  warning at load that points macOS users to the MLX builds, which run
+  perfectly. Traced end-to-end against upstream llama.cpp with the owner's
+  own downloads; healthy models verified unaffected.
 - **Real-surface smokes now part of the audit**: the GGUF/llama.cpp path
   (load → generate → cancel mid-stream → regenerate), the key-less search
   chain, article extraction, and a full UI walkthrough in English and
