@@ -364,9 +364,11 @@ impl MlxEngine {
             multimodal: loaded["multimodal"].as_bool().unwrap_or(false),
             // MLX VLMs carry their vision tower in the same weights — loaded
             // model ⇒ vision works; there is no separate mmproj to miss.
+            // (A folder missing its processor config loads text-only: the
+            // sidecar reports multimodal=false plus a warning.)
             vision_ready: loaded["multimodal"].as_bool().unwrap_or(false),
             mmproj: None,
-            warning: None,
+            warning: loaded["warning"].as_str().map(str::to_string),
         };
 
         let child = Arc::new(Mutex::new(Some(child)));

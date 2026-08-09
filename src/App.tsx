@@ -1234,6 +1234,8 @@ export default function App() {
       showNotice("warn", t("gpuCrashCpu"));
     } else if (info.warning === "conversion-suspect") {
       showNotice("warn", t("conversionSuspect"));
+    } else if (info.warning === "vision-config-missing") {
+      showNotice("warn", t("visionConfigMissing"));
     }
   }
 

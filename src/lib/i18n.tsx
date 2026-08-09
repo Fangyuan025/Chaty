@@ -830,6 +830,10 @@ export const T = {
     zh: "该模型家族与当前内置引擎的兼容性存在已知问题(转换元数据或引擎版本尚未跟上),回复可能退化为空白或乱码。macOS 上请改用该模型的 MLX 版本(运行正常);GGUF 需等待后续版本升级引擎。",
     en: "This model family has known compatibility issues with the bundled engine (conversion metadata or engine version lag) — replies may degenerate into blanks or noise. On macOS use the model's MLX build (works well); GGUF support awaits an engine upgrade.",
   },
+  visionConfigMissing: {
+    zh: "该模型目录缺少图像处理器配置(preprocessor_config.json),视觉功能已停用,本次以纯文本模式加载。从官方模型仓库补齐该文件后重新加载即可恢复视觉能力。",
+    en: "This model folder is missing its image-processor configuration (preprocessor_config.json), so vision is disabled and the model was loaded text-only. Restore that file from the official model repo and reload to re-enable vision.",
+  },
   gpuCrashCpu: {
     zh: "上次加载模型时 GPU 驱动导致程序崩溃，本次已改用 CPU 运行（速度较慢但稳定）。更新显卡驱动后可尝试恢复 GPU。",
     en: "The GPU driver crashed the app during the last model load — running on CPU this time (slower but stable). Update your GPU driver to try GPU again.",

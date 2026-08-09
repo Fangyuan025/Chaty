@@ -154,9 +154,9 @@ struct ModelMeta {
 /// configuration (neither preprocessor_config.json nor processor_config.json)
 /// — the vision tower is right there in the weights, but the VLM factory
 /// throws a configurationFileError and the whole model refuses to load. For
-/// the Qwen3-VL processor family the preprocessing values are architecture
-/// constants (mean/std 0.5) plus fields mirrored in config.json's
-/// vision_config, so the folder can be healed by writing a minimal
+/// families whose preprocessing values are architecture constants (mirrored
+/// in config.json's vision_config, or baked into the library's decoder
+/// defaults) the folder can be healed by writing a minimal
 /// preprocessor_config.json. Never overwrites an existing file.
 func healProcessorConfig(dir: URL) {
     let pre = dir.appendingPathComponent("preprocessor_config.json")
@@ -164,23 +164,45 @@ func healProcessorConfig(dir: URL) {
     let fm = FileManager.default
     guard !fm.fileExists(atPath: pre.path), !fm.fileExists(atPath: proc.path),
         let cfg = readJSON(dir.appendingPathComponent("config.json")),
-        let arch = cfg["model_type"] as? String,
-        ["qwen3_5", "qwen3_5_moe", "qwen3_vl", "qwen3_vl_moe"].contains(arch),
-        let vision = cfg["vision_config"] as? [String: Any]
+        let arch = cfg["model_type"] as? String
     else { return }
-    let synthesized: [String: Any] = [
-        "processor_class": "Qwen3VLProcessor",
-        "image_processor_type": "Qwen2VLImageProcessorFast",
-        "image_mean": [0.5, 0.5, 0.5],
-        "image_std": [0.5, 0.5, 0.5],
-        "patch_size": vision["patch_size"] as? Int ?? 16,
-        "merge_size": vision["spatial_merge_size"] as? Int ?? 2,
-        "temporal_patch_size": vision["temporal_patch_size"] as? Int ?? 2,
-        // Smart-resize band (total pixels), mirroring the official configs.
-        // Without it the processor never resizes and an oversized image
-        // blows past Metal's limits inside mlx_eval, killing the process.
-        "size": ["longest_edge": 16_777_216, "shortest_edge": 65_536],
-    ]
+    var synthesized: [String: Any]
+    switch arch {
+    case "qwen3_5", "qwen3_5_moe", "qwen3_vl", "qwen3_vl_moe":
+        // Qwen3-VL processor family: mean/std are the 0.5 constants, the
+        // geometry fields are mirrored in config.json's vision_config.
+        guard let vision = cfg["vision_config"] as? [String: Any] else { return }
+        synthesized = [
+            "processor_class": "Qwen3VLProcessor",
+            "image_processor_type": "Qwen2VLImageProcessorFast",
+            "image_mean": [0.5, 0.5, 0.5],
+            "image_std": [0.5, 0.5, 0.5],
+            "patch_size": vision["patch_size"] as? Int ?? 16,
+            "merge_size": vision["spatial_merge_size"] as? Int ?? 2,
+            "temporal_patch_size": vision["temporal_patch_size"] as? Int ?? 2,
+            // Smart-resize band (total pixels), mirroring the official configs.
+            // Without it the processor never resizes and an oversized image
+            // blows past Metal's limits inside mlx_eval, killing the process.
+            "size": ["longest_edge": 16_777_216, "shortest_edge": 65_536],
+        ]
+    case "gemma4", "gemma4_unified":
+        // Gemma4: every pixel constant has an architecture default baked
+        // into the library's config decoder, so an almost-empty file
+        // suffices — but the processor class must be spelled out (absent,
+        // the decoder falls back to the Unified variant, wrong for plain
+        // gemma4). Special-token ids are mirrored from config.json where
+        // present so quants with re-numbered specials still line up.
+        synthesized = [
+            "processor_class": arch == "gemma4" ? "Gemma4Processor" : "Gemma4UnifiedProcessor"
+        ]
+        for key in [
+            "image_token_id", "boi_token_id", "eoi_token_id", "audio_token_id", "video_token_id",
+        ] {
+            if let v = cfg[key] as? Int { synthesized[key] = v }
+        }
+    default:
+        return
+    }
     guard
         let data = try? JSONSerialization.data(
             withJSONObject: synthesized, options: [.prettyPrinted, .sortedKeys])
@@ -293,22 +315,44 @@ final class Engine: @unchecked Sendable {
 
     func load(path: String, nCtx: Int?) async {
         let dir = URL(fileURLWithPath: path)
-        let meta = inspectModelDir(dir)
+        var meta = inspectModelDir(dir)
+        var loadWarning: String?
+        if meta.multimodal {
+            healProcessorConfig(dir: dir)
+            let hasProcessorConfig = ["preprocessor_config.json", "processor_config.json"]
+                .contains { fname in
+                    FileManager.default.fileExists(
+                        atPath: dir.appendingPathComponent(fname).path)
+                }
+            // A multimodal config with no processor configuration at all —
+            // and no healing recipe for its family — can't drive its vision
+            // tower, but the language model underneath is fully loadable:
+            // the text factory registers these architectures too and its
+            // sanitize drops the vision_tower / multi_modal_projector
+            // weights. Degrade to text-only instead of refusing to load.
+            if !hasProcessorConfig {
+                log(
+                    "no processor config for \(meta.arch ?? "?") and no healing recipe; "
+                        + "degrading to text-only load")
+                meta.multimodal = false
+                loadWarning = "vision-config-missing"
+            }
+        }
         self.meta = meta
         self.modelDir = dir
+        let useVLM = meta.multimodal
         do {
             // Local-directory load: no downloader involved; the tokenizer
             // comes from swift-transformers via the MLXHuggingFace macro.
             // Natively-multimodal architectures (config carries a
-            // vision_config, e.g. the whole Qwen3.5+ family) are registered
-            // only in the VLM factory — load them there; chat stays
-            // text-only until Chaty grows MLX vision.
+            // vision_config, e.g. the whole Qwen3.5+ family) load through
+            // the VLM factory; text-only models — and vision models
+            // degraded above — through the LLM factory.
             // withError: C-level MLX failures during weight load (Metal OOM
             // on a too-big model) must surface as a load error, not kill the
             // sidecar — same boxing as the generate path.
             let container: ModelContainer = try await withError {
-                if meta.multimodal {
-                    healProcessorConfig(dir: dir)
+                if useVLM {
                     return try await VLMModelFactory.shared.loadContainer(
                         from: dir, using: #huggingFaceTokenizerLoader())
                 } else {
@@ -336,6 +380,7 @@ final class Engine: @unchecked Sendable {
             if let v = meta.nLayer { info["nLayer"] = v }
             if let v = meta.nEmbd { info["nEmbd"] = v }
             if let v = meta.nCtxTrain { info["nCtxTrain"] = v }
+            if let v = loadWarning { info["warning"] = v }
             out.emit(["event": "loaded", "info": info])
         } catch {
             out.error("模型加载失败 (failed to load MLX model): \(error)")
