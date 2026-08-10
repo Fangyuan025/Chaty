@@ -1624,7 +1624,8 @@ where
 }
 
 pub fn navigate(url: &str) -> Result<String, String> {
-    let url = normalize_url(url);
+    let ws = crate::agent::agent_get_workspace().map(std::path::PathBuf::from);
+    let url = normalize_url(url, ws.as_deref())?;
     dispatch(|reply| BrowserCmd::Navigate { url, reply })
 }
 
@@ -1720,7 +1721,89 @@ pub fn capture_headless(url: &str) -> Result<(Vec<u8>, String), String> {
 }
 
 /// Accept bare hosts and local file paths; default to https for schemeless hosts.
-fn normalize_url(u: &str) -> String {
+/// Extensions that mark an input as a FILE reference, never a domain guess —
+/// `index.html` must not become `https://index.html` (a DNS error the model
+/// retries forever); `example.com` must keep becoming a website.
+const WEB_FILE_EXTS: &[&str] = &[
+    "html", "htm", "xhtml", "svg", "pdf", "png", "jpg", "jpeg", "gif", "webp", "css", "js", "mjs",
+    "json", "txt", "md", "csv", "mp4", "webm", "ico",
+];
+
+fn web_file_ext(u: &str) -> bool {
+    let seg = u.rsplit(['/', '\\']).next().unwrap_or(u);
+    match seg.rsplit_once('.') {
+        Some((_, ext)) => WEB_FILE_EXTS.contains(&ext.to_ascii_lowercase().as_str()),
+        None => false,
+    }
+}
+
+/// Scheme-less local dev hosts (`localhost:8000`, `127.0.0.1:3000/app`) speak
+/// plain http — an `https://` guess dies on TLS and loops the model.
+fn is_local_host(u: &str) -> bool {
+    let host_port = u.split('/').next().unwrap_or("");
+    let host = if host_port.starts_with('[') {
+        host_port.split(']').next().map(|h| format!("{h}]")).unwrap_or_default()
+    } else {
+        match host_port.rsplit_once(':') {
+            Some((h, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => h.to_string(),
+            _ => host_port.to_string(),
+        }
+    };
+    matches!(host.as_str(), "localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]")
+        || host.ends_with(".localhost")
+}
+
+/// file:// URL with the handful of characters that break URL parsing escaped.
+fn file_url(p: &std::path::Path) -> String {
+    let s = p
+        .display()
+        .to_string()
+        .replace('%', "%25")
+        .replace(' ', "%20")
+        .replace('#', "%23")
+        .replace('?', "%3F");
+    format!("file://{s}")
+}
+
+/// Bounded workspace walk for a unique basename match: the model says
+/// `index.html`, the file lives at `dist/index.html` — one hit resolves it,
+/// several hits produce a disambiguation error instead of a wrong guess.
+fn find_by_name(ws: &std::path::Path, name: &str) -> Vec<std::path::PathBuf> {
+    const SKIP: &[&str] = &[".git", "node_modules", ".venv", "__pycache__", "target"];
+    let mut stack = vec![ws.to_path_buf()];
+    let mut hits = Vec::new();
+    let mut visited = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            visited += 1;
+            if visited > 20_000 || hits.len() >= 5 {
+                return hits;
+            }
+            let p = e.path();
+            let fname = e.file_name();
+            let fname = fname.to_string_lossy();
+            if p.is_dir() {
+                if !SKIP.contains(&fname.as_ref()) {
+                    stack.push(p);
+                }
+            } else if fname == name {
+                hits.push(p);
+            }
+        }
+    }
+    hits
+}
+
+/// Turn a model-supplied navigation target into a real URL. Resolution order
+/// (each step preserved from the previous behavior unless noted):
+/// scheme'd URLs pass through → bare localhost gets http:// → an existing
+/// path (absolute or CWD-relative, the old rule) → WORKSPACE-relative (new:
+/// the agent's cwd is the workspace, not the app process's) → a unique
+/// basename match inside the workspace (new) → a file-looking name that
+/// resolved nowhere is a plain-language error (new — it used to become
+/// `https://index.html` and loop the model on DNS) → https:// guess.
+fn normalize_url(u: &str, workspace: Option<&std::path::Path>) -> Result<String, String> {
     let u = u.trim();
     if u.starts_with("http://")
         || u.starts_with("https://")
@@ -1728,16 +1811,66 @@ fn normalize_url(u: &str) -> String {
         || u.starts_with("about:")
         || u.starts_with("data:")
     {
-        return u.to_string();
+        return Ok(u.to_string());
+    }
+    if is_local_host(u) {
+        return Ok(format!("http://{u}"));
     }
     // An existing local file → file:// URL.
     let p = std::path::Path::new(u);
     if p.exists() {
         if let Ok(abs) = p.canonicalize() {
-            return format!("file://{}", abs.display());
+            return Ok(file_url(&abs));
         }
     }
-    format!("https://{u}")
+    if let Some(ws) = workspace {
+        if !p.is_absolute() {
+            let joined = ws.join(u);
+            if joined.exists() {
+                if let Ok(abs) = joined.canonicalize() {
+                    // `../`-escapes stay jailed: resolve only inside the workspace.
+                    if abs.starts_with(ws) {
+                        return Ok(file_url(&abs));
+                    }
+                }
+            }
+            if !u.contains(['/', '\\']) && web_file_ext(u) {
+                let hits = find_by_name(ws, u);
+                match hits.len() {
+                    1 => {
+                        if let Ok(abs) = hits[0].canonicalize() {
+                            return Ok(file_url(&abs));
+                        }
+                    }
+                    n if n > 1 => {
+                        let shown = hits
+                            .iter()
+                            .filter_map(|h| h.strip_prefix(ws).ok())
+                            .map(|h| h.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return Err(crate::agent::tr(
+                            &format!("工作区里有多个 {u}:{shown}。请用相对工作区的完整路径指明要打开哪一个。"),
+                            &format!("Multiple files named {u} in the workspace: {shown}. Pass the full workspace-relative path of the one to open."),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if web_file_ext(u) {
+        let ws_shown = workspace.map(|w| w.display().to_string()).unwrap_or_else(|| "-".into());
+        return Err(crate::agent::tr(
+            &format!(
+                "找不到文件 {u}(工作区:{ws_shown})。请传工作区相对路径(如 dist/index.html)或绝对路径;网页地址请带 http(s)://。"
+            ),
+            &format!(
+                "File not found: {u} (workspace: {ws_shown}). Pass a workspace-relative path (e.g. dist/index.html) or an absolute path; for websites include http(s)://."
+            ),
+        ));
+    }
+    Ok(format!("https://{u}"))
 }
 
 /// A self-cleaning temp directory (Chrome's throwaway profile).
@@ -1772,6 +1905,57 @@ mod tempdir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The model-supplied navigation target resolver: relative file paths
+    /// resolve against the WORKSPACE (the agent's world), never the app
+    /// process's cwd — the old rule turned `index.html` into
+    /// `https://index.html` and looped the model on a DNS error.
+    #[test]
+    fn normalize_url_resolves_files_hosts_and_teaches() {
+        let ws = std::env::temp_dir().join(format!("chaty-navtest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(ws.join("dist")).unwrap();
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::write(ws.join("index.html"), "<p>hi</p>").unwrap();
+        std::fs::write(ws.join("dist/app.html"), "<p>app</p>").unwrap();
+        std::fs::write(ws.join("dist/dup.html"), "x").unwrap();
+        std::fs::write(ws.join("src/dup.html"), "x").unwrap();
+        std::fs::write(ws.join("my page.html"), "x").unwrap();
+        let ws = ws.canonicalize().unwrap();
+        let w = Some(ws.as_path());
+
+        // Scheme'd URLs pass through untouched.
+        for u in ["https://example.com/a?b=1", "http://x.dev", "about:blank", "data:text/html,hi"] {
+            assert_eq!(normalize_url(u, w).unwrap(), u);
+        }
+        // Bare local dev hosts speak http, not an https guess that dies on TLS.
+        assert_eq!(normalize_url("localhost:8000", w).unwrap(), "http://localhost:8000");
+        assert_eq!(normalize_url("127.0.0.1:3000/app", w).unwrap(), "http://127.0.0.1:3000/app");
+        assert_eq!(normalize_url("app.localhost:5173", w).unwrap(), "http://app.localhost:5173");
+        // Websites keep working.
+        assert_eq!(normalize_url("example.com", w).unwrap(), "https://example.com");
+        // Workspace-relative resolution: bare name and subdir path.
+        assert_eq!(normalize_url("index.html", w).unwrap(), file_url(&ws.join("index.html")));
+        assert_eq!(normalize_url("dist/app.html", w).unwrap(), file_url(&ws.join("dist/app.html")));
+        // Unique basename rescue: `app.html` lives only in dist/.
+        assert_eq!(normalize_url("app.html", w).unwrap(), file_url(&ws.join("dist/app.html")));
+        // Ambiguous basename → a disambiguation error, not a wrong guess.
+        let e = normalize_url("dup.html", w).unwrap_err();
+        assert!(e.contains("dup.html"), "err should name the file: {e}");
+        // Missing file-looking target → plain-language error, not https://.
+        let e = normalize_url("nope.html", w).unwrap_err();
+        assert!(e.contains("nope.html") && e.contains(ws.display().to_string().as_str()), "{e}");
+        // `../` cannot escape the workspace jail (parent exists but is outside).
+        assert!(normalize_url("../outside-escape.html", w).is_err());
+        // Spaces in resolved paths are escaped for the URL.
+        let got = normalize_url("my page.html", w).unwrap();
+        assert!(got.contains("my%20page.html"), "{got}");
+        // No workspace: files-looking names still teach instead of guessing DNS.
+        assert!(normalize_url("index.html", None).is_err());
+        assert_eq!(normalize_url("example.com", None).unwrap(), "https://example.com");
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
 
     /// The orphan sweep must claim dirs whose creator pid is gone (and
     /// malformed debris), and must NEVER claim a live process's profile —
