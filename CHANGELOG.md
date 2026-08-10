@@ -1,5 +1,88 @@
 # Changelog
 
+## v2.0.8 — Imperfect models, met halfway (2026-08-10)
+
+Started as v2.0.7 hotfix rounds and grew into its own release: a wave of
+model-adaptation work — broken quants healed, mute models explained,
+alien reasoning markup parsed — plus coding-and-canvas diagnostics that
+point at real lines instead of looping or shrugging.
+
+### Model adaptation: heal, diagnose, adapt
+
+- **A mute model now explains itself.** A generation that degenerates into
+  pure whitespace (the broken-conversion signature) is aborted after 32
+  tokens with a plain-language diagnosis streamed into the chat, instead
+  of a silent screenful of nothing — and model families with known engine
+  compatibility gaps (MiniCPM5 GGUFs: even the official file degenerates
+  on the bundled llama.cpp; MiniCPM 1–3 exported as plain llama) get a
+  warning at load that points macOS users to the MLX builds, which run
+  perfectly. Traced end-to-end against upstream llama.cpp with the owner's
+  own downloads; healthy models verified unaffected.
+- **A vision model missing its processor config now heals itself.**
+  Community MLX quants sometimes ship a VLM checkpoint without
+  `preprocessor_config.json` — the load died with a bare
+  `configurationFileError` and the model was unusable. For families whose
+  preprocessing values are architecture constants (Qwen3-VL, and now the
+  whole Gemma 4 line) the sidecar synthesizes a minimal config next to the
+  weights and vision simply works — verified end-to-end on a real 26B
+  Gemma 4 quant that used to fail: it now loads in seconds and answers
+  both text and image questions correctly. Families without a healing
+  recipe degrade to text-only chat with a plain-language notice instead of
+  refusing to load.
+- **Gemma 4's reasoning chain parses completely now, everywhere.** The
+  channel-style thought markup Gemma 4 (and Harmony) stream had three
+  leaks: a runaway generation that re-opens its thought channel spilled the
+  second round of reasoning into the visible answer; a close marker
+  followed by prose starting with "final"/"thought" swallowed that word as
+  markup; and a generation cut mid-thought showed the whole unfinished
+  reasoning as the answer (Code mode's step text was the loudest victim).
+  The normalizer now walks every reasoning span sequentially, half-typed
+  markers are held back while streaming instead of flashing `<|chan` into
+  the answer area, and Deep Research + Podcast — which stripped reasoning
+  with a bare regex — now go through the same normalizer. Locked by a
+  12-case unit suite over the real template shapes and re-verified live in
+  Code mode on both Gemma 4 engines (GGUF E4B and MLX 26B): thought panel,
+  prose and finals all clean.
+
+### Coding & Canvas: errors that point somewhere
+
+- **Canvas console errors now point at the exact line.** WebKit anonymizes
+  every uncaught error inside the sandboxed preview to a bare
+  "Script error." — no line, no stack, and several distinct bugs collapse
+  into identical, useless entries. The preview now routes the async entry
+  points where interaction bugs live (timers, rAF, microtasks, event
+  listeners) through a same-realm guard that catches each error with its
+  full stack, reports it with USER-source line numbers (the injected
+  shims' own line offset subtracted), and rethrows unchanged. Duplicate
+  follow-ups are dropped on both engines (WebKit's anonymized echo,
+  WebView2's detailed one), shim-internal frames never leak into stacks,
+  and the remaining anonymized class (top-level statements, inline on*=
+  handlers) is named in the Fix digest so the model audits the right
+  places. The whole injected stack (storage shim included) now rides
+  inside ONE counted block, so the calibration survives every wrapper —
+  the first cut left the storage shim outside it and a 4-line repro
+  reported line 16. And a page that throws several errors says so in the
+  fix banner ("… — N errors total") instead of showing only the first;
+  the Fix button already handed the model every error. Proven by behavior
+  unit tests, a live-browser replica of the sandboxed preview, and a
+  hand-verified WKWebView pass: throws reported once each, at their exact
+  source lines (inline on*= attribute code can sit one line high — a
+  WebKit quirk of attribute-compiled scripts).
+- **`browser_navigate index.html` now opens the file instead of looping.**
+  Models routinely pass a bare filename when asked to test the page they
+  just wrote — and the resolver checked it against the app process's
+  working directory (never the agent's workspace), so `index.html` became
+  `https://index.html`, a DNS error, and an endless retry loop. Relative
+  paths now resolve against the workspace, a bare name with no path finds
+  its unique match anywhere in the project (`app.html` → `dist/app.html`;
+  several matches ask which one), a file that resolves nowhere gets a
+  plain-language error teaching the right form instead of a DNS guess, and
+  scheme-less `localhost:8000` finally gets `http://` instead of an
+  `https://` guess that dies on TLS. Real URLs, absolute paths and
+  websites behave exactly as before — proven by a resolver unit suite and
+  a live-Chrome pass over all four shapes.
+
+
 ## v2.0.7 — Falado em português, auditado por completo (2026-08-08)
 
 ### The UI speaks Brazilian Portuguese
@@ -51,68 +134,6 @@
   anti-throttling launch flags plus CDP focus emulation (the same defaults
   Puppeteer ships), guarding screenshot capture against Chrome ≥150's
   frame-parking on static pages.
-- **A mute model now explains itself.** A generation that degenerates into
-  pure whitespace (the broken-conversion signature) is aborted after 32
-  tokens with a plain-language diagnosis streamed into the chat, instead
-  of a silent screenful of nothing — and model families with known engine
-  compatibility gaps (MiniCPM5 GGUFs: even the official file degenerates
-  on the bundled llama.cpp; MiniCPM 1–3 exported as plain llama) get a
-  warning at load that points macOS users to the MLX builds, which run
-  perfectly. Traced end-to-end against upstream llama.cpp with the owner's
-  own downloads; healthy models verified unaffected.
-- **A vision model missing its processor config now heals itself.**
-  Community MLX quants sometimes ship a VLM checkpoint without
-  `preprocessor_config.json` — the load died with a bare
-  `configurationFileError` and the model was unusable. For families whose
-  preprocessing values are architecture constants (Qwen3-VL, and now the
-  whole Gemma 4 line) the sidecar synthesizes a minimal config next to the
-  weights and vision simply works — verified end-to-end on a real 26B
-  Gemma 4 quant that used to fail: it now loads in seconds and answers
-  both text and image questions correctly. Families without a healing
-  recipe degrade to text-only chat with a plain-language notice instead of
-  refusing to load.
-- **Gemma 4's reasoning chain parses completely now, everywhere.** The
-  channel-style thought markup Gemma 4 (and Harmony) stream had three
-  leaks: a runaway generation that re-opens its thought channel spilled the
-  second round of reasoning into the visible answer; a close marker
-  followed by prose starting with "final"/"thought" swallowed that word as
-  markup; and a generation cut mid-thought showed the whole unfinished
-  reasoning as the answer (Code mode's step text was the loudest victim).
-  The normalizer now walks every reasoning span sequentially, half-typed
-  markers are held back while streaming instead of flashing `<|chan` into
-  the answer area, and Deep Research + Podcast — which stripped reasoning
-  with a bare regex — now go through the same normalizer. Locked by a
-  12-case unit suite over the real template shapes and re-verified live in
-  Code mode on both Gemma 4 engines (GGUF E4B and MLX 26B): thought panel,
-  prose and finals all clean.
-- **Canvas console errors now point at the exact line.** WebKit anonymizes
-  every uncaught error inside the sandboxed preview to a bare
-  "Script error." — no line, no stack, and several distinct bugs collapse
-  into identical, useless entries. The preview now routes the async entry
-  points where interaction bugs live (timers, rAF, microtasks, event
-  listeners) through a same-realm guard that catches each error with its
-  full stack, reports it with USER-source line numbers (the injected
-  shims' own line offset subtracted), and rethrows unchanged. Duplicate
-  follow-ups are dropped on both engines (WebKit's anonymized echo,
-  WebView2's detailed one), shim-internal frames never leak into stacks,
-  and the remaining anonymized class (top-level statements, inline on*=
-  handlers) is named in the Fix digest so the model audits the right
-  places. Proven by behavior unit tests plus a live-browser replica of
-  the sandboxed preview: timer, listener and inline-handler throws each
-  reported once, at their exact source lines.
-- **`browser_navigate index.html` now opens the file instead of looping.**
-  Models routinely pass a bare filename when asked to test the page they
-  just wrote — and the resolver checked it against the app process's
-  working directory (never the agent's workspace), so `index.html` became
-  `https://index.html`, a DNS error, and an endless retry loop. Relative
-  paths now resolve against the workspace, a bare name with no path finds
-  its unique match anywhere in the project (`app.html` → `dist/app.html`;
-  several matches ask which one), a file that resolves nowhere gets a
-  plain-language error teaching the right form instead of a DNS guess, and
-  scheme-less `localhost:8000` finally gets `http://` instead of an
-  `https://` guess that dies on TLS. Real URLs, absolute paths and
-  websites behave exactly as before — proven by a resolver unit suite and
-  a live-Chrome pass over all four shapes.
 - **Real-surface smokes now part of the audit**: the GGUF/llama.cpp path
   (load → generate → cancel mid-stream → regenerate), the key-less search
   chain, article extraction, and a full UI walkthrough in English and
