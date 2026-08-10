@@ -236,37 +236,49 @@ const uid = () => Math.random().toString(36).slice(2);
 
 function stripThink(raw: string): string {
   // Channel-style reasoning markers (Gemma 4 / Harmony) → <think> convention,
-  // same normalization chat mode applies before parsing.
-  const s = normalizeChannels(raw);
+  // same normalization chat mode applies before parsing. A generation can
+  // carry several think blocks (a runaway that re-opens its thought channel),
+  // and a trailing unclosed block (EOS mid-thought) is reasoning, not answer.
+  let s = normalizeChannels(raw);
   const o = s.indexOf("<think>");
-  if (o === -1) {
+  const c0 = s.indexOf("</think>");
+  if (c0 !== -1 && (o === -1 || c0 < o)) {
     // Orphan close: reasoning streamed without an opening tag (pre-open-trained
     // models) — everything before the close is reasoning.
-    const c = s.indexOf("</think>");
-    if (c !== -1) return s.slice(c + "</think>".length);
+    s = s.slice(c0 + "</think>".length);
   }
-  return s.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, "");
+  return s
+    .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .replace(/<think>[\s\S]*$/, "")
+    .replace(/<\/?think>/g, "");
 }
 
-/** The reasoning inside `<think>…</think>` (or after `<think>` if not yet closed). */
+/** The reasoning across ALL `<think>…</think>` blocks (a trailing unclosed
+ *  block counts — that's the streaming state). */
 function thinkPart(raw: string): string {
-  const s = normalizeChannels(raw);
+  let s = normalizeChannels(raw);
+  const parts: string[] = [];
   const o = s.indexOf("<think>");
-  if (o === -1) {
-    const c = s.indexOf("</think>");
-    return c === -1 ? "" : s.slice(0, c).trim(); // orphan close
+  const c0 = s.indexOf("</think>");
+  if (c0 !== -1 && (o === -1 || c0 < o)) {
+    parts.push(s.slice(0, c0).trim()); // orphan close
+    s = s.slice(c0 + "</think>".length);
   }
-  const after = s.slice(o + "<think>".length);
-  const c = after.indexOf("</think>");
-  return (c === -1 ? after : after.slice(0, c)).trim();
+  const re = /<think>([\s\S]*?)(?:<\/think>|$)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s))) parts.push(m[1].trim());
+  return parts.filter(Boolean).join("\n\n");
 }
 
-/** Prose after any think block and before any tool call. */
+/** Prose outside every think block and before any tool call. */
 function proseAfter(raw: string): string {
   let t = normalizeChannels(raw);
-  const c = t.indexOf("</think>");
-  if (c !== -1) t = t.slice(c + "</think>".length);
-  else if (t.includes("<think>")) return ""; // still thinking → no prose yet
+  const o = t.indexOf("<think>");
+  const c0 = t.indexOf("</think>");
+  if (c0 !== -1 && (o === -1 || c0 < o)) t = t.slice(c0 + "</think>".length); // orphan close
+  t = t.replace(/<think>[\s\S]*?<\/think>/g, "");
+  const open = t.indexOf("<think>");
+  if (open !== -1) t = t.slice(0, open); // still thinking → prose so far only
   const tc = t.indexOf("<tool_call>");
   return (tc === -1 ? t : t.slice(0, tc)).trim();
 }
@@ -2027,7 +2039,14 @@ export async function runAgentTurn(
 
       // Record the assistant turn (its reasoning + the tool call, tag restored).
       const withClose = raw.includes("</tool_call>") ? raw : `${raw}</tool_call>`;
-      messages.push({ role: "assistant", content: stripThink(withClose).trim() });
+      let turn = stripThink(withClose).trim();
+      // A thought left unclosed can swallow the tool call along with the
+      // reasoning — the call must stay in history so the model sees what it
+      // already did.
+      if (!turn.includes("<tool_call>"))
+        turn =
+          `${turn}\n<tool_call>${JSON.stringify({ name: call.name, arguments: call.args })}</tool_call>`.trim();
+      messages.push({ role: "assistant", content: turn });
 
       const stepObj: ToolStep = { id: uid(), call, status: "running", thinking };
 

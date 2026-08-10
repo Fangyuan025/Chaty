@@ -11,6 +11,7 @@ import {
   synthesize,
   type ModelInfo,
 } from "../lib/ipc";
+import { stripThink } from "../lib/voiceText";
 import { decodeAudio, encodeAudio, playAudio, type Playback } from "../lib/audio";
 import { fmtTime } from "../lib/eta";
 
@@ -133,11 +134,13 @@ export function PodcastPanel({
       (ev) => {
         if (ev.type === "token") {
           acc += ev.text;
-          setTranscript(acc.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, ""));
+          // stripThink also normalizes channel-style reasoning (Gemma 4 /
+          // Harmony) and holds back an unclosed trailing thought.
+          setTranscript(stripThink(acc));
         }
       },
     );
-    const clean = acc.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, "");
+    const clean = stripThink(acc);
     return parseTranscript(clean);
   }
 

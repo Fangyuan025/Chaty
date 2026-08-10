@@ -12,6 +12,7 @@ import {
   webResearch,
   type ChatMessage,
 } from "./ipc";
+import { normalizeChannels } from "./voiceText";
 
 export interface DRSource {
   n: number;
@@ -56,7 +57,13 @@ export interface DROptions {
 }
 
 function stripThink(s: string): string {
-  return s.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<\/?think>/g, "");
+  // normalizeChannels first: Gemma 4 / Harmony emit channel-style reasoning
+  // markers, and a bare regex would leak them into the report. A trailing
+  // unclosed thought (cut generation) is reasoning too.
+  return normalizeChannels(s)
+    .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .replace(/<think>[\s\S]*$/, "")
+    .replace(/<\/?think>/g, "");
 }
 
 /** Pull search queries out of a model reply (numbered/bulleted/plain lines). */

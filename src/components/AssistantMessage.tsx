@@ -4,7 +4,11 @@ import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { normalizeChannels } from "../lib/voiceText";
 
-/** Split a streamed assistant message into its `<think>` reasoning and answer. */
+/** Split a streamed assistant message into its `<think>` reasoning and answer.
+ *  A message can carry SEVERAL think blocks (interleaved reasoning, or a
+ *  runaway that re-opened its thought channel): all block contents feed the
+ *  reasoning panel, everything outside is answer, and only a trailing
+ *  unclosed block counts as "still thinking". */
 function parseThinking(raw: string): {
   reasoning: string;
   answer: string;
@@ -12,39 +16,39 @@ function parseThinking(raw: string): {
   hasThink: boolean;
 } {
   // Channel-style reasoning markers (Gemma 4 / Harmony) → <think> convention.
-  const content = normalizeChannels(raw);
-  const open = "<think>";
+  let content = normalizeChannels(raw);
   const close = "</think>";
-  const oi = content.indexOf(open);
-  if (oi === -1) {
-    // Orphan close tag: reasoning streamed without an opening <think> (a
-    // pre-open-trained model whose prompt lost the tag). Everything before
-    // the close is reasoning.
-    const ci0 = content.indexOf(close);
-    if (ci0 !== -1) {
-      return {
-        reasoning: content.slice(0, ci0).trim(),
-        answer: content.slice(ci0 + close.length).replace(/^\s+/, ""),
-        thinking: false,
-        hasThink: true,
-      };
-    }
-    return { reasoning: "", answer: content, thinking: false, hasThink: false };
+  const chunks: string[] = [];
+  let answer = "";
+  let thinking = false;
+  let hasThink = false;
+  // Orphan close tag: reasoning streamed without an opening <think> (a
+  // pre-open-trained model whose prompt lost the tag). Everything before
+  // the close is reasoning.
+  const oi0 = content.indexOf("<think>");
+  const ci0 = content.indexOf(close);
+  if (ci0 !== -1 && (oi0 === -1 || ci0 < oi0)) {
+    chunks.push(content.slice(0, ci0).trim());
+    content = content.slice(ci0 + close.length);
+    hasThink = true;
   }
-  const afterOpen = oi + open.length;
-  const ci = content.indexOf(close, afterOpen);
-  if (ci === -1) {
-    // Opening tag seen but not yet closed → still reasoning.
-    return {
-      reasoning: content.slice(afterOpen).replace(/^\n+/, ""),
-      answer: "",
-      thinking: true,
-      hasThink: true,
-    };
+  const re = /<think>([\s\S]*?)(?:<\/think>|$)/g;
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content))) {
+    answer += content.slice(cursor, m.index);
+    chunks.push(m[1].replace(/^\n+/, "").trim());
+    cursor = m.index + m[0].length;
+    hasThink = true;
+    thinking = !m[0].endsWith(close);
   }
-  const reasoning = content.slice(afterOpen, ci).trim();
-  const answer = (content.slice(0, oi) + content.slice(ci + close.length)).replace(/^\s+/, "");
-  return { reasoning, answer, thinking: false, hasThink: true };
+  answer += content.slice(cursor);
+  return {
+    reasoning: chunks.filter(Boolean).join("\n\n"),
+    answer: answer.replace(/^\s+/, ""),
+    thinking,
+    hasThink,
+  };
 }
 
 const SOURCE_RE = /[【[（(]\s*来源\s*[\d０-９,，、\s]+[】\])）]/g;
@@ -96,6 +100,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     const answer = prepareCitations(
       normalizeChannels(content)
         .replace(/<think>[\s\S]*?<\/think>/g, "")
+        .replace(/<think>[\s\S]*$/, "")
         .replace(/<\/?think>/g, ""),
       hasSources,
     ).replace(/^\s+/, "");
