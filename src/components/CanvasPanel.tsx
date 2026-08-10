@@ -79,12 +79,31 @@ const CONSOLE_SHIM = `<script>(function(){
     var orig = console[l] && console[l].bind(console);
     console[l] = function(){ send(l === 'info' || l === 'debug' ? 'log' : l, arguments); if (orig) orig.apply(null, arguments); };
   });
+  function ufix(s){
+    var K = window.__CV_LINEOFF || 0;
+    return String(s).split('\\n').filter(function(l){ return l.indexOf('__cvGuard') < 0; }).join('\\n')
+      .replace(/about:srcdoc:(\\d+)/g, function(_, n){ n = +n; return 'canvas:' + (n > K ? n - K : n); });
+  }
   window.addEventListener('error', function(e){
     if (e && e.target && (e.target.src || e.target.href)) send('error', ['Failed to load resource: ' + (e.target.src || e.target.href)], true);
-    else if (e && e.message) send('error', [e.message + ' (' + (e.filename||'') + ':' + (e.lineno||0) + ')' + (e.error && e.error.stack ? '\\n' + e.error.stack : '')], true);
+    else if (e && e.message) {
+      // The trap shim replays caught errors as detailed synthetic events
+      // (filename 'canvas') — drop the browser's own follow-up for the same
+      // throw: the anonymized "Script error." (WebKit) or the duplicate
+      // detailed event (Chromium/WebView2).
+      var fresh = Date.now() - (window.__CV_TRAP_AT || 0) < 200;
+      if (fresh && e.filename !== 'canvas' && (/^Script error/.test(e.message) || (window.__CV_TRAP_MSG && String(e.message).indexOf(window.__CV_TRAP_MSG) >= 0))) return;
+      var K = window.__CV_LINEOFF || 0, ln = e.lineno || 0;
+      var srcdocFile = String(e.filename || '').indexOf('srcdoc') >= 0;
+      if (srcdocFile && ln > K) ln -= K;
+      var fname = e.filename && !srcdocFile ? e.filename : 'canvas';
+      var loc = ln ? ' (' + fname + ':' + ln + ')' : '';
+      send('error', [e.message + loc + (e.error && e.error.stack ? '\\n' + ufix(e.error.stack) : '')], true);
+    }
   }, true);
   window.addEventListener('unhandledrejection', function(e){
-    var r = e && e.reason; send('error', ['Unhandled rejection: ' + ((r && r.message) || String(r))], true);
+    var r = e && e.reason;
+    send('error', ['Unhandled rejection: ' + ((r && r.message) || String(r)) + (r && r.stack ? '\\n' + ufix(r.stack) : '')], true);
   });
 })();</script>`;
 
@@ -100,17 +119,95 @@ const ERROR_SHIM = `<script>(function(){
     if (seen[sig]) return; seen[sig] = 1;
     try { parent.postMessage({ __chatyCanvasError: { kind: kind, message: String(msg).slice(0,1000), detail: String(detail||'').slice(0,2000), nonce: window.__CV_NONCE || '' } }, '*'); } catch(_){}
   }
+  function ufix(s){
+    var K = window.__CV_LINEOFF || 0;
+    return String(s).split('\\n').filter(function(l){ return l.indexOf('__cvGuard') < 0; }).join('\\n')
+      .replace(/about:srcdoc:(\\d+)/g, function(_, n){ n = +n; return 'canvas:' + (n > K ? n - K : n); });
+  }
   window.addEventListener('error', function(e){
     if (e && e.target && (e.target.src || e.target.href)) {
       send('resource', 'Failed to load ' + (e.target.src || e.target.href), e.target.tagName);
     } else if (e && e.message) {
-      send('error', e.message, (e.filename||'') + ':' + (e.lineno||0) + ':' + (e.colno||0) + (e.error && e.error.stack ? '\\n' + e.error.stack : ''));
+      // Same duplicate-drop as the console shim: the trap shim already
+      // replayed this throw as a detailed synthetic event.
+      var fresh = Date.now() - (window.__CV_TRAP_AT || 0) < 200;
+      if (fresh && e.filename !== 'canvas' && (/^Script error/.test(e.message) || (window.__CV_TRAP_MSG && String(e.message).indexOf(window.__CV_TRAP_MSG) >= 0))) return;
+      var K = window.__CV_LINEOFF || 0, ln = e.lineno || 0;
+      var srcdocFile = String(e.filename || '').indexOf('srcdoc') >= 0;
+      if (srcdocFile && ln > K) ln -= K;
+      var fname = e.filename && !srcdocFile ? e.filename : 'canvas';
+      send('error', e.message, fname + ':' + ln + ':' + (e.colno||0) + (e.error && e.error.stack ? '\\n' + ufix(e.error.stack) : ''));
     }
   }, true);
   window.addEventListener('unhandledrejection', function(e){
     var r = e && e.reason;
-    send('promise', (r && r.message) ? r.message : String(r), (r && r.stack) ? r.stack : '');
+    send('promise', (r && r.message) ? r.message : String(r), (r && r.stack) ? ufix(r.stack) : '');
   });
+})();</script>`;
+
+/**
+ * Async-entry error trap. WebKit anonymizes every uncaught error inside the
+ * sandboxed null-origin srcdoc frame to "Script error." — no line, no stack.
+ * Same-realm CAUGHT errors keep everything, so the big async entry points
+ * (timers, rAF, microtasks, event listeners — where interaction bugs live)
+ * run through a guard that catches, replays the error as a DETAILED
+ * synthetic ErrorEvent (picked up by the console/error shims above, lines
+ * already in user-source space), then rethrows so page semantics don't
+ * change. Residual: top-level synchronous throws and inline on*= attribute
+ * handlers stay anonymized — the digest note covers them.
+ */
+const TRAP_SHIM = `<script>(function(){
+  var wraps = typeof WeakMap === 'function' ? new WeakMap() : null;
+  function fixline(n){ var K = window.__CV_LINEOFF || 0; n = +n; return n > K ? n - K : n; }
+  function ufix(s){ return String(s).split('\\n').filter(function(l){ return l.indexOf('__cvGuard') < 0; }).join('\\n').replace(/about:srcdoc:(\\d+)/g, function(_, n){ return 'canvas:' + fixline(n); }); }
+  function report(err){
+    try {
+      var st = err && err.stack ? String(err.stack) : '';
+      var m = /about:srcdoc:(\\d+):(\\d+)/.exec(st);
+      var ln = m ? fixline(m[1]) : 0, cn = m ? +m[2] : 0;
+      if (st) { try { err.stack = ufix(st); } catch(_){} }
+      window.__CV_TRAP_AT = Date.now();
+      window.__CV_TRAP_MSG = (err && err.message) ? String(err.message) : String(err);
+      window.dispatchEvent(new ErrorEvent('error', {
+        message: window.__CV_TRAP_MSG,
+        filename: 'canvas', lineno: ln, colno: cn, error: err
+      }));
+    } catch(_){}
+  }
+  function guard(fn){
+    if (typeof fn !== 'function') return fn;
+    if (wraps) { var w0 = wraps.get(fn); if (w0) return w0; }
+    var w = function __cvGuard(){ try { return fn.apply(this, arguments); } catch(err){ report(err); throw err; } };
+    if (wraps) wraps.set(fn, w);
+    return w;
+  }
+  function patch(obj, name){
+    try {
+      var orig = obj[name];
+      if (!orig) return;
+      obj[name] = function(){
+        var a = Array.prototype.slice.call(arguments);
+        if (typeof a[0] === 'function') a[0] = guard(a[0]);
+        return orig.apply(this, a);
+      };
+    } catch(_){}
+  }
+  patch(window, 'setTimeout');
+  patch(window, 'setInterval');
+  patch(window, 'requestAnimationFrame');
+  patch(window, 'queueMicrotask');
+  try {
+    var ET = window.EventTarget;
+    var proto = ET && ET.prototype;
+    if (proto) {
+      var add = proto.addEventListener, rem = proto.removeEventListener;
+      proto.addEventListener = function(type, fn, opts){ return add.call(this, type, guard(fn), opts); };
+      proto.removeEventListener = function(type, fn, opts){
+        var w = (wraps && typeof fn === 'function') ? (wraps.get(fn) || fn) : fn;
+        return rem.call(this, type, w, opts);
+      };
+    }
+  } catch(_){}
 })();</script>`;
 
 /**
@@ -200,6 +297,7 @@ export const PREVIEW_SHIMS: Record<string, string> = {
   COMPAT_SHIM,
   CONSOLE_SHIM,
   ERROR_SHIM,
+  TRAP_SHIM,
   NAV_GUARD,
   INSPECT_SHIM,
   SCROLL_SCHEME_SHIM,
@@ -211,10 +309,15 @@ function withShims(html: string, nonce: string): string {
   // srcDoc that produced it: WKWebView can start reparsing (and posting
   // errors) BEFORE React's post-commit clear effect runs, so a timing-based
   // clear silently ate early errors — generation filtering is order-proof.
-  const shims =
-    `<script>window.__CV_NONCE=${JSON.stringify(nonce)};</script>` +
+  let shims =
+    `<script>window.__CV_NONCE=${JSON.stringify(nonce)};window.__CV_LINEOFF=0;</script>` +
     SCROLLBAR_PAINT_SHIM +
-    COMPAT_SHIM + CONSOLE_SHIM + ERROR_SHIM + NAV_GUARD + INSPECT_SHIM + SCROLL_SCHEME_SHIM;
+    COMPAT_SHIM + CONSOLE_SHIM + ERROR_SHIM + TRAP_SHIM + NAV_GUARD + INSPECT_SHIM + SCROLL_SCHEME_SHIM;
+  // Error lines arrive in srcdoc coordinates: user source shifted down by the
+  // shim block's newline count. Bake that offset into the page so the shims
+  // can report USER-source line numbers (swapping digits keeps the count).
+  const lineOff = (shims.match(/\n/g) || []).length;
+  shims = shims.replace("__CV_LINEOFF=0", `__CV_LINEOFF=${lineOff}`);
   // Inject at the very TOP of the document (only the doctype may precede us,
   // or it would flip the page into quirks mode). Injecting "after <head>" by
   // regex trusted the DOCUMENT's structure: models produce html like

@@ -263,8 +263,8 @@ export function buildFixPayload(
   const note =
     muzzled > 0
       ? lang === "zh"
-        ? `\n注意:其中 "Script error." 出现 ${muzzled} 次——这是浏览器把沙箱内的不同错误匿名化的结果,它们很可能是多个不同的运行时错误。请通读页面全部脚本逻辑逐一排查,不要只修一处。`
-        : `\nNote: "Script error." appeared ${muzzled} time(s) — the browser anonymizes distinct sandboxed errors into this one line, so they are likely SEVERAL different runtime bugs. Audit all script logic on the page; do not stop at one fix.`
+        ? `\n注意:其中 "Script error." 出现 ${muzzled} 次——这是浏览器把沙箱内的不同错误匿名化的结果,它们很可能是多个不同的运行时错误。定时器/事件监听里的错误现在自带行号,所以匿名条目通常来自脚本顶层直接执行的代码或内联 on*= 属性——重点排查这两处,不要只修一处。`
+        : `\nNote: "Script error." appeared ${muzzled} time(s) — the browser anonymizes distinct sandboxed errors into this one line, so they are likely SEVERAL different runtime bugs. Timer/event-listener errors now carry line numbers, so anonymized entries usually come from TOP-LEVEL script statements or inline on*= attributes — audit those first; do not stop at one fix.`
       : "";
   if (uniq.length <= 1) return (uniq[0] ?? "") + note;
   return (uniq.map((t, i) => `${i + 1}. ${t}`).join("\n") + note).slice(0, 6400);
