@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
 import { useConfirm } from "./ConfirmModal";
 import { Icon } from "./Icon";
-import { withStorageShim } from "./Markdown";
+import { STORAGE_SHIM } from "./Markdown";
 import { IconDownload, IconEdit } from "./icons";
 import { annotate, buildFixPayload, highlightLines, INSPECT_SHIM, precheckScripts } from "../lib/canvasSource";
 import { diffLines } from "../lib/diff";
@@ -304,14 +304,18 @@ export const PREVIEW_SHIMS: Record<string, string> = {
   SCROLLBAR_PAINT_SHIM,
 };
 
-function withShims(html: string, nonce: string): string {
+export function withShims(html: string, nonce: string): string {
   // The nonce ties every message from this document generation to the
   // srcDoc that produced it: WKWebView can start reparsing (and posting
   // errors) BEFORE React's post-commit clear effect runs, so a timing-based
   // clear silently ate early errors — generation filtering is order-proof.
+  // STORAGE_SHIM must live in THIS block too: injecting it separately (the
+  // old withStorageShim wrapper) put its newlines outside __CV_LINEOFF and
+  // every reported error line drifted by its height — the owner's 4-line
+  // repro reported canvas:16.
   let shims =
     `<script>window.__CV_NONCE=${JSON.stringify(nonce)};window.__CV_LINEOFF=0;</script>` +
-    SCROLLBAR_PAINT_SHIM +
+    STORAGE_SHIM + SCROLLBAR_PAINT_SHIM +
     COMPAT_SHIM + CONSOLE_SHIM + ERROR_SHIM + TRAP_SHIM + NAV_GUARD + INSPECT_SHIM + SCROLL_SCHEME_SHIM;
   // Error lines arrive in srcdoc coordinates: user source shifted down by the
   // shim block's newline count. Bake that offset into the page so the shims
@@ -370,6 +374,9 @@ export function CanvasPanel({
   const { t, lang } = useI18n();
   const [instruction, setInstruction] = useState("");
   const [error, setError] = useState<CanvasError | null>(null);
+  // How many DISTINCT errors this page generation produced (the banner shows
+  // the first, the count keeps the rest visible).
+  const [errorCount, setErrorCount] = useState(0);
   const [muted, setMuted] = useState(false);
   const [view, setView] = useState<"code" | "diff" | "console">("code");
   const [consoleLog, setConsoleLog] = useState<{ level: string; text: string; nonce?: string; fault?: boolean }[]>([]);
@@ -438,7 +445,7 @@ export function CanvasPanel({
   const nonceRef = useRef(frameNonce);
   nonceRef.current = frameNonce;
   const srcDoc = useMemo(
-    () => (annotated ? withShims(withStorageShim(annotated.html), frameNonce) : ""),
+    () => (annotated ? withShims(annotated.html, frameNonce) : ""),
     [annotated, frameNonce],
   );
   const codeLines = useMemo(() => (current ? highlightLines(current.html) : []), [current]);
@@ -464,7 +471,7 @@ export function CanvasPanel({
   // Old error / hot line don't apply across version switches; and a version
   // with no predecessor has no diff to show — fall back to the code view.
   useEffect(() => {
-    setError(null);
+    setError(null); setErrorCount(0);
     setHotLine(null);
     setPreviewScheme("light");
     // Keep entries from the CURRENT document generation: on WKWebView the
@@ -484,7 +491,7 @@ export function CanvasPanel({
   useEffect(() => {
     if (!open) {
       setConsoleLog([]);
-      setError(null);
+      setError(null); setErrorCount(0);
       setConDiag({ raw: 0, dropped: "" });
       setPreviewScheme("light");
     }
@@ -518,7 +525,10 @@ export function CanvasPanel({
       }
       if (data?.__chatyCanvasError && !muted) {
         const d = data.__chatyCanvasError as CanvasError & { nonce?: string };
-        if (!d.nonce || d.nonce === nonceRef.current) setError((prev) => prev ?? d);
+        if (!d.nonce || d.nonce === nonceRef.current) {
+          setError((prev) => prev ?? d);
+          setErrorCount((c) => c + 1);
+        }
       }
       const sel = (data as { __chatyCvSelect?: { cv: string; multi: boolean } })?.__chatyCvSelect;
       if (sel && annotated) {
@@ -722,7 +732,7 @@ export function CanvasPanel({
               title={t("canvasReload")}
               onClick={() => {
                 setConsoleLog([]);
-                setError(null);
+                setError(null); setErrorCount(0);
                 setReloadNonce((n) => n + 1);
               }}
             >
@@ -1056,6 +1066,7 @@ export function CanvasPanel({
             <span className="canvas-heal-msg">
               {t("canvasHealMsg")}
               <code>{error.message}</code>
+              {errorCount > 1 && <span className="canvas-heal-more">{t("canvasErrMore", { n: errorCount })}</span>}
             </span>
             <div className="canvas-heal-actions">
               <button
@@ -1072,19 +1083,19 @@ export function CanvasPanel({
                       lang as "zh" | "en",
                     ),
                   );
-                  setError(null);
+                  setError(null); setErrorCount(0);
                 }}
               >
                 {t("canvasFixBtn")}
               </button>
-              <button className="canvas-heal-ghost" onClick={() => setError(null)}>
+              <button className="canvas-heal-ghost" onClick={() => { setError(null); setErrorCount(0); }}>
                 {t("canvasIgnore")}
               </button>
               <button
                 className="canvas-heal-ghost"
                 onClick={() => {
                   setMuted(true);
-                  setError(null);
+                  setError(null); setErrorCount(0);
                 }}
               >
                 {t("canvasMute")}

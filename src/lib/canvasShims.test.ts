@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PREVIEW_SHIMS } from "../components/CanvasPanel";
+import { PREVIEW_SHIMS, withShims } from "../components/CanvasPanel";
 
 /** The generated shim code must PARSE. A template-escape slip ('\n' in the
  *  TS source becomes a real newline inside the shim's single-quoted string)
@@ -111,6 +111,33 @@ describe("TRAP_SHIM behavior (WebKit muzzle workaround)", () => {
     target.removeEventListener("click", stranger);
     expect(removed[1].fn).toBe(stranger);
   });
+});
+
+describe("withShims line offset invariant", () => {
+  // The whole line-calibration scheme rests on ONE invariant: user-source
+  // line L sits at srcdoc line L + __CV_LINEOFF. The storage shim used to be
+  // injected OUTSIDE this block (separate wrapper) and broke it — the
+  // owner's 4-line repro reported canvas:16.
+  const shapes: Record<string, string> = {
+    "bare fragment": `<button onclick="setTimeout(()=>{ boom() },0)">点我</button>\n<script>\nMARKER_LINE_3();\n</script>`,
+    "doctyped document": `<!doctype html>\n<html>\n<head><title>t</title></head>\n<body>\nMARKER_LINE_5\n</body>\n</html>`,
+  };
+  for (const [name, html] of Object.entries(shapes)) {
+    it(`${name}: marker line maps to source line + __CV_LINEOFF`, () => {
+      const out = withShims(html, "n");
+      const K = Number(/__CV_LINEOFF=(\d+)/.exec(out)![1]);
+      expect(K).toBeGreaterThan(10);
+      const srcLine = html.split("\n").findIndex((l) => l.includes("MARKER_LINE") || l.includes("boom(")) + 1;
+      const outLine = out.split("\n").findIndex((l) => l.includes("MARKER_LINE") || l.includes("boom(")) + 1;
+      expect(outLine).toBe(srcLine + K);
+      // The marker deeper in the document obeys the same offset.
+      const deepSrc = html.split("\n").findIndex((l) => l.includes("MARKER_LINE")) + 1;
+      const deepOut = out.split("\n").findIndex((l) => l.includes("MARKER_LINE")) + 1;
+      expect(deepOut).toBe(deepSrc + K);
+      // Storage shim rides INSIDE the counted block now.
+      expect(out.slice(0, out.indexOf("MARKER_LINE")).includes("localStorage.getItem")).toBe(true);
+    });
+  }
 });
 
 describe("CONSOLE_SHIM line mapping and duplicate-drop", () => {

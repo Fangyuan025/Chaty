@@ -313,6 +313,7 @@ export const T = {
   canvasEdit: { zh: "修改", en: "Edit", pt: "Editar" },
   canvasFix: { zh: "修复", en: "Fix", pt: "Consertar" },
   canvasHealMsg: { zh: "页面运行出错，让模型修复？", en: "The page threw an error — let the model fix it?", pt: "A página emitiu um erro — quer que o modelo tente consertá-lo?" },
+  canvasErrMore: { zh: "等共 {n} 个错误", en: "— {n} errors total", pt: "— {n} erros no total" },
   canvasFixBtn: { zh: "修复", en: "Fix it", pt: "Conserte" },
   canvasIgnore: { zh: "忽略", en: "Ignore", pt: "Ignorar" },
   canvasMute: { zh: "本次不再提示", en: "Don't ask again", pt: "Não perguntar novamente" },

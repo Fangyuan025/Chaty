@@ -203,7 +203,7 @@ function Mermaid({ code }: { code: string }) {
  * Sandboxed (non-same-origin) iframes throw SecurityError on storage access,
  * which crashes e.g. single-file games that save a highscore on boot.
  */
-const STORAGE_SHIM = `<script>(function(){
+export const STORAGE_SHIM = `<script>(function(){
   try { localStorage.getItem(""); } catch (_) {
     var m = new Map();
     var shim = {

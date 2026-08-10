@@ -3209,6 +3209,12 @@ body.resizing-x {
   border-radius: var(--r-sm);
   white-space: nowrap;
 }
+.canvas-heal-more {
+  margin-left: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim, rgba(255, 255, 255, 0.55));
+  white-space: nowrap;
+}
 .canvas-heal-actions {
   display: flex;
   align-items: center;
