@@ -263,8 +263,8 @@ export function buildFixPayload(
   const note =
     muzzled > 0
       ? lang === "zh"
-        ? `\n注意:其中 "Script error." 出现 ${muzzled} 次——这是浏览器把沙箱内的不同错误匿名化的结果,它们很可能是多个不同的运行时错误。定时器/事件监听里的错误现在自带行号,所以匿名条目通常来自脚本顶层直接执行的代码或内联 on*= 属性——重点排查这两处,不要只修一处。`
-        : `\nNote: "Script error." appeared ${muzzled} time(s) — the browser anonymizes distinct sandboxed errors into this one line, so they are likely SEVERAL different runtime bugs. Timer/event-listener errors now carry line numbers, so anonymized entries usually come from TOP-LEVEL script statements or inline on*= attributes — audit those first; do not stop at one fix.`
+        ? `\n注意:其中 "Script error." 出现 ${muzzled} 次——这是浏览器把沙箱内的不同错误匿名化的结果,它们很可能是多个不同的运行时错误。顶层语句、内联 on*= 属性、定时器与事件回调的错误现在都自带行号,残余的匿名条目通常来自 'use strict' 脚本、type=module 脚本、或多脚本页面里声明 let/const 的脚本——排查这些块,不要只修一处。`
+        : `\nNote: "Script error." appeared ${muzzled} time(s) — the browser anonymizes distinct sandboxed errors into this one line, so they are likely SEVERAL different runtime bugs. Top-level statements, inline on*= attributes and timer/event callbacks all carry line numbers now; remaining anonymized entries usually come from 'use strict' scripts, type=module scripts, or let/const-declaring scripts on multi-script pages — audit those; do not stop at one fix.`
       : "";
   if (uniq.length <= 1) return (uniq[0] ?? "") + note;
   return (uniq.map((t, i) => `${i + 1}. ${t}`).join("\n") + note).slice(0, 6400);
@@ -277,6 +277,69 @@ export function buildFixPayload(
  *  executing. (Function-body context: a stray top-level `return` slips
  *  through — acceptable for a diagnostic tier.) */
 const CLASSIC_SCRIPT_TYPE = /^(text|application)\/(x-)?(java|ecma)script$/;
+
+const SCRIPT_BLOCK_RE = /<script\b(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?<\/script>/gi;
+const CATCH_TAIL = "}catch(__cvE){window.__cvReport&&window.__cvReport(__cvE);throw __cvE}";
+
+function isClassicScript(openTag: string): boolean {
+  if (/\bsrc\s*=/i.test(openTag)) return false;
+  const tm = /\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(openTag);
+  const t = (tm?.[1] ?? tm?.[2] ?? tm?.[3] ?? "").trim().toLowerCase();
+  return !t || CLASSIC_SCRIPT_TYPE.test(t);
+}
+
+/** Rewrite inline on*= attribute handlers to report their errors precisely.
+ *  WebKit anonymizes attribute-compiled code's uncaught errors; a try/catch
+ *  INSIDE the attribute keeps the message and stack. `return` semantics and
+ *  line numbers are untouched (the rewrite adds no newlines). */
+function rewriteInlineHandlers(seg: string): string {
+  const wrap = (pre: string, q: string, code: string) =>
+    code.trim() ? `${pre}${q}try{${code}${CATCH_TAIL}${q}` : `${pre}${q}${code}${q}`;
+  return seg
+    .replace(/(\son[a-z]+\s*=\s*)"([^"]*)"/gi, (_, pre: string, code: string) => wrap(pre, '"', code))
+    .replace(/(\son[a-z]+\s*=\s*)'([^']*)'/gi, (_, pre: string, code: string) => wrap(pre, "'", code));
+}
+
+/**
+ * Instrument the page so the sandboxed preview can report EXACT errors
+ * despite WebKit's "Script error." muzzle (an opaque-origin srcdoc document
+ * anonymizes its own uncaught errors — no message, no line):
+ *
+ * - every classic `<script>` body runs inside a line-preserving try/catch
+ *   that reports the caught error (full stack, real source lines) and
+ *   rethrows — this is what makes TOP-LEVEL statement errors precise;
+ * - every inline on*= attribute handler gets the same treatment inside the
+ *   attribute string (attribute rewriting never touches script bodies).
+ *
+ * Skips: `'use strict'` scripts (the wrap would block-scope their function
+ * declarations away from inline handlers), and — on MULTI-script pages —
+ * scripts declaring top-level let/const/class (the wrap would hide those
+ * bindings from the other scripts). Both fall back to the anonymized path,
+ * which the Fix digest's muzzle note explains.
+ */
+export function instrumentHtml(html: string): string {
+  const classicBodies = [...html.matchAll(SCRIPT_BLOCK_RE)].filter((m) =>
+    isClassicScript(/^<script\b(?:[^>"']|"[^"]*"|'[^']*')*>/i.exec(m[0])![0]),
+  ).length;
+  const wrapScript = (block: string): string => {
+    const open = /^<script\b(?:[^>"']|"[^"]*"|'[^']*')*>/i.exec(block)![0];
+    if (!isClassicScript(open)) return block;
+    const body = block.slice(open.length, block.length - "</script>".length);
+    if (!body.trim()) return block;
+    if (/^\s*(['"])use strict\1/.test(body)) return block;
+    if (classicBodies > 1 && /^\s{0,3}(let|const|class)\s/m.test(body)) return block;
+    return `${open}try{${body}${CATCH_TAIL}</script>`;
+  };
+  let out = "";
+  let last = 0;
+  for (const m of html.matchAll(SCRIPT_BLOCK_RE)) {
+    out += rewriteInlineHandlers(html.slice(last, m.index));
+    out += wrapScript(m[0]);
+    last = m.index + m[0].length;
+  }
+  out += rewriteInlineHandlers(html.slice(last));
+  return out;
+}
 
 export function precheckScripts(html: string, lang: "zh" | "en" = "zh"): string[] {
   const out: string[] = [];

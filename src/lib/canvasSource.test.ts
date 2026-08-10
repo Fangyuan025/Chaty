@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from "vitest";
-import { annotate, buildFixPayload, fixInstruction, highlightLines, precheckScripts } from "./canvasSource";
+import { annotate, buildFixPayload, fixInstruction, highlightLines, instrumentHtml, precheckScripts } from "./canvasSource";
 
 describe("annotate", () => {
   test("tags real elements with data-cv and records their lines", () => {
@@ -171,5 +171,51 @@ describe("fixInstruction", () => {
     const s = fixInstruction("1. A\n2. B", "zh", "");
     expect(s).toContain("全部 2 个问题");
     expect(s).not.toContain("完整修正后的 HTML 更稳妥");
+  });
+});
+
+describe("instrumentHtml (muzzle-defeating source rewrite)", () => {
+  it("wraps a classic script body without adding lines", () => {
+    const html = `<div>x</div>\n<script>\nconst a = 1;\nboom();\n</script>`;
+    const out = instrumentHtml(html);
+    expect(out.split("\n").length).toBe(html.split("\n").length);
+    expect(out).toContain("<script>try{");
+    expect(out).toContain("throw __cvE}</script>");
+    // the body itself is untouched between the wrap
+    expect(out).toContain("const a = 1;");
+  });
+
+  it("rewrites inline on*= handlers in both quote styles, outside scripts only", () => {
+    const html = `<button onclick="go()">x</button>\n<a onmouseover='hover()'>y</a>\n<script>var once = "a"; var conf = { online: 1 };</script>`;
+    const out = instrumentHtml(html);
+    expect(out).toContain(`onclick="try{go()}catch(__cvE){`);
+    expect(out).toContain(`onmouseover='try{hover()}catch(__cvE){`);
+    // script-body text that merely LOOKS like an attribute stays untouched
+    expect(out).toContain(`var once = "a"; var conf = { online: 1 };`);
+  });
+
+  it("skips 'use strict' scripts and non-classic blocks", () => {
+    const strict = `<script>\n'use strict';\nlet a = 1;\n</script>`;
+    expect(instrumentHtml(strict)).toBe(strict);
+    const module = `<script type="module">import x from 'y';</script>`;
+    expect(instrumentHtml(module)).toBe(module);
+    const json = `<script type="application/json">{"a":1}</script>`;
+    expect(instrumentHtml(json)).toBe(json);
+  });
+
+  it("on MULTI-script pages, scripts with top-level lexical declarations stay unwrapped", () => {
+    const html = `<script>\nconst SHARED = 1;\n</script>\n<script>\nuse(SHARED);\n</script>`;
+    const out = instrumentHtml(html);
+    // first script (const at top level) untouched; second script wrapped
+    expect(out).toContain(`<script>\nconst SHARED = 1;\n</script>`);
+    expect(out).toContain(`<script>try{\nuse(SHARED);\n`);
+    // single-script pages wrap even with top-level const
+    const single = `<script>\nconst A = 1;\nboom();\n</script>`;
+    expect(instrumentHtml(single)).toContain("<script>try{");
+  });
+
+  it("empty handlers and empty scripts stay untouched", () => {
+    const html = `<button onclick="">x</button><script></script>`;
+    expect(instrumentHtml(html)).toBe(html);
   });
 });

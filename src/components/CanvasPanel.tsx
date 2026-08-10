@@ -5,7 +5,7 @@ import { useConfirm } from "./ConfirmModal";
 import { Icon } from "./Icon";
 import { STORAGE_SHIM } from "./Markdown";
 import { IconDownload, IconEdit } from "./icons";
-import { annotate, buildFixPayload, highlightLines, INSPECT_SHIM, precheckScripts } from "../lib/canvasSource";
+import { annotate, buildFixPayload, highlightLines, INSPECT_SHIM, instrumentHtml, precheckScripts } from "../lib/canvasSource";
 import { diffLines } from "../lib/diff";
 import { buildScanView } from "../lib/canvasStream";
 
@@ -66,13 +66,42 @@ const COMPAT_SHIM = `<script>(function(){
  */
 const CONSOLE_SHIM = `<script>(function(){
   var count = 0;
+  // DevTools-grade argument rendering: Errors show their (line-fixed) stack,
+  // DOM nodes a readable tag, undefined/null/functions their real names —
+  // JSON.stringify alone turned console.error(new Error(...)) into "{}".
+  function fmt(a){
+    try {
+      if (a === undefined) return 'undefined';
+      if (a === null) return 'null';
+      if (typeof a === 'string') return a;
+      if (typeof a === 'function' || typeof a === 'symbol') return String(a);
+      if (a && (a instanceof Error || (a.stack && a.message !== undefined))) {
+        var head = (a.name || 'Error') + (a.message ? ': ' + a.message : '');
+        var st = a.stack ? String(a.stack) : '';
+        if (st.indexOf(head) === 0) return ufix(st);
+        return head + (st ? '\\n' + ufix(st) : '');
+      }
+      if (a && a.nodeType === 1 && a.tagName) return '<' + String(a.tagName).toLowerCase() + (a.id ? '#' + a.id : '') + '>';
+      var j; try { j = JSON.stringify(a); } catch(_) { return String(a); }
+      return j === undefined ? String(a) : j;
+    } catch(_) { return '[unserializable]'; }
+  }
   function send(level, args, fault){
     if (count >= 300) return; count++;
     var text = '';
-    try { text = Array.prototype.map.call(args, function(a){
-      if (typeof a === 'string') return a;
-      try { return JSON.stringify(a); } catch(_) { return String(a); }
-    }).join(' '); } catch(_) { text = '[unserializable]'; }
+    try { text = Array.prototype.map.call(args, fmt).join(' '); } catch(_) { text = '[unserializable]'; }
+    // Caller location, like devtools shows for every console line. Fault
+    // paths (uncaught errors) carry their own location already.
+    if (!fault) {
+      try {
+        var K = window.__CV_LINEOFF || 0;
+        var st = String(new Error().stack || '').split('\\n');
+        for (var i = 0; i < st.length; i++) {
+          var mm = /about:srcdoc:(\\d+)/.exec(st[i]);
+          if (mm && +mm[1] > K) { text += ' @canvas:' + (+mm[1] - K); break; }
+        }
+      } catch(_){}
+    }
     try { parent.postMessage({ __chatyCvConsole: { level: level, text: String(text).slice(0, level === 'error' ? 2000 : 600), nonce: window.__CV_NONCE || '', fault: !!fault } }, '*'); } catch(_){}
   }
   ['log','info','warn','error','debug'].forEach(function(l){
@@ -82,7 +111,7 @@ const CONSOLE_SHIM = `<script>(function(){
   function ufix(s){
     var K = window.__CV_LINEOFF || 0;
     return String(s).split('\\n').filter(function(l){ return l.indexOf('__cvGuard') < 0; }).join('\\n')
-      .replace(/about:srcdoc:(\\d+)/g, function(_, n){ n = +n; return 'canvas:' + (n > K ? n - K : n); });
+      .replace(/about:srcdoc:(\\d+)/g, function(_, n){ n = +n; return n > K ? 'canvas:' + (n - K) : 'canvas:eval'; });
   }
   window.addEventListener('error', function(e){
     if (e && e.target && (e.target.src || e.target.href)) send('error', ['Failed to load resource: ' + (e.target.src || e.target.href)], true);
@@ -122,7 +151,7 @@ const ERROR_SHIM = `<script>(function(){
   function ufix(s){
     var K = window.__CV_LINEOFF || 0;
     return String(s).split('\\n').filter(function(l){ return l.indexOf('__cvGuard') < 0; }).join('\\n')
-      .replace(/about:srcdoc:(\\d+)/g, function(_, n){ n = +n; return 'canvas:' + (n > K ? n - K : n); });
+      .replace(/about:srcdoc:(\\d+)/g, function(_, n){ n = +n; return n > K ? 'canvas:' + (n - K) : 'canvas:eval'; });
   }
   window.addEventListener('error', function(e){
     if (e && e.target && (e.target.src || e.target.href)) {
@@ -158,8 +187,8 @@ const ERROR_SHIM = `<script>(function(){
  */
 const TRAP_SHIM = `<script>(function(){
   var wraps = typeof WeakMap === 'function' ? new WeakMap() : null;
-  function fixline(n){ var K = window.__CV_LINEOFF || 0; n = +n; return n > K ? n - K : n; }
-  function ufix(s){ return String(s).split('\\n').filter(function(l){ return l.indexOf('__cvGuard') < 0; }).join('\\n').replace(/about:srcdoc:(\\d+)/g, function(_, n){ return 'canvas:' + fixline(n); }); }
+  function fixline(n){ var K = window.__CV_LINEOFF || 0; n = +n; return n > K ? n - K : 0; }
+  function ufix(s){ return String(s).split('\\n').filter(function(l){ return l.indexOf('__cvGuard') < 0; }).join('\\n').replace(/about:srcdoc:(\\d+)/g, function(_, n){ var f = fixline(n); return f ? 'canvas:' + f : 'canvas:eval'; }); }
   function report(err){
     try {
       var st = err && err.stack ? String(err.stack) : '';
@@ -167,7 +196,8 @@ const TRAP_SHIM = `<script>(function(){
       var ln = m ? fixline(m[1]) : 0, cn = m ? +m[2] : 0;
       if (st) { try { err.stack = ufix(st); } catch(_){} }
       window.__CV_TRAP_AT = Date.now();
-      window.__CV_TRAP_MSG = (err && err.message) ? String(err.message) : String(err);
+      window.__CV_TRAP_MSG = (err && err.message) ? String(err.message)
+        : (function(){ try { return (err && typeof err === 'object') ? JSON.stringify(err) : String(err); } catch(_) { return String(err); } })();
       window.dispatchEvent(new ErrorEvent('error', {
         message: window.__CV_TRAP_MSG,
         filename: 'canvas', lineno: ln, colno: cn, error: err
@@ -178,6 +208,7 @@ const TRAP_SHIM = `<script>(function(){
     if (typeof fn !== 'function') return fn;
     if (wraps) { var w0 = wraps.get(fn); if (w0) return w0; }
     var w = function __cvGuard(){ try { return fn.apply(this, arguments); } catch(err){ report(err); throw err; } };
+    try { w.__cvOrig = fn; } catch(_){}
     if (wraps) wraps.set(fn, w);
     return w;
   }
@@ -188,6 +219,8 @@ const TRAP_SHIM = `<script>(function(){
       obj[name] = function(){
         var a = Array.prototype.slice.call(arguments);
         if (typeof a[0] === 'function') a[0] = guard(a[0]);
+        else if ((name === 'setTimeout' || name === 'setInterval') && typeof a[0] === 'string' && a[0] && a[0].indexOf('__cvReport') < 0)
+          a[0] = 'try{' + a[0] + '}catch(__cvE){window.__cvReport&&window.__cvReport(__cvE);throw __cvE}';
         return orig.apply(this, a);
       };
     } catch(_){}
@@ -196,6 +229,7 @@ const TRAP_SHIM = `<script>(function(){
   patch(window, 'setInterval');
   patch(window, 'requestAnimationFrame');
   patch(window, 'queueMicrotask');
+  patch(window, 'requestIdleCallback');
   try {
     var ET = window.EventTarget;
     var proto = ET && ET.prototype;
@@ -208,6 +242,85 @@ const TRAP_SHIM = `<script>(function(){
       };
     }
   } catch(_){}
+  // on-PROPERTY handlers (el.onclick = fn, xhr.onload = fn, ws.onmessage = fn)
+  // are the other big async entry — wrap through the accessor pair so the
+  // getter still hands back what the page assigned.
+  function patchOnProps(proto){
+    if (!proto) return;
+    Object.getOwnPropertyNames(proto).forEach(function(name){
+      if (name.slice(0, 2) !== 'on') return;
+      var d;
+      try { d = Object.getOwnPropertyDescriptor(proto, name); } catch(_) { return; }
+      if (!d || !d.set || !d.configurable) return;
+      try {
+        Object.defineProperty(proto, name, {
+          configurable: true, enumerable: d.enumerable,
+          get: function(){ var v = d.get ? d.get.call(this) : undefined; return v && v.__cvOrig || v; },
+          set: function(v){ d.set.call(this, guard(v)); }
+        });
+      } catch(_){}
+    });
+  }
+  [
+    window.HTMLElement && HTMLElement.prototype,
+    window.HTMLMediaElement && HTMLMediaElement.prototype,
+    window.Window && Window.prototype,
+    window.Document && Document.prototype,
+    window.XMLHttpRequest && XMLHttpRequest.prototype,
+    window.WebSocket && WebSocket.prototype,
+    window.FileReader && FileReader.prototype,
+    window.Worker && Worker.prototype,
+  ].forEach(function(p){ try { patchOnProps(p); } catch(_){} });
+  patch(window.MediaQueryList && MediaQueryList.prototype, 'addListener');
+  // Observer callbacks live outside every entry point above.
+  ['MutationObserver', 'ResizeObserver', 'IntersectionObserver', 'PerformanceObserver'].forEach(function(n){
+    try {
+      var O = window[n];
+      if (!O) return;
+      var W = function(cb, opts){ return new O(guard(cb), opts); };
+      W.prototype = O.prototype;
+      window[n] = W;
+    } catch(_){}
+  });
+  // Dynamically-injected inline handlers (setAttribute('onclick', …),
+  // innerHTML with on*= attributes) compile in the muzzled world too — give
+  // them the same in-attribute try/catch the static rewrite applies.
+  var CATCH = 'catch(__cvE){window.__cvReport&&window.__cvReport(__cvE);throw __cvE}';
+  function rewriteAttrs(v){
+    try {
+      var str = String(v);
+      if (str.indexOf('on') < 0 || str.indexOf('<script') >= 0) return v;
+      return str
+        .replace(/(\\son[a-z]+\\s*=\\s*)"(?!try\\{)([^"]*)"/gi, function(_, pre, code){ return code.replace(/\\s/g, '') ? pre + '"try{' + code + '}' + CATCH + '"' : pre + '"' + code + '"'; })
+        .replace(/(\\son[a-z]+\\s*=\\s*)'(?!try\\{)([^']*)'/gi, function(_, pre, code){ return code.replace(/\\s/g, '') ? pre + "'try{" + code + '}' + CATCH + "'" : pre + "'" + code + "'"; });
+    } catch(_) { return v; }
+  }
+  try {
+    var EP = window.Element && Element.prototype;
+    if (EP && EP.setAttribute) {
+      var setAttr = EP.setAttribute;
+      EP.setAttribute = function(name, value){
+        try {
+          if (typeof name === 'string' && name.slice(0, 2).toLowerCase() === 'on' && typeof value === 'string' && value && value.indexOf('__cvReport') < 0)
+            value = 'try{' + value + '}' + CATCH;
+        } catch(_){}
+        return setAttr.call(this, name, value);
+      };
+    }
+    var ihd = EP && Object.getOwnPropertyDescriptor(EP, 'innerHTML');
+    if (ihd && ihd.set && ihd.configurable) {
+      Object.defineProperty(EP, 'innerHTML', {
+        configurable: true, enumerable: ihd.enumerable, get: ihd.get,
+        set: function(v){ ihd.set.call(this, rewriteAttrs(v)); }
+      });
+    }
+    if (EP && EP.insertAdjacentHTML) {
+      var iah = EP.insertAdjacentHTML;
+      EP.insertAdjacentHTML = function(pos, v){ return iah.call(this, pos, rewriteAttrs(v)); };
+    }
+  } catch(_){}
+  // The source instrumentation (script wrap + attribute rewrite) reports here.
+  window.__cvReport = report;
 })();</script>`;
 
 /**
@@ -445,7 +558,7 @@ export function CanvasPanel({
   const nonceRef = useRef(frameNonce);
   nonceRef.current = frameNonce;
   const srcDoc = useMemo(
-    () => (annotated ? withShims(annotated.html, frameNonce) : ""),
+    () => (annotated ? withShims(instrumentHtml(annotated.html), frameNonce) : ""),
     [annotated, frameNonce],
   );
   const codeLines = useMemo(() => (current ? highlightLines(current.html) : []), [current]);
