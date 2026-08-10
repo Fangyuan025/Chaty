@@ -46,6 +46,25 @@ point at real lines instead of looping or shrugging.
 
 ### Coding & Canvas: errors that point somewhere
 
+- **No canvas error stays anonymous — the whole map, not just the easy
+  half.** Verified class-by-class against a 17-way error matrix on both
+  engines (Chromium replica + a WKWebView hand-pass): classic scripts run
+  inside a line-preserving guard so TOP-LEVEL throws finally name their
+  line (a reported error-collection page turned out to be one giant
+  invisible SyntaxError); inline `on*=` attributes are rewritten in place
+  (which also cured WebKit's off-by-one for attribute-compiled code);
+  dynamically-injected handlers — `el.onclick = fn`,
+  `setAttribute('onclick', …)`, `innerHTML` with handlers, string-form
+  timers — are instrumented at their entry points; observers
+  (Mutation/Resize/Intersection/Performance), media and Worker `on*`
+  properties and `requestIdleCallback` join the trap. The console itself
+  grew up too: `console.error(new Error(…))` shows the real stack instead
+  of `{}` (WebKit stacks carry no message line — one is prepended),
+  objects and DOM nodes render DevTools-style, every console line carries
+  its `@canvas:LINE` call site, and eval'd code is labeled `canvas:eval`
+  instead of impersonating line 1. Scripts whose wrapping would change
+  scoping semantics ('use strict', let/const shared across scripts,
+  modules) are left alone and named in the Fix digest.
 - **Canvas console errors now point at the exact line.** WebKit anonymizes
   every uncaught error inside the sandboxed preview to a bare
   "Script error." — no line, no stack, and several distinct bugs collapse
