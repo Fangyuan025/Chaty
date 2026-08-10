@@ -85,6 +85,21 @@
   12-case unit suite over the real template shapes and re-verified live in
   Code mode on both Gemma 4 engines (GGUF E4B and MLX 26B): thought panel,
   prose and finals all clean.
+- **Canvas console errors now point at the exact line.** WebKit anonymizes
+  every uncaught error inside the sandboxed preview to a bare
+  "Script error." — no line, no stack, and several distinct bugs collapse
+  into identical, useless entries. The preview now routes the async entry
+  points where interaction bugs live (timers, rAF, microtasks, event
+  listeners) through a same-realm guard that catches each error with its
+  full stack, reports it with USER-source line numbers (the injected
+  shims' own line offset subtracted), and rethrows unchanged. Duplicate
+  follow-ups are dropped on both engines (WebKit's anonymized echo,
+  WebView2's detailed one), shim-internal frames never leak into stacks,
+  and the remaining anonymized class (top-level statements, inline on*=
+  handlers) is named in the Fix digest so the model audits the right
+  places. Proven by behavior unit tests plus a live-browser replica of
+  the sandboxed preview: timer, listener and inline-handler throws each
+  reported once, at their exact source lines.
 - **`browser_navigate index.html` now opens the file instead of looping.**
   Models routinely pass a bare filename when asked to test the page they
   just wrote — and the resolver checked it against the app process's
