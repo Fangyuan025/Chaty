@@ -85,6 +85,19 @@
   12-case unit suite over the real template shapes and re-verified live in
   Code mode on both Gemma 4 engines (GGUF E4B and MLX 26B): thought panel,
   prose and finals all clean.
+- **`browser_navigate index.html` now opens the file instead of looping.**
+  Models routinely pass a bare filename when asked to test the page they
+  just wrote — and the resolver checked it against the app process's
+  working directory (never the agent's workspace), so `index.html` became
+  `https://index.html`, a DNS error, and an endless retry loop. Relative
+  paths now resolve against the workspace, a bare name with no path finds
+  its unique match anywhere in the project (`app.html` → `dist/app.html`;
+  several matches ask which one), a file that resolves nowhere gets a
+  plain-language error teaching the right form instead of a DNS guess, and
+  scheme-less `localhost:8000` finally gets `http://` instead of an
+  `https://` guess that dies on TLS. Real URLs, absolute paths and
+  websites behave exactly as before — proven by a resolver unit suite and
+  a live-Chrome pass over all four shapes.
 - **Real-surface smokes now part of the audit**: the GGUF/llama.cpp path
   (load → generate → cancel mid-stream → regenerate), the key-less search
   chain, article extraction, and a full UI walkthrough in English and
