@@ -71,6 +71,20 @@
   both text and image questions correctly. Families without a healing
   recipe degrade to text-only chat with a plain-language notice instead of
   refusing to load.
+- **Gemma 4's reasoning chain parses completely now, everywhere.** The
+  channel-style thought markup Gemma 4 (and Harmony) stream had three
+  leaks: a runaway generation that re-opens its thought channel spilled the
+  second round of reasoning into the visible answer; a close marker
+  followed by prose starting with "final"/"thought" swallowed that word as
+  markup; and a generation cut mid-thought showed the whole unfinished
+  reasoning as the answer (Code mode's step text was the loudest victim).
+  The normalizer now walks every reasoning span sequentially, half-typed
+  markers are held back while streaming instead of flashing `<|chan` into
+  the answer area, and Deep Research + Podcast — which stripped reasoning
+  with a bare regex — now go through the same normalizer. Locked by a
+  12-case unit suite over the real template shapes and re-verified live in
+  Code mode on both Gemma 4 engines (GGUF E4B and MLX 26B): thought panel,
+  prose and finals all clean.
 - **Real-surface smokes now part of the audit**: the GGUF/llama.cpp path
   (load → generate → cancel mid-stream → regenerate), the key-less search
   chain, article extraction, and a full UI walkthrough in English and
