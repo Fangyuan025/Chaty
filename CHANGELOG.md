@@ -64,7 +64,10 @@ point at real lines instead of looping or shrugging.
   its `@canvas:LINE` call site, and eval'd code is labeled `canvas:eval`
   instead of impersonating line 1. Scripts whose wrapping would change
   scoping semantics ('use strict', let/const shared across scripts,
-  modules) are left alone and named in the Fix digest.
+  modules) are left alone and named in the Fix digest. And a repeated
+  error folds into a ×N badge devtools-style instead of flooding the
+  console — the frame budget counts unique lines, so one broken interval
+  can't silence every later, different error.
 - **Canvas console errors now point at the exact line.** WebKit anonymizes
   every uncaught error inside the sandboxed preview to a bare
   "Script error." — no line, no stack, and several distinct bugs collapse
