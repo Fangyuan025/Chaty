@@ -104,6 +104,19 @@ point at real lines instead of looping or shrugging.
   websites behave exactly as before — proven by a resolver unit suite and
   a live-Chrome pass over all four shapes.
 
+- **The tiktok-video skill now follows its upstream on its own.** The
+  skill's support files (scripts, references, examples) have always been
+  byte-for-byte mirrors of the public upstream repo — and every upstream
+  fix used to wait for a Chaty release just to ride along. Online machines
+  now check upstream quietly (at most once a day), download complete
+  verified trees into app data, and `use_skill` materializes the freshest
+  layer; offline or failing networks fall back to the bundled files
+  without a sound, incomplete or oversized fetches are rejected outright,
+  and `CHATY_SKILL_SYNC=0` turns the whole mechanism off. The model-facing
+  SKILL.md stays bundled (it is a Chaty-owned rewrite; script CLIs are
+  stable upstream). Proven end-to-end against the live repo — the very
+  first sync picked up an upstream Ken Burns judder fix that no longer
+  needs a repack to reach users.
 - **tiktok-video skill: the video speaks the USER'S language.** Upstream
   sync — `lang` no longer silently defaults to Chinese: the storyboard
   must state it explicitly (the pipeline stops with a pointed message
