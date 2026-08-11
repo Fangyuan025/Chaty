@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PREVIEW_SHIMS, withShims } from "../components/CanvasPanel";
+import { type ConsoleEntry, foldConsoleEntry, PREVIEW_SHIMS, withShims } from "../components/CanvasPanel";
 
 /** The generated shim code must PARSE. A template-escape slip ('\n' in the
  *  TS source becomes a real newline inside the shim's single-quoted string)
@@ -194,5 +194,32 @@ describe("CONSOLE_SHIM line mapping and duplicate-drop", () => {
     handlers.error({ message: "Script error.", filename: "", lineno: 0 });
     expect(posted).toHaveLength(2);
     expect(posted[1].text).toBe("Script error.");
+  });
+});
+
+describe("foldConsoleEntry (devtools-style duplicate folding)", () => {
+  it("repeats bump a counter instead of appending", () => {
+    let log = foldConsoleEntry([], { level: "error", text: "boom (canvas:3)" });
+    log = foldConsoleEntry(log, { level: "error", text: "boom (canvas:3)" });
+    log = foldConsoleEntry(log, { level: "error", text: "boom (canvas:3)" });
+    expect(log).toHaveLength(1);
+    expect(log[0].count).toBe(3);
+  });
+
+  it("different text or level stays a separate line", () => {
+    let log = foldConsoleEntry([], { level: "error", text: "boom (canvas:3)" });
+    log = foldConsoleEntry(log, { level: "error", text: "boom (canvas:5)" });
+    log = foldConsoleEntry(log, { level: "warn", text: "boom (canvas:3)" });
+    expect(log).toHaveLength(3);
+    expect(log.every((c) => (c.count ?? 1) === 1)).toBe(true);
+  });
+
+  it("folding still works once the cap is reached (only NEW lines are dropped)", () => {
+    let log: ConsoleEntry[] = Array.from({ length: 300 }, (_, i) => ({ level: "log", text: `line ${i}` }));
+    log = foldConsoleEntry(log, { level: "log", text: "line 5" });
+    expect(log).toHaveLength(300);
+    expect(log[5].count).toBe(2);
+    log = foldConsoleEntry(log, { level: "log", text: "brand new" });
+    expect(log).toHaveLength(300);
   });
 });

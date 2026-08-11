@@ -65,7 +65,10 @@ const COMPAT_SHIM = `<script>(function(){
  * output. Capped; strings truncated.
  */
 const CONSOLE_SHIM = `<script>(function(){
-  var count = 0;
+  // Budget by UNIQUE lines, not total sends: a broken interval repeating one
+  // error must not exhaust the pipe and silence later, different errors.
+  // Repeats still post (the panel folds them into a ×N badge) up to 50.
+  var uniq = 0; var seenN = {};
   // DevTools-grade argument rendering: Errors show their (line-fixed) stack,
   // DOM nodes a readable tag, undefined/null/functions their real names —
   // JSON.stringify alone turned console.error(new Error(...)) into "{}".
@@ -87,7 +90,6 @@ const CONSOLE_SHIM = `<script>(function(){
     } catch(_) { return '[unserializable]'; }
   }
   function send(level, args, fault){
-    if (count >= 300) return; count++;
     var text = '';
     try { text = Array.prototype.map.call(args, fmt).join(' '); } catch(_) { text = '[unserializable]'; }
     // Caller location, like devtools shows for every console line. Fault
@@ -102,7 +104,14 @@ const CONSOLE_SHIM = `<script>(function(){
         }
       } catch(_){}
     }
-    try { parent.postMessage({ __chatyCvConsole: { level: level, text: String(text).slice(0, level === 'error' ? 2000 : 600), nonce: window.__CV_NONCE || '', fault: !!fault } }, '*'); } catch(_){}
+    text = String(text).slice(0, level === 'error' ? 2000 : 600);
+    var key = level + '|' + text;
+    var n = seenN[key] || 0;
+    if (n === 0 && uniq >= 300) return;
+    if (n >= 50) return;
+    if (n === 0) uniq++;
+    seenN[key] = n + 1;
+    try { parent.postMessage({ __chatyCvConsole: { level: level, text: text, nonce: window.__CV_NONCE || '', fault: !!fault } }, '*'); } catch(_){}
   }
   ['log','info','warn','error','debug'].forEach(function(l){
     var orig = console[l] && console[l].bind(console);
@@ -417,6 +426,30 @@ export const PREVIEW_SHIMS: Record<string, string> = {
   SCROLLBAR_PAINT_SHIM,
 };
 
+/** One console line as the panel stores it. */
+export interface ConsoleEntry {
+  level: string;
+  text: string;
+  nonce?: string;
+  fault?: boolean;
+  /** How many times this exact (level,text) line arrived — devtools-style
+   *  duplicate folding. Absent means 1. */
+  count?: number;
+}
+
+/** Chrome-style duplicate folding: a repeated (level,text) line bumps the
+ *  existing entry's counter instead of appending — a broken button clicked
+ *  ten times must not bury the rest of the console. */
+export function foldConsoleEntry(prev: ConsoleEntry[], entry: ConsoleEntry, cap = 300): ConsoleEntry[] {
+  const i = prev.findIndex((c) => c.level === entry.level && c.text === entry.text);
+  if (i !== -1) {
+    const next = prev.slice();
+    next[i] = { ...next[i], count: (next[i].count ?? 1) + 1 };
+    return next;
+  }
+  return prev.length >= cap ? prev : [...prev, entry];
+}
+
 export function withShims(html: string, nonce: string): string {
   // The nonce ties every message from this document generation to the
   // srcDoc that produced it: WKWebView can start reparsing (and posting
@@ -492,7 +525,7 @@ export function CanvasPanel({
   const [errorCount, setErrorCount] = useState(0);
   const [muted, setMuted] = useState(false);
   const [view, setView] = useState<"code" | "diff" | "console">("code");
-  const [consoleLog, setConsoleLog] = useState<{ level: string; text: string; nonce?: string; fault?: boolean }[]>([]);
+  const [consoleLog, setConsoleLog] = useState<ConsoleEntry[]>([]);
   // DEV-only pipeline diagnostics: how many console messages ARRIVED vs were
   // kept, and why the last one was dropped — reads the fault location off the
   // screen instead of guessing (the empty-console hunt).
@@ -626,7 +659,7 @@ export function CanvasPanel({
       if (con) {
         if (import.meta.env.DEV) setConDiag((d) => ({ ...d, raw: d.raw + 1 }));
         if (!con.nonce || con.nonce === nonceRef.current) {
-          setConsoleLog((prev) => (prev.length >= 300 ? prev : [...prev, con]));
+          setConsoleLog((prev) => foldConsoleEntry(prev, con));
         } else if (import.meta.env.DEV) {
           setConDiag((d) => ({ ...d, dropped: `${con.nonce}≠${nonceRef.current}` }));
         }
@@ -1140,6 +1173,7 @@ export function CanvasPanel({
                     consoleLog.map((c, i) => (
                       <div key={i} className={`cvp-con-row ${c.level}`}>
                         <span className="cvp-con-lv">{c.level}</span>
+                        {(c.count ?? 1) > 1 && <span className="cvp-con-count">×{c.count}</span>}
                         {c.text}
                       </div>
                     ))

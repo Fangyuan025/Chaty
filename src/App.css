@@ -3129,6 +3129,17 @@ body.resizing-x {
 }
 .cvp-con-row.warn { color: var(--warn); }
 .cvp-con-row.error { color: var(--danger); }
+.cvp-con-count {
+  flex: none;
+  margin-right: 6px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  line-height: 16px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: #fff;
+  user-select: none;
+}
 .cvp-conbadge {
   margin-left: 5px;
   padding: 0 6px;
