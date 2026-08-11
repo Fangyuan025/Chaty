@@ -211,9 +211,11 @@ def load_storyboard(project_dir) -> dict:
     if not isinstance(sb.get("scenes"), list) or not sb["scenes"]:
         die("storyboard needs a non-empty 'scenes' list")
     sb.setdefault("title", "untitled")
-    lang = sb.setdefault("lang", "zh")
+    lang = sb.get("lang")
     if lang not in ("zh", "en"):
-        die("lang must be 'zh' or 'en'")
+        die("storyboard must set lang: 'zh' or 'en' explicitly — match the language "
+            "of the USER'S BRIEF (an English request means an English video), never "
+            "the language of the skill docs or examples")
     aspect = sb.setdefault("aspect", "9:16")
     if aspect not in ASPECTS:
         die(f"aspect must be one of {list(ASPECTS)}")

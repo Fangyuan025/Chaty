@@ -104,6 +104,12 @@ point at real lines instead of looping or shrugging.
   websites behave exactly as before — proven by a resolver unit suite and
   a live-Chrome pass over all four shapes.
 
+- **tiktok-video skill: the video speaks the USER'S language.** Upstream
+  sync — `lang` no longer silently defaults to Chinese: the storyboard
+  must state it explicitly (the pipeline stops with a pointed message
+  otherwise), and the skill doc now opens with the rule: an English brief
+  means an English video — hook, captions, badges, voice — whatever
+  language the docs themselves are written in.
 
 ## v2.0.7 — Falado em português, auditado por completo (2026-08-08)
 

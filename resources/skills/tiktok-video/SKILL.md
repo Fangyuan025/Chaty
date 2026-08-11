@@ -18,6 +18,8 @@ bash {SKILL_ROOT}/scripts/setup.sh
 
 ## 1. 先核实,再写文案 + 分镜
 
+**语言规则(最先决定)**:视频语言 = **用户需求的语言**(或用户明确指定的目标受众),永远不是本文档或示例的语言。英文需求 → `lang: "en"`,文案、hook、角标("No.1"/"TOP 1")、CTA 全英文,en-US 音色,TikTok 习惯;中文需求 → `lang: "zh"`,抖音习惯("第1名")。用户点名目标市场("给美国观众")则以市场为准。`lang` 缺省管线会直接报错,没有默认值。
+
 **模型的内部知识可能过期或有错——未经核实的论断禁止进视频。**动笔前用你的联网搜索工具核实文案里每一个具体论断:数字、统计、纪录、价格、日期、排名、一切"第一/最大/唯一/最快",以及任何时效性内容(新闻/产品/版本/"今年/最新"),无论你多有把握。规则:**按来源改写文案**(不是反过来);核实不了就换成能核实的或直接删;把依据的 URL 记入 storyboard 的 `"sources": [...]`(会出现在 report.txt 供用户复核);确实无联网能力时只用教科书级常识、避免具体数字、并向用户声明未核实。
 
 然后读 `{SKILL_ROOT}/references/writing-guide.md`(hook 公式、节奏、场景结构)。然后在工作区建 `<slug>/storyboard.json`:
@@ -52,7 +54,7 @@ bash {SKILL_ROOT}/scripts/setup.sh
 
 | 字段 | 取值 | 说明 |
 |---|---|---|
-| `lang` | `zh` \| `en` | 决定字幕分组和默认音色 |
+| `lang` | `zh` \| `en`(**必填**) | = 用户需求/受众的语言(见上方语言规则);决定字幕分组和默认音色 |
 | `aspect` | `9:16`(默认) \| `16:9` \| `1:1` | |
 | `voice` | 任意 edge-tts 音色 | zh: `zh-CN-YunjianNeural`(磁性男) `zh-CN-XiaoxiaoNeural`(女) `zh-CN-YunxiNeural`(阳光男);en: `en-US-ChristopherNeural` `en-US-AriaNeural` |
 | `rate` | 如 `+10%` | 营销号节奏:zh `+8%`~`+15%`,en `+5%`~`+10%` |

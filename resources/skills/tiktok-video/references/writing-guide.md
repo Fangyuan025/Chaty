@@ -2,6 +2,11 @@
 
 The storyboard you write IS the video. Spend real effort here.
 
+**Language first**: write the script in the language of the user's brief (or
+their stated target audience) — this guide's Chinese examples are formulas,
+not a language default. English brief = fully English video (script, hook,
+badges, CTA).
+
 ## 结构公式 / Structure formula
 
 **钩子 Hook (scene 1, 0–4s) → 信息点/冲突 Body (3–5 scenes) → 反转/升华 Payoff → 关注引导 CTA (last scene)**
