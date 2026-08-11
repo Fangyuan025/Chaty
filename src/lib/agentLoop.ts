@@ -45,6 +45,7 @@ import {
   agentUnderstandRepo,
   agentSearchCode,
   agentWriteFile,
+  skillLiveSupport,
   cancelGeneration,
   fetchPageEx,
   siteSearch,
@@ -1137,19 +1138,28 @@ async function execTool(
           const root = skillRoot(hit.name);
           body = body.replace(/\{SKILL_ROOT\}/g, root);
           try {
+            // Skill sync: a live upstream layer replaces the bundled support
+            // set wholesale (the backend only serves COMPLETE trees, so
+            // upstream deletions apply too). Reject OR undefined both mean
+            // "no live layer" — bundled files are the fallback either way.
+            const live = await skillLiveSupport(hit.name).catch(() => null);
+            const eff =
+              live && live.rev && Array.isArray(live.files) && live.files.length > 0
+                ? { rev: `${support.rev}+${live.rev}`, files: live.files }
+                : support;
             const revPath = `${root}/.bundle-rev`;
             // A missing file REJECTS through Tauri but RESOLVES undefined
             // through the bench bridge — coerce both to "not installed yet"
             // (the first real-model run lost all 14 files to this).
             const onDisk = String((await agentReadFile(revPath).catch(() => "")) ?? "");
-            if (!onDisk.includes(support.rev)) {
-              for (const f of support.files) {
+            if (!onDisk.includes(eff.rev)) {
+              for (const f of eff.files) {
                 await agentWriteFile(`${root}/${f.path}`, f.text);
               }
               // Materialized skills are DERIVED content (bundle-owned, plus
               // their venv/assets) — keep them out of the user's repo.
               await agentWriteFile(`${root}/.gitignore`, "*\n");
-              await agentWriteFile(revPath, `${support.rev}\n`);
+              await agentWriteFile(revPath, `${eff.rev}\n`);
             }
           } catch (e) {
             body += isZh()

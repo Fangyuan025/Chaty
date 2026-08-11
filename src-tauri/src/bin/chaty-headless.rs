@@ -193,6 +193,10 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
             Ok(Value::Null)
         }
         "agent_get_workspace" => ok(ag::agent_get_workspace()),
+        "skill_live_support" => match req_s(&args, "name") {
+            Ok(n) => ok(chaty_lib::skillsync::live_support(&n)),
+            Err(e) => Err(e),
+        },
         "agent_grant_dir" => req_s(&args, "path").and_then(|p| res(ag::agent_grant_dir(p))),
         "agent_revoke_dir" => req_s(&args, "path").map(|p| {
             ag::agent_revoke_dir(p);

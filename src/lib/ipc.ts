@@ -250,6 +250,15 @@ export async function agentListGrants(): Promise<string[]> {
 export async function agentClearGrants(): Promise<void> {
   await invoke("agent_clear_grants");
 }
+/** Live upstream support layer for an official directory-shaped skill
+ *  (skill sync). null when offline / disabled / never synced — bundled files
+ *  are always the fallback. */
+export async function skillLiveSupport(
+  name: string,
+): Promise<{ rev: string; files: { path: string; text: string }[] } | null> {
+  return ((await invoke("skill_live_support", { name })) as { rev: string; files: { path: string; text: string }[] } | null) ?? null;
+}
+
 export async function agentReadFile(
   path: string,
   offset?: number,

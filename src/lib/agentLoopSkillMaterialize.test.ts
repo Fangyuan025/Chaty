@@ -145,3 +145,84 @@ describe("directory-shaped skill materialization", () => {
     expect(run.results.find((r) => r.includes("My own steps"))).toBeTruthy();
   });
 });
+
+describe("skill sync live layer", () => {
+  afterEach(() => clearMocks());
+
+  async function turnWithLive(
+    live: unknown,
+    files: Map<string, string>,
+  ): Promise<string[]> {
+    const writes: string[] = [];
+    mockIPC(async (cmd, args) => {
+      if (cmd === "skill_live_support") return live;
+      if (cmd === "generate") {
+        const ch = (args as { onEvent: Chan }).onEvent;
+        ch.onmessage?.({ type: "token", text: call("use_skill", { name: "tiktok-video" }) });
+        ch.onmessage?.({ type: "done", stats: { completionTokens: 8, tokensPerSecond: 50, promptTokens: 100 } });
+        return null;
+      }
+      if (cmd === "agent_write_file") {
+        const a = args as { path?: string; content?: string };
+        writes.push(String(a.path));
+        files.set(String(a.path), String(a.content ?? ""));
+        return "written";
+      }
+      if (cmd === "agent_read_file") {
+        const p = String((args as { path?: string }).path);
+        if (files.has(p)) return files.get(p);
+        throw new Error("no such file");
+      }
+      if (cmd === "agent_bash") return { stdout: "ok", stderr: "", code: 0, timedOut: false, bgId: null };
+      if (cmd === "agent_list_files") return [];
+      return null;
+    });
+    const skills = officialSkills().filter((sk) => sk.name === "tiktok-video");
+    await new Promise<void>((resolve) => {
+      void runAgentTurn(
+        "make a video",
+        [] as never,
+        "/ws",
+        "zh",
+        {
+          thinkMode: "off", nCtx: 8192, maxSteps: 2, temperature: 0.2, bashTimeout: 5,
+          browserTextMode: true, signal: { cancelled: false } as never,
+          approve: async () => true, approveDir: async () => false,
+          approveSudo: async () => ({ ok: false }),
+          skills,
+        } as never,
+        {
+          onThinking: () => {}, onAssistantText: () => {}, onPlan: () => {}, onStep: () => {},
+          onFinal: () => resolve(), onError: () => resolve(),
+          onAskUser: async (_q: string, o: string[]) => o[0] ?? "continue",
+        } as never,
+      );
+    });
+    return writes;
+  }
+
+  it("a live layer replaces the bundled support set and stamps a combined rev", async () => {
+    const files = new Map<string, string>();
+    await turnWithLive(
+      { rev: "deadbee", files: [{ path: "scripts/pipeline.py", text: "print('LIVE')" }] },
+      files,
+    );
+    const root = [...files.keys()].find((k) => k.endsWith("scripts/pipeline.py"))!;
+    expect(files.get(root)).toBe("print('LIVE')");
+    const revFile = [...files.keys()].find((k) => k.endsWith(".bundle-rev"))!;
+    expect(files.get(revFile)).toMatch(/\+deadbee\n$/);
+    // bundled-only files are NOT written when the live layer is in effect
+    expect([...files.keys()].some((k) => k.endsWith("scripts/tts.py"))).toBe(false);
+  });
+
+  it("undefined/reject from the backend falls back to bundled files (bridge semantics)", async () => {
+    for (const live of [undefined, null]) {
+      const files = new Map<string, string>();
+      await turnWithLive(live, files);
+      expect([...files.keys()].some((k) => k.endsWith("scripts/pipeline.py"))).toBe(true);
+      const revFile = [...files.keys()].find((k) => k.endsWith(".bundle-rev"))!;
+      expect(files.get(revFile)).not.toContain("+");
+      clearMocks();
+    }
+  });
+});

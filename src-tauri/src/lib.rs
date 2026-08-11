@@ -17,6 +17,7 @@ pub mod errlog;
 pub mod mcp;
 pub mod ocr;
 pub mod search;
+pub mod skillsync;
 mod state;
 mod store;
 pub mod update;
@@ -79,6 +80,9 @@ pub fn run() {
     // `_exit()`s, crashes, killed bench bridges) keep running headless —
     // reap them before this run launches its own.
     crate::browser::sweep_orphan_browsers();
+    // Official-skill support files follow their public upstream quietly (24h
+    // throttle, offline ⇒ bundled files) — never on the startup path.
+    std::thread::spawn(crate::skillsync::tick);
     // GPU crash guard (issue #5): if the previous model load took the whole
     // process down (broken Vulkan driver aborts mid-load), block GPU offload
     // for this run BEFORE any llama/ggml init touches the driver.
@@ -365,6 +369,7 @@ pub fn run() {
             agent::agent_set_edit_anchors,
             agent::agent_edit_lines,
             agent::agent_get_workspace,
+            skillsync::skill_live_support,
             agent::agent_grant_dir,
             agent::agent_revoke_dir,
             agent::agent_list_grants,
