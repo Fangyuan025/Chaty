@@ -3131,10 +3131,12 @@ body.resizing-x {
 .cvp-con-row.error { color: var(--danger); }
 .cvp-con-count {
   flex: none;
+  align-self: flex-start;
+  margin-top: 1px;
   margin-right: 6px;
   padding: 0 6px;
   font-size: 10.5px;
-  line-height: 16px;
+  line-height: 15px;
   border-radius: 8px;
   background: var(--danger);
   color: #fff;
