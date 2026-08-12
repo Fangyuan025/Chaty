@@ -40,6 +40,128 @@ pub fn is_mlx_dir(path: &Path) -> bool {
     })
 }
 
+const WRAP_PREFIX: &str = "language_model.";
+
+/// Strip a uniform VLM-style `language_model.` wrapper off every weight key
+/// of a TEXT-ONLY checkpoint (converter artifact; the LFM2.5 quants shipped
+/// this way and the text factory dies with keyNotFound on the first key).
+///
+/// Safetensors layout is `u64 header-len | header JSON | data`; renames only
+/// SHRINK the JSON, so the rewritten header is padded with trailing spaces
+/// back to its exact original length and written in place — the data section
+/// never moves, so a multi-gigabyte model costs a kilobyte-sized write.
+/// Applies ONLY when EVERY tensor key wears the prefix — a real VLM always
+/// carries vision_tower / multi_modal_projector siblings, so the uniform
+/// condition fails naturally and its wrapper stays. (The config's own
+/// vision_config is NOT consulted: the LFM2.5 quants keep a VL config shell
+/// on a text-only weight tree, which is exactly the case to heal.)
+pub(crate) fn heal_wrapped_weight_prefix(dir: &Path) -> Result<()> {
+    let shards: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |x| x.eq_ignore_ascii_case("safetensors")))
+        .collect();
+    if shards.is_empty() {
+        return Ok(());
+    }
+    // Pass 1: every tensor key in every shard must wear the wrapper.
+    let mut headers = Vec::new();
+    for shard in &shards {
+        let (len, json) = read_st_header(shard)?;
+        let obj = json.as_object().context("safetensors header is not an object")?;
+        for k in obj.keys() {
+            if k != "__metadata__" && !k.starts_with(WRAP_PREFIX) {
+                return Ok(()); // mixed or already-clean tree — not ours to touch
+            }
+        }
+        if !obj.keys().any(|k| k != "__metadata__") {
+            return Ok(());
+        }
+        headers.push((shard.clone(), len, json));
+    }
+    // Pass 2: rewrite headers in place, padded to the original length.
+    for (shard, orig_len, json) in headers {
+        let mut renamed = serde_json::Map::new();
+        for (k, v) in json.as_object().unwrap() {
+            let nk = if k == "__metadata__" {
+                k.clone()
+            } else {
+                k.strip_prefix(WRAP_PREFIX).unwrap_or(k).to_string()
+            };
+            renamed.insert(nk, v.clone());
+        }
+        let mut out = serde_json::to_string(&Value::Object(renamed))?;
+        if out.len() > orig_len {
+            bail!("renamed header grew — refusing to shift tensor data");
+        }
+        out.push_str(&" ".repeat(orig_len - out.len()));
+        use std::io::{Seek, SeekFrom, Write as _};
+        let mut f = std::fs::OpenOptions::new().write(true).open(&shard)?;
+        f.seek(SeekFrom::Start(8))?;
+        f.write_all(out.as_bytes())?;
+        f.sync_all()?;
+    }
+    // The index (when present) maps the same key names.
+    let index = dir.join("model.safetensors.index.json");
+    if index.is_file() {
+        let mut idx: Value = serde_json::from_str(&std::fs::read_to_string(&index)?)?;
+        if let Some(map) = idx.get_mut("weight_map").and_then(|m| m.as_object_mut()) {
+            let renamed: serde_json::Map<String, Value> = map
+                .iter()
+                .map(|(k, v)| {
+                    (k.strip_prefix(WRAP_PREFIX).unwrap_or(k).to_string(), v.clone())
+                })
+                .collect();
+            *map = renamed;
+        }
+        std::fs::write(&index, serde_json::to_string(&idx)?)?;
+    }
+    eprintln!("[mlx] healed weight keys: stripped `{WRAP_PREFIX}` wrapper in {dir:?}");
+    Ok(())
+}
+
+/// LFM2.5 configs express the FFN width as standard `intermediate_size`,
+/// but the engine's LFM2 reader only understands `block_ff_dim` and falls
+/// back to a wrong default without it — weights then fail shape validation
+/// (w2.scales expected [2048,32], actual [2048,168]). Mirror the value in.
+pub(crate) fn heal_lfm2_ff_dim(dir: &Path) -> Result<()> {
+    let cfg_path = dir.join("config.json");
+    let mut cfg: Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path)?)?;
+    let obj = match cfg.as_object_mut() {
+        Some(o) => o,
+        None => return Ok(()),
+    };
+    if obj.get("model_type").and_then(|v| v.as_str()) != Some("lfm2") {
+        return Ok(());
+    }
+    if obj.contains_key("block_ff_dim") {
+        return Ok(());
+    }
+    let Some(inter) = obj.get("intermediate_size").and_then(|v| v.as_u64()) else {
+        return Ok(());
+    };
+    obj.insert("block_ff_dim".into(), json!(inter));
+    std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg)?)?;
+    eprintln!("[mlx] healed lfm2 config: block_ff_dim = {inter} (from intermediate_size)");
+    Ok(())
+}
+
+/// Read a safetensors header: (header byte length, parsed JSON).
+fn read_st_header(path: &Path) -> Result<(usize, Value)> {
+    use std::io::Read as _;
+    let mut f = std::fs::File::open(path)?;
+    let mut lenb = [0u8; 8];
+    f.read_exact(&mut lenb)?;
+    let len = u64::from_le_bytes(lenb) as usize;
+    if len == 0 || len > 256 * 1024 * 1024 {
+        bail!("implausible safetensors header length {len}");
+    }
+    let mut buf = vec![0u8; len];
+    f.read_exact(&mut buf)?;
+    let json: Value = serde_json::from_slice(&buf).context("safetensors header parse")?;
+    Ok((len, json))
+}
+
 /// The folder's config.json declares a vision tower (natively-multimodal
 /// architectures like the Qwen3.5 family) — vision works once loaded.
 pub fn mlx_dir_has_vision(path: &Path) -> bool {
@@ -233,6 +355,17 @@ impl MlxEngine {
                 "不是有效的 MLX 模型文件夹（需要 config.json 与 .safetensors） \
                  (not an MLX model folder: config.json + .safetensors required)"
             );
+        }
+        // Some community quants of TEXT models keep a VLM-style
+        // `language_model.` wrapper on every weight key (the LFM2.5 case) —
+        // the text factory then dies with keyNotFound(model.embed_tokens…).
+        // Strip the wrapper in place before the sidecar looks; errors here
+        // must never block a load that might work anyway.
+        if let Err(e) = heal_wrapped_weight_prefix(&dir_path) {
+            eprintln!("[mlx] weight-prefix heal skipped: {e}");
+        }
+        if let Err(e) = heal_lfm2_ff_dim(&dir_path) {
+            eprintln!("[mlx] lfm2 config heal skipped: {e}");
         }
 
         let mut child = Command::new(sidecar)
@@ -667,6 +800,111 @@ fn run_generation(
 
 #[cfg(test)]
 mod tests {
+
+    /// Build a minimal valid safetensors file: `u64 len | header JSON | data`.
+    fn write_st(path: &std::path::Path, keys: &[&str], data: &[u8]) -> usize {
+        let mut header = serde_json::Map::new();
+        let mut off = 0usize;
+        for k in keys {
+            let end = off + data.len() / keys.len();
+            header.insert(
+                k.to_string(),
+                serde_json::json!({"dtype": "U8", "shape": [data.len() / keys.len()], "data_offsets": [off, end]}),
+            );
+            off = end;
+        }
+        let json = serde_json::to_string(&serde_json::Value::Object(header)).unwrap();
+        let mut bytes = (json.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(json.as_bytes());
+        bytes.extend_from_slice(data);
+        std::fs::write(path, &bytes).unwrap();
+        bytes.len()
+    }
+
+    /// The wrapper heal strips a uniform `language_model.` prefix in place —
+    /// same file size, data bytes untouched — and leaves VLM configs and
+    /// mixed trees alone.
+    #[test]
+    fn wrapped_weight_prefix_heals_in_place() {
+        let dir = std::env::temp_dir().join(format!("chaty-sthea-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"model_type":"lfm2"}"#).unwrap();
+        let shard = dir.join("model.safetensors");
+        let data = b"ABCDEFGH".to_vec();
+        let total = write_st(
+            &shard,
+            &["language_model.model.embed_tokens.weight", "language_model.model.norm.weight"],
+            &data,
+        );
+        std::fs::write(
+            dir.join("model.safetensors.index.json"),
+            r#"{"weight_map":{"language_model.model.embed_tokens.weight":"model.safetensors","language_model.model.norm.weight":"model.safetensors"}}"#,
+        )
+        .unwrap();
+
+        super::heal_wrapped_weight_prefix(&dir).unwrap();
+
+        let bytes = std::fs::read(&shard).unwrap();
+        assert_eq!(bytes.len(), total, "file size must not change");
+        assert_eq!(&bytes[bytes.len() - 8..], data.as_slice(), "tensor data must not move");
+        let (_, json) = super::read_st_header(&shard).unwrap();
+        let keys: Vec<&str> = json.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        assert!(keys.contains(&"model.embed_tokens.weight"), "{keys:?}");
+        assert!(keys.contains(&"model.norm.weight"));
+        assert!(!keys.iter().any(|k| k.starts_with("language_model.")));
+        let idx = std::fs::read_to_string(dir.join("model.safetensors.index.json")).unwrap();
+        assert!(idx.contains(r#""model.embed_tokens.weight""#));
+        assert!(!idx.contains("language_model."));
+
+        // Idempotent: a second heal is a no-op (keys no longer wear the prefix).
+        super::heal_wrapped_weight_prefix(&dir).unwrap();
+        assert_eq!(std::fs::read(&shard).unwrap().len(), total);
+
+        // A VL config SHELL on a text-only weight tree still heals — the
+        // LFM2.5 quats ship exactly this (vision_config present, zero
+        // vision_tower weights).
+        let vdir = dir.join("vlshell");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("config.json"), r#"{"model_type":"x","vision_config":{}}"#).unwrap();
+        let vshard = vdir.join("model.safetensors");
+        write_st(&vshard, &["language_model.model.a"], b"12345678");
+        super::heal_wrapped_weight_prefix(&vdir).unwrap();
+        let (_, vjson) = super::read_st_header(&vshard).unwrap();
+        assert!(vjson.as_object().unwrap().contains_key("model.a"), "VL shell over text tree heals");
+
+        // A mixed tree (vision_tower sibling) stays untouched even without
+        // a vision_config — the uniform-wrapper condition fails.
+        let mdir = dir.join("mixed");
+        std::fs::create_dir_all(&mdir).unwrap();
+        std::fs::write(mdir.join("config.json"), r#"{"model_type":"x"}"#).unwrap();
+        let mshard = mdir.join("model.safetensors");
+        write_st(&mshard, &["language_model.model.a", "vision_tower.b"], b"12345678");
+        let before = std::fs::read(&mshard).unwrap();
+        super::heal_wrapped_weight_prefix(&mdir).unwrap();
+        assert_eq!(std::fs::read(&mshard).unwrap(), before, "mixed tree must stay untouched");
+
+        // LFM2.5 config heal: block_ff_dim mirrored from intermediate_size,
+        // only for lfm2, only when absent.
+        let ldir = dir.join("lfm");
+        std::fs::create_dir_all(&ldir).unwrap();
+        std::fs::write(
+            ldir.join("config.json"),
+            r#"{"model_type":"lfm2","intermediate_size":10752}"#,
+        )
+        .unwrap();
+        super::heal_lfm2_ff_dim(&ldir).unwrap();
+        let cfg = std::fs::read_to_string(ldir.join("config.json")).unwrap();
+        assert!(cfg.contains(r#""block_ff_dim": 10752"#), "{cfg}");
+        // Idempotent + other archs untouched.
+        super::heal_lfm2_ff_dim(&ldir).unwrap();
+        std::fs::write(ldir.join("config.json"), r#"{"model_type":"qwen3","intermediate_size":5}"#)
+            .unwrap();
+        super::heal_lfm2_ff_dim(&ldir).unwrap();
+        assert!(!std::fs::read_to_string(ldir.join("config.json")).unwrap().contains("block_ff_dim"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The vision pixel budget follows HEADROOM (Metal ceiling − weights):
     /// tight boxes halve to 0.5 MP regardless of model size, roomy boxes keep
