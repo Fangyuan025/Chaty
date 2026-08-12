@@ -18,6 +18,19 @@ point at real lines instead of looping or shrugging.
   warning at load that points macOS users to the MLX builds, which run
   perfectly. Traced end-to-end against upstream llama.cpp with the owner's
   own downloads; healthy models verified unaffected.
+- **LFM2.5 MLX quants load now — two converter artifacts, two heals.**
+  The community quants ship a text-only weight tree with every key wearing
+  a VLM-style `language_model.` wrapper (the loader died with
+  `keyNotFound(model.embed_tokens.weight)`), and a config that says
+  `intermediate_size` where the engine's LFM2 reader only understands
+  `block_ff_dim` (weights then failed shape validation). Chaty now strips
+  a UNIFORM wrapper in place — safetensors headers are renamed and padded
+  back to their exact original length, so a multi-gigabyte model costs a
+  kilobyte-sized write and the tensor data never moves — and mirrors the
+  FFN width into the field the engine reads. A real VLM always carries
+  vision-tower keys, so the uniform-wrapper condition never touches one.
+  Verified on the failing 2.6B (loads, chats, computes) with the
+  previously-working 8B MoE confirmed byte-untouched.
 - **A vision model missing its processor config now heals itself.**
   Community MLX quants sometimes ship a VLM checkpoint without
   `preprocessor_config.json` — the load died with a bare
