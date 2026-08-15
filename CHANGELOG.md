@@ -1,5 +1,38 @@
 # Changelog
 
+## v2.0.9 — The model's own thinking dial (2026-08-12)
+
+### Qwen3.8, on both engines, with its native reasoning ladder
+
+- **Qwen3.8 loads and reasons correctly on GGUF and MLX alike**, and its
+  three native effort rungs — `low`, `medium`, `xhigh` — are wired into the
+  UI where they belong: Chat's thinking item grows a submenu of the rungs
+  (the model's own ladder, not Chaty's generic intensities), and Code mode's
+  think switch becomes off / low / medium / high. Both surfaces appear ONLY
+  for models whose chat template actually declares the ladder — detected
+  from the template text, never from the model name, so renamed finetunes
+  are recognized and every other model keeps exactly the UI it had.
+- **The rung reaches the model differently on each engine, and correctly on
+  both.** MLX passes `reasoning_effort` as a chat-template kwarg. llama.cpp
+  can't take custom kwargs — but the rung is only ever a sentence the
+  template injects into the system block, and a default render already
+  carries the `xhigh` one, so the GGUF path rewrites that sentence into the
+  requested rung verbatim (`medium` = the template's empty-instruction
+  branch, sentence removed). The result is byte-identical to what the
+  official template emits for that rung.
+- Proven on the real 27B: the ladder is reported at load, all three rungs
+  answer correctly, and reasoning length tracks the rung (725 → 879 → 4661
+  characters on the same question). Greedy decoding with a fixed seed
+  reproduces a rung byte-for-byte and produces three different outputs
+  across rungs — the prompt really is changing. A Qwen3 GGUF reports an
+  empty ladder and behaves exactly as before.
+- The Qwen3.5+ family test now parses the minor version out of the
+  architecture instead of listing releases, so 3.8 (and whatever comes
+  next) inherits the paradigm without another patch.
+- **tiktok-video skill**: upstream's Ken Burns judder fix rides along — a
+  4× zoompan canvas with smoothstep easing takes the worst frame-to-frame
+  velocity step from 1.3px to sub-pixel.
+
 ## v2.0.8 — Imperfect models, met halfway (2026-08-10)
 
 Started as v2.0.7 hotfix rounds and grew into its own release: a wave of
