@@ -73,6 +73,16 @@ export const T = {
   cmThinking: { zh: "思考中…", en: "Thinking…", pt: "Pensando…" },
   cmThought: { zh: "已思考", en: "Reasoned", pt: "Raciocinou" },
   cmThinkOff: { zh: "不思考", en: "Off", pt: "Desligado" },
+  // Native reasoning-effort rungs (Qwen3.8). The model's own ladder, so the
+  // labels name the rungs rather than Chaty's generic intensities.
+  effortLow: { zh: "低", en: "Low", pt: "Baixo" },
+  effortMedium: { zh: "中", en: "Medium", pt: "Médio" },
+  effortXhigh: { zh: "高", en: "High", pt: "Alto" },
+  effortHint: {
+    zh: "该模型原生支持思考档位:低更快,高更周全(模型默认高)。",
+    en: "This model has native reasoning-effort levels: low is faster, high is more thorough (the model's own default).",
+    pt: "Este modelo tem níveis nativos de esforço de raciocínio: baixo é mais rápido, alto é mais completo (padrão do modelo).",
+  },
   cmThinkNormal: { zh: "标准", en: "Normal", pt: "Normal" },
   cmThinkDeep: { zh: "深入", en: "Deep", pt: "Profundo" },
   cmThinkHint: {

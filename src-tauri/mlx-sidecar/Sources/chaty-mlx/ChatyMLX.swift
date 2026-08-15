@@ -52,6 +52,9 @@ struct WireParams: Decodable {
     /// Reasoning control: `false` forces no-think (template arg when the chat
     /// template supports `enable_thinking`, else an empty-<think> prefill).
     var think: Bool?
+    /// Native reasoning-effort rung for templates taking a `reasoning_effort`
+    /// kwarg (Qwen3.8: low | medium | xhigh). Passed straight through.
+    var effort: String?
 }
 
 struct WireCmd: Decodable {
@@ -127,6 +130,9 @@ struct ModelMeta {
     var hasChatTemplate = false
     /// Chat template honours an `enable_thinking` kwarg (Qwen3 family).
     var thinkArg = false
+    /// Native reasoning-effort ladder the template accepts, weakest first
+    /// (Qwen3.8: low/medium/xhigh). Empty ⇒ no effort control.
+    var effortLevels: [String] = []
     /// Best effort: the model emits <think> reasoning.
     var supportsThinking = false
     /// Best effort: the chat template supports tool / function calling.
@@ -267,6 +273,11 @@ func inspectModelDir(_ dir: URL) -> ModelMeta {
     }
     meta.hasChatTemplate = !template.isEmpty
     meta.thinkArg = template.contains("enable_thinking")
+    if template.contains("reasoning_effort") {
+        meta.effortLevels = ["low", "medium", "xhigh"].filter {
+            template.contains("'\($0)'") || template.contains("\"\($0)\"")
+        }
+    }
     let archLower = (meta.arch ?? "").lowercased()
     meta.supportsThinking =
         template.contains("<think>") || meta.thinkArg || archLower.contains("qwen3")
@@ -372,6 +383,7 @@ final class Engine: @unchecked Sendable {
                 "supportsThinking": meta.supportsThinking,
                 "thinkArg": meta.thinkArg,
                 "supportsTools": meta.supportsTools,
+                "effortLevels": meta.effortLevels,
                 // VLM-factory models have their vision tower loaded and
                 // ready — no separate encoder file like GGUF's mmproj.
                 "multimodal": meta.multimodal,
@@ -437,11 +449,16 @@ final class Engine: @unchecked Sendable {
             }
         }
         let hasImages = messages.contains { !($0.images ?? []).isEmpty }
-        var extra: [String: any Sendable]? = nil
+        var extra: [String: any Sendable] = [:]
         if let think = p.think, meta.thinkArg {
-            extra = ["enable_thinking": think]
+            extra["enable_thinking"] = think
         }
-        let userInput = UserInput(chat: chat, additionalContext: extra)
+        // Native effort rung — only when the template declares the ladder and
+        // thinking isn't off (the template rejects unknown values outright).
+        if let effort = p.effort, meta.effortLevels.contains(effort), p.think != false {
+            extra["reasoning_effort"] = effort
+        }
+        let userInput = UserInput(chat: chat, additionalContext: extra.isEmpty ? nil : extra)
         let lmInput = try await context.processor.prepare(input: userInput)
         var tokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
 

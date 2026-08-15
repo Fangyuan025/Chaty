@@ -567,7 +567,7 @@ impl LlamaEngine {
         // Qwen3.5/3.6 (arch "qwen35*"/"qwen36*") use the <think> paradigm with
         // no soft switch — the architecture field is authoritative over
         // template text, which community finetunes frequently customize.
-        let is_qwen35plus = arch_lc.starts_with("qwen35") || arch_lc.starts_with("qwen36");
+        let is_qwen35plus = is_qwen3_5_plus_arch(&arch_lc);
         let supports_thinking = is_qwen35plus
             || template_lc.contains("think")
             || template_lc.contains("reasoning")
@@ -611,6 +611,7 @@ impl LlamaEngine {
             .and_then(|s| s.trim().parse::<u32>().ok())
             .map(|ft| quant_name(ft).to_string());
 
+        let effort_levels = effort_levels_of(template.as_deref().unwrap_or(""));
         let info = ModelInfo {
             name,
             path: path.to_string(),
@@ -630,6 +631,7 @@ impl LlamaEngine {
             has_chat_template: template.is_some(),
             supports_thinking,
             think_switch,
+            effort_levels,
             supports_tools,
             multimodal,
             vision_ready,
@@ -863,6 +865,17 @@ fn run_turn(
         build_prompt_pair(model, &inject_media_markers(&req.messages), req.params.think)?
     } else {
         (build_prompt(model, &req.messages, req.params.think)?, String::new())
+    };
+    // Native reasoning-effort rung (Qwen3.8). The template rendered with
+    // llama.cpp's default kwargs already carries the `xhigh` sentence, so a
+    // different rung is a verbatim swap. BOTH renders get it: the body is the
+    // media-cache anchor and must stay a prefix of the full prompt.
+    let (prompt, prompt_body) = match req.params.effort.as_deref() {
+        Some(level) if req.params.think != Some(false) => (
+            apply_effort(&prompt, level),
+            if prompt_body.is_empty() { prompt_body } else { apply_effort(&prompt_body, level) },
+        ),
+        _ => (prompt, prompt_body),
     };
     // Qwen3.5/3.6-style templates PRE-OPEN the reasoning block: the prompt
     // ends with "<think>\n" and the model starts mid-reasoning, so the UI
@@ -1535,10 +1548,7 @@ fn build_prompt_pair(
     // even when a finetune ships a legacy/custom template without the markers.
     let qwen35plus = model
         .meta_val_str("general.architecture")
-        .map(|a| {
-            let a = a.to_lowercase();
-            a.starts_with("qwen35") || a.starts_with("qwen36")
-        })
+        .map(|a| is_qwen3_5_plus_arch(&a.to_lowercase()))
         .unwrap_or(false);
     let template_uses_think = qwen35plus
         || model
@@ -1589,6 +1599,61 @@ fn build_prompt_pair(
     // (true for every sane template; guard against odd ones).
     let body = if prompt.starts_with(&body) { body } else { String::new() };
     Ok((prompt, body))
+}
+
+/// Qwen 3.5 and everything after it (3.6, 3.8, …) share one paradigm: no
+/// `/no_think` soft switch, a pre-opened `<think>` block. Parse the minor
+/// version out of the GGUF arch string instead of listing each release —
+/// `qwen35`, `qwen36`, `qwen38` all qualify, `qwen3`/`qwen3moe` do not.
+pub(crate) fn is_qwen3_5_plus_arch(arch_lc: &str) -> bool {
+    let Some(rest) = arch_lc.strip_prefix("qwen3") else { return false };
+    match rest.chars().next() {
+        Some(d) if d.is_ascii_digit() => d >= '5',
+        _ => false,
+    }
+}
+
+/// The three sentences Qwen3.8's chat template injects for its
+/// `reasoning_effort` ladder, verbatim from the official template. `medium`
+/// deliberately injects nothing — it is the neutral baseline.
+pub(crate) const EFFORT_XHIGH: &str = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.";
+pub(crate) const EFFORT_LOW: &str = "Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.";
+
+/// The ladder a template offers, weakest first — detected from the template
+/// text, never from the model name (finetunes rename freely, and a template
+/// that takes the kwarg is exactly the set of models that honour it).
+pub(crate) fn effort_levels_of(template: &str) -> Vec<String> {
+    if !template.contains("reasoning_effort") {
+        return Vec::new();
+    }
+    ["low", "medium", "xhigh"]
+        .iter()
+        .filter(|lvl| template.contains(&format!("'{lvl}'")) || template.contains(&format!("\"{lvl}\"")))
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// llama.cpp renders the chat template with DEFAULT kwargs, so a thinking
+/// Qwen3.8 prompt already carries the `xhigh` sentence. Requesting another
+/// rung is therefore a verbatim substitution on the rendered prompt — the
+/// result is byte-identical to what the official template produces for that
+/// rung (`medium` = the sentence removed, its empty-instruction branch).
+/// Anything unexpected (finetuned template, fallback renderer that never
+/// emitted the sentence) leaves the prompt untouched.
+pub(crate) fn apply_effort(prompt: &str, effort: &str) -> String {
+    if !prompt.contains(EFFORT_XHIGH) {
+        return prompt.to_string();
+    }
+    match effort {
+        "xhigh" => prompt.to_string(),
+        "low" => prompt.replace(EFFORT_XHIGH, EFFORT_LOW),
+        // The template emits `instructions + '\n\n'` before the system body,
+        // or a system block holding only the sentence — drop both shapes.
+        "medium" => prompt
+            .replace(&format!("<|im_start|>system\n{EFFORT_XHIGH}<|im_end|>\n"), "")
+            .replace(&format!("{EFFORT_XHIGH}\n\n"), ""),
+        _ => prompt.to_string(),
+    }
 }
 
 /// Gemma 4 uses `<|turn>role\n…<turn|>` turn delimiters (the template string
@@ -1963,6 +2028,63 @@ fn build_sampler(params: &GenParams) -> LlamaSampler {
 
 #[cfg(test)]
 mod tests {
+
+    /// The Qwen3.5+ paradigm test parses the minor version instead of listing
+    /// releases — 3.8 must qualify the day it ships, `qwen3`/`qwen3moe` must
+    /// not (they still use the `/no_think` soft switch).
+    #[test]
+    fn qwen3_family_predicate_reads_the_minor_version() {
+        for a in ["qwen35", "qwen35moe", "qwen36", "qwen38", "qwen39moe"] {
+            assert!(super::is_qwen3_5_plus_arch(a), "{a} should be 3.5+");
+        }
+        for a in ["qwen3", "qwen3moe", "qwen2", "qwen34", "llama", "qwen"] {
+            assert!(!super::is_qwen3_5_plus_arch(a), "{a} should NOT be 3.5+");
+        }
+    }
+
+    /// The effort ladder is detected from the template text (never the model
+    /// name), and a rung request rewrites the rendered prompt to exactly what
+    /// the official template emits for that rung.
+    #[test]
+    fn reasoning_effort_ladder_detect_and_apply() {
+        let tmpl = "{%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}\
+                    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}";
+        assert_eq!(super::effort_levels_of(tmpl), vec!["low", "medium", "xhigh"]);
+        // Templates without the kwarg have no ladder — the UI keeps on/off.
+        assert!(super::effort_levels_of("{% if enable_thinking %}<think>{% endif %}").is_empty());
+
+        // A rendered prompt as llama.cpp produces it (default kwargs ⇒ xhigh).
+        let rendered = format!(
+            "<|im_start|>system\n{}\n\nYou are helpful.<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n",
+            super::EFFORT_XHIGH
+        );
+        // xhigh is what the template already rendered — byte-identical no-op.
+        assert_eq!(super::apply_effort(&rendered, "xhigh"), rendered);
+        // low swaps the sentence, keeping everything else identical.
+        let low = super::apply_effort(&rendered, "low");
+        assert!(low.contains(super::EFFORT_LOW), "{low}");
+        assert!(!low.contains(super::EFFORT_XHIGH));
+        assert!(low.contains("You are helpful."));
+        assert_eq!(low.matches("<|im_start|>system").count(), 1);
+        // medium is the template's empty-instruction branch: sentence gone,
+        // system body intact.
+        let med = super::apply_effort(&rendered, "medium");
+        assert!(!med.contains("Reasoning effort is set to"), "{med}");
+        assert!(med.contains("<|im_start|>system\nYou are helpful.<|im_end|>"), "{med}");
+        // A system block holding ONLY the sentence disappears entirely.
+        let only = format!(
+            "<|im_start|>system\n{}<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n",
+            super::EFFORT_XHIGH
+        );
+        assert_eq!(
+            super::apply_effort(&only, "medium"),
+            "<|im_start|>user\nhi<|im_end|>\n"
+        );
+        // Unknown rungs and prompts the sentence never reached are untouched.
+        assert_eq!(super::apply_effort(&rendered, "bogus"), rendered);
+        assert_eq!(super::apply_effort("plain prompt", "low"), "plain prompt");
+    }
+
     use super::*;
 
     /// The crash-guard state machine (issue #5): a leftover inflight marker

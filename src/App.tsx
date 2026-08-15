@@ -412,6 +412,16 @@ export default function App() {
   const [showDeepResearch, setShowDeepResearch] = useState(false);
   const [showKbReport, setShowKbReport] = useState(false);
   const [appMode, setAppMode] = useState<"chat" | "code">("chat");
+  /** Native reasoning-effort rung for models with a ladder (Qwen3.8). Kept
+   *  even while thinking is off, so toggling back restores the choice; models
+   *  without a ladder never send it. */
+  const [effort, setEffort] = useState(() => {
+    try {
+      return localStorage.getItem("chaty.effort") || "xhigh";
+    } catch {
+      return "xhigh";
+    }
+  });
   const [thinkEnabled, setThinkEnabled] = useState(() => {
     try {
       return localStorage.getItem("chaty.think") !== "0";
@@ -827,6 +837,14 @@ export default function App() {
       /* ignore */
     }
   }, [thinkEnabled]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("chaty.effort", effort);
+    } catch {
+      /* ignore */
+    }
+  }, [effort]);
 
   useEffect(() => {
     try {
@@ -1766,6 +1784,11 @@ export default function App() {
     // For switch-less reasoning models, drive thinking through the backend flag.
     const thinkParam =
       model?.supportsThinking && !model.thinkSwitch ? !wantNoThink : undefined;
+    // Native effort rung: only for models whose template declares the ladder,
+    // and only when they are actually reasoning.
+    const levels = model?.effortLevels ?? [];
+    const effortParam =
+      levels.length > 0 && !wantNoThink && levels.includes(effort) ? effort : undefined;
 
     // Only tell the model today's date when the question is actually time-related,
     // otherwise short prompts can trigger the model to recite the date.
@@ -1864,6 +1887,7 @@ export default function App() {
             repeatPenalty: settings.repeatPenalty,
             stop: parseStops(settings.stop),
             think: thinkParam,
+            effort: effortParam,
           },
         },
         (ev: StreamEvent) => {
@@ -3091,6 +3115,52 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+                    {/* Thinking. Models with a native effort ladder (Qwen3.8)
+                        get a submenu of their own rungs; every other model
+                        keeps the plain on/off item, byte-for-byte as before. */}
+                    {(model?.effortLevels?.length ?? 0) > 0 ? (
+                      <div className="tool-group">
+                        <button
+                          className={`tool-item tool-parent ${thinkEnabled ? "on" : ""}`}
+                          onClick={() => {
+                            const next = !thinkEnabled;
+                            setThinkEnabled(next);
+                            if (next) setWebEnabled(false); // thinking ⇄ web search are exclusive
+                          }}
+                          title={t("effortHint")}
+                        >
+                          <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                            <path d="M9.5 18h5M10.5 21h3" strokeLinecap="round" />
+                            <path d="M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8v.3h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3z" strokeLinejoin="round" />
+                          </svg>
+                          <span className="ti-label">{t("toolThink")}</span>
+                          <span className="ti-check">
+                            {thinkEnabled ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}
+                          </span>
+                          <span className="ti-caret">›</span>
+                        </button>
+                        <div className="tool-submenu">
+                          {(model?.effortLevels ?? []).map((lvl) => (
+                            <button
+                              key={lvl}
+                              className={`tool-item ${thinkEnabled && effort === lvl ? "on" : ""}`}
+                              onClick={() => {
+                                setEffort(lvl);
+                                setThinkEnabled(true);
+                                setWebEnabled(false);
+                              }}
+                            >
+                              <span className="ti-label">
+                                {t(lvl === "low" ? "effortLow" : lvl === "medium" ? "effortMedium" : "effortXhigh")}
+                              </span>
+                              <span className="ti-check">
+                                {thinkEnabled && effort === lvl ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
                     <button
                       className={`tool-item ${thinkEnabled && model?.supportsThinking ? "on" : ""}`}
                       onClick={() => {
@@ -3110,6 +3180,7 @@ export default function App() {
                         {thinkEnabled && model?.supportsThinking ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}
                       </span>
                     </button>
+                    )}
                     <button
                       className={`tool-item ${webDesign ? "on" : ""}`}
                       onClick={() => setWebDesign((v) => !v)}

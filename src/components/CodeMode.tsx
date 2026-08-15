@@ -87,6 +87,16 @@ interface CodeMsg {
 }
 
 const THINK_MODES: ThinkMode[] = ["off", "normal", "deep"];
+/** Models with a native effort ladder (Qwen3.8) show the model's own rungs
+ *  instead of Chaty's generic intensities — off still means enable_thinking
+ *  false, which the ladder itself has no rung for. */
+const NATIVE_THINK_MODES: ThinkMode[] = ["off", "low", "normal", "deep"];
+/** thinkMode → the native rung it requests. */
+const EFFORT_OF: Partial<Record<ThinkMode, string>> = {
+  low: "low",
+  normal: "medium",
+  deep: "xhigh",
+};
 
 const RAIL_DEFAULT = 240;
 const RAIL_MIN = 180;
@@ -538,9 +548,12 @@ export function CodeMode({
   const [previewImg, setPreviewImg] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [bypass, setBypass] = useState(false);
+  /** The model exposes a native reasoning-effort ladder (Qwen3.8) — the think
+   *  switch then shows the model's own rungs instead of Chaty's intensities. */
+  const nativeEffort = (model?.effortLevels?.length ?? 0) > 0;
   const [thinkMode, setThinkMode] = useState<ThinkMode>(() => {
     const v = localStorage.getItem("chaty.code.think");
-    return v === "off" || v === "normal" || v === "deep" ? v : "normal";
+    return v === "off" || v === "low" || v === "normal" || v === "deep" ? v : "normal";
   });
   const [approval, setApproval] = useState<{ call: ToolCall; resolve: (ok: boolean) => void } | null>(null);
   /** Out-of-workspace access request from the agent (grant persists this session). */
@@ -1059,7 +1072,7 @@ export function CodeMode({
       newSession();
     } else if (cmd.startsWith("/think ")) {
       const arg = cmd.slice(7).trim();
-      if (arg === "off" || arg === "normal" || arg === "deep") {
+      if (arg === "off" || arg === "low" || arg === "normal" || arg === "deep") {
         setThinkMode(arg);
         localStorage.setItem("chaty.code.think", arg);
       }
@@ -1236,6 +1249,7 @@ export function CodeMode({
       thinkMode,
       supportsThinking: model.supportsThinking,
       thinkSwitch: model.thinkSwitch,
+      effort: nativeEffort ? EFFORT_OF[thinkMode] : undefined,
       nCtx: model.nCtx ?? undefined,
       maxSteps,
       temperature,
@@ -1478,8 +1492,8 @@ export function CodeMode({
               </div>
             );
           })()}
-          <div className="cm-think-switch" title={t("cmThinkHint")}>
-            {THINK_MODES.map((mode) => (
+          <div className="cm-think-switch" title={t(nativeEffort ? "effortHint" : "cmThinkHint")}>
+            {(nativeEffort ? NATIVE_THINK_MODES : THINK_MODES).map((mode) => (
               <button
                 key={mode}
                 className={`cm-think-tab ${thinkMode === mode ? "active" : ""}`}
@@ -1489,7 +1503,19 @@ export function CodeMode({
                 }}
                 disabled={running}
               >
-                {t(mode === "off" ? "cmThinkOff" : mode === "normal" ? "cmThinkNormal" : "cmThinkDeep")}
+                {t(
+                  mode === "off"
+                    ? "cmThinkOff"
+                    : nativeEffort
+                      ? mode === "low"
+                        ? "effortLow"
+                        : mode === "normal"
+                          ? "effortMedium"
+                          : "effortXhigh"
+                      : mode === "normal"
+                        ? "cmThinkNormal"
+                        : "cmThinkDeep",
+                )}
               </button>
             ))}
           </div>

@@ -112,7 +112,10 @@ export interface ToolCall {
 export type StepStatus = "running" | "done" | "error" | "denied";
 
 /** How much the model reasons before each action. */
-export type ThinkMode = "off" | "normal" | "deep";
+/// Reasoning intensity for a coding turn. `low` is only offered by models
+/// with a native effort ladder (Qwen3.8) — for every other model the switch
+/// keeps its three rungs and this value never occurs.
+export type ThinkMode = "off" | "low" | "normal" | "deep";
 
 /** A single item in the agent's task plan (todo list). */
 export type PlanStatus = "pending" | "in_progress" | "done";
@@ -181,6 +184,9 @@ export interface AgentCallbacks {
 export interface AgentOptions {
   /** Reasoning depth: off = no thinking, normal = default, deep = thorough. */
   thinkMode: ThinkMode;
+  /** Native reasoning-effort rung to request (Qwen3.8: low|medium|xhigh).
+   *  Undefined for models without the ladder. */
+  effort?: string;
   /** User-set hard ceiling on thinking tokens per round (0/undefined = no
    *  mid-stream ceiling). Over budget the think block is CLOSED gracefully:
    *  the reasoning so far stays in context and the model is told to act on
@@ -354,7 +360,7 @@ export function systemPrompt(
       ? zh
         ? "\n- 在每次行动前,先在 <think>…</think> 中充分思考:分析现状、权衡多种方案、考虑边界情况,再决定调用哪个工具。"
         : "\n- Before each action, reason thoroughly inside <think>…</think>: analyze the state, weigh options and edge cases, then decide which tool to call."
-      : mode === "normal"
+      : mode === "normal" || mode === "low"
         ? zh
           ? "\n- 行动前可在 <think>…</think> 中简要思考下一步,再调用工具。"
           : "\n- You may think briefly inside <think>…</think> before each tool call."
@@ -1458,7 +1464,9 @@ export async function runAgentTurn(
         ? 8192
         : opts.thinkMode === "normal"
           ? 6144
-          : 4096;
+          : opts.thinkMode === "low"
+            ? 5120
+            : 4096;
   const maxTokens = Math.min(budget, Math.max(1024, Math.floor(nCtx * 0.75)));
   // User think budget: the ONLY mid-stream thinking ceiling (owner call — the
   // old built-in 3000/5000 runaway cut kept beheading legitimate long
@@ -1732,6 +1740,7 @@ export async function runAgentTurn(
             repeatPenalty: 1.05,
             stop: ["</tool_call>"],
             think: stepThink,
+            effort: opts.effort,
           },
         },
         (ev) => {

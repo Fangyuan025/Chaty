@@ -24,6 +24,10 @@ export interface GenParams {
   /** Reasoning control for switch-less models (Qwen3.5+): false force-disables
    *  thinking, true/undefined leaves the model default. */
   think?: boolean | null;
+  /** Native reasoning-effort rung for models whose chat template takes a
+   *  `reasoning_effort` kwarg (Qwen3.8: "low" | "medium" | "xhigh"). Ignored
+   *  by every other model. */
+  effort?: string | null;
 }
 
 export interface GenRequest {
@@ -51,6 +55,9 @@ export interface ModelInfo {
   supportsThinking: boolean;
   /** The chat template honours the `/no_think` soft switch (Qwen3, not 3.5+). */
   thinkSwitch: boolean;
+  /** Native reasoning-effort ladder, weakest first (Qwen3.8:
+   *  ["low","medium","xhigh"]). Empty ⇒ plain on/off thinking. */
+  effortLevels?: string[];
   supportsTools: boolean;
   multimodal: boolean;
   /** The vision encoder (mmproj) is loaded — images actually work this session. */

@@ -3961,6 +3961,11 @@ a:focus-visible,
 .tool-parent {
   cursor: default;
 }
+/* A parent that is itself an action (thinking on/off, with the rung submenu
+   hanging off it) keeps the clickable affordance. */
+button.tool-parent {
+  cursor: pointer;
+}
 .tool-group:hover > .tool-parent {
   background: var(--surface);
 }

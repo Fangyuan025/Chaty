@@ -56,6 +56,10 @@ pub struct GenParams {
     /// (Qwen3.5+): `Some(false)` force-disables thinking by pre-filling an empty
     /// `<think></think>` block; `Some(true)`/`None` leave the model default.
     pub think: Option<bool>,
+    /// Native reasoning-effort level for models whose chat template takes a
+    /// `reasoning_effort` kwarg (Qwen3.8: `low` | `medium` | `xhigh`). `None`
+    /// leaves the model's own default; ignored by models without the ladder.
+    pub effort: Option<String>,
 }
 
 impl Default for GenParams {
@@ -70,6 +74,7 @@ impl Default for GenParams {
             repeat_penalty: 1.1,
             stop: Vec::new(),
             think: None,
+            effort: None,
         }
     }
 }
@@ -150,6 +155,11 @@ pub struct ModelInfo {
     pub supports_thinking: bool,
     /// The chat template honours the `/no_think` soft switch (Qwen3, not 3.5+).
     pub think_switch: bool,
+    /// Native reasoning-effort ladder the chat template accepts, weakest
+    /// first (Qwen3.8: `["low", "medium", "xhigh"]`). Empty ⇒ the model has
+    /// no effort control and the UI keeps its plain thinking toggle.
+    #[serde(default)]
+    pub effort_levels: Vec<String>,
     /// Best-effort: the chat template supports tool / function calling.
     pub supports_tools: bool,
     /// Best-effort: the model appears to be multimodal (vision).

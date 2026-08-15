@@ -115,6 +115,7 @@ fn load_engine(path: &str, n_ctx: Option<u32>) -> Result<ModelInfo, String> {
             has_chat_template: true,
             supports_thinking: false,
             think_switch: false,
+            effort_levels: Vec::new(),
             supports_tools: true,
             multimodal: false,
             vision_ready: false,

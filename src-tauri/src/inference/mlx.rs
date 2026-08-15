@@ -493,6 +493,11 @@ impl MlxEngine {
             // (template kwarg or empty-<think> prefill in the sidecar) —
             // never the `/no_think` prompt-suffix switch.
             think_switch: false,
+            // The sidecar reports the ladder its chat template accepts.
+            effort_levels: loaded["effortLevels"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default(),
             supports_tools: loaded["supportsTools"].as_bool().unwrap_or(false),
             multimodal: loaded["multimodal"].as_bool().unwrap_or(false),
             // MLX VLMs carry their vision tower in the same weights — loaded
@@ -717,6 +722,7 @@ fn run_generation(
                 "maxTokens": p.max_tokens,
                 "seed": p.seed,
                 "think": p.think,
+                "effort": p.effort,
             },
         }),
     )?;
