@@ -26,18 +26,29 @@ def snap(t, fps):
     return round(t * fps) / fps
 
 
+ZP_OVER = 4.0   # zoompan input canvas multiple. zoompan steps its crop window
+                # in whole INPUT pixels; on a small canvas each step is ~a full
+                # output pixel and slow pans visibly judder. At 4x the step is
+                # ~0.25 output px — below perception (measured: worst frame
+                # step 1.3px -> 0.6px, accel std 1.14px -> 0.25px).
+
+
 def kb_expr(effect, frames):
-    """zoompan z/x/y expressions for a given Ken Burns effect."""
+    """zoompan z/x/y expressions for a given Ken Burns effect.
+    Motion is smoothstep-eased — constant-velocity pans read as mechanical
+    and make endpoint judder more obvious."""
     cx, cy = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
     d = max(frames, 1)
+    p = f"(on/{d})"
+    e = f"({p}*{p}*(3-2*{p}))"   # smoothstep 0..1
     if effect == "kb_in":
-        return f"z='1+0.13*on/{d}':x='{cx}':y='{cy}'"
+        return f"z='1+0.13*{e}':x='{cx}':y='{cy}'"
     if effect == "kb_out":
-        return f"z='1.13-0.13*on/{d}':x='{cx}':y='{cy}'"
+        return f"z='1.13-0.13*{e}':x='{cx}':y='{cy}'"
     if effect == "pan_left":
-        return f"z='1.10':x='(iw-iw/zoom)*(1-on/{d})':y='(ih-ih/zoom)/2'"
+        return f"z='1.10':x='(iw-iw/zoom)*(1-{e})':y='(ih-ih/zoom)/2'"
     if effect == "pan_right":
-        return f"z='1.10':x='(iw-iw/zoom)*on/{d}':y='(ih-ih/zoom)/2'"
+        return f"z='1.10':x='(iw-iw/zoom)*{e}':y='(ih-ih/zoom)/2'"
     return f"z='1.02':x='{cx}':y='{cy}'"  # static
 
 
@@ -176,11 +187,12 @@ def render_scene(sb, si, scene, timing, shots, paths, renderer, scene_dur, fspli
         media = paths["media"] / shot["file"]
         shot_dur = fk / fps
         if shot["kind"] == "image":
-            cw, ch = cover_dims(shot["w"], shot["h"], int(W * 1.3), int(H * 1.3))
+            zw, zh = int(W * ZP_OVER) // 2 * 2, int(H * ZP_OVER) // 2 * 2
+            cw, ch = cover_dims(shot["w"], shot["h"], zw, zh)
             rw, rh = int(W * 1.5) // 2 * 2, int(H * 1.5) // 2 * 2
             cmd += ["-i", media]
             fc.append(
-                f"[{k}:v]scale={cw}:{ch},crop={int(W*1.3)//2*2}:{int(H*1.3)//2*2},"
+                f"[{k}:v]scale={cw}:{ch}:flags=lanczos,crop={zw}:{zh},"
                 f"zoompan={kb_expr(eff, fk)}:d={fk}:s={rw}x{rh}:fps={fps},"
                 f"scale={W}:{H}:flags=lanczos,setsar=1,format=yuv420p[sh{k}]")
         else:
