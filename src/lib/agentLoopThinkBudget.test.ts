@@ -52,8 +52,15 @@ describe("per-round generation budget (maxGenTokens)", () => {
     expect(await capturedMaxTokens({ maxGenTokens: 2048, nCtx: 16384 })).toBe(2048);
   });
 
-  it("zero keeps the per-thinkMode default", async () => {
-    expect(await capturedMaxTokens({ maxGenTokens: 0, nCtx: 16384 })).toBe(4096);
+  it("zero means no ceiling of our own — the context window is the only bound", async () => {
+    // Mirrors the think budget's 0: nothing is imposed beyond what the
+    // window can hold (the per-thinkMode 4096/6144/8192 defaults are gone,
+    // they silently truncated long reasoning and big writes).
+    expect(await capturedMaxTokens({ maxGenTokens: 0, nCtx: 16384 })).toBe(12288);
+    expect(await capturedMaxTokens({ maxGenTokens: 0, nCtx: 8192 })).toBe(6144);
+    // …and the think depth no longer changes it.
+    expect(await capturedMaxTokens({ maxGenTokens: 0, nCtx: 16384, thinkMode: "deep" })).toBe(12288);
+    expect(await capturedMaxTokens({ maxGenTokens: 0, nCtx: 16384, thinkMode: "low" })).toBe(12288);
   });
 
   it("an oversized value is clamped to the context window", async () => {

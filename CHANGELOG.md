@@ -4,6 +4,15 @@
 
 ### Qwen3.8, on both engines, with its native reasoning ladder
 
+- **The per-step output limit means what the think budget's zero means.**
+  It used to install a hidden ceiling keyed to think depth (4096 / 6144 /
+  8192) whenever it was left at zero, quietly truncating long reasoning and
+  large file writes on models that could easily afford more — and the
+  slider itself topped out at a hardcoded 12288 regardless of the model.
+  Zero is now simply no ceiling of our own (the context window still bounds
+  every step), the slider tops out at the loaded model's context window,
+  and the think depth no longer moves it.
+
 - **Qwen3.8 loads and reasons correctly on GGUF and MLX alike**, and its
   three native effort rungs — `low`, `medium`, `xhigh` — are wired into the
   UI where they belong: Chat's thinking item grows a submenu of the rungs

@@ -145,10 +145,9 @@ export const T = {
     en: "Hard per-step ceiling on thinking tokens. Over budget the think block closes gracefully: the reasoning stays in context and the model acts on it — nothing discarded, coherence kept. 0 = no ceiling (the per-step generation limit still bounds it). For models that loop in thought at low temperature, 1000-2000 works well.", pt: "Limite rígido de tokens de raciocínio por passo. Ao exceder o orçamento, o bloco de raciocínio é fechado de forma suave: o raciocínio permanece no contexto e o modelo age com base nele — nada é descartado, a coerência é mantida. 0 = sem teto (o limite de geração por passo ainda restringe). Para modelos que entram em loop de raciocínio em baixas temperaturas, 1000-2000 costuma funcionar bem.",
   },
   cmMaxTokens: { zh: "单步生成上限 (tokens)", en: "Per-step output limit (tokens)", pt: "Limite de saída por passo (tokens)" },
-  cmMaxTokensAuto: { zh: "自动", en: "auto", pt: "automático" },
   cmMaxTokensHint: {
-    zh: "每个 agent 步骤的生成 token 上限。0 = 按思考深度自动(关 4096 / 标准 6144 / 深度 8192);任何值都会被上下文窗口自动收紧。调低可以防长跑,调高给长思考和大文件写入留空间。",
-    en: "Generation cap per agent step. 0 = auto by think depth (off 4096 / normal 6144 / deep 8192); any value is clamped to the context window. Lower it to bound runaways, raise it for long reasoning and big file writes.", pt: "Limite de geração por passo do agente. 0 = automático pela profundidade de raciocínio (desligado 4096 / normal 6144 / profundo 8192); qualquer valor é limitado pela janela de contexto. Diminua para restringir fugas, aumente para raciocínios longos e escritas de arquivos grandes.",
+    zh: "每个 agent 步骤的生成 token 上限。0 = 不限制(由上下文窗口自然封顶);滑杆上限即当前模型的上下文窗口。调低可以防长跑,调高给长思考和大文件写入留空间。",
+    en: "Generation cap per agent step. 0 = no cap of its own (the context window still bounds it); the slider tops out at the loaded model's context window. Lower it to bound runaways, raise it for long reasoning and big file writes.", pt: "Limite de geração por passo do agente. 0 = sem limite próprio (a janela de contexto ainda restringe); o controle vai até a janela de contexto do modelo carregado. Diminua para restringir fugas, aumente para raciocínios longos e escritas de arquivos grandes.",
   },
   cmAutoEdits: { zh: "自动批准文件编辑", en: "Auto-approve file edits", pt: "Auto-aprovar edições de arquivos" },
   cmAutoEditsHint: {

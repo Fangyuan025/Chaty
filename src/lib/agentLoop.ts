@@ -1455,18 +1455,14 @@ export async function runAgentTurn(
   // A generous token budget so a long reasoning block can't bury the tool call,
   // but never so large that generation crowds the prompt out of the window.
   const nCtx = opts.nCtx ?? 8192;
-  // User override first (0 = auto per-thinkMode default), floored at 512 so a
-  // tool call still fits, always clamped to what the window can hold.
+  // Per-step generation ceiling. 0 = no ceiling of our own — the context
+  // window is the only bound, exactly like the think budget's 0. (This used
+  // to install a per-thinkMode default of 4096/6144/8192, which silently
+  // truncated long reasoning and big file writes on models that could
+  // easily afford more.) A set value is floored at 512 so a tool call still
+  // fits, and clamped to what the window can hold either way.
   const budget =
-    opts.maxGenTokens && opts.maxGenTokens > 0
-      ? Math.max(512, opts.maxGenTokens)
-      : opts.thinkMode === "deep"
-        ? 8192
-        : opts.thinkMode === "normal"
-          ? 6144
-          : opts.thinkMode === "low"
-            ? 5120
-            : 4096;
+    opts.maxGenTokens && opts.maxGenTokens > 0 ? Math.max(512, opts.maxGenTokens) : Infinity;
   const maxTokens = Math.min(budget, Math.max(1024, Math.floor(nCtx * 0.75)));
   // User think budget: the ONLY mid-stream thinking ceiling (owner call — the
   // old built-in 3000/5000 runaway cut kept beheading legitimate long

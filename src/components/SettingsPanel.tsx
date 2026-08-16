@@ -892,12 +892,12 @@ export function SettingsPanel({
               <label className="field">
                 <span>
                   {t("cmMaxTokens")}{" "}
-                  <b>{value.codeMaxTokens > 0 ? value.codeMaxTokens : t("cmMaxTokensAuto")}</b>
+                  <b>{value.codeMaxTokens > 0 ? value.codeMaxTokens : t("cmThinkBudgetOff")}</b>
                 </span>
                 <input
                   type="range"
                   min={0}
-                  max={12288}
+                  max={maxTokensLimit}
                   step={512}
                   value={value.codeMaxTokens}
                   onChange={(e) => set("codeMaxTokens", Number(e.target.value))}
