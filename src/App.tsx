@@ -2511,6 +2511,7 @@ export default function App() {
             onClose={() => setShowSettings(false)}
             maxTokensLimit={Math.max(1024, model?.nCtx ?? 4096)}
             ctxTrainLimit={model?.nCtxTrain}
+            layersLimit={model?.nLayer}
             onReloadModel={model ? () => void reloadModel() : undefined}
             reloading={loadingModel}
             onDataCleared={() => {

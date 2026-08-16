@@ -250,6 +250,7 @@ export function SettingsPanel({
   onClose,
   maxTokensLimit = 4096,
   ctxTrainLimit,
+  layersLimit,
   onReloadModel,
   reloading = false,
   onDataCleared,
@@ -260,6 +261,9 @@ export function SettingsPanel({
   onClose: () => void;
   /** Upper bound for the max-length slider — adapts to the loaded model's context. */
   maxTokensLimit?: number;
+  /** The loaded model's layer count — ceiling for the GPU-offload slider
+   *  (a hardcoded 80 clipped every deeper model). */
+  layersLimit?: number | null;
   /** The loaded model's trained context length, used as the slider ceiling. */
   ctxTrainLimit?: number | null;
   /** Reload the current model so context/GPU changes take effect. Absent = no model. */
@@ -723,7 +727,14 @@ export function SettingsPanel({
                   <span>
                     {t("gpuLayersLabel")} <b>{value.gpuLayers}</b>
                   </span>
-                  <input type="range" min={1} max={80} step={1} value={value.gpuLayers} onChange={(e) => set("gpuLayers", Number(e.target.value))} />
+                  <input
+                    type="range"
+                    min={1}
+                    max={Math.max(1, layersLimit ?? 80)}
+                    step={1}
+                    value={value.gpuLayers}
+                    onChange={(e) => set("gpuLayers", Number(e.target.value))}
+                  />
                 </label>
               )}
               <div className="settings-hint">{t("gpuHint")}</div>
@@ -881,7 +892,7 @@ export function SettingsPanel({
                 <input
                   type="range"
                   min={0}
-                  max={6000}
+                  max={maxTokensLimit}
                   step={250}
                   value={value.codeThinkBudget}
                   onChange={(e) => set("codeThinkBudget", Number(e.target.value))}

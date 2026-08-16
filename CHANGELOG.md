@@ -11,7 +11,13 @@
   slider itself topped out at a hardcoded 12288 regardless of the model.
   Zero is now simply no ceiling of our own (the context window still bounds
   every step), the slider tops out at the loaded model's context window,
-  and the think depth no longer moves it.
+  and the think depth no longer moves it. The same sweep freed every other
+  slider that was guessing what the model could do: the think budget
+  (hardcoded 6000) and the GPU-offload layer count (hardcoded 80, which let
+  you drag past layers a model doesn't have) now take their ceilings from
+  the loaded model's context window and layer count. Sampling ranges and
+  policy caps (max steps, shell timeout) stay fixed — those are ours to
+  choose, not the model's.
 
 - **Qwen3.8 loads and reasons correctly on GGUF and MLX alike**, and its
   three native effort rungs — `low`, `medium`, `xhigh` — are wired into the
