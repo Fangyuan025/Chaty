@@ -13,7 +13,7 @@ No account, no cloud, no telemetry — with a local coding agent, a document
 knowledge base, Deep Research, and hands-free voice built right in.
 
 [![Latest release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=19c37d)](../../releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Fangyuan025/Chaty/total?color=8a63d2)](../../releases)
+[![Downloads](https://img.shields.io/github/downloads/Fangyuan025/Chaty/total?color=8a63d2&cacheSeconds=3600)](../../releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/Fangyuan025/Chaty/ci.yml?branch=main&label=CI)](../../actions)
 [![Windows · Vulkan](https://img.shields.io/badge/Windows-Vulkan-0078D6?logo=windows&logoColor=white)](../../releases)
 [![macOS · Metal + MLX](https://img.shields.io/badge/macOS-Metal_%2B_MLX-000000?logo=apple&logoColor=white)](../../releases)
