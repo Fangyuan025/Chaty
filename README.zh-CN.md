@@ -12,11 +12,16 @@ Chaty 是一款精致的桌面应用,让开源大模型**完全离线**运行。
 无需账号、不上云、零遥测 —— 还内置本地编码智能体、文档知识库、
 Deep Research 与免手语音。
 
+**新增 —— [Qwen3.8](https://huggingface.co/Qwen/Qwen3.8-27B) 双引擎可跑,
+它原生的思考档位是一个真正能拧的旋钮,而不是一行说明。**
+[Chaty 是怎么适配的 ↓](#把思考档位做成一等公民)
+
 [![Latest release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=19c37d)](../../releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Fangyuan025/Chaty/total?color=8a63d2&cacheSeconds=3600)](../../releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/Fangyuan025/Chaty/ci.yml?branch=main&label=CI)](../../actions)
 [![Windows · Vulkan](https://img.shields.io/badge/Windows-Vulkan-0078D6?logo=windows&logoColor=white)](../../releases)
 [![macOS · Metal + MLX](https://img.shields.io/badge/macOS-Metal_%2B_MLX-000000?logo=apple&logoColor=white)](../../releases)
+[![Qwen3.8 · reasoning effort](https://img.shields.io/badge/Qwen3.8-思考档位-6b4fbb)](#把思考档位做成一等公民)
 [![100% offline](https://img.shields.io/badge/100%25-offline-19c37d)](https://chaty.ca)
 [![Rust + Tauri 2](https://img.shields.io/badge/Rust_+_Tauri_2-CE412B?logo=rust&logoColor=white)](#架构)
 [![License: MIT](https://img.shields.io/badge/License-MIT-444)](LICENSE)
@@ -38,8 +43,46 @@ Deep Research 与免手语音。
 - 🔒 **真正私密** —— 每个模型、文档、对话都留在你的设备上。无需注册、没有服务器、不向任何地方回传。
 - ⚡ **原生而快** —— Rust + llama.cpp 内核,**Vulkan / Metal** GPU 卸载,按硬件自动调优,放不下时平稳回退 CPU。
 - 🧰 **不只是聊天框** —— 编码智能体、知识库(RAG)、Deep Research、免手语音,以及会自愈的设计画布 —— 全部离线。
-- 🧠 **几乎什么都能跑** —— Llama 3、Gemma 3 / 4、Qwen 3 / 3.5 / 3.6、Hugging Face 上的*任意* GGUF,**Apple Silicon 上还能原生跑 MLX 模型** —— 还有 **Chaty 自研微调模型**。
+- 🧠 **几乎什么都能跑** —— Llama 3、Gemma 3 / 4、Qwen 3 / 3.5 / 3.6 / **3.8**、Hugging Face 上的*任意* GGUF,**Apple Silicon 上还能原生跑 MLX 模型** —— 还有 **Chaty 自研微调模型**。
 - 💻 **对弱硬件友好** —— 首次启动的「为我配置」会按你的内存挑一个合适的模型,一键下载。
+
+<br />
+
+## 把思考档位做成一等公民
+
+[Qwen3.8](https://huggingface.co/Qwen/Qwen3.8-27B) 自带原生**思考档位**——`low` · `medium` ·
+`xhigh`——是模型训练时就学会服从的指令。它以对话模板 kwarg 的形式传入,所以不认识它的运行时
+只会静默拿到默认档(`xhigh`):问「1+1 等于几」也要等它把最长的思考走完。
+
+Chaty 把这个档位做成了你真正能拧的旋钮:
+
+<table>
+<tr><td width="52%">
+
+- **聊天** —— `+` 菜单里的「思考模式」展开成模型**自己的**档位子菜单,选中即对下一条消息生效。
+- **Code 模式** —— 原本的「不思考 / 标准 / 深入」直接换成原生阶梯:**不思考 · 低 · 中 · 高**,
+  让 agent 的每一步可以只想一小会儿就继续干活。
+- **两个引擎,都老实做。** MLX 侧档位作为模板 kwarg 原样传下去;llama.cpp 不接受自定义 kwarg,
+  于是 Chaty 直接把渲染后的提示词改写成目标档位——结果与官方模板渲染**逐字节一致**。
+- **按模板探测,不看模型名** —— 改过名字、重新量化的微调版照样认得出档位;而**没有**档位的模型,
+  界面还是原来那个开关,一个像素都不会变。
+
+</td><td width="48%">
+
+同一个问题、同一个随机种子,只差一档 —— Qwen3.8-27B(8-bit MLX,48 GB Apple Silicon):
+
+| 档位 | 思考量 | tokens | 耗时 |
+|---|---|---|---|
+| `low` | 725 字 | 158 | **24 秒** |
+| `medium` | 879 字 | 226 | 31 秒 |
+| `xhigh`(模型默认) | 4 661 字 | 936 | 125 秒 |
+
+五倍的等待,还是五倍的深思——每条消息都由你决定。
+
+</td></tr>
+</table>
+
+<br />
 
 <br />
 
@@ -196,7 +239,7 @@ Deep Research 与免手语音。
 
 - 会话、模型、索引都在一个**本地数据文件夹**里 —— 拷走即备份,一键即清空。
 - **GPU 加速**:跨厂商 **Vulkan**(Windows)与 **Metal**(Apple Silicon,统一内存下全量卸载),按显存自动调优,带 OOM 回退与 CPU 兜底。
-- **任意 `.gguf` 或 MLX 文件夹** —— 分词器与对话模板都取自文件本身;一流支持 Llama 3、Gemma 3 / 4 与 Qwen 3 / 3.5 / 3.6。
+- **任意 `.gguf` 或 MLX 文件夹** —— 分词器与对话模板都取自文件本身;一流支持 Llama 3、Gemma 3 / 4 与 Qwen 3 / 3.5 / 3.6 / 3.8(含其思考档位)。
 - **可调上下文**,自动把模型训练长度适配到你的内存,接近上限时总结较早的对话;**安全切换模型**,完整采样控制 + 可保存预设。
 
 </td>
