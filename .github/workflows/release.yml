@@ -243,6 +243,11 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
+            <!-- Highlights go above this line, hand-written per release —
+                 the release page is where people who found Chaty through a
+                 model's name land, and a bare install table tells them
+                 nothing about why this version exists. -->
+
             ## Install
 
             | Platform | File |
