@@ -262,6 +262,95 @@ func healJinjaComments(dir: URL) {
     log("healed chat template: applied jinja comment whitespace semantics (\(raw.count) → \(healed.count) chars)")
 }
 
+/// swift-transformers still defaults `clean_up_tokenization_spaces` to **true**
+/// when a tokenizer config omits it, while transformers/mlx-lm default it to
+/// false. That legacy BERT-era heuristic rewrites `" ."` → `"."` (and the same
+/// for `,` `!` `?`) inside the *decoder*, which mangles code: a CSS rule
+/// indented with eight spaces decodes with seven, and — because the streaming
+/// detokenizer measures new text by character count — the selector's leading
+/// `.` is swallowed outright, turning `.card {` into `card {`. Write the modern
+/// default in when the config is silent; an explicit setting is left alone.
+func healTokenizerCleanup(dir: URL) {
+    let cfg = dir.appendingPathComponent("tokenizer_config.json")
+    guard let raw = try? Data(contentsOf: cfg),
+        var obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
+        obj["clean_up_tokenization_spaces"] == nil
+    else { return }
+    obj["clean_up_tokenization_spaces"] = false
+    guard
+        let out = try? JSONSerialization.data(
+            withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
+    else { return }
+    let backup = dir.appendingPathComponent("tokenizer_config.json.chaty-orig")
+    if !FileManager.default.fileExists(atPath: backup.path) {
+        try? raw.write(to: backup, options: .atomic)
+    }
+    guard (try? out.write(to: cfg, options: .atomic)) != nil else { return }
+    log("healed tokenizer config: clean_up_tokenization_spaces=false (was absent)")
+}
+
+/// Streaming detokenizer that only ever emits *verified* new text.
+///
+/// `NaiveStreamingDetokenizer` derives each piece as
+/// `newSegment.suffix(newSegment.count - segment.count)` — a character-count
+/// delta that assumes re-decoding a longer run of tokens can only append. A
+/// decoder that rewrites earlier characters breaks that assumption silently:
+/// the piece then starts at the wrong offset and real characters vanish from
+/// the model's output (see `healTokenizerCleanup` — one eaten space cost every
+/// CSS selector its leading `.`). Taking the delta from the verified common
+/// prefix instead makes a rewrite cost at most a repeated tail, never a lost
+/// character.
+struct SafeStreamingDetokenizer {
+    private let tokenizer: any MLXLMCommon.Tokenizer
+    private var segmentTokens: [Int] = []
+    private var segment = ""
+
+    init(tokenizer: any MLXLMCommon.Tokenizer) {
+        self.tokenizer = tokenizer
+    }
+
+    mutating func append(token: Int) {
+        segmentTokens.append(token)
+    }
+
+    /// Restart the window at the token just emitted, exactly like the library
+    /// detokenizer: a bounded segment keeps re-decoding cheap.
+    private mutating func startNewSegment() {
+        guard let last = segmentTokens.last else {
+            segmentTokens.removeAll()
+            segment = ""
+            return
+        }
+        segmentTokens = [last]
+        segment = tokenizer.decode(tokenIds: segmentTokens)
+    }
+
+    mutating func next() -> String? {
+        let newSegment = tokenizer.decode(tokenIds: segmentTokens)
+        // A byte-fallback character split across tokens decodes to U+FFFD
+        // until its last byte arrives — hold the piece back rather than
+        // emitting a replacement character.
+        if newSegment.last == "\u{fffd}" { return nil }
+        let new: String
+        if newSegment.hasPrefix(segment) {
+            new = String(newSegment.dropFirst(segment.count))
+        } else {
+            // The decoder rewrote text already streamed out. Nothing can be
+            // retracted, so re-anchor on the longest common prefix and emit
+            // the rest: worst case a character repeats, none is dropped.
+            let common = zip(newSegment, segment).prefix { $0 == $1 }.count
+            new = String(newSegment.dropFirst(common))
+        }
+        if new.isEmpty { return nil }
+        if new.hasSuffix("\n") {
+            startNewSegment()
+        } else {
+            segment = newSegment
+        }
+        return new
+    }
+}
+
 /// Cheap identity for an image file (path + size + mtime) — mirrors the GGUF
 /// engine's `image_cache_key`.
 func imageKey(_ path: String) -> String {
@@ -373,6 +462,7 @@ final class Engine: @unchecked Sendable {
         var meta = inspectModelDir(dir)
         var loadWarning: String?
         healJinjaComments(dir: dir)
+        healTokenizerCleanup(dir: dir)
         if meta.multimodal {
             healProcessorConfig(dir: dir)
             let hasProcessorConfig = ["preprocessor_config.json", "processor_config.json"]
@@ -801,7 +891,10 @@ final class Engine: @unchecked Sendable {
             return y.item(Int.self)
         }
 
-        var detok = NaiveStreamingDetokenizer(tokenizer: context.tokenizer)
+        var detok = SafeStreamingDetokenizer(tokenizer: context.tokenizer)
+        var dumpIds: [Int] = []
+        var dumpStreamed = ""
+        let dumpTokens = ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_TOKENS"] == "1"
         let started = Date()
         var done = 0
         var reason = "eos"
@@ -822,7 +915,9 @@ final class Engine: @unchecked Sendable {
             let logits = stepEval(tok)
             asyncEval(logits)
             detok.append(token: tok)
+            if dumpTokens { dumpIds.append(tok) }
             if let piece = detok.next() {
+                if dumpTokens { dumpStreamed += piece }
                 out.emit(["event": "token", "text": piece])
             }
             if done >= maxTokens {
@@ -837,6 +932,12 @@ final class Engine: @unchecked Sendable {
                 break
             }
             tok = sample(logits)
+        }
+        if dumpTokens {
+            let whole = context.tokenizer.decode(tokenIds: dumpIds)
+            log("STREAMED[\(dumpStreamed.count)]>>>" + dumpStreamed + "<<<END")
+            log("WHOLE[\(whole.count)]>>>" + whole + "<<<END")
+            log("MATCH=\(dumpStreamed == whole)")
         }
         let dt = max(Date().timeIntervalSince(started), 0.001)
         self.finish(
