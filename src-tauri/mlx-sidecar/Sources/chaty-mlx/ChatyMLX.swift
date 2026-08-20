@@ -218,6 +218,50 @@ func healProcessorConfig(dir: URL) {
     }
 }
 
+/// Jinja comments carry no output, and their `-` markers are supposed to eat
+/// the whitespace on that side. The Swift Jinja engine strips the comment but
+/// NOT the marked whitespace, so a template written as
+///
+///     …<turn|>\n{%- endif %}
+///     {#- pre-scan -#}
+///
+/// renders one newline MORE than the reference engine does — and that single
+/// stray `\n\n` token (Gemma 4's system/user boundary) is enough to shift the
+/// model's behaviour measurably: same weights, same task, the reference
+/// runtime writes `.card { }` while we wrote `card { }` on every CSS rule.
+///
+/// Applying the comment semantics ourselves — delete each comment together
+/// with the whitespace its markers claim — makes the rendered prompt
+/// byte-identical to the reference. Comments produce no output either way, so
+/// a correct engine is unaffected by the rewrite. The original is kept beside
+/// it once, so the edit is auditable and reversible.
+func healJinjaComments(dir: URL) {
+    let tpl = dir.appendingPathComponent("chat_template.jinja")
+    guard let raw = try? String(contentsOf: tpl, encoding: .utf8), raw.contains("{#") else {
+        return
+    }
+    // Most specific first: both markers, then each single marker, then plain.
+    let rules: [(String, NSRegularExpression.Options)] = [
+        ("[ \\t]*\\r?\\n?[ \\t]*\\{#-[\\s\\S]*?-#\\}[ \\t]*\\r?\\n?[ \\t]*", []),
+        ("[ \\t]*\\r?\\n?[ \\t]*\\{#-[\\s\\S]*?#\\}", []),
+        ("\\{#[\\s\\S]*?-#\\}[ \\t]*\\r?\\n?[ \\t]*", []),
+        ("\\{#[\\s\\S]*?#\\}", []),
+    ]
+    var healed = raw
+    for (pattern, opts) in rules {
+        guard let re = try? NSRegularExpression(pattern: pattern, options: opts) else { continue }
+        healed = re.stringByReplacingMatches(
+            in: healed, range: NSRange(healed.startIndex..., in: healed), withTemplate: "")
+    }
+    guard healed != raw else { return }
+    let backup = dir.appendingPathComponent("chat_template.jinja.chaty-orig")
+    if !FileManager.default.fileExists(atPath: backup.path) {
+        try? raw.write(to: backup, atomically: true, encoding: .utf8)
+    }
+    guard (try? healed.write(to: tpl, atomically: true, encoding: .utf8)) != nil else { return }
+    log("healed chat template: applied jinja comment whitespace semantics (\(raw.count) → \(healed.count) chars)")
+}
+
 /// Cheap identity for an image file (path + size + mtime) — mirrors the GGUF
 /// engine's `image_cache_key`.
 func imageKey(_ path: String) -> String {
@@ -328,6 +372,7 @@ final class Engine: @unchecked Sendable {
         let dir = URL(fileURLWithPath: path)
         var meta = inspectModelDir(dir)
         var loadWarning: String?
+        healJinjaComments(dir: dir)
         if meta.multimodal {
             healProcessorConfig(dir: dir)
             let hasProcessorConfig = ["preprocessor_config.json", "processor_config.json"]
@@ -461,6 +506,11 @@ final class Engine: @unchecked Sendable {
         let userInput = UserInput(chat: chat, additionalContext: extra.isEmpty ? nil : extra)
         let lmInput = try await context.processor.prepare(input: userInput)
         var tokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
+        // Diagnostic: what the model actually sees. Off unless asked for —
+        // prompts can carry user content, so this never logs by default.
+        if ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_PROMPT"] == "1" {
+            log("PROMPT[\(tokens.count) tok]>>>" + context.tokenizer.decode(tokenIds: tokens) + "<<<END")
+        }
 
         // Ordered image identities — must match the order the processor lays
         // the placeholder runs out (messages render in order, images within a
