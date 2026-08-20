@@ -1480,11 +1480,11 @@ mod mlx_vlm_e2e {
     }
 
     /// Image-turn prefill progress + the GGUF media-cache analogue: a text
-    /// follow-up in the same conversation must not re-encode the image on
-    /// dense VLMs (qwen3_vl — trimmable cache resumes past the media prefix,
-    /// so its first prefill event starts beyond zero), while hybrid ones
-    /// (qwen3_5 — Mamba state can't rewind) re-prefill from zero, still with
-    /// progress events. Both variants must answer correctly.
+    /// follow-up in the same conversation must not re-encode the image on a
+    /// dense VLM — its trimmable cache resumes past the media prefix, so the
+    /// first prefill event starts beyond zero — while a hybrid one (qwen3_5 /
+    /// qwen3_6, whose Mamba state can't rewind) re-prefills from zero, still
+    /// with progress events. Both variants must answer correctly.
     #[test]
     #[ignore]
     fn mlx_vlm_e2e_prefill_progress_and_reuse() {
@@ -1558,16 +1558,21 @@ mod mlx_vlm_e2e {
         eprintln!("turn2 answer: {answer2:?}, prefills: {prefills2:?}");
         assert!(answer2.to_lowercase().contains("paris"), "expected 'Paris' in: {answer2}");
         assert!(!prefills2.is_empty(), "long follow-up must emit prefill progress");
-        if arch == "qwen3_vl" {
+        // What decides this is whether the model's memory can rewind, not
+        // which VLM it happens to be. Naming the one dense arch this was
+        // written against made every *other* dense VLM — Gemma 4 among them —
+        // fail for doing exactly the right thing.
+        let hybrid = arch.starts_with("qwen3_5") || arch.starts_with("qwen3_6");
+        if hybrid {
+            assert_eq!(
+                prefills2[0].0, 0,
+                "hybrid VLM re-prefills from zero (Mamba state can't rewind)"
+            );
+        } else {
             assert!(
                 prefills2[0].0 > 0,
                 "dense VLM must resume past the cached image prefix, got {:?}",
                 prefills2
-            );
-        } else {
-            assert_eq!(
-                prefills2[0].0, 0,
-                "hybrid VLM re-prefills from zero (Mamba state can't rewind)"
             );
         }
         engine.unload();
