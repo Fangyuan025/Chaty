@@ -235,17 +235,43 @@ func healProcessorConfig(dir: URL) {
 /// byte-identical to the reference. Comments produce no output either way, so
 /// a correct engine is unaffected by the rewrite. The original is kept beside
 /// it once, so the edit is auditable and reversible.
-func healJinjaComments(dir: URL) {
-    // swift-transformers resolves the chat template in this order, so heal the
-    // first source that actually carries one and leave the others untouched.
+/// Strip jinja comments from a template that lives in its own file.
+/// swift-transformers prefers `chat_template.jinja`, then `chat_template.json`;
+/// returns true once one of them supplied the template, so the caller knows
+/// the copy inside tokenizer_config.json is not the one being rendered.
+func healJinjaTemplateFile(dir: URL) -> Bool {
     let jinja = dir.appendingPathComponent("chat_template.jinja")
     if FileManager.default.fileExists(atPath: jinja.path) {
-        healJinjaFile(jinja)
-        return
+        if let raw = try? String(contentsOf: jinja, encoding: .utf8) {
+            if let healed = strippedJinjaComments(raw) {
+                backUpOriginal(jinja, Data(raw.utf8))
+                if (try? healed.write(to: jinja, atomically: true, encoding: .utf8)) != nil {
+                    log(
+                        "healed chat template: applied jinja comment whitespace semantics (\(raw.count) → \(healed.count) chars)"
+                    )
+                }
+            }
+            return true
+        }
     }
-    for name in ["chat_template.json", "tokenizer_config.json"] {
-        if healJinjaInJSON(dir.appendingPathComponent(name)) { return }
+    let json = dir.appendingPathComponent("chat_template.json")
+    guard let raw = try? Data(contentsOf: json),
+        var obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
+        let template = obj["chat_template"] as? String
+    else { return false }
+    guard let healed = strippedJinjaComments(template) else { return true }
+    obj["chat_template"] = healed
+    if let out = try? JSONSerialization.data(
+        withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
+    {
+        backUpOriginal(json, raw)
+        if (try? out.write(to: json, options: .atomic)) != nil {
+            log(
+                "healed chat template in chat_template.json: applied jinja comment whitespace semantics (\(template.count) → \(healed.count) chars)"
+            )
+        }
     }
+    return true
 }
 
 /// Delete every jinja comment together with the whitespace its `-` markers
@@ -268,70 +294,58 @@ func strippedJinjaComments(_ raw: String) -> String? {
     return healed == raw ? nil : healed
 }
 
-func backUpOnce(_ url: URL, _ data: Data) {
-    let backup = URL(fileURLWithPath: url.path + ".chaty-orig")
-    guard !FileManager.default.fileExists(atPath: backup.path) else { return }
-    try? data.write(to: backup, options: .atomic)
+/// Snapshot the file about to be rewritten. A heal only ever fires on a file
+/// it has not already healed — its own output never triggers it again — so
+/// whatever sits there now *is* the pristine original, including after the
+/// model is re-downloaded over an earlier heal. Overwrite unconditionally:
+/// keeping the first snapshot forever would leave a `.chaty-orig` describing a
+/// copy of the model that is no longer on disk. Exactly one heal writes any
+/// given file, so this never captures another heal's intermediate state.
+func backUpOriginal(_ url: URL, _ data: Data) {
+    try? data.write(to: URL(fileURLWithPath: url.path + ".chaty-orig"), options: .atomic)
 }
 
-func healJinjaFile(_ tpl: URL) {
-    guard let raw = try? String(contentsOf: tpl, encoding: .utf8),
-        let healed = strippedJinjaComments(raw)
-    else { return }
-    backUpOnce(tpl, Data(raw.utf8))
-    guard (try? healed.write(to: tpl, atomically: true, encoding: .utf8)) != nil else { return }
-    log(
-        "healed chat template: applied jinja comment whitespace semantics (\(raw.count) → \(healed.count) chars)"
-    )
-}
-
-/// Heal a template carried inside a JSON config. Returns true when the file
-/// owns a template at all — the caller stops at the first source that does,
-/// mirroring how the template itself is resolved.
-func healJinjaInJSON(_ url: URL) -> Bool {
-    guard let raw = try? Data(contentsOf: url),
-        var obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
-        let template = obj["chat_template"] as? String
-    else { return false }
-    guard let healed = strippedJinjaComments(template) else { return true }
-    obj["chat_template"] = healed
-    guard
-        let out = try? JSONSerialization.data(
-            withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
-    else { return true }
-    backUpOnce(url, raw)
-    guard (try? out.write(to: url, options: .atomic)) != nil else { return true }
-    log(
-        "healed chat template in \(url.lastPathComponent): applied jinja comment whitespace semantics (\(template.count) → \(healed.count) chars)"
-    )
-    return true
-}
-
+/// One read-modify-write over tokenizer_config.json, covering both repairs it
+/// can need, so the file is snapshotted once and the backup is never a
+/// half-healed intermediate.
+///
 /// swift-transformers still defaults `clean_up_tokenization_spaces` to **true**
 /// when a tokenizer config omits it, while transformers/mlx-lm default it to
 /// false. That legacy BERT-era heuristic rewrites `" ."` → `"."` (and the same
 /// for `,` `!` `?`) inside the *decoder*, which mangles code: a CSS rule
-/// indented with eight spaces decodes with seven, and — because the streaming
-/// detokenizer measures new text by character count — the selector's leading
-/// `.` is swallowed outright, turning `.card {` into `card {`. Write the modern
-/// default in when the config is silent; an explicit setting is left alone.
-func healTokenizerCleanup(dir: URL) {
+/// indented with eight spaces decodes with seven, and the streaming
+/// detokenizer that measured new text by character count swallowed the
+/// selector's leading `.` outright. Write the modern default in when the
+/// config is silent; an explicit setting is left alone.
+///
+/// `healTemplate` is false when a sibling file already supplied the chat
+/// template — then the copy in here is not the one being rendered, and
+/// rewriting it would only churn the file.
+func healTokenizerConfig(dir: URL, healTemplate: Bool) {
     let cfg = dir.appendingPathComponent("tokenizer_config.json")
     guard let raw = try? Data(contentsOf: cfg),
-        var obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
-        obj["clean_up_tokenization_spaces"] == nil
+        var obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any]
     else { return }
-    obj["clean_up_tokenization_spaces"] = false
-    guard
+
+    var notes: [String] = []
+    if obj["clean_up_tokenization_spaces"] == nil {
+        obj["clean_up_tokenization_spaces"] = false
+        notes.append("clean_up_tokenization_spaces=false (was absent)")
+    }
+    if healTemplate, let template = obj["chat_template"] as? String,
+        let healed = strippedJinjaComments(template)
+    {
+        obj["chat_template"] = healed
+        notes.append(
+            "jinja comment whitespace semantics (\(template.count) → \(healed.count) chars)")
+    }
+    guard !notes.isEmpty,
         let out = try? JSONSerialization.data(
             withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
     else { return }
-    let backup = dir.appendingPathComponent("tokenizer_config.json.chaty-orig")
-    if !FileManager.default.fileExists(atPath: backup.path) {
-        try? raw.write(to: backup, options: .atomic)
-    }
+    backUpOriginal(cfg, raw)
     guard (try? out.write(to: cfg, options: .atomic)) != nil else { return }
-    log("healed tokenizer config: clean_up_tokenization_spaces=false (was absent)")
+    log("healed tokenizer config: " + notes.joined(separator: "; "))
 }
 
 /// Streaming detokenizer that only ever emits *verified* new text.
@@ -341,7 +355,7 @@ func healTokenizerCleanup(dir: URL) {
 /// delta that assumes re-decoding a longer run of tokens can only append. A
 /// decoder that rewrites earlier characters breaks that assumption silently:
 /// the piece then starts at the wrong offset and real characters vanish from
-/// the model's output (see `healTokenizerCleanup` — one eaten space cost every
+/// the model's output (see `healTokenizerConfig` — one eaten space cost every
 /// CSS selector its leading `.`). Taking the delta from the verified common
 /// prefix instead makes a rewrite cost at most a repeated tail, never a lost
 /// character.
@@ -506,8 +520,7 @@ final class Engine: @unchecked Sendable {
         let dir = URL(fileURLWithPath: path)
         var meta = inspectModelDir(dir)
         var loadWarning: String?
-        healJinjaComments(dir: dir)
-        healTokenizerCleanup(dir: dir)
+        healTokenizerConfig(dir: dir, healTemplate: !healJinjaTemplateFile(dir: dir))
         if meta.multimodal {
             healProcessorConfig(dir: dir)
             let hasProcessorConfig = ["preprocessor_config.json", "processor_config.json"]
@@ -855,9 +868,20 @@ final class Engine: @unchecked Sendable {
         context: ModelContext, input: LMInput, cache: [KVCache], gp: GenerateParameters,
         total: Int
     ) async throws {
-        let stream = try MLXLMCommon.generate(
+        // Token ids, not the library's text stream: that stream measures each
+        // new piece by character count, which silently drops a character
+        // whenever the decoder rewrites earlier text (the bug
+        // `SafeStreamingDetokenizer` exists to make impossible). The iterator
+        // underneath is the same media-aware one — only the detokenizing moves
+        // to our side. Tool calls and stop *strings* were never taken from the
+        // library here either; both stay Rust-side.
+        let stream = try MLXLMCommon.generateTokens(
             input: input, cache: cache, parameters: gp, context: context)
 
+        var detok = SafeStreamingDetokenizer(tokenizer: context.tokenizer)
+        var dumpIds: [Int] = []
+        var dumpStreamed = ""
+        let dumpTokens = ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_TOKENS"] == "1"
         var reason = "eos"
         var info: GenerateCompletionInfo? = nil
         for await gen in stream {
@@ -865,13 +889,15 @@ final class Engine: @unchecked Sendable {
                 reason = "cancelled"
                 break
             }
-            switch gen {
-            case .chunk(let text):
-                out.emit(["event": "token", "text": text])
-            case .info(let i):
+            if let token = gen.token {
+                detok.append(token: token)
+                if dumpTokens { dumpIds.append(token) }
+                if let piece = detok.next() {
+                    if dumpTokens { dumpStreamed += piece }
+                    out.emit(["event": "token", "text": piece])
+                }
+            } else if let i = gen.info {
                 info = i
-            default:
-                break
             }
             // MambaCache never advances its offset — take the largest across
             // layers (the attention caches do track it).
@@ -879,6 +905,12 @@ final class Engine: @unchecked Sendable {
                 reason = "context"
                 break
             }
+        }
+        if dumpTokens {
+            let whole = context.tokenizer.decode(tokenIds: dumpIds)
+            log("STREAMED[\(dumpStreamed.count)]>>>" + dumpStreamed + "<<<END")
+            log("WHOLE[\(whole.count)]>>>" + whole + "<<<END")
+            log("MATCH=\(dumpStreamed == whole)")
         }
         if reason == "eos", let i = info {
             switch i.stopReason {
