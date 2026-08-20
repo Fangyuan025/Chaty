@@ -236,30 +236,75 @@ func healProcessorConfig(dir: URL) {
 /// a correct engine is unaffected by the rewrite. The original is kept beside
 /// it once, so the edit is auditable and reversible.
 func healJinjaComments(dir: URL) {
-    let tpl = dir.appendingPathComponent("chat_template.jinja")
-    guard let raw = try? String(contentsOf: tpl, encoding: .utf8), raw.contains("{#") else {
+    // swift-transformers resolves the chat template in this order, so heal the
+    // first source that actually carries one and leave the others untouched.
+    let jinja = dir.appendingPathComponent("chat_template.jinja")
+    if FileManager.default.fileExists(atPath: jinja.path) {
+        healJinjaFile(jinja)
         return
     }
+    for name in ["chat_template.json", "tokenizer_config.json"] {
+        if healJinjaInJSON(dir.appendingPathComponent(name)) { return }
+    }
+}
+
+/// Delete every jinja comment together with the whitespace its `-` markers
+/// claim. Returns nil when the template has nothing to strip.
+func strippedJinjaComments(_ raw: String) -> String? {
+    guard raw.contains("{#") else { return nil }
     // Most specific first: both markers, then each single marker, then plain.
-    let rules: [(String, NSRegularExpression.Options)] = [
-        ("[ \\t]*\\r?\\n?[ \\t]*\\{#-[\\s\\S]*?-#\\}[ \\t]*\\r?\\n?[ \\t]*", []),
-        ("[ \\t]*\\r?\\n?[ \\t]*\\{#-[\\s\\S]*?#\\}", []),
-        ("\\{#[\\s\\S]*?-#\\}[ \\t]*\\r?\\n?[ \\t]*", []),
-        ("\\{#[\\s\\S]*?#\\}", []),
+    let rules = [
+        "[ \\t]*\\r?\\n?[ \\t]*\\{#-[\\s\\S]*?-#\\}[ \\t]*\\r?\\n?[ \\t]*",
+        "[ \\t]*\\r?\\n?[ \\t]*\\{#-[\\s\\S]*?#\\}",
+        "\\{#[\\s\\S]*?-#\\}[ \\t]*\\r?\\n?[ \\t]*",
+        "\\{#[\\s\\S]*?#\\}",
     ]
     var healed = raw
-    for (pattern, opts) in rules {
-        guard let re = try? NSRegularExpression(pattern: pattern, options: opts) else { continue }
+    for pattern in rules {
+        guard let re = try? NSRegularExpression(pattern: pattern) else { continue }
         healed = re.stringByReplacingMatches(
             in: healed, range: NSRange(healed.startIndex..., in: healed), withTemplate: "")
     }
-    guard healed != raw else { return }
-    let backup = dir.appendingPathComponent("chat_template.jinja.chaty-orig")
-    if !FileManager.default.fileExists(atPath: backup.path) {
-        try? raw.write(to: backup, atomically: true, encoding: .utf8)
-    }
+    return healed == raw ? nil : healed
+}
+
+func backUpOnce(_ url: URL, _ data: Data) {
+    let backup = URL(fileURLWithPath: url.path + ".chaty-orig")
+    guard !FileManager.default.fileExists(atPath: backup.path) else { return }
+    try? data.write(to: backup, options: .atomic)
+}
+
+func healJinjaFile(_ tpl: URL) {
+    guard let raw = try? String(contentsOf: tpl, encoding: .utf8),
+        let healed = strippedJinjaComments(raw)
+    else { return }
+    backUpOnce(tpl, Data(raw.utf8))
     guard (try? healed.write(to: tpl, atomically: true, encoding: .utf8)) != nil else { return }
-    log("healed chat template: applied jinja comment whitespace semantics (\(raw.count) → \(healed.count) chars)")
+    log(
+        "healed chat template: applied jinja comment whitespace semantics (\(raw.count) → \(healed.count) chars)"
+    )
+}
+
+/// Heal a template carried inside a JSON config. Returns true when the file
+/// owns a template at all — the caller stops at the first source that does,
+/// mirroring how the template itself is resolved.
+func healJinjaInJSON(_ url: URL) -> Bool {
+    guard let raw = try? Data(contentsOf: url),
+        var obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
+        let template = obj["chat_template"] as? String
+    else { return false }
+    guard let healed = strippedJinjaComments(template) else { return true }
+    obj["chat_template"] = healed
+    guard
+        let out = try? JSONSerialization.data(
+            withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
+    else { return true }
+    backUpOnce(url, raw)
+    guard (try? out.write(to: url, options: .atomic)) != nil else { return true }
+    log(
+        "healed chat template in \(url.lastPathComponent): applied jinja comment whitespace semantics (\(template.count) → \(healed.count) chars)"
+    )
+    return true
 }
 
 /// swift-transformers still defaults `clean_up_tokenization_spaces` to **true**
