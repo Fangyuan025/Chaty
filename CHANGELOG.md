@@ -1,5 +1,69 @@
 # Changelog
 
+## v2.1.0 — What the model actually wrote (2026-08-20)
+
+### The MLX engine stops altering the model's own output
+
+- **Every CSS class selector was losing its leading dot.** `.card {` reached
+  the screen as `card {`, so a page the model had written correctly opened
+  with no styling at all — and it happened on *every* MLX model, not one
+  family. Two defects stacked. swift-transformers still defaults
+  `clean_up_tokenization_spaces` to true when a tokenizer config omits it,
+  while transformers and mlx-lm default it to false; that BERT-era heuristic
+  rewrites `" ."` into `"."` inside the decoder, so a rule indented with
+  eight spaces decoded with seven. The streaming detokenizer then derived
+  each new piece by character count — and the eaten space kept the count
+  level across the token carrying the `.`, so the dot was dropped outright.
+  Chaty now writes the modern default in when a config is silent (an explicit
+  setting is still honoured), and its detokenizer takes each piece from a
+  verified common prefix, which makes a lost character impossible rather than
+  unlikely. Measured against mlx-lm on the same prompt and sampling: class
+  selectors went from 0 dotted / 12 undotted to 18 / 0, with indentation back
+  to the reference's eight spaces.
+
+- **The rendered prompt no longer gains a newline the reference never had.**
+  Jinja comments carry no output and their `-` markers are supposed to eat
+  the whitespace beside them; the Swift engine stripped the comment but not
+  the whitespace, which put an extra `\n` at Gemma 4's system/user boundary —
+  the same weights answering a subtly different prompt. Comment semantics are
+  now applied before load, and the token sequence matches the reference render
+  byte for byte. This reaches templates wherever they live: `chat_template.jinja`,
+  `chat_template.json`, or the `chat_template` key inside tokenizer_config.json,
+  in the order the stack itself resolves them.
+
+- **The fallback generation path detokenizes the same way as the main one.**
+  A vision model whose media placeholder can't be located takes a different
+  route through the engine, and that route was still taking text from the
+  library's character-count stream. It now drives the same media-aware
+  iterator at the token level and does its own detokenizing.
+
+- Every local MLX model — nine of them, four families — now renders prompts
+  identical to the reference implementation, including the two whose templates
+  the repair rewrites, which are checked against a reference render of their
+  originals. `CHATY_MLX_DUMP_TOKENS=1` prints the streamed text beside a whole
+  decode of the same token ids and whether they match: a self-check that needs
+  no second runtime.
+
+### Numbers and files that describe what you actually have
+
+- **Opening a canvas in the browser stops leaving a copy behind.** The export
+  was named after the clock, so every click on the same page dropped another
+  identical file in the folder. It is named after its content now — the same
+  page reopens the file already there, a different version still gets its own —
+  and the folder keeps its newest sixty.
+
+- **Settings → Data counted messages nobody could open.** Cancelling a reply
+  and deleting that conversation in the same breath let the reply save *after*
+  the delete, writing it back under an id nothing pointed at any more. Such
+  rows are unreachable from every screen, yet they were counted: on one machine
+  84 of 94. Messages can no longer be written for a conversation that is gone,
+  the panel counts what's reachable, and startup clears what earlier builds
+  stranded.
+
+- **Model and database sizes are honest.** Model folders were scaled as if
+  mebibytes were megabytes, shaving ~4.6% off each; the database reported only
+  `chaty.db` while its write-ahead log — often the larger file — went uncounted.
+
 ## v2.0.9 — The model's own thinking dial (2026-08-12)
 
 ### Qwen3.8, on both engines, with its native reasoning ladder

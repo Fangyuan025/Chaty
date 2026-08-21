@@ -243,6 +243,23 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
+            ## What the model actually wrote
+
+            The MLX engine stops altering the model's own output. Every CSS
+            class selector was losing its leading dot — `.card {` reached the
+            screen as `card {`, so a page the model had written correctly
+            opened with no styling — on every MLX model, not one family. The
+            rendered prompt no longer gains a newline the reference never had,
+            so the same weights answer the same prompt they would anywhere
+            else. Nine local models across four families now render prompts
+            identical to the reference implementation.
+
+            Numbers and files describe what you actually have: opening a canvas
+            in the browser reuses the file already there instead of leaving a
+            copy behind, and Settings → Data stops counting messages nobody can
+            open (84 of 94 on one machine) while model and database sizes are
+            no longer understated.
+
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
                  model's name land, and a bare install table tells them
