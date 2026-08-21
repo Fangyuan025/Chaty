@@ -759,12 +759,18 @@ pub fn open_html_report(
         .map_err(|e| e.to_string())?
         .join(subdir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let path = dir.join(format!("{stem}-{ts}.html"));
-    std::fs::write(&path, html).map_err(|e| format!("写入文件失败 (failed to write file): {e}"))?;
+    // Name the file after its content, not the clock: opening the same canvas
+    // twice used to leave a second timestamped copy in the folder every time.
+    // A different variant still hashes differently and gets its own file.
+    let path = dir.join(format!("{stem}-{}.html", content_name(html.as_bytes())));
+    if !path.exists() {
+        std::fs::write(&path, html)
+            .map_err(|e| format!("写入文件失败 (failed to write file): {e}"))?;
+        // Distinct variants still accumulate — keep the folder from growing
+        // without bound, newest first. Only on a fresh write, so reopening an
+        // existing page never disturbs the directory.
+        prune_exports(&dir, "html", 60);
+    }
     let p = path.to_string_lossy().to_string();
     open_default(&p)?;
     Ok(p)
@@ -785,11 +791,26 @@ fn canvas_sessions_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Str
 }
 
 /// Keep the newest `keep` session files; delete the rest. Sorted by mtime.
+/// Stable file name for a document's content, so the same page always maps to
+/// the same file. Not cryptographic and not stable across toolchains — the
+/// worst a changed hash can do is write one extra copy.
+fn content_name(bytes: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
 fn prune_canvas_sessions(dir: &Path, keep: usize) {
+    prune_exports(dir, "json", keep)
+}
+
+/// Keep the newest `keep` files of one extension, delete the rest.
+fn prune_exports(dir: &Path, ext: &str, keep: usize) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
         .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter(|e| e.path().extension().is_some_and(|x| x == ext))
         .filter_map(|e| {
             let m = e.metadata().ok()?.modified().ok()?;
             Some((m, e.path()))
@@ -1319,6 +1340,20 @@ pub async fn synthesize(
 
 #[cfg(test)]
 mod tests {
+    /// The same document always names the same file, a different one does not:
+    /// this is what stops "open in browser" from dropping another copy in the
+    /// folder on every click.
+    #[test]
+    fn export_name_follows_content_not_the_clock() {
+        let a = super::content_name(b"<html>one</html>");
+        let b = super::content_name(b"<html>one</html>");
+        let c = super::content_name(b"<html>two</html>");
+        assert_eq!(a, b, "same content must reuse the same file name");
+        assert_ne!(a, c, "a different variant needs its own file");
+        assert_eq!(a.len(), 16, "name is a fixed-width hex digest");
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "name must be path-safe: {a}");
+    }
+
     /// Session pruning keeps the NEWEST files and never deletes below the cap.
     #[test]
     fn canvas_session_prune_keeps_newest() {

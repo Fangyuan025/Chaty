@@ -308,7 +308,9 @@ export function SettingsPanel({
           code: ds.codeSessions,
           db: ds.dbBytes,
           models: models.length,
-          modelBytes: models.reduce((a, m) => a + (m.sizeMb ?? 0) * 1e6, 0),
+          // sizeMb is mebibytes (bytes / 1024²) — scaling it by 1e6 quietly
+          // shaved ~4.6% off every model folder the panel reported.
+          modelBytes: models.reduce((a, m) => a + (m.sizeMb ?? 0) * 1024 * 1024, 0),
           kbDocs: rs?.docs ?? 0,
           kbChunks: rs?.chunks ?? 0,
         }),

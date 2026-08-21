@@ -82,6 +82,20 @@ pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
         "ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT '[]'",
         [],
     );
+    // Sweep messages left behind by a conversation that is already gone. No
+    // screen can reach one — every read goes through a conversation id — so
+    // they were pure weight in the file and a wrong number in Settings → Data.
+    // `save_message` no longer creates them; this clears what earlier builds
+    // did, and costs nothing once the table is clean.
+    if let Ok(n) = conn.execute(
+        "DELETE FROM messages
+         WHERE conversation_id NOT IN (SELECT id FROM conversations)",
+        [],
+    ) {
+        if n > 0 {
+            eprintln!("store: swept {n} message(s) whose conversation no longer exists");
+        }
+    }
     Ok(Db(Mutex::new(conn)))
 }
 
@@ -130,9 +144,16 @@ pub fn save_message(
     let now = now_ms();
     let images_json =
         serde_json::to_string(&images.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+    // Only for a conversation that still exists. Cancelling a stream and
+    // deleting its conversation in the same breath used to land here *after*
+    // the delete — the reply was written back under an id nothing pointed to
+    // any more, leaving a message no screen could ever show and an inflated
+    // count in Settings → Data. The guard makes that unreachable from any
+    // caller, whatever the ordering.
     conn.execute(
         "INSERT OR REPLACE INTO messages (id, conversation_id, role, content, created_at, images)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6
+         WHERE EXISTS (SELECT 1 FROM conversations WHERE id = ?2)",
         params![id, conversation_id, role, content, now, images_json],
     )
     .map_err(|e| e.to_string())?;
@@ -213,6 +234,18 @@ pub fn replace_messages(
     let mut conn = lock(&db)?;
     let base = now_ms();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    // Same rule as `save_message`: a conversation deleted while its turn was
+    // being regenerated must not get its messages written back underneath it.
+    let alive: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM conversations WHERE id = ?1",
+            params![conversation_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if alive == 0 {
+        return Ok(());
+    }
     tx.execute(
         "DELETE FROM messages WHERE conversation_id = ?1",
         params![conversation_id],
@@ -400,15 +433,113 @@ pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats,
         conn.query_row(sql, [], |r| r.get(0)).map_err(|e| e.to_string())
     };
     let conversations = count("SELECT COUNT(*) FROM conversations")?;
-    let messages = count("SELECT COUNT(*) FROM messages")?;
+    // Reachable messages only — a stray row whose conversation is gone is not
+    // something the user has, so counting it just makes the number wrong.
+    let messages = count(
+        "SELECT COUNT(*) FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id",
+    )?;
     let code_sessions = count("SELECT COUNT(*) FROM code_sessions").unwrap_or(0);
     drop(conn);
+    // The database is three files in WAL mode, and the log routinely outgrows
+    // the main one — reporting only `chaty.db` understated what it occupies.
     let db_bytes = tauri::Manager::path(&app)
         .app_data_dir()
         .ok()
-        .map(|d| d.join("chaty.db"))
-        .and_then(|p| std::fs::metadata(p).ok())
-        .map(|m| m.len())
+        .map(|d| {
+            ["chaty.db", "chaty.db-wal", "chaty.db-shm"]
+                .iter()
+                .filter_map(|f| std::fs::metadata(d.join(f)).ok())
+                .map(|m| m.len())
+                .sum()
+        })
         .unwrap_or(0);
     Ok(DataStats { conversations, messages, code_sessions, db_bytes })
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{params, Connection};
+
+    /// The schema plus the migrations `init_db` applies, on an in-memory DB.
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::SCHEMA).unwrap();
+        conn
+    }
+
+    fn conv(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO conversations (id, title, model_path, created_at, updated_at)
+             VALUES (?1, 't', NULL, 0, 0)",
+            params![id],
+        )
+        .unwrap();
+    }
+
+    /// The write `save_message` performs: a message only lands when its
+    /// conversation is still there. Cancelling a stream and deleting the
+    /// conversation in the same breath used to save the reply afterwards,
+    /// leaving a row no screen could reach.
+    fn save(conn: &Connection, id: &str, conv_id: &str) -> usize {
+        conn.execute(
+            "INSERT OR REPLACE INTO messages (id, conversation_id, role, content, created_at, images)
+             SELECT ?1, ?2, 'assistant', 'hi', 0, '[]'
+             WHERE EXISTS (SELECT 1 FROM conversations WHERE id = ?2)",
+            params![id, conv_id],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn message_never_outlives_its_conversation() {
+        let conn = db();
+        conv(&conn, "c1");
+        assert_eq!(save(&conn, "m1", "c1"), 1, "live conversation accepts the message");
+
+        conn.execute("DELETE FROM messages WHERE conversation_id = 'c1'", []).unwrap();
+        conn.execute("DELETE FROM conversations WHERE id = 'c1'", []).unwrap();
+        assert_eq!(save(&conn, "m2", "c1"), 0, "a deleted conversation takes nothing");
+
+        let left: i64 =
+            conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0, "no orphan may be created");
+    }
+
+    /// The statistics panel counts what the user can actually open, and the
+    /// startup sweep clears rows earlier builds stranded.
+    #[test]
+    fn stats_count_reachable_messages_and_sweep_clears_the_rest() {
+        let conn = db();
+        conv(&conn, "c1");
+        save(&conn, "m1", "c1");
+        // An orphan as an older build would have left it.
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, created_at, images)
+             VALUES ('m2', 'gone', 'assistant', 'x', 0, '[]')",
+            [],
+        )
+        .unwrap();
+
+        let raw: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
+        let reachable: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, 2, "the table still holds the stranded row");
+        assert_eq!(reachable, 1, "but only one message is reachable — that is the count to show");
+
+        let swept = conn
+            .execute(
+                "DELETE FROM messages WHERE conversation_id NOT IN (SELECT id FROM conversations)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(swept, 1, "the sweep takes the stranded row");
+        let after: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(after, reachable, "raw and reachable agree once the table is clean");
+    }
 }
