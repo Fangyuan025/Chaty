@@ -136,8 +136,10 @@ struct ModelMeta {
     var hasChatTemplate = false
     /// Chat template honours an `enable_thinking` kwarg (Qwen3 family).
     var thinkArg = false
-    /// See `HistoryShape.thinkOffPrefill` — probed at load, not guessed.
-    var thinkOffPrefill = false
+    /// The block a stored assistant turn must carry when thinking is off —
+    /// probed against the real template at load, never named. See
+    /// `probeTurnPrefix`.
+    var turnPrefix = ""
     /// Native reasoning-effort ladder the template accepts, weakest first
     /// (Qwen3.8: low/medium/xhigh). Empty ⇒ no effort control.
     var effortLevels: [String] = []
@@ -442,29 +444,51 @@ struct SafeStreamingDetokenizer {
 struct HistoryShape {
     var toolRole = false
     var reasoningField = false
-    /// With thinking off, the prompt ends with an empty reasoning block that the
-    /// model continues from — either because the template writes one for
-    /// `enable_thinking: false`, or because we prefill it ourselves for
-    /// templates without the kwarg. Whichever it is, a stored assistant turn
-    /// has to carry the same block or the next prompt stops being an append of
-    /// the last one and the whole conversation is prefilled again.
-    var thinkOffPrefill = false
 }
 
-/// Does a thinking-off prompt really end with the empty reasoning block? Asked
-/// of the template rather than assumed: guessing wrong in either direction
-/// breaks the prefix, and templates disagree about what "thinking off" renders.
-func probeThinkOffPrefill(_ tokenizer: any MLXLMCommon.Tokenizer, thinkArg: Bool) -> Bool {
-    // No kwarg to ask with — the sidecar appends the block itself, so it is
-    // certainly there.
-    if !thinkArg { return true }
+/// What a thinking-off prompt writes after the assistant header — the block the
+/// model continues from, and therefore the block a STORED assistant turn has to
+/// carry for the next prompt to be an append of this one. Without it the common
+/// prefix ends at the header and the whole conversation is re-read every turn.
+///
+/// Discovered from the template rather than named, because the block is not one
+/// string: Qwen writes `<think>\n\n</think>\n\n`, Gemma writes
+/// `<|channel>thought\n<channel|>`, and a template that writes nothing must get
+/// nothing added. The answer is then VERIFIED by rendering a turn that carries
+/// it — templates that refuse to re-emit the block for historical turns (Qwen's
+/// `last_query_index` gate) strip whatever the content holds, and for those the
+/// honest answer is the empty string.
+func probeTurnPrefix(
+    _ tokenizer: any MLXLMCommon.Tokenizer, thinkArg: Bool, appendsOwnBlock: Bool
+) -> String {
+    let extra: [String: any Sendable]? = thinkArg ? ["enable_thinking": false] : nil
+    func render(_ msgs: [[String: any Sendable]]) -> String? {
+        guard
+            let ids = try? tokenizer.applyChatTemplate(
+                messages: msgs, tools: nil, additionalContext: extra)
+        else { return nil }
+        let text = tokenizer.decode(tokenIds: ids, skipSpecialTokens: false)
+        // A template without the kwarg never writes a block; the sidecar adds
+        // one after rendering, so the probe has to model that same step.
+        return appendsOwnBlock ? text + Engine.thinkOffPrefix : text
+    }
+    let opening: [[String: any Sendable]] = [["role": "user", "content": "q"]]
+    let follow: [[String: any Sendable]] = [["role": "user", "content": "q2"]]
+    let marker = "PROBE_ANSWER"
+    guard let first = render(opening),
+        let stored = render(opening + [["role": "assistant", "content": marker]] + follow)
+    else { return "" }
+    // Where the live prompt and the stored rendering part company is the header;
+    // everything the live prompt has past that point is the block.
+    let common = zip(first, stored).prefix { $0 == $1 }.count
+    let prefix = String(first.dropFirst(common))
+    guard !prefix.isEmpty else { return "" }
     guard
-        let ids = try? tokenizer.applyChatTemplate(
-            messages: [["role": "user", "content": "q"]], tools: nil,
-            additionalContext: ["enable_thinking": false])
-    else { return false }
-    return tokenizer.decode(tokenIds: ids, skipSpecialTokens: false)
-        .hasSuffix(Engine.thinkOffPrefix)
+        let verify = render(
+            opening + [["role": "assistant", "content": prefix + marker]] + follow),
+        verify.hasPrefix(first + marker)
+    else { return "" }
+    return prefix
 }
 
 func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
@@ -679,8 +703,10 @@ final class Engine: @unchecked Sendable {
             meta.reasoningField = shape.reasoningField
             if meta.supportsThinking {
                 let thinkArg = meta.thinkArg
-                meta.thinkOffPrefill = await container.perform { ctx in
-                    probeThinkOffPrefill(ctx.tokenizer, thinkArg: thinkArg)
+                let appendsOwn = !thinkArg
+                meta.turnPrefix = await container.perform { ctx in
+                    probeTurnPrefix(
+                        ctx.tokenizer, thinkArg: thinkArg, appendsOwnBlock: appendsOwn)
                 }
             }
             self.meta = meta
@@ -769,14 +795,15 @@ final class Engine: @unchecked Sendable {
         // the default in code mode. A turn that already opens with a reasoning
         // block is left alone; doubling it breaks the prefix just as badly.
         let messages: [WireMessage] = {
-            guard p.think == false, meta.thinkOffPrefill else { return messages }
+            guard p.think == false, !meta.turnPrefix.isEmpty else { return messages }
             return messages.map { m in
                 guard m.role == "assistant",
+                    !m.content.hasPrefix(meta.turnPrefix),
                     !m.content.trimmingCharacters(in: .whitespaces).hasPrefix("<think>"),
                     (m.reasoningContent ?? "").isEmpty
                 else { return m }
                 var copy = m
-                copy.content = Self.thinkOffPrefix + m.content
+                copy.content = meta.turnPrefix + m.content
                 return copy
             }
         }()
