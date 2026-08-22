@@ -411,40 +411,59 @@ struct SafeStreamingDetokenizer {
     }
 }
 
-/// Marker planted in a probe transcript's reasoning — if it survives the
-/// render, the template kept that turn's thinking.
-private let toolProbeMark = "CHATY_REASONING_PROBE"
-
-/// Does delivering a tool result under its own role make the template keep the
-/// assistant reasoning that came before it?
+/// Does delivering a tool result under its own role keep the next prompt an
+/// APPEND onto the last one?
 ///
-/// A template decides "does this turn still belong to the request being
-/// answered" from the index of the last *user* message. An agent posts a
-/// result after every call, so a result wearing the user role pushes that
-/// index past every assistant turn and the template discards all of their
-/// reasoning — the model loses the thread of its own work, and the prompt
-/// stops reproducing what the model just generated, which voids the KV prefix
-/// on every step.
+/// That is the property the KV cache actually needs: round two must begin with
+/// round one's prompt followed by exactly the text the model generated on top
+/// of it. A template decides "does this turn still belong to the request being
+/// answered" from the index of the last *user* message, so a result wearing
+/// the user role pushes that index past every assistant turn — some templates
+/// then drop their reasoning, others re-wrap the stored turn inside an empty
+/// thinking block. Either way the prompt no longer reproduces what the model
+/// just wrote, the prefix dies at the first assistant turn, and a model whose
+/// memory cannot rewind re-reads the entire conversation every step.
 ///
-/// Probed, never assumed: render the same exchange both ways. The tool role is
-/// adopted only when it rescues reasoning the user role loses, so a template
-/// with no notion of reasoning, one that strips it either way, or one that
-/// cannot render a tool turn keeps byte-identical output.
+/// Testing the append property directly, rather than looking for reasoning in
+/// the output, is what distinguishes a template that genuinely preserves the
+/// turn from one that merely passes the markup through as content.
 func probeToolRole(_ tokenizer: any MLXLMCommon.Tokenizer) -> Bool {
-    func kept(_ toolRole: String) -> Bool {
-        let messages: [[String: any Sendable]] = [
-            ["role": "system", "content": "s"],
-            ["role": "user", "content": "q"],
-            [
-                "role": "assistant",
-                "content": "<think>\n\(toolProbeMark)\n</think>\n\ncalling",
-            ],
-            ["role": toolRole, "content": "result"],
-        ]
-        guard let ids = try? tokenizer.applyChatTemplate(messages: messages) else { return false }
-        return tokenizer.decode(tokenIds: ids).contains(toolProbeMark)
+    let reasoned = "PROBE_REASONING\n</think>\n\nPROBE_ANSWER"
+    // Render the way generation actually will — a template asked without
+    // `enable_thinking` takes its no-reasoning branch, and the probe would then
+    // be measuring a prompt shape that never occurs.
+    func render(_ messages: [[String: any Sendable]]) -> String? {
+        guard
+            let ids = try? tokenizer.applyChatTemplate(
+                messages: messages, tools: nil, additionalContext: ["enable_thinking": true])
+        else { return nil }
+        return tokenizer.decode(tokenIds: ids)
     }
-    return kept("tool") && !kept("user")
+    let opening: [[String: any Sendable]] = [
+        ["role": "system", "content": "s"],
+        ["role": "user", "content": "q"],
+    ]
+    guard let first = render(opening) else { return false }
+    // A template that pre-opens the thinking block supplies that tag itself, so
+    // the model's own output starts after it — and the loop stores the turn the
+    // same way, tag included.
+    // The stored turn always carries the opening tag; what the model *generated*
+    // does not when the template pre-opened it. Both conventions exist (Qwen3.5
+    // pre-opens, Qwen3 emits the tag itself), and getting this backwards makes
+    // the probe test a shape that never occurs.
+    let stored = "<think>\n" + reasoned
+    let generated =
+        first.hasSuffix("<think>\n") || first.hasSuffix("<think>") ? reasoned : stored
+    func appends(_ toolRole: String) -> Bool {
+        let second =
+            opening + [
+                ["role": "assistant", "content": stored],
+                ["role": toolRole, "content": "result"],
+            ]
+        guard let p = render(second) else { return false }
+        return p.hasPrefix(first + generated)
+    }
+    return appends("tool") && !appends("user")
 }
 
 /// Cheap identity for an image file (path + size + mtime) — mirrors the GGUF

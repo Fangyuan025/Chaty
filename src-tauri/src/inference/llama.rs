@@ -1638,41 +1638,56 @@ pub(crate) const EFFORT_LOW: &str = "Reasoning effort is set to low. Keep your t
 /// The ladder a template offers, weakest first — detected from the template
 /// text, never from the model name (finetunes rename freely, and a template
 /// that takes the kwarg is exactly the set of models that honour it).
-/// Marker planted in a probe transcript's reasoning — if it survives the
-/// render, the template kept that turn's thinking.
-const TOOL_PROBE_MARK: &str = "CHATY_REASONING_PROBE";
-
-/// Does delivering a tool result under its own role make the template keep the
-/// assistant reasoning that preceded it?
+/// Does delivering a tool result under its own role keep the next prompt an
+/// APPEND onto the last one?
 ///
-/// Templates decide "is this turn part of the request still being answered"
-/// from the index of the last *user* message. An agent posts a result after
-/// every call, so a result wearing the user role pushes that index past every
-/// assistant turn and the template drops all of their reasoning — the model
-/// loses the thread of its own work, and the prompt stops reproducing what the
-/// model just generated, which voids the KV prefix on every single step.
+/// That is the property the KV cache actually needs: round two must begin with
+/// round one's prompt followed by exactly the text the model generated on top
+/// of it. Templates decide "does this turn still belong to the request being
+/// answered" from the index of the last *user* message, so a result wearing
+/// the user role pushes that index past every assistant turn — some templates
+/// then drop their reasoning, others re-wrap the stored turn inside an empty
+/// thinking block. Either way the prompt no longer reproduces what the model
+/// just wrote, the prefix dies at the first assistant turn, and a model whose
+/// memory cannot rewind re-reads the entire conversation every step.
 ///
-/// Probed, never assumed: render the same exchange both ways and compare. We
-/// switch only when the tool role rescues reasoning that the user role loses,
-/// so a template that has no notion of reasoning (Gemma 4), strips it either
-/// way (QwQ), or cannot render a tool turn at all keeps byte-identical output.
+/// Testing the append property directly, rather than looking for reasoning in
+/// the output, is what distinguishes a template that genuinely preserves the
+/// turn from one that merely passes the markup through as content.
 fn probe_tool_role(model: &LlamaModel) -> bool {
-    let exchange = |tool_role: Role| {
-        vec![
-            ChatMessage { role: Role::System, content: "s".into(), images: vec![] },
-            ChatMessage { role: Role::User, content: "q".into(), images: vec![] },
-            ChatMessage {
-                role: Role::Assistant,
-                content: format!("<think>\n{TOOL_PROBE_MARK}\n</think>\n\ncalling"),
-                images: vec![],
-            },
-            ChatMessage { role: tool_role, content: "result".into(), images: vec![] },
-        ]
+    const REASONED: &str = "PROBE_REASONING\n</think>\n\nPROBE_ANSWER";
+    let msg = |role: Role, content: &str| ChatMessage {
+        role,
+        content: content.into(),
+        images: vec![],
     };
-    let kept = |msgs: &[ChatMessage]| {
-        render_chat(model, msgs, true).map(|p| p.contains(TOOL_PROBE_MARK)).unwrap_or(false)
+    let opening = [msg(Role::System, "s"), msg(Role::User, "q")];
+    let Ok(first) = render_chat(model, &opening, true) else { return false };
+    // A template that pre-opens the thinking block supplies that tag itself, so
+    // the model's own output starts after it — and the loop stores the turn the
+    // same way, tag included.
+    // The stored turn always carries the opening tag; what the model *generated*
+    // does not when the template pre-opened it. Both conventions exist (Qwen3.5
+    // pre-opens, Qwen3 emits the tag itself), and getting this backwards makes
+    // the probe test a shape that never occurs.
+    let stored = format!("<think>\n{REASONED}");
+    let generated = if first.trim_end().ends_with("<think>") {
+        REASONED.to_string()
+    } else {
+        stored.clone()
     };
-    kept(&exchange(Role::Tool)) && !kept(&exchange(Role::User))
+    let appends = |tool_role: Role| {
+        let second = [
+            opening[0].clone(),
+            opening[1].clone(),
+            msg(Role::Assistant, &stored),
+            msg(tool_role, "result"),
+        ];
+        render_chat(model, &second, true)
+            .map(|p| p.starts_with(&format!("{first}{generated}")))
+            .unwrap_or(false)
+    };
+    appends(Role::Tool) && !appends(Role::User)
 }
 
 pub(crate) fn effort_levels_of(template: &str) -> Vec<String> {
