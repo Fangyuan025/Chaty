@@ -612,6 +612,7 @@ impl LlamaEngine {
             .map(|ft| quant_name(ft).to_string());
 
         let effort_levels = effort_levels_of(template.as_deref().unwrap_or(""));
+        let tool_role = probe_tool_role(&model);
         let info = ModelInfo {
             name,
             path: path.to_string(),
@@ -632,6 +633,7 @@ impl LlamaEngine {
             supports_thinking,
             think_switch,
             effort_levels,
+            tool_role,
             supports_tools,
             multimodal,
             vision_ready,
@@ -892,6 +894,10 @@ fn run_turn(
     // `n_prompt_pos` = positions resident after prefill; `idx` = where to
     // sample the first token (-1 = "last logits" after an mtmd prefill).
     let (n_prompt_pos, mut idx): (i32, i32);
+    // How many prompt tokens the KV already held — the same observability the
+    // MLX engine reports, and the number that shows an agent turn is a pure
+    // append rather than a full re-read.
+    let mut kv_reused = 0u32;
 
     if media_turn {
         let mtmd = mtmd.expect("media_turn implies mtmd");
@@ -991,6 +997,7 @@ fn run_turn(
                 return Err(e2).context("prompt decode failed");
             }
         }
+        kv_reused = prefix as u32;
         *cached = tokens; // KV now holds the full prompt
         n_prompt_pos = n_prompt as i32;
         idx = batch.n_tokens() - 1;
@@ -1142,7 +1149,7 @@ fn run_turn(
     }
 
     let secs = start.elapsed().as_secs_f32().max(1e-3);
-    done_event(sink, n_prompt_pos as u32, n_decoded, n_decoded as f32 / secs, stop_reason)
+    done_event_reused(sink, n_prompt_pos as u32, n_decoded, n_decoded as f32 / secs, stop_reason, kv_reused)
 }
 
 /// Prefill a multimodal prompt through mtmd, reusing the media KV cache
@@ -1491,15 +1498,24 @@ fn done_event(
     tps: f32,
     stop_reason: &str,
 ) -> Result<()> {
+    done_event_reused(sink, prompt_tokens, completion_tokens, tps, stop_reason, 0)
+}
+
+fn done_event_reused(
+    sink: &dyn EventSink,
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    tps: f32,
+    stop_reason: &str,
+    reused: u32,
+) -> Result<()> {
     sink.emit(StreamEvent::Done {
         stats: GenStats {
             prompt_tokens,
             completion_tokens,
             tokens_per_second: tps,
             stop_reason: stop_reason.to_string(),
-            // llama.cpp manages its KV prefix via n_past truncation; reuse
-            // accounting is only surfaced for the MLX engine.
-            reused: 0,
+            reused,
         },
     })?;
     Ok(())
@@ -1622,6 +1638,43 @@ pub(crate) const EFFORT_LOW: &str = "Reasoning effort is set to low. Keep your t
 /// The ladder a template offers, weakest first — detected from the template
 /// text, never from the model name (finetunes rename freely, and a template
 /// that takes the kwarg is exactly the set of models that honour it).
+/// Marker planted in a probe transcript's reasoning — if it survives the
+/// render, the template kept that turn's thinking.
+const TOOL_PROBE_MARK: &str = "CHATY_REASONING_PROBE";
+
+/// Does delivering a tool result under its own role make the template keep the
+/// assistant reasoning that preceded it?
+///
+/// Templates decide "is this turn part of the request still being answered"
+/// from the index of the last *user* message. An agent posts a result after
+/// every call, so a result wearing the user role pushes that index past every
+/// assistant turn and the template drops all of their reasoning — the model
+/// loses the thread of its own work, and the prompt stops reproducing what the
+/// model just generated, which voids the KV prefix on every single step.
+///
+/// Probed, never assumed: render the same exchange both ways and compare. We
+/// switch only when the tool role rescues reasoning that the user role loses,
+/// so a template that has no notion of reasoning (Gemma 4), strips it either
+/// way (QwQ), or cannot render a tool turn at all keeps byte-identical output.
+fn probe_tool_role(model: &LlamaModel) -> bool {
+    let exchange = |tool_role: Role| {
+        vec![
+            ChatMessage { role: Role::System, content: "s".into(), images: vec![] },
+            ChatMessage { role: Role::User, content: "q".into(), images: vec![] },
+            ChatMessage {
+                role: Role::Assistant,
+                content: format!("<think>\n{TOOL_PROBE_MARK}\n</think>\n\ncalling"),
+                images: vec![],
+            },
+            ChatMessage { role: tool_role, content: "result".into(), images: vec![] },
+        ]
+    };
+    let kept = |msgs: &[ChatMessage]| {
+        render_chat(model, msgs, true).map(|p| p.contains(TOOL_PROBE_MARK)).unwrap_or(false)
+    };
+    kept(&exchange(Role::Tool)) && !kept(&exchange(Role::User))
+}
+
 pub(crate) fn effort_levels_of(template: &str) -> Vec<String> {
     if !template.contains("reasoning_effort") {
         return Vec::new();
@@ -1699,7 +1752,9 @@ fn render_gemma4(messages: &[ChatMessage], think: Option<bool>, add_gen: bool) -
     for m in messages {
         let role = match m.role {
             Role::System => continue,
-            Role::User => "user",
+            // Gemma's format has no tool turn — a result is spoken by the user,
+            // which is exactly the shape this renderer already produced.
+            Role::User | Role::Tool => "user",
             Role::Assistant => "model",
         };
         // Strip reasoning channels from prior assistant turns — official
@@ -1839,6 +1894,7 @@ fn role_str(role: &Role) -> &'static str {
         Role::System => "system",
         Role::User => "user",
         Role::Assistant => "assistant",
+        Role::Tool => "tool",
     }
 }
 
@@ -2045,6 +2101,40 @@ mod tests {
     /// The effort ladder is detected from the template text (never the model
     /// name), and a rung request rewrites the rendered prompt to exactly what
     /// the official template emits for that rung.
+    /// The wire name a template sees. The sidecar used to fold every role it
+    /// did not recognise into `user`, which silently undid the whole point.
+    #[test]
+    fn tool_role_goes_over_the_wire_as_tool() {
+        assert_eq!(super::role_str(&Role::Tool), "tool");
+        assert_eq!(serde_json::to_string(&Role::Tool).unwrap(), "\"tool\"");
+        let back: Role = serde_json::from_str("\"tool\"").unwrap();
+        assert!(matches!(back, Role::Tool));
+    }
+
+    /// Gemma's format has no tool turn, so a result is spoken by the user —
+    /// exactly the bytes this renderer produced before the role existed.
+    #[test]
+    fn gemma4_renders_a_tool_result_exactly_as_it_did_a_user_turn() {
+        let msg = |role: Role, text: &str| ChatMessage {
+            role,
+            content: text.into(),
+            images: vec![],
+        };
+        let with = |role: Role| {
+            super::render_gemma4(
+                &[
+                    msg(Role::System, "s"),
+                    msg(Role::User, "q"),
+                    msg(Role::Assistant, "a"),
+                    msg(role, "<tool_result name=\"ls\">x</tool_result>"),
+                ],
+                Some(true),
+                true,
+            )
+        };
+        assert_eq!(with(Role::Tool), with(Role::User));
+    }
+
     #[test]
     fn reasoning_effort_ladder_detect_and_apply() {
         let tmpl = "{%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}\

@@ -23,6 +23,14 @@ pub enum Role {
     System,
     User,
     Assistant,
+    /// A tool's result, delivered under its own role rather than folded into a
+    /// user turn. Chat templates key "is this turn still part of the current
+    /// request" off the last *user* message, so a tool result posing as one
+    /// makes the template discard the assistant reasoning that preceded it —
+    /// costing the model the thread of its own work and voiding the KV prefix
+    /// every step. Used only where the model's template actually renders it
+    /// (probed at load, never assumed).
+    Tool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +168,12 @@ pub struct ModelInfo {
     /// no effort control and the UI keeps its plain thinking toggle.
     #[serde(default)]
     pub effort_levels: Vec<String>,
+    /// The chat template renders a tool result under its own role AND keeps
+    /// the assistant reasoning that preceded it — which a result posing as a
+    /// user turn discards. Probed at load; false ⇒ results stay user turns and
+    /// the rendered prompt is byte-identical to what earlier builds produced.
+    #[serde(default)]
+    pub tool_role: bool,
     /// Best-effort: the chat template supports tool / function calling.
     pub supports_tools: bool,
     /// Best-effort: the model appears to be multimodal (vision).

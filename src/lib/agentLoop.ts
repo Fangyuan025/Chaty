@@ -220,6 +220,12 @@ export interface AgentOptions {
   /** The loaded model has a vision encoder — unlock `view_image` / browser
    *  visual verification, and let the model see user-attached images. */
   visionReady?: boolean;
+  /** Deliver tool results under the `tool` role. Templates decide "is this turn
+   *  still part of the request being answered" from the last *user* message, so
+   *  a result posing as one makes them drop every preceding assistant's
+   *  reasoning. Probed per model at load; false keeps the old user-turn shape
+   *  byte for byte. */
+  toolRole?: boolean;
   /** Expose the browser suite to models WITHOUT vision: same tools minus the
    *  two screenshot captures — browser_read's digest is the model's eyes. */
   browserTextMode?: boolean;
@@ -1335,7 +1341,7 @@ export function compactionStub(
   return `<tool_result name="${name}">\n${body2}\n</tool_result>`;
 }
 
-function compactMessages(
+export function compactMessages(
   messages: ChatMessage[],
   nCtx: number,
   toolMeta?: WeakMap<ChatMessage, { name: string; args: Record<string, unknown> }>,
@@ -1344,7 +1350,9 @@ function compactMessages(
   if (estimateTokens(messages) <= limit) return false;
   const results = messages
     .map((m, i) => ({ m, i }))
-    .filter(({ m }) => m.role === "user" && m.content.startsWith("<tool_result"));
+    .filter(
+      ({ m }) => (m.role === "user" || m.role === "tool") && m.content.startsWith("<tool_result"),
+    );
   const KEEP = 3; // most recent results stay verbatim
   let changed = false;
   for (let k = 0; k < results.length - KEEP; k++) {
@@ -1352,11 +1360,30 @@ function compactMessages(
     if (m.content.length < 200) continue; // already tiny
     const name = /name="([^"]+)"/.exec(m.content)?.[1] ?? "tool";
     messages[i] = {
-      role: "user",
+      role: m.role,
       content: compactionStub(name, toolMeta?.get(m), m.content, currentLang),
     };
     changed = true;
     if (estimateTokens(messages) <= limit) break;
+  }
+  // Still over? Reclaim the OLDEST reasoning. Assistant turns used to be
+  // untouchable because they were small; now that they carry their thinking,
+  // stale reasoning is the least useful bulk left — but the most recent rounds
+  // keep theirs, since that is the thread the model is working from (and what
+  // keeps each step a pure append).
+  if (estimateTokens(messages) > limit) {
+    const KEEP_THINK = 2;
+    const thought = messages
+      .map((m, i) => ({ m, i }))
+      .filter(({ m }) => m.role === "assistant" && m.content.includes("</think>"));
+    for (let k = 0; k < thought.length - KEEP_THINK; k++) {
+      const { m, i } = thought[k];
+      const bare = m.content.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+      if (!bare || bare === m.content.trim()) continue;
+      messages[i] = { role: "assistant", content: bare };
+      changed = true;
+      if (estimateTokens(messages) <= limit) break;
+    }
   }
   return changed;
 }
@@ -1371,13 +1398,19 @@ export function digestHistory(dropped: ChatMessage[], lang: "zh" | "en"): string
   for (const m of dropped) {
     const text = m.content.trim();
     if (!text) continue;
+    if (m.role === "tool") continue; // stale mechanics, not narrative
     if (m.role === "user") {
       if (text.startsWith("<tool_result")) continue; // stale mechanics, not narrative
       bullets.push((lang === "zh" ? "- 用户: " : "- user: ") + text.slice(0, 60));
     } else if (m.role === "assistant") {
       // Stored assistant turns may carry a "(tools run: …)" prefix — reuse it.
       const tools = /^\((tools run|已用工具)[^)]*\)/.exec(text)?.[0] ?? "";
-      const rest = text.slice(tools.length).trim();
+      // A stored turn leads with its reasoning — digest what it did, not what
+      // it was mulling over.
+      const rest = text
+        .slice(tools.length)
+        .replace(/<think>[\s\S]*?<\/think>\s*/g, "")
+        .trim();
       const firstLine = rest.split("\n", 1)[0] ?? "";
       bullets.push(
         (lang === "zh" ? "- 助手: " : "- assistant: ") +
@@ -1509,7 +1542,12 @@ export async function runAgentTurn(
     meta?: { name: string; args: Record<string, unknown> },
     images?: string[],
   ) => {
-    const m: ChatMessage = { role: "user", content: content + noThinkSuffix };
+    // A tool result is not the user speaking. Where the template renders a
+    // tool turn, say so — that is what keeps the model's own reasoning in the
+    // transcript and each step a pure append onto the KV cache.
+    const isResult = content.trimStart().startsWith("<tool_result");
+    const role: ChatMessage["role"] = isResult && opts.toolRole ? "tool" : "user";
+    const m: ChatMessage = { role, content: content + noThinkSuffix };
     if (images?.length) m.images = images;
     messages.push(m);
     if (meta) toolMeta.set(m, meta);
@@ -2052,9 +2090,22 @@ export async function runAgentTurn(
       }
       argSlips.delete(call.name);
 
-      // Record the assistant turn (its reasoning + the tool call, tag restored).
+      // Record the assistant turn WITH its reasoning. Dropping it left the next
+      // round's prompt unable to reproduce what the model had just generated,
+      // which voids the KV prefix at the first assistant turn — every step then
+      // re-reads the whole transcript, and a model whose memory cannot rewind
+      // re-reads the system prompt with it. It also cost the model the thread
+      // of its own work between steps. Compaction reclaims the oldest reasoning
+      // if the window gets tight.
       const withClose = raw.includes("</tool_call>") ? raw : `${raw}</tool_call>`;
-      let turn = stripThink(withClose).trim();
+      // Verbatim, in whatever markup this model reasons in — normalizing it to
+      // `<think>` would feed channel-style reasoners (Gemma 4) tags they never
+      // saw in training, and only an exact copy of what was generated lets the
+      // next prompt reproduce it token for token.
+      let turn = withClose.trim();
+      // An unterminated block would swallow whatever follows it when a template
+      // splits on the closing tag.
+      if (turn.includes("<think>") && !turn.includes("</think>")) turn += "\n</think>";
       // A thought left unclosed can swallow the tool call along with the
       // reasoning — the call must stay in history so the model sees what it
       // already did.

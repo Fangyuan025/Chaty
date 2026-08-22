@@ -3,7 +3,7 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
-export type Role = "system" | "user" | "assistant";
+export type Role = "system" | "user" | "assistant" | "tool";
 
 export interface ChatMessage {
   role: Role;
@@ -58,6 +58,9 @@ export interface ModelInfo {
   /** Native reasoning-effort ladder, weakest first (Qwen3.8:
    *  ["low","medium","xhigh"]). Empty ⇒ plain on/off thinking. */
   effortLevels?: string[];
+  /** The chat template renders a tool result under its own role AND keeps the
+   *  assistant reasoning before it — probed at load, never assumed. */
+  toolRole?: boolean;
   supportsTools: boolean;
   multimodal: boolean;
   /** The vision encoder (mmproj) is loaded — images actually work this session. */

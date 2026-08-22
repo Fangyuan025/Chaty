@@ -133,6 +133,7 @@ struct ModelMeta {
     /// Native reasoning-effort ladder the template accepts, weakest first
     /// (Qwen3.8: low/medium/xhigh). Empty ⇒ no effort control.
     var effortLevels: [String] = []
+    var toolRole = false
     /// Best effort: the model emits <think> reasoning.
     var supportsThinking = false
     /// Best effort: the chat template supports tool / function calling.
@@ -410,6 +411,42 @@ struct SafeStreamingDetokenizer {
     }
 }
 
+/// Marker planted in a probe transcript's reasoning — if it survives the
+/// render, the template kept that turn's thinking.
+private let toolProbeMark = "CHATY_REASONING_PROBE"
+
+/// Does delivering a tool result under its own role make the template keep the
+/// assistant reasoning that came before it?
+///
+/// A template decides "does this turn still belong to the request being
+/// answered" from the index of the last *user* message. An agent posts a
+/// result after every call, so a result wearing the user role pushes that
+/// index past every assistant turn and the template discards all of their
+/// reasoning — the model loses the thread of its own work, and the prompt
+/// stops reproducing what the model just generated, which voids the KV prefix
+/// on every step.
+///
+/// Probed, never assumed: render the same exchange both ways. The tool role is
+/// adopted only when it rescues reasoning the user role loses, so a template
+/// with no notion of reasoning, one that strips it either way, or one that
+/// cannot render a tool turn keeps byte-identical output.
+func probeToolRole(_ tokenizer: any MLXLMCommon.Tokenizer) -> Bool {
+    func kept(_ toolRole: String) -> Bool {
+        let messages: [[String: any Sendable]] = [
+            ["role": "system", "content": "s"],
+            ["role": "user", "content": "q"],
+            [
+                "role": "assistant",
+                "content": "<think>\n\(toolProbeMark)\n</think>\n\ncalling",
+            ],
+            ["role": toolRole, "content": "result"],
+        ]
+        guard let ids = try? tokenizer.applyChatTemplate(messages: messages) else { return false }
+        return tokenizer.decode(tokenIds: ids).contains(toolProbeMark)
+    }
+    return kept("tool") && !kept("user")
+}
+
 /// Cheap identity for an image file (path + size + mtime) — mirrors the GGUF
 /// engine's `image_cache_key`.
 func imageKey(_ path: String) -> String {
@@ -565,6 +602,8 @@ final class Engine: @unchecked Sendable {
                 }
             }
             self.container = container
+            // Ask the loaded template itself, rather than guessing from a name.
+            meta.toolRole = await container.perform { ctx in probeToolRole(ctx.tokenizer) }
             let trained = meta.nCtxTrain ?? 4096
             self.nCtxCap = min(nCtx ?? trained, trained)
             var info: [String: Any] = [
@@ -577,6 +616,7 @@ final class Engine: @unchecked Sendable {
                 "thinkArg": meta.thinkArg,
                 "supportsTools": meta.supportsTools,
                 "effortLevels": meta.effortLevels,
+                "toolRole": meta.toolRole,
                 // VLM-factory models have their vision tower loaded and
                 // ready — no separate encoder file like GGUF's mmproj.
                 "multimodal": meta.multimodal,
@@ -638,6 +678,11 @@ final class Engine: @unchecked Sendable {
             switch m.role {
             case "system": return .init(role: .system, content: m.content, images: imgs)
             case "assistant": return .init(role: .assistant, content: m.content, images: imgs)
+            // A tool result speaks for itself. Folding it into the user role
+            // (as the catch-all did) is what makes a template treat every
+            // preceding assistant turn as belonging to an already-answered
+            // request and drop its reasoning.
+            case "tool": return .init(role: .tool, content: m.content, images: imgs)
             default: return .init(role: .user, content: m.content, images: imgs)
             }
         }
@@ -856,7 +901,7 @@ final class Engine: @unchecked Sendable {
             self.decode(
                 context: context, cache: warm, tokens: tokens, total: total,
                 state: state, gp: gp,
-                recorded: Array(tokens.prefix(prefillEnd)), imageKeys: imageKeys,
+                recorded: tokens, imageKeys: imageKeys,
                 reused: start)
         }
     }
@@ -969,6 +1014,9 @@ final class Engine: @unchecked Sendable {
         }
 
         var detok = SafeStreamingDetokenizer(tokenizer: context.tokenizer)
+        // Every token this turn puts into the cache, so the next turn can
+        // match against them instead of trimming them away unseen.
+        var generatedIds: [Int] = []
         var dumpIds: [Int] = []
         var dumpStreamed = ""
         let dumpTokens = ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_TOKENS"] == "1"
@@ -992,6 +1040,7 @@ final class Engine: @unchecked Sendable {
             let logits = stepEval(tok)
             asyncEval(logits)
             detok.append(token: tok)
+            generatedIds.append(tok)
             if dumpTokens { dumpIds.append(tok) }
             if let piece = detok.next() {
                 if dumpTokens { dumpStreamed += piece }
@@ -1019,7 +1068,7 @@ final class Engine: @unchecked Sendable {
         let dt = max(Date().timeIntervalSince(started), 0.001)
         self.finish(
             prompt: total, done: done, tps: Double(done) / dt, reason: reason,
-            generated: recorded, images: imageKeys, state: recordedState,
+            generated: recorded + generatedIds, images: imageKeys, state: recordedState,
             evaluated: total + done, reused: reused)
     }
 
@@ -1028,9 +1077,13 @@ final class Engine: @unchecked Sendable {
         images: [String] = [], state: LMOutput.State? = nil, evaluated: Int = 0,
         reused: Int = 0
     ) {
-        // Remember the prompt prefix this engine evaluated itself (the cache
-        // also holds the decoded tokens past this point; next turn trims them
-        // away and re-evaluates that text with clean positions).
+        // Remember EVERY token the cache now holds — the prompt and the reply
+        // this turn generated. Recording only the prompt made the generated
+        // tail look like excess that the next turn had to trim away, and a
+        // model whose memory cannot rewind answered that by clearing the cache
+        // and re-reading the whole conversation. With the reply in the ledger,
+        // a turn that only appends (an agent posting a tool result) matches
+        // right to the end: nothing to trim, nothing to re-read.
         if let generated {
             kvTokens = generated
             kvImageKeys = images

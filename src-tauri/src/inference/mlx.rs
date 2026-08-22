@@ -498,6 +498,7 @@ impl MlxEngine {
                 .as_array()
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
                 .unwrap_or_default(),
+            tool_role: loaded["toolRole"].as_bool().unwrap_or(false),
             supports_tools: loaded["supportsTools"].as_bool().unwrap_or(false),
             multimodal: loaded["multimodal"].as_bool().unwrap_or(false),
             // MLX VLMs carry their vision tower in the same weights — loaded
@@ -686,6 +687,7 @@ fn run_generation(
                     super::Role::System => "system",
                     super::Role::User => "user",
                     super::Role::Assistant => "assistant",
+                    super::Role::Tool => "tool",
                 },
                 "content": m.content,
                 // Vision cap, TIGHTER than the GGUF engine's 2 MP: raw 2x

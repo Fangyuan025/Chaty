@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 (globalThis as Record<string, unknown>).window = globalThis;
 const { mockIPC } = await import("@tauri-apps/api/mocks");
 mockIPC(() => Promise.resolve(null));
-const { digestForCall, compactionStub, digestHistory } = await import("./agentLoop");
+const { digestForCall, compactionStub, digestHistory, compactMessages } = await import("./agentLoop");
 
 describe("digestForCall", () => {
   test("read_file carries path, symbol, and range", () => {
@@ -83,5 +83,64 @@ describe("digestHistory", () => {
     const digest = digestHistory(many as never, "zh");
     expect(digest.length).toBeLessThanOrEqual(700);
     expect(digest).toContain("任务 39"); // newest survives
+  });
+});
+
+describe("compactMessages — reasoning stays until the window needs the room", () => {
+  const think = (n: number) => `<think>\n${"reasoning ".repeat(n)}\n</think>\n\ncalled a tool`;
+  const result = () => `<tool_result name="bash">${"out ".repeat(400)}</tool_result>`;
+  // Five rounds: compaction keeps the three most recent results verbatim, so
+  // anything fewer would never exercise the stubbing path at all.
+  const build = (resultRole: "user" | "tool") =>
+    [
+      { role: "system", content: "sys" },
+      { role: "user", content: "task" },
+      ...Array.from({ length: 5 }, () => [
+        { role: "assistant", content: think(400) },
+        { role: resultRole, content: result() },
+      ]).flat(),
+      { role: "assistant", content: think(400) },
+    ] as Parameters<typeof compactMessages>[0];
+
+  test("a transcript that fits keeps every word of its reasoning", () => {
+    const msgs = build("tool");
+    expect(compactMessages(msgs, 1_000_000)).toBe(false);
+    expect(msgs.filter((m) => m.content.includes("</think>"))).toHaveLength(6);
+  });
+
+  test("results delivered under the tool role are still compactable", () => {
+    const msgs = build("tool");
+    expect(compactMessages(msgs, 2000)).toBe(true);
+    const stubbed = msgs.filter((m) => m.role === "tool" && !m.content.includes("out out"));
+    expect(stubbed.length).toBeGreaterThan(0);
+    // Stubbing must not smuggle a result back into the user's voice.
+    expect(msgs.every((m) => m.role !== "user" || !m.content.startsWith("<tool_result"))).toBe(true);
+  });
+
+  test("under real pressure the oldest reasoning goes and the newest stays", () => {
+    const msgs = build("tool");
+    compactMessages(msgs, 900);
+    const withThink = msgs
+      .map((m, i) => ({ i, has: m.content.includes("</think>") }))
+      .filter((x) => x.has)
+      .map((x) => x.i);
+    // Only the last two rounds keep their thinking.
+    expect(withThink).toEqual([10, 12]);
+    // What the turn actually did survives — only the mulling is dropped.
+    expect(msgs[2].content).toBe("called a tool");
+  });
+});
+
+describe("digestHistory", () => {
+  test("summarises what a turn did, not what it was thinking", () => {
+    const d = digestHistory(
+      [{ role: "assistant", content: "<think>\nlong internal debate\n</think>\n\nran the tests" }],
+      "en",
+    );
+    expect(d).toContain("ran the tests");
+    expect(d).not.toContain("internal debate");
+  });
+  test("a tool-role result is mechanics, not narrative", () => {
+    expect(digestHistory([{ role: "tool", content: "<tool_result name=\"ls\">a.py</tool_result>" }], "en")).toBe("");
   });
 });
