@@ -55,6 +55,7 @@ import {
   type ThinkMode,
   type ToolCall,
   type ToolStep,
+  replayableTail,
 } from "../lib/agentLoop";
 import { isReadOnlyCommand } from "../lib/readOnlyCmd";
 import { syncMcpServers } from "../lib/mcp";
@@ -71,6 +72,10 @@ interface CodeMsg {
   images?: string[];
   /** All attachments (docs + images) shown as chips in the user bubble. */
   attachments?: { name: string; kind: string; path?: string }[];
+  /** The exact message tail the turn ended with, as the model saw it — kept so
+   *  the NEXT turn continues from it verbatim. Only the newest assistant turn
+   *  holds one; older turns drop it, since only the tail is ever replayed. */
+  prompt?: ChatMessage[];
   /** Reasoning shown before the final answer (collapsible). */
   thinking?: string;
   /** Live reasoning streaming for the in-flight step. */
@@ -1210,18 +1215,35 @@ export function CodeMode({
         : undefined,
     };
     const asst: CodeMsg = { id: uid(), role: "assistant", text: "", steps: [] };
-    // Cross-turn history keeps only the text, but assistant turns carry a
-    // compact record of the tools they ran — so "continue" resumes from the
-    // actual progress instead of re-exploring the workspace from scratch.
-    const history: ChatMessage[] = msgs.map((m) => {
-      if (m.role !== "assistant" || m.steps.length === 0) return { role: m.role, content: m.text };
-      const done = m.steps
-        .filter((s) => s.status === "done")
-        .map((s) => toolSummary(s.call))
-        .join("; ");
-      const prefix = done ? (lang === "zh" ? `(已执行:${done})\n` : `(tools run: ${done})\n`) : "";
-      return { role: m.role, content: prefix + m.text };
-    });
+    // The previous turn hands back exactly what it sent, so this one continues
+    // from it instead of from a summary. Replaying that tail is what keeps the
+    // model's own work in front of it — a follow-up used to arrive with the
+    // tool results gone and only "(tools run: read_file, bash)" in their place,
+    // so the model re-read files it had just read, and the prompt could not
+    // extend the previous one either. The tail is only the truth while it is
+    // still the end of the conversation: anything edited or deleted after it
+    // falls back to the text record.
+    // The newest turn that recorded a tail. Locally-injected assistant text
+    // (/help) can sit after it without invalidating anything; a USER message
+    // after it cannot, because a turn that answered one would have recorded a
+    // tail of its own — so seeing one means this record is not the truth.
+    const replay = replayableTail(msgs);
+    const history: ChatMessage[] =
+      replay ??
+      msgs.map((m) => {
+        if (m.role !== "assistant" || m.steps.length === 0)
+          return { role: m.role, content: m.text };
+        const done = m.steps
+          .filter((s) => s.status === "done")
+          .map((s) => toolSummary(s.call))
+          .join("; ");
+        const prefix = done
+          ? lang === "zh"
+            ? `(已执行:${done})\n`
+            : `(tools run: ${done})\n`
+          : "";
+        return { role: m.role, content: prefix + m.text };
+      });
     const base = [...msgs, userMsg, asst];
     const isFirstTurn = msgs.length === 0;
     setMsgs(base);
@@ -1352,6 +1374,19 @@ export function CodeMode({
           paused: reason === "steps",
         })),
       onError: (msg) => update((m) => ({ ...m, text: (m.text ? m.text + "\n\n" : "") + `**${msg}**` })),
+      // Keep the tail on the newest assistant turn only — it is the only one
+      // ever replayed, and every earlier copy would be dead weight in the
+      // session file, which stores the whole transcript verbatim.
+      onTranscript: (tail) =>
+        setMsgs((cur) =>
+          cur.map((m) =>
+            m.id === asst.id
+              ? { ...m, prompt: tail }
+              : m.prompt
+                ? { ...m, prompt: undefined }
+                : m,
+          ),
+        ),
     });
 
     setRunning(false);
