@@ -5659,3 +5659,107 @@ mod gguf_kv_e2e {
         engine.unload();
     }
 }
+/// Layers the model's next-token-prediction head occupies, read from the GGUF
+/// metadata (`<arch>.nextn_predict_layers`). llama.cpp has a C accessor for
+/// this; the Rust binding does not re-export it.
+pub(crate) fn nextn_layers(model: &LlamaModel) -> u32 {
+    let arch = model.meta_val_str("general.architecture").unwrap_or_default();
+    model
+        .meta_val_str(&format!("{arch}.nextn_predict_layers"))
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+/// What llama.cpp's multi-token-prediction drafter needs before it will draft,
+/// pinned as an executable note. Everything an MTP integration does is
+/// downstream of these four facts, and each one cost a round of guessing:
+///
+/// - the draft context is a SECOND context over the same model, asked for with
+///   `LlamaContextType::Mtp`, and it stands up with GPU offload just fine;
+/// - the target's prompt must be decoded with an output requested on EVERY
+///   position — the nextn head reads hidden states, and llama.cpp only
+///   produces the rows a batch asked for;
+/// - `process` must see each prefill batch, and `begin` only afterwards: it
+///   inspects the DRAFT context's position and warns if the prompt never
+///   reached it;
+/// - `draft`'s `n_past` is the number of tokens resident in the cache, and
+///   `id_last` is the last of them — a token whose hidden state already exists.
+///   Drafting from a token that has not been decoded yet cannot work.
+///
+///   CHATY_TEST_MTP=<gguf with nextn layers> [CHATY_TEST_MTP_GPU=999] \
+///     cargo test --lib mtp_probe -- --ignored --nocapture
+#[cfg(test)]
+mod mtp_probe {
+    use super::*;
+    use llama_cpp_2::context::params::LlamaContextType;
+    use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
+
+    #[test]
+    #[ignore]
+    fn mtp_draft_context_stands_up_and_drafts() {
+        let path = std::env::var("CHATY_TEST_MTP").expect("set CHATY_TEST_MTP=<gguf>");
+        let backend = llama_backend().expect("backend");
+        let gpu: u32 = std::env::var("CHATY_TEST_MTP_GPU")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let model = LlamaModel::load_from_file(
+            backend,
+            &path,
+            &LlamaModelParams::default().with_n_gpu_layers(gpu),
+        )
+        .expect("load model");
+        assert!(
+            nextn_layers(&model) > 0,
+            "this model carries no nextn layers — nothing to draft with"
+        );
+
+        let base = || {
+            LlamaContextParams::default()
+                .with_n_ctx(NonZeroU32::new(2048))
+                .with_n_threads(4)
+                .with_n_threads_batch(4)
+        };
+        let target = model.new_context(backend, base()).expect("target context");
+        let draft = model
+            .new_context(backend, base().with_context_type(LlamaContextType::Mtp))
+            .expect("MTP draft context");
+
+        let mut spec = MtpSpeculative::new(target, draft, MtpSpeculativeParams::default())
+            .expect("MtpSpeculative::new");
+
+        let prompt = model
+            .str_to_token("The capital of France is", AddBos::Always)
+            .expect("tokenize");
+
+        // An output on every position, or the nextn head has no hidden states
+        // to read; `process` before `begin`, or the drafter has no prompt.
+        let mut batch = LlamaBatch::new(512, 1);
+        for (i, t) in prompt.iter().enumerate() {
+            batch.add(*t, i as i32, &[0], true).expect("add");
+        }
+        spec.target_context_mut().decode(&mut batch).expect("decode prompt");
+        spec.process(&batch).expect("process");
+        spec.begin(&prompt).expect("begin");
+
+        let last = *prompt.last().unwrap();
+        let drafted = spec
+            .draft(prompt.len() as i32, last, &prompt)
+            .expect("draft");
+        eprintln!(
+            "MTP drafted {} token(s): {:?}",
+            drafted.len(),
+            drafted
+                .iter()
+                .map(|t| String::from_utf8_lossy(&piece_bytes(&model, *t)).to_string())
+                .collect::<Vec<_>>()
+        );
+        // `accept` is only valid while a draft is pending — an empty one is not.
+        if !drafted.is_empty() {
+            spec.accept(drafted.len() as u16).expect("accept");
+        }
+        assert!(!drafted.is_empty(), "an MTP model should draft at least one token");
+    }
+}
+
