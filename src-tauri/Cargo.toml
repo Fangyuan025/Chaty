@@ -45,7 +45,7 @@ async-trait = "0.1"
 anyhow = "1"
 # Base llama.cpp binding (CPU). The GPU backend feature (vulkan/metal) is added
 # per-target by the `gpu-backend` shim when the `gpu` feature is on.
-llama-cpp-2 = { version = "0.1.150", features = ["sampler", "mtmd"] }
+llama-cpp-2 = { version = "0.1.154", features = ["sampler", "mtmd"] }
 chaty-gpu-backend = { path = "gpu-backend", optional = true }
 sysinfo = "0.32"
 # Human-readable local timestamps in the user-attachable error log (already
