@@ -1177,9 +1177,15 @@ fn run_turn(
         let pieces: Vec<String> = gen_ids
             .iter()
             .map(|t| {
-                let plain = String::from_utf8_lossy(&piece_bytes(model, LlamaToken(*t))).to_string();
-                let full = String::from_utf8_lossy(&piece_bytes_special(model, LlamaToken(*t))).to_string();
-                if plain == full { format!("{t}:{plain:?}") } else { format!("{t}:EMPTY!={full:?}") }
+                let text = String::from_utf8_lossy(&piece_bytes(model, LlamaToken(*t))).to_string();
+                if text.is_empty() {
+                    // Nothing should land here now that control tokens render;
+                    // if one does, it is a token the next prompt cannot
+                    // reproduce and the prefix will break on it.
+                    format!("{t}:<EMPTY>")
+                } else {
+                    format!("{t}:{text:?}")
+                }
             })
             .collect();
         eprintln!("GEN_TOKENS[{}]>>>{}<<<END", gen_ids.len(), pieces.join(" "));
@@ -1572,6 +1578,58 @@ fn build_prompt(model: &LlamaModel, messages: &[ChatMessage], think: Option<bool
 /// diverges from how the assistant turn is later re-rendered. Truncating the
 /// KV back to the body costs a handful of tokens — re-encoding every image
 /// (the old behavior on any tail divergence) cost seconds per turn.
+/// The empty reasoning block Chaty prefills when thinking is off, as it must
+/// appear at the head of a stored assistant turn. Kept next to the injection
+/// site below — the two spellings have to stay identical.
+const THINK_OFF_PREFIX: &str = "<think>\n\n</think>\n\n";
+
+/// Put that block back in front of prior assistant turns, so re-rendering the
+/// conversation reproduces the prompt the model actually continued from. A turn
+/// that already opens with a reasoning block is left alone — the model wrote one
+/// despite the request, and doubling it would break the prefix just as badly.
+fn with_think_off_prefix(
+    model: &LlamaModel,
+    messages: &[ChatMessage],
+    think: Option<bool>,
+) -> Vec<ChatMessage> {
+    prefixed_assistant_turns(messages, think == Some(false) && template_uses_think(model))
+}
+
+/// The message rewrite itself, with the model question already answered so the
+/// rule is testable on its own.
+fn prefixed_assistant_turns(messages: &[ChatMessage], apply: bool) -> Vec<ChatMessage> {
+    if !apply {
+        return messages.to_vec();
+    }
+    messages
+        .iter()
+        .map(|m| {
+            if !matches!(m.role, Role::Assistant) || m.content.trim_start().starts_with("<think>") {
+                return m.clone();
+            }
+            ChatMessage {
+                content: format!("{THINK_OFF_PREFIX}{}", m.content),
+                ..m.clone()
+            }
+        })
+        .collect()
+}
+
+/// Does this model's template use the `<think>` convention? Architecture is
+/// authoritative: Qwen3.5/3.6 use it even when a finetune ships a custom
+/// template without the markers.
+fn template_uses_think(model: &LlamaModel) -> bool {
+    let qwen35plus = model
+        .meta_val_str("general.architecture")
+        .map(|a| is_qwen3_5_plus_arch(&a.to_lowercase()))
+        .unwrap_or(false);
+    qwen35plus
+        || model
+            .meta_val_str("tokenizer.chat_template")
+            .map(|t| t.contains("<think>"))
+            .unwrap_or(false)
+}
+
 fn build_prompt_pair(
     model: &LlamaModel,
     messages: &[ChatMessage],
@@ -1586,6 +1644,16 @@ fn build_prompt_pair(
             render_gemma4(messages, think, false),
         ));
     }
+    // What Chaty appends after the assistant header when thinking is off (see
+    // below) has to appear in front of every STORED assistant turn too, or the
+    // next prompt is not an append of the last one. Round one ends with
+    // `…assistant\n<think>\n\n</think>\n\n` and the model continues from there;
+    // if round two renders that same turn as `…assistant\n<answer>`, the common
+    // prefix ends at the header and every turn after the first pays a full
+    // prefill. Measured at 0% KV reuse on qwen35 and lfm2 with thinking off —
+    // which is the default in code mode.
+    let messages = with_think_off_prefix(model, messages, think);
+    let messages = messages.as_slice();
     let body = render_chat(model, messages, false).unwrap_or_default();
     let mut prompt = render_chat(model, messages, true)?;
 
@@ -1603,11 +1671,7 @@ fn build_prompt_pair(
         .meta_val_str("general.architecture")
         .map(|a| is_qwen3_5_plus_arch(&a.to_lowercase()))
         .unwrap_or(false);
-    let template_uses_think = qwen35plus
-        || model
-            .meta_val_str("tokenizer.chat_template")
-            .map(|t| t.contains("<think>"))
-            .unwrap_or(false);
+    let template_uses_think = template_uses_think(model);
     // Thinking ON for a model whose official template PRE-OPENS the block
     // after the assistant header (Qwen3.5/3.6: literal `'<think>\n'` in the
     // generation section — Qwen3 emits the tag itself and must NOT get this):
@@ -1643,7 +1707,7 @@ fn build_prompt_pair(
                 // The template already opened a reasoning block — just close it.
                 prompt.push_str("\n</think>\n\n");
             } else {
-                prompt.push_str("<think>\n\n</think>\n\n");
+                prompt.push_str(THINK_OFF_PREFIX);
             }
         }
     }
@@ -1961,20 +2025,27 @@ fn role_str(role: &Role) -> &'static str {
 }
 
 /// Raw bytes of a token's piece, handling pieces longer than the initial
-/// buffer. `special = false` so control tokens render empty.
+/// buffer.
+///
+/// `special = true`: a control token renders as its literal text rather than as
+/// nothing. This used to be `false`, which quietly deleted information the rest
+/// of Chaty needs. A turn's streamed text is what the NEXT turn's prompt is
+/// rebuilt from, so a token whose piece renders empty is a token the next
+/// prompt cannot reproduce, and the KV prefix diverges at exactly that
+/// position — every later turn paid a full prefill. Worse, LFM2 emits its tool
+/// calls as `<|tool_call_start|>[read_file(path='x')]<|tool_call_end|>` no
+/// matter what format the system prompt asks for: with the markers deleted the
+/// text read as ordinary prose and the tool call never fired at all.
+///
+/// The MLX engine has always kept them (swift-transformers decodes with
+/// `skipSpecialTokens: false`), and the front end already normalises such
+/// markers away for display in `normalizeChannels` — this restores the same
+/// contract on the GGUF side: the engine streams what the model actually
+/// produced, and the front end decides what a person sees.
+///
+/// End-of-generation tokens never reach here — the sampling loop breaks on
+/// `is_eog_token` first.
 fn piece_bytes(model: &LlamaModel, token: LlamaToken) -> Vec<u8> {
-    match model.token_to_piece_bytes(token, 32, false, None) {
-        Ok(b) => b,
-        Err(llama_cpp_2::TokenToStringError::InsufficientBufferSpace(i)) => model
-            .token_to_piece_bytes(token, (-i) as usize, false, None)
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    }
-}
-
-/// Same, but rendering control tokens as their literal text. Diagnostic only —
-/// the difference against `piece_bytes` is exactly what a turn's text loses.
-fn piece_bytes_special(model: &LlamaModel, token: LlamaToken) -> Vec<u8> {
     match model.token_to_piece_bytes(token, 32, true, None) {
         Ok(b) => b,
         Err(llama_cpp_2::TokenToStringError::InsufficientBufferSpace(i)) => model
@@ -5798,3 +5869,63 @@ mod mtp_probe {
     }
 }
 
+
+#[cfg(test)]
+mod think_off_prefix {
+    use super::*;
+
+    fn msg(role: Role, content: &str) -> ChatMessage {
+        ChatMessage { role, content: content.into(), images: vec![], reasoning_content: None }
+    }
+
+    #[test]
+    fn a_stored_turn_carries_what_the_prompt_prefilled() {
+        // Round one ends with `…assistant\n<think>\n\n</think>\n\n` and the model
+        // continues from there. Unless round two puts the same block in front of
+        // that stored turn, the common prefix ends at the assistant header and
+        // the whole conversation is prefilled again — measured at 0% KV reuse on
+        // qwen35 and lfm2 with thinking off, which is code mode's default.
+        let out = prefixed_assistant_turns(
+            &[msg(Role::User, "q"), msg(Role::Assistant, "the answer")],
+            true,
+        );
+        assert_eq!(out[1].content, format!("{THINK_OFF_PREFIX}the answer"));
+    }
+
+    #[test]
+    fn only_assistant_turns_are_touched() {
+        let out = prefixed_assistant_turns(
+            &[
+                msg(Role::System, "s"),
+                msg(Role::User, "q"),
+                msg(Role::Tool, "result"),
+            ],
+            true,
+        );
+        assert_eq!(out[0].content, "s");
+        assert_eq!(out[1].content, "q");
+        assert_eq!(out[2].content, "result");
+    }
+
+    #[test]
+    fn a_turn_that_already_reasons_is_left_alone() {
+        // The model wrote a block despite the request; doubling it would break
+        // the prefix exactly as badly as omitting it.
+        let already = "<think>\nhmm\n</think>\n\nthe answer";
+        let out = prefixed_assistant_turns(&[msg(Role::Assistant, already)], true);
+        assert_eq!(out[0].content, already);
+    }
+
+    #[test]
+    fn thinking_on_changes_nothing() {
+        let before = [msg(Role::User, "q"), msg(Role::Assistant, "a")];
+        let out = prefixed_assistant_turns(&before, false);
+        assert_eq!(out[1].content, "a");
+    }
+
+    #[test]
+    fn the_prefix_matches_what_the_prompt_appends() {
+        // The two spellings live apart; if they drift the prefix silently dies.
+        assert_eq!(THINK_OFF_PREFIX, "<think>\n\n</think>\n\n");
+    }
+}

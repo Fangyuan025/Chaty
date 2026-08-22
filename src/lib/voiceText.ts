@@ -43,7 +43,16 @@ function trimPartialMarker(s: string): string {
  * unterminated span is left open for the streaming UI.
  */
 export function normalizeChannels(s: string): string {
-  const held = trimPartialMarker(s);
+  // LFM2 writes its tool calls as `<|tool_call_start|>[fn(arg='v')]<|tool_call_end|>`
+  // whatever format the system prompt asks for. The engine now streams those
+  // markers instead of deleting them — the recorded turn needs them verbatim or
+  // the next prompt cannot reproduce the tokens and the KV prefix breaks — so
+  // this is where they stop being shown to a person. The call itself is read
+  // out of the raw text by parseNativeToolCall; what is left here is display.
+  const held = trimPartialMarker(s).replace(
+    /<[|｜]tool_(?:call|list)_(?:start|end)[|｜]>/gi,
+    "",
+  );
   // Control-token words (think/message/end/return/start) require AT LEAST ONE
   // pipe — a plain `<think>` is the Qwen convention this function's OUTPUT
   // uses and must pass through untouched.

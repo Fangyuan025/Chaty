@@ -551,11 +551,121 @@ export function repairUnclosedJson(body: string): string | null {
   return body + stack.reverse().join("");
 }
 
+/** LFM2's own tool-call syntax, which the model emits no matter what format the
+ *  system prompt asks for — the 8B reasons at length about using Chaty's
+ *  `<tool_call>` JSON and then writes this instead:
+ *
+ *      <|tool_call_start|>[read_file(path='src/main.py')]<|tool_call_end|>
+ *
+ *  Its chat template quotes strings with `'` and escapes `\ ' \n \r`; the
+ *  models also use `"` in practice, so both are accepted. Non-string arguments
+ *  arrive as jinja's `| string` — Python spellings, hence True/False/None.
+ *  Several calls may be listed; Chaty runs one tool per step, so the first wins.
+ *  Exported for tests. */
+export function parseNativeToolCall(text: string): ToolCall | null {
+  const open = text.indexOf("<|tool_call_start|>");
+  if (open === -1) return null;
+  let body = text.slice(open + "<|tool_call_start|>".length);
+  const close = body.indexOf("<|tool_call_end|>");
+  if (close !== -1) body = body.slice(0, close);
+  body = body.trim();
+  if (body.startsWith("[")) body = body.slice(1);
+  if (body.endsWith("]")) body = body.slice(0, -1);
+
+  const nameEnd = body.indexOf("(");
+  if (nameEnd === -1) return null;
+  const name = body.slice(0, nameEnd).trim();
+  if (!name || /[^\w.-]/.test(name)) return null;
+
+  // Walk the argument list rather than splitting on commas: a comma inside a
+  // quoted path or an embedded JSON object is not a separator.
+  const args: Record<string, unknown> = {};
+  let i = nameEnd + 1;
+  while (i < body.length) {
+    while (i < body.length && /[\s,]/.test(body[i])) i++;
+    if (i >= body.length || body[i] === ")") break;
+    const eq = body.indexOf("=", i);
+    if (eq === -1) break;
+    const key = body.slice(i, eq).trim();
+    i = eq + 1;
+    while (i < body.length && /\s/.test(body[i])) i++;
+    const q = body[i];
+    let raw: string;
+    if (q === "'" || q === '"') {
+      let j = i + 1;
+      let out = "";
+      while (j < body.length && body[j] !== q) {
+        if (body[j] === "\\" && j + 1 < body.length) {
+          const c = body[j + 1];
+          out += c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c;
+          j += 2;
+        } else {
+          out += body[j];
+          j++;
+        }
+      }
+      if (key) args[key] = out;
+      i = j + 1;
+      continue;
+    }
+    if (q === "{" || q === "[") {
+      // Balanced scan, skipping brackets that live inside strings.
+      const openCh = q;
+      const closeCh = q === "{" ? "}" : "]";
+      let depth = 0;
+      let j = i;
+      let inStr: string | null = null;
+      for (; j < body.length; j++) {
+        const c = body[j];
+        if (inStr) {
+          if (c === "\\") j++;
+          else if (c === inStr) inStr = null;
+          continue;
+        }
+        if (c === "'" || c === '"') inStr = c;
+        else if (c === openCh) depth++;
+        else if (c === closeCh && --depth === 0) {
+          j++;
+          break;
+        }
+      }
+      raw = body.slice(i, j);
+      i = j;
+      if (key) {
+        try {
+          args[key] = JSON.parse(raw.replace(/'/g, '"'));
+        } catch {
+          args[key] = raw;
+        }
+      }
+      continue;
+    }
+    // Bare token: number, boolean, null, or an unquoted word.
+    let j = i;
+    while (j < body.length && body[j] !== "," && body[j] !== ")") j++;
+    raw = body.slice(i, j).trim();
+    i = j;
+    if (key) {
+      args[key] =
+        raw === "True" || raw === "true"
+          ? true
+          : raw === "False" || raw === "false"
+            ? false
+            : raw === "None" || raw === "null"
+              ? null
+              : raw !== "" && !Number.isNaN(Number(raw))
+                ? Number(raw)
+                : raw;
+    }
+  }
+  return { name: name as AgentToolName, args };
+}
+
 /** Exported for the write-stall regression tests: the parser must survive the
  *  tool-call shapes real local models actually emit. */
 export function parseToolCall(text: string): ToolCall | null {
   const open = text.indexOf("<tool_call>");
-  if (open === -1) return null;
+  if (open === -1) return parseNativeToolCall(text);
   let body = text.slice(open + "<tool_call>".length);
   const close = body.indexOf("</tool_call>");
   if (close !== -1) body = body.slice(0, close);

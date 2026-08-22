@@ -36,7 +36,7 @@ import Tokenizers
 
 struct WireMessage: Decodable {
     let role: String
-    let content: String
+    var content: String
     /// The turn's thinking, kept out of `content`. Some templates (Qwen3.8)
     /// read reasoning ONLY from this field and never split it back out of the
     /// content, so a turn stored inline reaches them as an empty thought
@@ -136,6 +136,8 @@ struct ModelMeta {
     var hasChatTemplate = false
     /// Chat template honours an `enable_thinking` kwarg (Qwen3 family).
     var thinkArg = false
+    /// See `HistoryShape.thinkOffPrefill` — probed at load, not guessed.
+    var thinkOffPrefill = false
     /// Native reasoning-effort ladder the template accepts, weakest first
     /// (Qwen3.8: low/medium/xhigh). Empty ⇒ no effort control.
     var effortLevels: [String] = []
@@ -440,6 +442,29 @@ struct SafeStreamingDetokenizer {
 struct HistoryShape {
     var toolRole = false
     var reasoningField = false
+    /// With thinking off, the prompt ends with an empty reasoning block that the
+    /// model continues from — either because the template writes one for
+    /// `enable_thinking: false`, or because we prefill it ourselves for
+    /// templates without the kwarg. Whichever it is, a stored assistant turn
+    /// has to carry the same block or the next prompt stops being an append of
+    /// the last one and the whole conversation is prefilled again.
+    var thinkOffPrefill = false
+}
+
+/// Does a thinking-off prompt really end with the empty reasoning block? Asked
+/// of the template rather than assumed: guessing wrong in either direction
+/// breaks the prefix, and templates disagree about what "thinking off" renders.
+func probeThinkOffPrefill(_ tokenizer: any MLXLMCommon.Tokenizer, thinkArg: Bool) -> Bool {
+    // No kwarg to ask with — the sidecar appends the block itself, so it is
+    // certainly there.
+    if !thinkArg { return true }
+    guard
+        let ids = try? tokenizer.applyChatTemplate(
+            messages: [["role": "user", "content": "q"]], tools: nil,
+            additionalContext: ["enable_thinking": false])
+    else { return false }
+    return tokenizer.decode(tokenIds: ids, skipSpecialTokens: false)
+        .hasSuffix(Engine.thinkOffPrefix)
 }
 
 func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
@@ -652,6 +677,13 @@ final class Engine: @unchecked Sendable {
             let shape = await container.perform { ctx in probeHistoryShape(ctx.tokenizer) }
             meta.toolRole = shape.toolRole
             meta.reasoningField = shape.reasoningField
+            if meta.supportsThinking {
+                let thinkArg = meta.thinkArg
+                meta.thinkOffPrefill = await container.perform { ctx in
+                    probeThinkOffPrefill(ctx.tokenizer, thinkArg: thinkArg)
+                }
+            }
+            self.meta = meta
             let trained = meta.nCtxTrain ?? 4096
             self.nCtxCap = min(nCtx ?? trained, trained)
             var info: [String: Any] = [
@@ -715,9 +747,40 @@ final class Engine: @unchecked Sendable {
         }
     }
 
+
+    /// The empty reasoning block prefilled when thinking is off. Prompt-side and
+
+    /// stored-turn-side must stay the same string or the KV prefix breaks.
+
+    static let thinkOffPrefix = "<think>\n\n</think>\n\n"
+
+
     private func run(context: ModelContext, messages: [WireMessage], params p: WireParams)
         async throws
     {
+        // The empty reasoning block prefilled when thinking is off (below) has
+        // to sit in front of every STORED assistant turn too, or the next
+        // prompt is not an append of the last one: round one ends with
+        // `…assistant\n<think>\n\n</think>\n\n` and the model continues from
+        // there, while round two would render that same turn without it. The
+        // common prefix then ends at the assistant header and every turn after
+        // the first re-prefills from scratch — measured at 0% KV reuse on the
+        // llama.cpp side before the matching fix, with thinking off, which is
+        // the default in code mode. A turn that already opens with a reasoning
+        // block is left alone; doubling it breaks the prefix just as badly.
+        let messages: [WireMessage] = {
+            guard p.think == false, meta.thinkOffPrefill else { return messages }
+            return messages.map { m in
+                guard m.role == "assistant",
+                    !m.content.trimmingCharacters(in: .whitespaces).hasPrefix("<think>"),
+                    (m.reasoningContent ?? "").isEmpty
+                else { return m }
+                var copy = m
+                copy.content = Self.thinkOffPrefix + m.content
+                return copy
+            }
+        }()
+
         // 1. Chat template → token ids (images ride along inside the chat
         // messages; the VLM processor turns them into embeddings).
         let chat: [Chat.Message] = messages.map { m in
@@ -803,7 +866,7 @@ final class Engine: @unchecked Sendable {
         // whole-input path (exotic VLMs) must not grow the token list.
         if p.think == false, !meta.thinkArg, meta.supportsThinking, segmented {
             tokens += context.tokenizer.encode(
-                text: "<think>\n\n</think>\n\n", addSpecialTokens: false)
+                text: Self.thinkOffPrefix, addSpecialTokens: false)
         }
 
         // Qwen3.5-style templates open a `<think>` tag in the prompt when
