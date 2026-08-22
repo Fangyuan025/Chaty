@@ -1,5 +1,65 @@
 # Changelog
 
+## v2.1.1 — An agent turn stops re-reading the conversation (2026-08-22)
+
+### Code mode: prefill that no longer grows with the transcript
+
+- **A tool result stops posing as the user, and the reply stops being erased
+  from its own transcript.** Prefill crawled as the rounds piled up, and two
+  habits caused it. The loop recorded each assistant turn with its reasoning
+  stripped, so the next round's prompt could no longer reproduce what the model
+  had just generated — the KV prefix died at the FIRST assistant turn, every
+  step, and a model whose memory cannot rewind (the Qwen3.5 / 3.6 / 3.8 line,
+  whose hybrid state refuses partial trimming) answered that by clearing the
+  cache and re-reading the entire conversation. The transcript only grows, so
+  each step cost more than the last. The loop also posted every tool result as
+  a user turn, and templates decide "does this turn still belong to the request
+  being answered" from the index of the last *user* message — so the result
+  pushed that index past every assistant turn and the template discarded all of
+  their reasoning, which also cost the model the thread of its own work between
+  calls.
+
+- **How a turn is written down is now probed, never assumed.** At load, each
+  engine renders the same exchange with its OWN renderer and keeps the least
+  invasive shape that makes the next prompt a true append — who speaks a tool
+  result, and whether a turn's thinking travels in the body or in its own
+  `reasoning_content` field. Qwen3.8 needs the field: its template reads
+  thinking only from there and, unlike Qwen3.5, has no fallback that splits it
+  out of the content, so an inline turn reached it as an empty thought followed
+  by its own markup. A template with no notion of reasoning (Gemma 4), one that
+  strips it either way (QwQ), or one that cannot render a tool turn keeps
+  byte-identical output.
+
+- **The MLX cache ledger records the reply it just decoded**, not only the
+  prompt. Recording only the prompt made the generated tail look like excess
+  the next turn had to trim — which a model that cannot rewind met with a full
+  clear. Compaction gained a matching valve: with reasoning in the transcript,
+  assistant turns are no longer small, so the OLDEST reasoning is reclaimed
+  under real pressure while the most recent rounds keep theirs.
+
+- Measured on every local model — 19 of them, seven families, both engines —
+  with a fresh first-round cache before each measurement. Reused prompt tokens
+  on the second agent step:
+
+  | Model | Engine | Before | After |
+  |---|---|---|---|
+  | Qwen3 0.6B | MLX | 31 | 231 |
+  | Qwen3.5 0.8B | MLX | 0 | 233 |
+  | Qwen3.5 2B | MLX | 0 | 176 |
+  | Qwen3.5 9B | MLX | 0 | 89 |
+  | Qwen3.6 27B | MLX | 0 | 52 |
+  | Qwen3.8 27B | MLX | 0 | 202 |
+  | Qwen3.6 35B-A3B | MLX | 0 | 233 |
+  | Qwen3.5 4B | GGUF | 0 | 62 |
+
+  Only the genuinely new tail is computed, and the reused span grows with the
+  transcript instead of the cost doing so. Gemma 4 (three builds), QwQ,
+  Qwen-14B, Qwen3 4B/8B and Pepe report identical counts before and after.
+
+- The llama.cpp engine now reports how much KV a turn reused, and can dump the
+  prompt it rendered — the observability the MLX side already had, and what
+  made the second half of this measurable at all.
+
 ## v2.1.0 — What the model actually wrote (2026-08-20)
 
 ### The MLX engine stops altering the model's own output

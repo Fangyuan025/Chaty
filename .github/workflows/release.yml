@@ -243,22 +243,21 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## What the model actually wrote
+            ## An agent turn stops re-reading the conversation
 
-            The MLX engine stops altering the model's own output. Every CSS
-            class selector was losing its leading dot — `.card {` reached the
-            screen as `card {`, so a page the model had written correctly
-            opened with no styling — on every MLX model, not one family. The
-            rendered prompt no longer gains a newline the reference never had,
-            so the same weights answer the same prompt they would anywhere
-            else. Nine local models across four families now render prompts
-            identical to the reference implementation.
+            In code mode, prefill used to crawl as the rounds piled up: the
+            prompt could no longer reproduce what the model had just generated,
+            so the cache died at the first assistant turn every step — and a
+            model whose memory cannot rewind answered that by re-reading the
+            whole conversation. A turn is now recorded so the next prompt is a
+            true append, and how to record it is probed per model on each engine
+            rather than assumed.
 
-            Numbers and files describe what you actually have: opening a canvas
-            in the browser reuses the file already there instead of leaving a
-            copy behind, and Settings → Data stops counting messages nobody can
-            open (84 of 94 on one machine) while model and database sizes are
-            no longer understated.
+            Second agent step, reused prompt tokens: Qwen3.5 0.8B 0 → 233,
+            Qwen3.8 27B 0 → 202, Qwen3.6 35B-A3B 0 → 233, Qwen3.5 4B (GGUF)
+            0 → 62. Only the genuinely new tail is computed, and the reused span
+            grows with the transcript instead of the cost doing so. Gemma 4, QwQ
+            and the Qwen3 line report identical counts before and after.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
