@@ -37,6 +37,12 @@ import Tokenizers
 struct WireMessage: Decodable {
     let role: String
     let content: String
+    /// The turn's thinking, kept out of `content`. Some templates (Qwen3.8)
+    /// read reasoning ONLY from this field and never split it back out of the
+    /// content, so a turn stored inline reaches them as an empty thought
+    /// followed by its own markup — and the prompt stops reproducing what the
+    /// model generated. Sent only where the template is probed to use it.
+    let reasoningContent: String?
     /// Image attachments as absolute file paths (VLM-loaded models only).
     let images: [String]?
 }
@@ -134,6 +140,7 @@ struct ModelMeta {
     /// (Qwen3.8: low/medium/xhigh). Empty ⇒ no effort control.
     var effortLevels: [String] = []
     var toolRole = false
+    var reasoningField = false
     /// Best effort: the model emits <think> reasoning.
     var supportsThinking = false
     /// Best effort: the chat template supports tool / function calling.
@@ -411,24 +418,34 @@ struct SafeStreamingDetokenizer {
     }
 }
 
-/// Does delivering a tool result under its own role keep the next prompt an
-/// APPEND onto the last one?
+/// How a turn must be written down for the next prompt to be an APPEND onto
+/// the last one — the property the KV cache actually needs. Round two has to
+/// BEGIN with round one's prompt followed by exactly the text the model
+/// generated on top of it; anything less and the prefix dies at the first
+/// assistant turn, which a model whose memory cannot rewind answers by
+/// re-reading the whole conversation, every step.
 ///
-/// That is the property the KV cache actually needs: round two must begin with
-/// round one's prompt followed by exactly the text the model generated on top
-/// of it. A template decides "does this turn still belong to the request being
-/// answered" from the index of the last *user* message, so a result wearing
-/// the user role pushes that index past every assistant turn — some templates
-/// then drop their reasoning, others re-wrap the stored turn inside an empty
-/// thinking block. Either way the prompt no longer reproduces what the model
-/// just wrote, the prefix dies at the first assistant turn, and a model whose
-/// memory cannot rewind re-reads the entire conversation every step.
+/// Two dials, because templates disagree on both:
 ///
-/// Testing the append property directly, rather than looking for reasoning in
-/// the output, is what distinguishes a template that genuinely preserves the
-/// turn from one that merely passes the markup through as content.
-func probeToolRole(_ tokenizer: any MLXLMCommon.Tokenizer) -> Bool {
-    let reasoned = "PROBE_REASONING\n</think>\n\nPROBE_ANSWER"
+/// - **Who speaks a tool result.** A template decides "does this turn still
+///   belong to the request being answered" from the index of the last *user*
+///   message, so a result wearing that role can push every assistant turn into
+///   "already answered" and get its reasoning dropped.
+/// - **Where a turn's thinking lives.** Some templates split it back out of
+///   `content`; others (Qwen3.8) read it only from a `reasoning_content` field
+///   and render an empty thought for anything stored inline.
+///
+/// Probed rather than assumed, and ordered so the least invasive shape that
+/// works is the one adopted.
+struct HistoryShape {
+    var toolRole = false
+    var reasoningField = false
+}
+
+func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
+    let reasoning = "PROBE_REASONING"
+    let answer = "PROBE_ANSWER"
+    let reasoned = "\(reasoning)\n</think>\n\n\(answer)"
     // Render the way generation actually will — a template asked without
     // `enable_thinking` takes its no-reasoning branch, and the probe would then
     // be measuring a prompt shape that never occurs.
@@ -443,27 +460,37 @@ func probeToolRole(_ tokenizer: any MLXLMCommon.Tokenizer) -> Bool {
         ["role": "system", "content": "s"],
         ["role": "user", "content": "q"],
     ]
-    guard let first = render(opening) else { return false }
-    // A template that pre-opens the thinking block supplies that tag itself, so
-    // the model's own output starts after it — and the loop stores the turn the
-    // same way, tag included.
+    guard let first = render(opening) else { return HistoryShape() }
     // The stored turn always carries the opening tag; what the model *generated*
     // does not when the template pre-opened it. Both conventions exist (Qwen3.5
-    // pre-opens, Qwen3 emits the tag itself), and getting this backwards makes
-    // the probe test a shape that never occurs.
-    let stored = "<think>\n" + reasoned
+    // pre-opens, Qwen3 emits the tag itself).
+    let inlineContent = "<think>\n" + reasoned
     let generated =
-        first.hasSuffix("<think>\n") || first.hasSuffix("<think>") ? reasoned : stored
-    func appends(_ toolRole: String) -> Bool {
+        first.hasSuffix("<think>\n") || first.hasSuffix("<think>") ? reasoned : inlineContent
+
+    func appends(toolRole: Bool, reasoningField: Bool) -> Bool {
+        var turn: [String: any Sendable] = ["role": "assistant"]
+        if reasoningField {
+            turn["content"] = answer
+            turn["reasoning_content"] = reasoning
+        } else {
+            turn["content"] = inlineContent
+        }
         let second =
-            opening + [
-                ["role": "assistant", "content": stored],
-                ["role": toolRole, "content": "result"],
-            ]
+            opening + [turn, ["role": toolRole ? "tool" : "user", "content": "result"]]
         guard let p = render(second) else { return false }
         return p.hasPrefix(first + generated)
     }
-    return appends("tool") && !appends("user")
+    // Least invasive first: today's shape, then one dial, then both.
+    for shape in [
+        HistoryShape(toolRole: false, reasoningField: false),
+        HistoryShape(toolRole: true, reasoningField: false),
+        HistoryShape(toolRole: false, reasoningField: true),
+        HistoryShape(toolRole: true, reasoningField: true),
+    ] where appends(toolRole: shape.toolRole, reasoningField: shape.reasoningField) {
+        return shape
+    }
+    return HistoryShape()
 }
 
 /// Cheap identity for an image file (path + size + mtime) — mirrors the GGUF
@@ -622,7 +649,9 @@ final class Engine: @unchecked Sendable {
             }
             self.container = container
             // Ask the loaded template itself, rather than guessing from a name.
-            meta.toolRole = await container.perform { ctx in probeToolRole(ctx.tokenizer) }
+            let shape = await container.perform { ctx in probeHistoryShape(ctx.tokenizer) }
+            meta.toolRole = shape.toolRole
+            meta.reasoningField = shape.reasoningField
             let trained = meta.nCtxTrain ?? 4096
             self.nCtxCap = min(nCtx ?? trained, trained)
             var info: [String: Any] = [
@@ -636,6 +665,7 @@ final class Engine: @unchecked Sendable {
                 "supportsTools": meta.supportsTools,
                 "effortLevels": meta.effortLevels,
                 "toolRole": meta.toolRole,
+                "reasoningField": meta.reasoningField,
                 // VLM-factory models have their vision tower loaded and
                 // ready — no separate encoder file like GGUF's mmproj.
                 "multimodal": meta.multimodal,
@@ -716,7 +746,27 @@ final class Engine: @unchecked Sendable {
             extra["reasoning_effort"] = effort
         }
         let userInput = UserInput(chat: chat, additionalContext: extra.isEmpty ? nil : extra)
-        let lmInput = try await context.processor.prepare(input: userInput)
+        // The library's message generator emits role/content only, so a
+        // structured `reasoning_content` never reaches the template through it.
+        // Templates that read thinking ONLY from that field (Qwen3.8) would see
+        // an empty thought and the turn's own markup as content — the prompt
+        // then reproduces nothing and the prefix dies. Render the template
+        // ourselves in that case; media still goes through the processor, which
+        // is the only position-correct entry point for pixels.
+        let carriesReasoning = messages.contains { !($0.reasoningContent ?? "").isEmpty }
+        let lmInput: LMInput
+        if carriesReasoning && !hasImages {
+            let dicts: [[String: any Sendable]] = messages.map { m in
+                var d: [String: any Sendable] = ["role": m.role, "content": m.content]
+                if let r = m.reasoningContent, !r.isEmpty { d["reasoning_content"] = r }
+                return d
+            }
+            let ids = try context.tokenizer.applyChatTemplate(
+                messages: dicts, tools: nil, additionalContext: extra.isEmpty ? nil : extra)
+            lmInput = LMInput(text: .init(tokens: MLXArray(ids.map(Int32.init))))
+        } else {
+            lmInput = try await context.processor.prepare(input: userInput)
+        }
         var tokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
         // Diagnostic: what the model actually sees. Off unless asked for —
         // prompts can carry user content, so this never logs by default.

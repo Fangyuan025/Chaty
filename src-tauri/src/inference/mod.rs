@@ -37,6 +37,13 @@ pub enum Role {
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
+    /// The turn's thinking, kept out of `content`. Some templates read
+    /// reasoning only from a structured field and never split it back out of
+    /// the content — a turn stored inline reaches them as an empty thought
+    /// followed by its own markup. Sent only where the template is probed to
+    /// use it; `None` everywhere else keeps the wire shape unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     /// Image attachments (absolute file paths) for vision models. Ignored —
     /// and expected empty — when the loaded model has no mmproj.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -174,6 +181,10 @@ pub struct ModelInfo {
     /// the rendered prompt is byte-identical to what earlier builds produced.
     #[serde(default)]
     pub tool_role: bool,
+    /// The template reads a turn's thinking from a structured
+    /// `reasoning_content` field rather than splitting it out of the content.
+    #[serde(default)]
+    pub reasoning_field: bool,
     /// Best-effort: the chat template supports tool / function calling.
     pub supports_tools: bool,
     /// Best-effort: the model appears to be multimodal (vision).

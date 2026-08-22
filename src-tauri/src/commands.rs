@@ -1243,6 +1243,7 @@ pub async fn vision_query(
         messages: vec![crate::inference::ChatMessage {
             role: crate::inference::Role::User,
             content: prompt,
+            reasoning_content: None,
             images,
         }],
         params: crate::inference::GenParams {

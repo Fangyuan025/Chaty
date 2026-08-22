@@ -318,7 +318,12 @@ fn inject_media_markers(messages: &[ChatMessage]) -> Vec<ChatMessage> {
                     content.push('\n');
                 }
                 content.push_str(&m.content);
-                ChatMessage { role: m.role.clone(), content, images: m.images.clone() }
+                ChatMessage {
+                    role: m.role.clone(),
+                    content,
+                    images: m.images.clone(),
+                    reasoning_content: m.reasoning_content.clone(),
+                }
             }
         })
         .collect()
@@ -613,6 +618,9 @@ impl LlamaEngine {
 
         let effort_levels = effort_levels_of(template.as_deref().unwrap_or(""));
         let tool_role = probe_tool_role(&model);
+        // llama.cpp's chat message carries a role and a body and nothing else,
+        // so a structured reasoning field can never reach a template here.
+        let reasoning_field = false;
         let info = ModelInfo {
             name,
             path: path.to_string(),
@@ -634,6 +642,7 @@ impl LlamaEngine {
             think_switch,
             effort_levels,
             tool_role,
+            reasoning_field,
             supports_tools,
             multimodal,
             vision_ready,
@@ -929,6 +938,11 @@ fn run_turn(
             cached.clear();
         }
 
+        // Diagnostic parity with the MLX engine: what the model actually sees.
+        // Off unless asked for — prompts carry user content.
+        if std::env::var("CHATY_DUMP_PROMPT").as_deref() == Ok("1") {
+            eprintln!("PROMPT[{} chars]>>>{prompt}<<<END", prompt.len());
+        }
         let tokens = model
             .str_to_token(&prompt, AddBos::Always)
             .context("tokenization failed")?;
@@ -1657,6 +1671,7 @@ pub(crate) const EFFORT_LOW: &str = "Reasoning effort is set to low. Keep your t
 fn probe_tool_role(model: &LlamaModel) -> bool {
     const REASONED: &str = "PROBE_REASONING\n</think>\n\nPROBE_ANSWER";
     let msg = |role: Role, content: &str| ChatMessage {
+    reasoning_content: None,
         role,
         content: content.into(),
         images: vec![],
@@ -1876,13 +1891,22 @@ fn fold_system(messages: &[ChatMessage]) -> Vec<ChatMessage> {
                 out.push(ChatMessage { images: Vec::new(),
                     role: Role::User,
                     content: format!("{sys_text}\n\n{}", m.content),
+                    reasoning_content: None,
                 });
             }
             _ => out.push(m.clone()),
         }
     }
     if !injected {
-        out.insert(0, ChatMessage { images: Vec::new(), role: Role::User, content: sys_text });
+        out.insert(
+            0,
+            ChatMessage {
+                images: Vec::new(),
+                role: Role::User,
+                content: sys_text,
+                reasoning_content: None,
+            },
+        );
     }
     out
 }
@@ -2134,7 +2158,8 @@ mod tests {
             role,
             content: text.into(),
             images: vec![],
-        };
+            reasoning_content: None,
+};
         let with = |role: Role| {
             super::render_gemma4(
                 &[
@@ -2615,11 +2640,12 @@ mod agent_e2e {
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()), reasoning_content: None },
             ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "用 search_files 找出这个项目里所有和 \"token\" 有关的文件和代码,把命中的文件路径列出来。".into(),
-            },
+                reasoning_content: None,
+},
         ];
         let think = Some(false);
         let cancel = AtomicBool::new(false);
@@ -2652,11 +2678,12 @@ mod agent_e2e {
                     let result = exec_tool(&name, &args);
                     eprintln!("  ◀ RESULT\n{}", result.chars().take(500).collect::<String>());
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close), reasoning_content: None });
                     messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
-                    });
+                        reasoning_content: None,
+});
                 }
                 None => {
                     final_text = strip_think(&raw);
@@ -2719,11 +2746,12 @@ if __name__ == "__main__":
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()), reasoning_content: None },
             ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "把 shop.py 里的函数 calc_total 重命名为 compute_total,并更新文件里所有调用它的地方(先用 outline 看结构,同一文件的多处修改用一次 edit_file 的 edits 数组一次完成)。改完运行 python3 shop.py 确认输出仍然是 TOTAL: 33.00 和 AUDIT: 30.00。".into(),
-            },
+                reasoning_content: None,
+},
         ];
         let think = Some(false);
         let cancel = AtomicBool::new(false);
@@ -2761,11 +2789,12 @@ if __name__ == "__main__":
                     let result = exec_tool(&name, &args);
                     eprintln!("  ◀ RESULT\n{}", result.chars().take(600).collect::<String>());
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close), reasoning_content: None });
                     messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
-                    });
+                        reasoning_content: None,
+});
                 }
                 None => {
                     eprintln!("  ✔ FINAL\n{}", strip_think(&raw));
@@ -2841,11 +2870,12 @@ if __name__ == "__main__":
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()), reasoning_content: None },
             ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "在 YouTube 上搜索 \"me at the zoo\",找到 YouTube 历史上的第一条视频,用 web_fetch 获取它的字幕转写,然后把视频中拍摄者实际谈论的动物和他说的重点写进 NOTES.md(必须依据字幕内容,不要凭标题猜)。".into(),
-            },
+                reasoning_content: None,
+},
         ];
         let think = Some(false);
         let cancel = AtomicBool::new(false);
@@ -2875,11 +2905,12 @@ if __name__ == "__main__":
                     let result = exec_tool(&name, &args);
                     eprintln!("  ◀ RESULT\n{}", result.chars().take(500).collect::<String>());
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close), reasoning_content: None });
                     messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
-                    });
+                        reasoning_content: None,
+});
                 }
                 None => {
                     eprintln!("  ✔ FINAL\n{}", strip_think(&raw));
@@ -2938,11 +2969,12 @@ if __name__ == "__main__":
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()), reasoning_content: None },
             ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "帮我调研一个小众 Rust 库:在 GitHub 上搜索 \"dom_smoothie readability\",找到那个把 Mozilla Readability 移植到 Rust 的仓库;用 web_fetch 打开它的仓库页面,把仓库全名和一句话简介写入 RESEARCH.md;最后用 web_download 把页面上列出的任意一张图片保存为 logo.png。全部完成后总结。".into(),
-            },
+                reasoning_content: None,
+},
         ];
         let think = Some(false);
         let cancel = AtomicBool::new(false);
@@ -2977,11 +3009,12 @@ if __name__ == "__main__":
                     let result = exec_tool(&name, &args);
                     eprintln!("  ◀ RESULT\n{}", result.chars().take(700).collect::<String>());
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close), reasoning_content: None });
                     messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
-                    });
+                        reasoning_content: None,
+});
                 }
                 None => {
                     eprintln!("  ✔ FINAL\n{}", strip_think(&raw));
@@ -3039,11 +3072,12 @@ if __name__ == "__main__":
         const GARBAGE: &str = "1. 十大人气奶茶配方大公开 — https://example.com/boba\n   在家自制珍珠奶茶的完整教程…\n2. 2026 春季旅行地推荐 — https://example.com/travel\n   这些小众目的地值得一去…\n3. 如何挑选适合自己的跑鞋 — https://example.com/shoes\n   跑步爱好者的选鞋指南…";
 
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_WEB.replace("{WS}", &ws.to_string_lossy()), reasoning_content: None },
             ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "调研一下 Rust crate dom_smoothie 是做什么用的,把一句话结论写入 FINDING.md,然后总结。".into(),
-            },
+                reasoning_content: None,
+},
         ];
         let think = Some(false);
         let cancel = AtomicBool::new(false);
@@ -3099,11 +3133,12 @@ if __name__ == "__main__":
                     };
                     eprintln!("  ◀ RESULT\n{}", result.chars().take(500).collect::<String>());
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close), reasoning_content: None });
                     messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
-                    });
+                        reasoning_content: None,
+});
                 }
                 None => {
                     eprintln!("  ✔ FINAL\n{}", strip_think(&raw));
@@ -3185,11 +3220,12 @@ if __name__ == "__main__":
         let _cp = crate::agent::agent_checkpoint_begin();
 
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_CODE.replace("{WS}", &ws.to_string_lossy()), reasoning_content: None },
             ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "这个项目的注册邮箱校验有 bug:没有 @ 的字符串也能通过校验。找到相关代码修复(返回值必须仍是布尔值),然后验证修复是否正确。".into(),
-            },
+                reasoning_content: None,
+},
         ];
         let think = Some(false);
         let cancel = AtomicBool::new(false);
@@ -3230,11 +3266,12 @@ if __name__ == "__main__":
                     }
                     eprintln!("  ◀ RESULT\n{}", result.chars().take(600).collect::<String>());
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close), reasoning_content: None });
                     messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
-                    });
+                        reasoning_content: None,
+});
                 }
                 None => {
                     eprintln!("  ✔ FINAL\n{}", strip_think(&raw));
@@ -3294,11 +3331,12 @@ if __name__ == "__main__":
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: SYS.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS.replace("{WS}", &ws.to_string_lossy()), reasoning_content: None },
             ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "这个项目有一个失败的测试。请运行 `python3 test_calc.py`,找出失败原因并修复代码,直到测试全部通过(输出 ALL TESTS PASSED)。".into(),
-            },
+                reasoning_content: None,
+},
         ];
         // Simulate the app's thinking config: default forces no-think (Some(false)),
         // but CHATY_TEST_THINK=none reproduces the "model may think" path.
@@ -3352,11 +3390,12 @@ if __name__ == "__main__":
                         result.lines().take(3).collect::<Vec<_>>().join(" | ")
                     ));
                     let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+                    messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close), reasoning_content: None });
                     messages.push(ChatMessage { images: Vec::new(),
                         role: Role::User,
                         content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
-                    });
+                        reasoning_content: None,
+});
                 }
                 None => {
                     let final_text = strip_think(&raw);
@@ -3418,11 +3457,12 @@ if __name__ == "__main__":
         crate::agent::agent_set_workspace(ws.to_string_lossy().to_string()).unwrap();
 
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_META.replace("{WS}", &ws.to_string_lossy()) },
+            ChatMessage { images: Vec::new(), role: Role::System, content: SYS_META.replace("{WS}", &ws.to_string_lossy()), reasoning_content: None },
             ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: "请在工作区创建一个 Python 模块 greet.py,实现 greet(name) 函数,再写 test_greet.py 并用 bash 运行确认通过。开始前先用 update_plan 列出步骤。问候语的语言(中文还是英文)由我决定,请用 ask_user 问我。".into(),
-            },
+                reasoning_content: None,
+},
         ];
         let cancel = AtomicBool::new(false);
         let mut cached: Vec<LlamaToken> = Vec::new();
@@ -3455,7 +3495,7 @@ if __name__ == "__main__":
                 break;
             };
             let with_close = if raw.contains("</tool_call>") { raw.clone() } else { format!("{raw}</tool_call>") };
-            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close) });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&with_close), reasoning_content: None });
 
             let result = match name.as_str() {
                 "update_plan" => {
@@ -3499,7 +3539,8 @@ if __name__ == "__main__":
             messages.push(ChatMessage { images: Vec::new(),
                 role: Role::User,
                 content: format!("<tool_result name=\"{name}\">\n{result}\n</tool_result>"),
-            });
+                reasoning_content: None,
+});
         }
 
         let greet_src = std::fs::read_to_string(ws.join("greet.py")).unwrap_or_default();
@@ -3608,7 +3649,8 @@ mod vision_e2e {
             images: vec![img_path.to_string_lossy().to_string()],
             role: Role::User,
             content: "What is the dominant color of this image? Answer with one English word.".into(),
-        }];
+            reasoning_content: None,
+}];
         let ans1 = ask(messages.clone(), &mut ctx, &mut cached, &mut media_cache);
         assert!(
             ans1.to_lowercase().contains("red"),
@@ -3620,12 +3662,13 @@ mod vision_e2e {
         assert!(cached.is_empty(), "token cache must stay empty in the media regime");
 
         // ---- turn 2: follow-up reuses the media prefill incrementally ----
-        messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: ans1 });
+        messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: ans1, reasoning_content: None });
         messages.push(ChatMessage {
             images: Vec::new(),
             role: Role::User,
             content: "Is this image mostly red? Answer strictly yes or no.".into(),
-        });
+            reasoning_content: None,
+});
         // The behavioral property the media cache exists for: a follow-up
         // turn must NOT re-encode the already-seen image. (Checked via the
         // encoder counter rather than string prefixes — on Qwen3.5+ the
@@ -3659,7 +3702,8 @@ mod vision_e2e {
                 images: Vec::new(),
                 role: Role::User,
                 content: "Say the single word 'hello'.".into(),
-            }],
+                reasoning_content: None,
+}],
             &mut ctx,
             &mut cached,
             &mut media_cache,
@@ -3706,7 +3750,8 @@ mod vision_engine {
                 images: vec![img.to_string_lossy().to_string()],
                 role: Role::User,
                 content: "What is the dominant color? One English word.".into(),
-            }],
+                reasoning_content: None,
+}],
             params: GenParams { temperature: 0.1, max_tokens: 32, think: Some(false), ..Default::default() },
         };
         let cancel = std::sync::Arc::new(AtomicBool::new(false));
@@ -3738,7 +3783,8 @@ mod vision_engine {
                 images: vec![scene_path.to_string_lossy().to_string()],
                 role: Role::User,
                 content: "Describe this image thoroughly for search: shapes, colors, layout.".into(),
-            }],
+                reasoning_content: None,
+}],
             params: GenParams { temperature: 0.3, max_tokens: 200, think: Some(false), ..Default::default() },
         };
         let cancel2 = std::sync::Arc::new(AtomicBool::new(false));
@@ -3798,7 +3844,8 @@ mod vision_engine {
                 images: vec![shot.to_string_lossy().to_string()],
                 role: Role::User,
                 content: "What is the heading text and the total amount shown on this page?".into(),
-            }],
+                reasoning_content: None,
+}],
             params: GenParams { temperature: 0.2, max_tokens: 96, think: Some(false), ..Default::default() },
         };
         let cancel = std::sync::Arc::new(AtomicBool::new(false));
@@ -3897,9 +3944,11 @@ mod browser_task_probe {
              CSS 选择器只支持标准语法(没有 :contains/:has-text);按文字点用 browser_click 的 text。首个页面:{home}"
         );
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: sys },
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys, reasoning_content: None },
             ChatMessage { images: Vec::new(), role: Role::User,
-                content: format!("打开 {home},进入 Contact 页面,填写姓名 Alice、邮箱 alice@example.com、留言 Hello,然后提交表单。\n/no_think") },
+                content: format!("打开 {home},进入 Contact 页面,填写姓名 Alice、邮箱 alice@example.com、留言 Hello,然后提交表单。\n/no_think"),
+                reasoning_content: None,
+},
         ];
 
         let cancel = AtomicBool::new(false);
@@ -3935,9 +3984,11 @@ mod browser_task_probe {
             // Echo the model's ACTUAL output (with args) — the real loop does this;
             // a name-only echo makes the model mimic argument-less calls.
             let asst = strip_think(&raw);
-            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: asst });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: asst, reasoning_content: None });
             let mut m = ChatMessage { images: image.clone().into_iter().collect(), role: Role::User,
-                content: format!("<tool_result>{}</tool_result>\n/no_think", result) };
+                content: format!("<tool_result>{}</tool_result>\n/no_think", result),
+                reasoning_content: None,
+};
             if image.is_some() { m.content = "<tool_result>这是当前页面截图,请查看后继续。</tool_result>\n/no_think".into(); }
             messages.push(m);
             if submitted { eprintln!("=== FORM SUBMITTED at step {step}"); break; }
@@ -4035,8 +4086,8 @@ mod browser_tasks_e2e {
         let mut media_cache: Option<MediaCache> = None;
 
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: sys.to_string() },
-            ChatMessage { images: Vec::new(), role: Role::User, content: format!("{task}\n/no_think") },
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys.to_string(), reasoning_content: None },
+            ChatMessage { images: Vec::new(), role: Role::User, content: format!("{task}\n/no_think"), reasoning_content: None },
         ];
         let cancel = AtomicBool::new(false);
 
@@ -4074,9 +4125,11 @@ mod browser_tasks_e2e {
                 // is exactly what proves a legit repeated scroll is NOT blocked.
                 eprintln!("    (breaker: intercepted identical non-exempt call {tname})");
                 steps.push(format!("{tname}*BLOCKED"));
-                messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+                messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw), reasoning_content: None });
                 messages.push(ChatMessage { images: Vec::new(), role: Role::User,
-                    content: "<tool_result>这一步和上一步完全相同,已拦截。换一种做法或读取当前状态。</tool_result>\n/no_think".into() });
+                    content: "<tool_result>这一步和上一步完全相同,已拦截。换一种做法或读取当前状态。</tool_result>\n/no_think".into(),
+                    reasoning_content: None,
+});
                 continue;
             }
 
@@ -4128,13 +4181,17 @@ mod browser_tasks_e2e {
             };
 
             // Echo the model's ACTUAL output (with args), then the tool result.
-            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw), reasoning_content: None });
             if let Some(img) = image {
                 messages.push(ChatMessage { images: vec![img], role: Role::User,
-                    content: "<tool_result>这是当前页面截图,请查看后继续。</tool_result>\n/no_think".into() });
+                    content: "<tool_result>这是当前页面截图,请查看后继续。</tool_result>\n/no_think".into(),
+                    reasoning_content: None,
+});
             } else {
                 messages.push(ChatMessage { images: Vec::new(), role: Role::User,
-                    content: format!("<tool_result>{result}</tool_result>\n/no_think") });
+                    content: format!("<tool_result>{result}</tool_result>\n/no_think"),
+                    reasoning_content: None,
+});
             }
 
             if break_on_done && done() { break; }
@@ -4435,7 +4492,8 @@ mod prefill_progress_e2e {
             images: Vec::new(),
             role: Role::User,
             content: format!("{filler}\n读完以上资料,回答:一加一等于几?只答数字。\n/no_think"),
-        }];
+            reasoning_content: None,
+}];
         let req = GenRequest {
             messages: messages.clone(),
             params: GenParams { temperature: 0.0, max_tokens: 8, think: Some(false), ..Default::default() },
@@ -4474,8 +4532,8 @@ mod prefill_progress_e2e {
 
         // ── Turn 2: append a short exchange → KV prefix reuse leaves a tiny
         //    tail (< one batch) → NO prefill events (the ring must not flash) ──
-        messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: reply });
-        messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: "再答一次,只答数字。\n/no_think".into() });
+        messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: reply, reasoning_content: None });
+        messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: "再答一次,只答数字。\n/no_think".into(), reasoning_content: None });
         let req2 = GenRequest {
             messages,
             params: GenParams { temperature: 0.0, max_tokens: 8, think: Some(false), ..Default::default() },
@@ -4644,7 +4702,8 @@ mod media_prefill_e2e {
                 images: vec![img_path.to_string_lossy().to_string()],
                 role: Role::User,
                 content: "What is the dominant color of this image? Answer with one word.".into(),
-            }],
+                reasoning_content: None,
+}],
             params: GenParams { temperature: 0.0, max_tokens: 12, think: Some(false), ..Default::default() },
         };
         let sink = AllEvents { evs: RefCell::new(Vec::new()) };
@@ -4782,8 +4841,8 @@ pw.addEventListener("input",render);render();
              **只用 browser_read/browser_type 文字操作,绝不要用 browser_screenshot/browser_snapshot。** 首个页面:{url}"
         );
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: sys },
-            ChatMessage { images: Vec::new(), role: Role::User, content: format!("打开 {url},玩这个密码游戏,尽量多满足几条规则。\n/no_think") },
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys, reasoning_content: None },
+            ChatMessage { images: Vec::new(), role: Role::User, content: format!("打开 {url},玩这个密码游戏,尽量多满足几条规则。\n/no_think"), reasoning_content: None },
         ];
 
         let cancel = AtomicBool::new(false);
@@ -4814,8 +4873,8 @@ pw.addEventListener("input",render);render();
                 other => format!("未知工具 {other}"),
             };
             best = best.max(solved_now());
-            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
-            messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{}</tool_result>\n/no_think", result) });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw), reasoning_content: None });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{}</tool_result>\n/no_think", result), reasoning_content: None });
             if best >= 8 { break; }
         }
         let elapsed = started.elapsed();
@@ -4938,9 +4997,11 @@ document.getElementById("submit").addEventListener("click",function(){
              这是一个很长、需要滚动的求职表单。**尽量用 steps 一次填多个字段、一次点多个按钮**以求最快。要求:填完所有字段(姓名/邮箱/公司/电话/城市/求职动机)、勾选同意条款、点提交。每次操作后读返回文字确认。首个页面:{url}"
         );
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: sys },
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys, reasoning_content: None },
             ChatMessage { images: Vec::new(), role: Role::User, content: format!(
-                "打开 {url},填写这张求职表单并提交:姓名 Alice Chen、邮箱 alice@nimbus.io、公司 Acme、电话 5551234567、城市 Montreal、求职动机随便写一句,勾选同意条款,然后提交。\n/no_think") },
+                "打开 {url},填写这张求职表单并提交:姓名 Alice Chen、邮箱 alice@nimbus.io、公司 Acme、电话 5551234567、城市 Montreal、求职动机随便写一句,勾选同意条款,然后提交。\n/no_think"),
+                reasoning_content: None,
+},
         ];
 
         let cancel = AtomicBool::new(false);
@@ -4997,8 +5058,8 @@ document.getElementById("submit").addEventListener("click",function(){
                 other => format!("未知工具 {other}"),
             };
             steps_log.push(name.clone());
-            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
-            messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{}</tool_result>\n/no_think", result) });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw), reasoning_content: None });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{}</tool_result>\n/no_think", result), reasoning_content: None });
             if submitted() { break; }
         }
         let elapsed = started.elapsed();
@@ -5124,8 +5185,8 @@ mod visual_verify_e2e {
              判断:要文字/状态用 browser_read;要判断图片画的是什么、颜色、外观,读文字看不出来,必须用 browser_screenshot/snapshot 亲眼看。首个页面:{url}"
         );
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: sys },
-            ChatMessage { images: Vec::new(), role: Role::User, content: format!("打开 {url},页面上有一张图片。告诉我这张图片主要是什么颜色、中间画的是什么形状。\n/no_think") },
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys, reasoning_content: None },
+            ChatMessage { images: Vec::new(), role: Role::User, content: format!("打开 {url},页面上有一张图片。告诉我这张图片主要是什么颜色、中间画的是什么形状。\n/no_think"), reasoning_content: None },
         ];
 
         let cancel = AtomicBool::new(false);
@@ -5157,11 +5218,11 @@ mod visual_verify_e2e {
                 }
                 other => (format!("未知工具 {other}"), None),
             };
-            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw), reasoning_content: None });
             if let Some(img) = image {
-                messages.push(ChatMessage { images: vec![img], role: Role::User, content: "<tool_result>这是当前页面截图,请查看后回答。</tool_result>\n/no_think".into() });
+                messages.push(ChatMessage { images: vec![img], role: Role::User, content: "<tool_result>这是当前页面截图,请查看后回答。</tool_result>\n/no_think".into(), reasoning_content: None });
             } else {
-                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{result}</tool_result>\n/no_think") });
+                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{result}</tool_result>\n/no_think"), reasoning_content: None });
             }
         }
         crate::browser::shutdown();
@@ -5281,8 +5342,8 @@ document.getElementById("check").addEventListener("click",function(){
              要求:①想好完整顺序后**用 browser_click 的 steps 一次把所有词按顺序点完**,不要一个一个点;②点 Check(会判分、不可逆)**之前先用 browser_snapshot 截屏,用视觉确认拼出的句子完全正确**,再点 Check。首个页面:{url}"
         );
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: sys },
-            ChatMessage { images: Vec::new(), role: Role::User, content: format!("打开 {url},把「我每天早上喝咖啡」这道选词造句题做对(目标英文句子是 I drink coffee every morning),按要求先批量选词、提交前截图确认,再点 Check。\n/no_think") },
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys, reasoning_content: None },
+            ChatMessage { images: Vec::new(), role: Role::User, content: format!("打开 {url},把「我每天早上喝咖啡」这道选词造句题做对(目标英文句子是 I drink coffee every morning),按要求先批量选词、提交前截图确认,再点 Check。\n/no_think"), reasoning_content: None },
         ];
 
         let cancel = AtomicBool::new(false);
@@ -5318,11 +5379,11 @@ document.getElementById("check").addEventListener("click",function(){
                 }
                 other => (format!("未知工具 {other}"), None),
             };
-            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw), reasoning_content: None });
             if let Some(img) = image {
-                messages.push(ChatMessage { images: vec![img], role: Role::User, content: "<tool_result>这是当前页面截图,请查看后继续。</tool_result>\n/no_think".into() });
+                messages.push(ChatMessage { images: vec![img], role: Role::User, content: "<tool_result>这是当前页面截图,请查看后继续。</tool_result>\n/no_think".into(), reasoning_content: None });
             } else {
-                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{result}</tool_result>\n/no_think") });
+                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{result}</tool_result>\n/no_think"), reasoning_content: None });
             }
             if checked() { break; }
         }
@@ -5411,8 +5472,8 @@ mod real_scenarios_e2e {
         let mut cached: Vec<LlamaToken> = Vec::new();
         let mut media_cache: Option<MediaCache> = None;
         let mut messages = vec![
-            ChatMessage { images: Vec::new(), role: Role::System, content: sys.to_string() },
-            ChatMessage { images: Vec::new(), role: Role::User, content: format!("{task}\n/no_think") },
+            ChatMessage { images: Vec::new(), role: Role::System, content: sys.to_string(), reasoning_content: None },
+            ChatMessage { images: Vec::new(), role: Role::User, content: format!("{task}\n/no_think"), reasoning_content: None },
         ];
         let cancel = AtomicBool::new(false);
         let mut steps: Vec<String> = Vec::new();
@@ -5432,8 +5493,8 @@ mod real_scenarios_e2e {
             if exempt { last_key.clear(); repeat = 0; } else if key == last_key { repeat += 1; } else { last_key = key; repeat = 0; }
             if repeat >= 1 && !exempt {
                 steps.push(format!("{tname}*BLK"));
-                messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
-                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: "<tool_result>这一步和上一步完全相同,已拦截,换做法。</tool_result>\n/no_think".into() });
+                messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw), reasoning_content: None });
+                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: "<tool_result>这一步和上一步完全相同,已拦截,换做法。</tool_result>\n/no_think".into(), reasoning_content: None });
                 continue;
             }
             steps.push(tname.clone());
@@ -5456,11 +5517,11 @@ mod real_scenarios_e2e {
                 "web_search" => match rt.block_on(crate::search::web_search(g("query").unwrap_or_default())) { Ok(rs)=>{let s=rs.iter().take(6).map(|r|format!("- {} — {}\n  {}",r.title,r.url,r.snippet)).collect::<Vec<_>>().join("\n");(if s.is_empty(){"(无结果)".into()}else{s},None)} Err(e)=>(format!("ERROR: {e}"),None) },
                 other => (format!("未知工具 {other}"), None),
             };
-            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw) });
+            messages.push(ChatMessage { images: Vec::new(), role: Role::Assistant, content: strip_think(&raw), reasoning_content: None });
             if let Some(img) = image {
-                messages.push(ChatMessage { images: vec![img], role: Role::User, content: "<tool_result>这是当前页面截图,请查看后继续。</tool_result>\n/no_think".into() });
+                messages.push(ChatMessage { images: vec![img], role: Role::User, content: "<tool_result>这是当前页面截图,请查看后继续。</tool_result>\n/no_think".into(), reasoning_content: None });
             } else {
-                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{}</tool_result>\n/no_think", result.chars().take(6000).collect::<String>()) });
+                messages.push(ChatMessage { images: Vec::new(), role: Role::User, content: format!("<tool_result>{}</tool_result>\n/no_think", result.chars().take(6000).collect::<String>()), reasoning_content: None });
             }
             if done() && !final_text.is_empty() { break; }
         }
@@ -5576,7 +5637,8 @@ mod gguf_kv_e2e {
                     role: Role::User,
                     content: content.into(),
                     images: vec![],
-                }],
+                    reasoning_content: None,
+}],
                 params: GenParams { max_tokens: 96, think: Some(false), ..Default::default() },
             };
             rt.block_on(engine.generate_collect(req, Arc::new(AtomicBool::new(false))))

@@ -753,6 +753,7 @@ async fn vision_caption(
         messages: vec![crate::inference::ChatMessage {
             role: crate::inference::Role::User,
             content: prompt,
+            reasoning_content: None,
             images: vec![path.to_string()],
         }],
         params: crate::inference::GenParams {

@@ -499,6 +499,7 @@ impl MlxEngine {
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
                 .unwrap_or_default(),
             tool_role: loaded["toolRole"].as_bool().unwrap_or(false),
+            reasoning_field: loaded["reasoningField"].as_bool().unwrap_or(false),
             supports_tools: loaded["supportsTools"].as_bool().unwrap_or(false),
             multimodal: loaded["multimodal"].as_bool().unwrap_or(false),
             // MLX VLMs carry their vision tower in the same weights — loaded
@@ -690,6 +691,7 @@ fn run_generation(
                     super::Role::Tool => "tool",
                 },
                 "content": m.content,
+                "reasoningContent": m.reasoning_content,
                 // Vision cap, TIGHTER than the GGUF engine's 2 MP: raw 2x
                 // full-page screenshots (15+ MP) either blow past Metal
                 // limits inside the sidecar's mlx_eval (fatalError →
@@ -1096,7 +1098,8 @@ done
                 role: Role::User,
                 content: "hi".into(),
                 images: vec![],
-            }],
+                reasoning_content: None,
+}],
             params: GenParams { stop: vec!["STOP".into()], ..Default::default() },
         };
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1126,7 +1129,7 @@ mod mlx_e2e {
 
     fn req(prompt: &str, params: GenParams) -> GenRequest {
         GenRequest {
-            messages: vec![ChatMessage { role: Role::User, content: prompt.into(), images: vec![] }],
+            messages: vec![ChatMessage { role: Role::User, content: prompt.into(), images: vec![], reasoning_content: None }],
             params,
         }
     }
@@ -1244,7 +1247,8 @@ mod mlx_e2e {
                     role: Role::User,
                     content: content.into(),
                     images: vec![],
-                }],
+                    reasoning_content: None,
+}],
                 params: GenParams { max_tokens: 96, think: Some(false), temperature: 0.0, ..Default::default() },
             };
             rt.block_on(engine.generate(req, sink, Arc::new(AtomicBool::new(false))))
@@ -1305,7 +1309,8 @@ mod mlx_e2e {
                 role: Role::User,
                 content: format!("{filler}\nSummarize the above in one short sentence."),
                 images: vec![],
-            }],
+                reasoning_content: None,
+}],
             params: GenParams { max_tokens: 64, think: Some(false), temperature: 0.0, ..Default::default() },
         };
         rt().block_on(engine.generate(req, sink, Arc::new(AtomicBool::new(false))))
@@ -1352,7 +1357,8 @@ mod mlx_vlm_e2e {
                 content: "What is the dominant color of this image? Answer with one word."
                     .into(),
                 images: vec![img_path.to_string_lossy().to_string()],
-            }],
+                reasoning_content: None,
+}],
             params: GenParams { max_tokens: 160, think: Some(false), temperature: 0.0, ..Default::default() },
         };
         let text = rt
@@ -1368,7 +1374,8 @@ mod mlx_vlm_e2e {
                 role: Role::User,
                 content: "Name the capital of France. One word.".into(),
                 images: vec![],
-            }],
+                reasoning_content: None,
+}],
             params: GenParams { max_tokens: 64, think: Some(false), temperature: 0.0, ..Default::default() },
         };
         let text = rt
@@ -1421,7 +1428,8 @@ mod mlx_vlm_e2e {
                 role: Role::User,
                 content: "What is the dominant color of this image? Answer with one word.".into(),
                 images: vec![img_path.to_string_lossy().to_string()],
-            }],
+                reasoning_content: None,
+}],
             params: GenParams { max_tokens: 160, think: Some(false), temperature: 0.0, ..Default::default() },
         };
         let text = rt
@@ -1456,7 +1464,8 @@ mod mlx_vlm_e2e {
                 content: "What is the dominant color of this image? Answer with one word."
                     .into(),
                 images: vec![img_path.to_string_lossy().to_string()],
-            }],
+                reasoning_content: None,
+}],
             params: GenParams { max_tokens: 160, think: Some(false), temperature: 0.0, ..Default::default() },
         };
         let text = rt
@@ -1471,7 +1480,8 @@ mod mlx_vlm_e2e {
                 role: Role::User,
                 content: "Name the capital of France. One word.".into(),
                 images: vec![],
-            }],
+                reasoning_content: None,
+}],
             params: GenParams { max_tokens: 64, think: Some(false), temperature: 0.0, ..Default::default() },
         };
         let text = rt
@@ -1538,7 +1548,8 @@ mod mlx_vlm_e2e {
             role: Role::User,
             content: "What is the dominant color of this image? Answer with one word.".into(),
             images: vec![img_path.to_string_lossy().to_string()],
-        };
+            reasoning_content: None,
+};
         let (answer1, prefills1) = run(vec![img_msg.clone()]);
         eprintln!("turn1 answer: {answer1:?}, prefills: {prefills1:?}");
         assert!(answer1.to_lowercase().contains("red"), "expected 'red' in: {answer1}");
@@ -1550,12 +1561,13 @@ mod mlx_vlm_e2e {
         let filler = "Notes: the quick brown fox jumps over the lazy dog. ".repeat(60);
         let (answer2, prefills2) = run(vec![
             img_msg,
-            ChatMessage { role: Role::Assistant, content: answer1.clone(), images: vec![] },
+            ChatMessage { role: Role::Assistant, content: answer1.clone(), images: vec![], reasoning_content: None },
             ChatMessage {
                 role: Role::User,
                 content: format!("{filler}\nNow name the capital of France. One word."),
                 images: vec![],
-            },
+                reasoning_content: None,
+},
         ]);
         eprintln!("turn2 answer: {answer2:?}, prefills: {prefills2:?}");
         assert!(answer2.to_lowercase().contains("paris"), "expected 'Paris' in: {answer2}");
@@ -1624,7 +1636,8 @@ mod mlx_mem_e2e {
                     role: Role::User,
                     content: "Say OK.".into(),
                     images: vec![],
-                }],
+                    reasoning_content: None,
+}],
                 params: GenParams { max_tokens: 8, think: Some(false), temperature: 0.0, ..Default::default() },
             };
             let text = rt

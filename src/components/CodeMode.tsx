@@ -1261,6 +1261,7 @@ export function CodeMode({
       memoryIndex,
       visionReady: model.visionReady,
       toolRole: model.toolRole ?? false,
+      reasoningField: model.reasoningField ?? false,
       // No vision encoder → still expose the browser suite, minus the two
       // screenshot tools: browser_read's digest is the model's eyes.
       // (ChatyWeb-Bench: 22/23 web tasks on a text-only 35B-A3B in this mode.)

@@ -117,6 +117,7 @@ fn load_engine(path: &str, n_ctx: Option<u32>) -> Result<ModelInfo, String> {
             think_switch: false,
             effort_levels: Vec::new(),
             tool_role: false,
+            reasoning_field: false,
             supports_tools: true,
             multimodal: false,
             vision_ready: false,

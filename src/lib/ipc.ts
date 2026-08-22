@@ -8,6 +8,10 @@ export type Role = "system" | "user" | "assistant" | "tool";
 export interface ChatMessage {
   role: Role;
   content: string;
+  /** The turn's thinking, kept out of `content`. Some templates read reasoning
+   *  only from this field and never split it back out of the content — sent
+   *  only where the model is probed to use it (`ModelInfo.reasoningField`). */
+  reasoning_content?: string;
   /** Image attachment paths — only honoured by vision-ready models (mmproj loaded). */
   images?: string[];
 }
@@ -61,6 +65,9 @@ export interface ModelInfo {
   /** The chat template renders a tool result under its own role AND keeps the
    *  assistant reasoning before it — probed at load, never assumed. */
   toolRole?: boolean;
+  /** The template reads a turn's thinking from a structured field rather than
+   *  splitting it out of the content (Qwen3.8). */
+  reasoningField?: boolean;
   supportsTools: boolean;
   multimodal: boolean;
   /** The vision encoder (mmproj) is loaded — images actually work this session. */

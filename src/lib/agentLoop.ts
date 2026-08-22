@@ -226,6 +226,11 @@ export interface AgentOptions {
    *  reasoning. Probed per model at load; false keeps the old user-turn shape
    *  byte for byte. */
   toolRole?: boolean;
+  /** Record a turn's thinking in a structured `reasoning_content` field instead
+   *  of inside the content. Templates that read it only from there (Qwen3.8)
+   *  otherwise render an empty thought followed by the turn's own markup, and
+   *  the prompt stops reproducing what the model generated. Probed per model. */
+  reasoningField?: boolean;
   /** Expose the browser suite to models WITHOUT vision: same tools minus the
    *  two screenshot captures — browser_read's digest is the model's eyes. */
   browserTextMode?: boolean;
@@ -2112,7 +2117,19 @@ export async function runAgentTurn(
       if (!turn.includes("<tool_call>"))
         turn =
           `${turn}\n<tool_call>${JSON.stringify({ name: call.name, arguments: call.args })}</tool_call>`.trim();
-      messages.push({ role: "assistant", content: turn });
+      // Where the template reads thinking from its own field, the content must
+      // hold the answer alone — leaving it inline reaches such a template as an
+      // empty thought followed by this turn's markup.
+      const splitReasoning = opts.reasoningField ? thinkPart(turn).trim() : "";
+      messages.push(
+        splitReasoning
+          ? {
+              role: "assistant",
+              content: stripThink(turn).trim(),
+              reasoning_content: splitReasoning,
+            }
+          : { role: "assistant", content: turn },
+      );
 
       const stepObj: ToolStep = { id: uid(), call, status: "running", thinking };
 
