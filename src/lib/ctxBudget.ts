@@ -84,15 +84,38 @@ export function textTokens(text: string): number {
 }
 
 /** Calibrated cost of a conversation, framing included. */
-export function messageTokens(messages: { content: string }[]): number {
-  const raw = messages.reduce((n, m) => n + rawTokens(m.content) + PER_MESSAGE_OVERHEAD, 0);
+/**
+ * What an attached image costs the window.
+ *
+ * A picture is not free context: downscaled to the caps the engines use, one
+ * screenshot reaches the model as roughly a thousand visual tokens — measured at
+ * 1038 prompt tokens for a single 1 MP image plus 38 of text on MLX Qwen3.5, and
+ * about 340 for Gemma-4's 2 MP cap on llama.cpp. Counting only the text left a
+ * conversation carrying a few screenshots calling itself comfortable while it
+ * was already over the window, and it also poisoned the calibration: the engine
+ * reports the visual tokens in `promptTokens`, so a prediction that ignores them
+ * reads as a wild under-estimate and pushes the ratio up for every text-only
+ * turn after it. The high end is the safe one to charge — over-reserving costs a
+ * summary, under-reserving costs the turn — and the calibration settles it
+ * against what the engine actually charges.
+ */
+const IMAGE_TOKENS = 1000;
+
+type Countable = { content: string; images?: string[] };
+
+function rawMessageCost(m: Countable): number {
+  return rawTokens(m.content) + PER_MESSAGE_OVERHEAD + (m.images?.length ?? 0) * IMAGE_TOKENS;
+}
+
+export function messageTokens(messages: Countable[]): number {
+  const raw = messages.reduce((n, m) => n + rawMessageCost(m), 0);
   return Math.ceil(raw * calibrationFactor());
 }
 
 /** Uncalibrated cost of a conversation — what to hand `calibrate` alongside
  *  the engine's `promptTokens`, so the ratio does not chase itself. */
-export function rawMessageTokens(messages: { content: string }[]): number {
-  return messages.reduce((n, m) => n + rawTokens(m.content) + PER_MESSAGE_OVERHEAD, 0);
+export function rawMessageTokens(messages: Countable[]): number {
+  return messages.reduce((n, m) => n + rawMessageCost(m), 0);
 }
 
 /**

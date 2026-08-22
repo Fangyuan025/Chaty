@@ -34,6 +34,10 @@ import { PodcastPanel } from "./components/PodcastPanel";
 import { DeepResearchPanel } from "./components/DeepResearchPanel";
 import { CodeMode } from "./components/CodeMode";
 import { answerOnly, cleanTitle, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
+// The reasoning/answer split the agent loop uses. Its stripThink leaves source
+// markers alone, which matters here: the content has to rejoin with the
+// reasoning into exactly what the model generated, or the prefix breaks.
+import { thinkPart as turnReasoning, stripThink as turnAnswer } from "./lib/agentLoop";
 import { copyToClipboard } from "./lib/clipboard";
 import {
   cancelGeneration,
@@ -97,9 +101,9 @@ import {
   calibrate,
   contextLimit,
   fitTranscript,
-  rawTokens,
+  messageTokens,
+  rawMessageTokens,
   resetCalibration,
-  textTokens,
 } from "./lib/ctxBudget";
 import { fmtGbFromMb } from "./lib/fmt";
 
@@ -277,11 +281,6 @@ function formatDate(lang: Lang): string {
   });
 }
 
-/** Shared with Code mode, and calibrated against the engine's own
- *  `promptTokens` — see `ctxBudget`. The local guess this replaced read source
- *  code and tool output below their true cost, which is exactly the content a
- *  long chat accumulates before it needs summarising. */
-const estimateTokens = textTokens;
 
 function loadSettings(): GenSettings {
   try {
@@ -1592,8 +1591,12 @@ export default function App() {
       1024,
       contextLimit(nCtx, settings.limitTokens ? settings.maxTokens : undefined),
     );
-    const cost = (m: { content: string }) => estimateTokens(m.content) + 8;
-    const total = msgs.reduce((s, m) => s + cost(m), 0);
+    // Attached pictures are context too — see IMAGE_TOKENS. Counting only the
+    // text let a conversation carrying screenshots call itself comfortable while
+    // it was already past the window.
+    const total = messageTokens(msgs as { content: string; images?: string[] }[]);
+    const cost = (m: { content: string; images?: string[] }) =>
+      messageTokens([m]);
     if (total <= budget * 0.85) return null; // still comfortable
 
     // Keep the most recent turns within ~half the budget; summarise the rest.
@@ -1757,16 +1760,25 @@ export default function App() {
       }
     }
 
-    // Never feed a prior turn's reasoning back to the model: Qwen's own guidance
-    // is that history should carry only the final answer, and stale <think> blocks
-    // just waste context and confuse newer (3.5+) reasoning parsers.
-    const historyForModel = history.map(({ role, content, images }) => ({
-      role,
-      content: role === "assistant" ? stripThink(content) : content,
-      // Only vision-ready models get pixels; otherwise images were already
-      // OCR'd into text at attach time (or never attached).
-      ...(role === "user" && images?.length && model?.visionReady ? { images } : {}),
-    }));
+    // An assistant turn travels the way the model wrote it. Stripping the
+    // reasoning here left the next prompt unable to reproduce what had just been
+    // generated, so the KV prefix died at the first assistant turn and every
+    // reply re-read the whole conversation — 0% cache reuse against 100% when
+    // the turn is kept whole, measured on Qwen3.5 with thinking on. Nothing is
+    // gained by stripping it either: the templates that should not see stale
+    // reasoning already split it out themselves and re-emit it only for the
+    // turn still being answered. Where a template reads thinking from its own
+    // field instead, the split has to happen — leaving it inline reaches such a
+    // template as an empty thought followed by the turn's own markup.
+    const historyForModel = history.map(({ role, content, images }) => {
+      const pixels =
+        role === "user" && images?.length && model?.visionReady ? { images } : {};
+      if (role !== "assistant") return { role, content, ...pixels };
+      const reasoning = model?.reasoningField ? turnReasoning(content).trim() : "";
+      return reasoning
+        ? { role, content: turnAnswer(content).trim(), reasoning_content: reasoning }
+        : { role, content };
+    });
 
     // Near the context limit: summarise the older turns so the user can keep the
     // conversation going. This is non-destructive — the UI still shows every
@@ -1833,7 +1845,7 @@ export default function App() {
     // Predicted (uncalibrated) cost of exactly this prompt — the left-hand side
     // of the calibration the reply completes, so the next turn's summarise-or-not
     // decision rests on what the engine actually charges rather than a guess.
-    const sentRaw = sent.reduce((n, m) => n + rawTokens(m.content) + 8, 0);
+    const sentRaw = rawMessageTokens(sent as { content: string; images?: string[] }[]);
 
     // Streaming text-to-speech: synthesize & play sentence-by-sentence as the
     // answer arrives, so audio starts long before generation finishes.

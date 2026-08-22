@@ -181,3 +181,30 @@ describe("fitTranscript — no single turn eats the whole budget", () => {
     expect(out).toContain('name="read_file"');
   });
 });
+
+describe("attached pictures are context too", () => {
+  test("an image costs far more than the sentence that carries it", () => {
+    // Counting only the text let a conversation with screenshots call itself
+    // comfortable while it was already past the window.
+    const withImg = messageTokens([{ content: "look at this", images: ["/tmp/a.png"] }]);
+    const without = messageTokens([{ content: "look at this" }]);
+    expect(withImg).toBeGreaterThan(without + 500);
+  });
+
+  test("two pictures cost about twice one", () => {
+    const one = messageTokens([{ content: "x", images: ["/a.png"] }]);
+    const two = messageTokens([{ content: "x", images: ["/a.png", "/b.png"] }]);
+    expect(two - one).toBeGreaterThan(800);
+  });
+
+  test("an empty image list changes nothing", () => {
+    expect(messageTokens([{ content: "hi", images: [] }])).toBe(messageTokens([{ content: "hi" }]));
+  });
+
+  test("the calibration is fed the same picture cost it will be charged for", () => {
+    // Otherwise the engine's promptTokens reads as a wild under-estimate and
+    // the ratio climbs for every text-only turn after it.
+    const msgs = [{ content: "look", images: ["/a.png"] }];
+    expect(rawMessageTokens(msgs)).toBeGreaterThan(500);
+  });
+});

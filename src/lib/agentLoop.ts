@@ -263,7 +263,7 @@ export interface AgentOptions {
 
 const uid = () => Math.random().toString(36).slice(2);
 
-function stripThink(raw: string): string {
+export function stripThink(raw: string): string {
   // Channel-style reasoning markers (Gemma 4 / Harmony) → <think> convention,
   // same normalization chat mode applies before parsing. A generation can
   // carry several think blocks (a runaway that re-opens its thought channel),
@@ -284,7 +284,7 @@ function stripThink(raw: string): string {
 
 /** The reasoning across ALL `<think>…</think>` blocks (a trailing unclosed
  *  block counts — that's the streaming state). */
-function thinkPart(raw: string): string {
+export function thinkPart(raw: string): string {
   let s = normalizeChannels(raw);
   const parts: string[] = [];
   const o = s.indexOf("<think>");
