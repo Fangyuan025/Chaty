@@ -259,6 +259,29 @@ jobs:
             grows with the transcript instead of the cost doing so. Gemma 4, QwQ
             and the Qwen3 line report identical counts before and after.
 
+            ### Re-cut assets
+
+            These installers were rebuilt after release day. Same version,
+            different binary — if you downloaded 2.1.1 on release day, this is
+            not the build you have.
+
+            Thinking off no longer costs a full prefill every turn: the empty
+            reasoning block Chaty prefills after the assistant header was
+            missing from stored turns, so round two diverged right there. 0% KV
+            reuse on Qwen3.5 and LFM2 before, 100% after — and thinking off is
+            code mode's default.
+
+            LFM2's tool calls run. The engine rendered control tokens as
+            nothing, so `<|tool_call_start|>[read_file(path='x')]<|tool_call_end|>`
+            reached Chaty as ordinary prose and the call never fired.
+
+            Context compaction now condenses the work with a model-written
+            summary instead of a 60-character index per turn, and leaves room to
+            breathe rather than skimming the limit: the same task on an 8k
+            window went from 63 rounds and 633 seconds to 18 rounds and 132
+            seconds. Chat and code also share one token budget now, calibrated
+            against what the engine actually charges.
+
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
                  model's name land, and a bare install table tells them

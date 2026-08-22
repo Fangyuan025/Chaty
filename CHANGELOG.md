@@ -60,6 +60,49 @@
   prompt it rendered — the observability the MLX side already had, and what
   made the second half of this measurable at all.
 
+### Re-cut assets (2026-08-22)
+
+The installers published under this version were rebuilt to carry the following.
+Same version, different binary — if you downloaded 2.1.1 on release day, this is
+not the build you have.
+
+- **Thinking off no longer costs a full prefill every turn.** Chaty prefills an
+  empty reasoning block after the assistant header so the model skips straight
+  to the answer, but a stored assistant turn was rendered without it — so round
+  two diverged at that header and the whole conversation was read again.
+  Measured at 0% KV reuse on Qwen3.5 and LFM2, and thinking off is code mode's
+  default, so this was every turn of every coding session. Now 100%, verified
+  across six local models on both thinking settings and on both engines. The
+  block is probed from the template rather than named, because it is not one
+  string: Qwen writes `<think></think>`, Gemma writes a thought channel, and a
+  template that writes nothing must get nothing added.
+
+- **LFM2's tool calls run.** The engine rendered control tokens as nothing, and
+  LFM2 writes its calls as `<|tool_call_start|>[read_file(path='x')]<|tool_call_end|>`
+  whatever the system prompt asks for — the 8B reasons at length about using
+  Chaty's JSON form and then writes its own anyway. With the markers deleted the
+  text read as ordinary prose and the call never fired. The llama.cpp engine now
+  keeps them, as the MLX engine always has, and Chaty reads that syntax.
+
+- **Context compaction condenses the work instead of indexing it.** Code mode
+  replaced dropped history with 60 characters per turn, which cannot carry a
+  constant read out of a file or an approach already ruled out; the model now
+  writes that summary, as it always has in chat. Compaction also freed exactly
+  enough to slip back under the limit, so the next round went straight over
+  again — it now works down to 60% of the limit. On an 8k window the same task
+  went from 63 rounds and 633 seconds to 18 rounds and 132 seconds, same answer.
+
+- **One budget for both modes.** Chat and code each estimated tokens their own
+  way, and both under-read: measured against a real tokenizer, code mode read
+  dense Chinese at 0.24x its true cost and chat mode read code at 0.67x. They
+  now share one estimator that calibrates against the token count the engine
+  reports every turn, so after one reply the budget is measured, not guessed.
+
+- **The chat summariser reads the beginning of the conversation.** It was fed
+  the last 7000 characters of the stretch being condensed — the end, which was
+  already being kept verbatim — while the opening, where you state the goal and
+  the constraints, was dropped.
+
 ## v2.1.0 — What the model actually wrote (2026-08-20)
 
 ### The MLX engine stops altering the model's own output
