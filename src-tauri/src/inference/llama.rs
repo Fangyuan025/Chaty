@@ -1017,6 +1017,14 @@ fn run_turn(
         idx = batch.n_tokens() - 1;
     }
 
+    // Diagnostic parity with the MLX engine's CHATY_MLX_DUMP_TOKENS: the exact
+    // ids this turn generated. The text a turn streams is what the NEXT turn's
+    // prompt is rebuilt from, so any id whose piece renders empty — a control
+    // token — is an id the next prompt cannot reproduce, and the KV prefix
+    // diverges at exactly that position.
+    let dump_gen = std::env::var("CHATY_DUMP_GEN_TOKENS").as_deref() == Ok("1");
+    let mut gen_ids: Vec<i32> = Vec::new();
+
     let mut sampler = build_sampler(&req.params);
     // Robust incremental UTF-8 assembly: accumulate raw token bytes and only
     // emit the valid-UTF-8 prefix, carrying any incomplete trailing bytes to
@@ -1059,6 +1067,9 @@ fn run_turn(
         sampler.accept(token);
         if model.is_eog_token(token) {
             break;
+        }
+        if dump_gen {
+            gen_ids.push(token.0);
         }
         pending.extend_from_slice(&piece_bytes(model, token));
         let valid = match std::str::from_utf8(&pending) {
@@ -1160,6 +1171,18 @@ fn run_turn(
                 let _ = sink.emit(StreamEvent::Token { text });
             }
         }
+    }
+
+    if dump_gen {
+        let pieces: Vec<String> = gen_ids
+            .iter()
+            .map(|t| {
+                let plain = String::from_utf8_lossy(&piece_bytes(model, LlamaToken(*t))).to_string();
+                let full = String::from_utf8_lossy(&piece_bytes_special(model, LlamaToken(*t))).to_string();
+                if plain == full { format!("{t}:{plain:?}") } else { format!("{t}:EMPTY!={full:?}") }
+            })
+            .collect();
+        eprintln!("GEN_TOKENS[{}]>>>{}<<<END", gen_ids.len(), pieces.join(" "));
     }
 
     let secs = start.elapsed().as_secs_f32().max(1e-3);
@@ -1944,6 +1967,18 @@ fn piece_bytes(model: &LlamaModel, token: LlamaToken) -> Vec<u8> {
         Ok(b) => b,
         Err(llama_cpp_2::TokenToStringError::InsufficientBufferSpace(i)) => model
             .token_to_piece_bytes(token, (-i) as usize, false, None)
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Same, but rendering control tokens as their literal text. Diagnostic only —
+/// the difference against `piece_bytes` is exactly what a turn's text loses.
+fn piece_bytes_special(model: &LlamaModel, token: LlamaToken) -> Vec<u8> {
+    match model.token_to_piece_bytes(token, 32, true, None) {
+        Ok(b) => b,
+        Err(llama_cpp_2::TokenToStringError::InsufficientBufferSpace(i)) => model
+            .token_to_piece_bytes(token, (-i) as usize, true, None)
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     }

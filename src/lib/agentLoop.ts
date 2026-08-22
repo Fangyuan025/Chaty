@@ -55,7 +55,13 @@ import {
   webSearch,
   type ChatMessage,
 } from "./ipc";
-import { calibrate, contextLimit, messageTokens, rawMessageTokens } from "./ctxBudget";
+import {
+  calibrate,
+  contextLimit,
+  fitTranscript,
+  messageTokens,
+  rawMessageTokens,
+} from "./ctxBudget";
 import { normalizeChannels } from "./voiceText";
 import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
 import { wrapupNudge, planEcho, isWebSourceFile, isSourceCodeFile, devServerUrlFrom, runCheckAboveBar } from "./wrapupGate";
@@ -1349,14 +1355,23 @@ export function compactionStub(
   return `<tool_result name="${name}">\n${body2}\n</tool_result>`;
 }
 
-export function compactMessages(
+export async function compactMessages(
   messages: ChatMessage[],
   nCtx: number,
   toolMeta?: WeakMap<ChatMessage, { name: string; args: Record<string, unknown> }>,
   maxGenTokens?: number,
-): boolean {
+  /** Condense a stretch of dropped transcript. Omitted in tests and in any
+   *  caller with no model to spare — the bullet digest stands in. */
+  summarise?: (transcript: string) => Promise<string>,
+): Promise<boolean> {
   const limit = contextLimit(nCtx, maxGenTokens);
   if (estimateTokens(messages) <= limit) return false;
+  // Compaction triggers at the limit but works down to a TARGET well under it.
+  // Freeing exactly enough to slip back under the limit meant the next round
+  // went straight over again: a 4k-window run spent 120 consecutive rounds
+  // hugging the ceiling, re-compacting every single time and paying a full
+  // prefill for it. Leaving real headroom buys many rounds of runway instead.
+  const target = Math.floor(limit * 0.6);
   const results = messages
     .map((m, i) => ({ m, i }))
     .filter(
@@ -1373,14 +1388,14 @@ export function compactMessages(
       content: compactionStub(name, toolMeta?.get(m), m.content, currentLang),
     };
     changed = true;
-    if (estimateTokens(messages) <= limit) break;
+    if (estimateTokens(messages) <= target) break;
   }
   // Still over? Reclaim the OLDEST reasoning. Assistant turns used to be
   // untouchable because they were small; now that they carry their thinking,
   // stale reasoning is the least useful bulk left — but the most recent rounds
   // keep theirs, since that is the thread the model is working from (and what
   // keeps each step a pure append).
-  if (estimateTokens(messages) > limit) {
+  if (estimateTokens(messages) > target) {
     const KEEP_THINK = 2;
     const thought = messages
       .map((m, i) => ({ m, i }))
@@ -1391,7 +1406,7 @@ export function compactMessages(
       if (!bare || bare === m.content.trim()) continue;
       messages[i] = { role: "assistant", content: bare };
       changed = true;
-      if (estimateTokens(messages) <= limit) break;
+      if (estimateTokens(messages) <= target) break;
     }
   }
   // Last resort: drop the oldest rounds outright, leaving a digest in their
@@ -1401,24 +1416,45 @@ export function compactMessages(
   // transcript made of many merely-large messages defeats both. Every later
   // round would then re-run a compaction with nothing left to free and
   // overflow again, so the run cannot recover on its own.
-  if (estimateTokens(messages) > limit) {
+  if (estimateTokens(messages) > target) {
     const head = messages.findIndex((m) => m.role !== "system");
     const start = head < 0 ? messages.length : head;
     // The current working thread stays whole — dropping it would erase the
     // step the model is mid-way through, which is worse than a long prompt.
     const KEEP_TAIL = 4;
     const dropped: ChatMessage[] = [];
-    while (messages.length - start > KEEP_TAIL && estimateTokens(messages) > limit) {
+    while (messages.length - start > KEEP_TAIL && estimateTokens(messages) > target) {
       dropped.push(messages.splice(start, 1)[0]);
     }
     if (dropped.length) {
-      const digest = digestHistory(dropped, currentLang);
+      // What replaces the dropped span. A first-60-characters bullet per turn
+      // is a table of contents, not a memory: it cannot carry the decision that
+      // was made, the constant that was read out of a file, or the approach
+      // already ruled out. Chat mode has always had the model write this
+      // summary; code mode, where the facts are load-bearing, was the mode
+      // going without. The bullet digest remains the fallback for callers with
+      // no model to spare, and for when the summariser comes back empty.
+      let note = digestHistory(dropped, currentLang);
+      if (summarise) {
+        const transcript = fitTranscript(
+          dropped.map((m) => `${m.role}: ${m.content}`),
+          Math.max(1500, Math.floor(target * 0.6)),
+          currentLang,
+        );
+        try {
+          const written = (await summarise(transcript)).trim();
+          if (written) note = written;
+        } catch {
+          // A failed summary must not take the run down with it — the digest
+          // still describes what was dropped.
+        }
+      }
       messages.splice(start, 0, {
         role: "user",
         content:
           currentLang === "zh"
-            ? `[上下文已压缩] 更早的 ${dropped.length} 条消息已省略。要点:\n${digest}`
-            : `[context compacted] ${dropped.length} earlier messages elided. Gist:\n${digest}`,
+            ? `[上下文已压缩] 更早的 ${dropped.length} 条消息已被总结如下,请当作已发生的事实继续:\n${note}`
+            : `[context compacted] ${dropped.length} earlier messages, summarised. Treat this as established fact and continue:\n${note}`,
       });
       changed = true;
     }
@@ -1427,8 +1463,8 @@ export function compactMessages(
   // results KEEP held back. Stubbing them is the last thing that keeps the
   // prompt inside the window, and a stub still names the tool and its arguments
   // — the model can see what it ran and run it again if it needs the output.
-  if (estimateTokens(messages) > limit) {
-    for (let i = 0; i < messages.length && estimateTokens(messages) > limit; i++) {
+  if (estimateTokens(messages) > target) {
+    for (let i = 0; i < messages.length && estimateTokens(messages) > target; i++) {
       const m = messages[i];
       if (m.role !== "user" && m.role !== "tool") continue;
       if (!m.content.startsWith("<tool_result") || m.content.length < 200) continue;
@@ -1445,6 +1481,16 @@ export function compactMessages(
 
 /** Cross-turn compaction: if the prior conversation alone would eat too much of
  *  the window, keep only the most recent exchanges and note the elision. */
+/** What the model is told to preserve when a stretch of work is condensed.
+ *  Written for an agent transcript rather than a chat: the facts a coding run
+ *  cannot afford to lose are the concrete ones — which files were changed and
+ *  how, what a tool actually returned, what has already been ruled out. */
+export function compactionSummaryPrompt(lang: "zh" | "en"): string {
+  return lang === "zh"
+    ? "下面是一个编程 agent 早期的工作记录。请压缩成简洁的要点,必须保留:已经改动过的文件及改法、工具返回的关键事实(路径、函数名、常量、报错原文要点)、已确认无效的思路、以及尚未完成的事项。省略寒暄和思考过程。只输出要点正文。"
+    : "Below is the earlier work of a coding agent. Condense it into terse notes. You MUST preserve: which files were changed and how, concrete facts returned by tools (paths, symbol names, constants, the gist of error messages), approaches already ruled out, and what is still outstanding. Omit pleasantries and deliberation. Output only the notes.";
+}
+
 /** Bullet digest of dropped history turns, so the model keeps a thread of
  *  what already happened instead of a generic "earlier stuff was elided"
  *  note. ≤700 chars — oldest bullets go first when over. Pure — unit-tested. */
@@ -1482,7 +1528,14 @@ export function digestHistory(dropped: ChatMessage[], lang: "zh" | "en"): string
   return out.slice(0, 700);
 }
 
-function trimHistory(history: ChatMessage[], nCtx: number): { history: ChatMessage[]; trimmed: boolean } {
+async function trimHistory(
+  history: ChatMessage[],
+  nCtx: number,
+  summarise?: (transcript: string) => Promise<string>,
+): Promise<{ history: ChatMessage[]; trimmed: boolean }> {
+  // Prior conversation gets at most 40% of the window — deliberately smaller
+  // than what mid-turn compaction allows, because the rest of the window is
+  // about to be spent on this turn's own tool traffic.
   const budget = Math.floor(nCtx * 0.4);
   if (estimateTokens(history) <= budget) return { history, trimmed: false };
   const kept = [...history];
@@ -1492,7 +1545,20 @@ function trimHistory(history: ChatMessage[], nCtx: number): { history: ChatMessa
   }
   // Never start the kept slice mid-exchange with an assistant message.
   while (kept.length && kept[0].role === "assistant") dropped.push(kept.shift()!);
-  const digest = digestHistory(dropped, currentLang);
+  let digest = digestHistory(dropped, currentLang);
+  if (summarise && dropped.length) {
+    const transcript = fitTranscript(
+      dropped.map((m) => `${m.role}: ${m.content}`),
+      Math.max(1500, Math.floor(budget * 0.6)),
+      currentLang,
+    );
+    try {
+      const written = (await summarise(transcript)).trim();
+      if (written) digest = written;
+    } catch {
+      // The bullet digest still describes what was dropped.
+    }
+  }
   const base =
     currentLang === "zh"
       ? "(提示:更早的对话已被自动压缩省略,以下是最近的部分。"
@@ -1564,7 +1630,31 @@ export async function runAgentTurn(
   // token; compaction reclaims the space on later steps. Small-context models
   // get a proportionally smaller (safe) budget; big ones read up to ~384 KB.
   const readChars = Math.min(384000, Math.max(8000, Math.floor((nCtx - 5000) * 3)));
-  const { history: keptHistory, trimmed } = trimHistory(history, nCtx);
+  // One summariser, used both by the start-of-turn history trim and by
+  // mid-turn compaction — condensing a stretch of work is the same job in
+  // both places, and it should not lose different things depending on when
+  // it happens to run.
+  const summariseSpan = async (transcript: string): Promise<string> => {
+    if (opts.signal.cancelled) return "";
+    let out = "";
+    await generate(
+      {
+        messages: [
+          { role: "system", content: compactionSummaryPrompt(currentLang) },
+          { role: "user", content: transcript },
+        ],
+        // Low temperature and no thinking: this is a transcription job, not a
+        // creative one, and a think block would eat the budget the summary
+        // itself needs.
+        params: { temperature: 0.2, topP: 0.9, maxTokens: 500, think: false },
+      },
+      (ev) => {
+        if (ev.type === "token") out += ev.text;
+      },
+    );
+    return out.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  };
+  const { history: keptHistory, trimmed } = await trimHistory(history, nCtx, summariseSpan);
   // The user's opening turn carries any attached images (vision models only);
   // otherwise it's plain text as before.
   const userImages = opts.visionReady && opts.images?.length ? opts.images : undefined;
@@ -1804,7 +1894,8 @@ export async function runAgentTurn(
           );
         }
       }
-      if (compactMessages(messages, nCtx, toolMeta, opts.maxGenTokens)) noteCompacted();
+      if (await compactMessages(messages, nCtx, toolMeta, opts.maxGenTokens, summariseSpan))
+        noteCompacted();
       evictStaleImages(messages);
 
       // Predicted (uncalibrated) cost of exactly the prompt this step sends —

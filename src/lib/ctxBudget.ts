@@ -132,10 +132,26 @@ export function contextLimit(nCtx: number, maxGenTokens?: number): number {
  * the summariser knows a gap is there rather than inventing continuity across
  * it.
  */
-export function fitTranscript(lines: string[], maxTokens: number, lang: "zh" | "en"): string {
+export function fitTranscript(rawLines: string[], maxTokens: number, lang: "zh" | "en"): string {
   const join = (xs: string[]) => xs.join("\n");
-  if (!lines.length) return "";
-  if (textTokens(join(lines)) <= maxTokens) return join(lines);
+  if (!rawLines.length) return "";
+  if (textTokens(join(rawLines)) <= maxTokens) return join(rawLines);
+
+  // No single turn may eat the whole budget. One 4000-character tool result is
+  // a line like any other here, and left whole it would crowd out every other
+  // turn — the summariser would see one file dump instead of the shape of the
+  // work. Its opening carries what matters (the path, the first rows, the
+  // error); the middle of a dump does not.
+  const perLine = Math.max(120, Math.floor(maxTokens * 0.25));
+  const clip = lang === "zh" ? "…(此条已截断)" : "…(truncated)";
+  const lines = rawLines.map((l) => {
+    if (textTokens(l) <= perLine) return l;
+    // textTokens is an estimate; walk back from a character budget derived
+    // from it rather than trusting a single division.
+    let cut = Math.max(80, Math.floor((l.length * perLine) / Math.max(1, textTokens(l))));
+    while (cut > 80 && textTokens(l.slice(0, cut)) > perLine) cut = Math.floor(cut * 0.9);
+    return l.slice(0, cut) + clip;
+  });
 
   const marker = lang === "zh" ? "……(中间若干轮已省略)……" : "…(some turns omitted here)…";
   // The opening gets the larger share: it is the part that never comes back.

@@ -8,7 +8,7 @@ const { contextLimit, messageTokens } = await import("./ctxBudget");
 type ChatMessage = Parameters<typeof compactMessages>[0][number];
 
 describe("digestForCall", () => {
-  test("read_file carries path, symbol, and range", () => {
+  test("read_file carries path, symbol, and range", async () => {
     const d = digestForCall("read_file", { path: "src/foo.py", offset: 1, limit: 400 }, "zh");
     expect(d).toContain("src/foo.py");
     expect(d).toContain("offset=1");
@@ -104,24 +104,24 @@ describe("compactMessages — reasoning stays until the window needs the room", 
       { role: "assistant", content: think(400) },
     ] as Parameters<typeof compactMessages>[0];
 
-  test("a transcript that fits keeps every word of its reasoning", () => {
+  test("a transcript that fits keeps every word of its reasoning", async () => {
     const msgs = build("tool");
-    expect(compactMessages(msgs, 1_000_000)).toBe(false);
+    expect(await compactMessages(msgs, 1_000_000)).toBe(false);
     expect(msgs.filter((m) => m.content.includes("</think>"))).toHaveLength(6);
   });
 
-  test("results delivered under the tool role are still compactable", () => {
+  test("results delivered under the tool role are still compactable", async () => {
     const msgs = build("tool");
-    expect(compactMessages(msgs, 2000)).toBe(true);
+    expect(await compactMessages(msgs, 2000)).toBe(true);
     const stubbed = msgs.filter((m) => m.role === "tool" && !m.content.includes("out out"));
     expect(stubbed.length).toBeGreaterThan(0);
     // Stubbing must not smuggle a result back into the user's voice.
     expect(msgs.every((m) => m.role !== "user" || !m.content.startsWith("<tool_result"))).toBe(true);
   });
 
-  test("under real pressure the oldest reasoning goes and the newest stays", () => {
+  test("under real pressure the oldest reasoning goes and the newest stays", async () => {
     const msgs = build("tool");
-    compactMessages(msgs, 900);
+    await compactMessages(msgs, 900);
     const assistants = msgs.filter((m) => m.role === "assistant");
     const withThink = assistants.filter((m) => m.content.includes("</think>"));
     // Only the last two rounds keep their thinking, and they are the LAST two —
@@ -136,7 +136,7 @@ describe("compactMessages — reasoning stays until the window needs the room", 
 });
 
 describe("digestHistory", () => {
-  test("summarises what a turn did, not what it was thinking", () => {
+  test("summarises what a turn did, not what it was thinking", async () => {
     const d = digestHistory(
       [{ role: "assistant", content: "<think>\nlong internal debate\n</think>\n\nran the tests" }],
       "en",
@@ -171,46 +171,179 @@ describe("compaction reaches the limit, not just 'closer to it'", () => {
     return msgs;
   }
 
-  test("a transcript far over the window is brought under it", () => {
+  test("a transcript far over the window is brought under it", async () => {
     const msgs = heavyTranscript();
     const limit = contextLimit(4096);
     expect(messageTokens(msgs)).toBeGreaterThan(limit * 5);
-    expect(compactMessages(msgs, 4096)).toBe(true);
-    expect(messageTokens(msgs)).toBeLessThanOrEqual(limit);
+    expect(await compactMessages(msgs, 4096)).toBe(true);
+    // Under the limit, and with room to spare: freeing exactly enough to slip
+    // back under meant re-compacting on the very next round, every round.
+    expect(messageTokens(msgs)).toBeLessThanOrEqual(Math.floor(limit * 0.6));
   });
 
-  test("the working thread survives, so the model keeps its place", () => {
+  test("the working thread survives, so the model keeps its place", async () => {
     const msgs = heavyTranscript();
-    compactMessages(msgs, 4096);
+    await compactMessages(msgs, 4096);
     expect(msgs[0].role).toBe("system");
     expect(msgs[msgs.length - 1].content).toContain("<tool_result");
     expect(msgs.some((m) => m.content.includes("done 11"))).toBe(true);
   });
 
-  test("dropped history leaves a digest rather than a silent hole", () => {
+  test("dropped history leaves a digest rather than a silent hole", async () => {
     const msgs = heavyTranscript();
-    compactMessages(msgs, 4096);
+    await compactMessages(msgs, 4096);
     const note = msgs.find((m) => /context compacted|上下文已压缩/.test(m.content));
     expect(note).toBeDefined();
     expect(note!.content).toMatch(/task \d|user:|用户:/);
   });
 
-  test("compacting twice is stable — no churn once it fits", () => {
+  test("compacting twice is stable — no churn once it fits", async () => {
     const msgs = heavyTranscript();
-    compactMessages(msgs, 4096);
+    await compactMessages(msgs, 4096);
     const after = messageTokens(msgs);
-    expect(compactMessages(msgs, 4096)).toBe(false);
+    expect(await compactMessages(msgs, 4096)).toBe(false);
     expect(messageTokens(msgs)).toBe(after);
   });
 
-  test("a comfortable transcript is left completely alone", () => {
+  test("a comfortable transcript is left completely alone", async () => {
     const msgs: ChatMessage[] = [
       { role: "system", content: "sys" },
       { role: "user", content: "hi" },
       { role: "assistant", content: "hello" },
     ];
     const snapshot = JSON.stringify(msgs);
-    expect(compactMessages(msgs, 32768)).toBe(false);
+    expect(await compactMessages(msgs, 32768)).toBe(false);
     expect(JSON.stringify(msgs)).toBe(snapshot);
+  });
+});
+
+describe("dropped history is summarised, not just indexed", () => {
+  function longRun(): ChatMessage[] {
+    const msgs: ChatMessage[] = [{ role: "system", content: "sys" }];
+    for (let i = 0; i < 12; i++) {
+      msgs.push({ role: "user", content: `task ${i}` });
+      msgs.push({ role: "assistant", content: `did step ${i} ${"x".repeat(600)}` });
+      msgs.push({
+        role: "user",
+        content: `<tool_result name="read_file">${"y".repeat(4000)}</tool_result>`,
+      });
+    }
+    return msgs;
+  }
+
+  test("the model's summary replaces the dropped span", async () => {
+    const seen: string[] = [];
+    const msgs = longRun();
+    await compactMessages(msgs, 4096, undefined, undefined, async (tr) => {
+      seen.push(tr);
+      return "PORT is 8080; src/api.py already patched; the regex approach failed";
+    });
+    expect(seen).toHaveLength(1);
+    const note = msgs.find((m) => m.content.includes("PORT is 8080"));
+    expect(note).toBeDefined();
+    // The load-bearing facts a bullet list of first-60-chars could not carry.
+    expect(note!.content).toContain("src/api.py already patched");
+    expect(note!.content).toContain("regex approach failed");
+  });
+
+  test("the summariser is shown the turns that are going away", async () => {
+    let transcript = "";
+    await compactMessages(longRun(), 4096, undefined, undefined, async (tr) => {
+      transcript = tr;
+      return "ok";
+    });
+    expect(transcript).toContain("task 0");
+    expect(transcript.length).toBeGreaterThan(0);
+  });
+
+  test("a summariser that throws does not take the run down", async () => {
+    const msgs = longRun();
+    const ok = await compactMessages(msgs, 4096, undefined, undefined, async () => {
+      throw new Error("model unloaded mid-compaction");
+    });
+    expect(ok).toBe(true);
+    expect(messageTokens(msgs)).toBeLessThanOrEqual(contextLimit(4096));
+    expect(msgs.some((m) => /context compacted|上下文已压缩/.test(m.content))).toBe(true);
+  });
+
+  test("an empty summary falls back to the bullet digest", async () => {
+    const msgs = longRun();
+    await compactMessages(msgs, 4096, undefined, undefined, async () => "   ");
+    const note = msgs.find((m) => /context compacted|上下文已压缩/.test(m.content));
+    expect(note!.content).toMatch(/task \d|user:/);
+  });
+
+  test("no summariser at all still compacts — the digest stands in", async () => {
+    const msgs = longRun();
+    expect(await compactMessages(msgs, 4096)).toBe(true);
+    expect(messageTokens(msgs)).toBeLessThanOrEqual(contextLimit(4096));
+  });
+
+  test("nothing is summarised when the transcript already fits", async () => {
+    let called = false;
+    const msgs: ChatMessage[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hi" },
+    ];
+    await compactMessages(msgs, 32768, undefined, undefined, async () => {
+      called = true;
+      return "x";
+    });
+    expect(called).toBe(false);
+  });
+});
+
+describe("compaction buys runway, it does not just skim the ceiling", () => {
+  // The behaviour the target exists to prevent: freeing exactly enough to slip
+  // back under the limit, so the very next round is over again. A 4k-window
+  // bench run spent 120 consecutive rounds doing this, paying a full prefill
+  // each time.
+  function growingRun() {
+    const msgs: ChatMessage[] = [{ role: "system", content: "sys" }];
+    let n = 0;
+    return {
+      msgs,
+      // One more round of work: a request, a reply, and a fat tool result.
+      round() {
+        msgs.push({ role: "user", content: `step ${n}` });
+        msgs.push({ role: "assistant", content: `working on ${n} ${"x".repeat(300)}` });
+        msgs.push({
+          role: "user",
+          content: `<tool_result name="read_file">${"y".repeat(1500)}</tool_result>`,
+        });
+        n++;
+      },
+    };
+  }
+
+  test("most rounds do not compact at all", async () => {
+    const run = growingRun();
+    const nCtx = 8192;
+    let compactions = 0;
+    for (let i = 0; i < 40; i++) {
+      run.round();
+      if (await compactMessages(run.msgs, nCtx)) compactions++;
+      // Whatever it does, the prompt must stay inside the window.
+      expect(messageTokens(run.msgs)).toBeLessThanOrEqual(contextLimit(nCtx));
+    }
+    // Skimming the ceiling would compact on nearly every round after the first
+    // overflow. With real headroom it should be a small fraction of them.
+    expect(compactions).toBeLessThan(12);
+  });
+
+  test("a compaction is followed by rounds that need none", async () => {
+    const run = growingRun();
+    const nCtx = 8192;
+    let sawCompaction = false;
+    let quietAfter = 0;
+    for (let i = 0; i < 40; i++) {
+      run.round();
+      const did = await compactMessages(run.msgs, nCtx);
+      if (sawCompaction && !did) quietAfter++;
+      if (did && sawCompaction) break;
+      if (did) sawCompaction = true;
+    }
+    expect(sawCompaction).toBe(true);
+    expect(quietAfter).toBeGreaterThan(2);
   });
 });

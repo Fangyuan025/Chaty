@@ -156,3 +156,28 @@ describe("fitTranscript — what the summariser gets to read", () => {
     expect(fitTranscript([], 100, "en")).toBe("");
   });
 });
+
+describe("fitTranscript — no single turn eats the whole budget", () => {
+  test("one huge tool result does not crowd out every other turn", () => {
+    const lines = [
+      `tool: <tool_result name="read_file">${"y".repeat(20000)}</tool_result>`,
+      "user: and then what",
+      "assistant: I checked the config",
+      "user: which key was wrong",
+    ];
+    const out = fitTranscript(lines, 300, "en");
+    // The dump is clipped and marked, and the turns after it still make it in.
+    expect(out).toContain("truncated");
+    expect(out).toContain("which key was wrong");
+    expect(textTokens(out)).toBeLessThanOrEqual(300 * 1.2);
+  });
+
+  test("the clipped line keeps its opening, which is the part that identifies it", () => {
+    const out = fitTranscript(
+      [`tool: <tool_result name="read_file">${"y".repeat(20000)}</tool_result>`, "user: ok"],
+      300,
+      "en",
+    );
+    expect(out).toContain('name="read_file"');
+  });
+});

@@ -40,7 +40,7 @@ import { Bridge, type Json } from "../lib/bridge.mts";
 
 interface TaskResult {
   task: string; resolved: boolean; steps: number; turns: number;
-  seconds: number; error?: string;
+  seconds: number; error?: string; ctxPeak?: number; ctxOverflow?: boolean; compactions?: number;
 }
 
 async function main() {
@@ -55,7 +55,10 @@ async function main() {
   if (!existsSync(bin)) throw new Error(`chaty-headless not found at ${bin} — build it first`);
 
   const bridge = new Bridge(bin);
-  const info = (await bridge.call("load_model", { path: model, nCtx: 16384 })) as Json;
+  // CHATY_BENCH_NCTX: shrink the window deliberately, so a task that would never
+  // fill 16k still drives the compaction path hard.
+  const nCtx = Number(process.env.CHATY_BENCH_NCTX ?? 16384);
+  const info = (await bridge.call("load_model", { path: model, nCtx })) as Json;
   console.log(`model loaded: ${JSON.stringify(info)}`);
   // A missing/unloadable model must kill the run LOUDLY. The v201-full45
   // launch ran 12 tasks against a deleted model dir: load came back without
@@ -103,6 +106,9 @@ async function main() {
     const t0 = Date.now();
     const taskDir = path.join(tasksDir, name);
     const ws = mkdtempSync(path.join(tmpdir(), `chaty-bench-${name}-`));
+    let ctxPeak = 0;
+    let compactions = 0;
+    const ctxSamples: number[] = [];
     // Each workspace copy is ~60MB — always remove it once the task is graded,
     // including on error paths, or a full run leaks gigabytes of $TMPDIR.
     try {
@@ -144,7 +150,7 @@ async function main() {
         await new Promise<void>((resolve) => {
           runAgentTurn(prompt, history as never, ws, (process.env.CHATY_BENCH_LANG === "zh" ? "zh" : "en"), {
             thinkMode: "off",
-            nCtx: 16384,
+            nCtx,
             maxSteps: 40,
             temperature: 0.2,
             bashTimeout: 120,
@@ -155,6 +161,14 @@ async function main() {
             approveSudo: async () => ({ ok: false }),
           }, {
             onThinking: () => {},
+            // Compaction proof: the engine's own count of what it was actually
+            // handed. If compaction ever fails to keep the prompt inside the
+            // window, this is where it shows — not in a estimate we computed.
+            onContext: (used: number) => {
+              ctxPeak = Math.max(ctxPeak, used);
+              ctxSamples.push(used);
+            },
+            onCompacted: () => { compactions++; },
             onAssistantText: (t) => { trace({ ev: "text", t }); },
             onStep: (s) => {
               if (!seenSteps.has(s.id)) { seenSteps.add(s.id); steps++; }
@@ -184,7 +198,8 @@ async function main() {
         catch { resolved = false; }
       }
       if (resolved) resolvedCount++;
-      const r: TaskResult = { task: name, resolved, steps, turns, seconds: Math.round((Date.now() - t0) / 1000), error };
+      const r: TaskResult = { task: name, resolved, steps, turns, seconds: Math.round((Date.now() - t0) / 1000), error, ctxPeak, ctxOverflow: ctxPeak > nCtx, compactions };
+      console.log(`  context: peak ${ctxPeak}/${nCtx} over ${ctxSamples.length} rounds, ${compactions} compactions${ctxPeak > nCtx ? "  *** OVERFLOWED ***" : ""}`);
       appendFileSync(outFile, JSON.stringify(r) + "\n");
       console.log(`${resolved ? "✓" : "✗"} ${name}  ${r.seconds}s  ${steps} steps${error ? `  ERROR: ${error}` : ""}`);
     } finally {
