@@ -105,6 +105,24 @@
   289ms, Qwen3.8 27B 664ms — flat, cache reused. Screenshot rounds no longer
   grow with how many screenshots the session has taken.
 
+### Code mode: a turn continues from the work the last one did
+
+- **The agent stops forgetting what it just did.** Between turns everything it
+  had actually done was thrown away — the follow-up arrived with the tool
+  results gone and `(tools run: read_file, bash)` in their place, so the model no
+  longer knew what any of those calls had returned and re-read files it had just
+  read. A turn now hands back the exact message tail it sent and the next one
+  continues from it, including when it was cancelled or errored halfway.
+
+- **Carrying the exchange is cheaper than discarding it was.** The second turn's
+  first step: 2058 prompt tokens with 2035 reused, 75ms, against a cold 208ms
+  for the 97-token summary it replaces — 99% reuse on Qwen3.5, LFM2 and Qwen3
+  through llama.cpp, all three faster in wall time than throwing the context
+  away. On MLX the reuse half does not follow: its template renders earlier
+  assistant turns without their reasoning block once a new question arrives, so
+  the first step after a new question re-prefills there. Within a turn MLX still
+  reuses in full.
+
 ### Context compaction
 
 - **Compaction condenses the work instead of indexing it.** Code mode

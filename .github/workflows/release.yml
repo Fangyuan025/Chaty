@@ -269,6 +269,13 @@ jobs:
             nothing, so `<|tool_call_start|>[read_file(path='x')]<|tool_call_end|>`
             reached Chaty as ordinary prose and the call never fired.
 
+            The agent stops forgetting what it just did between turns. The
+            tool results used to be dropped and replaced by "(tools run:
+            read_file, bash)", so a follow-up re-read files the model had just
+            read. The exchange now carries over intact — and that is cheaper
+            than discarding it was: 2035 of 2058 prompt tokens reused, 75ms,
+            against a cold 208ms for the summary it replaces.
+
             A screenshot the model has already seen is no longer re-encoded.
             Three consecutive tool-result rounds on Qwen3.5 4B cost 2826ms,
             5596ms and 5741ms before; they now cost about 150ms each, and a
