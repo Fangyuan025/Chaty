@@ -269,6 +269,16 @@ jobs:
             nothing, so `<|tool_call_start|>[read_file(path='x')]<|tool_call_end|>`
             reached Chaty as ordinary prose and the call never fired.
 
+            A screenshot the model has already seen is no longer re-encoded.
+            Three consecutive tool-result rounds on Qwen3.5 4B cost 2826ms,
+            5596ms and 5741ms before; they now cost about 150ms each, and a
+            fresh screenshot encodes only itself. Dropping stale screenshots
+            turned out to make llama.cpp slower, not faster, so it keeps them.
+
+            A chat reply now travels the way the model wrote it — stripping the
+            reasoning out of stored turns meant every reply re-read the whole
+            conversation. Attached pictures count toward the context budget.
+
             Context compaction now condenses the work with a model-written
             summary instead of a 60-character index per turn, and leaves room to
             breathe rather than skimming the limit: the same task on an 8k
