@@ -1260,6 +1260,10 @@ export function CodeMode({
       skills,
       memoryIndex,
       visionReady: model.visionReady,
+      // llama.cpp's media cache keeps every already-encoded image whose identity
+      // still prefixes the new prompt; MLX re-encodes them all whenever a call
+      // carries pixels. That decides whether dropping stale screenshots pays.
+      mediaPrefixReuse: model.backend === "llama.cpp",
       toolRole: model.toolRole ?? false,
       reasoningField: model.reasoningField ?? false,
       // No vision encoder → still expose the browser suite, minus the two

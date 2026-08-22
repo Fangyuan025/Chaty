@@ -275,6 +275,12 @@ struct MediaCache {
     body: String,
     /// Positions resident at the end of `body`.
     n_past_body: i32,
+    /// Whether `prompt`/`n_past` describe the KV *including* the reply this
+    /// turn generated. When they do, a prompt that string-extends them is a
+    /// pure append with nothing to truncate — which is the only way a
+    /// hybrid/recurrent model can reuse a media prefill at all, since its
+    /// state cannot be rewound to drop a generation tail.
+    complete: bool,
 }
 
 /// Total images pushed through the vision encoder (observability: the media
@@ -1025,6 +1031,9 @@ fn run_turn(
     let dump_gen = std::env::var("CHATY_DUMP_GEN_TOKENS").as_deref() == Ok("1");
     let mut gen_ids: Vec<i32> = Vec::new();
 
+    // How much of `out` is actually resident in the KV. See the snapshot below.
+    let mut decoded_len = 0usize;
+
     let mut sampler = build_sampler(&req.params);
     // Robust incremental UTF-8 assembly: accumulate raw token bytes and only
     // emit the valid-UTF-8 prefix, carrying any incomplete trailing bytes to
@@ -1152,12 +1161,14 @@ fn run_turn(
             *media_cache = None;
             return Err(e).context("decode failed");
         }
-        // The token cache only describes text-regime KV contents; generated
-        // tokens in a media conversation live beyond `media_cache.n_past` and
-        // are truncated away by the next incremental media prefill.
         if !media_turn {
             cached.push(token);
         }
+        // The text of everything the KV now holds. A token reaches the cache
+        // only here, at the end of its iteration — a stop sequence breaks out
+        // above, with that token's piece already in `out` but never decoded —
+        // so the snapshot has to be taken after the decode, not before.
+        decoded_len = out.len();
         idx = batch.n_tokens() - 1;
     }
     // Flush the unsent tail (unless we halted on a stop sequence).
@@ -1189,6 +1200,25 @@ fn run_turn(
             })
             .collect();
         eprintln!("GEN_TOKENS[{}]>>>{}<<<END", gen_ids.len(), pieces.join(" "));
+    }
+
+    // Record the reply into the media ledger, so the next turn's prompt — which
+    // contains this very reply — extends it instead of colliding with a tail
+    // nothing describes. Without this the next prefill had to rewind the KV
+    // past the generated tokens, and a hybrid model cannot rewind: it re-read
+    // the whole conversation and re-encoded every image, on every single round.
+    //
+    // Only when `pending` is empty, because a multi-byte character split across
+    // tokens leaves bytes that have not reached `out` yet — the ledger would
+    // then describe less than the KV holds, and the next turn would evaluate a
+    // tail the model has already seen. In that case the ledger stays
+    // prompt-only and the old rewind path handles it.
+    if media_turn && pending.is_empty() && decoded_len > 0 {
+        if let Some(c) = media_cache.as_mut() {
+            c.prompt.push_str(&out[..decoded_len]);
+            c.n_past = n_past;
+            c.complete = true;
+        }
     }
 
     let secs = start.elapsed().as_secs_f32().max(1e-3);
@@ -1234,13 +1264,15 @@ fn prefill_media(
     // an empty tail would leave the sampler without fresh logits.
     let reuse = media_cache.as_ref().and_then(|c| {
         if prompt.len() > c.prompt.len() && prompt.starts_with(c.prompt.as_str()) && img_prefix_ok(c) {
-            Some((c.n_past, c.prompt.len(), c.image_keys.len()))
+            Some((c.n_past, c.prompt.len(), c.image_keys.len(), c.complete))
         } else if !c.body.is_empty()
             && prompt.len() > c.body.len()
             && prompt.starts_with(c.body.as_str())
             && img_prefix_ok(c)
         {
-            Some((c.n_past_body, c.body.len(), c.image_keys.len()))
+            // The anchor deliberately points behind the generation tail, so
+            // this one always has something to truncate.
+            Some((c.n_past_body, c.body.len(), c.image_keys.len(), false))
         } else {
             None
         }
@@ -1251,7 +1283,13 @@ fn prefill_media(
         // state — seq_rm reports false — so fall back to a clean full
         // prefill (correct, just slower; the frontend caps how many images
         // ride along, so the re-encode cost stays bounded).
-        Some((n_past, prompt_len, n_imgs))
+        // A complete ledger means the KV ends exactly where the cached prompt
+        // does: the new prompt appends to it, so there is nothing to remove and
+        // no rewind to ask for. This is what lets a hybrid model reuse at all.
+        Some((n_past, prompt_len, n_imgs, true)) => {
+            (n_past, &prompt[prompt_len..], &images[n_imgs..])
+        }
+        Some((n_past, prompt_len, n_imgs, false))
             if ctx.clear_kv_cache_seq(Some(0), Some(n_past as u32), None) == Ok(true) =>
         {
             (n_past, &prompt[prompt_len..], &images[n_imgs..])
@@ -1463,6 +1501,9 @@ fn prefill_media(
         n_past,
         body: if anchored { prompt_body.to_string() } else { String::new() },
         n_past_body,
+        // The reply has not been generated yet; the generation loop marks this
+        // true once it has recorded what it decoded.
+        complete: false,
     });
     Ok(n_past)
 }
