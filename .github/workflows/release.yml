@@ -259,12 +259,6 @@ jobs:
             grows with the transcript instead of the cost doing so. Gemma 4, QwQ
             and the Qwen3 line report identical counts before and after.
 
-            ### Re-cut assets
-
-            These installers were rebuilt after release day. Same version,
-            different binary — if you downloaded 2.1.1 on release day, this is
-            not the build you have.
-
             Thinking off no longer costs a full prefill every turn: the empty
             reasoning block Chaty prefills after the assistant header was
             missing from stored turns, so round two diverged right there. 0% KV

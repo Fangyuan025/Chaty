@@ -60,12 +60,6 @@
   prompt it rendered — the observability the MLX side already had, and what
   made the second half of this measurable at all.
 
-### Re-cut assets (2026-08-22)
-
-The installers published under this version were rebuilt to carry the following.
-Same version, different binary — if you downloaded 2.1.1 on release day, this is
-not the build you have.
-
 - **Thinking off no longer costs a full prefill every turn.** Chaty prefills an
   empty reasoning block after the assistant header so the model skips straight
   to the answer, but a stored assistant turn was rendered without it — so round
@@ -84,7 +78,9 @@ not the build you have.
   text read as ordinary prose and the call never fired. The llama.cpp engine now
   keeps them, as the MLX engine always has, and Chaty reads that syntax.
 
-- **Context compaction condenses the work instead of indexing it.** Code mode
+### Context compaction
+
+- **Compaction condenses the work instead of indexing it.** Code mode
   replaced dropped history with 60 characters per turn, which cannot carry a
   constant read out of a file or an approach already ruled out; the model now
   writes that summary, as it always has in chat. Compaction also freed exactly
