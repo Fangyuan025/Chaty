@@ -115,3 +115,47 @@ export function contextLimit(nCtx: number, maxGenTokens?: number): number {
   const reserve = Math.min(Math.max(want, 512), Math.floor(nCtx * 0.25)) + 700;
   return Math.max(Math.floor(nCtx * 0.5), nCtx - reserve);
 }
+
+/**
+ * Fit a run of transcript lines into `maxTokens` for a summarisation pass.
+ *
+ * Chat mode used to do this with `transcript.slice(-7000)` — a flat character
+ * cap that kept the END of the stretch being summarised. That threw away the
+ * opening of the conversation, which is where the user states the goal, the
+ * constraints and the preferences, and which nothing later restates; and the
+ * recent end was already being kept verbatim as the tail, so the summary spent
+ * its budget describing what the model could still read. It also cut mid-word,
+ * handing the summariser a sentence fragment as its first line.
+ *
+ * When everything fits, nothing is dropped. When it does not, the opening is
+ * kept in full and the MIDDLE is elided, on line boundaries, with a marker so
+ * the summariser knows a gap is there rather than inventing continuity across
+ * it.
+ */
+export function fitTranscript(lines: string[], maxTokens: number, lang: "zh" | "en"): string {
+  const join = (xs: string[]) => xs.join("\n");
+  if (!lines.length) return "";
+  if (textTokens(join(lines)) <= maxTokens) return join(lines);
+
+  const marker = lang === "zh" ? "……(中间若干轮已省略)……" : "…(some turns omitted here)…";
+  // The opening gets the larger share: it is the part that never comes back.
+  const headBudget = Math.floor(maxTokens * 0.6);
+  const head: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    const c = textTokens(line);
+    if (used + c > headBudget && head.length) break;
+    head.push(line);
+    used += c;
+  }
+  const tail: string[] = [];
+  let tailUsed = textTokens(marker);
+  for (let i = lines.length - 1; i >= head.length; i--) {
+    const c = textTokens(lines[i]);
+    if (used + tailUsed + c > maxTokens) break;
+    tail.unshift(lines[i]);
+    tailUsed += c;
+  }
+  if (!tail.length) return join([...head, marker]);
+  return join([...head, marker, ...tail]);
+}

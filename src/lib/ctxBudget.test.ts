@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach } from "vitest";
 import {
   contextLimit,
+  fitTranscript,
   calibrate,
   calibrationFactor,
   messageTokens,
@@ -113,5 +114,45 @@ describe("contextLimit — one rule for both modes", () => {
 
   test("both modes are asked the same question and get the same answer", () => {
     expect(contextLimit(32768, 4096)).toBe(contextLimit(32768, 4096));
+  });
+});
+
+describe("fitTranscript — what the summariser gets to read", () => {
+  const lines = Array.from({ length: 60 }, (_, i) => `user: turn number ${i} with some content`);
+
+  test("a short stretch is passed through untouched", () => {
+    expect(fitTranscript(lines.slice(0, 3), 10_000, "en")).toBe(lines.slice(0, 3).join("\n"));
+  });
+
+  test("the opening survives — it is what nothing later restates", () => {
+    // The old flat slice(-7000) kept the end and dropped exactly this.
+    const out = fitTranscript(lines, 60, "en");
+    expect(out).toContain("turn number 0");
+  });
+
+  test("the gap is marked, not papered over", () => {
+    const out = fitTranscript(lines, 60, "en");
+    expect(out).toContain("omitted here");
+    expect(out).not.toContain("turn number 30");
+  });
+
+  test("it stays within the budget it was given", () => {
+    for (const budget of [40, 100, 300]) {
+      expect(textTokens(fitTranscript(lines, budget, "en"))).toBeLessThanOrEqual(budget * 1.1);
+    }
+  });
+
+  test("it cuts on line boundaries, never mid-sentence", () => {
+    for (const line of fitTranscript(lines, 60, "en").split("\n")) {
+      expect(line === "…(some turns omitted here)…" || lines.includes(line)).toBe(true);
+    }
+  });
+
+  test("a budget too small for even one line still yields that line", () => {
+    expect(fitTranscript(lines, 1, "en")).toContain("turn number 0");
+  });
+
+  test("empty in, empty out", () => {
+    expect(fitTranscript([], 100, "en")).toBe("");
   });
 });

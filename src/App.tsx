@@ -96,6 +96,7 @@ import "./App.css";
 import {
   calibrate,
   contextLimit,
+  fitTranscript,
   rawTokens,
   resetCalibration,
   textTokens,
@@ -1609,10 +1610,13 @@ export default function App() {
     const tail = msgs.slice(splitAt);
     if (head.length === 0) return null;
 
-    let transcript = head
-      .map((m) => `${m.role === "user" ? "用户" : "助手"}: ${m.content}`)
-      .join("\n");
-    if (transcript.length > 7000) transcript = transcript.slice(-7000);
+    // Budget the summariser's own prompt against the real window rather than a
+    // flat character cap, and keep the opening when it will not all fit.
+    const transcript = fitTranscript(
+      head.map((m) => `${m.role === "user" ? "用户" : "助手"}: ${m.content}`),
+      Math.max(1500, Math.floor(budget * 0.6)),
+      lang === "zh" ? "zh" : "en",
+    );
 
     setComposing(true);
     let out = "";
