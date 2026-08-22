@@ -74,8 +74,9 @@ pub fn mic_cancel() -> Result<(), String> {
 mod imp {
     use super::MicResult;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::mpsc::Sender;
+    use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
     use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::Duration;
 
     use base64::Engine;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -89,8 +90,13 @@ mod imp {
     }
 
     static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
-    /// Send () to ask the capture thread to wind down.
-    static STOP: Mutex<Option<Sender<()>>> = Mutex::new(None);
+    struct CaptureControl {
+        stop: Sender<()>,
+        /// Signalled after the capture stream has actually released CoreAudio.
+        released: Receiver<()>,
+    }
+
+    static STOP: Mutex<Option<CaptureControl>> = Mutex::new(None);
 
     fn shared() -> &'static Arc<Shared> {
         SHARED.get_or_init(|| Arc::new(Shared::default()))
@@ -114,6 +120,7 @@ mod imp {
         *sh.level.lock().unwrap() = 0.0;
 
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let (released_tx, released_rx) = std::sync::mpsc::channel::<()>();
         let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<u32, String>>();
 
         std::thread::Builder::new()
@@ -176,10 +183,7 @@ mod imp {
                             let push = push.clone();
                             move |data: &[i16], _| {
                                 let n = data.len() / channels;
-                                push(
-                                    &mut data.chunks(channels).map(|f| f[0] as f32 / 32768.0),
-                                    n,
-                                )
+                                push(&mut data.chunks(channels).map(|f| f[0] as f32 / 32768.0), n)
                             }
                         },
                         on_err,
@@ -203,19 +207,25 @@ mod imp {
                         None,
                     ),
                     other => {
-                        let _ = init_tx.send(Err(format!("不支持的采样格式 (unsupported sample format): {other:?}")));
+                        let _ = init_tx.send(Err(format!(
+                            "不支持的采样格式 (unsupported sample format): {other:?}"
+                        )));
                         return;
                     }
                 };
                 let stream = match stream {
                     Ok(s) => s,
                     Err(e) => {
-                        let _ = init_tx.send(Err(format!("无法打开麦克风输入流 (failed to open input stream): {e}")));
+                        let _ = init_tx.send(Err(format!(
+                            "无法打开麦克风输入流 (failed to open input stream): {e}"
+                        )));
                         return;
                     }
                 };
                 if let Err(e) = stream.play() {
-                    let _ = init_tx.send(Err(format!("无法启动麦克风输入流 (failed to start input stream): {e}")));
+                    let _ = init_tx.send(Err(format!(
+                        "无法启动麦克风输入流 (failed to start input stream): {e}"
+                    )));
                     return;
                 }
                 sh.sample_rate.store(sample_rate, Ordering::Relaxed);
@@ -223,12 +233,16 @@ mod imp {
                 // Hold the stream until asked to stop (or the sender is dropped).
                 let _ = stop_rx.recv();
                 drop(stream);
+                let _ = released_tx.send(());
             })
             .map_err(|e| e.to_string())?;
 
         match init_rx.recv() {
             Ok(Ok(rate)) => {
-                *stop_slot = Some(stop_tx);
+                *stop_slot = Some(CaptureControl {
+                    stop: stop_tx,
+                    released: released_rx,
+                });
                 Ok(rate)
             }
             Ok(Err(e)) => Err(e),
@@ -265,20 +279,19 @@ mod imp {
         host: &cpal::Host,
     ) -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
         let mut tried: Vec<String> = Vec::new();
-        let mut try_dev =
-            |d: cpal::Device| -> Option<(cpal::Device, cpal::SupportedStreamConfig)> {
-                let name = d.name().unwrap_or_else(|_| "?".into());
-                match d.default_input_config() {
-                    Ok(c) => return Some((d, c)),
-                    Err(e) => tried.push(format!("{name}: {e}")),
+        let mut try_dev = |d: cpal::Device| -> Option<(cpal::Device, cpal::SupportedStreamConfig)> {
+            let name = d.name().unwrap_or_else(|_| "?".into());
+            match d.default_input_config() {
+                Ok(c) => return Some((d, c)),
+                Err(e) => tried.push(format!("{name}: {e}")),
+            }
+            if let Ok(mut cfgs) = d.supported_input_configs() {
+                if let Some(c) = cfgs.next() {
+                    return Some((d, c.with_max_sample_rate()));
                 }
-                if let Ok(mut cfgs) = d.supported_input_configs() {
-                    if let Some(c) = cfgs.next() {
-                        return Some((d, c.with_max_sample_rate()));
-                    }
-                }
-                None
-            };
+            }
+            None
+        };
         if let Some(d) = host.default_input_device() {
             if let Some(dc) = try_dev(d) {
                 return Ok(dc);
@@ -302,12 +315,21 @@ mod imp {
     }
 
     fn signal_stop() -> Result<(), String> {
-        match STOP.lock().unwrap().take() {
-            Some(tx) => {
-                let _ = tx.send(());
+        // Do not hold STOP while waiting. The acknowledgement is the real
+        // device-release handshake; the timeout only prevents a broken audio
+        // backend from hanging the command forever.
+        let control = STOP
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| "当前没有进行中的录音 (no recording in progress)".to_string())?;
+        let _ = control.stop.send(());
+        match control.released.recv_timeout(Duration::from_secs(2)) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => Ok(()),
+            Err(RecvTimeoutError::Timeout) => {
+                eprintln!("mic: timed out waiting for capture thread to release the device");
                 Ok(())
             }
-            None => Err("当前没有进行中的录音 (no recording in progress)".into()),
         }
     }
 }

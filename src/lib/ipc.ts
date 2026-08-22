@@ -1075,18 +1075,23 @@ export interface SynthAudio {
   sampleRate: number;
 }
 
-/** Transcribe base64 f32 PCM audio → text (Whisper). */
-export async function transcribe(audio: string, sampleRate: number): Promise<string> {
-  return await invoke<string>("transcribe", { audio, sampleRate });
+/** Transcribe base64 f32 PCM audio → text (Whisper base.en by default). */
+export async function transcribe(
+  audio: string,
+  sampleRate: number,
+  multilingual = false,
+): Promise<string> {
+  return await invoke<string>("transcribe", { audio, sampleRate, multilingual });
 }
 
-/** Synthesize speech for text (Kokoro) → base64 f32 PCM + sample rate. */
+/** Synthesize speech (Kokoro, or Chinese VITS when explicitly enabled). */
 export async function synthesize(
   text: string,
   speed?: number,
   sid?: number,
+  chineseEnabled = false,
 ): Promise<SynthAudio> {
-  return await invoke<SynthAudio>("synthesize", { text, speed, sid });
+  return await invoke<SynthAudio>("synthesize", { text, speed, sid, chineseEnabled });
 }
 
 // ---------- Attachments ----------

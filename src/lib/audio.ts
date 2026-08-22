@@ -28,7 +28,7 @@ export interface Recorder {
   /** Stop and return the captured mono PCM. */
   stop: () => Promise<{ samples: Float32Array; sampleRate: number }>;
   /** Stop and discard. */
-  cancel: () => void;
+  cancel: () => Promise<void>;
 }
 
 export interface RecordOptions {
@@ -126,7 +126,7 @@ export async function startRecording(opts?: RecordOptions): Promise<Recorder> {
         return 0;
       }
     },
-    cancel: teardown,
+    cancel: async () => teardown(),
     stop: async () => {
       teardown();
       const total = chunks.reduce((n, c) => n + c.length, 0);
@@ -169,11 +169,11 @@ async function startNativeRecording(opts?: RecordOptions): Promise<Recorder> {
   const teardown = () => window.clearInterval(poll);
   return {
     level: () => last,
-    cancel: () => {
+    cancel: async () => {
       if (stopped) return;
       stopped = true;
       teardown();
-      void invoke("mic_cancel").catch(() => {});
+      await invoke("mic_cancel");
     },
     stop: async () => {
       teardown();
@@ -193,9 +193,35 @@ export interface Playback {
   stop: () => void;
 }
 
+// WKWebView applies the same user-activation rules as Safari: an AudioContext
+// created only after an async TTS IPC call may start suspended because the
+// original click is no longer considered active. Keep one output context and
+// unlock it on the first pointer/keyboard gesture, before synthesis begins.
+let playbackContext: AudioContext | null = null;
+
+function sharedPlaybackContext(): AudioContext {
+  if (!playbackContext || playbackContext.state === "closed") {
+    playbackContext = new AudioContext();
+  }
+  return playbackContext;
+}
+
+/** Unlock Web Audio while a real user gesture is still active. */
+export function primeAudioPlayback(): void {
+  if (typeof AudioContext === "undefined") return;
+  const ctx = sharedPlaybackContext();
+  if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+}
+
+if (typeof window !== "undefined" && typeof AudioContext !== "undefined") {
+  const unlock = () => primeAudioPlayback();
+  window.addEventListener("pointerdown", unlock, { capture: true, once: true });
+  window.addEventListener("keydown", unlock, { capture: true, once: true });
+}
+
 /** Play Float32 PCM; returns an analyser + a promise that resolves when done. */
 export function playAudio(samples: Float32Array, sampleRate: number): Playback {
-  const ctx = new AudioContext();
+  const ctx = sharedPlaybackContext();
   const buffer = ctx.createBuffer(1, samples.length, sampleRate);
   buffer.copyToChannel(samples, 0);
   const source = ctx.createBufferSource();
@@ -206,13 +232,33 @@ export function playAudio(samples: Float32Array, sampleRate: number): Playback {
   analyser.connect(ctx.destination);
 
   let stopped = false;
+  let finished = false;
+  let resolveDone!: () => void;
   const done = new Promise<void>((resolve) => {
-    source.onended = () => {
-      ctx.close().catch(() => {});
-      resolve();
-    };
+    resolveDone = resolve;
   });
-  source.start();
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    try {
+      source.disconnect();
+      analyser.disconnect();
+    } catch {
+      /* already disconnected */
+    }
+    resolveDone();
+  };
+  source.onended = finish;
+  void ctx
+    .resume()
+    .then(() => {
+      if (stopped) {
+        finish();
+        return;
+      }
+      source.start();
+    })
+    .catch(finish);
 
   return {
     analyser,
@@ -223,7 +269,8 @@ export function playAudio(samples: Float32Array, sampleRate: number): Playback {
       try {
         source.stop();
       } catch {
-        /* already stopped */
+        // Not started yet, or already stopped.
+        finish();
       }
     },
   };
