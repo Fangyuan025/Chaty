@@ -55,6 +55,7 @@ import {
   webSearch,
   type ChatMessage,
 } from "./ipc";
+import { calibrate, contextLimit, messageTokens, rawMessageTokens } from "./ctxBudget";
 import { normalizeChannels } from "./voiceText";
 import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
 import { wrapupNudge, planEcho, isWebSourceFile, isSourceCodeFile, devServerUrlFrom, runCheckAboveBar } from "./wrapupGate";
@@ -1258,9 +1259,11 @@ export function toolResultMsg(name: string, content: string): string {
 
 /** Rough transcript size in tokens (mixed code/CJK ≈ 2.5 chars per token,
  *  plus a little chat-template overhead per message). */
-function estimateTokens(messages: ChatMessage[]): number {
-  return messages.reduce((n, m) => n + Math.ceil(m.content.length / 2.5) + 8, 0);
-}
+/** Shared with Chat, and calibrated against the engine's own `promptTokens` —
+ *  see `ctxBudget`. The local guess this replaced read dense Chinese at a
+ *  quarter of its true cost, so compaction could not fire before the window
+ *  was already gone. */
+const estimateTokens = messageTokens;
 
 /** Auto-compaction: when the transcript nears the context window, elide the
  *  OLDEST tool results (they are the bulkiest and least useful verbatim) while
@@ -1350,8 +1353,9 @@ export function compactMessages(
   messages: ChatMessage[],
   nCtx: number,
   toolMeta?: WeakMap<ChatMessage, { name: string; args: Record<string, unknown> }>,
+  maxGenTokens?: number,
 ): boolean {
-  const limit = Math.floor(nCtx * 0.8);
+  const limit = contextLimit(nCtx, maxGenTokens);
   if (estimateTokens(messages) <= limit) return false;
   const results = messages
     .map((m, i) => ({ m, i }))
@@ -1388,6 +1392,52 @@ export function compactMessages(
       messages[i] = { role: "assistant", content: bare };
       changed = true;
       if (estimateTokens(messages) <= limit) break;
+    }
+  }
+  // Last resort: drop the oldest rounds outright, leaving a digest in their
+  // place. Without this the function could report "compacted" while still
+  // handing the engine a prompt two or three times the window — stubbing and
+  // reasoning-reclaim only reach the bulk they happen to know about, and a
+  // transcript made of many merely-large messages defeats both. Every later
+  // round would then re-run a compaction with nothing left to free and
+  // overflow again, so the run cannot recover on its own.
+  if (estimateTokens(messages) > limit) {
+    const head = messages.findIndex((m) => m.role !== "system");
+    const start = head < 0 ? messages.length : head;
+    // The current working thread stays whole — dropping it would erase the
+    // step the model is mid-way through, which is worse than a long prompt.
+    const KEEP_TAIL = 4;
+    const dropped: ChatMessage[] = [];
+    while (messages.length - start > KEEP_TAIL && estimateTokens(messages) > limit) {
+      dropped.push(messages.splice(start, 1)[0]);
+    }
+    if (dropped.length) {
+      const digest = digestHistory(dropped, currentLang);
+      messages.splice(start, 0, {
+        role: "user",
+        content:
+          currentLang === "zh"
+            ? `[上下文已压缩] 更早的 ${dropped.length} 条消息已省略。要点:\n${digest}`
+            : `[context compacted] ${dropped.length} earlier messages elided. Gist:\n${digest}`,
+      });
+      changed = true;
+    }
+  }
+  // Still over with only the working thread left: the bulk is now in the recent
+  // results KEEP held back. Stubbing them is the last thing that keeps the
+  // prompt inside the window, and a stub still names the tool and its arguments
+  // — the model can see what it ran and run it again if it needs the output.
+  if (estimateTokens(messages) > limit) {
+    for (let i = 0; i < messages.length && estimateTokens(messages) > limit; i++) {
+      const m = messages[i];
+      if (m.role !== "user" && m.role !== "tool") continue;
+      if (!m.content.startsWith("<tool_result") || m.content.length < 200) continue;
+      const name = /name="([^"]+)"/.exec(m.content)?.[1] ?? "tool";
+      messages[i] = {
+        role: m.role,
+        content: compactionStub(name, toolMeta?.get(m), m.content, currentLang),
+      };
+      changed = true;
     }
   }
   return changed;
@@ -1754,9 +1804,12 @@ export async function runAgentTurn(
           );
         }
       }
-      if (compactMessages(messages, nCtx, toolMeta)) noteCompacted();
+      if (compactMessages(messages, nCtx, toolMeta, opts.maxGenTokens)) noteCompacted();
       evictStaleImages(messages);
 
+      // Predicted (uncalibrated) cost of exactly the prompt this step sends —
+      // the left-hand side of the calibration the reply will complete.
+      const sentRaw = rawMessageTokens(messages);
       let raw = "";
       let liveTokens = 0;
       let budgetTripped = false;
@@ -1823,6 +1876,10 @@ export async function runAgentTurn(
             cb.onStats?.(baseTokens, lastTps);
             // prompt + this step's output ≈ current position in the context window
             cb.onContext?.(ev.stats.promptTokens + ev.stats.completionTokens);
+            // What the engine charged for the prompt we just sent, against what
+            // we predicted it would cost. Every step makes the next estimate
+            // less of a guess — and compaction fires on the real number.
+            calibrate(sentRaw, ev.stats.promptTokens);
           }
         },
       );

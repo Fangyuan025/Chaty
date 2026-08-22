@@ -93,6 +93,13 @@ import {
   type UpdateInfo,
 } from "./lib/ipc";
 import "./App.css";
+import {
+  calibrate,
+  contextLimit,
+  rawTokens,
+  resetCalibration,
+  textTokens,
+} from "./lib/ctxBudget";
 import { fmtGbFromMb } from "./lib/fmt";
 
 interface UiMessage extends ChatMessage {
@@ -269,22 +276,11 @@ function formatDate(lang: Lang): string {
   });
 }
 
-/** Rough token estimate: CJK ≈ 1 token/char, other text ≈ 1 token per ~3.6 chars. */
-function estimateTokens(text: string): number {
-  let cjk = 0;
-  for (const ch of text) {
-    const c = ch.codePointAt(0) ?? 0;
-    if (
-      (c >= 0x3000 && c <= 0x9fff) ||
-      (c >= 0xac00 && c <= 0xd7a3) ||
-      (c >= 0xf900 && c <= 0xfaff) ||
-      (c >= 0xff00 && c <= 0xffef)
-    ) {
-      cjk++;
-    }
-  }
-  return Math.ceil(cjk + (text.length - cjk) / 3.6);
-}
+/** Shared with Code mode, and calibrated against the engine's own
+ *  `promptTokens` — see `ctxBudget`. The local guess this replaced read source
+ *  code and tool output below their true cost, which is exactly the content a
+ *  long chat accumulates before it needs summarising. */
+const estimateTokens = textTokens;
 
 function loadSettings(): GenSettings {
   try {
@@ -548,6 +544,8 @@ export default function App() {
         setLoadingModel(true);
         try {
           const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
+          // A different tokenizer charges differently — start the ratio over.
+          resetCalibration();
           setModel(info);
           localStorage.setItem(LAST_MODEL_KEY, info.path);
           noticeForLoad(info);
@@ -1293,6 +1291,8 @@ export default function App() {
     setLoadingModel(true);
     try {
       const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
+      // A different tokenizer charges differently — start the ratio over.
+      resetCalibration();
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
       noticeForLoad(info);
@@ -1311,6 +1311,8 @@ export default function App() {
     setLoadingModel(true);
     try {
       const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
+      // A different tokenizer charges differently — start the ratio over.
+      resetCalibration();
       setModel(info);
       noticeForLoad(info);
     } catch (e) {
@@ -1372,6 +1374,8 @@ export default function App() {
       if (!path) return;
       setLoadingModel(true);
       const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
+      // A different tokenizer charges differently — start the ratio over.
+      resetCalibration();
       setModel(info);
       localStorage.setItem(LAST_MODEL_KEY, info.path);
       noticeForLoad(info);
@@ -1580,9 +1584,13 @@ export default function App() {
     const nCtx = model?.nCtx ?? 0;
     if (!nCtx || msgs.length < 6) return null;
 
-    // Room for the answer + chat markup. With no reply cap, reserve a sane slice.
-    const reserve = (settings.limitTokens ? settings.maxTokens : 2048) + 700;
-    const budget = Math.max(1024, nCtx - reserve);
+    // Room for the answer + chat markup — the same rule code mode compacts by,
+    // so a conversation does not compact at two different places depending on
+    // which screen it is on.
+    const budget = Math.max(
+      1024,
+      contextLimit(nCtx, settings.limitTokens ? settings.maxTokens : undefined),
+    );
     const cost = (m: { content: string }) => estimateTokens(m.content) + 8;
     const total = msgs.reduce((s, m) => s + cost(m), 0);
     if (total <= budget * 0.85) return null; // still comfortable
@@ -1818,6 +1826,10 @@ export default function App() {
       ...(sysParts.length ? [{ role: "system" as const, content: sysParts.join("\n\n") }] : []),
       ...modelHistory,
     ];
+    // Predicted (uncalibrated) cost of exactly this prompt — the left-hand side
+    // of the calibration the reply completes, so the next turn's summarise-or-not
+    // decision rests on what the engine actually charges rather than a guess.
+    const sentRaw = sent.reduce((n, m) => n + rawTokens(m.content) + 8, 0);
 
     // Streaming text-to-speech: synthesize & play sentence-by-sentence as the
     // answer arrives, so audio starts long before generation finishes.
@@ -1902,6 +1914,7 @@ export default function App() {
             }
             renderMsg();
             setStats(ev.stats);
+            calibrate(sentRaw, ev.stats.promptTokens);
           } else if (ev.type === "error") {
             acc.text += `\n\n**${ev.message}**`;
             if (rafId != null) {

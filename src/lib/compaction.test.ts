@@ -4,6 +4,8 @@ import { describe, expect, test } from "vitest";
 const { mockIPC } = await import("@tauri-apps/api/mocks");
 mockIPC(() => Promise.resolve(null));
 const { digestForCall, compactionStub, digestHistory, compactMessages } = await import("./agentLoop");
+const { contextLimit, messageTokens } = await import("./ctxBudget");
+type ChatMessage = Parameters<typeof compactMessages>[0][number];
 
 describe("digestForCall", () => {
   test("read_file carries path, symbol, and range", () => {
@@ -120,14 +122,16 @@ describe("compactMessages — reasoning stays until the window needs the room", 
   test("under real pressure the oldest reasoning goes and the newest stays", () => {
     const msgs = build("tool");
     compactMessages(msgs, 900);
-    const withThink = msgs
-      .map((m, i) => ({ i, has: m.content.includes("</think>") }))
-      .filter((x) => x.has)
-      .map((x) => x.i);
-    // Only the last two rounds keep their thinking.
-    expect(withThink).toEqual([10, 12]);
-    // What the turn actually did survives — only the mulling is dropped.
-    expect(msgs[2].content).toBe("called a tool");
+    const assistants = msgs.filter((m) => m.role === "assistant");
+    const withThink = assistants.filter((m) => m.content.includes("</think>"));
+    // Only the last two rounds keep their thinking, and they are the LAST two —
+    // asserting the property rather than an index, since how much older history
+    // survives depends on how tight the window is.
+    expect(withThink).toHaveLength(2);
+    expect(assistants.slice(-2)).toEqual(withThink);
+    // What a reclaimed turn actually did survives — only the mulling is dropped.
+    const reclaimed = assistants.filter((m) => !m.content.includes("</think>"));
+    expect(reclaimed.every((m) => m.content === "called a tool")).toBe(true);
   });
 });
 
@@ -142,5 +146,71 @@ describe("digestHistory", () => {
   });
   test("a tool-role result is mechanics, not narrative", () => {
     expect(digestHistory([{ role: "tool", content: "<tool_result name=\"ls\">a.py</tool_result>" }], "en")).toBe("");
+  });
+});
+
+describe("compaction reaches the limit, not just 'closer to it'", () => {
+  // The three earlier passes only reach the bulk they know how to name. A
+  // transcript of many merely-large messages used to survive all of them:
+  // compactMessages reported success while still handing the engine a prompt
+  // several times the window, and every later round re-ran a compaction with
+  // nothing left to free.
+  function heavyTranscript() {
+    const msgs: ChatMessage[] = [{ role: "system", content: "sys" }];
+    for (let i = 0; i < 12; i++) {
+      msgs.push({ role: "user", content: `task ${i}` });
+      msgs.push({
+        role: "assistant",
+        content: `<think>${"reasoning ".repeat(200)}</think> done ${i}`,
+      });
+      msgs.push({
+        role: "user",
+        content: `<tool_result name="read_file">${"y".repeat(4000)}</tool_result>`,
+      });
+    }
+    return msgs;
+  }
+
+  test("a transcript far over the window is brought under it", () => {
+    const msgs = heavyTranscript();
+    const limit = contextLimit(4096);
+    expect(messageTokens(msgs)).toBeGreaterThan(limit * 5);
+    expect(compactMessages(msgs, 4096)).toBe(true);
+    expect(messageTokens(msgs)).toBeLessThanOrEqual(limit);
+  });
+
+  test("the working thread survives, so the model keeps its place", () => {
+    const msgs = heavyTranscript();
+    compactMessages(msgs, 4096);
+    expect(msgs[0].role).toBe("system");
+    expect(msgs[msgs.length - 1].content).toContain("<tool_result");
+    expect(msgs.some((m) => m.content.includes("done 11"))).toBe(true);
+  });
+
+  test("dropped history leaves a digest rather than a silent hole", () => {
+    const msgs = heavyTranscript();
+    compactMessages(msgs, 4096);
+    const note = msgs.find((m) => /context compacted|上下文已压缩/.test(m.content));
+    expect(note).toBeDefined();
+    expect(note!.content).toMatch(/task \d|user:|用户:/);
+  });
+
+  test("compacting twice is stable — no churn once it fits", () => {
+    const msgs = heavyTranscript();
+    compactMessages(msgs, 4096);
+    const after = messageTokens(msgs);
+    expect(compactMessages(msgs, 4096)).toBe(false);
+    expect(messageTokens(msgs)).toBe(after);
+  });
+
+  test("a comfortable transcript is left completely alone", () => {
+    const msgs: ChatMessage[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+    ];
+    const snapshot = JSON.stringify(msgs);
+    expect(compactMessages(msgs, 32768)).toBe(false);
+    expect(JSON.stringify(msgs)).toBe(snapshot);
   });
 });
