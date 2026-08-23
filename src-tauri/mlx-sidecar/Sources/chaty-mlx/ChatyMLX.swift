@@ -136,6 +136,10 @@ struct ModelMeta {
     var hasChatTemplate = false
     /// Chat template honours an `enable_thinking` kwarg (Qwen3 family).
     var thinkArg = false
+    /// A layout learned from the template and proven against its own token ids,
+    /// used in place of it when the template re-renders history as the
+    /// conversation grows. Nil means the template is already append-safe.
+    var layout: LearnedLayout?
     /// The block a stored assistant turn must carry when thinking is off —
     /// probed against the real template at load, never named. See
     /// `probeTurnPrefix`.
@@ -446,6 +450,39 @@ struct HistoryShape {
     var reasoningField = false
 }
 
+/// Does the template still render earlier turns the same way once a NEW user
+/// question arrives? Qwen's does not — history loses its reasoning block the
+/// moment it stops being the current query — and that is what costs a full
+/// prefill on the first step of every follow-up.
+/// `block` is whatever the template writes after the assistant header for the
+/// turn being produced — `<think></think>` for Qwen, a thought channel for
+/// Gemma. Probing with it is what makes this work for any markup: a template
+/// that keeps history intact renders a stored turn carrying that block exactly
+/// as it rendered the live one, and a template that strips reasoning out of
+/// history does not.
+func templateSurvivesFollowUp(
+    _ tokenizer: any MLXLMCommon.Tokenizer, extra: [String: any Sendable]?, block: String
+) -> Bool {
+    func render(_ msgs: [[String: any Sendable]]) -> String? {
+        guard
+            let ids = try? tokenizer.applyChatTemplate(
+                messages: msgs, tools: nil, additionalContext: extra)
+        else { return nil }
+        return tokenizer.decode(tokenIds: ids, skipSpecialTokens: false)
+    }
+    let turn: [[String: any Sendable]] = [
+        ["role": "user", "content": "q1"],
+        ["role": "assistant", "content": block + "PROBE_ANS"],
+    ]
+    guard let first = render(turn),
+        let second = render(turn + [["role": "user", "content": "q2"]])
+    else { return true }
+    // Everything of the first render up to the end of that turn has to survive
+    // verbatim into the second.
+    guard let cut = first.range(of: "PROBE_ANS", options: .backwards) else { return true }
+    return second.hasPrefix(String(first[first.startIndex ..< cut.upperBound]))
+}
+
 /// What a thinking-off prompt writes after the assistant header — the block the
 /// model continues from, and therefore the block a STORED assistant turn has to
 /// carry for the next prompt to be an append of this one. Without it the common
@@ -458,6 +495,163 @@ struct HistoryShape {
 /// it — templates that refuse to re-emit the block for historical turns (Qwen's
 /// `last_query_index` gate) strip whatever the content holds, and for those the
 /// honest answer is the empty string.
+/// A conversation rendered one message at a time, learned from the template.
+///
+/// Qwen's template decides how to render an assistant turn from WHERE it sits:
+/// everything before the newest user question is history and loses its reasoning
+/// block. So the moment a follow-up question arrives, every earlier turn renders
+/// differently and the prompt stops being an append of the last one — a 7856
+/// character transcript diverging 161 characters in, which costs a full prefill
+/// on every new question. llama.cpp never had this: it renders each message
+/// verbatim through its own ChatML fallback, which is what ships today for
+/// these same models and what makes its cross-turn reuse 99%.
+///
+/// This learns the per-role scaffolding from the template's own output and then
+/// lays messages out with it, so position stops mattering. It is only trusted
+/// when it reproduces the template's own token ids exactly (see `learn`), and
+/// only used when the template has already been shown to break the invariant —
+/// the alternative there is a guaranteed full re-prefill.
+struct LearnedLayout {
+    var head = ""
+    var open: [String: String] = [:]
+    var close: [String: String] = [:]
+    /// What follows the last message when thinking is off / on. The scaffolding
+    /// is the same either way; only the invitation to the model differs.
+    var genTail = ""
+    var genTailThinking = ""
+
+    func tail(thinking: Bool) -> String {
+        thinking && !genTailThinking.isEmpty ? genTailThinking : genTail
+    }
+
+    /// The part of the generation tail that sits AFTER the assistant header —
+    /// the reasoning block the model continues from. A stored turn has to carry
+    /// it, or the next prompt stops being an append; `turnPrefix` is what puts
+    /// it there.
+    func turnPrefix(thinking: Bool) -> String {
+        let t = tail(thinking: thinking)
+        guard let head = open["assistant"], t.hasPrefix(head) else { return "" }
+        return String(t.dropFirst(head.count))
+    }
+
+    func render(_ msgs: [(role: String, content: String)], thinking: Bool = false) -> String {
+        var out = head
+        for m in msgs {
+            out += (open[m.role] ?? open["user"] ?? "") + m.content
+            out += (close[m.role] ?? close["user"] ?? "")
+        }
+        return out + tail(thinking: thinking)
+    }
+
+    /// Learn the layout, then prove it: the learned rendering of a probe
+    /// conversation must tokenize to exactly what the template produces for the
+    /// same conversation. Anything less and this returns nil, because a prompt
+    /// that merely looks right is a prompt the model was not trained on.
+    static func learn(
+        _ tokenizer: any MLXLMCommon.Tokenizer, extra: [String: any Sendable]?
+    ) -> LearnedLayout? {
+        func render(_ msgs: [[String: any Sendable]]) -> String? {
+            guard
+                let ids = try? tokenizer.applyChatTemplate(
+                    messages: msgs, tools: nil, additionalContext: extra)
+            else { return nil }
+            return tokenizer.decode(tokenIds: ids, skipSpecialTokens: false)
+        }
+        func msg(_ role: String, _ c: String) -> [String: any Sendable] {
+            ["role": role, "content": c]
+        }
+        let u1 = "PROBE_U1"
+        // Two same-role messages isolate one message's scaffolding: what the
+        // second render has beyond the first, minus the generation tail, is
+        // exactly one rendered message.
+        guard let r1 = render([msg("user", u1)]),
+            let r2 = render([msg("user", u1), msg("user", "PROBE_U2")])
+        else { return nil }
+        let shared = String(r1.prefix(zip(r1, r2).prefix { $0 == $1 }.count))
+        let genTail = String(r1.dropFirst(shared.count))
+        var seg = String(r2.dropFirst(shared.count))
+        seg.removeLast(genTail.count)
+        guard let hit = seg.range(of: "PROBE_U2") else { return nil }
+
+        var out = LearnedLayout()
+        out.genTail = genTail
+        out.open["user"] = String(seg[seg.startIndex ..< hit.lowerBound])
+        out.close["user"] = String(seg[hit.upperBound...])
+        // `shared` is the head plus the first user message laid out the same way.
+        let firstUser = out.open["user"]! + u1 + out.close["user"]!
+        out.head = String(shared.dropLast(firstUser.count))
+
+        // The other roles. An assistant turn is read from a HISTORY position —
+        // one with a user message after it — because that is where the template
+        // shows the bare scaffolding. Read from the live position it would come
+        // back wrapped in a reasoning block, and a stored turn that carries its
+        // own would then be rendered inside a second one. The block belongs to
+        // the content, added by `turnPrefix`, exactly as it is on llama.cpp.
+        for role in ["assistant", "tool"] {
+            let mark = "PROBE_\(role.uppercased())"
+            guard
+                let r = render([msg("user", u1), msg(role, mark), msg("user", "PROBE_TAILQ")])
+            else { continue }
+            guard let h = r.range(of: mark), let nextQ = r.range(of: "PROBE_TAILQ") else { continue }
+            // Everything from the end of the first user message to the marker.
+            let afterFirst = shared.count
+            guard r.count > afterFirst, r.index(r.startIndex, offsetBy: afterFirst) <= h.lowerBound
+            else { continue }
+            out.open[role] = String(r[r.index(r.startIndex, offsetBy: afterFirst) ..< h.lowerBound])
+            // …and from the marker to wherever the next message begins.
+            let afterMark = String(r[h.upperBound ..< nextQ.lowerBound])
+            guard let userOpen = out.open["user"], afterMark.hasSuffix(userOpen) else { continue }
+            out.close[role] = String(afterMark.dropLast(userOpen.count))
+        }
+        if let r = render([msg("system", "PROBE_SYS"), msg("user", u1)]),
+            let h = r.range(of: "PROBE_SYS")
+        {
+            let opening = String(r[r.startIndex ..< h.lowerBound])
+            if opening.hasPrefix(out.head) {
+                out.open["system"] = String(opening.dropFirst(out.head.count))
+                if let uOpen = out.open["user"],
+                    let uPos = r.range(of: u1),
+                    case let between = String(r[h.upperBound ..< uPos.lowerBound]),
+                    between.hasSuffix(uOpen)
+                {
+                    out.close["system"] = String(between.dropLast(uOpen.count))
+                }
+            }
+        }
+
+        // Proof. Not "reproduce the template everywhere" — the whole point is to
+        // stop it rewriting history — but "reproduce it wherever it is not
+        // rewriting anything". Both shapes below are ones the template renders
+        // one way only, and the ids must match, since markup that merely looks
+        // right can still tokenize differently and miss the cache.
+        func matches(_ conv: [(role: String, content: String)]) -> Bool {
+            guard
+                let expected = try? tokenizer.applyChatTemplate(
+                    messages: conv.map { msg($0.role, $0.content) }, tools: nil,
+                    additionalContext: extra)
+            else { return false }
+            return tokenizer.encode(text: out.render(conv), addSpecialTokens: false) == expected
+        }
+        let m1 = matches([("system", "PROBE_S"), ("user", "PROBE_A")])
+        let m2 = matches([("user", "PROBE_A"), ("assistant", "PROBE_B"), ("user", "PROBE_C")])
+        if !m1 || !m2 {
+            return nil
+        }
+
+        // The same prompt with thinking on ends differently. Read that tail off
+        // the template too, rather than assuming what it looks like.
+        if let onIds = try? tokenizer.applyChatTemplate(
+            messages: [msg("user", u1)], tools: nil,
+            additionalContext: ["enable_thinking": true]),
+            case let onText = tokenizer.decode(tokenIds: onIds, skipSpecialTokens: false),
+            onText.hasPrefix(shared)
+        {
+            out.genTailThinking = String(onText.dropFirst(shared.count))
+        }
+        return out
+    }
+}
+
 func probeTurnPrefix(
     _ tokenizer: any MLXLMCommon.Tokenizer, thinkArg: Bool, appendsOwnBlock: Bool
 ) -> String {
@@ -709,6 +903,42 @@ final class Engine: @unchecked Sendable {
                         ctx.tokenizer, thinkArg: thinkArg, appendsOwnBlock: appendsOwn)
                 }
             }
+            // Only worth replacing a template that has been shown to rewrite
+            // history as the conversation grows, and only with a layout that
+            // reproduces its own token ids.
+            let thinkArgForLayout = meta.thinkArg
+            meta.layout = await container.perform { ctx -> LearnedLayout? in
+                let extra: [String: any Sendable]? =
+                    thinkArgForLayout ? ["enable_thinking": false] : nil
+                // Learn first: the probe needs the template's own block to ask
+                // its question with, and the layout is what knows that block.
+                guard let learned = LearnedLayout.learn(ctx.tokenizer, extra: extra) else {
+                    return nil
+                }
+                let block = learned.turnPrefix(thinking: false)
+                // Two ways a template makes the next prompt stop being an append,
+                // and both end here. Qwen rewrites history once a follow-up
+                // question arrives. Gemma keeps history stable but strips the
+                // thought channel out of a stored turn, so the block the live
+                // prompt ended with can never be put back — which is what
+                // `probeTurnPrefix` comes back empty-handed about. The layout
+                // answers both, because it lays every message out the same way
+                // wherever it sits.
+                let stable = templateSurvivesFollowUp(
+                    ctx.tokenizer, extra: extra, block: block)
+                let reproducible =
+                    block.isEmpty
+                    || !probeTurnPrefix(
+                        ctx.tokenizer, thinkArg: thinkArgForLayout,
+                        appendsOwnBlock: !thinkArgForLayout
+                    ).isEmpty
+                return stable && reproducible ? nil : learned
+            }
+            log(
+                "layout: "
+                    + (meta.layout == nil
+                        ? "template is append-safe, or a layout could not be proven"
+                        : "learned and proven — messages laid out one at a time"))
             self.meta = meta
             let trained = meta.nCtxTrain ?? 4096
             self.nCtxCap = min(nCtx ?? trained, trained)
@@ -795,15 +1025,17 @@ final class Engine: @unchecked Sendable {
         // the default in code mode. A turn that already opens with a reasoning
         // block is left alone; doubling it breaks the prefix just as badly.
         let messages: [WireMessage] = {
-            guard p.think == false, !meta.turnPrefix.isEmpty else { return messages }
+            let prefix =
+                meta.layout?.turnPrefix(thinking: false) ?? meta.turnPrefix
+            guard p.think == false, !prefix.isEmpty else { return messages }
             return messages.map { m in
                 guard m.role == "assistant",
-                    !m.content.hasPrefix(meta.turnPrefix),
+                    !m.content.hasPrefix(prefix),
                     !m.content.trimmingCharacters(in: .whitespaces).hasPrefix("<think>"),
                     (m.reasoningContent ?? "").isEmpty
                 else { return m }
                 var copy = m
-                copy.content = meta.turnPrefix + m.content
+                copy.content = prefix + m.content
                 return copy
             }
         }()
@@ -845,7 +1077,23 @@ final class Engine: @unchecked Sendable {
         // is the only position-correct entry point for pixels.
         let carriesReasoning = messages.contains { !($0.reasoningContent ?? "").isEmpty }
         let lmInput: LMInput
-        if carriesReasoning && !hasImages {
+        // Thinking off only. The layout lays every message out the same way
+        // wherever it sits, which is what makes the next prompt an append — but
+        // with thinking ON that also means a turn's reasoning travels into
+        // history, and templates that deliberately keep thought traces out of
+        // it (Gemma's) would stop doing so. With thinking off the block is
+        // empty, so nothing travels that was not already there, and thinking
+        // off is what code mode runs.
+        if let layout = meta.layout, !hasImages, p.think == false {
+            // Laid out one message at a time, so a follow-up question cannot
+            // change how the turns before it render. Pixels still go through the
+            // processor — it is the only position-correct entry point for them.
+            let text = layout.render(
+                messages.map { (role: $0.role, content: $0.content) },
+                thinking: p.think != false)
+            let ids = context.tokenizer.encode(text: text, addSpecialTokens: false)
+            lmInput = LMInput(text: .init(tokens: MLXArray(ids.map(Int32.init))))
+        } else if carriesReasoning && !hasImages {
             let dicts: [[String: any Sendable]] = messages.map { m in
                 var d: [String: any Sendable] = ["role": m.role, "content": m.content]
                 if let r = m.reasoningContent, !r.isEmpty { d["reasoning_content"] = r }
