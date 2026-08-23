@@ -1,6 +1,6 @@
 [package]
 name = "chaty"
-version = "2.1.1"
+version = "2.1.2"
 # Two binaries live here (the app + the bench/headless tool server) — `cargo
 # run`, which `tauri dev` invokes, needs to know the app is the default.
 default-run = "chaty"

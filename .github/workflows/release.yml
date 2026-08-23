@@ -243,38 +243,45 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## An agent turn stops re-reading the conversation
+            ## The model stops re-reading what it just did
 
-            In code mode, prefill used to crawl as the rounds piled up: the
-            prompt could no longer reproduce what the model had just generated,
-            so the cache died at the first assistant turn every step — and a
-            model whose memory cannot rewind answered that by re-reading the
-            whole conversation. A turn is now recorded so the next prompt is a
-            true append, and how to record it is probed per model on each engine
-            rather than assumed.
+            Between turns, code mode threw away everything the agent had
+            actually done. The follow-up arrived with the tool results gone and
+            "(tools run: read_file, bash)" in their place, so the model no
+            longer knew what any of those calls had returned and re-read files
+            it had just read. The exchange now carries over intact — and that is
+            cheaper than discarding it was: 2035 of 2058 prompt tokens reused,
+            75ms, against a cold 208ms for the summary it replaces.
 
-            Second agent step, reused prompt tokens: Qwen3.5 0.8B 0 → 233,
-            Qwen3.8 27B 0 → 202, Qwen3.6 35B-A3B 0 → 233, Qwen3.5 4B (GGUF)
-            0 → 62. Only the genuinely new tail is computed, and the reused span
-            grows with the transcript instead of the cost doing so. Gemma 4, QwQ
-            and the Qwen3 line report identical counts before and after.
+            A follow-up question no longer re-reads the conversation on MLX
+            either. Chaty lays a conversation out one message at a time now,
+            from a layout learned off the model's own template and used only
+            when it reproduces that template's token ids exactly. Qwen3.5 2B and
+            Gemma-4 26B both go from 0% to 99% reuse on the second turn's first
+            step — 1587ms to 95ms, 4292ms to 216ms.
 
-            Thinking off no longer costs a full prefill every turn: the empty
-            reasoning block Chaty prefills after the assistant header was
-            missing from stored turns, so round two diverged right there. 0% KV
-            reuse on Qwen3.5 and LFM2 before, 100% after — and thinking off is
-            code mode's default.
+            Thinking off no longer costs a full prefill every turn. Chaty
+            prefills an empty reasoning block after the assistant header, but a
+            stored turn was rendered without it, so round two diverged right
+            there — 0% reuse on Qwen3.5 and LFM2, and thinking off is code
+            mode's default. Now 100%, on both engines.
 
             LFM2's tool calls run. The engine rendered control tokens as
             nothing, so `<|tool_call_start|>[read_file(path='x')]<|tool_call_end|>`
             reached Chaty as ordinary prose and the call never fired.
 
-            The agent stops forgetting what it just did between turns. The
-            tool results used to be dropped and replaced by "(tools run:
-            read_file, bash)", so a follow-up re-read files the model had just
-            read. The exchange now carries over intact — and that is cheaper
-            than discarding it was: 2035 of 2058 prompt tokens reused, 75ms,
-            against a cold 208ms for the summary it replaces.
+            A screenshot the model has already seen is no longer re-encoded.
+            Three consecutive tool-result rounds on Qwen3.5 4B cost 2826ms,
+            5596ms and 5741ms before; they now cost about 150ms each. Dropping
+            stale screenshots turned out to make llama.cpp slower, not faster,
+            so it keeps them.
+
+            Context compaction condenses the work with a model-written summary
+            instead of a 60-character index per turn, and leaves room to breathe
+            rather than skimming the limit: the same task on an 8k window went
+            from 63 rounds and 633 seconds to 18 rounds and 132 seconds. Chat
+            and code share one token budget now, calibrated against what the
+            engine actually charges, and attached pictures count toward it.
 
             A follow-up question no longer re-reads the conversation on MLX
             either: Qwen3.5 2B and Gemma-4 26B both go from 0% to 99% cache
