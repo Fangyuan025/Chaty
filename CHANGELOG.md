@@ -116,12 +116,21 @@
 
 - **Carrying the exchange is cheaper than discarding it was.** The second turn's
   first step: 2058 prompt tokens with 2035 reused, 75ms, against a cold 208ms
-  for the 97-token summary it replaces — 99% reuse on Qwen3.5, LFM2 and Qwen3
-  through llama.cpp, all three faster in wall time than throwing the context
-  away. On MLX the reuse half does not follow: its template renders earlier
-  assistant turns without their reasoning block once a new question arrives, so
-  the first step after a new question re-prefills there. Within a turn MLX still
-  reuses in full.
+  for the 97-token summary it replaces — all of it faster in wall time than
+  throwing the context away.
+
+- **A follow-up question no longer re-reads the conversation on MLX either.**
+  Two templates blocked it for different reasons: Qwen renders an assistant turn
+  differently once it stops being the current query, so a 7856-character
+  transcript diverged 161 characters in; Gemma strips the thought channel out of
+  a stored turn, so the block its prompt ended with could never be put back.
+  Chaty now lays a conversation out one message at a time, from a layout learned
+  off the template and accepted only when it reproduces that template's own
+  token ids — the same per-message rendering llama.cpp has always used for these
+  models. Second turn's first step: Qwen3.5 2B 0% → 99% reuse (1587ms → 95ms),
+  Gemma-4 26B 0% → 99% (4284ms → 217ms), Qwen3.8 27B already 99%. Thinking-off
+  only, so a turn's reasoning still never travels into history where a template
+  keeps it out.
 
 ### Context compaction
 

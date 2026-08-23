@@ -276,6 +276,11 @@ jobs:
             than discarding it was: 2035 of 2058 prompt tokens reused, 75ms,
             against a cold 208ms for the summary it replaces.
 
+            A follow-up question no longer re-reads the conversation on MLX
+            either: Qwen3.5 2B and Gemma-4 26B both go from 0% to 99% cache
+            reuse on the second turn's first step (1587ms to 95ms, 4284ms to
+            217ms).
+
             A screenshot the model has already seen is no longer re-encoded.
             Three consecutive tool-result rounds on Qwen3.5 4B cost 2826ms,
             5596ms and 5741ms before; they now cost about 150ms each, and a
