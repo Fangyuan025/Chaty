@@ -139,7 +139,15 @@ struct ModelMeta {
     /// A layout learned from the template and proven against its own token ids,
     /// used in place of it when the template cannot reproduce its own live
     /// prompt from a stored turn. Nil means the template is already append-safe.
-    var layout: LearnedLayout?
+    /// One per thinking mode, because the switch does not live in one place:
+    /// Qwen changes only what follows the last message, Gemma also changes the
+    /// system turn (its template opens the thought channel there). A layout
+    /// learned in one mode and reused in the other silently disables the
+    /// switch — which is exactly what shipping a single one did.
+    var layoutOff: LearnedLayout?
+    var layoutOn: LearnedLayout?
+
+    func layout(thinking: Bool) -> LearnedLayout? { thinking ? layoutOn : layoutOff }
 
     /// The block a stored assistant turn must carry when thinking is off —
     /// probed against the real template at load, never named. See
@@ -516,32 +524,29 @@ struct LearnedLayout {
     var head = ""
     var open: [String: String] = [:]
     var close: [String: String] = [:]
-    /// What follows the last message when thinking is off / on. The scaffolding
-    /// is the same either way; only the invitation to the model differs.
     var genTail = ""
-    var genTailThinking = ""
-
-    func tail(thinking: Bool) -> String {
-        thinking && !genTailThinking.isEmpty ? genTailThinking : genTail
-    }
 
     /// The part of the generation tail that sits AFTER the assistant header —
     /// the reasoning block the model continues from. A stored turn has to carry
     /// it, or the next prompt stops being an append; `turnPrefix` is what puts
     /// it there.
-    func turnPrefix(thinking: Bool) -> String {
-        let t = tail(thinking: thinking)
-        guard let head = open["assistant"], t.hasPrefix(head) else { return "" }
-        return String(t.dropFirst(head.count))
+    func turnPrefix() -> String {
+        guard let head = open["assistant"], genTail.hasPrefix(head) else { return "" }
+        return String(genTail.dropFirst(head.count))
     }
 
-    func render(_ msgs: [(role: String, content: String)], thinking: Bool = false) -> String {
-        var out = head
+    func render(_ msgs: [(role: String, content: String)]) -> String {
+        // A template may open the prompt differently depending on whether a
+        // system message starts it — Gemma emits a system block for thinking
+        // even when there is nothing to put in it — so the system opening
+        // carries everything before its own content and the plain head is used
+        // only when no system message leads.
+        var out = msgs.first?.role == "system" ? "" : head
         for m in msgs {
             out += (open[m.role] ?? open["user"] ?? "") + m.content
             out += (close[m.role] ?? close["user"] ?? "")
         }
-        return out + tail(thinking: thinking)
+        return out + genTail
     }
 
     /// Learn the layout, then prove it: the learned rendering of a probe
@@ -607,16 +612,13 @@ struct LearnedLayout {
         if let r = render([msg("system", "PROBE_SYS"), msg("user", u1)]),
             let h = r.range(of: "PROBE_SYS")
         {
-            let opening = String(r[r.startIndex ..< h.lowerBound])
-            if opening.hasPrefix(out.head) {
-                out.open["system"] = String(opening.dropFirst(out.head.count))
-                if let uOpen = out.open["user"],
-                    let uPos = r.range(of: u1),
-                    case let between = String(r[h.upperBound ..< uPos.lowerBound]),
-                    between.hasSuffix(uOpen)
-                {
-                    out.close["system"] = String(between.dropLast(uOpen.count))
-                }
+            out.open["system"] = String(r[r.startIndex ..< h.lowerBound])
+            if let uOpen = out.open["user"],
+                let uPos = r.range(of: u1),
+                case let between = String(r[h.upperBound ..< uPos.lowerBound]),
+                between.hasSuffix(uOpen)
+            {
+                out.close["system"] = String(between.dropLast(uOpen.count))
             }
         }
 
@@ -639,16 +641,6 @@ struct LearnedLayout {
             return nil
         }
 
-        // The same prompt with thinking on ends differently. Read that tail off
-        // the template too, rather than assuming what it looks like.
-        if let onIds = try? tokenizer.applyChatTemplate(
-            messages: [msg("user", u1)], tools: nil,
-            additionalContext: ["enable_thinking": true]),
-            case let onText = tokenizer.decode(tokenIds: onIds, skipSpecialTokens: false),
-            onText.hasPrefix(shared)
-        {
-            out.genTailThinking = String(onText.dropFirst(shared.count))
-        }
         return out
     }
 }
@@ -908,23 +900,24 @@ final class Engine: @unchecked Sendable {
             // history as the conversation grows, and only with a layout that
             // reproduces its own token ids.
             let thinkArgForLayout = meta.thinkArg
-            meta.layout = await container.perform { ctx -> LearnedLayout? in
+            // Each mode is learned and judged on its own. If one cannot be
+            // proven, that mode keeps using the template — a slower prompt is
+            // always better than a prompt that quietly ignores the switch.
+            let learnFor: @Sendable (ModelContext, Bool) -> LearnedLayout? = { ctx, thinking in
                 let extra: [String: any Sendable]? =
-                    thinkArgForLayout ? ["enable_thinking": false] : nil
-                // Learn first: the probe needs the template's own block to ask
-                // its question with, and the layout is what knows that block.
+                    thinkArgForLayout ? ["enable_thinking": thinking] : nil
                 guard let learned = LearnedLayout.learn(ctx.tokenizer, extra: extra) else {
                     return nil
                 }
-                let block = learned.turnPrefix(thinking: false)
-                // Two ways a template makes the next prompt stop being an append,
-                // and both end here. Qwen rewrites history once a follow-up
-                // question arrives. Gemma keeps history stable but strips the
-                // thought channel out of a stored turn, so the block the live
-                // prompt ended with can never be put back — which is what
+                let block = learned.turnPrefix()
+                // Two ways a template stops the next prompt being an append, and
+                // both end here. Qwen rewrites history once a follow-up question
+                // arrives. Gemma keeps history stable but strips the thought
+                // channel out of a stored turn, so the block the live prompt
+                // ended with can never be put back — which is what
                 // `probeTurnPrefix` comes back empty-handed about. The layout
-                // answers both, because it lays every message out the same way
-                // wherever it sits.
+                // answers both: it lays every message out the same way wherever
+                // it sits.
                 let stable = templateSurvivesFollowUp(
                     ctx.tokenizer, extra: extra, block: block)
                 let reproducible =
@@ -935,11 +928,14 @@ final class Engine: @unchecked Sendable {
                     ).isEmpty
                 return stable && reproducible ? nil : learned
             }
+            (meta.layoutOff, meta.layoutOn) = await container.perform { ctx in
+                (learnFor(ctx, false), learnFor(ctx, true))
+            }
             log(
-                "layout: "
-                    + (meta.layout == nil
-                        ? "template is append-safe, or a layout could not be proven"
-                        : "learned and proven — messages laid out one at a time"))
+                "layout: thinking-off "
+                    + (meta.layoutOff == nil ? "template" : "learned")
+                    + ", thinking-on "
+                    + (meta.layoutOn == nil ? "template" : "learned"))
             self.meta = meta
             let trained = meta.nCtxTrain ?? 4096
             self.nCtxCap = min(nCtx ?? trained, trained)
@@ -1034,7 +1030,7 @@ final class Engine: @unchecked Sendable {
             // carries one is left alone — doubling it breaks the prefix just as
             // badly as omitting it.
             let prefix =
-                meta.layout.map { $0.turnPrefix(thinking: thinking) }
+                meta.layout(thinking: thinking).map { $0.turnPrefix() }
                 ?? (thinking ? "" : meta.turnPrefix)
             guard !prefix.isEmpty else { return messages }
             return messages.map { m in
@@ -1092,13 +1088,11 @@ final class Engine: @unchecked Sendable {
         // these models since 2.1.1, measured across nineteen of them, and a
         // turn that cannot see its own working is the thing this exists to fix.
         // Compaction reclaims the oldest reasoning when the window tightens.
-        if let layout = meta.layout, !hasImages {
+        if let layout = meta.layout(thinking: thinking), !hasImages {
             // Laid out one message at a time, so a follow-up question cannot
             // change how the turns before it render. Pixels still go through the
             // processor — it is the only position-correct entry point for them.
-            let text = layout.render(
-                messages.map { (role: $0.role, content: $0.content) },
-                thinking: p.think != false)
+            let text = layout.render(messages.map { (role: $0.role, content: $0.content) })
             let ids = context.tokenizer.encode(text: text, addSpecialTokens: false)
             lmInput = LMInput(text: .init(tokens: MLXArray(ids.map(Int32.init))))
         } else if carriesReasoning && !hasImages {
