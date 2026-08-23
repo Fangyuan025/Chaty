@@ -137,9 +137,10 @@ struct ModelMeta {
     /// Chat template honours an `enable_thinking` kwarg (Qwen3 family).
     var thinkArg = false
     /// A layout learned from the template and proven against its own token ids,
-    /// used in place of it when the template re-renders history as the
-    /// conversation grows. Nil means the template is already append-safe.
+    /// used in place of it when the template cannot reproduce its own live
+    /// prompt from a stored turn. Nil means the template is already append-safe.
     var layout: LearnedLayout?
+
     /// The block a stored assistant turn must carry when thinking is off —
     /// probed against the real template at load, never named. See
     /// `probeTurnPrefix`.
@@ -1024,10 +1025,18 @@ final class Engine: @unchecked Sendable {
         // llama.cpp side before the matching fix, with thinking off, which is
         // the default in code mode. A turn that already opens with a reasoning
         // block is left alone; doubling it breaks the prefix just as badly.
+        let thinking = p.think != false
         let messages: [WireMessage] = {
+            // With thinking on the block is the OPENING of a reasoning trace,
+            // and a stored turn needs it just as much: the prompt it was
+            // generated from ended with it, so a turn recorded without it is
+            // not what the model continued from. Only a turn that already
+            // carries one is left alone — doubling it breaks the prefix just as
+            // badly as omitting it.
             let prefix =
-                meta.layout?.turnPrefix(thinking: false) ?? meta.turnPrefix
-            guard p.think == false, !prefix.isEmpty else { return messages }
+                meta.layout.map { $0.turnPrefix(thinking: thinking) }
+                ?? (thinking ? "" : meta.turnPrefix)
+            guard !prefix.isEmpty else { return messages }
             return messages.map { m in
                 guard m.role == "assistant",
                     !m.content.hasPrefix(prefix),
@@ -1077,14 +1086,13 @@ final class Engine: @unchecked Sendable {
         // is the only position-correct entry point for pixels.
         let carriesReasoning = messages.contains { !($0.reasoningContent ?? "").isEmpty }
         let lmInput: LMInput
-        // Thinking off only. The layout lays every message out the same way
-        // wherever it sits, which is what makes the next prompt an append — but
-        // with thinking ON that also means a turn's reasoning travels into
-        // history, and templates that deliberately keep thought traces out of
-        // it (Gemma's) would stop doing so. With thinking off the block is
-        // empty, so nothing travels that was not already there, and thinking
-        // off is what code mode runs.
-        if let layout = meta.layout, !hasImages, p.think == false {
+        // Both thinking modes. Laying every message out the same way wherever it
+        // sits does mean a turn's reasoning travels into history, which the
+        // official templates strip — but that is what llama.cpp has done for
+        // these models since 2.1.1, measured across nineteen of them, and a
+        // turn that cannot see its own working is the thing this exists to fix.
+        // Compaction reclaims the oldest reasoning when the window tightens.
+        if let layout = meta.layout, !hasImages {
             // Laid out one message at a time, so a follow-up question cannot
             // change how the turns before it render. Pixels still go through the
             // processor — it is the only position-correct entry point for them.
