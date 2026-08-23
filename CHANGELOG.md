@@ -37,6 +37,15 @@
   text read as ordinary prose and the call never fired. The llama.cpp engine now
   keeps them, as the MLX engine always has, and Chaty reads that syntax.
 
+- **The thinking switch is read per mode, not once.** A conversation's layout is
+  learned from the template, and learning it in one thinking position and reusing
+  it in the other assumes the switch lives in what follows the last message —
+  where Qwen keeps it. Gemma's template also changes the system turn, so a layout
+  learned with thinking off carried the off system turn into the on position and
+  the toggle did nothing at all. Each mode is learned and judged on its own now,
+  and a mode that cannot be proven keeps using the template: a prompt that
+  quietly ignores the switch is worse than a slow one.
+
 - **A follow-up question no longer re-reads the conversation on MLX.** Two
   templates blocked it for different reasons: Qwen renders an assistant turn
   differently once it stops being the current query, so a 7856-character
