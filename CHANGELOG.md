@@ -37,6 +37,23 @@
   text read as ordinary prose and the call never fired. The llama.cpp engine now
   keeps them, as the MLX engine always has, and Chaty reads that syntax.
 
+- **Thinking can be turned off on every local model.** Three things had to be
+  wrong at once. `</think>` contains `/think`, so the probe for Qwen's
+  `/no_think` soft switch matched every template that closes a reasoning block —
+  LFM2 was handed a switch it has never heard of, and the engine flag stopped
+  being sent on its behalf. The abliterated Qwen3 4B ships an empty chat
+  template, and both mechanisms read template text, so neither fired. And the
+  soft switch itself turns out to be the worse path even where it is native: it
+  mutates the turn, so the next prompt diverges there (51-71% cache reuse against
+  100%), and on two Qwen3 finetunes it did not suppress reasoning at all. The
+  engine prefills the block itself now wherever it can.
+
+- **Gemma-4 keeps its reasoning in history, on both engines.** The official
+  templates strip it, which means the prompt can no longer reproduce what the
+  model generated: 13% cache reuse across four chat turns on llama.cpp, 5% on
+  MLX, against 100% when the turn travels whole. Answers stay correct with the
+  reasoning there — stale reasoning is compaction's job, not the renderer's.
+
 - **The thinking switch is read per mode, not once.** A conversation's layout is
   learned from the template, and learning it in one thinking position and reusing
   it in the other assumes the switch lives in what follows the last message —
