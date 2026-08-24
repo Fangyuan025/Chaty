@@ -1141,11 +1141,21 @@ final class Engine: @unchecked Sendable {
         let carriesReasoning = messages.contains { !($0.reasoningContent ?? "").isEmpty }
         let lmInput: LMInput
         // Both thinking modes. Laying every message out the same way wherever it
-        // sits does mean a turn's reasoning travels into history, which the
-        // official templates strip — but that is what llama.cpp has done for
-        // these models since 2.1.1, measured across nineteen of them, and a
-        // turn that cannot see its own working is the thing this exists to fix.
-        // Compaction reclaims the oldest reasoning when the window tightens.
+        // sits means a turn's reasoning travels into history, which the official
+        // templates strip.
+        //
+        // For Gemma that is a DELIBERATE departure — do not quietly restore it.
+        // Google asks for two things: thoughts kept between the tool calls of
+        // one model turn, and dropped from previous turns. Its template does
+        // neither cleanly, stripping every model message unconditionally, which
+        // breaks the tool-call half and made an agent step re-read its whole
+        // transcript. Keeping the channel fixes that half and costs the other:
+        // 5% cache reuse across four chat turns became 100%, and the owner ran
+        // it and found no drop in answer quality. Compaction reclaims stale
+        // reasoning when the window tightens — carrying the substance rather
+        // than the raw trace, which is what Google suggests for long sessions.
+        //
+        // https://ai.google.dev/gemma/docs/capabilities/thinking
         if let layout = meta.layout(thinking: thinking), !hasImages {
             // Laid out one message at a time, so a follow-up question cannot
             // change how the turns before it render. Pixels still go through the

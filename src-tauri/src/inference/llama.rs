@@ -1951,14 +1951,25 @@ fn render_gemma4(messages: &[ChatMessage], think: Option<bool>, add_gen: bool) -
             Role::User | Role::Tool => "user",
             Role::Assistant => "model",
         };
-        // A turn keeps the channel it was written in. Stripping reasoning out of
-        // prior turns is what the official template does, but it means the
-        // prompt can no longer reproduce what the model generated: the cache
-        // died at the last assistant turn and every reply after the first
-        // re-read the conversation — 13% reuse across four turns against 100%
-        // when the turn travels whole. It is also what the MLX side does for
-        // this model now, and what llama.cpp has always done for Qwen. Stale
-        // reasoning is compaction's job, not the renderer's.
+        // A turn keeps the channel it was written in.
+        //
+        // This is a DELIBERATE departure from Google's documented contract, so
+        // do not quietly restore the strip. Their guidance is in two parts:
+        // thoughts must NOT be removed between the tool calls of one model turn,
+        // and they must be removed from previous turns before the next one.
+        // Gemma's own template obeys neither half cleanly — `strip_thinking`
+        // runs over every model message unconditionally, so it breaks the
+        // tool-call half, which is what made an agent step re-read its whole
+        // transcript.
+        //
+        // Keeping the whole channel fixes that half and costs the other: 13%
+        // cache reuse across four chat turns became 100%. The owner ran it and
+        // found no drop in answer quality with reasoning in history, and took
+        // the trade knowingly. Compaction reclaims stale reasoning when the
+        // window tightens, which is also what Google suggests for long sessions
+        // — carry the substance, not the raw trace.
+        //
+        // https://ai.google.dev/gemma/docs/capabilities/thinking
         let content = m.content.clone();
         p.push_str("<|turn>");
         p.push_str(role);
