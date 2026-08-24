@@ -486,9 +486,12 @@ func templateSurvivesFollowUp(
     guard let first = render(turn),
         let second = render(turn + [["role": "user", "content": "q2"]])
     else { return true }
-    // Everything of the first render up to the end of that turn has to survive
-    // verbatim into the second.
-    guard let cut = first.range(of: "PROBE_ANS", options: .backwards) else { return true }
+    // The probe's own answer missing from the render means the template threw
+    // the turn away rather than rendering it — Gemma does exactly that to a
+    // reasoning block it considers unterminated. That is the opposite of
+    // surviving, and reading it as "nothing to see" is how this came back clean
+    // for a model whose cache died on every follow-up.
+    guard let cut = first.range(of: "PROBE_ANS", options: .backwards) else { return false }
     return second.hasPrefix(String(first[first.startIndex ..< cut.upperBound]))
 }
 
@@ -638,6 +641,16 @@ struct LearnedLayout {
         let m1 = matches([("system", "PROBE_S"), ("user", "PROBE_A")])
         let m2 = matches([("user", "PROBE_A"), ("assistant", "PROBE_B"), ("user", "PROBE_C")])
         if !m1 || !m2 {
+            if let e = try? tokenizer.applyChatTemplate(
+                messages: [msg("user", "PROBE_A"), msg("assistant", "PROBE_B"), msg("user", "PROBE_C")],
+                tools: nil, additionalContext: extra)
+            {
+            }
+            if let e = try? tokenizer.applyChatTemplate(
+                messages: [msg("system", "PROBE_S"), msg("user", "PROBE_A")],
+                tools: nil, additionalContext: extra)
+            {
+            }
             return nil
         }
 
@@ -645,10 +658,44 @@ struct LearnedLayout {
     }
 }
 
+/// Does a stored assistant turn keep the reasoning it was written with?
+///
+/// This is the question that decides whether a template can reproduce its own
+/// live prompt, and asking it any other way misses cases. Reading only the
+/// generation tail does: with thinking ON Gemma's tail is a bare assistant
+/// header — the model opens its own channel — so there is no block to probe
+/// with, the check waved it through, and every follow-up re-read the
+/// conversation anyway because the template drops the channel from history.
+///
+/// `emptyBlock` is the same span the template writes when thinking is OFF, which
+/// is where the markup is legible: a complete, empty reasoning span. Splitting
+/// it at its closing tag gives the opener and closer this model reasons in —
+/// `<think>…</think>` for Qwen, a thought channel for Gemma — and a turn built
+/// from them is the shape a real one has.
+func templateKeepsStoredReasoning(
+    _ tokenizer: any MLXLMCommon.Tokenizer, extra: [String: any Sendable]?, emptyBlock: String
+) -> Bool {
+    guard let close = emptyBlock.range(of: "<", options: .backwards),
+        close.lowerBound > emptyBlock.startIndex
+    else { return true }
+    let opener = String(emptyBlock[emptyBlock.startIndex ..< close.lowerBound])
+    let closer = String(emptyBlock[close.lowerBound...])
+    let stored = opener + "PROBE_REASON" + closer + "PROBE_ANS"
+    guard
+        let ids = try? tokenizer.applyChatTemplate(
+            messages: [
+                ["role": "user", "content": "q1"],
+                ["role": "assistant", "content": stored],
+                ["role": "user", "content": "q2"],
+            ], tools: nil, additionalContext: extra)
+    else { return true }
+    return tokenizer.decode(tokenIds: ids, skipSpecialTokens: false).contains("PROBE_REASON")
+}
+
 func probeTurnPrefix(
-    _ tokenizer: any MLXLMCommon.Tokenizer, thinkArg: Bool, appendsOwnBlock: Bool
+    _ tokenizer: any MLXLMCommon.Tokenizer, extra: [String: any Sendable]?,
+    appendsOwnBlock: Bool
 ) -> String {
-    let extra: [String: any Sendable]? = thinkArg ? ["enable_thinking": false] : nil
     func render(_ msgs: [[String: any Sendable]]) -> String? {
         guard
             let ids = try? tokenizer.applyChatTemplate(
@@ -893,7 +940,9 @@ final class Engine: @unchecked Sendable {
                 let appendsOwn = !thinkArg
                 meta.turnPrefix = await container.perform { ctx in
                     probeTurnPrefix(
-                        ctx.tokenizer, thinkArg: thinkArg, appendsOwnBlock: appendsOwn)
+                        ctx.tokenizer,
+                        extra: thinkArg ? ["enable_thinking": false] : nil,
+                        appendsOwnBlock: appendsOwn)
                 }
             }
             // Only worth replacing a template that has been shown to rewrite
@@ -903,6 +952,13 @@ final class Engine: @unchecked Sendable {
             // Each mode is learned and judged on its own. If one cannot be
             // proven, that mode keeps using the template — a slower prompt is
             // always better than a prompt that quietly ignores the switch.
+            // The thinking-OFF span, where this model's reasoning markup is
+            // legible even when the thinking-ON tail says nothing about it.
+            let offBlock: String = await container.perform { ctx in
+                let e: [String: any Sendable]? =
+                    thinkArgForLayout ? ["enable_thinking": false] : nil
+                return LearnedLayout.learn(ctx.tokenizer, extra: e)?.turnPrefix() ?? ""
+            }
             let learnFor: @Sendable (ModelContext, Bool) -> LearnedLayout? = { ctx, thinking in
                 let extra: [String: any Sendable]? =
                     thinkArgForLayout ? ["enable_thinking": thinking] : nil
@@ -921,11 +977,13 @@ final class Engine: @unchecked Sendable {
                 let stable = templateSurvivesFollowUp(
                     ctx.tokenizer, extra: extra, block: block)
                 let reproducible =
-                    block.isEmpty
-                    || !probeTurnPrefix(
-                        ctx.tokenizer, thinkArg: thinkArgForLayout,
-                        appendsOwnBlock: !thinkArgForLayout
-                    ).isEmpty
+                    (block.isEmpty
+                        || !probeTurnPrefix(
+                            ctx.tokenizer, extra: extra,
+                            appendsOwnBlock: !thinkArgForLayout
+                        ).isEmpty)
+                    && templateKeepsStoredReasoning(
+                        ctx.tokenizer, extra: extra, emptyBlock: offBlock)
                 return stable && reproducible ? nil : learned
             }
             (meta.layoutOff, meta.layoutOn) = await container.perform { ctx in

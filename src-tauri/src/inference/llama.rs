@@ -579,6 +579,14 @@ impl LlamaEngine {
         // no soft switch — the architecture field is authoritative over
         // template text, which community finetunes frequently customize.
         let is_qwen35plus = is_qwen3_5_plus_arch(&arch_lc);
+        // Can the engine turn thinking off by itself, by prefilling an empty
+        // reasoning block after the assistant header? Same question
+        // `template_uses_think` answers at render time — asked here so the soft
+        // switch knows whether it is needed. Architecture is authoritative: the
+        // Qwen3 line reasons in `<think>` blocks whatever template a finetune
+        // shipped, and some ship none at all.
+        let engine_can_prefill_think =
+            is_think_paradigm_arch(&arch_lc) || template_lc.contains("<think>");
         let supports_thinking = is_qwen35plus
             || template_lc.contains("think")
             || template_lc.contains("reasoning")
@@ -600,11 +608,29 @@ impl LlamaEngine {
                 model.apply_chat_template(&t, &probe, true).ok()
             })
             .is_some();
-        // The soft switch is Qwen3-only; never offer it on 3.5+/finetunes
-        // whose legacy templates still mention it.
+        // `/no_think` appended to the user's message: Qwen3's soft switch, and
+        // the last resort. It is offered only when nothing better exists,
+        // because it is worse in both directions. It mutates the turn, so the
+        // next prompt — rendered without it — diverges at that message and the
+        // cache dies there: 51-71% reuse against 100% for the engine flag,
+        // measured over four turns on two Qwen3 builds. And on those same two it
+        // does not even work — both kept reasoning with `/no_think` appended,
+        // the trained behaviour apparently lost in the finetune, while the flag
+        // silenced them.
+        //
+        // So: whenever the engine can prefill an empty reasoning block itself,
+        // that is the mechanism, and this stays off.
+        //
+        // The probe also has to drop `</think>` before asking, because that
+        // closing tag CONTAINS `/think` — every template that closes a block
+        // matched, which is all of them. LFM2 was handed a switch it has never
+        // heard of, the app stopped sending the flag on its behalf, and thinking
+        // could not be turned off on it at all.
+        let switch_probe = template_lc.replace("</think>", "");
         let think_switch = !is_qwen35plus
+            && !engine_can_prefill_think
             && template_usable
-            && (template_lc.contains("no_think") || template_lc.contains("/think"));
+            && (switch_probe.contains("no_think") || switch_probe.contains("/think"));
         let multimodal = mmproj.is_some()
             || model
                 .meta_val_str(&format!("{arch}.vision.block_count"))
@@ -1660,15 +1686,14 @@ fn prefixed_assistant_turns(messages: &[ChatMessage], apply: bool) -> Vec<ChatMe
 /// authoritative: Qwen3.5/3.6 use it even when a finetune ships a custom
 /// template without the markers.
 fn template_uses_think(model: &LlamaModel) -> bool {
-    let qwen35plus = model
+    let arch = model
         .meta_val_str("general.architecture")
-        .map(|a| is_qwen3_5_plus_arch(&a.to_lowercase()))
+        .map(|a| is_think_paradigm_arch(&a.to_lowercase()))
         .unwrap_or(false);
-    qwen35plus
-        || model
-            .meta_val_str("tokenizer.chat_template")
-            .map(|t| t.contains("<think>"))
-            .unwrap_or(false)
+    arch || model
+        .meta_val_str("tokenizer.chat_template")
+        .map(|t| t.contains("<think>"))
+        .unwrap_or(false)
 }
 
 fn build_prompt_pair(
@@ -1763,6 +1788,17 @@ fn build_prompt_pair(
 /// `/no_think` soft switch, a pre-opened `<think>` block. Parse the minor
 /// version out of the GGUF arch string instead of listing each release —
 /// `qwen35`, `qwen36`, `qwen38` all qualify, `qwen3`/`qwen3moe` do not.
+/// Does this architecture reason in `<think>` blocks at all? The whole Qwen3
+/// line does — 3, 3.5, 3.6, 3.8 — and that is a property of the model, not of
+/// whatever chat template a finetune happened to ship. Some ship none: the
+/// abliterated Qwen3 4B carries an EMPTY template, so llama.cpp renders it with
+/// its ChatML fallback and every think-off mechanism that keyed off template
+/// text silently did nothing. Thinking could not be turned off on that model at
+/// all, in either mode, and the only sign was a slow reply.
+pub(crate) fn is_think_paradigm_arch(arch_lc: &str) -> bool {
+    arch_lc.starts_with("qwen3")
+}
+
 pub(crate) fn is_qwen3_5_plus_arch(arch_lc: &str) -> bool {
     let Some(rest) = arch_lc.strip_prefix("qwen3") else { return false };
     match rest.chars().next() {
@@ -1915,13 +1951,15 @@ fn render_gemma4(messages: &[ChatMessage], think: Option<bool>, add_gen: bool) -
             Role::User | Role::Tool => "user",
             Role::Assistant => "model",
         };
-        // Strip reasoning channels from prior assistant turns — official
-        // templates never feed thought traces back into the context.
-        let content = if matches!(m.role, Role::Assistant) {
-            strip_thought_channels(&m.content)
-        } else {
-            m.content.clone()
-        };
+        // A turn keeps the channel it was written in. Stripping reasoning out of
+        // prior turns is what the official template does, but it means the
+        // prompt can no longer reproduce what the model generated: the cache
+        // died at the last assistant turn and every reply after the first
+        // re-read the conversation — 13% reuse across four turns against 100%
+        // when the turn travels whole. It is also what the MLX side does for
+        // this model now, and what llama.cpp has always done for Qwen. Stale
+        // reasoning is compaction's job, not the renderer's.
+        let content = m.content.clone();
         p.push_str("<|turn>");
         p.push_str(role);
         p.push('\n');
@@ -1932,24 +1970,6 @@ fn render_gemma4(messages: &[ChatMessage], think: Option<bool>, add_gen: bool) -
         p.push_str("<|turn>model\n");
     }
     p
-}
-
-/// Remove `<|channel>…<channel|>` reasoning spans (and stray markers).
-fn strip_thought_channels(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(open) = rest.find("<|channel>") {
-        out.push_str(&rest[..open]);
-        match rest[open..].find("<channel|>") {
-            Some(close) => rest = &rest[open + close + "<channel|>".len()..],
-            None => {
-                rest = "";
-                break;
-            }
-        }
-    }
-    out.push_str(rest);
-    out.trim().to_string()
 }
 
 /// Apply the chat template with a robust fallback chain:
@@ -2411,30 +2431,6 @@ mod tests {
         drop(g);
         assert!(!p.exists());
         std::fs::remove_dir_all(&base).ok();
-    }
-
-    #[test]
-    fn strips_a_single_channel_span() {
-        assert_eq!(strip_thought_channels("a<|channel>secret<channel|>b"), "ab");
-    }
-
-    #[test]
-    fn strips_multiple_channel_spans() {
-        assert_eq!(
-            strip_thought_channels("x<|channel>1<channel|>y<|channel>2<channel|>z"),
-            "xyz"
-        );
-    }
-
-    #[test]
-    fn drops_unterminated_channel_tail() {
-        // No closing marker: everything from the open tag on is discarded.
-        assert_eq!(strip_thought_channels("answer<|channel>still thinking"), "answer");
-    }
-
-    #[test]
-    fn leaves_plain_text_untouched() {
-        assert_eq!(strip_thought_channels("  just a normal reply  "), "just a normal reply");
     }
 
     // ---- find_mmproj: the vision folder-layout pairing rules ----
