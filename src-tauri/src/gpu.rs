@@ -266,7 +266,16 @@ pub fn auto_gpu_layers(path: &Path, n_layer: u32, vram_mb: u64) -> i32 {
     // Weights are roughly evenly spread across blocks (+1 for embeddings/output).
     let per_layer = file_bytes as f64 / (n_layer as f64 + 1.0);
 
-    let vram = vram_mb as f64 * 1024.0 * 1024.0;
+    // What is actually FREE, not what the card has. Sizing from the total is how
+    // a 26B model gets told it fits on a 12 GB card that a desktop, a browser
+    // and a game are already sitting on — and a Vulkan driver answers that by
+    // taking the process down rather than returning an allocation failure the
+    // back-off could catch (issue #9). Falls back to the total when live usage
+    // cannot be read, which is the old behaviour.
+    let free_mb = gpu_usage()
+        .filter(|u| u.total_mb > 0 && u.used_mb <= u.total_mb)
+        .map_or(vram_mb, |u| u.total_mb.saturating_sub(u.used_mb));
+    let vram = free_mb.min(vram_mb) as f64 * 1024.0 * 1024.0;
     // Reserve ~20% or at least 1 GiB for the KV cache / compute buffers / OS.
     let reserve = (vram * 0.20).max(1024.0 * 1024.0 * 1024.0);
     let budget = (vram - reserve).max(0.0);

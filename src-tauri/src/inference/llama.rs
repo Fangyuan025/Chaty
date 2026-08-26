@@ -44,7 +44,12 @@ use super::{ChatMessage, GenParams, GenRequest, GenStats, InferenceBackend, Mode
 // and the UI is told to say so.
 
 const GPU_INFLIGHT: &str = "llama-load.inflight";
+/// Pre-2.1.3 marker: its mere existence meant "GPU off, forever". Still read so
+/// a machine carrying one is not left stranded, but never written again.
 const GPU_BLOCKED: &str = "llama-gpu-blocked";
+/// How many layers the engine may offload after a load killed the process.
+/// A number, not a tombstone.
+const GPU_CAP: &str = "llama-gpu-cap";
 
 use crate::errlog::chaty_data_dir;
 
@@ -54,14 +59,42 @@ use crate::errlog::chaty_data_dir;
 /// from in here, so every `cargo test` run stamped a false "gpu crashed"
 /// entry into the dev machine's user log (the errlog-pollution sin, third
 /// occurrence). The production caller logs; the state machine doesn't.
-fn gpu_guard_check(base: &Path) -> bool {
+fn gpu_guard_check(base: &Path) -> Option<i32> {
     let inflight = base.join(GPU_INFLIGHT);
-    let blocked = base.join(GPU_BLOCKED);
+    let cap_file = base.join(GPU_CAP);
+    // The old tombstone: honour it as "CPU only" so an existing install keeps
+    // its protection, but let a successful load clear it like any other cap.
+    let legacy = base.join(GPU_BLOCKED);
+    let mut cap = if legacy.exists() {
+        Some(0)
+    } else {
+        std::fs::read_to_string(&cap_file).ok().and_then(|t| t.trim().parse().ok())
+    };
     if inflight.exists() {
-        let _ = std::fs::write(&blocked, "previous model load crashed the process\n");
+        // The marker survived, so the process died inside a load. It carries
+        // what that load was attempting; try half as much rather than giving
+        // up on the GPU entirely. A 26B model asked to put every layer on a
+        // 12 GB card takes the driver down with it — that is a reason to offer
+        // fewer layers, not to spend the rest of the install on the CPU.
+        let attempted: i32 = std::fs::read_to_string(&inflight)
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0);
+        let next = backoff_layers(attempted.max(0));
+        cap = Some(cap.map_or(next, |c: i32| c.min(next)));
+        let _ = std::fs::write(&cap_file, next.to_string());
+        let _ = std::fs::remove_file(&legacy);
         let _ = std::fs::remove_file(&inflight);
     }
-    blocked.exists()
+    cap
+}
+
+/// Forget the cap — the machine is not the one that crashed any more. Called
+/// when a load succeeds with the GPU, and by the user from Settings.
+pub fn clear_gpu_cap() {
+    let base = chaty_data_dir();
+    let _ = std::fs::remove_file(base.join(GPU_CAP));
+    let _ = std::fs::remove_file(base.join(GPU_BLOCKED));
 }
 
 /// Known bad-conversion tells, per model family. Two cases so far:
@@ -96,42 +129,53 @@ fn conversion_suspect(name: &str, arch: &str, tokenizer_pre: &str) -> bool {
 /// Metal (which ignores the env), and an active guard off-Windows can only
 /// produce FALSE "gpu crashed" warnings — a cargo-test on the dev Mac once
 /// raced the real app into exactly that.
-pub fn apply_gpu_crash_guard() -> bool {
+pub fn apply_gpu_crash_guard() -> Option<i32> {
     #[cfg(windows)]
     {
         let base = chaty_data_dir();
-        let promoted = base.join(GPU_INFLIGHT).exists();
-        let blocked = gpu_guard_check(&base);
-        if promoted && blocked {
+        let crashed = base.join(GPU_INFLIGHT).exists();
+        let cap = gpu_guard_check(&base);
+        if crashed {
             crate::errlog::append_error(
                 "gpu-crash-guard",
-                "previous model load crashed the process (likely GPU driver abort, issue #5 class); GPU offload disabled — running CPU-only from now on",
+                &match cap {
+                    Some(0) => "previous model load crashed the process (likely GPU driver abort, issue #5 class); running CPU-only until a load succeeds or the cap is reset in Settings".to_string(),
+                    Some(n) => format!("previous model load crashed the process (likely GPU driver abort, issue #5 class); retrying with at most {n} GPU layers"),
+                    None => "previous model load crashed the process".to_string(),
+                },
             );
         }
-        if blocked {
+        if cap == Some(0) {
             // Vulkan backend: zero visible devices = never touches the
             // driver's allocation/pipeline paths again.
             std::env::set_var("GGML_VK_VISIBLE_DEVICES", "");
         }
-        return blocked;
+        return cap;
     }
     #[cfg(not(windows))]
     {
         // Hygiene only: a stale inflight marker (crashed dev build, killed
-        // test run) is removed without promoting it to a block.
+        // test run) is removed without becoming a cap.
         let _ = std::fs::remove_file(chaty_data_dir().join(GPU_INFLIGHT));
-        false
+        None
     }
 }
 
 /// Whether the guard is currently blocking GPU offload (for the load reply).
-pub fn gpu_crash_blocked() -> bool {
+/// The current cap, if a previous load crashed. `Some(0)` is CPU-only.
+pub fn gpu_layer_cap() -> Option<i32> {
     #[cfg(windows)]
     {
-        return chaty_data_dir().join(GPU_BLOCKED).exists();
+        let base = chaty_data_dir();
+        if base.join(GPU_BLOCKED).exists() {
+            return Some(0);
+        }
+        return std::fs::read_to_string(base.join(GPU_CAP))
+            .ok()
+            .and_then(|t| t.trim().parse().ok());
     }
     #[cfg(not(windows))]
-    false
+    None
 }
 
 /// Removes the marker when load() returns — normally OR with an error. Only
@@ -139,14 +183,17 @@ pub fn gpu_crash_blocked() -> bool {
 /// Armed on Windows only (see apply_gpu_crash_guard).
 struct LoadGuard(Option<std::path::PathBuf>);
 impl LoadGuard {
-    fn arm_at(base: &Path) -> Self {
+    /// `layers` is what this load is about to attempt. If the process dies, the
+    /// marker survives carrying that number, and the next start offers half —
+    /// which is the useful thing to know, and what "GPU off forever" threw away.
+    fn arm_at(base: &Path, layers: i32) -> Self {
         let p = base.join(GPU_INFLIGHT);
-        let _ = std::fs::write(&p, "loading\n");
+        let _ = std::fs::write(&p, layers.to_string());
         Self(Some(p))
     }
-    fn arm() -> Self {
+    fn arm(layers: i32) -> Self {
         if cfg!(windows) {
-            Self::arm_at(&chaty_data_dir())
+            Self::arm_at(&chaty_data_dir(), layers)
         } else {
             Self(None)
         }
@@ -382,10 +429,6 @@ impl LlamaEngine {
     /// `gpu_pref`: `None`/negative = auto‑tune by VRAM, `Some(0)` = force CPU,
     /// `Some(n>0)` = offload exactly `n` layers.
     pub fn load(path: &str, gpu_pref: Option<i32>, n_ctx_pref: Option<u32>) -> Result<(Self, ModelInfo)> {
-        // Armed for the whole load: if the process dies in here (Vulkan
-        // driver abort — issue #5), the marker survives and the next start
-        // falls back to CPU instead of dying again.
-        let _crash_guard = LoadGuard::arm();
         let backend = llama_backend()?;
         if !Path::new(path).exists() {
             bail!("model file not found: {path}");
@@ -430,6 +473,19 @@ impl LlamaEngine {
                 None => 0,
             },
         };
+        // A load that killed the process last time gets less than it asked for,
+        // not nothing. The cap halves per crash and clears on the first load
+        // that survives, so a machine that has freed some VRAM — or a smaller
+        // model — climbs straight back onto the GPU.
+        let cap = gpu_layer_cap();
+        let requested = match cap {
+            Some(c) => requested.min(c),
+            None => requested,
+        };
+        // Armed for the whole load, carrying what it is attempting: if the
+        // process dies in here (Vulkan driver abort — issue #5), the marker
+        // survives and the next start offers half of this.
+        let _crash_guard = LoadGuard::arm(requested);
 
         // CPU-side worker threads. On Apple Silicon this is the performance-core
         // count (efficiency cores hurt throughput); elsewhere the logical CPUs.
@@ -529,7 +585,11 @@ impl LlamaEngine {
         if let Some(err) = &mtmd_err {
             eprintln!("mmproj load failed (vision disabled): {err}");
         }
-        let warning = if gpu_crash_blocked() {
+        // A GPU load that made it this far means the machine is healthy again.
+        if gpu_layers > 0 {
+            clear_gpu_cap();
+        }
+        let warning = if cap == Some(0) {
             // A previous load crashed the process (issue #5: broken Vulkan
             // driver aborts mid-load) — this run is CPU-only by the guard.
             Some("gpu-crash-cpu".to_string())
@@ -2419,12 +2479,42 @@ mod tests {
     fn gpu_crash_guard_state_machine() {
         let base = std::env::temp_dir().join(format!("chaty-gpu-guard-{}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
-        assert!(!gpu_guard_check(&base), "clean dir must not block");
-        std::fs::write(base.join(GPU_INFLIGHT), "loading").unwrap();
-        assert!(gpu_guard_check(&base), "stale inflight must block");
+        assert_eq!(gpu_guard_check(&base), None, "a clean dir caps nothing");
+
+        // A load died attempting 40 layers. Offer half, not zero: the reporter
+        // in issue #9 crashed once on a 26B model and spent every session since
+        // on the CPU, with nothing in the app able to undo it.
+        std::fs::write(base.join(GPU_INFLIGHT), "40").unwrap();
+        assert_eq!(gpu_guard_check(&base), Some(20), "a crash halves the offer");
         assert!(!base.join(GPU_INFLIGHT).exists(), "inflight must be consumed");
-        assert!(base.join(GPU_BLOCKED).exists(), "block must persist");
-        assert!(gpu_guard_check(&base), "block persists across restarts");
+        assert_eq!(gpu_guard_check(&base), Some(20), "the cap survives a restart");
+
+        // Crash again and it halves again, down to CPU.
+        std::fs::write(base.join(GPU_INFLIGHT), "20").unwrap();
+        assert_eq!(gpu_guard_check(&base), Some(10));
+        std::fs::write(base.join(GPU_INFLIGHT), "10").unwrap();
+        assert_eq!(gpu_guard_check(&base), Some(5));
+        std::fs::write(base.join(GPU_INFLIGHT), "5").unwrap();
+        assert_eq!(gpu_guard_check(&base), Some(0), "the ladder ends at CPU-only");
+
+        // A cap never rises on its own — only a successful load clears it.
+        std::fs::write(base.join(GPU_INFLIGHT), "999").unwrap();
+        assert_eq!(gpu_guard_check(&base), Some(0), "a later crash cannot raise it");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// An install carrying the old tombstone keeps its protection, and can get
+    /// out of it — before this the file was written once and read forever.
+    #[test]
+    fn the_old_tombstone_is_honoured_and_escapable() {
+        let base = std::env::temp_dir().join(format!("chaty-gpu-legacy-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join(GPU_BLOCKED), "previous model load crashed\n").unwrap();
+        assert_eq!(gpu_guard_check(&base), Some(0), "an old block still means CPU-only");
+        // A crash on top of it replaces it with a real cap rather than stacking.
+        std::fs::write(base.join(GPU_INFLIGHT), "8").unwrap();
+        assert_eq!(gpu_guard_check(&base), Some(0));
+        assert!(!base.join(GPU_BLOCKED).exists(), "the tombstone is migrated away");
         std::fs::remove_dir_all(&base).ok();
     }
 
@@ -2436,7 +2526,7 @@ mod tests {
     fn load_guard_cleans_up_on_drop() {
         let base = std::env::temp_dir().join(format!("chaty-loadguard-{}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
-        let g = LoadGuard::arm_at(&base);
+        let g = LoadGuard::arm_at(&base, 42);
         let p = g.0.clone().unwrap();
         assert!(p.exists());
         drop(g);

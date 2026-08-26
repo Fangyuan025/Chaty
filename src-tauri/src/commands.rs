@@ -302,6 +302,22 @@ pub fn get_gpu_usage() -> Option<crate::gpu::GpuUsage> {
     crate::gpu::gpu_usage()
 }
 
+/// How many GPU layers the engine is currently allowed after a crash, if any.
+/// `Some(0)` means CPU-only; `None` means no cap at all.
+#[tauri::command]
+pub fn get_gpu_layer_cap() -> Option<i32> {
+    crate::inference::llama::gpu_layer_cap()
+}
+
+/// Forget that cap. Offered in Settings because the machine that crashed is not
+/// necessarily the machine you have now — a driver update, a closed game, or a
+/// smaller model all make the GPU worth another try, and before this the only
+/// way back was deleting a file by hand.
+#[tauri::command]
+pub fn reset_gpu_layer_cap() {
+    crate::inference::llama::clear_gpu_cap();
+}
+
 /// Write `content` to `path` (used by conversation export after a save dialog).
 #[tauri::command]
 pub fn write_text_file(path: String, content: String) -> Result<(), String> {

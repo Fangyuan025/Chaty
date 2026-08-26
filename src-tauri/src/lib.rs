@@ -86,7 +86,7 @@ pub fn run() {
     // GPU crash guard (issue #5): if the previous model load took the whole
     // process down (broken Vulkan driver aborts mid-load), block GPU offload
     // for this run BEFORE any llama/ggml init touches the driver.
-    let _gpu_blocked = crate::inference::llama::apply_gpu_crash_guard();
+    let _gpu_cap = crate::inference::llama::apply_gpu_crash_guard();
     // ggml's Metal backend keeps every weight buffer in an MTLResidencySet
     // when built against the macOS 15+ SDK, which shows up as a wired-memory
     // balloon the size of the model (and froze machines on big models with
@@ -319,6 +319,8 @@ pub fn run() {
             commands::get_model,
             commands::get_hardware_info,
             commands::get_gpu_usage,
+            commands::get_gpu_layer_cap,
+            commands::reset_gpu_layer_cap,
             commands::write_text_file,
             commands::write_wav_file,
             download::list_hf_ggufs,
