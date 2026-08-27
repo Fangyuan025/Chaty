@@ -422,12 +422,12 @@ export const T = {
   // A turn can end with nothing to show. Say which way it happened rather than
   // leaving an empty bubble that reads as the app losing the answer.
   emptyNoRoom: {
-    zh: "**(这一轮没有生成内容:提示词已超出模型的上下文窗口。请开启新对话,或在设置里调大上下文长度。)**",
-    en: "**(Nothing was generated this turn: the prompt no longer fits the model's context window. Start a new conversation, or raise the context length in settings.)**",
+    zh: "**(这一轮没有生成内容:提示词已超出模型的上下文窗口。请开启新对话,或在「设置 → 模型 → 上下文长度」里调大。)**",
+    en: "**(Nothing was generated this turn: the prompt no longer fits the model's context window. Start a new conversation, or raise Settings → Model → Context length.)**",
   },
   emptyOutOfBudget: {
-    zh: "**(这一轮的生成长度用完时,模型还停在思考里,没来得及写出回答。可在设置→采样里调大「最大长度」,或点击重新生成。)**",
-    en: "**(The model was still reasoning when it ran out of generation length, so no answer was written. Raise Max length in Settings → Sampling, or regenerate.)**",
+    zh: "**(这一轮的生成长度用完时,模型还停在思考里,没来得及写出回答。可在「设置 → 采样 → 最大生成长度」里调大,或点击重新生成。)**",
+    en: "**(The model was still reasoning when it ran out of generation length, so no answer was written. Raise Settings → Sampling → Max length, or regenerate.)**",
   },
   emptyThoughtOnly: {
     zh: "**(模型这一轮只输出了思考过程就结束了,没有给出正式回答。可以点击重新生成。)**",
@@ -848,7 +848,6 @@ export const T = {
     zh: "**上一次运行被中断** — 界面在运行过程中重新加载了(渲染进程崩溃或被重启),这一轮没有跑完。已完成的文件改动仍在工作区里,可以直接说「继续」。",
     en: "**The last run was interrupted** — the interface reloaded while it was working (a renderer crash or restart), so that turn never finished. Edits already written are still in the workspace; say \"continue\" to pick it up.",
   },
-  limitOn: { zh: "限制", en: "Limit" },
   ragTopK: { zh: "知识库引用条数", en: "Knowledge citations" },
   tipRagTopK: {
     zh: "一次提问最多引用多少条知识库片段。片段越多覆盖越全,但占用的上下文也越多。",

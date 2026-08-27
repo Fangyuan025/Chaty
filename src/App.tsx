@@ -456,11 +456,11 @@ export default function App() {
   // was expected to remember the other — and the command palette's web toggle
   // did not, so switching search on from ⌘K silently stopped the reasoning of
   // every later turn while still claiming it was on. One rule, one place.
-  const useThinking = (on: boolean) => {
+  const setThinkingOn = (on: boolean) => {
     setThinkEnabled(on);
     if (on) setWebEnabled(false);
   };
-  const useWebSearch = (on: boolean) => {
+  const setWebSearchOn = (on: boolean) => {
     setWebEnabled(on);
     if (on) setThinkEnabled(false);
   };
@@ -2344,7 +2344,7 @@ export default function App() {
       id: "web",
       label: webEnabled ? t("cmdkWebOff") : t("cmdkWebOn"),
       keywords: "web search 联网 搜索",
-      run: () => useWebSearch(!webEnabled),
+      run: () => setWebSearchOn(!webEnabled),
     },
     {
       id: "models-dir",
@@ -3279,7 +3279,7 @@ export default function App() {
                         <button
                           className={`tool-item ${webEnabled ? "on" : ""}`}
                           onClick={() => {
-                            useWebSearch(!webEnabled);
+                            setWebSearchOn(!webEnabled);
                           }}
                         >
                           <span className="ti-label">{t("toolWeb")}</span>
@@ -3295,7 +3295,7 @@ export default function App() {
                         <button
                           className={`tool-item tool-parent ${thinkEnabled ? "on" : ""}`}
                           onClick={() => {
-                            useThinking(!thinkEnabled);
+                            setThinkingOn(!thinkEnabled);
                           }}
                           title={t("effortHint")}
                         >
@@ -3316,7 +3316,7 @@ export default function App() {
                               className={`tool-item ${thinkEnabled && effort === lvl ? "on" : ""}`}
                               onClick={() => {
                                 setEffort(lvl);
-                                useThinking(true);
+                                setThinkingOn(true);
                               }}
                             >
                               <span className="ti-label">
@@ -3333,7 +3333,7 @@ export default function App() {
                     <button
                       className={`tool-item ${thinkEnabled && model?.supportsThinking ? "on" : ""}`}
                       onClick={() => {
-                        useThinking(!thinkEnabled);
+                        setThinkingOn(!thinkEnabled);
                       }}
                       disabled={!model?.supportsThinking}
                       title={model && !model.supportsThinking ? t("thinkUnsupported") : undefined}

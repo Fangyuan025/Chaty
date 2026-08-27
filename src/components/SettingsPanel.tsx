@@ -240,6 +240,62 @@ function SetRow({ label, hint, children }: { label: string; hint?: string; child
   );
 }
 
+/**
+ * A number that can be switched off entirely: the off/custom pair, with the
+ * slider showing only while it is on.
+ *
+ * Three settings are this control — Sampling's max length and Code's step and
+ * timeout ceilings — and each had grown its own copy inline. They had drifted:
+ * two said "Limit / No limit" in that order against the third's "No limit /
+ * Custom", and their sliders lived in a bordered card of their own holding
+ * nothing but a bare bar. One component, so the next one cannot drift either.
+ */
+function LimitField({
+  label,
+  tip,
+  offLabel,
+  onLabel,
+  off,
+  onOff,
+  value,
+  children,
+}: {
+  label: string;
+  tip?: string;
+  offLabel: string;
+  onLabel: string;
+  off: boolean;
+  onOff: (off: boolean) => void;
+  /** Shown beside the label while the setting is on. */
+  value?: React.ReactNode;
+  /** The slider — rendered only while the setting is on. */
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="field">
+      <span>
+        {tip ? (
+          <em className="has-tip" data-tip={tip}>
+            {label}
+          </em>
+        ) : (
+          label
+        )}
+        {!off && value != null && <> <b>{value}</b></>}
+      </span>
+      <div className="lang-switch">
+        <button type="button" className={off ? "active" : ""} onClick={() => onOff(true)}>
+          {offLabel}
+        </button>
+        <button type="button" className={off ? "" : "active"} onClick={() => onOff(false)}>
+          {onLabel}
+        </button>
+      </div>
+      {!off && children}
+    </label>
+  );
+}
+
 function Switch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   return (
     <button type="button" role="switch" aria-checked={on} className={`set-switch ${on ? "on" : ""}`} onClick={onToggle}>
@@ -532,8 +588,8 @@ export function SettingsPanel({
       // pseudo-element on the label any more.
       <div
         ref={tipRef}
-        className="settings-tip"
-        style={{ left: tip.x, top: tip.y, opacity: tip.x === -9999 ? 0 : 1 }}
+        className={`settings-tip ${tip.x === -9999 ? "" : "placed"}`}
+        style={{ left: tip.x, top: tip.y }}
       >
         {tip.text}
       </div>
@@ -639,21 +695,6 @@ export function SettingsPanel({
           {cat === "chat" && (
             <>
               <label className="field">
-                <span>
-                  <em className="has-tip" data-tip={t("tipRagTopK")}>{t("ragTopK")}</em> <b>{value.ragTopK}</b>
-                </span>
-                <input
-                  type="range"
-                  min={1}
-                  max={32}
-                  step={1}
-                  value={value.ragTopK}
-                  onChange={(e) => set("ragTopK", Number(e.target.value))}
-                />
-              </label>
-              <div className="settings-hint">{t("ragTopKHint")}</div>
-
-              <label className="field">
                 <span>{t("systemPrompt")}</span>
                 <textarea
                   rows={4}
@@ -725,6 +766,21 @@ export function SettingsPanel({
               <SetRow label={t("setAutoTitle")} hint={t("setAutoTitleHint")}>
                 <Switch on={value.autoTitle} onToggle={() => set("autoTitle", !value.autoTitle)} />
               </SetRow>
+
+              <label className="field">
+                <span>
+                  <em className="has-tip" data-tip={t("tipRagTopK")}>{t("ragTopK")}</em> <b>{value.ragTopK}</b>
+                </span>
+                <input
+                  type="range"
+                  min={1}
+                  max={32}
+                  step={1}
+                  value={value.ragTopK}
+                  onChange={(e) => set("ragTopK", Number(e.target.value))}
+                />
+              </label>
+              <div className="settings-hint">{t("ragTopKHint")}</div>
             </>
           )}
 
@@ -742,28 +798,24 @@ export function SettingsPanel({
                 </span>
                 <input type="range" min={0.1} max={1} step={0.01} value={value.topP} onChange={(e) => set("topP", Number(e.target.value))} />
               </label>
-              <label className="field">
-                <span><em className="has-tip" data-tip={t("tipMaxTokens")}>{t("maxTokens")}</em></span>
-                <div className="lang-switch">
-                  <button type="button" className={!value.limitTokens ? "active" : ""} onClick={() => set("limitTokens", false)}>{t("noLimit")}</button>
-                  <button type="button" className={value.limitTokens ? "active" : ""} onClick={() => set("limitTokens", true)}>{t("gpuCustom")}</button>
-                </div>
-              </label>
-              {value.limitTokens && (
-                <label className="field">
-                  <span>
-                    {t("maxTokens")} <b>{value.maxTokens}</b>
-                  </span>
-                  <input
-                    type="range"
-                    min={128}
-                    max={maxTokensLimit}
-                    step={128}
-                    value={Math.min(value.maxTokens, maxTokensLimit)}
-                    onChange={(e) => set("maxTokens", Number(e.target.value))}
-                  />
-                </label>
-              )}
+              <LimitField
+                label={t("maxTokens")}
+                tip={t("tipMaxTokens")}
+                offLabel={t("noLimit")}
+                onLabel={t("gpuCustom")}
+                off={!value.limitTokens}
+                onOff={(o) => set("limitTokens", !o)}
+                value={Math.min(value.maxTokens, maxTokensLimit)}
+              >
+                <input
+                  type="range"
+                  min={128}
+                  max={maxTokensLimit}
+                  step={128}
+                  value={Math.min(value.maxTokens, maxTokensLimit)}
+                  onChange={(e) => set("maxTokens", Number(e.target.value))}
+                />
+              </LimitField>
               <label className="field">
                 <span>
                   <em className="has-tip" data-tip={t("tipTopK")}>Top-K</em> <b>{value.topK === 0 ? t("off") : value.topK}</b>
@@ -940,78 +992,42 @@ export function SettingsPanel({
 
           {cat === "code" && (
             <>
-              <label className="field">
-                <span>
-                  {t("cmMaxSteps")}{" "}
-                  <b>{value.codeMaxSteps > 0 ? value.codeMaxSteps : t("noLimit")}</b>
-                </span>
-                <div className="lang-switch">
-                  <button
-                    type="button"
-                    className={value.codeMaxSteps > 0 ? "active" : ""}
-                    onClick={() => set("codeMaxSteps", value.codeMaxSteps > 0 ? value.codeMaxSteps : 64)}
-                  >
-                    {t("limitOn")}
-                  </button>
-                  <button
-                    type="button"
-                    className={value.codeMaxSteps <= 0 ? "active" : ""}
-                    onClick={() => set("codeMaxSteps", 0)}
-                  >
-                    {t("noLimit")}
-                  </button>
-                </div>
-              </label>
-              {value.codeMaxSteps > 0 && (
-                <label className="field">
-                  <input
-                    type="range"
-                    min={8}
-                    max={256}
-                    step={4}
-                    value={value.codeMaxSteps}
-                    onChange={(e) => set("codeMaxSteps", Number(e.target.value))}
-                  />
-                </label>
-              )}
+              <LimitField
+                label={t("cmMaxSteps")}
+                offLabel={t("noLimit")}
+                onLabel={t("gpuCustom")}
+                off={value.codeMaxSteps <= 0}
+                onOff={(o) => set("codeMaxSteps", o ? 0 : 64)}
+                value={value.codeMaxSteps}
+              >
+                <input
+                  type="range"
+                  min={8}
+                  max={256}
+                  step={4}
+                  value={value.codeMaxSteps}
+                  onChange={(e) => set("codeMaxSteps", Number(e.target.value))}
+                />
+              </LimitField>
               <div className="settings-hint">{t("cmMaxStepsHint")}</div>
 
-              <label className="field">
-                <span>
-                  {t("cmBashTimeout")}{" "}
-                  <b>{value.codeBashTimeout > 0 ? `${value.codeBashTimeout}s` : t("noLimit")}</b>
-                </span>
-                <div className="lang-switch">
-                  <button
-                    type="button"
-                    className={value.codeBashTimeout > 0 ? "active" : ""}
-                    onClick={() =>
-                      set("codeBashTimeout", value.codeBashTimeout > 0 ? value.codeBashTimeout : 60)
-                    }
-                  >
-                    {t("limitOn")}
-                  </button>
-                  <button
-                    type="button"
-                    className={value.codeBashTimeout <= 0 ? "active" : ""}
-                    onClick={() => set("codeBashTimeout", 0)}
-                  >
-                    {t("noLimit")}
-                  </button>
-                </div>
-              </label>
-              {value.codeBashTimeout > 0 && (
-                <label className="field">
-                  <input
-                    type="range"
-                    min={10}
-                    max={1800}
-                    step={10}
-                    value={value.codeBashTimeout}
-                    onChange={(e) => set("codeBashTimeout", Number(e.target.value))}
-                  />
-                </label>
-              )}
+              <LimitField
+                label={t("cmBashTimeout")}
+                offLabel={t("noLimit")}
+                onLabel={t("gpuCustom")}
+                off={value.codeBashTimeout <= 0}
+                onOff={(o) => set("codeBashTimeout", o ? 0 : 60)}
+                value={`${value.codeBashTimeout}s`}
+              >
+                <input
+                  type="range"
+                  min={10}
+                  max={1800}
+                  step={10}
+                  value={value.codeBashTimeout}
+                  onChange={(e) => set("codeBashTimeout", Number(e.target.value))}
+                />
+              </LimitField>
               <div className="settings-hint">{t("cmBashTimeoutHint")}</div>
 
               <label className="field">

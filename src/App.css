@@ -4268,7 +4268,6 @@ button.tool-parent {
 
 /* Hover tooltips for parameter labels in settings. */
 .has-tip {
-  position: relative;
   font-style: normal;
   border-bottom: 1px dotted var(--text-dim);
   cursor: help;
@@ -4295,7 +4294,13 @@ button.tool-parent {
   border-radius: var(--r-md);
   box-shadow: var(--shadow-2);
   pointer-events: none;
-  transition: opacity 0.12s ease;
+  /* An animation, not a transition. The bubble is measured and then placed in
+     the same frame, so a transition between the two has no earlier painted
+     state to run from and the fade simply did not happen. */
+  opacity: 0;
+}
+.settings-tip.placed {
+  animation: ui-fade-in var(--t-fast) var(--ease) both;
 }
 
 /* First-launch setup: hero CTA + recommendation modal. */
@@ -4686,15 +4691,23 @@ button.tool-parent {
 
 /* Focus-follows-generation: while reasoning streams, pin a small window to
    the newest text and fade the older lines out above (mask gradient). */
-.think-body.focus {
-  max-height: 140px;
+/* Focus-follows-generation, shared by both modes: while reasoning streams, a
+   short window pinned to the newest line with what is above it faded out. The
+   two panels differ only in how tall that window is — their type sizes differ —
+   so only the height is stated twice. */
+.think-body.focus,
+.cm-think-body.focus {
   overflow-y: auto;
   scrollbar-width: none;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
   mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
 }
-.think-body.focus::-webkit-scrollbar {
+.think-body.focus::-webkit-scrollbar,
+.cm-think-body.focus::-webkit-scrollbar {
   display: none;
+}
+.think-body.focus {
+  max-height: 140px;
 }
 
 .ctx-ring {
@@ -5845,19 +5858,12 @@ button.tool-parent {
 .cm-think.live .cm-think-body {
   color: var(--text);
 }
-/* Focus-follows-generation, matching chat's `.think-body.focus`: a short window
-   pinned to the newest text with the older lines faded out above it. Without
-   it a long reasoning trace grew until it pushed the steps under it off screen,
-   and the words being written were wherever the page happened to be scrolled. */
+/* The shared spotlight rule lives with chat's; only this panel's height is its
+   own. Without it a long reasoning trace grew until it pushed the steps under
+   it off screen, and the words being written were wherever the page happened
+   to be scrolled. */
 .cm-think-body.focus {
   max-height: 132px;
-  overflow-y: auto;
-  scrollbar-width: none;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
-}
-.cm-think-body.focus::-webkit-scrollbar {
-  display: none;
 }
 
 /* ---- spinner ---- */

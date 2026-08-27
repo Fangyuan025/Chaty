@@ -65,6 +65,80 @@
   ever reported; the rungs in between loaded in silence, and the model just ran
   slower for no stated reason.
 
+### The knowledge base, and two limits that were not ours to set
+
+- **The knowledge base answered out of six chunks.** The count was written into
+  the search itself with a ceiling of twelve above it, so a library of two
+  hundred documents cited six of them however much of it was relevant, and
+  nothing in the app could raise that. It is a setting now — chat and the
+  `search_docs` tool both read it — and the clamp only stops a runaway value
+  reading the whole table into one prompt.
+
+- **Indexing a large file could take the app down.** The chunker collected an
+  oversized paragraph into memory four bytes a character first, and a file with
+  no blank line in it — minified JavaScript, one-line JSON, a log — IS one
+  paragraph. It walks the text one chunk at a time now, and refuses something
+  past a bound with a message naming the size rather than dying in the middle
+  of it.
+
+- **The step and timeout ceilings can be switched off.** The slider stopped at
+  96 steps and 300 seconds, with a second 600-second ceiling behind it in the
+  backend that the slider could not even express. Both take "no limit" now, and
+  the backend honours it.
+
+### Code mode
+
+- **The console tool could not see what Chrome was showing.** Everything a page
+  spawns reports on its own debugger session — a cross-origin iframe, a window
+  it opens, a worker — and only the first was ever attached, so those errors
+  existed in the browser and nowhere else. Reading the console also emptied it,
+  so a model that looked twice was told it was empty while the error was still
+  on screen.
+
+- **A tall page's tiles no longer fail the round on Gemma-4.** Through MLX it
+  cannot take more than one picture in a prompt: it encodes the first and then
+  refuses the count, so the round FAILS. A full-page screenshot arrives as
+  several tiles, which means every one of them failed, and the retry behind each
+  failure is what a browsing session looked like from the outside. The engine
+  reports the capability now, and a model that can only look at one tile is sent
+  one and told so.
+
+- **A long unattended run stops eating the renderer.** Every step card held the
+  FULL tool result — up to 384 KB for a single file read, for every step, for
+  the session, written to disk on each save — while showing 6000 characters of
+  it, and every edit kept both whole copies of the file for its diff. That is
+  how a run grows until the web content process is killed and comes back empty:
+  no error, no notice, the turn simply gone and the mode reset to chat. Cards
+  keep a bounded copy now; what the model receives is untouched, and the diff's
+  +N/−M badge is still counted from the whole file. The mode survives a reload,
+  an interrupted run says so on the way back, and a reload of the page is
+  written to the error log so the next one leaves evidence.
+
+- **Reasoning shown the way chat shows it.** A long thought used to grow until
+  it pushed the steps below it off the screen; it now holds a short window
+  pinned to the newest line, and opening it by hand releases that.
+
+- **A recovery nudge stops shortening the turn it recovers.** Two paths stored a
+  stripped copy of what the model wrote — removing the very markup the nudge was
+  about, so the model was asked to fix a call it could no longer see — and a
+  stored turn shorter than the generated one kills the prefix, so every
+  remaining step re-read the transcript.
+
+### Windows: a GPU crash lowers the offer instead of ending it
+
+- **Issue #9.** A 26B model on a 12 GB card took the Vulkan driver down on its
+  first load, and the reporter spent every session afterwards on the CPU with no
+  way back. Two faults, one crash tripping both. The auto-tuner sized the
+  offload from the card's TOTAL memory, ignoring what the desktop already held —
+  the live figure was being collected for the hardware panel and never consulted
+  for the decision; it sizes from what is free now. And the crash guard was a
+  tombstone: written once, removed by no code path anywhere, while the warning
+  told the user to update a driver that nothing would ever re-check. A crash
+  now HALVES what the load was attempting rather than ending it — 40 layers
+  becomes 20, then 10, then 5, then CPU — and the first load that survives on
+  the GPU clears it, so a driver update, a closed game or a smaller model puts
+  the card back in play by itself.
+
 ### Settings
 
 - **The hover explanations stay in the window.** They were drawn as a
