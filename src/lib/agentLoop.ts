@@ -181,7 +181,14 @@ export interface AgentCallbacks {
   onCompacted?: () => void;
   /** The model finished the task (no more tool calls). `reason` is "steps"
    *  when the turn paused at the step limit rather than truly finishing. */
-  onFinal: (text: string, thinking?: string, reason?: "done" | "steps") => void;
+  onFinal: (
+    text: string,
+    thinking?: string,
+    reason?: "done" | "steps",
+    /** What the turn was stuck on when it paused, so a "continue" can pick the
+     *  escape up where it left off instead of starting it over. */
+    stuck?: StuckState,
+  ) => void;
   /** The exact message tail this turn ended with, system prompt excluded —
    *  handed back so the NEXT turn can continue from it verbatim instead of a
    *  summary. Reconstructing this from what the UI shows cannot be exact (a
@@ -243,6 +250,14 @@ export interface AgentOptions {
   mediaPrefixReuse?: boolean;
   /** How many knowledge-base excerpts `search_docs` may return. */
   ragTopK?: number;
+  /** Set when this turn is a "continue" after a paused one. A pause is not a
+   *  reset: everything that was trying to break the loop — the heat, the rung
+   *  the missing-argument ladder had climbed, the repeat count — lived in the
+   *  turn and died with it. So "continue" restarted at base temperature, on
+   *  rung one, facing a transcript in which the model had just made the same
+   *  call five times: the three worst settings at once, and small models duly
+   *  made it a sixth. The rung carries over now; the allowance is fresh. */
+  resume?: StuckState;
   /** Whether one prompt may carry several pictures (false: Gemma-4 on MLX). */
   multiImage?: boolean;
   /** Deliver tool results under the `tool` role. Templates decide "is this turn
@@ -342,6 +357,51 @@ export function agentSetEditAnchors(on: boolean): void {
 }
 
 
+
+/**
+ * What every user-role turn carries for the current thinking rung.
+ *
+ * The off switch has always ridden here, because — as the call site says — the
+ * model decides whether to think from the LAST user message. The DEPTH rung,
+ * which decides how much, was the one thing left behind in the system prompt,
+ * six thousand characters back, as a single bullet among thirty. It did
+ * nothing: measured on Qwen3.6 35B across five paired tasks, deep produced
+ * 0.95x the reasoning of standard and was the longer of the pair on one task
+ * out of five; on Qwen3.5 9B, 1.04x. A switch that moves nothing is a
+ * decoration. It now arrives where the model is actually deciding.
+ */
+export function thinkSuffix(mode: ThinkMode, zh: boolean, thinkSwitch?: boolean): string {
+  if (mode === "off") return thinkSwitch ? "\n/no_think" : "";
+  if (mode !== "deep") return "";
+  return zh
+    ? "\n(本步请充分思考后再行动:先分析现状,权衡几种做法,再决定调用哪个工具。)"
+    : "\n(Think this step through thoroughly before acting: read the state, weigh a few approaches, then choose the tool.)";
+}
+
+/**
+ * Why a turn paused, in the terms the next turn needs to do better.
+ *
+ * `argslip`: the model kept calling `tool` without a required argument, and the
+ * ladder had climbed to `count` rungs. `repeat`: it kept issuing the identical
+ * call `key` — `count` times in a row.
+ */
+export type StuckState =
+  | { kind: "argslip"; tool: string; count: number }
+  | { kind: "repeat"; tool: string; key: string; count: number };
+
+/** What a "continue" after a pause says on the turn itself, at the end of the
+ *  user message — where the model reads its instructions from. The pause text
+ *  the user sees is ours; this is the model's copy of it. */
+export function resumeNudge(stuck: StuckState, zh: boolean): string {
+  if (stuck.kind === "argslip") {
+    return zh
+      ? `\n(上一轮因为 ${stuck.tool} 连续 ${stuck.count} 次缺少必需参数而暂停。这一轮请换个做法:先用 list_dir / read_file / grep 带着具体参数弄清楚要操作的对象,再带完整 arguments 调用 ${stuck.tool}。不要再发空参数的调用。)`
+      : `\n(The previous attempt was paused: ${stuck.count} ${stuck.tool} calls in a row were missing a required argument. Do something different this time — use list_dir / read_file / grep with concrete arguments to find out what you are operating on, then call ${stuck.tool} with complete arguments. Do not send another empty one.)`;
+  }
+  return zh
+    ? `\n(上一轮因为连续 ${stuck.count} 次发出完全相同的 ${stuck.tool} 调用而暂停。原样重发不会有不同结果:请换一个工具,或改变参数。)`
+    : `\n(The previous attempt was paused after ${stuck.count} identical ${stuck.tool} calls in a row. Re-sending it unchanged cannot produce a different result — use a different tool, or different arguments.)`;
+}
 
 export function systemPrompt(
   workspace: string,
@@ -1847,7 +1907,7 @@ export async function runAgentTurn(
       : opts.supportsThinking && !opts.thinkSwitch
         ? !wantNoThink
         : undefined;
-  const noThinkSuffix = wantNoThink && opts.thinkSwitch ? "\n/no_think" : "";
+  const turnSuffix = thinkSuffix(opts.thinkMode, lang === "zh", opts.thinkSwitch);
   // A generous token budget so a long reasoning block can't bury the tool call,
   // but never so large that generation crowds the prompt out of the window.
   const nCtx = opts.nCtx ?? 8192;
@@ -1915,11 +1975,17 @@ export async function runAgentTurn(
       ),
     },
     ...keptHistory,
-    { role: "user", content: userInput + noThinkSuffix, ...(userImages ? { images: userImages } : {}) },
+    {
+      role: "user",
+      content:
+        userInput + (opts.resume ? resumeNudge(opts.resume, lang === "zh") : "") + turnSuffix,
+      ...(userImages ? { images: userImages } : {}),
+    },
   ];
 
-  // Every user-role turn (tool results, nudges) carries the soft switch too,
-  // since the model reads the LAST user message when deciding to think.
+  // Every user-role turn (tool results, nudges) carries the thinking rung,
+  // since the model reads the LAST user message when deciding to think — and,
+  // it turns out, when deciding how much (see thinkSuffix).
   // Tool-call metadata per result message, so compaction can replace a big
   // result with a digest that still names the file/command it came from.
   const toolMeta = new WeakMap<ChatMessage, { name: string; args: Record<string, unknown> }>();
@@ -1934,7 +2000,7 @@ export async function runAgentTurn(
     // transcript and each step a pure append onto the KV cache.
     const isResult = content.trimStart().startsWith("<tool_result");
     const role: ChatMessage["role"] = isResult && opts.toolRole ? "tool" : "user";
-    const m: ChatMessage = { role, content: content + noThinkSuffix };
+    const m: ChatMessage = { role, content: content + turnSuffix };
     if (images?.length) m.images = images;
     messages.push(m);
     if (meta) toolMeta.set(m, meta);
@@ -1948,9 +2014,15 @@ export async function runAgentTurn(
   // the exact same call (e.g. `ls .` forever). Escalation: 2nd identical call
   // is intercepted (not executed) + the next step samples hotter to break the
   // pattern attractor; 3rd pauses the turn for the user.
-  let lastCallKey = "";
-  let repeatCount = 0;
-  let hotNext = false;
+  // Seeded from the pause this turn is resuming, if any. An identical call
+  // arriving right after a "continue" is the SECOND one, not the first — it
+  // meets the soft lock immediately instead of buying six more free steps.
+  let lastCallKey = opts.resume?.kind === "repeat" ? opts.resume.key : "";
+  let repeatCount = opts.resume?.kind === "repeat" ? 1 : 0;
+  // Resume hot. Replaying at base temperature is what made "continue" produce
+  // the same call again: the transcript's most likely continuation IS the
+  // thing that got the turn paused.
+  let hotNext = opts.resume !== undefined;
   // Whether the last executed call returned an ERROR — a repeated identical
   // call after an error needs "fix the arguments" advice, not "try list_dir".
   let lastResultErrored = false;
@@ -1970,6 +2042,12 @@ export async function runAgentTurn(
   // tool's counter. Slip 5 pauses — guarded calls never reach the repeat
   // breaker, so the ladder carries its own backstop.
   const argSlips = new Map<string, { n: number; atStep: number; total: number }>();
+  if (opts.resume?.kind === "argslip") {
+    // The rung carries over — the model earns the strongest wording on its
+    // first slip after a resume, not the gentlest — while `total` starts over,
+    // so continuing actually buys another run of attempts.
+    argSlips.set(opts.resume.tool, { n: opts.resume.count, atStep: 0, total: 0 });
+  }
   // Pre-compaction memory flush: once per turn, just before the first
   // compaction, the files already edited get pinned into a plain user note —
   // compaction digests tool results, and without this the model loses track
@@ -2481,6 +2559,7 @@ export async function runAgentTurn(
               : `The model issued ${total} ${call.name} calls with missing arguments — paused to avoid spinning. Hit "Continue" to retry, or break the task into more concrete steps.`,
             undefined,
             "steps",
+            { kind: "argslip", tool: call.name, count: n },
           );
           return;
         }
@@ -2643,6 +2722,7 @@ export async function runAgentTurn(
             : `The model issued the exact same call ${repeatCount + 1} times in a row — paused to avoid spinning. Hit "Continue" to retry, or rephrase with the specific subdirectory/file to look at.`,
           undefined,
           "steps",
+          { kind: "repeat", tool: call.name, key: callKey, count: repeatCount + 1 },
         );
         return;
       }
@@ -2756,7 +2836,7 @@ export async function runAgentTurn(
                   lang === "zh"
                     ? `已加载图片 ${rel},下面是它的内容,请查看后继续。`
                     : `Loaded image ${rel}; its contents are below — look and continue.`,
-                ) + noThinkSuffix,
+                ) + turnSuffix,
               images: [abs],
             });
           } else {

@@ -114,6 +114,28 @@
   an interrupted run says so on the way back, and a reload of the page is
   written to the error log so the next one leaves evidence.
 
+- **The deep / standard switch was a decoration on models without a native
+  ladder.** For those the rung was one bullet in a six-thousand-character
+  system prompt, while the off switch rode on the last user message — where,
+  as the code beside it says, the model decides whether to think. It decides
+  how much there too: measured across five paired tasks, deep produced 0.95x
+  the reasoning of standard on Qwen3.6 35B and was the longer of the pair once
+  in five. The rung now arrives with the off switch, and the same measurement
+  gives 1.52x on that model (5 of 5), 1.81x on Qwen3.5 9B and 3.20x on Gemma-4
+  E4B through the other engine.
+
+- **"Continue" after a pause no longer restarts the loop it was breaking.** A
+  turn pauses when the model keeps issuing the same call, or keeps leaving out
+  a required argument — and everything that had been trying to break that out
+  lived in the turn and died with it. So Continue began the next one at base
+  temperature, with the missing-argument ladder back on its gentlest rung,
+  facing a transcript in which the model had just made the same empty call five
+  times. The three worst settings at once. The rung carries over now, the first
+  step samples hot instead of replaying, an identical call arriving straight
+  after a resume counts as the second rather than buying six more free steps,
+  and the turn itself says which loop it is resuming from and what to do
+  instead.
+
 - **Reasoning shown the way chat shows it.** A long thought used to grow until
   it pushed the steps below it off the screen; it now holds a short window
   pinned to the newest line, and opening it by hand releases that.

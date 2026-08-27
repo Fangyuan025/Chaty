@@ -52,6 +52,7 @@ import {
   runAgentTurn,
   IS_WINDOWS,
   type PlanItem,
+  type StuckState,
   type ThinkMode,
   type ToolCall,
   type ToolStep,
@@ -580,6 +581,9 @@ export function CodeMode({
   /** The model exposes a native reasoning-effort ladder (Qwen3.8) — the think
    *  switch then shows the model's own rungs instead of Chaty's intensities. */
   const nativeEffort = (model?.effortLevels?.length ?? 0) > 0;
+  /** Set when a turn pauses on a loop the model could not get out of; consumed
+   *  by the next turn so "Continue" picks the escape up where it stopped. */
+  const stuckRef = useRef<StuckState | null>(null);
   const [thinkMode, setThinkMode] = useState<ThinkMode>(() => {
     const v = localStorage.getItem("chaty.code.think");
     return v === "off" || v === "low" || v === "normal" || v === "deep" ? v : "normal";
@@ -1288,6 +1292,8 @@ export function CodeMode({
     // own sometimes and takes the turn with it; without this the session simply
     // reappeared idle and there was nothing to say what had happened.
     localStorage.setItem(RUN_INFLIGHT_KEY, String(Date.now()));
+    const resumeFrom = stuckRef.current;
+    stuckRef.current = null;
     setStats(null);
     // The session this turn belongs to — if the user deletes it mid-run the
     // live sid moves on, and the turn's results must not be written anywhere.
@@ -1309,6 +1315,8 @@ export function CodeMode({
     const modelInput = attachCtx ? `${attachCtx}\n\n${text}` : text;
     await runAgentTurn(modelInput, history, workspace, agentLang(lang), {
       thinkMode,
+      // Consumed once: this turn resumes the escape, the one after it starts clean.
+      resume: resumeFrom ?? undefined,
       supportsThinking: model.supportsThinking,
       thinkSwitch: model.thinkSwitch,
       effort: nativeEffort ? EFFORT_OF[thinkMode] : undefined,
@@ -1407,14 +1415,18 @@ export function CodeMode({
         // not the whole transcript.
         persistSoon(turnSid);
       },
-      onFinal: (final, thinking, reason) =>
+      onFinal: (final, thinking, reason, stuck) => {
+        // What the turn was stuck on, so "Continue" resumes the escape instead
+        // of restarting it — see AgentOptions.resume.
+        stuckRef.current = reason === "steps" ? (stuck ?? null) : null;
         update((m) => ({
           ...m,
           text: final,
           thinking: thinking || m.thinking,
           liveThinking: "",
           paused: reason === "steps",
-        })),
+        }));
+      },
       onError: (msg) => update((m) => ({ ...m, text: (m.text ? m.text + "\n\n" : "") + `**${msg}**` })),
       // Keep the tail on the newest assistant turn only — it is the only one
       // ever replayed, and every earlier copy would be dead weight in the
