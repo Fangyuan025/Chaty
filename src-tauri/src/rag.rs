@@ -32,6 +32,11 @@ const EMBED_URLS: &[&str] = &[
     "https://huggingface.co/gpustack/bge-m3-GGUF/resolve/main/bge-m3-Q8_0.gguf",
     "https://huggingface.co/lm-kit/bge-m3-gguf/resolve/main/bge-m3-Q8_0.gguf",
 ];
+/// Refuse to index more text than this rather than dying halfway through it.
+/// Roughly ten thousand chunks — an hour of embedding on its own, and the point
+/// at which the memory the ingest needs stops being predictable. A clear message
+/// naming the size beats a process that disappears.
+const MAX_INDEX_CHARS: usize = 8_000_000;
 const CHUNK_CHARS: usize = 800;
 const CHUNK_OVERLAP: usize = 120;
 /// Candidates pulled per retriever before fusion.
@@ -452,12 +457,21 @@ fn chunk_text(text: &str) -> Vec<String> {
                 chunks.push(cur.trim().to_string());
                 cur.clear();
             }
-            let cs: Vec<char> = p.chars().collect();
-            let mut i = 0;
-            while i < cs.len() {
-                let end = (i + CHUNK_CHARS).min(cs.len());
-                chunks.push(cs[i..end].iter().collect::<String>().trim().to_string());
-                if end == cs.len() {
+            // Walk the paragraph by character boundaries rather than
+            // collecting it. `Vec<char>` is FOUR bytes per character, so a file
+            // with no blank line in it — minified JS, one-line JSON, a log —
+            // arrives as a single paragraph and quadruples in memory before a
+            // single chunk exists. That is what took the app down on a large
+            // import; the slicing below allocates one chunk at a time.
+            let idx: Vec<usize> = p.char_indices().map(|(i, _)| i).collect();
+            let n = idx.len();
+            let mut i = 0usize;
+            while i < n {
+                let end = (i + CHUNK_CHARS).min(n);
+                let from = idx[i];
+                let to = if end < n { idx[end] } else { p.len() };
+                chunks.push(p[from..to].trim().to_string());
+                if end == n {
                     break;
                 }
                 i = end.saturating_sub(CHUNK_OVERLAP);
@@ -597,7 +611,13 @@ pub struct RagHit {
 
 #[tauri::command]
 pub fn rag_search(app: tauri::AppHandle, query: String, k: Option<usize>) -> Result<Vec<RagHit>, String> {
-    let k = k.unwrap_or(6).clamp(1, 12);
+    // How many chunks a question may cite. The old ceiling was 12 with a
+    // default of 6, both written here — so a knowledge base of two hundred
+    // documents answered out of six chunks no matter how much of it was
+    // relevant, and nothing in the app could raise that. The caller decides
+    // now; the clamp only keeps a runaway value from reading the whole table
+    // into one prompt.
+    let k = k.unwrap_or(6).clamp(1, 64);
     let rows: Vec<ChunkRow> = with_db(&app, |conn| {
         let mut stmt = conn
             .prepare(
@@ -891,6 +911,13 @@ pub async fn rag_add_document(
                 t
             }
         };
+        let chars = text.chars().count();
+        if chars > MAX_INDEX_CHARS {
+            return Err(format!(
+                "文档过大,无法索引:{chars} 字符,上限 {MAX_INDEX_CHARS}。请拆分后再导入。\n\
+                 (Document too large to index: {chars} characters, limit {MAX_INDEX_CHARS}. Split it and import the parts.)"
+            ));
+        }
         let chunks = chunk_text(&text);
         if chunks.is_empty() {
             return Err("文档中没有可索引的文本 (no indexable text in document)".into());
@@ -1391,6 +1418,24 @@ mod tests {
             "semantic order broken: kitten~cat {kitten_cat} vs kitten~carburetor {kitten_carb}"
         );
         drop(emb); // exercises the worker-shutdown path
+    }
+
+    #[test]
+    /// A file with no blank line in it is ONE paragraph. The old splitter
+    /// collected it into a `Vec<char>` first — four bytes a character — and a
+    /// large import took the app with it. Chunks must come out the same, and
+    /// multi-byte text must not be sliced through a character.
+    #[test]
+    fn splits_a_single_huge_paragraph_without_collecting_it() {
+        let para = "字符".repeat(5_000); // 10k chars, 30k bytes, no blank lines
+        let chunks = chunk_text(&para);
+        assert!(chunks.len() > 10, "one long paragraph must still split");
+        assert!(chunks.iter().all(|c| c.chars().count() <= CHUNK_CHARS + 1));
+        // Every chunk is valid text that came out of the original.
+        assert!(chunks.iter().all(|c| para.contains(c.as_str())));
+        // And the whole paragraph is covered, overlaps aside.
+        let joined: String = chunks.concat();
+        assert!(joined.chars().count() >= para.chars().count());
     }
 
     #[test]

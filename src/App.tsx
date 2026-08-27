@@ -407,7 +407,18 @@ export default function App() {
   const [showPodcast, setShowPodcast] = useState(false);
   const [showDeepResearch, setShowDeepResearch] = useState(false);
   const [showKbReport, setShowKbReport] = useState(false);
-  const [appMode, setAppMode] = useState<"chat" | "code">("chat");
+  // Persisted: the webview reloads on its own (a renderer crash, a devtools
+  // reload, an OOM) and the backend is written to survive it — see the model
+  // hand-back below. The mode was not, so a reload silently dropped you back
+  // into chat while whatever code mode was running vanished with the JS
+  // context. Landing back where you were is what makes that visible as "my run
+  // stopped" instead of "why am I in chat".
+  const [appMode, setAppMode] = useState<"chat" | "code">(() =>
+    localStorage.getItem("chaty.appMode") === "code" ? "code" : "chat",
+  );
+  useEffect(() => {
+    localStorage.setItem("chaty.appMode", appMode);
+  }, [appMode]);
   /** Native reasoning-effort rung for models with a ladder (Qwen3.8). Kept
    *  even while thinking is off, so toggling back restores the choice; models
    *  without a ladder never send it. */
@@ -1692,7 +1703,7 @@ export default function App() {
         if (ragEnabled) {
           try {
             const query = prior.length > 0 ? await rewriteQuery(prior, text) : text;
-            const hits = await ragSearch(query, 6);
+            const hits = await ragSearch(query, settings.ragTopK);
             // Group retrieved chunks by their source file so the user sees one
             // citation per document, not one per chunk. First-seen order keeps
             // the best-scoring file first; chunks within a file go in document
@@ -2572,6 +2583,7 @@ export default function App() {
         active={appMode === "code"}
         maxSteps={settings.codeMaxSteps}
         bashTimeout={settings.codeBashTimeout}
+        ragTopK={settings.ragTopK}
         temperature={settings.codeTemperature}
         thinkBudget={settings.codeThinkBudget}
         maxGenTokens={settings.codeMaxTokens}

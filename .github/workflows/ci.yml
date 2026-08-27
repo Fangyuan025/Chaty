@@ -59,8 +59,10 @@ jobs:
         # sherpa-rs places in target/release/, breaking the link (same gotcha as
         # release.yml).
         with: { workspaces: src-tauri, cache-targets: false }
-      # clippy over lib, the chaty-headless bin, and tests (which
-      # `cargo test --lib` never compiles). Deny only the correctness and
+      # clippy over lib, the chaty-headless bin, tests (which `cargo test --lib`
+      # never compiles) and examples (which nothing else compiles either — a
+      # signature change reached PR #8 with voicetest.rs left behind, and every
+      # gate here was green). Deny only the correctness and
       # suspicious lint groups: these flag near-certain bugs (bad comparisons,
       # misused APIs, likely-wrong logic) and rarely false-positive, so they
       # gate real defects without drowning the run in style noise.
@@ -68,7 +70,7 @@ jobs:
       # down libonnxruntime under target/release/, and the link step looks there.
       - name: clippy (deny correctness bugs)
         working-directory: src-tauri
-        run: cargo clippy --lib --bins --tests --release -- -D clippy::correctness -D clippy::suspicious
+        run: cargo clippy --lib --bins --tests --examples --release -- -D clippy::correctness -D clippy::suspicious
       # Build in release so sherpa-rs lays down libonnxruntime in target/release/
       # (its build script only populates the release dir, which the link step
       # expects — a debug `cargo test` can't find it on a clean runner).

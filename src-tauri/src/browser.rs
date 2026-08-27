@@ -611,6 +611,11 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
 }
 
 /// A launched Chrome + an attached page session over one CDP WebSocket.
+/// Console lines kept for `browser_console`. Enough to hold a page's whole
+/// startup noise plus the error that matters, bounded so a chatty page cannot
+/// grow the buffer without limit across a long session.
+const CONSOLE_KEEP: usize = 400;
+
 struct BrowserSession {
     child: std::process::Child,
     ws: Ws,
@@ -621,6 +626,11 @@ struct BrowserSession {
     /// How many buffered lines were already auto-attached to an interaction
     /// result (the cursor keeps repeats out; `drain_console` resets it).
     surfaced: usize,
+    /// Sessions that attached while we were pumping — cross-origin iframes,
+    /// popups, workers. Each needs Runtime/Log enabled before it reports
+    /// anything, and that call cannot be made from inside the pump loop, so
+    /// they queue here and are drained after it.
+    pending_sessions: Vec<String>,
     /// Main-frame URL, kept fresh by navigate() and Page.frameNavigated —
     /// gates console auto-attach to LOCAL pages only (real websites are full
     /// of third-party console noise the model must not drown in).
@@ -730,7 +740,7 @@ impl BrowserSession {
             return Err("CDP 会话附加失败 (failed to attach CDP session)".into());
         }
 
-        let mut s = BrowserSession { child, ws, session_id, next_id, console: Vec::new(), surfaced: 0, current_url: String::new(), _profile: _guard };
+        let mut s = BrowserSession { child, ws, session_id, next_id, console: Vec::new(), surfaced: 0, pending_sessions: Vec::new(), current_url: String::new(), _profile: _guard };
         // Enable the domains we consume. Runtime.enable surfaces console API
         // calls + uncaught exceptions; Log.enable surfaces browser log entries.
         let sid = s.session_id.clone();
@@ -743,6 +753,23 @@ impl BrowserSession {
         // Puppeteer ships the same call for exactly this reason.
         let _ = s.call(Some(&sid), "Emulation.setFocusEmulationEnabled", json!({"enabled": true}));
         let _ = s.call(Some(&sid), "Log.enable", json!({}));
+        // Everything the page spawns reports on its OWN session: a cross-origin
+        // iframe, a window it opens, a worker. Without this they are simply not
+        // attached, and their errors appear in Chrome's console — where the user
+        // sees them — while `browser_console` comes back empty, which is exactly
+        // the shape of "the browser shows an error the tool cannot find".
+        let _ = s.call(
+            Some(&sid),
+            "Target.setAutoAttach",
+            json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}),
+        );
+        // And at the browser level, for targets the page did not create.
+        let _ = s.call(
+            None,
+            "Target.setAutoAttach",
+            json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}),
+        );
+        s.enable_pending_sessions();
         Ok(s)
     }
 
@@ -805,6 +832,11 @@ impl BrowserSession {
                     if let Some(u) = frame["url"].as_str() {
                         self.current_url = u.to_string();
                     }
+                }
+            }
+            "Target.attachedToTarget" => {
+                if let Some(sid) = p["sessionId"].as_str() {
+                    self.pending_sessions.push(sid.to_string());
                 }
             }
             "Runtime.consoleAPICalled" => {
@@ -909,20 +941,47 @@ impl BrowserSession {
         }
     }
 
+    /// The console as Chrome would show it. Reading does NOT empty it: a model
+    /// debugging a page looks more than once, and a second look answering
+    /// "console is empty" while the browser still shows the error is worse than
+    /// repeating a line. The buffer is trimmed to a bound instead.
     fn drain_console(&mut self) -> String {
         // Also pump any pending frames (non-blocking-ish) so freshly-logged
         // messages are included even without an intervening command.
         self.pump_pending();
+        self.enable_pending_sessions();
+        // Enabling a session can produce a burst of buffered entries.
+        self.pump_pending();
+        if self.console.len() > CONSOLE_KEEP {
+            let cut = self.console.len() - CONSOLE_KEEP;
+            self.console.drain(..cut);
+            self.surfaced = self.surfaced.saturating_sub(cut);
+        }
         if self.console.is_empty() {
             return "（控制台无输出 / console is empty）".into();
         }
-        let out = self.console.join("\n");
-        self.console.clear();
-        self.surfaced = 0;
-        out
+        // Everything has now been shown, so nothing here is "unsurfaced" any
+        // more — a later interaction attaches only what arrives after this.
+        self.surfaced = self.console.len();
+        self.console.join("\n")
     }
 
     /// Drain frames already waiting on the socket (short read timeout).
+    /// Turn on the domains we read for every session that attached while we
+    /// were pumping. Called outside the pump loop, which cannot send.
+    fn enable_pending_sessions(&mut self) {
+        while let Some(sid) = self.pending_sessions.pop() {
+            let _ = self.call(Some(&sid), "Runtime.enable", json!({}));
+            let _ = self.call(Some(&sid), "Log.enable", json!({}));
+            // A target this one spawns in turn reports the same way.
+            let _ = self.call(
+                Some(&sid),
+                "Target.setAutoAttach",
+                json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}),
+            );
+        }
+    }
+
     fn pump_pending(&mut self) {
         set_read_timeout(&self.ws, Duration::from_millis(120));
         for _ in 0..500 {
@@ -2210,6 +2269,15 @@ mod tests {
         assert!(
             full.contains("fyi-note-77") && full.contains("boot-crash-77"),
             "browser_console must keep the full buffer: {full}"
+        );
+        // And looking twice still shows it. Reading used to EMPTY the buffer,
+        // so a model that checked the console a second time — which is what
+        // debugging a page looks like — was told it was empty while Chrome went
+        // on showing the error.
+        let again = console().unwrap_or_default();
+        assert!(
+            again.contains("boot-crash-77"),
+            "a second look must not come back empty: {again}"
         );
         shutdown();
     }

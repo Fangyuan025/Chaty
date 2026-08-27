@@ -60,6 +60,10 @@ export interface GenSettings {
   /** Context window to load the model with: 0 = memory-friendly default (≤8192),
    *  >0 = that many tokens (clamped to the model's trained length). */
   contextLength: number;
+  /** How many knowledge-base chunks a question may cite. Was hardcoded at 6
+   *  with a ceiling of 12, so a large library answered out of six chunks no
+   *  matter how much of it was relevant. */
+  ragTopK: number;
   /** Code mode: max agent steps per turn before it pauses. */
   codeMaxSteps: number;
   /** Code mode: default bash-command timeout in seconds. */
@@ -131,6 +135,7 @@ export const defaultSettings: GenSettings = {
   voiceSpeed: 1.0,
   gpuLayers: -1,
   contextLength: 0,
+  ragTopK: 8,
   // 64, was 32: the CalendarApp repro showed 32 starves app-scale one-shots,
   // and 48 still cut the model off ONE error from green (round 16: mid-fix
   // on a duplicate-struct error at the buzzer). Simple tasks end early
@@ -280,6 +285,39 @@ export function SettingsPanel({
   const [checking, setChecking] = useState(false);
   const set = <K extends keyof GenSettings>(key: K, v: GenSettings[K]) =>
     onChange({ ...value, [key]: v });
+
+  // Tooltips are `position: fixed` and read their coordinates from these
+  // variables, so they can be kept inside the window instead of hanging off
+  // whichever label they belong to. Anchored to the label they overflowed the
+  // right edge when the label sat near it, and were clipped by the panel's own
+  // scrolling when the label sat near the top. Measured on hover — the bubble
+  // has no layout box until then, and the panel scrolls under it.
+  useEffect(() => {
+    if (!open) return;
+    const MARGIN = 12;
+    const place = (el: HTMLElement) => {
+      const tip = el.getAttribute("data-tip");
+      if (!tip) return;
+      const r = el.getBoundingClientRect();
+      // The bubble is at most 250px wide and roughly this tall; exact height
+      // needs the rendered box, which a ::after never exposes, so estimate from
+      // the text and let the clamp absorb the error.
+      const w = Math.min(250, window.innerWidth - 2 * MARGIN);
+      const h = Math.min(220, 30 + Math.ceil(tip.length / 34) * 17);
+      const x = Math.min(Math.max(MARGIN, r.left), window.innerWidth - w - MARGIN);
+      // Above the label by default; below it when there is no room above.
+      const above = r.top - 7 - h;
+      const y = above >= MARGIN ? above : Math.min(r.bottom + 7, window.innerHeight - h - MARGIN);
+      el.style.setProperty("--tip-x", `${Math.round(x)}px`);
+      el.style.setProperty("--tip-y", `${Math.round(y)}px`);
+    };
+    const onOver = (e: globalThis.MouseEvent) => {
+      const el = (e.target as HTMLElement | null)?.closest?.("[data-tip]");
+      if (el instanceof HTMLElement) place(el);
+    };
+    document.addEventListener("mouseover", onOver, true);
+    return () => document.removeEventListener("mouseover", onOver, true);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -554,6 +592,21 @@ export function SettingsPanel({
 
           {cat === "chat" && (
             <>
+              <label className="field">
+                <span>
+                  <em className="has-tip" data-tip={t("tipRagTopK")}>{t("ragTopK")}</em> <b>{value.ragTopK}</b>
+                </span>
+                <input
+                  type="range"
+                  min={1}
+                  max={32}
+                  step={1}
+                  value={value.ragTopK}
+                  onChange={(e) => set("ragTopK", Number(e.target.value))}
+                />
+              </label>
+              <div className="settings-hint">{t("ragTopKHint")}</div>
+
               <label className="field">
                 <span>{t("systemPrompt")}</span>
                 <textarea
@@ -843,32 +896,76 @@ export function SettingsPanel({
             <>
               <label className="field">
                 <span>
-                  {t("cmMaxSteps")} <b>{value.codeMaxSteps}</b>
+                  {t("cmMaxSteps")}{" "}
+                  <b>{value.codeMaxSteps > 0 ? value.codeMaxSteps : t("noLimit")}</b>
                 </span>
-                <input
-                  type="range"
-                  min={8}
-                  max={96}
-                  step={4}
-                  value={value.codeMaxSteps}
-                  onChange={(e) => set("codeMaxSteps", Number(e.target.value))}
-                />
+                <div className="lang-switch">
+                  <button
+                    type="button"
+                    className={value.codeMaxSteps > 0 ? "active" : ""}
+                    onClick={() => set("codeMaxSteps", value.codeMaxSteps > 0 ? value.codeMaxSteps : 64)}
+                  >
+                    {t("limitOn")}
+                  </button>
+                  <button
+                    type="button"
+                    className={value.codeMaxSteps <= 0 ? "active" : ""}
+                    onClick={() => set("codeMaxSteps", 0)}
+                  >
+                    {t("noLimit")}
+                  </button>
+                </div>
               </label>
+              {value.codeMaxSteps > 0 && (
+                <label className="field">
+                  <input
+                    type="range"
+                    min={8}
+                    max={256}
+                    step={4}
+                    value={value.codeMaxSteps}
+                    onChange={(e) => set("codeMaxSteps", Number(e.target.value))}
+                  />
+                </label>
+              )}
               <div className="settings-hint">{t("cmMaxStepsHint")}</div>
 
               <label className="field">
                 <span>
-                  {t("cmBashTimeout")} <b>{value.codeBashTimeout}s</b>
+                  {t("cmBashTimeout")}{" "}
+                  <b>{value.codeBashTimeout > 0 ? `${value.codeBashTimeout}s` : t("noLimit")}</b>
                 </span>
-                <input
-                  type="range"
-                  min={10}
-                  max={300}
-                  step={10}
-                  value={value.codeBashTimeout}
-                  onChange={(e) => set("codeBashTimeout", Number(e.target.value))}
-                />
+                <div className="lang-switch">
+                  <button
+                    type="button"
+                    className={value.codeBashTimeout > 0 ? "active" : ""}
+                    onClick={() =>
+                      set("codeBashTimeout", value.codeBashTimeout > 0 ? value.codeBashTimeout : 60)
+                    }
+                  >
+                    {t("limitOn")}
+                  </button>
+                  <button
+                    type="button"
+                    className={value.codeBashTimeout <= 0 ? "active" : ""}
+                    onClick={() => set("codeBashTimeout", 0)}
+                  >
+                    {t("noLimit")}
+                  </button>
+                </div>
               </label>
+              {value.codeBashTimeout > 0 && (
+                <label className="field">
+                  <input
+                    type="range"
+                    min={10}
+                    max={1800}
+                    step={10}
+                    value={value.codeBashTimeout}
+                    onChange={(e) => set("codeBashTimeout", Number(e.target.value))}
+                  />
+                </label>
+              )}
               <div className="settings-hint">{t("cmBashTimeoutHint")}</div>
 
               <label className="field">

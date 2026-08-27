@@ -4275,12 +4275,18 @@ button.tool-parent {
 }
 .has-tip::after {
   content: attr(data-tip);
-  position: absolute;
-  bottom: calc(100% + 7px);
-  left: 0;
+  /* Fixed, not absolute. Anchored to the label it belonged to, the bubble
+     inherited the label's position AND the settings panel's clipping: a label
+     near the right edge pushed 250px of it off the window, and one near the top
+     of the scroll area had it cut off above. The coordinates come from a
+     measurement on hover (see useTooltipPosition) and are already clamped to
+     the viewport; the fallback keeps it sane before the first measurement. */
+  position: fixed;
+  left: var(--tip-x, 0);
+  top: var(--tip-y, 0);
   z-index: 90;
   width: max-content;
-  max-width: 250px;
+  max-width: min(250px, calc(100vw - 24px));
   padding: 7px 10px;
   font-size: 11.5px;
   line-height: 1.45;
@@ -5843,6 +5849,20 @@ button.tool-parent {
 }
 .cm-think.live .cm-think-body {
   color: var(--text);
+}
+/* Focus-follows-generation, matching chat's `.think-body.focus`: a short window
+   pinned to the newest text with the older lines faded out above it. Without
+   it a long reasoning trace grew until it pushed the steps under it off screen,
+   and the words being written were wherever the page happened to be scrolled. */
+.cm-think-body.focus {
+  max-height: 132px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
+}
+.cm-think-body.focus::-webkit-scrollbar {
+  display: none;
 }
 
 /* ---- spinner ---- */

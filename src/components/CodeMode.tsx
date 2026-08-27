@@ -313,8 +313,21 @@ function StepCard({ step, onPreview }: { step: ToolStep; onPreview?: (path: stri
 }
 
 /** Collapsible reasoning panel. Streams open while `live`; collapsed once done. */
+/** Marks a code run as in flight so an interrupted one can be reported. */
+const RUN_INFLIGHT_KEY = "chaty.code.runInflight";
+
 function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label: string }) {
   const [open, setOpen] = useState(false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  // Focus-follows-generation, as chat mode has had: while reasoning streams,
+  // hold a short window pinned to the newest line and fade what is above it.
+  // Code mode let the whole trace grow instead, so a long think pushed the
+  // steps below it off the screen and the newest words were wherever the page
+  // happened to be scrolled. Opening it by hand releases the window.
+  const focus = !!live && !open;
+  useEffect(() => {
+    if (focus && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [text, focus]);
   if (!text) return null;
   return (
     <div className={`cm-think ${live ? "live" : ""}`}>
@@ -325,7 +338,11 @@ function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label
           <Icon name="chevron-right" size={11} strokeWidth={2} />
         </span>
       </button>
-      {(open || live) && <div className="cm-think-body">{text}</div>}
+      {(open || live) && (
+        <div ref={bodyRef} className={`cm-think-body ${focus ? "focus" : ""}`}>
+          {text}
+        </div>
+      )}
     </div>
   );
 }
@@ -494,6 +511,7 @@ export function CodeMode({
   active,
   maxSteps,
   bashTimeout,
+  ragTopK,
   temperature,
   thinkBudget = 0,
   maxGenTokens = 0,
@@ -512,6 +530,8 @@ export function CodeMode({
   autoTitle?: boolean;
   /** Max agent steps per turn (Settings → Code). */
   maxSteps?: number;
+  /** Knowledge-base excerpts `search_docs` may return. */
+  ragTopK?: number;
   /** Default bash timeout in seconds (Settings → Code). */
   bashTimeout?: number;
   /** Sampling temperature for agent steps (Settings → Code). */
@@ -596,6 +616,18 @@ export function CodeMode({
   const [downloads, setDownloads] = useState<AgentDlInfo[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const signalRef = useRef<AgentSignal | null>(null);
+  // Left behind when a run does not reach its own cleanup — i.e. the page went
+  // away underneath it. Reported once on the next mount, then cleared.
+  useEffect(() => {
+    if (!localStorage.getItem(RUN_INFLIGHT_KEY)) return;
+    localStorage.removeItem(RUN_INFLIGHT_KEY);
+    setMsgs((cur) =>
+      cur.length
+        ? [...cur, { id: uid(), role: "assistant" as const, text: t("cmRunInterrupted"), steps: [] }]
+        : cur,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef({ msgs, workspace, sid });
   bodyRef.current = { msgs, workspace, sid };
@@ -1248,6 +1280,10 @@ export function CodeMode({
     const isFirstTurn = msgs.length === 0;
     setMsgs(base);
     setRunning(true);
+    // A run in flight, recorded outside React state. The webview reloads on its
+    // own sometimes and takes the turn with it; without this the session simply
+    // reappeared idle and there was nothing to say what had happened.
+    localStorage.setItem(RUN_INFLIGHT_KEY, String(Date.now()));
     setStats(null);
     // The session this turn belongs to — if the user deletes it mid-run the
     // live sid moves on, and the turn's results must not be written anywhere.
@@ -1286,6 +1322,7 @@ export function CodeMode({
       // still prefixes the new prompt; MLX re-encodes them all whenever a call
       // carries pixels. That decides whether dropping stale screenshots pays.
       mediaPrefixReuse: model.backend === "llama.cpp",
+      ragTopK,
       toolRole: model.toolRole ?? false,
       reasoningField: model.reasoningField ?? false,
       // No vision encoder → still expose the browser suite, minus the two
@@ -1390,6 +1427,7 @@ export function CodeMode({
     });
 
     setRunning(false);
+    localStorage.removeItem(RUN_INFLIGHT_KEY);
     setApproval(null);
     setPrefill(null);
     // Persist only while this turn's session is still the active one — after

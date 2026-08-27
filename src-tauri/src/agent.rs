@@ -3379,7 +3379,18 @@ pub async fn agent_bash(
     sudo_password: Option<String>,
 ) -> Result<BashResult, String> {
     let root = workspace()?;
-    let timeout = Duration::from_secs(timeout_secs.unwrap_or(120).clamp(1, 600));
+    // 0 means the user turned the limit off in Settings. The 600-second ceiling
+    // was written here on top of a slider that already stopped at 300, so a
+    // build, a test suite or a long install had two caps above it and no way to
+    // raise either — the command just died mid-run. A day is not "no timeout",
+    // but it is past anything a person is waiting on, and it still guarantees
+    // the process cannot be orphaned forever.
+    const NO_LIMIT: u64 = 24 * 60 * 60;
+    let timeout = Duration::from_secs(match timeout_secs {
+        Some(0) => NO_LIMIT,
+        Some(n) => n.clamp(1, NO_LIMIT),
+        None => 120,
+    });
     let is_sudo = command_uses_sudo(&command);
     let (command, stdin, sandboxed) = if is_sudo {
         let cmd = if sudo_password.is_some() { ensure_sudo_stdin(&command) } else { command };

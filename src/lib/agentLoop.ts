@@ -238,6 +238,8 @@ export interface AgentOptions {
    *  appended (llama.cpp's media cache does; MLX cannot — pixels reset its rope
    *  state). Decides whether dropping stale screenshots is worth a re-prefill. */
   mediaPrefixReuse?: boolean;
+  /** How many knowledge-base excerpts `search_docs` may return. */
+  ragTopK?: number;
   /** Deliver tool results under the `tool` role. Templates decide "is this turn
    *  still part of the request being answered" from the last *user* message, so
    *  a result posing as one makes them drop every preceding assistant's
@@ -931,6 +933,8 @@ async function execTool(
   call: ToolCall,
   bashTimeout?: number,
   readChars?: number,
+  /** How many knowledge-base excerpts `search_docs` may return. */
+  ragTopK?: number,
   /** Present when a `sudo` command was approved and the user entered a
    *  password — piped to `sudo -S` on stdin by the backend. */
   sudoPassword?: string,
@@ -1016,7 +1020,7 @@ async function execTool(
       const q = asStr(a.query);
       if (!q) return { result: missingArg("query", '{"query":"how uploads are stored"}') };
       try {
-        const hits = await ragSearch(q, 6);
+        const hits = await ragSearch(q, ragTopK ?? 8);
         if (!hits.length) return { result: "(知识库中没有相关内容 / nothing relevant in the knowledge base)" };
         return {
           result: hits.map((h) => `── ${h.docName} ──\n${h.text}`).join("\n\n"),
@@ -1763,7 +1767,12 @@ export async function runAgentTurn(
   turnSkills = opts.skills ?? [];
   setSkillToolEnabled(turnSkills.length > 0, turnSkills.map((sk) => sk.name));
   setMemoryToolEnabled(Boolean(opts.memoryIndex !== undefined));
-  const maxSteps = opts.maxSteps ?? 32;
+  // 0 means the user turned the step limit off in Settings. The loop still
+  // needs a number to count against, and every "we are nearly out of steps"
+  // nudge below is written in terms of it, so an unbounded run gets a ceiling
+  // no session will reach rather than a special case threaded through all of
+  // them. Stopping is then the user's call — the run button cancels.
+  const maxSteps = opts.maxSteps === 0 ? Number.MAX_SAFE_INTEGER : (opts.maxSteps ?? 32);
   // Thinking control mirrors chat mode's per-model mechanisms:
   //  • Qwen3 (`thinkSwitch`): append the `/no_think` soft switch to user turns.
   //  • Switch-less reasoning models (Qwen3.5+ / Gemma): drive the think flag
@@ -2246,7 +2255,14 @@ export async function runAgentTurn(
         // raw markup into the answer; nudge the model to re-emit valid JSON.
         // (Bounded by maxSteps.) Otherwise it's a genuine final answer.
         if (raw.includes("<tool_call>") && step < maxSteps - 1) {
-          messages.push({ role: "assistant", content: proseOnly(raw) });
+          // Verbatim, like the tool-call path. Recording `proseOnly(raw)` here
+          // stripped the very markup the nudge below is about — the model was
+          // asked to fix a call it could no longer see — and it also made the
+          // stored turn shorter than what was generated, so the KV prefix died
+          // and EVERY remaining step of the turn re-read the transcript. The
+          // recovery paths are exactly where a session is already struggling;
+          // they are the worst place to also make it slow.
+          messages.push({ role: "assistant", content: raw });
           pushUser(
             lang === "zh"
               ? '你上一个工具调用的格式无效。请严格用一行 <tool_call>{"name":"...","arguments":{...}}</tool_call> 重新调用。'
@@ -2418,7 +2434,10 @@ export async function runAgentTurn(
         );
         // From the 3rd slip the stuck state deserves a visible card.
         if (n >= 3) cb.onStep({ id: uid(), call, status: "error", result: note });
-        messages.push({ role: "assistant", content: proseOnly(raw) });
+        // Verbatim — see the parse-failure path above. The model is being told
+        // its arguments were wrong; it needs to see the call it made, and the
+        // prompt needs to reproduce what was generated.
+        messages.push({ role: "assistant", content: raw });
         pushUser(note);
         continue;
       }
@@ -2847,7 +2866,7 @@ export async function runAgentTurn(
       try {
         let out: Awaited<ReturnType<typeof execTool>>;
         try {
-          out = await execTool(call, opts.bashTimeout, readChars, sudoPassword);
+          out = await execTool(call, opts.bashTimeout, readChars, opts.ragTopK, sudoPassword);
         } catch (e) {
           // Out-of-workspace access: the backend answers with a NEED_DIR_GRANT
           // marker instead of a flat rejection. Ask the user; a grant persists
@@ -2862,7 +2881,7 @@ export async function runAgentTurn(
           }
           await agentGrantDir(dir);
           cb.onDirGrants?.(await agentListGrants());
-          out = await execTool(call, opts.bashTimeout, readChars, sudoPassword);
+          out = await execTool(call, opts.bashTimeout, readChars, opts.ragTopK, sudoPassword);
         }
         // A tool must return a string; guard anyway so a stray undefined
         // (e.g. a backend read that resolved null) can't crash the whole turn

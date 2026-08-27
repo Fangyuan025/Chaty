@@ -830,6 +830,20 @@ export const T = {
     en: "Low VRAM — GPU offload reduced to {a}/{b} layers",
   },
   oomCpu: { zh: "显存不足，已回退到 CPU 运行", en: "Low VRAM — fell back to CPU" },
+  cmRunInterrupted: {
+    zh: "**上一次运行被中断** — 界面在运行过程中重新加载了(渲染进程崩溃或被重启),这一轮没有跑完。已完成的文件改动仍在工作区里,可以直接说「继续」。",
+    en: "**The last run was interrupted** — the interface reloaded while it was working (a renderer crash or restart), so that turn never finished. Edits already written are still in the workspace; say \"continue\" to pick it up.",
+  },
+  limitOn: { zh: "限制", en: "Limit" },
+  ragTopK: { zh: "知识库引用条数", en: "Knowledge citations" },
+  tipRagTopK: {
+    zh: "一次提问最多引用多少条知识库片段。片段越多覆盖越全,但占用的上下文也越多。",
+    en: "How many knowledge-base excerpts one question may cite. More covers more of the library and costs more context.",
+  },
+  ragTopKHint: {
+    zh: "文档多、问题跨文件时调高;上下文窗口小的模型建议调低。",
+    en: "Raise it for a large library or questions that span files; lower it on a small context window.",
+  },
   errorLog: { zh: "错误日志", en: "Error log" },
   errorLogHint: {
     zh: "应用异常会自动记录到 chaty-error.log。提 issue 时请附上这个文件，能大幅加快定位。",
