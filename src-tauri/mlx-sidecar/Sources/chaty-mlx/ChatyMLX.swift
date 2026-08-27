@@ -1012,6 +1012,16 @@ final class Engine: @unchecked Sendable {
                 // VLM-factory models have their vision tower loaded and
                 // ready — no separate encoder file like GGUF's mmproj.
                 "multimodal": meta.multimodal,
+                // Can one prompt carry SEVERAL pictures? Gemma-4's MLX
+                // implementation cannot: with three images it encodes one and
+                // then refuses the mismatch —
+                // `imageTokenCountMismatch(expectedVisionTokens: 280,
+                // actualPromptTokens: 840)` — and the whole round fails. A tall
+                // page screenshot arrives as several tiles, so every one of them
+                // failed, and the retries behind each failure are what made a
+                // browsing session look like it re-read everything from scratch.
+                // Qwen3.5/3.6 take three without complaint.
+                "multiImage": (meta.arch ?? "").lowercased() != "gemma4",
             ]
             if let v = meta.arch { info["arch"] = v }
             if let v = meta.nLayer { info["nLayer"] = v }

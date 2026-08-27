@@ -72,6 +72,9 @@ export interface ModelInfo {
   multimodal: boolean;
   /** The vision encoder (mmproj) is loaded — images actually work this session. */
   visionReady: boolean;
+  /** Whether one prompt may carry several pictures. False for Gemma-4 on MLX,
+   *  which encodes the first and rejects the rest. */
+  multiImage?: boolean;
   /** Path of the paired mmproj GGUF, when one was found. */
   mmproj?: string | null;
   /** Non-fatal load warning code (e.g. "gpu-oom"), or null. */
@@ -195,6 +198,12 @@ export interface RagDocText {
  *  an overview report with one citation per file. */
 export async function ragCorpusDocs(maxChars?: number): Promise<RagDocText[]> {
   return invoke<RagDocText[]>("rag_corpus_docs", { maxChars });
+}
+
+/** Tell the backend the page has booted. A second call in one process lifetime
+ *  is the webview having reloaded — see `note_frontend_ready`. */
+export async function noteFrontendReady(): Promise<void> {
+  await invoke("note_frontend_ready");
 }
 
 export async function ragSearch(query: string, k?: number): Promise<RagHit[]> {

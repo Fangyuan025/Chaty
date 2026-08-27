@@ -507,6 +507,7 @@ impl MlxEngine {
             // (A folder missing its processor config loads text-only: the
             // sidecar reports multimodal=false plus a warning.)
             vision_ready: loaded["multimodal"].as_bool().unwrap_or(false),
+            multi_image: loaded["multiImage"].as_bool().unwrap_or(true),
             mmproj: None,
             warning: loaded["warning"].as_str().map(str::to_string),
         };

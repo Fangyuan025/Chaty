@@ -258,6 +258,10 @@ function StepCard({ step, onPreview }: { step: ToolStep; onPreview?: (path: stri
   // Compute the diff once; the +N/−M badge uses the EXACT totals, never the
   // render-capped rows, so big edits are counted correctly.
   const d = useMemo(() => (diff ? diffLines(diff.before, diff.after) : null), [diff]);
+  // Exact totals when the contents were capped for the card; otherwise the
+  // ones just computed, which are exact anyway.
+  const added = step.diffCounts?.added ?? d?.added ?? 0;
+  const removed = step.diffCounts?.removed ?? d?.removed ?? 0;
   // Clicking an image step opens the preview directly; otherwise toggle the body.
   const onHead = () => {
     if (hasImage && step.image) onPreview?.(step.image);
@@ -272,8 +276,8 @@ function StepCard({ step, onPreview }: { step: ToolStep; onPreview?: (path: stri
         <span className="cm-step-sum">{toolSummary(step.call)}</span>
         {d && step.status === "done" && (
           <span className="cm-step-diffstat">
-            <em className="plus">+{d.added}</em>
-            <em className="minus">-{d.removed}</em>
+            <em className="plus">+{added}</em>
+            <em className="minus">-{removed}</em>
           </span>
         )}
         {hasImage && <span className="cm-step-meta muted">{t("cmClickPreview")}</span>}
@@ -299,7 +303,7 @@ function StepCard({ step, onPreview }: { step: ToolStep; onPreview?: (path: stri
               ))}
               {d.truncated && (
                 <div className="cm-dl ctx cm-dl-more">
-                  {t("cmDiffMore").replace("{n}", String(d.added + d.removed))}
+                  {t("cmDiffMore").replace("{n}", String(added + removed))}
                 </div>
               )}
             </pre>
@@ -1322,6 +1326,7 @@ export function CodeMode({
       // still prefixes the new prompt; MLX re-encodes them all whenever a call
       // carries pixels. That decides whether dropping stale screenshots pays.
       mediaPrefixReuse: model.backend === "llama.cpp",
+      multiImage: model.multiImage !== false,
       ragTopK,
       toolRole: model.toolRole ?? false,
       reasoningField: model.reasoningField ?? false,

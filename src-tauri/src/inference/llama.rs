@@ -738,6 +738,9 @@ impl LlamaEngine {
             supports_tools,
             multimodal,
             vision_ready,
+            // llama.cpp feeds pictures through mtmd, which takes as many as a
+            // prompt carries — including a tall page's tiles.
+            multi_image: true,
             mmproj,
             warning,
         };

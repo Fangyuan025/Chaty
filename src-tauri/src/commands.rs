@@ -302,6 +302,30 @@ pub fn get_gpu_usage() -> Option<crate::gpu::GpuUsage> {
     crate::gpu::gpu_usage()
 }
 
+/// The frontend reporting that it has just booted.
+///
+/// Called once per page load. A SECOND call inside one process lifetime means
+/// the webview reloaded underneath us — WebKit kills a renderer that grows too
+/// large and brings it back empty — and any code-mode run that was in flight
+/// died with the JS context, silently, because there is no JS left to notice.
+/// The count is the only evidence that this is what happened, so it goes in the
+/// error log where a report can quote it.
+#[tauri::command]
+pub fn note_frontend_ready() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static BOOTS: AtomicUsize = AtomicUsize::new(0);
+    let n = BOOTS.fetch_add(1, Ordering::Relaxed) + 1;
+    if n > 1 {
+        crate::errlog::append_error(
+            "webview-reload",
+            &format!(
+                "the interface reloaded without the app restarting (page load #{n}); \
+                 a code-mode run in flight at that moment was interrupted"
+            ),
+        );
+    }
+}
+
 /// How many GPU layers the engine is currently allowed after a crash, if any.
 /// `Some(0)` means CPU-only; `None` means no cap at all.
 #[tauri::command]

@@ -193,6 +193,11 @@ pub struct ModelInfo {
     /// images this session. `multimodal && !vision_ready` means "the model
     /// could do vision, but its mmproj GGUF is missing next to the weights".
     pub vision_ready: bool,
+    /// Whether ONE prompt may carry several pictures. Gemma-4 through MLX
+    /// cannot: it encodes the first and then rejects the token-count mismatch,
+    /// failing the whole round — which is what a tall page's tiled screenshot
+    /// hands it. Everything else here says true.
+    pub multi_image: bool,
     /// Path of the paired mmproj GGUF, when one was found.
     pub mmproj: Option<String>,
     /// Non-fatal load warning code for the UI (e.g. "gpu-oom" when the GPU

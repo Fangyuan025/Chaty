@@ -141,6 +141,9 @@ export interface ToolStep {
   result?: string;
   /** For edit/write, the before/after so the UI can render a diff. */
   diff?: { path: string; before: string; after: string };
+  /** Exact +N/−M for a diff whose contents were capped for the card. The badge
+   *  prefers these, so a big edit still reports the true totals. */
+  diffCounts?: { added: number; removed: number };
   /** Absolute path of an image this step produced (browser_screenshot /
    *  view_image) — the UI renders a clickable preview. */
   image?: string;
@@ -240,6 +243,8 @@ export interface AgentOptions {
   mediaPrefixReuse?: boolean;
   /** How many knowledge-base excerpts `search_docs` may return. */
   ragTopK?: number;
+  /** Whether one prompt may carry several pictures (false: Gemma-4 on MLX). */
+  multiImage?: boolean;
   /** Deliver tool results under the `tool` role. Templates decide "is this turn
    *  still part of the request being answered" from the last *user* message, so
    *  a result posing as one makes them drop every preceding assistant's
@@ -473,6 +478,48 @@ export function replayableTail<T extends { role: string; prompt?: ChatMessage[] 
     if (msgs[k].role === "user") return null;
   }
   return msgs[holder].prompt ?? null;
+}
+
+/** How much of a tool result a step card retains. The card renders 6000
+ *  characters; the rest is weight the renderer carries for the whole session
+ *  and writes to disk on every save. */
+const CARD_RESULT_CHARS = 8000;
+/** Combined before+after a diff card retains. Above this the file is bigger
+ *  than anything a person reads in a diff view, and the two copies are the
+ *  single largest thing a long run accumulates. */
+const CARD_DIFF_CHARS = 200_000;
+
+function capForCard(text: string | undefined, lang: "zh" | "en"): string | undefined {
+  if (!text || text.length <= CARD_RESULT_CHARS) return text;
+  const note =
+    lang === "zh"
+      ? `\n…(显示已截断,模型收到的是完整内容,共 ${text.length} 字符)`
+      : `\n…(display truncated; the model received all ${text.length} characters)`;
+  return text.slice(0, CARD_RESULT_CHARS) + note;
+}
+
+function capDiffForCard(
+  diff: ToolStep["diff"],
+  lang: "zh" | "en",
+): { diff: ToolStep["diff"]; counts?: { added: number; removed: number } } {
+  if (!diff) return { diff };
+  const total = diff.before.length + diff.after.length;
+  if (total <= CARD_DIFF_CHARS) return { diff };
+  // Count BEFORE cutting. The card's +N/−M badge is documented to show exact
+  // totals rather than the render-capped rows, and truncating the contents
+  // underneath it would have quietly made that a lie on the very files where
+  // the number matters most.
+  const { added, removed } = diffLines(diff.before, diff.after);
+  const half = Math.floor(CARD_DIFF_CHARS / 2);
+  const note = lang === "zh" ? "\n…(文件过大,差异视图已截断)" : "\n…(file too large; diff view truncated)";
+  return {
+    diff: {
+      path: diff.path,
+      before: diff.before.slice(0, half) + note,
+      after: diff.after.slice(0, half) + note,
+    },
+    counts: { added, removed },
+  };
 }
 
 /** Keep only the newest screenshots riding as pixels.
@@ -2768,7 +2815,19 @@ export async function runAgentTurn(
               : lang === "zh"
                 ? "这是当前网页的截图,请查看后继续验证/操作。"
                 : "Screenshot of the current page below — look and continue.";
-          pushUser(toolResultMsg("browser_screenshot", note), undefined, shots);
+          // A model that cannot take several pictures in one prompt gets the
+          // first tile and is told the rest exists. Handing Gemma-4 all of them
+          // fails the round outright — it encodes one and rejects the count —
+          // and the retry behind each failure is what made a browsing session
+          // look like it re-read the whole transcript every step.
+          const sendable = opts.multiImage === false ? shots.slice(0, 1) : shots;
+          const tiled =
+            shots.length > 1 && sendable.length === 1
+              ? lang === "zh"
+                ? `\n(此模型一次只能看一张图,下面是页面顶部那一段;需要看下面的部分请先滚动再截图。)`
+                : `\n(This model can only look at one image at a time — below is the top segment; scroll and capture again for the rest.)`
+              : "";
+          pushUser(toolResultMsg("browser_screenshot", note + tiled), undefined, sendable);
         } catch (e) {
           const msg = `ERROR: ${e instanceof Error ? e.message : String(e)}`;
           stepObj.status = "error";
@@ -2888,8 +2947,18 @@ export async function runAgentTurn(
         // at the .startsWith/.slice below.
         resultText = out.result ?? "";
         stepObj.status = "done";
-        stepObj.result = out.result;
-        stepObj.diff = out.diff;
+        // What the STEP CARD keeps, which is not what the model was given.
+        // `resultText` above is the model's copy and stays whole; this one is
+        // only ever rendered at 6000 characters, and holding the rest of a
+        // 384 KB file read — for every step, for the whole session, and
+        // serialised into the session file on every change — is how an
+        // unattended run grew until the webview's renderer was killed and
+        // reloaded, taking the turn with it and leaving nothing behind to say
+        // so.
+        stepObj.result = capForCard(out.result, lang);
+        const capped = capDiffForCard(out.diff, lang);
+        stepObj.diff = capped.diff;
+        stepObj.diffCounts = capped.counts;
         if (["edit_file", "edit_lines", "multi_edit", "write_file"].includes(call.name)) {
           const p = asStr(call.args?.path);
           if (p && !resultText.startsWith("ERROR")) {

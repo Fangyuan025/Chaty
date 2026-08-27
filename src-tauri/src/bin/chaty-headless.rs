@@ -121,6 +121,7 @@ fn load_engine(path: &str, n_ctx: Option<u32>) -> Result<ModelInfo, String> {
             supports_tools: true,
             multimodal: false,
             vision_ready: false,
+            multi_image: true,
             mmproj: None,
             warning: None,
         };
