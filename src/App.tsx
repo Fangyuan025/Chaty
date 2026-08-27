@@ -362,6 +362,10 @@ export default function App() {
    *  turn rewrites the system message every turn, and a system message that
    *  changes moves every token after it — see composeContext. */
   const compacted = useRef(new Map<string, Compacted>());
+  /** What the engine actually charged for each conversation's last prompt.
+   *  The summary above lets the tail keep growing while it stands, and it
+   *  decides that on an ESTIMATE of the tail's size — see composeContext. */
+  const lastPromptTokens = useRef(new Map<string, number>());
   const [canvasKey, setCanvasKey] = useState("");
   const [canvasBusy, setCanvasBusy] = useState(false);
   // Set by the canvas Stop button; the generation flow then discards the
@@ -1542,6 +1546,7 @@ export default function App() {
       }
       await deleteConversation(id);
       compacted.current.delete(id);
+      lastPromptTokens.current.delete(id);
       if (isCurrent) {
         setConversationId(null);
         setMessages([]);
@@ -1634,7 +1639,7 @@ export default function App() {
     // Attached pictures are context too — see IMAGE_TOKENS. Counting only the
     // text let a conversation carrying screenshots call itself comfortable while
     // it was already past the window.
-    const total = messageTokens(msgs as { content: string; images?: string[] }[]);
+    const total = messageTokens(msgs);
     const cost = (m: { content: string; images?: string[] }) =>
       messageTokens([m]);
 
@@ -1647,6 +1652,19 @@ export default function App() {
     // plus a whole extra generation per turn to write the summary again. Code
     // mode learned this one already (compactMessages compacts in place, down
     // to a target well under the limit); this is chat mode's half of it.
+    // Ground truth outranks the estimate. While the summary stands the tail
+    // grows, and whether it still fits is judged by a token estimate — which
+    // reads 1:1 until the first reply calibrates it, and can read a
+    // reasoning-heavy conversation at a fraction of its real cost. When that
+    // estimate is wrong in the optimistic direction the conversation walks off
+    // the end of the window: measured on Qwen3.8 27B with the estimator
+    // uncalibrated, the tail was judged to fit for six turns running while the
+    // engine answered every one of them with "context" and generated nothing.
+    // What the engine charged last turn is not a guess, so a prompt that was
+    // already over the budget retires the summary and forces a fresh, smaller
+    // one — whatever the estimate thinks.
+    const charged = lastPromptTokens.current.get(convId) ?? 0;
+    if (charged > budget) compacted.current.delete(convId);
     const memo = compacted.current.get(convId);
     if (memo) {
       const summary = t("contextSummary") + memo.summary;
@@ -2032,6 +2050,7 @@ export default function App() {
             renderMsg();
             final.stats = ev.stats;
             setStats(ev.stats);
+            lastPromptTokens.current.set(convId, ev.stats.promptTokens);
             calibrate(sentRaw, ev.stats.promptTokens);
           } else if (ev.type === "error") {
             acc.text += `\n\n**${ev.message}**`;

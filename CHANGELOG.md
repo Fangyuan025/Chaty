@@ -16,6 +16,18 @@
   written from the previous summary rather than from an increasingly elided
   transcript. Same measurement afterwards: 99-100% on the turns in between.
 
+- **Reasoning kept in its own field counts against the window again.** Some
+  templates read a turn's thinking from `reasoning_content` rather than from
+  the message body, so Chaty splits it out for them — and the token budget
+  counted only the body, reading a whole reasoning history as very nearly free.
+  Qwen3.8 27B is the one local model that splits it, and it was the one model
+  in a fourteen-model sweep that walked off the end of its own window: six
+  turns in a row answered with "context" and generated nothing, while the
+  budget still reported room to spare. The same shape as pictures counting for
+  nothing before 2.1.2. What the engine charged for the last prompt is now also
+  a hard stop on how far a standing summary may let the transcript grow —
+  ground truth outranks the estimate.
+
 - **Per-turn material moved out of the system message.** Today's date and the
   web-search results were merged into the one leading system block. A regex on
   *this* question decides whether the date line is there, and the results are

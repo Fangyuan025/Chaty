@@ -4,7 +4,7 @@
  *  prompt passes 85% of the budget. Reports per-turn anomalies rather than a
  *  score — the point is to see WHICH turn stops behaving, per model. */
 import { Bridge } from "../lib/bridge.mts";
-import { contextLimit, messageTokens, fitTranscript } from "../../src/lib/ctxBudget";
+import { calibrate, contextLimit, messageTokens, fitTranscript } from "../../src/lib/ctxBudget";
 
 const path = process.argv[2];
 const NCTX = Number(process.argv[3] ?? 8192);
@@ -34,6 +34,11 @@ async function gen(messages: any[], think: boolean | undefined, maxTokens: numbe
 }
 
 let memo: { summary: string; covered: number; print: string } | null = null;
+/** What the engine charged for the last prompt — chat mode calibrates its
+ *  estimator against this every turn, and refuses to let a standing summary
+ *  keep growing past it. A harness that skips both measures a budget the app
+ *  does not use. */
+let charged = 0;
 const printOf = (msgs: any[], upto: number) =>
   `${upto}:${msgs.slice(0, upto).reduce((n: number, m: any) => n + m.content.length, 0)}`;
 
@@ -41,6 +46,7 @@ const printOf = (msgs: any[], upto: number) =>
 async function compose(msgs: any[]) {
   if (msgs.length < 6) return null;
   const budget = Math.max(1024, contextLimit(NCTX, 2048));
+  if (charged > budget) memo = null;
   if (memo) {
     if (memo.covered <= msgs.length && printOf(msgs, memo.covered) === memo.print) {
       const tail = msgs.slice(memo.covered);
@@ -95,7 +101,9 @@ for (let n = 0; n < QS.length; n++) {
   if (process.argv[4] !== "nocompact") { try { comp = await compose(hist); } catch { /* the app swallows this too */ } }
   const sent = [{ role: "system", content: sys.content + (comp ? "\n\n【前情摘要】" + comp.summary : "") },
                 ...(comp ? comp.tail : hist)];
+  const sentRaw = messageTokens(sent);
   const r = await gen(sent, true, 2048);
+  if (r.stats?.promptTokens) { calibrate(sentRaw, r.stats.promptTokens); charged = r.stats.promptTokens; }
   const reasoned = REASONED.test(norm(r.text));
   const ans = answerPart(r.text);
   const mark = r.err ? "E" : !ans ? "!" : reasoned ? "T" : "-";

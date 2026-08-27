@@ -101,10 +101,23 @@ export function textTokens(text: string): number {
  */
 const IMAGE_TOKENS = 1000;
 
-type Countable = { content: string; images?: string[] };
+type Countable = { content: string; images?: string[]; reasoning_content?: string };
 
 function rawMessageCost(m: Countable): number {
-  return rawTokens(m.content) + PER_MESSAGE_OVERHEAD + (m.images?.length ?? 0) * IMAGE_TOKENS;
+  return (
+    rawTokens(m.content) +
+    // Reasoning carried in its own field is still tokens in the prompt. The
+    // templates that read it from there are exactly the ones it gets split out
+    // for, and they render it straight back — but the budget counted only
+    // `content`, so a reasoning-heavy history read as very nearly free.
+    // Measured on Qwen3.8 27B, which does split it: an 8k conversation walked
+    // off the end of its own window — six turns answered "context" with
+    // nothing generated — while the budget still reported room to spare. Same
+    // shape as pictures counting for nothing before 2.1.2.
+    rawTokens(m.reasoning_content ?? "") +
+    PER_MESSAGE_OVERHEAD +
+    (m.images?.length ?? 0) * IMAGE_TOKENS
+  );
 }
 
 export function messageTokens(messages: Countable[]): number {
@@ -229,7 +242,7 @@ export function historyPrint(msgs: { content: string }[], upto: number): string 
  * summary has to be written: the stretch it covered has changed underneath it,
  * or the conversation has since grown past the room it left.
  */
-export function standingTail<T extends { content: string }>(
+export function standingTail<T extends { content: string; reasoning_content?: string }>(
   memo: Compacted | null | undefined,
   msgs: T[],
   budget: number,
@@ -242,6 +255,6 @@ export function standingTail<T extends { content: string }>(
   const tail = msgs.slice(memo.covered);
   const cost =
     messageTokens([{ content: summaryText }]) +
-    messageTokens(tail as { content: string; images?: string[] }[]);
+    messageTokens(tail);
   return cost <= budget * 0.85 ? tail : null;
 }

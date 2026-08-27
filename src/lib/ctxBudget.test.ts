@@ -208,3 +208,20 @@ describe("attached pictures are context too", () => {
     expect(rawMessageTokens(msgs)).toBeGreaterThan(500);
   });
 });
+
+describe("reasoning split into its own field still costs the window", () => {
+  test("a turn carrying reasoning_content is not read as nearly free", () => {
+    const bare = messageTokens([{ content: "Yes." }]);
+    const withThought = messageTokens([
+      { content: "Yes.", reasoning_content: "x".repeat(8000) },
+    ]);
+    expect(withThought).toBeGreaterThan(bare * 10);
+  });
+
+  test("an empty answer with a long thought is not free either", () => {
+    // What Qwen3.8 27B produces when it reasons to the end of its budget: the
+    // answer is empty and the thought is the whole turn.
+    const n = messageTokens([{ content: "", reasoning_content: "y".repeat(8000) }]);
+    expect(n).toBeGreaterThan(1000);
+  });
+});
