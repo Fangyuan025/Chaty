@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LANGS, useI18n } from "../lib/i18n";
 import { useExitTransition } from "../lib/useExit";
@@ -286,38 +286,71 @@ export function SettingsPanel({
   const set = <K extends keyof GenSettings>(key: K, v: GenSettings[K]) =>
     onChange({ ...value, [key]: v });
 
-  // Tooltips are `position: fixed` and read their coordinates from these
-  // variables, so they can be kept inside the window instead of hanging off
-  // whichever label they belong to. Anchored to the label they overflowed the
-  // right edge when the label sat near it, and were clipped by the panel's own
-  // scrolling when the label sat near the top. Measured on hover — the bubble
-  // has no layout box until then, and the panel scrolls under it.
+  /** The hover bubble for a `data-tip` label: its text and where to draw it.
+   *
+   *  This used to be a `::after` on the label, positioned `fixed` and clamped
+   *  to the window. It could not work. A fixed box is positioned against — and
+   *  clipped by — the nearest ancestor carrying a transform, and the panel's
+   *  open animation (`ui-pop-in`, `both`) leaves one on `.settings-modal`,
+   *  which is also `overflow: hidden`. So the bubble was measured against the
+   *  window, drawn against a `.field` 362px away, and then cut off by the
+   *  panel's own edge — the "sometimes hangs off the window" report, and why
+   *  clamping harder never fixed it. A real element under `document.body` has
+   *  no such ancestor: viewport coordinates mean the viewport, and nothing
+   *  clips it. It also has a measurable height, so the placement below reads
+   *  the box it is actually placing instead of estimating from text length. */
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const tipRef = useRef<HTMLDivElement | null>(null);
+  const tipAnchor = useRef<DOMRect | null>(null);
+
   useEffect(() => {
-    if (!open) return;
-    const MARGIN = 12;
-    const place = (el: HTMLElement) => {
-      const tip = el.getAttribute("data-tip");
-      if (!tip) return;
-      const r = el.getBoundingClientRect();
-      // The bubble is at most 250px wide and roughly this tall; exact height
-      // needs the rendered box, which a ::after never exposes, so estimate from
-      // the text and let the clamp absorb the error.
-      const w = Math.min(250, window.innerWidth - 2 * MARGIN);
-      const h = Math.min(220, 30 + Math.ceil(tip.length / 34) * 17);
-      const x = Math.min(Math.max(MARGIN, r.left), window.innerWidth - w - MARGIN);
-      // Above the label by default; below it when there is no room above.
-      const above = r.top - 7 - h;
-      const y = above >= MARGIN ? above : Math.min(r.bottom + 7, window.innerHeight - h - MARGIN);
-      el.style.setProperty("--tip-x", `${Math.round(x)}px`);
-      el.style.setProperty("--tip-y", `${Math.round(y)}px`);
-    };
+    if (!open) {
+      setTip(null);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const onOver = (e: globalThis.MouseEvent) => {
       const el = (e.target as HTMLElement | null)?.closest?.("[data-tip]");
-      if (el instanceof HTMLElement) place(el);
+      const text = el instanceof HTMLElement ? el.getAttribute("data-tip") : null;
+      if (!text || !(el instanceof HTMLElement)) return;
+      clearTimeout(timer);
+      // The same short delay the CSS transition used to carry, so sweeping the
+      // pointer across a column of labels does not strobe.
+      timer = setTimeout(() => {
+        tipAnchor.current = el.getBoundingClientRect();
+        // Provisional: placed for real once the box below has been measured.
+        setTip({ text, x: -9999, y: -9999 });
+      }, 150);
+    };
+    const onOut = (e: globalThis.MouseEvent) => {
+      const el = (e.target as HTMLElement | null)?.closest?.("[data-tip]");
+      if (!el) return;
+      clearTimeout(timer);
+      setTip(null);
     };
     document.addEventListener("mouseover", onOver, true);
-    return () => document.removeEventListener("mouseover", onOver, true);
+    document.addEventListener("mouseout", onOut, true);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("mouseover", onOver, true);
+      document.removeEventListener("mouseout", onOut, true);
+    };
   }, [open]);
+
+  // Place the bubble once it has a box: above its label, below when there is no
+  // room above, and clamped into the window either way.
+  useLayoutEffect(() => {
+    const box = tipRef.current;
+    const anchor = tipAnchor.current;
+    if (!box || !anchor || !tip || tip.x !== -9999) return;
+    const MARGIN = 12;
+    const { width: w, height: h } = box.getBoundingClientRect();
+    const x = Math.min(Math.max(MARGIN, anchor.left), window.innerWidth - w - MARGIN);
+    const above = anchor.top - 7 - h;
+    const want = above >= MARGIN ? above : anchor.bottom + 7;
+    const y = Math.max(MARGIN, Math.min(want, window.innerHeight - h - MARGIN));
+    setTip({ text: tip.text, x: Math.round(x), y: Math.round(y) });
+  }, [tip]);
 
   useEffect(() => {
     if (!open) return;
@@ -492,6 +525,19 @@ export function SettingsPanel({
   if (!mounted) return null;
 
   return createPortal(
+    <>
+    {tip && (
+      // Outside the overlay on purpose: the overlay's descendants establish
+      // containing blocks and clip, which is the whole reason this is not a
+      // pseudo-element on the label any more.
+      <div
+        ref={tipRef}
+        className="settings-tip"
+        style={{ left: tip.x, top: tip.y, opacity: tip.x === -9999 ? 0 : 1 }}
+      >
+        {tip.text}
+      </div>
+    )}
     <div className={`settings-overlay ${closing ? "closing" : ""}`} onMouseDown={onClose}>
       <div className="settings-modal" onMouseDown={(e) => e.stopPropagation()}>
         <aside className="settings-nav">
@@ -1460,7 +1506,8 @@ export function SettingsPanel({
           </div>
         </div>
       </div>
-    </div>,
+    </div>
+    </>,
     document.body,
   );
 }

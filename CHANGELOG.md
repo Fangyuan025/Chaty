@@ -1,5 +1,70 @@
 # Changelog
 
+## v2.1.3 — A long conversation stops starting over (2026-08-27)
+
+### The conversation the engine can still recognise
+
+- **Chat mode stopped re-writing its own summary every turn.** Once a
+  conversation passed the compaction threshold, the older turns were condensed
+  again on every single message — a fresh wording each time, sitting in the
+  system message, which is the opening of the prompt. Everything behind it
+  moved, so the engine could match nothing it had already computed: measured on
+  Gemma-4 26B through MLX, 99% of the window reused on the turns before
+  compaction began and **0% on every turn after it**, plus a whole extra
+  generation per turn to write the summary again. The summary is now kept until
+  the conversation outgrows the room it left, and when a new one is due it is
+  written from the previous summary rather than from an increasingly elided
+  transcript. Same measurement afterwards: 99-100% on the turns in between.
+
+- **Per-turn material moved out of the system message.** Today's date and the
+  web-search results were merged into the one leading system block. A regex on
+  *this* question decides whether the date line is there, and the results are
+  new every turn — so a single question containing the word "recent" cost two
+  full re-prefills, the turn that added the line and the turn that dropped it
+  again: 2% and 1% reused against 81% and 94% around them. They belong to the
+  turn that produced them and now travel with it, which also means the answer
+  that cited a source keeps the source instead of standing alone afterwards.
+
+- **Code mode's cross-turn trim leaves room to grow.** It freed exactly enough
+  to slip back under its 40% ceiling, so the next turn was over again — the
+  ceiling-hugging that mid-turn compaction had already been fixed for, on the
+  other side of the turn boundary. It now trims well under, and the turns in
+  between are prompts the engine still recognises.
+
+### Turns that tell you what happened
+
+- **Thinking and web search can no longer both claim to be on.** They are
+  mutually exclusive — a searching turn is sent with reasoning suppressed — and
+  every switch was expected to remember the other. The command palette's did
+  not, so turning search on from ⌘K left a tick beside Thinking in the Tools
+  menu while every later turn quietly stopped reasoning. That is the "some turns
+  just don't think" report: nothing to do with the model.
+
+- **A turn with no answer in it says so.** Two ways it happened, both silent.
+  The prompt outgrew the window, so nothing was generated at all and the message
+  was never even saved — the turn vanished on reload. Or the model reasoned to
+  the end of its budget, or to EOS, and stopped without writing an answer,
+  leaving a bubble holding only a thought. All three now say which one it was,
+  and what to do about it.
+
+- **A GPU load that was quietly cut back now says so.** After a driver crash the
+  next load takes fewer layers and halves again if that crashes too, clearing on
+  the first load that survives. Only the bottom of that ladder — CPU-only — was
+  ever reported; the rungs in between loaded in silence, and the model just ran
+  slower for no stated reason.
+
+### Settings
+
+- **The hover explanations stay in the window.** They were drawn as a
+  pseudo-element on the label they belonged to, positioned `fixed` and clamped
+  to the window — which cannot work here: a fixed box is positioned against, and
+  clipped by, the nearest ancestor carrying a transform, and the panel's open
+  animation leaves one on a modal that also hides its overflow. So the bubble was
+  measured against the window, drawn against a field 362 pixels away, and then
+  cut off by the panel's own edge. It is a real element now, outside the panel,
+  measured rather than estimated.
+
+
 ## v2.1.2 — The model stops re-reading what it just did (2026-08-22)
 
 ### Code mode: a turn continues from the work the last one did

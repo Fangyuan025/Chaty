@@ -419,6 +419,20 @@ export const T = {
     zh: "【早前对话摘要，供延续参考】\n",
     en: "[Summary of earlier conversation, for continuity]\n",
   },
+  // A turn can end with nothing to show. Say which way it happened rather than
+  // leaving an empty bubble that reads as the app losing the answer.
+  emptyNoRoom: {
+    zh: "**(这一轮没有生成内容:提示词已超出模型的上下文窗口。请开启新对话,或在设置里调大上下文长度。)**",
+    en: "**(Nothing was generated this turn: the prompt no longer fits the model's context window. Start a new conversation, or raise the context length in settings.)**",
+  },
+  emptyOutOfBudget: {
+    zh: "**(这一轮的生成长度用完时,模型还停在思考里,没来得及写出回答。可在设置→采样里调大「最大长度」,或点击重新生成。)**",
+    en: "**(The model was still reasoning when it ran out of generation length, so no answer was written. Raise Max length in Settings → Sampling, or regenerate.)**",
+  },
+  emptyThoughtOnly: {
+    zh: "**(模型这一轮只输出了思考过程就结束了,没有给出正式回答。可以点击重新生成。)**",
+    en: "**(The model spent this turn reasoning and stopped without writing an answer. Regenerating usually gets one.)**",
+  },
   thinking: { zh: "正在思考", en: "Thinking" },
   thoughtExpand: { zh: "已深度思考 · 点击展开", en: "Reasoned · click to expand" },
   thoughtCollapse: { zh: "已深度思考 · 点击收起", en: "Reasoned · click to collapse" },
@@ -861,6 +875,10 @@ export const T = {
   gpuCrashCpu: {
     zh: "上次加载模型时 GPU 驱动导致程序崩溃，本次已改用 CPU 运行（速度较慢但稳定）。更新显卡驱动后可尝试恢复 GPU。",
     en: "The GPU driver crashed the app during the last model load — running on CPU this time (slower but stable). Update your GPU driver to try GPU again.",
+  },
+  gpuCrashCapped: {
+    zh: "上次加载模型时 GPU 驱动导致程序崩溃，本次已降低 GPU 层数({a}/{b} 层)以求稳妥,速度会慢一些。下一次成功加载后会自动恢复满配;若反复崩溃请更新显卡驱动。",
+    en: "The GPU driver crashed the app during a previous model load, so this one runs with fewer layers on the GPU ({a}/{b}) — slower, but stable. The next load that survives restores full offload; if it keeps crashing, update your GPU driver.",
   },
   ctxClamped: {
     zh: "上下文已按内存自动调整为 {n}（模型权重 + KV 缓存需放入统一内存）",

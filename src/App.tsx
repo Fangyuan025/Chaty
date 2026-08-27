@@ -98,12 +98,15 @@ import {
 } from "./lib/ipc";
 import "./App.css";
 import {
+  type Compacted,
   calibrate,
   contextLimit,
   fitTranscript,
+  historyPrint,
   messageTokens,
   rawMessageTokens,
   resetCalibration,
+  standingTail,
 } from "./lib/ctxBudget";
 import { fmtGbFromMb } from "./lib/fmt";
 
@@ -353,6 +356,12 @@ export default function App() {
   // ORIGINAL html block, so reopening the same reply resumes its versions
   // while a different reply starts fresh. In-memory, app-session scoped.
   const canvasSessions = useRef(new Map<string, { versions: CanvasVersion[]; index: number }>());
+  /** What compaction already wrote for a conversation: the summary, how many
+   *  leading messages it stands in for, and a fingerprint of those messages so
+   *  editing one invalidates it. Kept because re-deriving the summary every
+   *  turn rewrites the system message every turn, and a system message that
+   *  changes moves every token after it — see composeContext. */
+  const compacted = useRef(new Map<string, Compacted>());
   const [canvasKey, setCanvasKey] = useState("");
   const [canvasBusy, setCanvasBusy] = useState(false);
   // Set by the canvas Stop button; the generation flow then discards the
@@ -436,6 +445,22 @@ export default function App() {
       return true;
     }
   });
+  // Thinking and web search are mutually exclusive: a searching turn is sent
+  // with reasoning suppressed (see wantNoThink), so leaving both switches on
+  // means the Tools menu shows a tick next to Thinking for turns the model does
+  // not think through. Every entry point went through the two setters and each
+  // was expected to remember the other — and the command palette's web toggle
+  // did not, so switching search on from ⌘K silently stopped the reasoning of
+  // every later turn while still claiming it was on. One rule, one place.
+  const useThinking = (on: boolean) => {
+    setThinkEnabled(on);
+    if (on) setWebEnabled(false);
+  };
+  const useWebSearch = (on: boolean) => {
+    setWebEnabled(on);
+    if (on) setThinkEnabled(false);
+  };
+
   const [webDesign, setWebDesign] = useState(() => {
     try {
       return localStorage.getItem("chaty.webdesign") === "1";
@@ -1259,6 +1284,8 @@ export default function App() {
       showNotice("warn", t("ctxClamped", { n: info.nCtx }));
     } else if (info.warning === "gpu-crash-cpu") {
       showNotice("warn", t("gpuCrashCpu"));
+    } else if (info.warning === "gpu-crash-capped") {
+      showNotice("warn", t("gpuCrashCapped", { a: info.gpuLayers, b: info.nLayer ?? "?" }));
     } else if (info.warning === "conversion-suspect") {
       showNotice("warn", t("conversionSuspect"));
     } else if (info.warning === "vision-config-missing") {
@@ -1514,6 +1541,7 @@ export default function App() {
         }
       }
       await deleteConversation(id);
+      compacted.current.delete(id);
       if (isCurrent) {
         setConversationId(null);
         setMessages([]);
@@ -1591,6 +1619,7 @@ export default function App() {
    *  stored/displayed messages are never touched — only the prompt we send. */
   async function composeContext<T extends { role: Role; content: string }>(
     msgs: T[],
+    convId: string,
   ): Promise<{ summary: string; tail: T[] } | null> {
     const nCtx = model?.nCtx ?? 0;
     if (!nCtx || msgs.length < 6) return null;
@@ -1608,10 +1637,39 @@ export default function App() {
     const total = messageTokens(msgs as { content: string; images?: string[] }[]);
     const cost = (m: { content: string; images?: string[] }) =>
       messageTokens([m]);
+
+    // A summary already written for this conversation stands until the tail
+    // outgrows the room it left. Re-deriving it every turn produced a DIFFERENT
+    // wording every turn, and since the summary rides in the system message —
+    // the very first tokens of the prompt — the engine could not match a single
+    // token of what it had already computed. Measured on Gemma-4 26B: 99% of
+    // the window reused before compaction started, 0% on every turn after,
+    // plus a whole extra generation per turn to write the summary again. Code
+    // mode learned this one already (compactMessages compacts in place, down
+    // to a target well under the limit); this is chat mode's half of it.
+    const memo = compacted.current.get(convId);
+    if (memo) {
+      const summary = t("contextSummary") + memo.summary;
+      const standing = standingTail(memo, msgs, budget, summary);
+      if (standing) return { summary, tail: standing };
+      if (memo.covered > msgs.length || historyPrint(msgs, memo.covered) !== memo.print) {
+        // The stretch it summarised is no longer what it summarised — an edit
+        // or a regenerate rewrote history behind it.
+        compacted.current.delete(convId);
+      }
+    }
     if (total <= budget * 0.85) return null; // still comfortable
 
-    // Keep the most recent turns within ~half the budget; summarise the rest.
-    const tailCap = budget * 0.5;
+    // Keep the most recent turns within ~40% of the budget; summarise the rest.
+    // What is NOT kept is the runway: the turns that land on the memo above
+    // instead of writing a new summary — and every one of those is a prompt
+    // the engine can still recognise. Half a budget of verbatim tail against a
+    // trigger at 85% left barely one turn of runway on a small window, so a
+    // conversation went right back to re-summarising (and re-prefilling) every
+    // turn — compaction that leaves you hovering at the ceiling has not really
+    // compacted. The turns this no longer keeps verbatim are not lost: they go
+    // into the summary, which now carries forward instead of being re-derived.
+    const tailCap = budget * 0.4;
     let acc = 0;
     let keep = 0;
     for (let i = msgs.length - 1; i >= 0; i--) {
@@ -1625,9 +1683,17 @@ export default function App() {
     if (head.length === 0) return null;
 
     // Budget the summariser's own prompt against the real window rather than a
-    // flat character cap, and keep the opening when it will not all fit.
+    // flat character cap, and keep the opening when it will not all fit. When a
+    // previous summary covers part of this head, summarise FROM it rather than
+    // from the raw turns again: the earliest turns have then been condensed
+    // once, not re-condensed from an increasingly elided transcript each time.
+    const carried = memo && memo.covered < splitAt ? memo.summary : "";
+    const fresh = carried ? head.slice(memo!.covered) : head;
     const transcript = fitTranscript(
-      head.map((m) => `${m.role === "user" ? "用户" : "助手"}: ${m.content}`),
+      [
+        ...(carried ? [`${lang === "zh" ? "更早的摘要" : "earlier summary"}: ${carried}`] : []),
+        ...fresh.map((m) => `${m.role === "user" ? "用户" : "助手"}: ${m.content}`),
+      ],
       Math.max(1500, Math.floor(budget * 0.6)),
       lang === "zh" ? "zh" : "en",
     );
@@ -1662,6 +1728,7 @@ export default function App() {
 
     const summary = stripThink(out).trim();
     if (!summary) return null;
+    compacted.current.set(convId, { summary, covered: splitAt, print: historyPrint(msgs, splitAt) });
     return { summary: t("contextSummary") + summary, tail };
   }
 
@@ -1797,7 +1864,7 @@ export default function App() {
     let summaryNote = "";
     let modelHistory = historyForModel;
     try {
-      const comp = await composeContext(historyForModel);
+      const comp = await composeContext(historyForModel, convId);
       if (comp) {
         summaryNote = comp.summary;
         modelHistory = comp.tail;
@@ -1839,16 +1906,38 @@ export default function App() {
     // system messages threw TemplateException("System message must be at
     // the beginning.") the moment two were active at once (owner repro:
     // attachment + web-design mode). Merge every fragment instead.
+    // What goes in the system message must be the SAME system message next
+    // turn. It is the opening of the prompt, so a line added or dropped there
+    // moves every token behind it and the engine re-computes the whole window.
+    // Two of these fragments were per-turn: today's date (a regex on THIS
+    // question decides it) and the search results (new ones every turn). On
+    // Gemma-4 26B, one question containing the word "recent" cost two full
+    // re-prefills — the turn that added the date line and the turn that dropped
+    // it again, 2% and 1% reused against 81% and 94% around them. They belong
+    // to the turn that produced them, so they now ride on that turn's message,
+    // where everything before them stays reusable. They also stay in the
+    // transcript afterwards, which is the more honest arrangement: the answer
+    // that cited them keeps its sources instead of standing alone.
     const sysParts = [
-      ...(needsDate ? [t("todayNote", { date: formatDate(lang) })] : []),
       ...(webDesign ? [WEBDESIGN_PROMPT] : []),
       ...(sys ? [sys] : []),
       ...(attachment && attachment.kind !== "vision"
         ? [t("attachInstruction", { name: attachment.name }) + attachment.text.slice(0, 9000)]
         : []),
-      ...(webContext ? [webContext] : []),
       ...(summaryNote ? [summaryNote] : []),
     ];
+    const turnParts = [
+      ...(needsDate ? [t("todayNote", { date: formatDate(lang) })] : []),
+      ...(webContext ? [webContext] : []),
+    ];
+    const last = modelHistory[modelHistory.length - 1];
+    if (turnParts.length > 0 && last?.role === "user") {
+      modelHistory = modelHistory.map((m, i) =>
+        i === modelHistory.length - 1
+          ? { ...m, content: `${turnParts.join("\n\n")}\n\n${m.content}` }
+          : m,
+      );
+    }
     const sent: ChatMessage[] = [
       ...(sysParts.length ? [{ role: "system" as const, content: sysParts.join("\n\n") }] : []),
       ...modelHistory,
@@ -1861,6 +1950,7 @@ export default function App() {
     // Streaming text-to-speech: synthesize & play sentence-by-sentence as the
     // answer arrives, so audio starts long before generation finishes.
     const useTTS = speakReplies && lang === "en";
+    const final: { stats: GenStats | null } = { stats: null };
     let speech: SpeechQueue | null = null;
     let synthChain: Promise<void> = Promise.resolve();
     let spokenLen = 0;
@@ -1940,6 +2030,7 @@ export default function App() {
               rafId = null;
             }
             renderMsg();
+            final.stats = ev.stats;
             setStats(ev.stats);
             calibrate(sentRaw, ev.stats.promptTokens);
           } else if (ev.type === "error") {
@@ -1962,6 +2053,28 @@ export default function App() {
         rafId = null;
       }
       renderMsg();
+      // A finished turn with no answer in it must say so. It happens two ways:
+      // the prompt outgrew the window, so the engine generated nothing at all
+      // and the message was never even saved (the turn vanished on reload); or
+      // the model reasoned to EOS and stopped without writing the answer, which
+      // saved a bubble holding only a thought. Both read as the app dropping
+      // the reply. A cancel is not one of these — the user knows why that one
+      // is short.
+      if (final.stats && final.stats.stopReason !== "cancelled" && !answerOnly(acc.text).trim()) {
+        const noRoom =
+          final.stats.stopReason === "context" ||
+          (!!model?.nCtx && final.stats.promptTokens >= model.nCtx);
+        // Reasoning cut off by the length budget is not the same as reasoning
+        // that finished and then said nothing — the first wants a bigger
+        // budget, the second wants another go.
+        const key = noRoom
+          ? "emptyNoRoom"
+          : final.stats.stopReason === "length"
+            ? "emptyOutOfBudget"
+            : "emptyThoughtOnly";
+        acc.text += (acc.text ? "\n\n" : "") + t(key);
+        renderMsg();
+      }
       setBusy(false);
       setStreamingId(null);
       try {
@@ -2212,7 +2325,7 @@ export default function App() {
       id: "web",
       label: webEnabled ? t("cmdkWebOff") : t("cmdkWebOn"),
       keywords: "web search 联网 搜索",
-      run: () => setWebEnabled((v) => !v),
+      run: () => useWebSearch(!webEnabled),
     },
     {
       id: "models-dir",
@@ -3147,9 +3260,7 @@ export default function App() {
                         <button
                           className={`tool-item ${webEnabled ? "on" : ""}`}
                           onClick={() => {
-                            const next = !webEnabled;
-                            setWebEnabled(next);
-                            if (next) setThinkEnabled(false); // web search ⇄ thinking are exclusive
+                            useWebSearch(!webEnabled);
                           }}
                         >
                           <span className="ti-label">{t("toolWeb")}</span>
@@ -3165,9 +3276,7 @@ export default function App() {
                         <button
                           className={`tool-item tool-parent ${thinkEnabled ? "on" : ""}`}
                           onClick={() => {
-                            const next = !thinkEnabled;
-                            setThinkEnabled(next);
-                            if (next) setWebEnabled(false); // thinking ⇄ web search are exclusive
+                            useThinking(!thinkEnabled);
                           }}
                           title={t("effortHint")}
                         >
@@ -3188,8 +3297,7 @@ export default function App() {
                               className={`tool-item ${thinkEnabled && effort === lvl ? "on" : ""}`}
                               onClick={() => {
                                 setEffort(lvl);
-                                setThinkEnabled(true);
-                                setWebEnabled(false);
+                                useThinking(true);
                               }}
                             >
                               <span className="ti-label">
@@ -3206,9 +3314,7 @@ export default function App() {
                     <button
                       className={`tool-item ${thinkEnabled && model?.supportsThinking ? "on" : ""}`}
                       onClick={() => {
-                        const next = !thinkEnabled;
-                        setThinkEnabled(next);
-                        if (next) setWebEnabled(false); // thinking ⇄ web search are exclusive
+                        useThinking(!thinkEnabled);
                       }}
                       disabled={!model?.supportsThinking}
                       title={model && !model.supportsThinking ? t("thinkUnsupported") : undefined}

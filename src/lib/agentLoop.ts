@@ -1752,7 +1752,7 @@ export function digestHistory(dropped: ChatMessage[], lang: "zh" | "en"): string
   return out.slice(0, 700);
 }
 
-async function trimHistory(
+export async function trimHistory(
   history: ChatMessage[],
   nCtx: number,
   summarise?: (transcript: string) => Promise<string>,
@@ -1762,15 +1762,28 @@ async function trimHistory(
   // about to be spent on this turn's own tool traffic.
   const budget = Math.floor(nCtx * 0.4);
   if (estimateTokens(history) <= budget) return { history, trimmed: false };
+  // Trim down to a TARGET under the trigger, not to the trigger itself. Cutting
+  // just enough to slip back under put the next turn straight over again, so a
+  // long session re-trimmed every single turn — and each trim writes a fresh
+  // summary, which lands at the FRONT of the prompt and moves every token after
+  // it, so the engine could match nothing it had already computed. This is the
+  // lesson compactMessages records for mid-turn compaction, on the cross-turn
+  // side: what is freed beyond the trigger is runway, and every turn of runway
+  // is a turn whose prompt the engine still recognises.
+  const target = Math.floor(budget * 0.6);
   const kept = [...history];
   const dropped: ChatMessage[] = [];
-  while (kept.length > 2 && estimateTokens(kept) > budget) {
+  while (kept.length > 2 && estimateTokens(kept) > target) {
     dropped.push(kept.shift()!);
   }
   // Never start the kept slice mid-exchange with an assistant message.
   while (kept.length && kept[0].role === "assistant") dropped.push(kept.shift()!);
   let digest = digestHistory(dropped, currentLang);
   if (summarise && dropped.length) {
+    // A previous trim's note is among the dropped messages: summarise FROM it
+    // rather than re-condensing an already-condensed line as if it were
+    // transcript, so the oldest turns keep thinning instead of being described
+    // second-hand each time.
     const transcript = fitTranscript(
       dropped.map((m) => `${m.role}: ${m.content}`),
       Math.max(1500, Math.floor(budget * 0.6)),

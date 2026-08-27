@@ -4273,34 +4273,29 @@ button.tool-parent {
   border-bottom: 1px dotted var(--text-dim);
   cursor: help;
 }
-.has-tip::after {
-  content: attr(data-tip);
-  /* Fixed, not absolute. Anchored to the label it belonged to, the bubble
-     inherited the label's position AND the settings panel's clipping: a label
-     near the right edge pushed 250px of it off the window, and one near the top
-     of the scroll area had it cut off above. The coordinates come from a
-     measurement on hover (see useTooltipPosition) and are already clamped to
-     the viewport; the fallback keeps it sane before the first measurement. */
+/* The hover bubble. A real element portalled to <body>, not a pseudo-element
+   on the label: inside the settings panel a `position: fixed` box is positioned
+   against — and clipped by — the nearest transformed ancestor, and the panel's
+   open animation leaves a transform on an `overflow: hidden` modal. Placement
+   comes from SettingsPanel, which measures this box rather than guessing its
+   height from the text. */
+.settings-tip {
   position: fixed;
-  left: var(--tip-x, 0);
-  top: var(--tip-y, 0);
-  z-index: 90;
+  /* Above the settings overlay (2600), which is what it explains. */
+  z-index: 2700;
   width: max-content;
   max-width: min(250px, calc(100vw - 24px));
   padding: 7px 10px;
   font-size: 11.5px;
+  font-style: normal;
   line-height: 1.45;
   color: var(--text);
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-2);
-  opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s ease 0.15s;
-}
-.has-tip:hover::after {
-  opacity: 1;
+  transition: opacity 0.12s ease;
 }
 
 /* First-launch setup: hero CTA + recommendation modal. */

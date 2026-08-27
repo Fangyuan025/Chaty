@@ -198,3 +198,50 @@ export function fitTranscript(rawLines: string[], maxTokens: number, lang: "zh" 
   if (!tail.length) return join([...head, marker]);
   return join([...head, marker, ...tail]);
 }
+
+/**
+ * A summary chat mode has already written for a conversation: the text, how
+ * many leading messages it stands in for, and a fingerprint of exactly those
+ * messages.
+ */
+export type Compacted = { summary: string; covered: number; print: string };
+
+/** Fingerprint of the leading `upto` messages — cheap, and enough to notice an
+ *  edit or a regenerate rewriting the stretch a summary was written from. */
+export function historyPrint(msgs: { content: string }[], upto: number): string {
+  return `${upto}:${msgs.slice(0, upto).reduce((n, m) => n + m.content.length, 0)}`;
+}
+
+/**
+ * Does a summary already written still stand?
+ *
+ * Chat mode used to re-derive its compaction summary on every single turn. The
+ * summary rides in the system message — the opening of the prompt — so a new
+ * wording each turn moved every token behind it, and the engine could match
+ * nothing it had already computed. Measured on Gemma-4 26B through MLX: 99% of
+ * the window reused on the turns before compaction began, then 0% on every
+ * turn after it, plus a whole extra generation per turn to write the summary
+ * again. Code mode had already learned this (`compactMessages` compacts in
+ * place and leaves real headroom, so it is not re-run every round); this is the
+ * same lesson on the chat side.
+ *
+ * Returns the tail to send beside the standing summary, or null when a new
+ * summary has to be written: the stretch it covered has changed underneath it,
+ * or the conversation has since grown past the room it left.
+ */
+export function standingTail<T extends { content: string }>(
+  memo: Compacted | null | undefined,
+  msgs: T[],
+  budget: number,
+  /** The summary as it will actually appear in the prompt, prefix and all. */
+  summaryText: string,
+): T[] | null {
+  if (!memo) return null;
+  if (memo.covered > msgs.length) return null;
+  if (historyPrint(msgs, memo.covered) !== memo.print) return null;
+  const tail = msgs.slice(memo.covered);
+  const cost =
+    messageTokens([{ content: summaryText }]) +
+    messageTokens(tail as { content: string; images?: string[] }[]);
+  return cost <= budget * 0.85 ? tail : null;
+}

@@ -478,6 +478,10 @@ impl LlamaEngine {
         // that survives, so a machine that has freed some VRAM — or a smaller
         // model — climbs straight back onto the GPU.
         let cap = gpu_layer_cap();
+        // Whether the cap actually took layers away from THIS load. A cap left
+        // by a crash on a bigger model can be wider than what a small one asks
+        // for, and that load is not degraded — saying so would be noise.
+        let capped_by_guard = matches!(cap, Some(c) if c < requested);
         let requested = match cap {
             Some(c) => requested.min(c),
             None => requested,
@@ -593,6 +597,11 @@ impl LlamaEngine {
             // A previous load crashed the process (issue #5: broken Vulkan
             // driver aborts mid-load) — this run is CPU-only by the guard.
             Some("gpu-crash-cpu".to_string())
+        } else if capped_by_guard {
+            // The middle rungs of the same ladder. These used to load in
+            // silence: the model ran, slower, and nothing said why — which is
+            // the shape of the bug the ladder replaced (issue #9), just quieter.
+            Some("gpu-crash-capped".to_string())
         } else if oom_fallback {
             Some("gpu-oom".to_string())
         } else if mtmd_err.is_some() {
