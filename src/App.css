@@ -4096,6 +4096,11 @@ button.tool-parent {
   line-height: 1.45;
   color: var(--text-dim);
 }
+/* A hint that is reporting a failure — the voice preview says why it could not
+   play. Same shape as the hint, in the colour every other error uses. */
+.settings-hint.settings-error {
+  color: var(--danger);
+}
 .hw-panel {
   width: 322px;
 }
