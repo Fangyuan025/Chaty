@@ -18,7 +18,7 @@ import {
   synthesize,
   type UpdateInfo,
 } from "../lib/ipc";
-import { decodeAudio, playAudio } from "../lib/audio";
+import { decodeAudio, playAudio, primeAudioPlayback } from "../lib/audio";
 import { CODE_THEMES, type CodeTheme } from "../lib/codeTheme";
 import { useConfirm } from "./ConfirmModal";
 import { Select } from "./Select";
@@ -55,6 +55,8 @@ export interface GenSettings {
   voiceSid: number;
   /** Speech rate multiplier (0.5–2.0). */
   voiceSpeed: number;
+  /** Opt into Chinese STT/TTS when the UI itself is not Chinese. */
+  chineseVoice: boolean;
   /** GPU offload: -1 = auto‑tune by VRAM, 0 = CPU only, >0 = that many layers. */
   gpuLayers: number;
   /** Context window to load the model with: 0 = memory-friendly default (≤8192),
@@ -133,6 +135,7 @@ export const defaultSettings: GenSettings = {
   presets: [],
   voiceSid: 0,
   voiceSpeed: 1.0,
+  chineseVoice: false,
   gpuLayers: -1,
   contextLength: 0,
   ragTopK: 8,
@@ -451,12 +454,25 @@ export function SettingsPanel({
 
   // ---- Voice preview ----
   const [voiceTesting, setVoiceTesting] = useState(false);
+  const [voiceTestError, setVoiceTestError] = useState("");
   const testVoice = () => {
     if (voiceTesting) return;
+    // Must happen synchronously inside the click handler. Waiting until the
+    // async native synthesis returns loses Safari/WKWebView user activation.
+    primeAudioPlayback();
+    setVoiceTestError("");
     setVoiceTesting(true);
-    synthesize("Hi! This is how I sound. Nice to meet you.", value.voiceSpeed, value.voiceSid)
+    synthesize(
+      lang === "zh" ? "你好，这是我的中文声音。很高兴认识你。" : "Hi! This is how I sound. Nice to meet you.",
+      value.voiceSpeed,
+      value.voiceSid,
+      lang === "zh" || value.chineseVoice,
+    )
       .then((a) => playAudio(decodeAudio(a.audio), a.sampleRate).done)
-      .catch(console.error)
+      .catch((e) => {
+        console.error(e);
+        setVoiceTestError(typeof e === "string" ? e : ((e as Error)?.message ?? String(e)));
+      })
       .finally(() => setVoiceTesting(false));
   };
 
@@ -572,8 +588,7 @@ export function SettingsPanel({
     { id: "sampling", label: t("setCatSampling") },
     { id: "model", label: t("setCatModel") },
     { id: "code", label: "Code" },
-    // TTS is English-only, so the voice section only exists in English UI.
-    ...(lang === "en" ? [{ id: "voice" as CatId, label: t("setCatVoice") }] : []),
+    { id: "voice", label: t("setCatVoice") },
     { id: "data", label: t("setCatData") },
     { id: "about", label: t("setCatAbout") },
   ];
@@ -1353,8 +1368,19 @@ export function SettingsPanel({
             </>
           )}
 
-          {cat === "voice" && lang === "en" && (
+          {cat === "voice" && (
             <>
+              <SetRow label={t("chineseVoice")} hint={t("chineseVoiceHint")}>
+                <button
+                  type="button"
+                  className={`set-switch ${lang === "zh" || value.chineseVoice ? "on" : ""}`}
+                  disabled={lang === "zh"}
+                  aria-pressed={lang === "zh" || value.chineseVoice}
+                  onClick={() => set("chineseVoice", !value.chineseVoice)}
+                >
+                  <span className="set-switch-knob" />
+                </button>
+              </SetRow>
               <label className="field">
                 <span>{t("voice")}</span>
                 <Select
@@ -1376,6 +1402,7 @@ export function SettingsPanel({
                   {voiceTesting ? "…" : t("voicePreviewBtn")}
                 </button>
               </SetRow>
+              {voiceTestError && <div className="settings-hint settings-error">{voiceTestError}</div>}
               <div className="settings-hint">{t("voiceEngineHint")}</div>
             </>
           )}

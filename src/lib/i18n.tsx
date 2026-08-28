@@ -624,9 +624,14 @@ export const T = {
     en: "Play a sample with the current voice and speed",
   },
   voicePreviewBtn: { zh: "播放示例", en: "Play sample" },
+  chineseVoice: { zh: "中文语音支持", en: "Chinese voice support" },
+  chineseVoiceHint: {
+    zh: "中文界面会自动启用多语言 Whisper 和中文 VITS。",
+    en: "Opt in to multilingual Whisper and Chinese VITS. Leave this off to keep the existing English-only base.en model and its accuracy.",
+  },
   voiceEngineHint: {
-    zh: "语音由本地 Whisper（识别）与 Kokoro（朗读）驱动，仅支持英文，完全离线。用于消息朗读与 Live 语音对话。",
-    en: "Voice runs locally — Whisper for speech recognition, Kokoro for read-aloud. English only, fully offline. Powers message read-aloud and Live voice chat.",
+    zh: "语音完全在本地运行：多语言 Whisper 自动识别中文和英文，中文回复由 VITS 朗读，英文回复由 Kokoro 朗读。首次使用对应语言时会下载模型。",
+    en: "Voice runs locally. English uses Whisper base.en and Kokoro by default; Chinese support adds multilingual Whisper and VITS downloads.",
   },
   // knowledge base (local RAG)
   kbTitle: { zh: "本地知识库", en: "Local knowledge base" },
@@ -922,8 +927,7 @@ function detectLang(): Lang {
   } catch {
     /* ignore */
   }
-  // Default first language is English (voice features are English-only and are
-  // hidden when the user explicitly switches to Chinese).
+  // English remains the default; voice features support Chinese as well.
   return "en";
 }
 

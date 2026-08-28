@@ -40,6 +40,7 @@ export function LiveMode({
   forceNoThink,
   voiceSid,
   voiceSpeed,
+  chineseVoice,
 }: {
   onClose: () => void;
   preamble: string;
@@ -50,6 +51,7 @@ export function LiveMode({
   forceNoThink: boolean;
   voiceSid: number;
   voiceSpeed: number;
+  chineseVoice: boolean;
 }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<Status>("listening");
@@ -144,11 +146,18 @@ export function LiveMode({
   // ---- the conversation loop ----
   useEffect(() => {
     activeRef.current = true;
-    void loop();
+    // Defer startup by one task. React StrictMode intentionally runs
+    // effect setup → cleanup → setup in development; starting mic IPC
+    // immediately lets the discarded first setup retain the native recorder
+    // while the real setup receives "already recording".
+    const startTimer = window.setTimeout(() => {
+      if (activeRef.current) void loop();
+    }, 0);
     return () => {
+      window.clearTimeout(startTimer);
       activeRef.current = false;
       cancelCaptureRef.current?.();
-      recorderRef.current?.cancel();
+      void recorderRef.current?.cancel().catch(() => {});
       recorderRef.current = null;
       speechRef.current?.stop();
       speechRef.current = null;
@@ -175,14 +184,14 @@ export function LiveMode({
       cancelCaptureRef.current = () => {
         if (done) return;
         done = true;
-        recorderRef.current?.cancel();
+        void recorderRef.current?.cancel().catch(() => {});
         recorderRef.current = null;
         resolve(null);
       };
       startRecording({ onAutoStop: () => void finish(), silenceMs: 1000 })
-        .then((rec) => {
+        .then(async (rec) => {
           if (!activeRef.current) {
-            rec.cancel();
+            await rec.cancel().catch(() => {});
             resolve(null);
             return;
           }
@@ -208,7 +217,9 @@ export function LiveMode({
       setCaption("");
       let userText = "";
       try {
-        userText = (await transcribe(encodeAudio(cap.samples), cap.sampleRate)).trim();
+        userText = (
+          await transcribe(encodeAudio(cap.samples), cap.sampleRate, chineseVoice)
+        ).trim();
       } catch (e) {
         setError(String(e));
       }
@@ -249,7 +260,12 @@ export function LiveMode({
       synthChain = synthChain.then(async () => {
         if (speech.isStopped) return;
         try {
-          const { audio, sampleRate } = await synthesize(clean, voiceSpeed, voiceSid);
+          const { audio, sampleRate } = await synthesize(
+            clean,
+            voiceSpeed,
+            voiceSid,
+            chineseVoice,
+          );
           if (!speech.isStopped) speech.enqueue(decodeAudio(audio), sampleRate, clean);
         } catch (e) {
           setError(String(e));

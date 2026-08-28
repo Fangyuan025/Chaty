@@ -1343,6 +1343,7 @@ pub async fn transcribe(
     app: tauri::AppHandle,
     audio: String,
     sample_rate: u32,
+    multilingual: Option<bool>,
 ) -> Result<String, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(audio.as_bytes())
@@ -1352,7 +1353,7 @@ pub async fn transcribe(
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let dir = voice_models_dir(&app)?;
-    crate::voice::transcribe(dir, samples, sample_rate)
+    crate::voice::transcribe(dir, samples, sample_rate, multilingual.unwrap_or(false))
         .await
         .map_err(|e| format!("{e:#}"))
 }
@@ -1364,12 +1365,18 @@ pub async fn synthesize(
     text: String,
     speed: Option<f32>,
     sid: Option<i32>,
+    chinese_enabled: Option<bool>,
 ) -> Result<SynthAudio, String> {
     let dir = voice_models_dir(&app)?;
-    let (samples, sample_rate) =
-        crate::voice::synthesize(dir, text, speed.unwrap_or(1.0), sid.unwrap_or(0))
-            .await
-            .map_err(|e| format!("{e:#}"))?;
+    let (samples, sample_rate) = crate::voice::synthesize(
+        dir,
+        text,
+        speed.unwrap_or(1.0),
+        sid.unwrap_or(0),
+        chinese_enabled.unwrap_or(false),
+    )
+    .await
+    .map_err(|e| format!("{e:#}"))?;
 
     let mut bytes = Vec::with_capacity(samples.len() * 4);
     for s in &samples {

@@ -696,8 +696,16 @@ export default function App() {
     return () => window.removeEventListener("mousedown", close);
   }, [showToolsMenu]);
 
-  function openLive() {
+  async function openLive() {
     if (!model) return;
+    // Live mode owns the microphone for its whole listen/respond loop. Stop a
+    // composer recording first and wait until the native slot is released.
+    const rec = recorderRef.current;
+    if (rec) {
+      recorderRef.current = null;
+      setRecorder(null);
+      await rec.cancel().catch(console.error);
+    }
     liveConvRef.current = conversationId; // continue current chat, or null → new
     setShowToolsMenu(false);
     setShowLive(true);
@@ -1967,7 +1975,7 @@ export default function App() {
 
     // Streaming text-to-speech: synthesize & play sentence-by-sentence as the
     // answer arrives, so audio starts long before generation finishes.
-    const useTTS = speakReplies && lang === "en";
+    const useTTS = speakReplies;
     const final: { stats: GenStats | null } = { stats: null };
     let speech: SpeechQueue | null = null;
     let synthChain: Promise<void> = Promise.resolve();
@@ -1985,7 +1993,12 @@ export default function App() {
       synthChain = synthChain.then(async () => {
         if (q.isStopped) return;
         try {
-          const { audio, sampleRate } = await synthesize(clean, settings.voiceSpeed, settings.voiceSid);
+          const { audio, sampleRate } = await synthesize(
+            clean,
+            settings.voiceSpeed,
+            settings.voiceSid,
+            lang === "zh" || settings.chineseVoice,
+          );
           if (!q.isStopped) q.enqueue(decodeAudio(audio), sampleRate);
         } catch (e) {
           console.error(e);
@@ -2226,7 +2239,11 @@ export default function App() {
     try {
       const { samples, sampleRate } = await rec.stop();
       if (samples.length > sampleRate * 0.25) {
-        const text = await transcribe(encodeAudio(samples), sampleRate);
+        const text = await transcribe(
+          encodeAudio(samples),
+          sampleRate,
+          lang === "zh" || settings.chineseVoice,
+        );
         if (text) {
           if (autoSend) {
             setInput("");
@@ -2238,6 +2255,11 @@ export default function App() {
       }
     } catch (e) {
       console.error(e);
+      setAttachError(
+        typeof e === "string"
+          ? e
+          : ((e as Error)?.message ?? "语音识别失败 / Speech recognition failed"),
+      );
     } finally {
       setTranscribing(false);
     }
@@ -2270,7 +2292,12 @@ export default function App() {
     stopSpeaking();
     try {
       setSpeaking(true);
-      const { audio, sampleRate } = await synthesize(clean, settings.voiceSpeed, settings.voiceSid);
+      const { audio, sampleRate } = await synthesize(
+        clean,
+        settings.voiceSpeed,
+        settings.voiceSid,
+        lang === "zh" || settings.chineseVoice,
+      );
       const pb = playAudio(decodeAudio(audio), sampleRate);
       playbackRef.current = pb;
       await pb.done;
@@ -2333,7 +2360,7 @@ export default function App() {
       keywords: "download model 下载 模型",
       run: () => setShowDownload(true),
     },
-    { id: "live", label: t("cmdkLive"), keywords: "voice live 语音", run: () => setShowLive(true) },
+    { id: "live", label: t("cmdkLive"), keywords: "voice live 语音", run: () => void openLive() },
     {
       id: "kb",
       label: ragEnabled ? t("cmdkKbOff") : t("cmdkKbOn"),
@@ -3360,37 +3387,35 @@ export default function App() {
                       <span className="ti-label">{t("toolDesign")}</span>
                       <span className="ti-check">{webDesign ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
                     </button>
-                    {lang === "en" && (
-                      <>
-                        <div className="tools-sep" />
-                        <button
-                          className={`tool-item ${speakReplies ? "on" : ""}`}
-                          onClick={() => {
-                            if (speaking) stopSpeaking();
-                            else if (speakReplies) stopSpeaking();
-                            setSpeakReplies((v) => !v);
-                          }}
-                        >
-                          <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                            <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z" strokeLinejoin="round" />
-                            <path d="M15.5 8.5a4.2 4.2 0 0 1 0 7" strokeLinecap="round" />
-                          </svg>
-                          <span className="ti-label">{t("speakAloud")}</span>
-                          <span className="ti-check">{speakReplies ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
-                        </button>
-                        <button
-                          className="tool-item"
-                          onClick={openLive}
-                          disabled={!model}
-                        >
-                          <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                            <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
-                            <path d="M7.5 7.5a6 6 0 0 0 0 9M16.5 7.5a6 6 0 0 1 0 9" strokeLinecap="round" />
-                          </svg>
-                          <span className="ti-label">{t("liveStart")}</span>
-                        </button>
-                      </>
-                    )}
+                    <>
+                      <div className="tools-sep" />
+                      <button
+                        className={`tool-item ${speakReplies ? "on" : ""}`}
+                        onClick={() => {
+                          if (speaking) stopSpeaking();
+                          else if (speakReplies) stopSpeaking();
+                          setSpeakReplies((v) => !v);
+                        }}
+                      >
+                        <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                          <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z" strokeLinejoin="round" />
+                          <path d="M15.5 8.5a4.2 4.2 0 0 1 0 7" strokeLinecap="round" />
+                        </svg>
+                        <span className="ti-label">{t("speakAloud")}</span>
+                        <span className="ti-check">{speakReplies ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
+                      </button>
+                      <button
+                        className="tool-item"
+                        onClick={openLive}
+                        disabled={!model}
+                      >
+                        <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                          <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
+                          <path d="M7.5 7.5a6 6 0 0 0 0 9M16.5 7.5a6 6 0 0 1 0 9" strokeLinecap="round" />
+                        </svg>
+                        <span className="ti-label">{t("liveStart")}</span>
+                      </button>
+                    </>
                   </div>
                 )}
               </div>
@@ -3411,13 +3436,12 @@ export default function App() {
                 }
                 rows={1}
               />
-              {lang === "en" && (
-                <button
-                  className={`mic-btn ${recorder ? "recording" : ""}`}
-                  title={recorder ? t("micStop") : t("micStart")}
-                  onClick={handleMic}
-                  disabled={transcribing}
-                >
+              <button
+                className={`mic-btn ${recorder ? "recording" : ""}`}
+                title={recorder ? t("micStop") : t("micStart")}
+                onClick={handleMic}
+                disabled={transcribing}
+              >
                   {transcribing ? (
                     <span className="mini-spinner" />
                   ) : recorder ? (
@@ -3438,8 +3462,7 @@ export default function App() {
                       <path d="M5 11a7 7 0 0 0 14 0M12 18v3" strokeLinecap="round" />
                     </svg>
                   )}
-                </button>
-              )}
+              </button>
               {busy ? (
                 <button className="send-btn stop" onClick={handleStop} title={t("stopTitle")}>
                   <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
@@ -3511,6 +3534,7 @@ export default function App() {
           forceNoThink={(model?.supportsThinking && !model.thinkSwitch) ?? false}
           voiceSid={settings.voiceSid}
           voiceSpeed={settings.voiceSpeed}
+          chineseVoice={lang === "zh" || settings.chineseVoice}
         />
       )}
       {showDownload && (
