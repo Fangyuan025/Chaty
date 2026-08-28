@@ -10,6 +10,14 @@
   when Chinese is in play, and a Chinese reply is spoken by a local VITS voice
   while English keeps Kokoro. Which one speaks is decided per utterance.
 
+- **Each voice is picked from its own list.** The two are separate models with
+  separate speakers, so Settings → Voice offers an English voice and a Chinese
+  one, and neither moves when you change the other. The preview plays a sample
+  per voice rather than only the language the interface happens to be in. The
+  switch is on by default in the Chinese interface and can be turned off
+  there, and a reply in either language has the read-aloud button that used to
+  exist only in English.
+
 - **English speech did not get worse to make room for it.** Multilingual
   Whisper is a real accuracy drop on English, so English stays on `base.en` —
   the model already on disk, no re-download, no orphaned directory. The
