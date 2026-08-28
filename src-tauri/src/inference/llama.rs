@@ -1018,7 +1018,13 @@ fn run_turn(
         // while a conversation is in the media regime (and vice versa).
         cached.clear();
 
-        n_prompt_pos = prefill_media(
+        // The media path reuses too — the whole point of MediaCache — but it
+        // used to report nothing, so every screenshot turn showed 0% reused
+        // whatever the cache had actually kept. The stat is the only way an
+        // agent turn's "pure append" can be seen from outside; leaving it
+        // unset on this path made the media cache invisible and, worse, made
+        // it look broken.
+        let (pos, reused_media) = prefill_media(
             ctx,
             mtmd,
             media_cache,
@@ -1030,6 +1036,8 @@ fn run_turn(
             sink,
             cancel,
         )?;
+        n_prompt_pos = pos;
+        kv_reused = reused_media;
         if cancel.load(Ordering::Relaxed) {
             return done_event(sink, n_prompt_pos as u32, 0, 0.0, "cancelled");
         }
@@ -1339,7 +1347,7 @@ fn prefill_media(
     n_batch: i32,
     sink: &dyn EventSink,
     cancel: &AtomicBool,
-) -> Result<i32> {
+) -> Result<(i32, u32)> {
     let images: Vec<&String> = messages.iter().flat_map(|m| m.images.iter()).collect();
     let image_keys: Vec<String> = images.iter().map(|p| image_cache_key(p)).collect();
 
@@ -1421,7 +1429,7 @@ fn prefill_media(
     let mut bitmaps: Vec<MtmdBitmap> = Vec::with_capacity(new_images.len());
     for p in new_images {
         if cancel.load(Ordering::Relaxed) {
-            return Ok(start_past.max(0));
+            return Ok((start_past.max(0), start_past.max(0) as u32));
         }
         // Oversized screenshots (full-page captures at 2x scale reach tens of
         // megapixels) are downscaled before they hit the vision encoder — the
@@ -1548,7 +1556,7 @@ fn prefill_media(
         );
     }
     if cancel.load(Ordering::Relaxed) {
-        return Ok(start_past.max(0));
+        return Ok((start_past.max(0), start_past.max(0) as u32));
     }
 
     // Image turns are always worth a ring (encoding takes seconds); text-only
@@ -1571,7 +1579,7 @@ fn prefill_media(
             // Mid-prefill cancel: the KV holds a partial media prefill the
             // cache can't describe — drop it so the next turn starts clean.
             clear_all(ctx, media_cache);
-            return Ok(start_past.max(0));
+            return Ok((start_past.max(0), start_past.max(0) as u32));
         }
         n_past = match seg.chunks.eval_chunks(mtmd, ctx, n_past, 0, n_batch, i == last) {
             Ok(p) => p,
@@ -1603,7 +1611,7 @@ fn prefill_media(
         // true once it has recorded what it decoded.
         complete: false,
     });
-    Ok(n_past)
+    Ok((n_past, start_past.max(0) as u32))
 }
 
 /// Feed-side image budget for the vision encoder. Full-page browser

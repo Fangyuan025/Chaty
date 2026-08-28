@@ -16,7 +16,7 @@ const { runAgentTurn } = await import("./agentLoop");
 type Ev = { type: string; [k: string]: unknown };
 type Chan = { onmessage?: (ev: Ev) => void };
 
-async function runShot(shotReply: string) {
+async function runShot(shotReply: string, mediaChunked = false) {
   const rounds = [
     '<tool_call>{"name":"browser_screenshot","arguments":{}}</tool_call>',
     "Looks right, done.",
@@ -35,7 +35,7 @@ async function runShot(shotReply: string) {
   await runAgentTurn(
     "look at the page", [], "/tmp/ws", "en",
     {
-      thinkMode: "off", maxSteps: 6, visionReady: true,
+      thinkMode: "off", maxSteps: 6, visionReady: true, mediaChunked,
       signal: { cancelled: false },
       approve: async () => true, approveDir: async () => false, approveSudo: async () => ({ ok: false }),
     } as never,
@@ -68,5 +68,48 @@ describe("segmented full-page screenshots", () => {
     expect(a).not.toBeNull();
     expect(a!.content).toContain("Screenshot of the current page");
     expect(a!.content).not.toContain("segments");
+  });
+});
+
+describe("how many tiles ride in one prompt", () => {
+  afterEach(() => clearMocks());
+
+  // A prompt carrying pictures is one forward pass over everything up to the
+  // last image — it cannot be chunked the way text is, so the tile count is
+  // the part of that pass this code controls. Thirteen of them cost 7922
+  // prompt tokens and 147 seconds on Qwen3.6 35B with an otherwise empty
+  // conversation; behind a real transcript the same round drove the machine
+  // into swap.
+  it("a very tall page attaches only the first few, and says so", async () => {
+    const a = await runShot(
+      Array.from({ length: 13 }, (_, i) => `/tmp/t${i}.png`).join("\n"),
+    );
+    expect(a).not.toBeNull();
+    // It still reports what the page actually needed…
+    expect(a!.content).toContain("13 segments");
+    // …and is explicit that it did not send all of them, with the way on.
+    expect(a!.content).toContain("Only the first 4 segments");
+    expect(a!.content).toContain("browser_scroll");
+  });
+
+  it("an engine that feeds media incrementally gets the whole page", async () => {
+    // llama.cpp pays one chunk per tile, so the count barely moves the cost of
+    // the round; capping would lose coverage to solve a problem it does not
+    // have. The engine that takes the span in a single pass still caps, even
+    // though it now resumes the transcript beneath the pictures.
+    const a = await runShot(
+      Array.from({ length: 13 }, (_, i) => `/tmp/t${i}.png`).join("\n"),
+      true,
+    );
+    expect(a).not.toBeNull();
+    expect(a!.content).toContain("13 segments");
+    expect(a!.content).not.toContain("Only the first");
+  });
+
+  it("a page inside the cap sends everything, with no apology", async () => {
+    const a = await runShot("/tmp/t0.png\n/tmp/t1.png\n/tmp/t2.png\n/tmp/t3.png");
+    expect(a).not.toBeNull();
+    expect(a!.content).toContain("4 segments");
+    expect(a!.content).not.toContain("Only the first");
   });
 });

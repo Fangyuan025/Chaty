@@ -245,9 +245,16 @@ export interface AgentOptions {
    *  visual verification, and let the model see user-attached images. */
   visionReady?: boolean;
   /** Whether the engine can reuse an already-encoded image when a NEW one is
-   *  appended (llama.cpp's media cache does; MLX cannot — pixels reset its rope
-   *  state). Decides whether dropping stale screenshots is worth a re-prefill. */
+   *  appended. Both engines do now — llama.cpp's media cache always has, and
+   *  the MLX sidecar resumes its media pass from the warm cache. Decides
+   *  whether dropping stale screenshots is worth the re-prefill it costs. */
   mediaPrefixReuse?: boolean;
+  /** Whether the engine feeds pixels incrementally, so a tall page costs one
+   *  chunk per tile instead of a single pass over everything below it. Kept
+   *  apart from `mediaPrefixReuse`: resuming makes a warm round cheap, but a
+   *  cold one still evaluates the whole span at once, and that is what decides
+   *  how many tiles a page may send and how much transcript may ride with it. */
+  mediaChunked?: boolean;
   /** How many knowledge-base excerpts `search_docs` may return. */
   ragTopK?: number;
   /** Set when this turn is a "continue" after a paused one. A pause is not a
@@ -401,6 +408,40 @@ export function resumeNudge(stuck: StuckState, zh: boolean): string {
   return zh
     ? `\n(上一轮因为连续 ${stuck.count} 次发出完全相同的 ${stuck.tool} 调用而暂停。原样重发不会有不同结果:请换一个工具,或改变参数。)`
     : `\n(The previous attempt was paused after ${stuck.count} identical ${stuck.tool} calls in a row. Re-sending it unchanged cannot produce a different result — use a different tool, or different arguments.)`;
+}
+
+/**
+ * Has the stream stopped saying anything?
+ *
+ * Not "is it long" and not "is it looping over an idea" — the built-in runaway
+ * cuts were removed on purpose, and the think budget is the only ceiling on
+ * how MUCH a model may reason. This is the other failure: output that carries
+ * no information at all, the same character or a two-character cycle emitted
+ * until the token cap. The llama.cpp engine has caught one shape of it since
+ * MiniCPM5 (32 tokens of pure whitespace, a broken conversion); MLX caught
+ * none, and a Qwen3.6 35B turn ran to 31416 tokens of "!" at 1.1 tok/s after a
+ * screenshot before anything noticed.
+ *
+ * Deliberately blunt: four hundred characters with one distinct character in
+ * them, or a repeated unit of at most four. A markdown rule is eighty at the
+ * outside and a table separator shorter still, so nothing a model writes on
+ * purpose reaches this.
+ */
+export function looksDegenerate(text: string): boolean {
+  // One character, four hundred times: nothing a model writes on purpose comes
+  // close — a markdown rule is eighty at the outside.
+  const ONE = 400;
+  if (text.length >= ONE && new Set(text.slice(-ONE)).size === 1) return true;
+  // A short cycle is the same failure wearing a hat, but it has more room to be
+  // a coincidence, so it has to go on for twice as long before we believe it.
+  const CYCLE = 800;
+  if (text.length < CYCLE) return false;
+  const tail = text.slice(-CYCLE);
+  for (let n = 2; n <= 4; n++) {
+    const unit = tail.slice(0, n);
+    if (unit.repeat(Math.ceil(CYCLE / n)).slice(0, CYCLE) === tail) return true;
+  }
+  return false;
 }
 
 export function systemPrompt(
@@ -601,12 +642,12 @@ function capDiffForCard(
  *  leave a note so the model knows to retake if it needs another look. */
 export function evictStaleImages(messages: ChatMessage[], force: boolean) {
   if (!force) return;
-  // One, not two, when every live image is re-encoded anyway: a second one buys
-  // the model a screenshot it can still see, at the price of encoding it again
-  // on every screenshot round. Measured on MLX Qwen3.5, three screenshots in:
-  // 1799/3939/3988ms holding two, against 1798/1821/1871ms holding one — flat,
-  // and no stale image is ever re-encoded. Engines that reuse across a new
-  // image never get here at all, so they keep everything.
+  // Keeping two used to mean encoding both again on every screenshot round —
+  // measured on MLX Qwen3.5, three screenshots in: 1799/3939/3988ms holding
+  // two against 1798/1821/1871ms holding one. Both engines now resume across a
+  // new picture, so an older screenshot costs its tokens and nothing else, and
+  // callers only force this where it is not a matter of cost: a model that
+  // accepts one image per prompt, or a context being reclaimed anyway.
   const keep = 1;
   const withImages = messages.filter((m) => m.images && m.images.length > 0);
   for (const m of withImages.slice(0, Math.max(0, withImages.length - keep))) {
@@ -1639,6 +1680,51 @@ export function compactionStub(
   return `<tool_result name="${name}">\n${body2}\n</tool_result>`;
 }
 
+/**
+ * Replace the file bodies inside a stored write_file / edit_file call with a
+ * marker naming the path and what it held.
+ *
+ * The call itself stays — the model must still see that it wrote that file,
+ * and the turn must still read as the turn it was — but the body does not: it
+ * is on disk, and `read_file` brings it back for a few hundred tokens instead
+ * of twenty thousand.
+ */
+export function stubWrittenBodies(turn: string, lang: "zh" | "en"): string {
+  return turn.replace(/<tool_call>\s*([^]*?)\s*<\/tool_call>/g, (whole, body: string) => {
+    let call: { name?: string; arguments?: Record<string, unknown> };
+    try {
+      call = JSON.parse(body);
+    } catch {
+      return whole; // not ours to rewrite
+    }
+    const args = call.arguments;
+    if (!call.name || !args || typeof args !== "object") return whole;
+    let touched = false;
+    const slim: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(args)) {
+      // Every field that carries a file body, whichever editor produced it.
+      if ((k === "content" || k === "new" || k === "old" || k === "edits") && typeof v === "string" && v.length > 400) {
+        const lines = v.split("\n").length;
+        slim[k] =
+          lang === "zh"
+            ? `(已省略:${v.length} 字符 / ${lines} 行,内容已写入磁盘,需要时用 read_file 读回)`
+            : `(elided: ${v.length} chars / ${lines} lines — written to disk; read_file it back if needed)`;
+        touched = true;
+      } else if (k === "edits" && Array.isArray(v) && JSON.stringify(v).length > 400) {
+        slim[k] =
+          lang === "zh"
+            ? `(已省略 ${v.length} 处编辑,均已写入磁盘)`
+            : `(elided ${v.length} edits — all written to disk)`;
+        touched = true;
+      } else {
+        slim[k] = v;
+      }
+    }
+    if (!touched) return whole;
+    return `<tool_call>${JSON.stringify({ name: call.name, arguments: slim })}</tool_call>`;
+  });
+}
+
 export async function compactMessages(
   messages: ChatMessage[],
   nCtx: number,
@@ -1689,6 +1775,32 @@ export async function compactMessages(
       const bare = m.content.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
       if (!bare || bare === m.content.trim()) continue;
       messages[i] = { role: "assistant", content: bare };
+      changed = true;
+      if (estimateTokens(messages) <= target) break;
+    }
+  }
+  // Still over? Reclaim what the model WROTE. A write_file / edit_file call
+  // carries the whole file body in its arguments, and code mode writes files
+  // constantly: in the owner's session four such turns were 92,001 of the
+  // transcript's 111,781 characters — 82% of it, and untouchable, because the
+  // tiers above reach tool RESULTS and reasoning, never a tool CALL. It is
+  // also the most recoverable bulk in the transcript: the file is on disk, and
+  // re-reading it is one cheap call. The newest ones stay whole — that is the
+  // work in progress.
+  if (estimateTokens(messages) > target) {
+    const KEEP_WRITES = 2;
+    const writes = messages
+      .map((m, i) => ({ m, i }))
+      .filter(
+        ({ m }) =>
+          m.role === "assistant" &&
+          /<tool_call>\s*\{[^]*?"name"\s*:\s*"(write_file|edit_file|multi_edit)"/.test(m.content),
+      );
+    for (let k = 0; k < writes.length - KEEP_WRITES; k++) {
+      const { m, i } = writes[k];
+      const slimmed = stubWrittenBodies(m.content, currentLang);
+      if (slimmed === m.content) continue;
+      messages[i] = { role: "assistant", content: slimmed };
       changed = true;
       if (estimateTokens(messages) <= target) break;
     }
@@ -2026,6 +2138,8 @@ export async function runAgentTurn(
   // Whether the last executed call returned an ERROR — a repeated identical
   // call after an error needs "fix the arguments" advice, not "try list_dir".
   let lastResultErrored = false;
+  /** Consecutive steps cut for degenerate output — see looksDegenerate. */
+  let degenStreak = 0;
   // Result of the previous executed call, and whether an identical repeat of it
   // changed anything. A stateful UI click may legitimately repeat (pagination
   // "Next" × 3) — but only while the page keeps changing; an unchanged result
@@ -2214,6 +2328,19 @@ export async function runAgentTurn(
           );
         }
       }
+      // A prompt carrying pictures used to be the one shape the context
+      // window did not bound: the vision model evaluated everything up to the
+      // last image in a single forward pass, so the transcript underneath a
+      // screenshot set the size of one allocation. That is what produced
+      // nothing for ninety minutes on the owner's 50k-token round, and the
+      // loop answered it by compacting the transcript away whenever pixels
+      // rode along.
+      //
+      // The sidecar now feeds the text below the first picture in ordinary
+      // chunks and takes only the picture's own span in one pass, so the cost
+      // is set by the tiles and not by the conversation: the same 48k round
+      // reads in 131 seconds cold, 13 warm. Nothing about pixels needs its own
+      // budget any more, and taking one costs the transcript for nothing.
       const compacted = await compactMessages(
         messages,
         nCtx,
@@ -2223,8 +2350,13 @@ export async function runAgentTurn(
       );
       if (compacted) noteCompacted();
       // An engine that reuses a media prefill across a new screenshot loses by
-      // evicting, so it only does so when the context is already being reclaimed.
-      evictStaleImages(messages, !opts.mediaPrefixReuse || compacted);
+      // evicting, so it only does so when the context is already being
+      // reclaimed. A model that can hold only ONE picture is not a matter of
+      // cost: Gemma-4 26B answers a second live image with
+      // `imageTokenCountMismatch(280 vs 560)` and the turn fails outright, so
+      // there the old one always goes.
+      evictStaleImages(
+        messages, opts.multiImage === false || !opts.mediaPrefixReuse || compacted);
 
       // Predicted (uncalibrated) cost of exactly the prompt this step sends —
       // the left-hand side of the calibration the reply will complete.
@@ -2232,6 +2364,7 @@ export async function runAgentTurn(
       let raw = "";
       let liveTokens = 0;
       let budgetTripped = false;
+      let degenerated = false;
       let prefillShown = false;
       const t0 = performance.now();
       // After an intercepted repeat, sample hotter once to escape the pattern.
@@ -2283,9 +2416,15 @@ export async function runAgentTurn(
             // The user think budget is the only mid-stream thinking ceiling
             // (the old built-in runaway/looping cuts are gone — owner call:
             // set a budget if you want a cap). Graceful close, not a discard.
-            if (!budgetTripped && liveTokens % 48 === 0) {
+            if (!budgetTripped && !degenerated && liveTokens % 48 === 0) {
               if (thinkBudget && liveTokens > thinkBudget && isThinkOnly(raw)) {
                 budgetTripped = true;
+                void cancelGeneration().catch(() => {});
+              } else if (looksDegenerate(raw)) {
+                // Not a runaway thought — output with nothing in it. Waiting
+                // for the token cap costs minutes at a big model's speed and
+                // cannot produce anything, so cut it here.
+                degenerated = true;
                 void cancelGeneration().catch(() => {});
               }
             }
@@ -2306,6 +2445,29 @@ export async function runAgentTurn(
       cb.onPrefill?.(null);
       if (opts.signal.cancelled) return;
       cb.onTrace?.({ kind: "raw", text: raw });
+      // ── Degenerate-output breaker ── the step was cut because the stream had
+      // stopped carrying information. What it produced must NOT reach the
+      // transcript: the whole content of the failure is a character repeated,
+      // and leaving that in context is handing the model the pattern to
+      // continue. Retry hot, and pause rather than grind if it happens twice —
+      // twice is the model or the file, not sampling.
+      if (degenerated) {
+        degenStreak++;
+        if (degenStreak >= 2) {
+          cb.onFinal(
+            lang === "zh"
+              ? "模型连续两步输出退化(反复输出同一字符),已暂停以免空转。点「继续」会保留上下文重新采样;若仍如此,多半是这个模型在这段上下文上不稳,换一个模型再试。"
+              : 'The model degenerated into repeating one character twice in a row — paused instead of spinning. "Continue" keeps the context and samples again; if it repeats, this model is unsteady on this context and another one is worth trying.',
+            undefined,
+            "steps",
+            { kind: "repeat", tool: "generate", key: "generate:degenerate", count: degenStreak },
+          );
+          return;
+        }
+        hotNext = true;
+        continue;
+      }
+      degenStreak = 0;
       // ── Empty-completion breaker ── zero tokens is a sampling glitch, not a
       // finish: retry hotter (same lever as the repeat breaker), and pause for
       // the user after three in a row instead of silently ending the task.
@@ -2913,13 +3075,36 @@ export async function runAgentTurn(
           // fails the round outright — it encodes one and rejects the count —
           // and the retry behind each failure is what made a browsing session
           // look like it re-read the whole transcript every step.
-          const sendable = opts.multiImage === false ? shots.slice(0, 1) : shots;
+          // How many tiles may ride in one prompt.
+          //
+          // A picture is read in one forward pass — it cannot be fed in
+          // chunks the way text can — so every tile is another allocation the
+          // engine makes at once, and another run of the vision tower.
+          // Measured on Qwen3.6 35B: thirteen tiles cost 7922 prompt tokens
+          // and 147 seconds with nothing else in the conversation at all.
+          // Four tiles is a screenful and change; the page's full text came
+          // back with the navigate/refresh that preceded this, so nothing is
+          // lost that the model cannot read.
+          //
+          // Same split as everywhere else: an engine that feeds media
+          // incrementally pays per tile either way and gets the whole page.
+          const MAX_TILES = 4;
+          const sendable =
+            opts.multiImage === false
+              ? shots.slice(0, 1)
+              : opts.mediaChunked
+                ? shots
+                : shots.slice(0, MAX_TILES);
           const tiled =
             shots.length > 1 && sendable.length === 1
               ? lang === "zh"
                 ? `\n(此模型一次只能看一张图,下面是页面顶部那一段;需要看下面的部分请先滚动再截图。)`
                 : `\n(This model can only look at one image at a time — below is the top segment; scroll and capture again for the rest.)`
-              : "";
+              : shots.length > sendable.length
+                ? lang === "zh"
+                  ? `\n(下面只附了前 ${sendable.length} 段:一次带太多图会让这一步慢上几分钟。页面全文已在上一步的导航/刷新结果里,要看更下面的部分请先 browser_scroll 再截图。)`
+                  : `\n(Only the first ${sendable.length} segments are attached — more pictures in one prompt costs this step minutes. The page's full text came back with the navigate/refresh above; browser_scroll and capture again to see further down.)`
+                : "";
           pushUser(toolResultMsg("browser_screenshot", note + tiled), undefined, sendable);
         } catch (e) {
           const msg = `ERROR: ${e instanceof Error ? e.message : String(e)}`;

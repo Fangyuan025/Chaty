@@ -43,6 +43,39 @@
   other side of the turn boundary. It now trims well under, and the turns in
   between are prompts the engine still recognises.
 
+- **A picture stopped throwing the conversation away.** Through MLX, any prompt
+  carrying an image was evaluated from the very beginning — the whole
+  transcript, every turn, on the screenshot round and on every round after it.
+  Measured across seven local models in both thinking modes: 0% of the window
+  reused from the moment a screenshot entered a conversation until the end of
+  it. Two causes, both fixed. The chat template rewrites a stored turn's
+  reasoning when pixels force it to render the history, and re-encoding a
+  turn's text is not the inverse of generating it — on Qwen3.5 2B the word
+  "Chaty" comes back as a different pair of tokens than the model emitted, and
+  one pair is enough to end the match. Chaty now replays the exact tokens each
+  turn occupies in the cache. Same sweep afterwards: 99-100% on every round
+  after a picture, all fourteen combinations.
+
+- **A second screenshot resumes the conversation instead of re-reading it.**
+  The round that brings a NEW picture used to start over: everything under it
+  was re-evaluated because a call carrying pixels was assumed to be positionable
+  only from the beginning. It is not — the model takes its positions from the
+  cache — so only the new picture is read now, and the conversation beneath it
+  is kept. On a screenshot round the reuse is larger than the entire previous
+  prompt. The older screenshot also stays visible instead of being dropped to
+  save an encode that no longer happens; a model that accepts one image per
+  prompt still swaps.
+
+- **A screenshot in a long conversation stopped taking minutes.** The span a
+  vision model reads in one pass ran from the start of the prompt to the last
+  picture in it, so a screenshot's cost was set by the transcript underneath —
+  7.9k tokens took 147 seconds on a 35B, 12.3k took 187, and the owner's real
+  50k round had produced nothing after ninety minutes with 20 GB of swap
+  churning. The text below a picture is ordinary text and now goes in chunks
+  like any other; only the picture's own span is one pass. A 48k-token
+  conversation with a four-tile screenshot reads in 13 seconds against a warm
+  cache and 131 cold.
+
 ### Turns that tell you what happened
 
 - **Thinking and web search can no longer both claim to be on.** They are
@@ -145,6 +178,26 @@
   about, so the model was asked to fix a call it could no longer see — and a
   stored turn shorter than the generated one kills the prefix, so every
   remaining step re-read the transcript.
+
+- **A turn that stops saying anything is now cut.** Not a runaway thought — the
+  think budget is the only ceiling on how much a model may reason, and that
+  stays. This is the other failure: output carrying no information at all. A
+  Qwen3.6 35B step ran to 31,416 tokens of "!" at 1.1 tokens a second after a
+  screenshot, twenty minutes of it, and nothing stopped it because the only
+  ceiling was the token cap. Four hundred characters of one repeated character
+  (or a two-to-four character cycle twice as long) now ends the step, the
+  wreckage is kept out of the transcript rather than handed back as a pattern
+  to continue, and the step is retried once. Twice in a row pauses instead: at
+  that point it is the model or the file, not sampling.
+
+- **The files the model wrote stop crowding out everything else.** A
+  `write_file` call carries the whole body in its arguments, and compaction
+  reached tool RESULTS and reasoning but never a tool CALL — in the owner's
+  session four such turns were 92,001 of the transcript's 111,781 characters.
+  When the window tightens, the bodies of all but the two newest are replaced
+  by a line naming the file and its size. The call itself stays, so the turn
+  still reads as the turn it was, and the file is on disk if the model wants it
+  back.
 
 ### Windows: a GPU crash lowers the offer instead of ending it
 

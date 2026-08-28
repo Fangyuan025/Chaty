@@ -1330,10 +1330,13 @@ export function CodeMode({
       skills,
       memoryIndex,
       visionReady: model.visionReady,
-      // llama.cpp's media cache keeps every already-encoded image whose identity
-      // still prefixes the new prompt; MLX re-encodes them all whenever a call
-      // carries pixels. That decides whether dropping stale screenshots pays.
-      mediaPrefixReuse: model.backend === "llama.cpp",
+      // Both engines keep an already-encoded image whose identity still
+      // prefixes the new prompt, so dropping a stale screenshot only costs.
+      // They differ in HOW pixels are fed: llama.cpp takes one chunk per tile,
+      // MLX takes each picture's span in a single pass, and that is what
+      // decides how many tiles a tall page may send.
+      mediaPrefixReuse: true,
+      mediaChunked: model.backend === "llama.cpp",
       multiImage: model.multiImage !== false,
       ragTopK,
       toolRole: model.toolRole ?? false,

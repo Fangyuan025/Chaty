@@ -146,8 +146,16 @@ struct ModelMeta {
     /// switch — which is exactly what shipping a single one did.
     var layoutOff: LearnedLayout?
     var layoutOn: LearnedLayout?
+    /// The same layouts, kept even when the template is good enough to render
+    /// with. Rendering and anchoring are different jobs: a well-behaved
+    /// template is rendered by itself, but replaying a turn's recorded ids
+    /// still needs to know where in the token stream that turn begins and
+    /// ends, and only the layout knows the role markers.
+    var anchorOff: LearnedLayout?
+    var anchorOn: LearnedLayout?
 
     func layout(thinking: Bool) -> LearnedLayout? { thinking ? layoutOn : layoutOff }
+    func anchor(thinking: Bool) -> LearnedLayout? { thinking ? anchorOn : anchorOff }
 
     /// The block a stored assistant turn must carry when thinking is off —
     /// probed against the real template at load, never named. See
@@ -778,6 +786,17 @@ func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
 
 /// Cheap identity for an image file (path + size + mtime) — mirrors the GGUF
 /// engine's `image_cache_key`.
+/// First index at which `needle` occurs in `hay` at or after `from`.
+func firstIndex(of needle: [Int], in hay: [Int], from: Int) -> Int? {
+    guard !needle.isEmpty, hay.count >= needle.count else { return nil }
+    var i = max(0, from)
+    while i + needle.count <= hay.count {
+        if Array(hay[i ..< i + needle.count]) == needle { return i }
+        i += 1
+    }
+    return nil
+}
+
 func imageKey(_ path: String) -> String {
     let attrs = try? FileManager.default.attributesOfItem(atPath: path)
     let size = (attrs?[.size] as? UInt64) ?? 0
@@ -876,6 +895,24 @@ final class Engine: @unchecked Sendable {
     /// and continue linearly from this; resuming a trimmed cache without it
     /// would restart positions at zero.
     var kvState: LMOutput.State?
+    /// The exact tokens a turn this engine generated occupies in the KV — the
+    /// reasoning block the prompt ended with, then the ids the model produced.
+    ///
+    /// Keyed by the text the app will store for that turn. Re-encoding that
+    /// text is NOT the inverse of generating it: the model emits tokens one at
+    /// a time, and encoding the finished string is greedy, so the two disagree
+    /// wherever a word could be split more than one way. Measured on
+    /// Qwen3.5 2B, the word "Chaty" came back as [1106, 48289] from the model
+    /// and [15213, 88] from the encoder — one token pair into the previous
+    /// turn, the prefix was gone, and a model whose cache cannot be rewound
+    /// discarded all of it. Replaying what the model actually produced removes
+    /// the whole class.
+    var turnIds: [String: [Int]] = [:]
+    /// Bounded: a long session must not grow this without limit.
+    var turnOrder: [String] = []
+    /// The block the CURRENT prompt ends with, so the turn it produces can be
+    /// recorded whole.
+    var pendingBlock: [Int] = []
 
     static let prefillChunk = 512
     /// Only bother the UI with prefill events for prompts big enough to have
@@ -959,11 +996,12 @@ final class Engine: @unchecked Sendable {
                     thinkArgForLayout ? ["enable_thinking": false] : nil
                 return LearnedLayout.learn(ctx.tokenizer, extra: e)?.turnPrefix() ?? ""
             }
-            let learnFor: @Sendable (ModelContext, Bool) -> LearnedLayout? = { ctx, thinking in
+            let learnFor: @Sendable (ModelContext, Bool) -> (LearnedLayout?, LearnedLayout?) = {
+                ctx, thinking in
                 let extra: [String: any Sendable]? =
                     thinkArgForLayout ? ["enable_thinking": thinking] : nil
                 guard let learned = LearnedLayout.learn(ctx.tokenizer, extra: extra) else {
-                    return nil
+                    return (nil, nil)
                 }
                 let block = learned.turnPrefix()
                 // Two ways a template stops the next prompt being an append, and
@@ -984,11 +1022,12 @@ final class Engine: @unchecked Sendable {
                         ).isEmpty)
                     && templateKeepsStoredReasoning(
                         ctx.tokenizer, extra: extra, emptyBlock: offBlock)
-                return stable && reproducible ? nil : learned
+                return (stable && reproducible ? nil : learned, learned)
             }
-            (meta.layoutOff, meta.layoutOn) = await container.perform { ctx in
-                (learnFor(ctx, false), learnFor(ctx, true))
-            }
+            ((meta.layoutOff, meta.anchorOff), (meta.layoutOn, meta.anchorOn)) =
+                await container.perform { ctx in
+                    (learnFor(ctx, false), learnFor(ctx, true))
+                }
             log(
                 "layout: thinking-off "
                     + (meta.layoutOff == nil ? "template" : "learned")
@@ -1186,6 +1225,123 @@ final class Engine: @unchecked Sendable {
             lmInput = try await context.processor.prepare(input: userInput)
         }
         var tokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
+
+        // Every stored turn this engine generated, replayed as the tokens the
+        // KV actually holds for it. Only `tokens` is rewritten — the library's
+        // whole-input fallback still hands the model `lmInput` as the processor
+        // built it, so an exotic VLM's path is untouched.
+        //
+        // Two things break the prompt's ability to reproduce the one before it,
+        // and this removes both. The chat template rewrites a stored turn's
+        // reasoning — Qwen's cuts everything up to `</think>` with thinking off
+        // and writes an empty span in front of the real trace with it on — and
+        // that is what the learned layout routes around for a text-only prompt.
+        // Pixels cannot use the layout: they must go through the processor,
+        // which renders with the template. And re-encoding the turn's text is
+        // not the inverse of generating it, so even a faithful rendering can
+        // land on different token boundaries. Replaying the recorded ids answers
+        // both at once: no rendering to get wrong, nothing to re-encode.
+        //
+        // Every prompt, not only the ones carrying pictures. Where the cache
+        // cannot rewind — a hybrid model's, which is not trimmable — a prompt
+        // that stops matching one token early is a prompt that reuses nothing
+        // at all, and a plain text turn drifts exactly the same way.
+        //
+        // Anchored on the role boundary — the layout keeps `<|im_end|>\n<|im_start|>`
+        // in the previous role's close and only `assistant\n` in the assistant's
+        // open, and those two occur inside ordinary prose. Joined, they cannot.
+        //
+        // Token-level and BEFORE lastMediaEnd is measured: this moves the image
+        // placeholders, and everything downstream reads the final list.
+        if !turnIds.isEmpty,
+            let layout = meta.layout(thinking: thinking) ?? meta.anchor(thinking: thinking)
+        {
+            // The role header alone. A thinking template can fold a whole
+            // empty thought block into what it writes after `assistant\n`,
+            // and that block is not part of the header — it is the first
+            // thing the turn's body has to replace, because the prompt this
+            // turn was generated from wrote a DIFFERENT one there (an opened
+            // thought, not a closed empty one).
+            let fullOpener = layout.open["assistant"] ?? ""
+            let opener =
+                fullOpener.firstIndex(of: "\n").map { String(fullOpener[...$0]) } ?? fullOpener
+            var markers: [[Int]] = []
+            for c in Set(layout.close.values) {
+                let ids = context.tokenizer.encode(text: c + opener, addSpecialTokens: false)
+                if !ids.isEmpty { markers.append(ids) }
+            }
+            let closeIds = context.tokenizer.encode(
+                text: layout.close["assistant"] ?? "", addSpecialTokens: false)
+            let stored = messages.filter { $0.role == "assistant" }
+            if !markers.isEmpty, !stored.isEmpty, !closeIds.isEmpty {
+                // Where each turn's body starts, and where the next boundary is.
+                var starts: [Int] = []
+                var i = 0
+                while i < tokens.count {
+                    if markers.contains(where: { m in
+                        i + 1 >= m.count && Array(tokens[(i + 1 - m.count) ... i]) == m
+                    }) {
+                        starts.append(i + 1)
+                    }
+                    i += 1
+                }
+                // Rebuild once, back to front, so earlier offsets stay valid.
+                var out = tokens
+                for (k, m) in stored.enumerated().reversed() {
+                    guard k < starts.count else { continue }
+                    // The body the app stored, minus any block it carries —
+                    // the recorded ids already begin with one.
+                    var body = m.content
+                    let block = layout.turnPrefix()
+                    if !block.isEmpty, body.hasPrefix(block) {
+                        body = String(body.dropFirst(block.count))
+                    }
+                    let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let split = (m.reasoningContent ?? "").trimmingCharacters(
+                        in: .whitespacesAndNewlines)
+                    guard
+                        let recorded = turnIds[split.isEmpty ? body : split + "\u{0}" + trimmed]
+                            ?? turnIds[body] ?? turnIds[trimmed],
+                        !recorded.isEmpty
+                    else {
+                        if ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_REUSE"] != nil {
+                            FileHandle.standardError.write(
+                                ("mlx-replay MISS body=<<<\(body.prefix(40))>>>"
+                                    + " splitTail=<<<\((m.reasoningContent ?? "nil").suffix(50))>>>"
+                                    + " keyTails=" + turnIds.keys.map { "<<<\($0.suffix(50))>>>" }
+                                    .joined(separator: " ") + "\n").data(using: .utf8)!)
+                        }
+                        continue
+                    }
+                    let from = starts[k]
+                    // A turn ends where its OWN close begins — not at the next
+                    // assistant boundary, which has the intervening user and
+                    // tool messages between it and here, images included.
+                    guard let to = firstIndex(of: closeIds, in: out, from: from), to >= from
+                    else { continue }
+                    if Array(out[from ..< to]) == recorded { continue }
+                    // A generated turn holds no pictures. One that appears to
+                    // is a mis-measured record, and splicing it in would add
+                    // placeholders no pixels answer for.
+                    if let img = meta.imageTokenId, recorded.contains(img) { continue }
+                    if let vid = meta.videoTokenId, recorded.contains(vid) { continue }
+                    out.replaceSubrange(from ..< to, with: recorded)
+                }
+                tokens = out
+            }
+            if ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_REUSE"] != nil {
+                FileHandle.standardError.write(
+                    ("mlx-replay: ran markers=\(markers.count) stored=\(stored.count)"
+                        + " closeIds=\(closeIds.count) records=\(turnIds.count)\n")
+                        .data(using: .utf8)!)
+            }
+        } else if ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_REUSE"] != nil {
+            FileHandle.standardError.write(
+                ("mlx-replay: SKIPPED records=\(turnIds.count)"
+                    + " layout=\(meta.layout(thinking: thinking) != nil)"
+                    + " anchor=\(meta.anchor(thinking: thinking) != nil)\n").data(using: .utf8)!)
+        }
+
         // Diagnostic: what the model actually sees. Off unless asked for —
         // prompts can carry user content, so this never logs by default.
         if ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_PROMPT"] == "1" {
@@ -1195,19 +1351,28 @@ final class Engine: @unchecked Sendable {
         // Ordered image identities — must match the order the processor lays
         // the placeholder runs out (messages render in order, images within a
         // message in array order).
-        let imageKeys: [String] = messages.flatMap { ($0.images ?? []).map(imageKey) }
+        let imagePaths: [String] = messages.flatMap { $0.images ?? [] }
+        let imageKeys: [String] = imagePaths.map(imageKey)
 
-        // End (exclusive) of the last image/video placeholder in the expanded
-        // sequence. Everything up to here must be evaluated in ONE prepare()
-        // call: getRopeIndex computes image-grid positions from the start of
-        // whatever sequence it is handed, and any call carrying pixels resets
-        // the rope state — so a media-bearing span is only position-correct
-        // at cache offset 0.
+        // The placeholder runs, in prompt order — one contiguous block per
+        // image, matching `imageKeys` position for position. Knowing where
+        // each image sits (not just where the last one ends) is what lets a
+        // prompt that only ADDS an image resume from the cache below it.
+        var mediaRuns: [(start: Int, end: Int)] = []
+        /// One entry per picture from `perImageFrom` on, so each can be given
+        /// to `prepare` by itself.
+        var perImage: [LMInput.ProcessedImage]? = nil
+        var perImageFrom = 0
         var lastMediaEnd = 0
         var segmented = !hasImages
         if hasImages, let imgId = meta.imageTokenId {
             let vidId = meta.videoTokenId ?? Int.min
             for (i, t) in tokens.enumerated() where t == imgId || t == vidId {
+                if let last = mediaRuns.last, last.end == i {
+                    mediaRuns[mediaRuns.count - 1].end = i + 1
+                } else {
+                    mediaRuns.append((start: i, end: i + 1))
+                }
                 lastMediaEnd = i + 1
             }
             segmented = lastMediaEnd > 0
@@ -1218,11 +1383,57 @@ final class Engine: @unchecked Sendable {
         // an empty think block so the model skips reasoning. Appended tokens
         // land in the chunked text tail, after every image placeholder, so
         // the processor's image positions are untouched — only the legacy
-        // whole-input path (exotic VLMs) must not grow the token list.
         if p.think == false, !meta.thinkArg, meta.supportsThinking, segmented {
             tokens += context.tokenizer.encode(
                 text: Self.thinkOffPrefix, addSpecialTokens: false)
         }
+
+        // What this prompt ends with after the assistant header. Recorded with
+        // the turn it is about to produce, so the NEXT prompt can replay the
+        // pair instead of rendering and re-encoding it — see `turnIds`.
+        pendingBlock = {
+            // Measured off this very prompt rather than derived: whatever the
+            // template wrote between the assistant header and here — an opened
+            // thought, an empty one, nothing at all — is what the model
+            // continued from, so it is what the KV holds and what the next
+            // prompt has to put back.
+            guard
+                let layout = meta.layout(thinking: thinking) ?? meta.anchor(thinking: thinking)
+            else { return [] }
+            let fullOpener = layout.open["assistant"] ?? ""
+            let opener =
+                fullOpener.firstIndex(of: "\n").map { String(fullOpener[...$0]) } ?? fullOpener
+            // The LAST header in the prompt, across every marker — not the
+            // first one that happens to yield something. An empty block is a
+            // real answer (thinking off leaves nothing between the header and
+            // the model's first token), and treating it as "not found" sent
+            // the search back to an EARLIER boundary, whose span reaches over
+            // the messages in between — pictures included. Recorded, that
+            // block replays those placeholders into the next prompt a second
+            // time: featureTokenMismatch(expected: 2443, actual: 1463), which
+            // is exactly two of three pictures counted twice.
+            var bodyStart = -1
+            for c in Set(layout.close.values) {
+                let ids = context.tokenizer.encode(text: c + opener, addSpecialTokens: false)
+                guard !ids.isEmpty, tokens.count >= ids.count else { continue }
+                var i = tokens.count - ids.count
+                while i >= 0 {
+                    if Array(tokens[i ..< i + ids.count]) == ids {
+                        bodyStart = max(bodyStart, i + ids.count)
+                        break
+                    }
+                    i -= 1
+                }
+            }
+            guard bodyStart >= 0 else { return [] }
+            let head = Array(tokens[bodyStart...])
+            // A block is what the template wrote before the model spoke. It
+            // cannot contain a picture, and a recorded turn that did would
+            // duplicate one wherever it is replayed.
+            if let img = meta.imageTokenId, head.contains(img) { return [] }
+            if let vid = meta.videoTokenId, head.contains(vid) { return [] }
+            return head
+        }()
 
         // Qwen3.5-style templates open a `<think>` tag in the prompt when
         // thinking is enabled, so the model streams reasoning without the
@@ -1277,13 +1488,93 @@ final class Engine: @unchecked Sendable {
                 {
                     common += 1
                 }
-                // Media constraint: reuse only when every image of THIS
-                // prompt sits inside the shared prefix and is the same file
-                // the cache was built from. Anything else (new/changed image,
-                // edited history around one) re-evaluates from scratch — a
-                // pixels-bearing call restarts M-RoPE at zero, so a partial
-                // resume below `lastMediaEnd` can never be position-correct.
-                if imageKeys != kvImageKeys || common < lastMediaEnd {
+                // A prefix that ends INSIDE a placeholder run leaves half a
+                // picture in the cache — two images of different sizes at the
+                // same offset diverge partway through their pads. Pull back to
+                // where that run begins so the picture is wholly in or wholly
+                // out.
+                if let straddled = mediaRuns.first(where: {
+                    $0.start < common && common < $0.end
+                }) {
+                    common = straddled.start
+                }
+                // Media constraint. The cache is about to be trimmed back to
+                // the shared prefix, so the only images that survive into this
+                // run are the ones whose placeholders sit inside it — and each
+                // of those must be the same file the KV was built from. Images
+                // above the prefix are trimmed away with everything else, and
+                // images this prompt ADDS simply come after: the model reads
+                // its positions from the cache's offset, so a span prepared on
+                // a warm cache lands exactly where a full pass would put it.
+                //
+                // This is what llama.cpp's media cache has always done, and
+                // why a second screenshot there resumes from the whole
+                // conversation instead of re-reading it. It also covers the
+                // FIRST screenshot of a long session, where the cache holds
+                // only text: the transcript stays, the picture is all that
+                // gets evaluated.
+                let inPrefix = mediaRuns.prefix { $0.end <= common }.count
+                let sameImages =
+                    mediaRuns.count == imageKeys.count && inPrefix <= kvImageKeys.count
+                    && Array(imageKeys.prefix(inPrefix)) == Array(kvImageKeys.prefix(inPrefix))
+                if ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_REUSE"] != nil {
+                    let lo = max(0, common - 12)
+                    let cached = context.tokenizer.decode(
+                        tokenIds: Array(kvTokens[lo ..< min(kvTokens.count, common + 24)]))
+                    let fresh = context.tokenizer.decode(
+                        tokenIds: Array(tokens[lo ..< min(tokens.count, common + 24)]))
+                    FileHandle.standardError.write(
+                        ("mlx-diverge @\(common)\n  cached: \(cached.debugDescription)"
+                            + "\n  this:   \(fresh.debugDescription)\n")
+                            .data(using: .utf8)!)
+                    FileHandle.standardError.write(
+                        ("mlx-reuse: common=\(common) inPrefix=\(inPrefix) same=\(sameImages)"
+                            + " runLens=\(mediaRuns.map { $0.end - $0.start })"
+                            + " runs=\(mediaRuns.count) keys=\(imageKeys.count)"
+                            + " kvKeys=\(kvImageKeys.count) lastMediaEnd=\(lastMediaEnd)\n")
+                            .data(using: .utf8)!)
+                }
+                if !sameImages {
+                    common = 0
+                }
+                // Every picture above the prefix has to be embedded by this
+                // run, and ONLY those — the ones already in the KV must not be
+                // fed twice. One at a time, each from the processor run over
+                // that single image: a picture's patches don't depend on the
+                // words around it, and taking them one at a time is what keeps
+                // a conversation holding several screenshots from becoming one
+                // enormous forward pass when the cache is cold. Each is checked
+                // against the placeholders the full prompt reserved for it; if
+                // a template disagrees, don't second-guess it — fall back to
+                // the whole span in one call, which is always correct.
+                if lmInput.video == nil, mediaRuns.count == imageKeys.count, !mediaRuns.isEmpty {
+                    var built: [LMInput.ProcessedImage] = []
+                    for k in inPrefix ..< mediaRuns.count {
+                        let reduced = try await context.processor.prepare(
+                            input: UserInput(chat: [
+                                .init(
+                                    role: .user, content: "",
+                                    images: [.url(URL(fileURLWithPath: imagePaths[k]))])
+                            ]))
+                        let got = reduced.text.tokens.asArray(Int32.self)
+                            .filter { Int($0) == meta.imageTokenId }.count
+                        guard got == mediaRuns[k].end - mediaRuns[k].start,
+                            let px = reduced.image
+                        else { break }
+                        built.append(px)
+                    }
+                    if built.count == mediaRuns.count - inPrefix {
+                        perImage = built
+                        perImageFrom = inPrefix
+                    } else if inPrefix > 0 {
+                        // The new ones cannot be fed alone, so nothing below
+                        // them can be kept either.
+                        common = 0
+                    }
+                } else if inPrefix > 0 {
+                    // Video, or a layout we cannot map one-to-one: the whole
+                    // span goes in one call with every frame in it, which only
+                    // works from the beginning.
                     common = 0
                 }
                 // How much sits in the cache comes from OUR ledger, never
@@ -1307,6 +1598,11 @@ final class Engine: @unchecked Sendable {
                     start = common
                 }
                 if start > 0 { state = kvState }
+                if ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_REUSE"] != nil {
+                    FileHandle.standardError.write(
+                        ("mlx-reuse: start=\(start) kvEvaluated=\(kvEvaluated) dropped=\(kvCache == nil)\n")
+                            .data(using: .utf8)!)
+                }
             }
             if kvCache == nil {
                 kvCache = context.model.newCache(parameters: nil)
@@ -1324,33 +1620,100 @@ final class Engine: @unchecked Sendable {
                 (prefillEnd - start) > Self.prefillEventThreshold || start < lastMediaEnd
             var pos = start
             var legacyWhole = false
+            /// Ordinary text, fed in chunks, positions threaded. Returns false
+            /// if the caller should stop (cancelled).
+            func runText(to stopAt: Int) -> Bool {
+                while pos < stopAt {
+                    if cancelFlag.isSet {
+                        self.finish(
+                            prompt: total, done: 0, tps: 0, reason: "cancelled", generated: nil)
+                        return false
+                    }
+                    let end = min(pos + Self.prefillChunk, stopAt)
+                    let chunkText = LMInput.Text(
+                        tokens: MLXArray(tokens[pos..<end].map(Int32.init)))
+                    let result = withPreparedCache(warm, lengths: chunkText.sequenceLengths) {
+                        context.model(chunkText[text: .newAxis], cache: warm, state: state)
+                    }
+                    eval(result.logits)
+                    state = result.state
+                    pos = end
+                    if emitProgress {
+                        out.emit(["event": "prefill", "processed": pos, "total": total])
+                    }
+                }
+                return true
+            }
             if pos < lastMediaEnd {
-                // A resume point is never inside the media span, so this is a
-                // fresh cache at offset 0 — exactly what prepare() needs.
+                // Only the span from the first PICTURE onward has to go through
+                // in one pass — the model reads an image's position off the
+                // text before it, and that text can just as well be in the
+                // cache already. Everything below the first placeholder is
+                // ordinary text and chunks like any other, which is what keeps
+                // a screenshot in a long conversation from becoming one
+                // enormous allocation: the owner's 50k-token round produced
+                // nothing in ninety minutes, and it is this that made it one
+                // pass rather than the picture itself.
+                let first = mediaRuns.firstIndex(where: { $0.end > pos }) ?? mediaRuns.count
                 if cancelFlag.isSet {
                     self.finish(prompt: total, done: 0, tps: 0, reason: "cancelled", generated: nil)
                     return
                 }
                 if emitProgress {
-                    out.emit(["event": "prefill", "processed": 0, "total": total])
+                    out.emit(["event": "prefill", "processed": pos, "total": total])
                 }
-                let head = LMInput(
-                    text: .init(
-                        tokens: MLXArray(tokens[0..<lastMediaEnd].map(Int32.init))[.newAxis]),
-                    image: lmInput.image, video: lmInput.video)
-                switch try context.model.prepare(head, cache: warm, windowSize: nil) {
-                case .logits(let headOut):
-                    eval(headOut.logits)
-                    state = headOut.state
-                    pos = lastMediaEnd
-                    if emitProgress {
-                        out.emit(["event": "prefill", "processed": pos, "total": total])
+                // A resume point never lands inside a placeholder run, so each
+                // call below starts on a token boundary; the model reads the
+                // cache's offset for its positions, so a warm cache continues
+                // where it left off instead of restarting at zero.
+                if let perImage, first == perImageFrom {
+                    // One picture per call, the text before each one chunked
+                    // like any other text. The single pass is then the size of
+                    // a picture — never the size of the conversation under it.
+                    for k in first ..< mediaRuns.count {
+                        if !runText(to: max(pos, mediaRuns[k].start)) { return }
+                        let head = LMInput(
+                            text: .init(
+                                tokens: MLXArray(
+                                    tokens[pos..<mediaRuns[k].end].map(Int32.init))[.newAxis]),
+                            image: perImage[k - perImageFrom], video: nil)
+                        switch try context.model.prepare(head, cache: warm, windowSize: nil) {
+                        case .logits(let headOut):
+                            eval(headOut.logits)
+                            state = headOut.state
+                            pos = mediaRuns[k].end
+                            if emitProgress {
+                                out.emit(["event": "prefill", "processed": pos, "total": total])
+                            }
+                        case .tokens:
+                            legacyWhole = true
+                        }
+                        if legacyWhole { break }
                     }
-                case .tokens:
-                    // The model declined to consume the media in prepare —
-                    // nothing was evaluated. Hand the whole prompt to the
-                    // library loop instead (images would otherwise be lost).
-                    legacyWhole = true
+                } else {
+                    // Pixels that could not be split, or a cache that had to be
+                    // dropped after they were: the whole span in one call, with
+                    // every picture in it — always correct, and the only shape
+                    // an exotic processor is known to accept.
+                    if !runText(to: max(pos, mediaRuns.first?.start ?? pos)) { return }
+                    let head = LMInput(
+                        text: .init(
+                            tokens: MLXArray(tokens[pos..<lastMediaEnd].map(Int32.init))[.newAxis]),
+                        image: lmInput.image, video: lmInput.video)
+                    switch try context.model.prepare(head, cache: warm, windowSize: nil) {
+                    case .logits(let headOut):
+                        eval(headOut.logits)
+                        state = headOut.state
+                        pos = lastMediaEnd
+                        if emitProgress {
+                            out.emit(["event": "prefill", "processed": pos, "total": total])
+                        }
+                    case .tokens:
+                        // The model declined to consume the media in prepare —
+                        // nothing was evaluated. Hand the whole prompt to the
+                        // library loop instead (images would otherwise be lost).
+                        legacyWhole = true
+                    }
                 }
             }
             if legacyWhole {
@@ -1359,25 +1722,7 @@ final class Engine: @unchecked Sendable {
                     context: context, input: lmInput, cache: warm, gp: gp, total: total)
                 return
             }
-            while pos < prefillEnd {
-                if cancelFlag.isSet {
-                    self.finish(
-                        prompt: total, done: 0, tps: 0, reason: "cancelled", generated: nil)
-                    return
-                }
-                let end = min(pos + Self.prefillChunk, prefillEnd)
-                let chunkText = LMInput.Text(
-                    tokens: MLXArray(tokens[pos..<end].map(Int32.init)))
-                let result = withPreparedCache(warm, lengths: chunkText.sequenceLengths) {
-                    context.model(chunkText[text: .newAxis], cache: warm, state: state)
-                }
-                eval(result.logits)
-                state = result.state
-                pos = end
-                if emitProgress {
-                    out.emit(["event": "prefill", "processed": pos, "total": total])
-                }
-            }
+            if !runText(to: prefillEnd) { return }
 
             // 4. Decode with the M-RoPE state threaded through every step.
             // The library's TokenIterator evaluates the final prompt token
@@ -1556,13 +1901,15 @@ final class Engine: @unchecked Sendable {
         self.finish(
             prompt: total, done: done, tps: Double(done) / dt, reason: reason,
             generated: recorded + generatedIds, images: imageKeys, state: recordedState,
-            evaluated: total + done, reused: reused)
+            evaluated: total + done, reused: reused,
+            lastGeneratedIds: generatedIds, lastTokenizer: context.tokenizer)
     }
 
     private func finish(
         prompt: Int, done: Int, tps: Double, reason: String, generated: [Int]?,
         images: [String] = [], state: LMOutput.State? = nil, evaluated: Int = 0,
-        reused: Int = 0
+        reused: Int = 0, lastGeneratedIds: [Int]? = nil,
+        lastTokenizer: (any MLXLMCommon.Tokenizer)? = nil
     ) {
         // Remember EVERY token the cache now holds — the prompt and the reply
         // this turn generated. Recording only the prompt made the generated
@@ -1576,6 +1923,56 @@ final class Engine: @unchecked Sendable {
             kvImageKeys = images
             kvState = state
             kvEvaluated = evaluated
+            // What this turn occupies, against the text the app will store for
+            // it, so the next prompt can replay rather than re-encode.
+            if let ids = lastGeneratedIds, !ids.isEmpty, let tok = lastTokenizer {
+                let whole = tok.decode(tokenIds: ids, skipSpecialTokens: false)
+                // Under two keys, because the app stores a turn one of two
+                // ways: verbatim, or — where the template reads thinking from
+                // its own field (Qwen3.8) — with the reasoning split out and
+                // only the answer left in `content`. Either is a legitimate
+                // way to ask for the same turn back.
+                var keys = [whole]
+                // The same cut the app makes, both marker spellings normalised
+                // first: `<think>` for Qwen, a thought channel for Gemma. A
+                // turn that ran out of tokens mid-thought has no answer at all,
+                // which is why the reasoning alone has to be part of the key —
+                // `content` is empty and would match every such turn.
+                let norm = whole.replacingOccurrences(of: "<|channel>", with: "<think>")
+                    .replacingOccurrences(of: "<channel|>", with: "</think>")
+                var reasoning = "", answer = norm
+                if let c = norm.range(of: "</think>") {
+                    let o = norm.range(of: "<think>")
+                    let head = (o != nil && o!.lowerBound < c.lowerBound) ? o!.upperBound : norm.startIndex
+                    reasoning = String(norm[head ..< c.lowerBound])
+                    answer = String(norm[c.upperBound...])
+                } else if let o = norm.range(of: "<think>") {
+                    reasoning = String(norm[o.upperBound...])
+                    answer = ""
+                }
+                let ans = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                let rsn = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !ans.isEmpty, ans != whole { keys.append(ans) }
+                if !rsn.isEmpty {
+                    keys.append(rsn + "\u{0}" + ans)
+                } else {
+                    // No markers at all. That is either an ordinary answer —
+                    // already keyed by `whole` — or a turn whose thinking block
+                    // the TEMPLATE opened, so the model wrote reasoning without
+                    // ever announcing it (Qwen3.8). The app stores that one as
+                    // reasoning with empty content, and it has to be findable
+                    // under that shape too.
+                    keys.append(
+                        whole.trimmingCharacters(in: .whitespacesAndNewlines) + "\u{0}")
+                }
+                for key in keys where !key.isEmpty {
+                    if turnIds[key] == nil { turnOrder.append(key) }
+                    turnIds[key] = pendingBlock + ids
+                }
+                while turnOrder.count > 128 {
+                    turnIds.removeValue(forKey: turnOrder.removeFirst())
+                }
+            }
         } else {
             kvCache = nil
             kvTokens = []
