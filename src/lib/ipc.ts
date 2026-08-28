@@ -1090,8 +1090,11 @@ export async function synthesize(
   speed?: number,
   sid?: number,
   chineseEnabled = false,
+  /** Speaker for the Chinese voice, chosen from its own list. The engine
+   *  decides per utterance which of the two speaks, so both travel. */
+  sidZh?: number,
 ): Promise<SynthAudio> {
-  return await invoke<SynthAudio>("synthesize", { text, speed, sid, chineseEnabled });
+  return await invoke<SynthAudio>("synthesize", { text, speed, sid, sidZh, chineseEnabled });
 }
 
 // ---------- Attachments ----------

@@ -385,6 +385,7 @@ export const T = {
   liveListening: { zh: "聆听中…", en: "Listening…" },
   liveThinking: { zh: "思考中…", en: "Thinking…" },
   liveSpeaking: { zh: "回答中…", en: "Speaking…" },
+  toolVoiceGroup: { zh: "语音回复", en: "Voice replies" },
   speakAloud: { zh: "朗读回复", en: "Read replies aloud" },
   // context menu
   ctxCut: { zh: "剪切", en: "Cut" },
@@ -626,8 +627,16 @@ export const T = {
   voicePreviewBtn: { zh: "播放示例", en: "Play sample" },
   chineseVoice: { zh: "中文语音支持", en: "Chinese voice support" },
   chineseVoiceHint: {
-    zh: "中文界面会自动启用多语言 Whisper 和中文 VITS。",
-    en: "Opt in to multilingual Whisper and Chinese VITS. Leave this off to keep the existing English-only base.en model and its accuracy.",
+    zh: "识别用多语言 Whisper,含中文的回复由中文 VITS 朗读。中文界面默认开启,关掉即回到纯英文的 base.en。",
+    en: "Recognition uses multilingual Whisper, and a reply containing Chinese is read by the Chinese VITS voice. On by default in the Chinese interface; turn it off to keep English-only base.en and its accuracy.",
+  },
+  voiceEn: { zh: "英文音色", en: "English voice" },
+  voicePreviewZh: { zh: "播放中文示例", en: "Play Chinese sample" },
+  voicePreviewEn: { zh: "播放英文示例", en: "Play English sample" },
+  voiceZh: { zh: "中文音色", en: "Chinese voice" },
+  voiceZhHint: {
+    zh: "中文回复用哪个说话人。与上面的英文音色各自独立,互不影响。",
+    en: "Which speaker reads Chinese replies. Kept apart from the English voice above — changing one never moves the other.",
   },
   voiceEngineHint: {
     zh: "语音完全在本地运行：多语言 Whisper 自动识别中文和英文，中文回复由 VITS 朗读，英文回复由 Kokoro 朗读。首次使用对应语言时会下载模型。",
@@ -920,7 +929,7 @@ export const T = {
 
 export type TKey = keyof typeof T;
 
-function detectLang(): Lang {
+export function detectLang(): Lang {
   try {
     const saved = localStorage.getItem(LANG_KEY);
     if (LANGS.some((l) => l.id === saved)) return saved as Lang;

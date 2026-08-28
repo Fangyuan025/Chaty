@@ -2471,6 +2471,12 @@ body.resizing-x {
   font-weight: 600;
   color: var(--text-dim);
 }
+/* Two actions on the right of a settings row — the voice preview offers one
+   sample per voice when both are in play. */
+.row-btns {
+  display: flex;
+  gap: 8px;
+}
 .data-btn {
   flex: 1;
   text-align: center;
@@ -4014,6 +4020,12 @@ button.tool-parent {
   box-sizing: border-box;
   background: radial-gradient(circle at 50% 38%, #1b1b1b, #0c0c0c 72%);
   animation: ctxin 0.18s ease-out;
+  /* This surface is dark in BOTH themes, so it cannot borrow the theme's
+     foreground: in the light theme `--text` is near-black, which is how the
+     exit button came to be black on black. Everything inside reads from
+     these instead. */
+  --live-fg: rgba(255, 255, 255, 0.92);
+  --live-fg-dim: rgba(255, 255, 255, 0.55);
 }
 .live-close {
   position: absolute;
@@ -4023,7 +4035,7 @@ button.tool-parent {
   height: 40px;
   font-size: 26px;
   line-height: 1;
-  color: var(--text-dim);
+  color: var(--live-fg-dim);
   background: transparent;
   border: none;
   border-radius: var(--r-md);
@@ -4031,7 +4043,7 @@ button.tool-parent {
 }
 .live-close:hover {
   background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
+  color: var(--live-fg);
 }
 .live-stage {
   display: flex;
@@ -4045,7 +4057,7 @@ button.tool-parent {
 .live-status {
   font-size: 15px;
   letter-spacing: 0.04em;
-  color: var(--text-dim);
+  color: var(--live-fg-dim);
 }
 .live-caption {
   width: min(760px, 90vw);
@@ -4055,7 +4067,7 @@ button.tool-parent {
   text-align: center;
   font-size: 26px;
   line-height: 1.45;
-  color: var(--text);
+  color: var(--live-fg);
   font-family: var(--font-display);
   scrollbar-width: thin;
 }
@@ -4078,9 +4090,9 @@ button.tool-parent {
   bottom: 48px;
   padding: 10px 22px;
   font-size: 14px;
-  color: var(--text);
+  color: var(--live-fg);
   background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--border-strong);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: var(--r-lg);
   cursor: pointer;
   transition: background 0.15s;

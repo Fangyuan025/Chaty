@@ -477,6 +477,7 @@ pub async fn synthesize(
     text: String,
     speed: f32,
     sid: i32,
+    sid_zh: i32,
     chinese_enabled: bool,
 ) -> Result<(Vec<f32>, u32)> {
     // Deliberately simple heuristic: when Chinese support is enabled, one Han
@@ -497,7 +498,11 @@ pub async fn synthesize(
                 .lock()
                 .map_err(|_| anyhow!("中文 TTS lock poisoned"))?;
             let audio = tts
-                .create(&text, sid.rem_euclid(CHINESE_TTS_SPEAKER_COUNT), speed)
+                // The Chinese voice is chosen from its OWN list — the two
+                // models share nothing but a slider, and folding the Kokoro
+                // index onto five VITS speakers meant picking an English
+                // voice silently moved the Chinese one.
+                .create(&text, sid_zh.rem_euclid(CHINESE_TTS_SPEAKER_COUNT), speed)
                 .map_err(|e| anyhow!("中文语音合成失败: {e}"))?;
             Ok((audio.samples, audio.sample_rate))
         })
@@ -601,6 +606,7 @@ mod tests {
                 "hello world, this is a voice test".into(),
                 1.0,
                 0,
+                0,
                 false,
             ))
             .expect("kokoro synthesis");
@@ -635,6 +641,9 @@ mod tests {
                 dir.clone(),
                 "你好，这是一个中文语音测试。".into(),
                 1.0,
+                0,
+                // The Chinese speaker comes from its own list now — 0 is
+                // suyingxue, the first of the model's five.
                 0,
                 true,
             ))

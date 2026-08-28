@@ -55,8 +55,12 @@ export interface GenSettings {
   voiceSid: number;
   /** Speech rate multiplier (0.5–2.0). */
   voiceSpeed: number;
-  /** Opt into Chinese STT/TTS when the UI itself is not Chinese. */
+  /** Recognise and speak Chinese. Defaults on in the Chinese interface and
+   *  off elsewhere, and is a plain setting either way — the Chinese
+   *  interface can turn it off. */
   chineseVoice: boolean;
+  /** Speaker index into VOICES_ZH, independent of `voiceSid`. */
+  voiceSidZh: number;
   /** GPU offload: -1 = auto‑tune by VRAM, 0 = CPU only, >0 = that many layers. */
   gpuLayers: number;
   /** Context window to load the model with: 0 = memory-friendly default (≤8192),
@@ -134,7 +138,10 @@ export const defaultSettings: GenSettings = {
   stop: "",
   presets: [],
   voiceSid: 0,
+  voiceSidZh: 0,
   voiceSpeed: 1.0,
+  // Seeded from the interface language on first run (see loadSettings) —
+  // stored from then on, so the Chinese interface can turn it off.
   chineseVoice: false,
   gpuLayers: -1,
   contextLength: 0,
@@ -178,6 +185,12 @@ export const HF_ENDPOINT_MIRROR = "https://hf-mirror.com";
  *  the larger Kokoro-82M set (af_heart, am_fenrir, …) needs a different model.
  *  Labels carry the Kokoro VOICES.md overall grade so users can pick good ones;
  *  ★ marks the best in each gender. */
+/** The five speakers `sherpa-onnx-vits-zh-ll` declares in its own
+ *  `G_multisperaker_latest.json` (`speakers`: suyingxue 0, gunian 1,
+ *  fushiyu 2, bingjiao 3, bazong 4). Named as the model names them rather
+ *  than translated — these are the ids it was trained with. */
+export const VOICES_ZH = ["suyingxue", "gunian", "fushiyu", "bingjiao", "bazong"];
+
 export const VOICES = [
   "af · warm female · C+",
   "★ af_bella · female · A-",
@@ -453,27 +466,36 @@ export function SettingsPanel({
   }, [open, cat]);
 
   // ---- Voice preview ----
-  const [voiceTesting, setVoiceTesting] = useState(false);
+  /** Which sample is playing — the two voices are separate models, so each
+   *  gets its own button and its own busy state. */
+  const [voiceTesting, setVoiceTesting] = useState<"" | "en" | "zh">("");
   const [voiceTestError, setVoiceTestError] = useState("");
-  const testVoice = () => {
+  const SAMPLE = {
+    zh: "你好，这是我的中文声音。很高兴认识你。",
+    en: "Hi! This is how I sound. Nice to meet you.",
+  };
+  // Routing is by the TEXT: Chinese in it reaches the Chinese voice, English
+  // never does. So the flag rides along unchanged and the sample decides.
+  const testVoice = (which: "en" | "zh") => {
     if (voiceTesting) return;
     // Must happen synchronously inside the click handler. Waiting until the
     // async native synthesis returns loses Safari/WKWebView user activation.
     primeAudioPlayback();
     setVoiceTestError("");
-    setVoiceTesting(true);
+    setVoiceTesting(which);
     synthesize(
-      lang === "zh" ? "你好，这是我的中文声音。很高兴认识你。" : "Hi! This is how I sound. Nice to meet you.",
+      SAMPLE[which],
       value.voiceSpeed,
       value.voiceSid,
-      lang === "zh" || value.chineseVoice,
+      value.chineseVoice,
+      value.voiceSidZh,
     )
       .then((a) => playAudio(decodeAudio(a.audio), a.sampleRate).done)
       .catch((e) => {
         console.error(e);
         setVoiceTestError(typeof e === "string" ? e : ((e as Error)?.message ?? String(e)));
       })
-      .finally(() => setVoiceTesting(false));
+      .finally(() => setVoiceTesting(""));
   };
 
   const savePreset = () => {
@@ -1371,26 +1393,34 @@ export function SettingsPanel({
           {cat === "voice" && (
             <>
               <SetRow label={t("chineseVoice")} hint={t("chineseVoiceHint")}>
-                <button
-                  type="button"
-                  className={`set-switch ${lang === "zh" || value.chineseVoice ? "on" : ""}`}
-                  disabled={lang === "zh"}
-                  aria-pressed={lang === "zh" || value.chineseVoice}
-                  onClick={() => set("chineseVoice", !value.chineseVoice)}
-                >
-                  <span className="set-switch-knob" />
-                </button>
+                <Switch
+                  on={value.chineseVoice}
+                  onToggle={() => set("chineseVoice", !value.chineseVoice)}
+                />
               </SetRow>
               <label className="field">
-                <span>{t("voice")}</span>
+                <span>{value.chineseVoice ? t("voiceEn") : t("voice")}</span>
                 <Select
                   className="field-select"
                   value={value.voiceSid}
-                  ariaLabel={t("voice")}
+                  ariaLabel={value.chineseVoice ? t("voiceEn") : t("voice")}
                   onChange={(v) => set("voiceSid", v)}
                   options={VOICES.map((name, i) => ({ value: i, label: name }))}
                 />
               </label>
+              {value.chineseVoice && (
+                <label className="field">
+                  <span>{t("voiceZh")}</span>
+                  <Select
+                    className="field-select"
+                    value={value.voiceSidZh}
+                    ariaLabel={t("voiceZh")}
+                    onChange={(v) => set("voiceSidZh", v)}
+                    options={VOICES_ZH.map((name, i) => ({ value: i, label: name }))}
+                  />
+                </label>
+              )}
+              {value.chineseVoice && <div className="settings-hint">{t("voiceZhHint")}</div>}
               <label className="field">
                 <span>
                   {t("voiceSpeed")} <b>{value.voiceSpeed.toFixed(2)}×</b>
@@ -1398,9 +1428,35 @@ export function SettingsPanel({
                 <input type="range" min={0.5} max={2} step={0.05} value={value.voiceSpeed} onChange={(e) => set("voiceSpeed", Number(e.target.value))} />
               </label>
               <SetRow label={t("voicePreview")} hint={t("voicePreviewHint")}>
-                <button type="button" className="data-btn" disabled={voiceTesting} onClick={testVoice}>
-                  {voiceTesting ? "…" : t("voicePreviewBtn")}
-                </button>
+                {value.chineseVoice ? (
+                  <div className="row-btns">
+                    <button
+                      type="button"
+                      className="data-btn"
+                      disabled={!!voiceTesting}
+                      onClick={() => testVoice("zh")}
+                    >
+                      {voiceTesting === "zh" ? "…" : t("voicePreviewZh")}
+                    </button>
+                    <button
+                      type="button"
+                      className="data-btn"
+                      disabled={!!voiceTesting}
+                      onClick={() => testVoice("en")}
+                    >
+                      {voiceTesting === "en" ? "…" : t("voicePreviewEn")}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="data-btn"
+                    disabled={!!voiceTesting}
+                    onClick={() => testVoice(lang === "zh" ? "zh" : "en")}
+                  >
+                    {voiceTesting ? "…" : t("voicePreviewBtn")}
+                  </button>
+                )}
               </SetRow>
               {voiceTestError && <div className="settings-hint settings-error">{voiceTestError}</div>}
               <div className="settings-hint">{t("voiceEngineHint")}</div>

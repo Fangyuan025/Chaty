@@ -1365,6 +1365,7 @@ pub async fn synthesize(
     text: String,
     speed: Option<f32>,
     sid: Option<i32>,
+    sid_zh: Option<i32>,
     chinese_enabled: Option<bool>,
 ) -> Result<SynthAudio, String> {
     let dir = voice_models_dir(&app)?;
@@ -1373,6 +1374,7 @@ pub async fn synthesize(
         text,
         speed.unwrap_or(1.0),
         sid.unwrap_or(0),
+        sid_zh.unwrap_or(0),
         chinese_enabled.unwrap_or(false),
     )
     .await

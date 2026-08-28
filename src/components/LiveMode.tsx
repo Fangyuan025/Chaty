@@ -39,6 +39,7 @@ export function LiveMode({
   appendNoThink,
   forceNoThink,
   voiceSid,
+  voiceSidZh,
   voiceSpeed,
   chineseVoice,
 }: {
@@ -50,6 +51,9 @@ export function LiveMode({
   /** Switch-less reasoning models (Qwen3.5+): disable thinking via the backend. */
   forceNoThink: boolean;
   voiceSid: number;
+  /** Speaker for the Chinese voice — its own list, not an index into the
+   *  English one. */
+  voiceSidZh: number;
   voiceSpeed: number;
   chineseVoice: boolean;
 }) {
@@ -265,6 +269,7 @@ export function LiveMode({
             voiceSpeed,
             voiceSid,
             chineseVoice,
+            voiceSidZh,
           );
           if (!speech.isStopped) speech.enqueue(decodeAudio(audio), sampleRate, clean);
         } catch (e) {

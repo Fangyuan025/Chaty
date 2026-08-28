@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
     let text = "Hello, this is Chaty speaking.";
     eprintln!("synthesizing: {text:?}");
     let (samples, sr) =
-        chaty_lib::voice::synthesize(dir.clone(), text.into(), 1.0, 0, false).await?;
+        chaty_lib::voice::synthesize(dir.clone(), text.into(), 1.0, 0, 0, false).await?;
     eprintln!(
         "TTS -> {} samples @ {} Hz ({:.2}s)",
         samples.len(),

@@ -11,7 +11,7 @@ import { HardwarePanel } from "./components/HardwarePanel";
 import { LiveMode } from "./components/LiveMode";
 import { ModelInfoPanel } from "./components/ModelInfoPanel";
 import { WindowControls } from "./components/WindowControls";
-import { useI18n, type Lang, type TKey } from "./lib/i18n";
+import { useI18n, type Lang, type TKey, detectLang } from "./lib/i18n";
 import {
   decodeAudio,
   encodeAudio,
@@ -295,12 +295,18 @@ function loadSettings(): GenSettings {
       // and the new default exists because 32 starved app-scale deliveries),
       // so drop it and let the new default through.
       if (stored.codeMaxSteps === 32) delete stored.codeMaxSteps;
-      return { ...defaultSettings, ...stored };
+      const merged = { ...defaultSettings, ...stored };
+      // Chinese speech is on by default in the Chinese interface — but as a
+      // stored setting, not a forced one, so it can be turned back off.
+      // Seeded only when nothing was stored — re-deriving it on every load
+      // would turn the switch back on behind anyone who turned it off.
+      if (stored.chineseVoice === undefined) merged.chineseVoice = detectLang() === "zh";
+      return merged;
     }
   } catch {
     /* ignore */
   }
-  return defaultSettings;
+  return { ...defaultSettings, chineseVoice: detectLang() === "zh" };
 }
 
 export default function App() {
@@ -1997,7 +2003,8 @@ export default function App() {
             clean,
             settings.voiceSpeed,
             settings.voiceSid,
-            lang === "zh" || settings.chineseVoice,
+            settings.chineseVoice,
+            settings.voiceSidZh,
           );
           if (!q.isStopped) q.enqueue(decodeAudio(audio), sampleRate);
         } catch (e) {
@@ -2242,7 +2249,7 @@ export default function App() {
         const text = await transcribe(
           encodeAudio(samples),
           sampleRate,
-          lang === "zh" || settings.chineseVoice,
+          settings.chineseVoice,
         );
         if (text) {
           if (autoSend) {
@@ -2296,7 +2303,8 @@ export default function App() {
         clean,
         settings.voiceSpeed,
         settings.voiceSid,
-        lang === "zh" || settings.chineseVoice,
+        settings.chineseVoice,
+        settings.voiceSidZh,
       );
       const pb = playAudio(decodeAudio(audio), sampleRate);
       playbackRef.current = pb;
@@ -2989,15 +2997,13 @@ export default function App() {
                         >
                           {t("fork")}
                         </button>
-                        {lang === "en" && (
-                          <button
-                            className="msg-action"
-                            title={t("rereadTitle")}
-                            onClick={() => (speaking ? stopSpeaking() : speakText(m.content))}
-                          >
-                            {speaking ? t("rereadStop") : t("reread")}
-                          </button>
-                        )}
+                        <button
+                          className="msg-action"
+                          title={t("rereadTitle")}
+                          onClick={() => (speaking ? stopSpeaking() : speakText(m.content))}
+                        >
+                          {speaking ? t("rereadStop") : t("reread")}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -3389,32 +3395,43 @@ export default function App() {
                     </button>
                     <>
                       <div className="tools-sep" />
-                      <button
-                        className={`tool-item ${speakReplies ? "on" : ""}`}
-                        onClick={() => {
-                          if (speaking) stopSpeaking();
-                          else if (speakReplies) stopSpeaking();
-                          setSpeakReplies((v) => !v);
-                        }}
-                      >
-                        <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                          <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z" strokeLinejoin="round" />
-                          <path d="M15.5 8.5a4.2 4.2 0 0 1 0 7" strokeLinecap="round" />
-                        </svg>
-                        <span className="ti-label">{t("speakAloud")}</span>
-                        <span className="ti-check">{speakReplies ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
-                      </button>
-                      <button
-                        className="tool-item"
-                        onClick={openLive}
-                        disabled={!model}
-                      >
-                        <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                          <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
-                          <path d="M7.5 7.5a6 6 0 0 0 0 9M16.5 7.5a6 6 0 0 1 0 9" strokeLinecap="round" />
-                        </svg>
-                        <span className="ti-label">{t("liveStart")}</span>
-                      </button>
+                      {/* Voice group — the two ways a reply reaches your ears
+                          are one idea with two settings, not two tools. */}
+                      <div className="tool-group">
+                        <div className={`tool-item tool-parent ${speakReplies ? "on" : ""}`}>
+                          <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                            <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z" strokeLinejoin="round" />
+                            <path d="M15.5 8.5a4.2 4.2 0 0 1 0 7" strokeLinecap="round" />
+                          </svg>
+                          <span className="ti-label">{t("toolVoiceGroup")}</span>
+                          <span className="ti-check">{speakReplies ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
+                          <span className="ti-caret">›</span>
+                        </div>
+                        <div className="tool-submenu">
+                          <button
+                            className={`tool-item ${speakReplies ? "on" : ""}`}
+                            onClick={() => {
+                              if (speaking) stopSpeaking();
+                              else if (speakReplies) stopSpeaking();
+                              setSpeakReplies((v) => !v);
+                            }}
+                          >
+                            <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                              <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z" strokeLinejoin="round" />
+                              <path d="M15.5 8.5a4.2 4.2 0 0 1 0 7" strokeLinecap="round" />
+                            </svg>
+                            <span className="ti-label">{t("speakAloud")}</span>
+                            <span className="ti-check">{speakReplies ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
+                          </button>
+                          <button className="tool-item" onClick={openLive} disabled={!model}>
+                            <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                              <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
+                              <path d="M7.5 7.5a6 6 0 0 0 0 9M16.5 7.5a6 6 0 0 1 0 9" strokeLinecap="round" />
+                            </svg>
+                            <span className="ti-label">{t("liveStart")}</span>
+                          </button>
+                        </div>
+                      </div>
                     </>
                   </div>
                 )}
@@ -3534,7 +3551,8 @@ export default function App() {
           forceNoThink={(model?.supportsThinking && !model.thinkSwitch) ?? false}
           voiceSid={settings.voiceSid}
           voiceSpeed={settings.voiceSpeed}
-          chineseVoice={lang === "zh" || settings.chineseVoice}
+          chineseVoice={settings.chineseVoice}
+          voiceSidZh={settings.voiceSidZh}
         />
       )}
       {showDownload && (
