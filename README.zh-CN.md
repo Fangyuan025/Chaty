@@ -102,7 +102,7 @@ Chaty 把这个档位做成了你真正能拧的旋钮:
 <details>
 <summary>更多 Code 模式细节</summary>
 
-- 直接读 **PDF / Word / Excel / PowerPoint**(扫描件自动 OCR);`search_files` 按名字或内容查找;outline 大纲导航大文件;补丁失配时给「你是不是想改这里」提示。
+- 直接读 **PDF / Word / Excel / PowerPoint**(扫描件没有文本层,会直接说明);`search_files` 按名字或内容查找;outline 大纲导航大文件;补丁失配时给「你是不是想改这里」提示。
 - 浏览器自动化在真实网站上端到端验证过,还能开进你的真实 Chrome —— 全程围观,登录状态也保留。
 - 为本地模型而生:**Off / Normal / Deep** 思考强度开关、**提示词处理进度环**、上下文用量环 + 自动压缩、按上下文窗口定预算的整文件读取、`search_code` 语义检索 + 知识库 `search_docs`,以及防复读循环打断。
 - 会话持久化、项目记忆(**AGENTS.md**)、自定义 **/技能** 与 slash 命令。
@@ -222,6 +222,7 @@ Chaty 把这个档位做成了你真正能拧的旋钮:
 
 - **实时模式** —— 配一个动态光球的连续、免手语音对话。
 - 语音输入/输出,静音自动发送 + 朗读 —— **11 种嗓音** + 语速调节。
+- **中文或英文** —— 识别与中文嗓音随界面语言自动开启,也可在 设置 → 语音 里打开。英文继续用纯英文模型,它在英文上更准。
 - **深读播客** —— 把知识库变成 NotebookLM 风格的双主持人音频节目,支持 WAV 导出。
 - 所有语音都跑在 **CPU** 上,绝不与大模型抢显存。
 
@@ -297,7 +298,7 @@ npm run tauri build    # → .app + .dmg
 | 外壳 | Tauri 2 —— 系统托盘、全局快捷键、单实例 |
 | 前端 | React 19 · Vite · react-markdown · KaTeX |
 | 推理 | Rust · `llama-cpp-2`(llama.cpp)—— Vulkan(Windows)/ Metal(macOS) |
-| 语音 | `sherpa-rs`(ONNX Runtime,CPU)—— Whisper-base.en + Kokoro-82M |
+| 语音 | `sherpa-rs`(ONNX Runtime,CPU)—— Whisper(英文用 `base.en`,中文用多语 `base`)+ Kokoro-82M 与 VITS 中文嗓音 |
 | 知识库 | bge-m3 向量 + BM25 · 混合 RRF / MMR 检索 · SQLite 向量库 |
 | 存储 | SQLite —— 会话、消息、全文搜索 |
 

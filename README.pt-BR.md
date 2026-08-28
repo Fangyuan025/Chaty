@@ -107,7 +107,7 @@ própria — cada passo exibido ao vivo, cada mudança atrás de uma aprovação
 <details>
 <summary>Mais detalhes do modo Código</summary>
 
-- Lê **PDF / Word / Excel / PowerPoint** (PDFs escaneados passam por OCR); `search_files` encontra por nome ou conteúdo; outlines de arquivo navegam arquivos grandes; patches que falham recebem dicas de "você quis dizer".
+- Lê **PDF / Word / Excel / PowerPoint** (um PDF escaneado não tem camada de texto e diz isso); `search_files` encontra por nome ou conteúdo; outlines de arquivo navegam arquivos grandes; patches que falham recebem dicas de "você quis dizer".
 - A automação de navegador é verificada de ponta a ponta contra sites reais, e pode rodar no seu Chrome de verdade — assista-o trabalhar, logins e tudo.
 - Feito para modelos locais: chave de raciocínio **Off / Normal / Deep**, um **anel de progresso do processamento do prompt**, um anel de uso de contexto com compactação automática, leituras de arquivo inteiro dimensionadas à sua janela de contexto, `search_code` ranqueado + `search_docs` da base de conhecimento, e quebra de loops para modelos pequenos repetitivos.
 - Sessões persistentes, memória de projeto (**AGENTS.md**), **/skills** personalizadas e comandos de barra.
@@ -227,6 +227,7 @@ Modelos só-texto mantêm o caminho de OCR, então nada regride — e ao atualiz
 
 - **Modo ao vivo** — conversa contínua e mãos-livres com um orbe animado.
 - Voz de entrada/saída com envio automático por silêncio e leitura em voz alta — **11 vozes** com controle de velocidade.
+- **Inglês ou chinês** — o reconhecimento e uma voz chinesa entram junto com o idioma da interface, ou por Configurações → Voz. O inglês continua no modelo somente-inglês, mais preciso em inglês.
 - **Podcast aprofundado** — transforme sua base de conhecimento num programa de áudio com dois apresentadores, estilo NotebookLM, com exportação WAV.
 - Toda a voz roda na **CPU**, então nunca disputa VRAM com o LLM.
 
@@ -306,7 +307,7 @@ depois faça push de uma tag `vx.y.z` — o GitHub Actions compila os dois insta
 | Shell | Tauri 2 — bandeja do sistema, atalho global, instância única |
 | Frontend | React 19 · Vite · react-markdown · KaTeX |
 | Inferência | Rust · `llama-cpp-2` (llama.cpp) — Vulkan (Windows) / Metal (macOS) · MLX via sidecar `mlx-swift-lm` (Apple Silicon) |
-| Voz | `sherpa-rs` (ONNX Runtime, CPU) — Whisper-base.en + Kokoro-82M |
+| Voz | `sherpa-rs` (ONNX Runtime, CPU) — Whisper (`base.en` para inglês, `base` multilíngue para chinês) + Kokoro-82M e uma voz chinesa VITS |
 | Base de conhecimento | embeddings bge-m3 + BM25 · recuperação híbrida RRF / MMR · vetores em SQLite |
 | Armazenamento | SQLite — conversas, mensagens, busca em texto completo |
 

@@ -104,7 +104,7 @@ itself — every step shown live, every change behind an approval + diff.
 <details>
 <summary>More Code-mode details</summary>
 
-- Reads **PDF / Word / Excel / PowerPoint** (scanned PDFs get OCR'd); `search_files` finds by name or content; file outlines navigate big files; failed patches get “did-you-mean” hints.
+- Reads **PDF / Word / Excel / PowerPoint** (a scanned PDF has no text layer and says so); `search_files` finds by name or content; file outlines navigate big files; failed patches get “did-you-mean” hints.
 - Browser automation is verified end-to-end against real sites, and can run in your real Chrome — watch it work, logins and all.
 - Built for local models: an **Off / Normal / Deep** reasoning switch, a **prompt-processing progress ring**, a context-usage ring with automatic compaction, whole-file reads sized to your context window, ranked `search_code` + knowledge-base `search_docs`, and loop-breaking for repetitive small models.
 - Persistent sessions, project memory (**AGENTS.md**), custom **/skills**, and slash commands.
@@ -224,6 +224,7 @@ Text-only models keep the OCR path, so nothing regresses — and updating from a
 
 - **Live mode** — continuous, hands-free conversation with an animated orb.
 - Voice in/out with silence auto-send and read-aloud — **11 voices** with speed control.
+- **English or Chinese** — recognition and a Chinese voice switch on with the interface language, or from Settings → Voice. English stays on the English-only model, which is more accurate on English.
 - **Deep-dive podcast** — turn your knowledge base into a NotebookLM-style two-host audio show, with WAV export.
 - All voice runs on the **CPU**, so it never competes with the LLM for VRAM.
 
@@ -302,7 +303,7 @@ tag — GitHub Actions builds both installers onto a single release.
 | Shell | Tauri 2 — system tray, global shortcut, single-instance |
 | Frontend | React 19 · Vite · react-markdown · KaTeX |
 | Inference | Rust · `llama-cpp-2` (llama.cpp) — Vulkan (Windows) / Metal (macOS) · MLX via an `mlx-swift-lm` sidecar (Apple Silicon) |
-| Voice | `sherpa-rs` (ONNX Runtime, CPU) — Whisper-base.en + Kokoro-82M |
+| Voice | `sherpa-rs` (ONNX Runtime, CPU) — Whisper (`base.en` for English, multilingual `base` for Chinese) + Kokoro-82M and a VITS Chinese voice |
 | Knowledge base | bge-m3 embeddings + BM25 · hybrid RRF / MMR retrieval · SQLite vector store |
 | Storage | SQLite — conversations, messages, full-text search |
 
