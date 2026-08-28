@@ -243,67 +243,88 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## The model stops re-reading what it just did
+            ## Chinese speech, and a picture that stops costing the conversation
 
-            Between turns, code mode threw away everything the agent had
-            actually done. The follow-up arrived with the tool results gone and
-            "(tools run: read_file, bash)" in their place, so the model no
-            longer knew what any of those calls had returned and re-read files
-            it had just read. The exchange now carries over intact — and that is
-            cheaper than discarding it was: 2035 of 2058 prompt tokens reused,
-            75ms, against a cold 208ms for the summary it replaces.
+            Chaty listens and answers in Chinese. Speech recognition was
+            English-only and text-to-speech had no Chinese voice at all, so the
+            whole voice section was hidden outside the English UI. Recognition
+            now runs multilingual Whisper when Chinese is in play, and a Chinese
+            reply is spoken by a local VITS voice while English keeps Kokoro,
+            decided per utterance. English speech did not get worse to make room
+            for it: multilingual Whisper is a real accuracy drop on English, so
+            English stays on `base.en` — the model already on disk, no
+            re-download and nothing orphaned — and the multilingual model is
+            fetched only when the UI is Chinese or the Chinese-voice switch is
+            on. Its files are pinned to a revision rather than to a moving
+            branch, so a size check can no longer pass on bytes that changed
+            underneath it. (#8, by @wisetwo)
 
-            A follow-up question no longer re-reads the conversation on MLX
-            either. Chaty lays a conversation out one message at a time now,
-            from a layout learned off the model's own template and used only
-            when it reproduces that template's token ids exactly. Qwen3.5 2B and
-            Gemma-4 26B both go from 0% to 99% reuse on the second turn's first
-            step — 1587ms to 95ms, 4292ms to 216ms.
+            Around that: a voice model left half-downloaded now repairs itself
+            one file at a time instead of being fetched again from the start,
+            files land in a staging directory and are moved into place
+            atomically, the preview plays — WKWebView applies Safari's
+            user-activation rules, so the audio context is unlocked on the first
+            gesture rather than after the synthesis round-trip — and a preview
+            or transcription that fails says why. Live Mode stops racing the
+            microphone: the capture thread signals when it has actually released
+            the device and the next start waits for that, instead of guessing at
+            a delay.
 
-            Thinking off no longer costs a full prefill every turn. Chaty
-            prefills an empty reasoning block after the assistant header, but a
-            stored turn was rendered without it, so round two diverged right
-            there — 0% reuse on Qwen3.5 and LFM2, and thinking off is code
-            mode's default. Now 100%, on both engines.
+            A picture stopped throwing the conversation away. Through MLX, any
+            prompt carrying an image was evaluated from the very beginning — the
+            whole transcript, every turn, on the screenshot round and on every
+            round after it. Measured across seven local models in both thinking
+            modes: 0% of the window reused from the moment a screenshot entered
+            a conversation until the end of it. Two causes, both fixed. The chat
+            template rewrites a stored turn's reasoning when pixels force it to
+            render the history, and re-encoding a turn's text is not the inverse
+            of generating it — on Qwen3.5 2B the word "Chaty" comes back as a
+            different pair of tokens than the model emitted, and one pair is
+            enough to end the match. Chaty now replays the exact tokens each
+            turn occupies in the cache. Same sweep afterwards: 99-100% on every
+            round after a picture, all fourteen combinations.
 
-            LFM2's tool calls run. The engine rendered control tokens as
-            nothing, so `<|tool_call_start|>[read_file(path='x')]<|tool_call_end|>`
-            reached Chaty as ordinary prose and the call never fired.
+            A second screenshot resumes the conversation instead of re-reading
+            it. That round used to start over, because a call carrying pixels
+            was assumed to be positionable only from the beginning. It is not —
+            the model takes its positions from the cache — so only the new
+            picture is read now and the conversation beneath it is kept. The
+            older screenshot also stays visible instead of being dropped to save
+            an encode that no longer happens.
 
-            A screenshot the model has already seen is no longer re-encoded.
-            Three consecutive tool-result rounds on Qwen3.5 4B cost 2826ms,
-            5596ms and 5741ms before; they now cost about 150ms each. Dropping
-            stale screenshots turned out to make llama.cpp slower, not faster,
-            so it keeps them.
+            And a screenshot in a long conversation stopped taking minutes. The
+            span a vision model reads in one pass ran from the start of the
+            prompt to the last picture in it, so a screenshot's cost was set by
+            the transcript underneath: 12.3k tokens took 187 seconds on a 35B,
+            and a real 50k round had produced nothing after ninety minutes with
+            20 GB of swap churning. The text below a picture is ordinary text
+            and now goes in chunks like any other; only the picture's own span
+            is one pass. A 48k-token conversation with a four-tile screenshot
+            reads in 13 seconds against a warm cache and 131 cold.
 
-            Context compaction condenses the work with a model-written summary
-            instead of a 60-character index per turn, and leaves room to breathe
-            rather than skimming the limit: the same task on an 8k window went
-            from 63 rounds and 633 seconds to 18 rounds and 132 seconds. Chat
-            and code share one token budget now, calibrated against what the
-            engine actually charges, and attached pictures count toward it.
+            A turn that stops saying anything is now cut. Not a runaway thought
+            — the think budget is the only ceiling on how much a model may
+            reason, and that stays. This is the other failure: output carrying
+            no information at all. A 35B step ran to 31,416 tokens of "!" at 1.1
+            tokens a second, twenty minutes of it, because the only ceiling was
+            the token cap. Four hundred characters of one repeated character now
+            ends the step, the wreckage is kept out of the transcript rather
+            than handed back as a pattern to continue, and twice in a row pauses
+            instead of grinding. Separately, when the window tightens, the file
+            bodies inside earlier `write_file` calls are replaced by a line
+            naming the file — in one session four such turns were 82% of the
+            transcript, and the file is on disk if the model wants it back.
 
-            A follow-up question no longer re-reads the conversation on MLX
-            either: Qwen3.5 2B and Gemma-4 26B both go from 0% to 99% cache
-            reuse on the second turn's first step (1587ms to 95ms, 4284ms to
-            217ms).
-
-            A screenshot the model has already seen is no longer re-encoded.
-            Three consecutive tool-result rounds on Qwen3.5 4B cost 2826ms,
-            5596ms and 5741ms before; they now cost about 150ms each, and a
-            fresh screenshot encodes only itself. Dropping stale screenshots
-            turned out to make llama.cpp slower, not faster, so it keeps them.
-
-            A chat reply now travels the way the model wrote it — stripping the
-            reasoning out of stored turns meant every reply re-read the whole
-            conversation. Attached pictures count toward the context budget.
-
-            Context compaction now condenses the work with a model-written
-            summary instead of a 60-character index per turn, and leaves room to
-            breathe rather than skimming the limit: the same task on an 8k
-            window went from 63 rounds and 633 seconds to 18 rounds and 132
-            seconds. Chat and code also share one token budget now, calibrated
-            against what the engine actually charges.
+            A PDF the text extractor cannot read no longer kills the read. The
+            extractor asserts, rather than errors, on font encodings it has not
+            implemented — the encoding most Chinese-authored PDFs use is one of
+            them. The whole document is still tried first, and where it gives
+            out the pages are read one at a time, keeping every page that parses
+            and saying how many it could not: one textbook went from nothing at
+            all to 38,295 characters. The same guard covers attachments, browser
+            downloads, and knowledge-base indexing, where one bad file used to
+            be able to end a whole run. A PDF with no text in it — a scan — now
+            says that, instead of coming back as an empty document.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
