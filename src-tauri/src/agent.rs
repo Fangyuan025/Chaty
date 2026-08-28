@@ -1961,10 +1961,9 @@ pub(crate) async fn read_doc_core(
     let text = match ext.as_str() {
         "pdf" => {
             let p = abs_str.clone();
-            tokio::task::spawn_blocking(move || pdf_extract::extract_text(&p))
+            tokio::task::spawn_blocking(move || crate::rag::extract_pdf(&p))
                 .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| trf!("PDF 解析失败: {e}", "PDF parse failed: {e}"))?
+                .map_err(|e| e.to_string())??
         }
         "docx" => crate::rag::extract_docx(&abs_str)?,
         "xlsx" => crate::rag::extract_xlsx(&abs_str)?,

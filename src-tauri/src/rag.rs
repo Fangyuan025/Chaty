@@ -297,8 +297,7 @@ fn extract_text(path: &str) -> Result<String, String> {
         .unwrap_or("")
         .to_lowercase();
     match ext.as_str() {
-        "pdf" => pdf_extract::extract_text(path)
-            .map_err(|e| format!("PDF 解析失败 (PDF extraction failed): {e}")),
+        "pdf" => extract_pdf(path),
         "docx" => extract_docx(path),
         "xlsx" => extract_xlsx(path),
         "pptx" => extract_pptx(path),
@@ -364,6 +363,115 @@ pub(crate) fn extract_pptx(path: &str) -> Result<String, String> {
         .join("\n\n");
     if out.is_empty() {
         return Err("没有从演示文稿中解析到文本 (no text found in the deck)".into());
+    }
+    Ok(out)
+}
+
+/// Run a parser that may assert instead of erroring. `None` on panic.
+fn caught<T>(f: impl FnOnce() -> T) -> Option<T> {
+    crate::errlog::handled_panic(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+    })
+}
+
+/// Extract text from a PDF, surviving a parser that panics on it.
+///
+/// `pdf-extract` asserts rather than errors on encodings it has not
+/// implemented — `assert!(name == "Identity-H")` fires on the CMap most
+/// CJK-authored PDFs use, and it took down two of the owner's own textbooks.
+/// A panic there is not a fault to report; it is a file we cannot fully read.
+///
+/// So it is caught, twice over. First the whole document, which is the fast
+/// path, byte-for-byte what this used to do, and the one that knows how to
+/// decrypt. If that asserts, the pages are read one at a time and every page
+/// that parses is kept: a textbook whose front matter uses an exotic font
+/// still gives up its lessons, and the reader is told how much was skipped
+/// rather than left to wonder.
+pub(crate) fn extract_pdf(path: &str) -> Result<String, String> {
+    let p = path.to_string();
+    if let Some(whole) = caught(move || pdf_extract::extract_text(&p)) {
+        return whole
+            .map_err(|e| format!("PDF 解析失败 (PDF extraction failed): {e}"))
+            .and_then(has_text);
+    }
+    let p = path.to_string();
+    let doc = caught(move || pdf_extract::Document::load(&p))
+        .and_then(|r| r.ok())
+        .ok_or_else(pdf_unreadable)?;
+    pdf_by_page(&doc)
+}
+
+/// The same, for a PDF already in memory (a download).
+pub(crate) fn extract_pdf_bytes(bytes: &[u8]) -> Result<String, String> {
+    if let Some(whole) = caught(|| pdf_extract::extract_text_from_mem(bytes)) {
+        return whole
+            .map_err(|e| format!("PDF 解析失败 (PDF extraction failed): {e}"))
+            .and_then(has_text);
+    }
+    let doc = caught(|| pdf_extract::Document::load_mem(bytes))
+        .and_then(|r| r.ok())
+        .ok_or_else(pdf_unreadable)?;
+    pdf_by_page(&doc)
+}
+
+/// A PDF that parses fine and says nothing is a scan: pages of pictures with
+/// no text layer under them. Silently handing back an empty string left the
+/// model staring at a blank document with no idea why — 199 of the 200 pages
+/// in the owner's grammar manual are exactly this.
+fn has_text(t: String) -> Result<String, String> {
+    if t.chars().filter(|c| !c.is_whitespace()).count() >= 16 {
+        return Ok(t);
+    }
+    Err("PDF 里没有可提取的文字,多半是扫描件(整页都是图,没有文本层) \
+         (no extractable text in this PDF — it is almost certainly a scan: \
+         pages of images with no text layer)"
+        .to_string())
+}
+
+fn pdf_unreadable() -> String {
+    "PDF 解析失败:这个文件用了解析器不支持的字体编码      (PDF extraction failed: this file uses a font encoding the extractor does not support)"
+        .to_string()
+}
+
+/// Page by page, keeping what parses.
+fn pdf_by_page(doc: &pdf_extract::Document) -> Result<String, String> {
+    let pages: Vec<u32> = doc.get_pages().keys().copied().collect();
+    let total = pages.len();
+    let mut out = String::new();
+    let mut skipped = 0usize;
+    for n in pages {
+        let page = caught(|| {
+            let mut s = String::new();
+            {
+                let mut dev = pdf_extract::PlainTextOutput::new(&mut s);
+                pdf_extract::output_doc_page(doc, &mut dev, n).ok()?;
+            }
+            Some(s)
+        })
+        .flatten();
+        match page {
+            Some(s) => out.push_str(&s),
+            None => skipped += 1,
+        }
+    }
+    if total == 0 || skipped == total {
+        return Err(pdf_unreadable());
+    }
+    // Judged on what the pages actually yielded, before the note about the
+    // ones that failed is added to it.
+    out = has_text(out)?;
+    if skipped > 0 {
+        let note = format!(
+            "[已跳过 {skipped}/{total} 页:字体编码不受支持 \
+             — skipped {skipped} of {total} pages: unsupported font encoding]"
+        );
+        // In front when most of the book did not come through, so a reader
+        // cannot mistake a scrap for the whole thing.
+        out = if skipped * 2 > total {
+            format!("{note}\n\n{out}")
+        } else {
+            format!("{out}\n\n{note}\n")
+        };
     }
     Ok(out)
 }
@@ -1385,6 +1493,64 @@ pub async fn rag_download_model(
 
 #[cfg(test)]
 mod tests {
+    /// A parser that asserts must reach the caller as an error, never as a
+    /// panic — `pdf-extract` asserts on font encodings it has not implemented
+    /// (`assert!(name == "Identity-H")`), which is most CJK-authored PDFs.
+    #[test]
+    fn a_pdf_that_makes_the_parser_assert_comes_back_as_an_error() {
+        // Not a PDF at all: the parser fails on it one way or another, and
+        // either way this must return rather than unwind past us.
+        let junk = vec![b'%'; 4096];
+        assert!(super::extract_pdf_bytes(&junk).is_err());
+
+        let dir = std::env::temp_dir().join("chaty-pdf-panic-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("broken.pdf");
+        std::fs::write(&f, b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n").unwrap();
+        assert!(super::extract_pdf(&f.to_string_lossy()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The flag that keeps a caught panic out of the error log must come back
+    /// down when the closure unwinds — otherwise the NEXT real panic in this
+    /// thread goes unreported.
+    #[test]
+    fn a_handled_panic_does_not_silence_the_one_after_it() {
+        let out = std::panic::catch_unwind(|| {
+            crate::errlog::handled_panic(|| panic!("expected"));
+        });
+        assert!(out.is_err());
+        // Back to normal: a panic here would be logged again. Observable only
+        // through the flag, which `handled_panic` owns, so run it once more
+        // and check it still returns the closure's value.
+        assert_eq!(crate::errlog::handled_panic(|| 7), 7);
+    }
+
+    /// A PDF whose pages parse but carry no text is a scan, and saying so is
+    /// the difference between "empty document" and "I cannot read this".
+    #[test]
+    fn a_pdf_with_no_text_layer_says_it_is_a_scan() {
+        let err = super::has_text("  \n \t ".to_string()).unwrap_err();
+        assert!(err.contains("扫描件") && err.contains("scan"));
+        // A page number and a stray mark are not a text layer either.
+        assert!(super::has_text("1\n\n2".to_string()).is_err());
+        // Anything with real content through, untouched.
+        let real = "Leçon 7 — le conditionnel présent et ses emplois".to_string();
+        assert_eq!(super::has_text(real.clone()).unwrap(), real);
+    }
+
+    /// Point this at a real file to check extraction end to end. Skipped
+    /// unless CHATY_PDF_PROBE names one — the interesting PDFs are the
+    /// owner's, not the repo's.
+    #[test]
+    fn pdf_probe() {
+        let Ok(path) = std::env::var("CHATY_PDF_PROBE") else { return };
+        match super::extract_pdf(&path) {
+            Ok(t) => println!("PROBE ok: {} chars\n{}", t.len(), &t[..t.len().min(300)]),
+            Err(e) => println!("PROBE err: {e}"),
+        }
+    }
+
     use super::*;
 
     /// Real-embedder semantic probe (the knowledge base's core signal path,

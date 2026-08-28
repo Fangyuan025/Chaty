@@ -114,6 +114,23 @@
   past a bound with a message naming the size rather than dying in the middle
   of it.
 
+- **A PDF that the text extractor cannot read no longer kills the read.** The
+  extractor asserts, rather than errors, on font encodings it has not
+  implemented — the CMap most Chinese-authored PDFs use is one of them, and
+  both of the owner's own textbooks brought it down with `assertion failed:
+  name == "Identity-H"`. Nothing about that is a fault worth a crash: the whole
+  document is still tried first, and where it gives out the pages are read one
+  at a time, keeping every page that parses and saying how many it could not.
+  One of those textbooks went from nothing at all to 38,295 characters, with 39
+  of its pages noted as skipped. The same guard covers attachments, the browser
+  download path, and knowledge-base indexing, where one bad file used to be
+  able to end the whole run.
+
+- **A PDF with no text in it says so.** A scan is pages of pictures with no
+  text layer underneath, and it used to come back as an empty document with no
+  explanation — 199 of the 200 pages in the owner's grammar manual are exactly
+  that. It now says what it is.
+
 - **The step and timeout ceilings can be switched off.** The slider stopped at
   96 steps and 300 seconds, with a second 600-second ceiling behind it in the
   backend that the slider could not even express. Both take "no limit" now, and

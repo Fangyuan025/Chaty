@@ -39,10 +39,10 @@ pub async fn read_attachment(app: tauri::AppHandle, path: String) -> Result<Atta
     let (kind, mut text) = match ext.as_str() {
         "pdf" => {
             let path = path.clone();
-            let extracted = tokio::task::spawn_blocking(move || pdf_extract::extract_text(&path))
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| format!("PDF 解析失败：{e}"))?;
+            let extracted =
+                tokio::task::spawn_blocking(move || crate::rag::extract_pdf(&path))
+                    .await
+                    .map_err(|e| e.to_string())??;
             ("pdf".to_string(), extracted)
         }
         "docx" => ("docx".to_string(), crate::rag::extract_docx(&path)?),

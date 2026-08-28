@@ -820,8 +820,7 @@ pub async fn fetch_page_ex(url: String, raw: Option<bool>) -> Result<PageEx, Str
         if bytes.len() > PDF_CAP_BYTES {
             return Err(format!("PDF too large ({} MB)", bytes.len() / 1024 / 1024));
         }
-        let text = pdf_extract::extract_text_from_mem(&bytes)
-            .map_err(|e| format!("PDF 解析失败: {e}"))?;
+        let text = crate::rag::extract_pdf_bytes(&bytes)?;
         let (text, truncated) = cap(text.trim(), TEXT_CAP);
         return Ok(PageEx {
             url: final_url,
