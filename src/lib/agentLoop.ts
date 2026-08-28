@@ -144,8 +144,9 @@ export interface ToolStep {
   /** Exact +N/−M for a diff whose contents were capped for the card. The badge
    *  prefers these, so a big edit still reports the true totals. */
   diffCounts?: { added: number; removed: number };
-  /** Absolute path of an image this step produced (browser_screenshot /
-   *  view_image) — the UI renders a clickable preview. */
+  /** Absolute path of an image this step produced — the UI renders a
+   *  clickable preview. For a full-page capture this is the WHOLE page, not
+   *  the first of the segments the model was fed. */
   image?: string;
 }
 
@@ -3050,7 +3051,15 @@ export async function runAgentTurn(
           // A tall full-page screenshot arrives as SEGMENTS (newline-joined
           // paths, top to bottom) — every pixel of the page, each segment
           // legible. Normal pages stay a single image.
-          const shots = raw.split("\n").filter(Boolean);
+          //
+          // A full-page capture puts the WHOLE page in front of them, marked,
+          // because the two readers want different things: the model is fed
+          // segments (one picture is one forward pass), the step card is not,
+          // and giving the card the first segment made a full-page capture
+          // look like a viewport snapshot to everyone but the model.
+          const lines = raw.split("\n").filter(Boolean);
+          const full = lines[0]?.startsWith("full:") ? lines[0].slice(5) : undefined;
+          const shots = full ? lines.slice(1) : lines;
           stepObj.status = "done";
           stepObj.result =
             shots.length > 1
@@ -3060,7 +3069,7 @@ export async function runAgentTurn(
               : lang === "zh"
                 ? "已截取当前页面"
                 : "Captured the current page";
-          stepObj.image = shots[0];
+          stepObj.image = full ?? shots[0];
           cb.onStep(stepObj);
           const note =
             shots.length > 1

@@ -1730,9 +1730,16 @@ fn flattest_row_near(img: &image::DynamicImage, target: u32, window: u32) -> u32
     best.1
 }
 
-/// Full-page screenshot (auto-scrolls to trigger lazy content). Returns one
-/// temp PNG path per SEGMENT (newline-joined, top to bottom) — one path for
-/// normal pages, several for tall ones. The agent loop attaches them all.
+/// Full-page screenshot (auto-scrolls to trigger lazy content).
+///
+/// Returns the WHOLE page as line 0, marked `full:<path>`, then one temp PNG
+/// path per SEGMENT (top to bottom) — one segment for normal pages, several
+/// for tall ones. The two audiences want different things from one capture:
+/// the model is fed segments, because a picture is read in a single forward
+/// pass and a tall page as one image is an allocation no engine wants; the
+/// step card wants the page. Handing the card `shots[0]` gave it the top
+/// segment, which reads exactly like a viewport snapshot and is why a
+/// full-page capture appeared to take none of the page below the fold.
 #[tauri::command]
 pub async fn browser_screenshot() -> Result<String, String> {
     let png = tokio::task::spawn_blocking(crate::browser::screenshot)
@@ -1741,15 +1748,21 @@ pub async fn browser_screenshot() -> Result<String, String> {
     let img = match image::load_from_memory(&png) {
         Ok(i) => i,
         // Undecodable capture: hand it over untouched rather than failing.
-        Err(_) => return write_shot(png),
+        Err(_) => {
+            let p = write_shot(png)?;
+            return Ok(format!("full:{p}\n{p}"));
+        }
     };
     let (w, h) = (img.width(), img.height());
     let tile_h = ((w as f64) * 0.72) as u32;
     let window = tile_h / 5;
     let picker = |target: u32| flattest_row_near(&img, target, window);
     let tiles = tile_bounds_with(w, h, Some(&picker));
+    // The untiled capture, kept whatever the tiling decides — it is what the
+    // card previews and what a download hands over.
+    let full = write_shot(png)?;
     if tiles.len() == 1 {
-        return write_shot(png);
+        return Ok(format!("full:{full}\n{full}"));
     }
     let mut paths = Vec::new();
     for (i, (y, th)) in tiles.iter().enumerate() {
@@ -1773,7 +1786,7 @@ pub async fn browser_screenshot() -> Result<String, String> {
             .map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
         paths.push(path.to_string_lossy().to_string());
     }
-    Ok(paths.join("\n"))
+    Ok(format!("full:{full}\n{}", paths.join("\n")))
 }
 
 /// Snapshot of just the current viewport (immediate) — for lazy-load pages,

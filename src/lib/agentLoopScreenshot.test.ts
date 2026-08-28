@@ -16,7 +16,10 @@ const { runAgentTurn } = await import("./agentLoop");
 type Ev = { type: string; [k: string]: unknown };
 type Chan = { onmessage?: (ev: Ev) => void };
 
+let lastStepImage: string | undefined;
+
 async function runShot(shotReply: string, mediaChunked = false) {
+  lastStepImage = undefined;
   const rounds = [
     '<tool_call>{"name":"browser_screenshot","arguments":{}}</tool_call>',
     "Looks right, done.",
@@ -40,7 +43,10 @@ async function runShot(shotReply: string, mediaChunked = false) {
       approve: async () => true, approveDir: async () => false, approveSudo: async () => ({ ok: false }),
     } as never,
     {
-      onThinking: () => {}, onAssistantText: () => {}, onStep: () => {},
+      onThinking: () => {}, onAssistantText: () => {},
+      onStep: (s: { image?: string }) => {
+        if (s.image) lastStepImage = s.image;
+      },
       onFinal: () => {}, onError: (m) => { throw new Error(m); },
       onTrace: (ev) => {
         if (ev.kind === "inject" && ev.text.includes("browser_screenshot")) {
@@ -104,6 +110,25 @@ describe("how many tiles ride in one prompt", () => {
     expect(a).not.toBeNull();
     expect(a!.content).toContain("13 segments");
     expect(a!.content).not.toContain("Only the first");
+  });
+
+  it("the step card gets the whole page, not the first segment", async () => {
+    // The two readers of one capture want different things: the model is fed
+    // segments because a picture is one forward pass, and the card is not.
+    const a = await runShot(
+      ["full:/tmp/whole.png", "/tmp/t0.png", "/tmp/t1.png", "/tmp/t2.png"].join("\n"),
+    );
+    expect(lastStepImage).toBe("/tmp/whole.png");
+    // …and the marker never reaches the model as if it were a picture.
+    expect(a!.content).toContain("3 segments");
+    expect(a!.content).not.toContain("whole.png");
+  });
+
+  it("a capture with no full-page marker still shows something", async () => {
+    // browser_snapshot returns a bare path, and so did screenshot before the
+    // marker existed.
+    await runShot("/tmp/only.png");
+    expect(lastStepImage).toBe("/tmp/only.png");
   });
 
   it("a page inside the cap sends everything, with no apology", async () => {
