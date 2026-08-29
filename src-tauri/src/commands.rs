@@ -302,25 +302,58 @@ pub fn get_gpu_usage() -> Option<crate::gpu::GpuUsage> {
     crate::gpu::gpu_usage()
 }
 
+/// How long a page must have been up for its replacement to mean something.
+///
+/// Startup is not one page load. The macOS setup above flips
+/// `mediaDevicesEnabled` and reloads so the page re-evaluates its bindings, and
+/// what arrives after that is a burst — the owner's log shows the extra loads
+/// landing in the SAME second as the process starting, every launch since the
+/// counter existed. A renderer that WebKit killed for growing too large is the
+/// opposite shape: the page it replaces has been up for as long as the session.
+/// Twenty seconds is far above the burst and far below any session worth
+/// interrupting.
+const RELOAD_MIN_UPTIME: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Was this page load a reload worth reporting, given how long the previous
+/// page had been up? `None` is the first load of the process.
+fn reload_is_notable(previous_page_uptime: Option<std::time::Duration>) -> bool {
+    previous_page_uptime.is_some_and(|d| d >= RELOAD_MIN_UPTIME)
+}
+
 /// The frontend reporting that it has just booted.
 ///
-/// Called once per page load. A SECOND call inside one process lifetime means
-/// the webview reloaded underneath us — WebKit kills a renderer that grows too
-/// large and brings it back empty — and any code-mode run that was in flight
-/// died with the JS context, silently, because there is no JS left to notice.
-/// The count is the only evidence that this is what happened, so it goes in the
-/// error log where a report can quote it.
+/// Called once per page load. A call that REPLACES a page which had been up a
+/// while means the webview reloaded underneath us — WebKit kills a renderer
+/// that grows too large and brings it back empty — and whatever the interface
+/// was running died with the JS context, silently, because there is no JS left
+/// to notice. That is the only evidence such a thing happened, so it goes in
+/// the error log where a report can quote it.
+///
+/// The reloads Chaty causes itself at startup are not that, and logging them
+/// buried the signal under two false entries per launch.
 #[tauri::command]
 pub fn note_frontend_ready() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static BOOTS: AtomicUsize = AtomicUsize::new(0);
-    let n = BOOTS.fetch_add(1, Ordering::Relaxed) + 1;
-    if n > 1 {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static LAST: Mutex<Option<(usize, Instant)>> = Mutex::new(None);
+    let now = Instant::now();
+    let (n, previous_uptime) = {
+        let mut g = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        let (n, prev) = match *g {
+            Some((n, at)) => (n + 1, Some(now.duration_since(at))),
+            None => (1, None),
+        };
+        *g = Some((n, now));
+        (n, prev)
+    };
+    if reload_is_notable(previous_uptime) {
+        let up = previous_uptime.unwrap_or_default().as_secs();
         crate::errlog::append_error(
             "webview-reload",
             &format!(
-                "the interface reloaded without the app restarting (page load #{n}); \
-                 a code-mode run in flight at that moment was interrupted"
+                "the interface reloaded without the app restarting (page load #{n}, \
+                 after {up}s on the previous one); anything it was running at that \
+                 moment — a code-mode run included — died with it"
             ),
         );
     }
@@ -1390,6 +1423,26 @@ pub async fn synthesize(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    /// The startup reload the macOS setup issues (and the burst around it)
+    /// must not be reported: it lands in the same second the process starts,
+    /// and reporting it put two false entries in the log on every launch —
+    /// which is exactly the noise that makes a real one unreadable.
+    #[test]
+    fn a_reload_is_reported_only_when_it_replaced_a_live_page() {
+        // First load of the process — nothing was replaced.
+        assert!(!super::reload_is_notable(None));
+        // The startup burst: the owner's log shows these in the same second.
+        assert!(!super::reload_is_notable(Some(Duration::from_millis(0))));
+        assert!(!super::reload_is_notable(Some(Duration::from_secs(1))));
+        assert!(!super::reload_is_notable(Some(Duration::from_secs(19))));
+        // A renderer killed under a running session: the page it replaced had
+        // been up for as long as the work was.
+        assert!(super::reload_is_notable(Some(Duration::from_secs(20))));
+        assert!(super::reload_is_notable(Some(Duration::from_secs(45 * 60))));
+    }
+
     /// The same document always names the same file, a different one does not:
     /// this is what stops "open in browser" from dropping another copy in the
     /// folder on every click.
