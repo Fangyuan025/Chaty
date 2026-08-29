@@ -333,7 +333,7 @@ export const T = {
   deleteModelFile: { zh: "删除该模型文件", en: "Delete this model file", pt: "Excluir este arquivo de modelo" },
   confirmDeleteModel: {
     zh: "永久删除模型文件「{name}」？此操作不可撤销。",
-    en: 'Permanently delete the model file "{name}"? This cannot be undone.',
+    en: 'Permanently delete the model file "{name}"? This cannot be undone.', pt: 'Excluir permanentemente o arquivo de modelo "{name}"? Isso não pode ser desfeito.'
   },
   // html preview
   closePreview: { zh: "关闭预览", en: "Close preview", pt: "Fechar visualização" },
@@ -370,7 +370,7 @@ export const T = {
   toolDesign: { zh: "网页设计模式", en: "Web design mode", pt: "Modo web design" },
   thinkUnsupported: { zh: "当前模型不支持思考模式", en: "This model doesn't support thinking", pt: "Este modelo não suporta modo de raciocínio" },
   // update banner
-  updateAvailable: { zh: "发现新版本 v{v}", en: "Update available — v{v}" },
+  updateAvailable: { zh: "发现新版本 v{v}", en: "Update available — v{v}", pt: "Atualização disponível — v{v}" },
   updateNow: { zh: "立即更新", en: "Update now", pt: "Atualizar agora" },
   updateLater: { zh: "稍后", en: "Later", pt: "Mais tarde" },
   updateDownloading: { zh: "下载中…", en: "Downloading…", pt: "Baixando…" },
@@ -463,7 +463,7 @@ export const T = {
   storeVisionIncluded: { zh: "自动附带视觉编码器", en: "vision encoder included", pt: "codificador de visão incluído" },
   storeReadmeEmpty: { zh: "该仓库没有 README", en: "This repo has no README", pt: "Este repositório não possui README" },
   storeToday: { zh: "今天", en: "today", pt: "hoje" },
-  storeDaysAgo: { zh: "{n} 天前", en: "{n} days ago" },
+  storeDaysAgo: { zh: "{n} 天前", en: "{n} days ago", pt: "Há {n} dias" },
   storeMlxMacOnly: { zh: "MLX 模型仅支持 macOS (Apple Silicon)——请选择 GGUF 版本", en: "MLX models are macOS (Apple Silicon) only — pick a GGUF build instead", pt: "Modelos MLX são apenas para macOS (Apple Silicon) — escolha uma build GGUF" },
   mmprojFailed: {
     zh: "视觉编码器加载失败，本次会话仅支持文本（图片将走 OCR）。",
@@ -472,7 +472,7 @@ export const T = {
   miVision: { zh: "视觉", en: "Vision", pt: "Visão" },
   setupVision: { zh: "支持看图", en: "Understands images", pt: "Entende imagens" },
   truncatedSuffix: { zh: " · 已截断", en: " · truncated", pt: " · truncado" },
-  charsLabel: { zh: "{n} 字", en: "{n} chars" },
+  charsLabel: { zh: "{n} 字", en: "{n} chars", pt: "{n} caracteres" },
   readAttachFailed: { zh: "读取附件失败", en: "Failed to read file", pt: "Falha ao ler o arquivo" },
   dropToAttach: { zh: "松开以添加为附件", en: "Drop to attach", pt: "Solte para anexar" },
   searchConv: { zh: "搜索对话…", en: "Search chats…", pt: "Pesquisar conversas…" },
@@ -660,7 +660,7 @@ export const T = {
   },
   kbFolderConfirm: {
     zh: "在该文件夹及子目录中找到 {n} 个文件，全部导入知识库？",
-    en: "Found {n} files in that folder and its subfolders. Import all of them?",
+    en: "Found {n} files in that folder and its subfolders. Import all of them?", pt: "Encontrados {n} arquivos nessa pasta e subpastas. Importar todos?"
   },
   kbFolderConfirmGo: { zh: "全部导入", en: "Import all", pt: "Importar tudo" },
   kbScopeTip: { zh: "勾选 = 参与检索", en: "Checked = included in retrieval", pt: "Marcado = incluído na busca" },
@@ -830,8 +830,8 @@ export const T = {
   hwBackend: { zh: "GPU 后端", en: "GPU backend", pt: "Backend da GPU" },
   hwAccel: { zh: "当前模型加速", en: "Current model", pt: "Modelo atual" },
   hwNoGpu: { zh: "未检测到独立显卡", en: "No discrete GPU detected", pt: "Nenhuma GPU dedicada detectada" },
-  hwThreads: { zh: "{n} 线程", en: "{n} threads" },
-  hwLayersOn: { zh: "{a}/{b} 层在 GPU", en: "{a}/{b} layers on GPU" },
+  hwThreads: { zh: "{n} 线程", en: "{n} threads", pt: "{n} threads" },
+  hwLayersOn: { zh: "{a}/{b} 层在 GPU", en: "{a}/{b} layers on GPU", pt: "{a}/{b} camadas na GPU" },
   hwCpuOnly: { zh: "纯 CPU 运行", en: "Running on CPU", pt: "Rodando na CPU" },
   hwNoModel: { zh: "未加载模型", en: "No model loaded", pt: "Nenhum modelo carregado" },
   // model info panel
@@ -855,7 +855,7 @@ export const T = {
   // load notices / OOM
   oomPartial: {
     zh: "显存不足，已自动减少 GPU 层数（{a}/{b} 层在 GPU）",
-    en: "Low VRAM — GPU offload reduced to {a}/{b} layers",
+    en: "Low VRAM — GPU offload reduced to {a}/{b} layers", pt: "Pouca VRAM — aceleração por GPU reduzida para {a}/{b} camadas"
   },
   oomCpu: { zh: "显存不足，已回退到 CPU 运行", en: "Low VRAM — fell back to CPU", pt: "Pouca VRAM — caindo para a CPU" },
   cmRunInterrupted: {
@@ -891,11 +891,11 @@ export const T = {
   },
   gpuCrashCapped: {
     zh: "上次加载模型时 GPU 驱动导致程序崩溃，本次已降低 GPU 层数({a}/{b} 层)以求稳妥,速度会慢一些。下一次成功加载后会自动恢复满配;若反复崩溃请更新显卡驱动。",
-    en: "The GPU driver crashed the app during a previous model load, so this one runs with fewer layers on the GPU ({a}/{b}) — slower, but stable. The next load that survives restores full offload; if it keeps crashing, update your GPU driver.",
+    en: "The GPU driver crashed the app during a previous model load, so this one runs with fewer layers on the GPU ({a}/{b}) — slower, but stable. The next load that survives restores full offload; if it keeps crashing, update your GPU driver.", pt: "O driver da GPU travou o aplicativo em um carregamento anterior, então este modelo roda com menos camadas na GPU ({a}/{b}) — mais lento, porém estável. O próximo carregamento bem-sucedido restaurará a aceleração total; se continuar travando, atualize seu driver de GPU."
   },
   ctxClamped: {
     zh: "上下文已按内存自动调整为 {n}（模型权重 + KV 缓存需放入统一内存）",
-    en: "Context auto-fitted to {n} (weights + KV cache must fit in unified memory)",
+    en: "Context auto-fitted to {n} (weights + KV cache must fit in unified memory)", pt: "Contexto ajustado automaticamente para {n} (pesos + cache KV devem caber na memória unificada)"
   },
   oomFail: {
     zh: "内存不足，无法加载该模型。试试更小 / 更高量化的模型，或关闭其他占用内存的程序。",
