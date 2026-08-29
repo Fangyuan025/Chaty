@@ -347,7 +347,7 @@ export const T = {
   },
   confirmDeleteSession: {
     zh: "确定要删除这个编程会话吗？",
-    en: "Delete this coding session?", pt: "Excluir esta sessão de programação?"
+    en: "Delete this coding session?", pt: "Excluir esta sessão de código?"
   },
   pinConv: { zh: "置顶", en: "Pin", pt: "Fixar" },
   unpinConv: { zh: "取消置顶", en: "Unpin", pt: "Desafixar" },
@@ -766,7 +766,7 @@ export const T = {
   setupTitle: { zh: "为这台电脑挑选模型", en: "Models picked for this machine", pt: "Modelos escolhidos para esta máquina" },
   setupBudget: { zh: "可用模型内存约", en: "model memory budget ≈", pt: "orçamento de memória do modelo ≈" },
   setupDownload: { zh: "下载", en: "Download", pt: "Baixar" },
-  setupResolving: { zh: "正在查找…", en: "Resolving…", pt: "Resolvendo…" },
+  setupResolving: { zh: "正在查找…", en: "Resolving…", pt: "Localizando…" },
   setupLoad: { zh: "加载此模型", en: "Load this model", pt: "Carregar este modelo" },
   setupNotFound: { zh: "未找到合适的 GGUF 文件", en: "No suitable GGUF file found", pt: "Nenhum arquivo GGUF adequado encontrado" },
   setupStoreLink: { zh: "想用社区的其他模型?去模型商店逛逛", en: "Want other community models? Browse the model store", pt: "Procurando modelos da comunidade? Explore a loja de modelos" },
@@ -901,7 +901,7 @@ export const T = {
     zh: "内存不足，无法加载该模型。试试更小 / 更高量化的模型，或关闭其他占用内存的程序。",
     en: "Out of memory — couldn't load this model. Try a smaller / more-quantized model, or free up RAM.", pt: "Falta de memória — não foi possível carregar o modelo. Tente um modelo menor ou mais quantizado, ou libere RAM."
   },
-  toastDismiss: { zh: "点击关闭", en: "Click to dismiss", pt: "Clique para descartar" },
+  toastDismiss: { zh: "点击关闭", en: "Click to dismiss", pt: "Clique para fechar" },
   // greetings (time of day)
   greetMorning: { zh: "早上好", en: "Good morning", pt: "Bom dia" },
   greetNoon: { zh: "中午好", en: "Good afternoon", pt: "Boa tarde" },
