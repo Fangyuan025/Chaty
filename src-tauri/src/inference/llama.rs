@@ -731,8 +731,11 @@ impl LlamaEngine {
         let effort_levels = effort_levels_of(template.as_deref().unwrap_or(""));
         let tool_role = probe_tool_role(&model);
         // llama.cpp's chat message carries a role and a body and nothing else,
-        // so a structured reasoning field can never reach a template here.
-        let reasoning_field = false;
+        // so a structured reasoning field cannot reach a template it renders.
+        // Where Chaty renders the prompt itself the field is read straight off
+        // the message, and ATEM's template is one that wants it — its reasoning
+        // is a span of its own, not something to inline into the answer.
+        let reasoning_field = is_muse_glimmer(&model);
         let info = ModelInfo {
             name,
             path: path.to_string(),
@@ -1787,6 +1790,101 @@ fn template_uses_think(model: &LlamaModel) -> bool {
         .unwrap_or(false)
 }
 
+/// Muse Glimmer speaks ATEM, whose template llama.cpp cannot render: its
+/// built-in applier is a matcher over known templates, not a Jinja engine, so
+/// every custom template comes back as a bare error and the fallback chain
+/// lands on ChatML — a model quietly speaking the wrong protocol. The GGUF
+/// declares the architecture, which is the reliable marker.
+fn is_muse_glimmer(model: &LlamaModel) -> bool {
+    model
+        .meta_val_str("general.architecture")
+        .map(|a| a.to_lowercase().contains("muse-glimmer") || a.to_lowercase().contains("muse_glimmer"))
+        .unwrap_or(false)
+}
+
+/// Native renderer for ATEM:
+///
+/// ```text
+/// <|start|>system<|message|>…\n\nReasoning strength: high.\n\n# Valid recipients: "self", "user".<|eot|>
+/// <|start|>user<|message|>…<|eot|>
+/// <|start|>assistant to=self<|message|>…<|eom|><|start|>assistant to=user<|message|>…<|eot|>
+/// <|start|>assistant
+/// ```
+///
+/// Each span is addressed to a recipient rather than tagged: `to=self` is the
+/// reasoning, `to=user` the answer. The generation prompt stops after
+/// `<|start|>assistant`, so the model picks its own recipient — which is why
+/// the stored turn has to carry both spans or the next prompt stops being an
+/// append of the last.
+///
+/// The rung sentence is always written at `high`, the value the template's own
+/// default renders; `apply_effort` rewrites it in place for the other rungs.
+/// Tool definitions are not rendered here: Chaty carries its tool manual in the
+/// system message, not through the template's `tools` argument.
+fn render_muse_glimmer(messages: &[ChatMessage], add_gen: bool) -> String {
+    const RECIPIENTS: &str = "# Valid recipients: \"self\", \"user\".";
+    let mut p = String::new();
+    if !messages.iter().any(|m| matches!(m.role, Role::System)) {
+        p.push_str("<|start|>system<|message|>You are a helpful AI assistant.");
+        p.push_str("\nKnowledge cutoff: 2026-01-04.");
+        p.push_str("\n\n");
+        p.push_str(STRENGTH_PREFIX);
+        p.push_str("high.\n\n");
+        p.push_str(RECIPIENTS);
+        p.push_str("<|eot|>");
+    }
+    for m in messages {
+        match m.role {
+            Role::System => {
+                p.push_str("<|start|>system<|message|>");
+                p.push_str(&m.content);
+                // The template leaves a caller-written directive alone and adds
+                // its own only when there is none.
+                if !m.content.to_lowercase().contains("reasoning strength") {
+                    p.push_str("\n\n");
+                    p.push_str(STRENGTH_PREFIX);
+                    p.push_str("high.");
+                }
+                p.push_str("\n\n");
+                p.push_str(RECIPIENTS);
+                p.push_str("<|eot|>");
+            }
+            Role::User => {
+                p.push_str("<|start|>user<|message|>");
+                p.push_str(&m.content);
+                p.push_str("<|eot|>");
+            }
+            Role::Tool => {
+                // Chaty's results arrive without the name the template would
+                // look up from a structured call, and the name is written twice
+                // — keep both spellings consistent whatever it is.
+                let name = "tool";
+                p.push_str("<|start|>tool ");
+                p.push_str(name);
+                p.push_str("<|message|><tool_output name=\"");
+                p.push_str(name);
+                p.push_str("\">\n");
+                p.push_str(&m.content);
+                p.push_str("\n</tool_output><|eot|>");
+            }
+            Role::Assistant => {
+                if let Some(r) = m.reasoning_content.as_deref().filter(|r| !r.is_empty()) {
+                    p.push_str("<|start|>assistant to=self<|message|>");
+                    p.push_str(r);
+                    p.push_str("<|eom|>");
+                }
+                p.push_str("<|start|>assistant to=user<|message|>");
+                p.push_str(&m.content);
+                p.push_str("<|eot|>");
+            }
+        }
+    }
+    if add_gen {
+        p.push_str("<|start|>assistant");
+    }
+    p
+}
+
 fn build_prompt_pair(
     model: &LlamaModel,
     messages: &[ChatMessage],
@@ -2235,18 +2333,34 @@ fn render_chat(model: &LlamaModel, messages: &[ChatMessage], add_ass: bool) -> R
             .context("invalid message content")
     }
 
+    // ATEM has no thinking-off branch — the rung ladder is the control — so
+    // `think` never reaches this renderer, which is why it can live here rather
+    // than beside the Gemma 4 one. Every caller needs it, the load-time probes
+    // included: a probe that measured the ChatML fallback would decide how to
+    // store turns for a protocol the model does not speak.
+    if is_muse_glimmer(model) {
+        return Ok(render_muse_glimmer(messages, add_ass));
+    }
+
     let chat = to_chat(messages)?;
     let folded = fold_system(messages);
     let folded_chat = to_chat(&folded)?;
 
+    // Why the embedded template was rejected, kept for the fallback message
+    // below: falling back silently turns a template this llama.cpp cannot parse
+    // into a model that quietly speaks the wrong protocol.
+    let mut rejected = String::new();
     if let Ok(t) = model.chat_template(None) {
-        if let Ok(p) = model.apply_chat_template(&t, &chat, add_ass) {
-            return Ok(p);
+        match model.apply_chat_template(&t, &chat, add_ass) {
+            Ok(p) => return Ok(p),
+            Err(e) => rejected = e.to_string(),
         }
         if let Ok(p) = model.apply_chat_template(&t, &folded_chat, add_ass) {
             eprintln!("chat template rejected the system role; folded it into the user turn");
             return Ok(p);
         }
+    } else {
+        rejected = "the model embeds no chat template".to_string();
     }
 
     let arch = model
@@ -2256,7 +2370,9 @@ fn render_chat(model: &LlamaModel, messages: &[ChatMessage], add_ass: bool) -> R
     for name in builtin_template_candidates(&arch) {
         if let Ok(t) = LlamaChatTemplate::new(name) {
             if let Ok(p) = model.apply_chat_template(&t, &folded_chat, add_ass) {
-                eprintln!("embedded chat template unusable; using built-in '{name}' (arch: {arch})");
+                eprintln!(
+                    "embedded chat template unusable; using built-in '{name}' (arch: {arch}): {rejected}"
+                );
                 return Ok(p);
             }
         }
@@ -2675,6 +2791,51 @@ mod tests {
         // Unknown rungs and prompts the sentence never reached are untouched.
         assert_eq!(super::apply_effort(&rendered, "bogus"), rendered);
         assert_eq!(super::apply_effort("plain prompt", "low"), "plain prompt");
+    }
+
+    #[test]
+    fn an_atem_turn_carries_both_of_its_spans() {
+        use super::{ChatMessage, Role};
+        let msg = |role: Role, content: &str, reasoning: Option<&str>| ChatMessage {
+            role,
+            content: content.into(),
+            reasoning_content: reasoning.map(str::to_string),
+            images: vec![],
+        };
+        let live = super::render_muse_glimmer(
+            &[msg(Role::System, "Be terse.", None), msg(Role::User, "q", None)],
+            true,
+        );
+        assert!(live.contains("Reasoning strength: high."), "{live}");
+        assert!(live.contains(r#"# Valid recipients: "self", "user"."#), "{live}");
+        // The generation prompt stops before the recipient — the model picks it.
+        assert!(live.ends_with("<|start|>assistant"), "{live}");
+
+        // The stored turn carries reasoning and answer as separate spans, and
+        // the next prompt is a pure append onto the last one.
+        let next = super::render_muse_glimmer(
+            &[
+                msg(Role::System, "Be terse.", None),
+                msg(Role::User, "q", None),
+                msg(Role::Assistant, "A", Some("R")),
+                msg(Role::User, "q2", None),
+            ],
+            true,
+        );
+        assert!(
+            next.starts_with(
+                &(live.clone() + " to=self<|message|>R<|eom|><|start|>assistant to=user<|message|>A")
+            ),
+            "{next}"
+        );
+
+        // A caller that wrote its own rung directive keeps it — the template
+        // adds its sentence only when there is none.
+        let own = super::render_muse_glimmer(
+            &[msg(Role::System, "Reasoning strength: low.", None)],
+            false,
+        );
+        assert_eq!(own.matches("Reasoning strength").count(), 1, "{own}");
     }
 
     #[test]
