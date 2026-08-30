@@ -164,6 +164,9 @@ struct ModelMeta {
     /// Native reasoning-effort ladder the template accepts, weakest first
     /// (Qwen3.8: low/medium/xhigh). Empty ⇒ no effort control.
     var effortLevels: [String] = []
+    /// Which kwarg the template reads the rung from — the name differs by
+    /// protocol, and passing the wrong one is silently ignored.
+    var effortKwarg = "reasoning_effort"
     var toolRole = false
     var reasoningField = false
     /// Best effort: the model emits <think> reasoning.
@@ -850,14 +853,25 @@ func inspectModelDir(_ dir: URL) -> ModelMeta {
     }
     meta.hasChatTemplate = !template.isEmpty
     meta.thinkArg = template.contains("enable_thinking")
-    if template.contains("reasoning_effort") {
+    // ATEM (Muse Glimmer) renders its rung into a sentence instead of
+    // branching on each name, so the ladder cannot be read back out of the
+    // template — these four are the protocol's.
+    if template.contains("reasoning_strength") {
+        meta.effortLevels = ["low", "medium", "high", "xhigh"]
+        meta.effortKwarg = "reasoning_strength"
+    } else if template.contains("reasoning_effort") {
         meta.effortLevels = ["low", "medium", "xhigh"].filter {
             template.contains("'\($0)'") || template.contains("\"\($0)\"")
         }
+        meta.effortKwarg = "reasoning_effort"
     }
     let archLower = (meta.arch ?? "").lowercased()
+    // A rung ladder is itself a thinking model: ATEM reasons in a channel of
+    // its own, with neither a `<think>` tag nor an `enable_thinking` switch to
+    // recognise it by.
     meta.supportsThinking =
         template.contains("<think>") || meta.thinkArg || archLower.contains("qwen3")
+        || !meta.effortLevels.isEmpty
     meta.supportsTools = template.contains("tool_call") || template.contains("tools")
     return meta
 }
@@ -1180,7 +1194,7 @@ final class Engine: @unchecked Sendable {
         // Native effort rung — only when the template declares the ladder and
         // thinking isn't off (the template rejects unknown values outright).
         if let effort = p.effort, meta.effortLevels.contains(effort), p.think != false {
-            extra["reasoning_effort"] = effort
+            extra[meta.effortKwarg] = effort
         }
         let userInput = UserInput(chat: chat, additionalContext: extra.isEmpty ? nil : extra)
         // The library's message generator emits role/content only, so a

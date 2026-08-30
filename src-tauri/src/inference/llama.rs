@@ -1901,6 +1901,8 @@ pub(crate) fn is_qwen3_5_plus_arch(arch_lc: &str) -> bool {
 /// The three sentences Qwen3.8's chat template injects for its
 /// `reasoning_effort` ladder, verbatim from the official template. `medium`
 /// deliberately injects nothing — it is the neutral baseline.
+/// ATEM's rung sentence, up to the rung itself.
+pub(crate) const STRENGTH_PREFIX: &str = "Reasoning strength: ";
 pub(crate) const EFFORT_XHIGH: &str = "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.";
 pub(crate) const EFFORT_LOW: &str = "Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.";
 
@@ -2064,6 +2066,16 @@ fn probe_tool_role(model: &LlamaModel) -> bool {
 }
 
 pub(crate) fn effort_levels_of(template: &str) -> Vec<String> {
+    // ATEM (Muse Glimmer) renders its rung into a sentence — `Reasoning
+    // strength: <rung>.` — instead of branching on each name, so the ladder
+    // cannot be read back out of the template the way the Qwen one can. The
+    // four rungs are the protocol's, not the template's.
+    if template.contains("reasoning_strength") {
+        return ["low", "medium", "high", "xhigh"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+    }
     if !template.contains("reasoning_effort") {
         return Vec::new();
     }
@@ -2082,6 +2094,36 @@ pub(crate) fn effort_levels_of(template: &str) -> Vec<String> {
 /// Anything unexpected (finetuned template, fallback renderer that never
 /// emitted the sentence) leaves the prompt untouched.
 pub(crate) fn apply_effort(prompt: &str, effort: &str) -> String {
+    // ATEM states the rung in one sentence, and its template re-reads that
+    // sentence from the system block when the caller already wrote one —
+    // rewriting it in place is byte-identical to what the template renders for
+    // that rung, which is the same trick the Qwen branch below relies on.
+    if prompt.contains(STRENGTH_PREFIX) {
+        if !["low", "medium", "high", "xhigh"].contains(&effort) {
+            return prompt.to_string();
+        }
+        let mut out = String::with_capacity(prompt.len());
+        let mut rest = prompt;
+        while let Some(i) = rest.find(STRENGTH_PREFIX) {
+            let after = &rest[i + STRENGTH_PREFIX.len()..];
+            // Only a bare rung word ends the sentence; anything else is prose
+            // that merely opens the same way and is left alone.
+            match after.find('.') {
+                Some(dot) if after[..dot].chars().all(|c| c.is_ascii_alphabetic()) => {
+                    out.push_str(&rest[..i]);
+                    out.push_str(STRENGTH_PREFIX);
+                    out.push_str(effort);
+                    rest = &after[dot..];
+                }
+                _ => {
+                    out.push_str(&rest[..i + STRENGTH_PREFIX.len()]);
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        return out;
+    }
     if !prompt.contains(EFFORT_XHIGH) {
         return prompt.to_string();
     }
@@ -2633,6 +2675,31 @@ mod tests {
         // Unknown rungs and prompts the sentence never reached are untouched.
         assert_eq!(super::apply_effort(&rendered, "bogus"), rendered);
         assert_eq!(super::apply_effort("plain prompt", "low"), "plain prompt");
+    }
+
+    #[test]
+    fn an_atem_prompt_states_its_rung_in_one_sentence() {
+        // The ladder is the protocol's: the template renders the rung into a
+        // sentence rather than naming each one, so nothing to filter on.
+        assert_eq!(
+            super::effort_levels_of("{{- 'Reasoning strength: ' + reasoning_strength + '.' -}}"),
+            vec!["low", "medium", "high", "xhigh"]
+        );
+
+        // llama.cpp renders with default kwargs, which is `high`.
+        let rendered = "<|start|>system<|message|>Knowledge cutoff: 2026-01.\n\nReasoning strength: high.\n\nYou are helpful.<|eot|>";
+        assert_eq!(super::apply_effort(rendered, "high"), rendered);
+        let low = super::apply_effort(rendered, "low");
+        assert!(low.contains("Reasoning strength: low."), "{low}");
+        assert!(low.contains("You are helpful."), "{low}");
+        assert!(!low.contains("high"), "{low}");
+        assert!(super::apply_effort(rendered, "xhigh").contains("Reasoning strength: xhigh."));
+
+        // An unknown rung is not written into the prompt.
+        assert_eq!(super::apply_effort(rendered, "bogus"), rendered);
+        // Prose that merely opens the same way is not a rung sentence.
+        let prose = "Reasoning strength: the model decides how long to think.";
+        assert_eq!(super::apply_effort(prose, "low"), prose);
     }
 
     use super::*;
