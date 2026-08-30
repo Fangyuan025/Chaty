@@ -958,6 +958,9 @@ final class Engine: @unchecked Sendable {
             // withError: C-level MLX failures during weight load (Metal OOM
             // on a too-big model) must surface as a load error, not kill the
             // sidecar — same boxing as the generate path.
+            // Architectures mlx-swift-lm does not carry, taught to the
+            // factory before it is asked for one. Idempotent.
+            await MuseGlimmerRegistration.register()
             let container: ModelContainer = try await withError {
                 if useVLM {
                     return try await VLMModelFactory.shared.loadContainer(
