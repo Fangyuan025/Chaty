@@ -24,7 +24,7 @@ import MLXLLM
 import MLXLMCommon
 import MLXNN
 
-public struct MuseGlimmerConfiguration: Codable, Sendable {
+public struct MuseGlimmerConfiguration: Decodable, Sendable {
     var hiddenSize: Int
     var intermediateSize: Int
     var hiddenLayers: Int
@@ -74,10 +74,24 @@ public struct MuseGlimmerConfiguration: Codable, Sendable {
         case layerTypes = "layer_types"
         case noRopeLayers = "no_rope_layers"
         case normalizeTokEmbeddings = "normalize_tok_embeddings"
+        case textConfig = "text_config"
+        case packagedFormat = "muse_glimmer_mlx_format"
+        case layerRopeTheta = "layer_rope_theta"
+        case finalLogitSoftcapping = "final_logit_softcapping"
     }
 
+    /// The packaged artifact states the scale already divided by
+    /// `sqrt(head_dim)`; the HF/RC config states the reference's own constant.
+    /// Same effective scale, two different numbers under one key name.
+    var packagedScale = true
+
     public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let outer = try decoder.container(keyedBy: CodingKeys.self)
+        // Multimodal exports nest the language model's own config; the text
+        // keys below read the same either way.
+        let c =
+            (try? outer.nestedContainer(keyedBy: CodingKeys.self, forKey: .textConfig)) ?? outer
+        packagedScale = try outer.decodeIfPresent(Int.self, forKey: .packagedFormat) != nil
         hiddenSize = try c.decode(Int.self, forKey: .hiddenSize)
         intermediateSize = try c.decode(Int.self, forKey: .intermediateSize)
         hiddenLayers = try c.decode(Int.self, forKey: .hiddenLayers)
@@ -91,10 +105,20 @@ public struct MuseGlimmerConfiguration: Codable, Sendable {
         postNormEps = try c.decodeIfPresent(Float.self, forKey: .postNormEps) ?? 1e-8
         qkScaleFactor = try c.decodeIfPresent(Float.self, forKey: .qkScaleFactor) ?? 1
         outputMultiplier = try c.decodeIfPresent(Float.self, forKey: .outputMultiplier) ?? 1
-        outputSoftCapTemp = try c.decodeIfPresent(Float.self, forKey: .outputSoftCapTemp) ?? 0
+        outputSoftCapTemp =
+            try c.decodeIfPresent(Float.self, forKey: .outputSoftCapTemp)
+            ?? c.decodeIfPresent(Float.self, forKey: .finalLogitSoftcapping) ?? 0
         tieWordEmbeddings = try c.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings) ?? false
         layerTypes = try c.decodeIfPresent([String].self, forKey: .layerTypes) ?? []
-        noRopeLayers = try c.decodeIfPresent([Int].self, forKey: .noRopeLayers) ?? []
+        // Two spellings of the same schedule: a flag per layer, or the layer's
+        // own rope base with zero standing for "no rotary embedding here".
+        if let flags = try c.decodeIfPresent([Int].self, forKey: .noRopeLayers) {
+            noRopeLayers = flags
+        } else if let thetas = try c.decodeIfPresent([Float].self, forKey: .layerRopeTheta) {
+            noRopeLayers = thetas.map { $0 > 0 ? 1 : 0 }
+        } else {
+            noRopeLayers = []
+        }
         normalizeTokEmbeddings =
             try c.decodeIfPresent(Bool.self, forKey: .normalizeTokEmbeddings) ?? true
     }
@@ -125,7 +149,10 @@ private class MuseGlimmerAttention: Module {
         // `qk_scale_factor / sqrt(head_dim)` and then lets SDPA apply its own
         // `1 / sqrt(head_dim)`. Softmax scaling is linear in q and RoPE is
         // orthogonal, so both fold into one constant here.
-        self.scale = args.qkScaleFactor / Float(args.headDim)
+        self.scale =
+            args.packagedScale
+            ? args.qkScaleFactor / Float(args.headDim)
+            : args.qkScaleFactor * pow(Float(args.headDim), -0.5)
 
         let dim = args.hiddenSize
         // The reference keeps `output_gate_proj` beside `q_proj`, both reading
@@ -295,6 +322,72 @@ public class MuseGlimmerModel: Module, LLMModel, KVCacheDimensionProvider {
         if config.outputSoftCapTemp > 0 {
             let cap = config.outputSoftCapTemp
             out = tanh(out / cap) * cap
+        }
+        return out
+    }
+
+    /// Normalise a multimodal HF export into the shape this model declares.
+    ///
+    /// Two conventions ship under the same architecture. A packaged MLX
+    /// artifact is already in this shape and passes straight through. An HF
+    /// export nests the language model under its own prefix, names the four
+    /// norms positionally rather than by role, stores those norms as offsets
+    /// from 1.0, and keeps the attention gate as a projection of its own.
+    ///
+    /// The renames are POSITIONAL and must not cascade: the export's
+    /// `post_attention_layernorm` is the sandwich norm AFTER attention, while
+    /// the name this model uses for it belongs to the norm before the MLP. One
+    /// match per key, first match wins.
+    public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        guard weights.keys.contains(where: { $0.hasPrefix("language_model.") }) else {
+            return weights
+        }
+        let renames = [
+            (".post_attention_layernorm.", ".post_attn_norm."),
+            (".pre_feedforward_layernorm.", ".post_attention_layernorm."),
+            (".post_feedforward_layernorm.", ".post_ffn_norm."),
+        ]
+        let offsetNorms = [
+            "input_layernorm.weight", "post_attn_norm.weight",
+            "post_attention_layernorm.weight", "post_ffn_norm.weight",
+        ]
+
+        var out: [String: MLXArray] = [:]
+        var gates: [String: MLXArray] = [:]
+        for (rawKey, value) in weights {
+            // The vision tower is not built here; its weights are dropped
+            // rather than left to fail against a model that has no slot.
+            if rawKey.hasPrefix("vision_") { continue }
+            var key = rawKey
+            if key.hasPrefix("language_model.") {
+                key = String(key.dropFirst("language_model.".count))
+            }
+            for (from, to) in renames where key.contains(from) {
+                key = key.replacingOccurrences(of: from, with: to)
+                break
+            }
+            if key.contains(".self_attn.gate_proj.") {
+                gates[key.replacingOccurrences(of: ".gate_proj.", with: ".q_proj.")] = value
+                continue
+            }
+            var w = value
+            if offsetNorms.contains(where: { key.hasSuffix($0) }) {
+                w = w + 1.0
+            }
+            out[key] = w
+        }
+
+        // `[q_head; gate_head]` per head, which is a reordering of output rows
+        // and so applies to a quantised tensor's packed weight, scales and
+        // biases the same way.
+        let H = config.attentionHeads
+        let D = config.headDim
+        for (key, gate) in gates {
+            guard let q = out[key] else { continue }
+            let cols = q.dim(1)
+            out[key] = concatenated(
+                [q.reshaped(H, D, cols), gate.reshaped(H, D, cols)], axis: 1
+            ).reshaped(2 * H * D, cols)
         }
         return out
     }

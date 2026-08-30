@@ -984,14 +984,31 @@ final class Engine: @unchecked Sendable {
             // Architectures mlx-swift-lm does not carry, taught to the
             // factory before it is asked for one. Idempotent.
             await MuseGlimmerRegistration.register()
-            let container: ModelContainer = try await withError {
-                if useVLM {
-                    return try await VLMModelFactory.shared.loadContainer(
-                        from: dir, using: #huggingFaceTokenizerLoader())
-                } else {
-                    return try await LLMModelFactory.shared.loadContainer(
-                        from: dir, using: #huggingFaceTokenizerLoader())
+            let loadText: @Sendable () async throws -> ModelContainer = {
+                try await LLMModelFactory.shared.loadContainer(
+                    from: dir, using: #huggingFaceTokenizerLoader())
+            }
+            var container: ModelContainer
+            do {
+                container = try await withError {
+                    if useVLM {
+                        return try await VLMModelFactory.shared.loadContainer(
+                            from: dir, using: #huggingFaceTokenizerLoader())
+                    }
+                    return try await loadText()
                 }
+            } catch {
+                // The two factories do not carry the same set of
+                // architectures. When only the text one knows this model, its
+                // language half is still fully loadable — its sanitize drops
+                // the vision weights — so load that and say vision is off,
+                // rather than refusing a model that mostly works.
+                guard useVLM, "\(error)".contains("unsupportedModelType") else { throw error }
+                log("no vision implementation for \(meta.arch ?? "?"); loading text-only")
+                meta.multimodal = false
+                loadWarning = "vision-unsupported"
+                self.meta = meta
+                container = try await withError { try await loadText() }
             }
             self.container = container
             // Ask the loaded template itself, rather than guessing from a name.
