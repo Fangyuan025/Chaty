@@ -12,6 +12,7 @@ import { LiveMode } from "./components/LiveMode";
 import { ModelInfoPanel } from "./components/ModelInfoPanel";
 import { WindowControls } from "./components/WindowControls";
 import { useI18n, type Lang, type TKey, detectLang } from "./lib/i18n";
+import { effortLabel } from "./lib/effort";
 import {
   decodeAudio,
   encodeAudio,
@@ -3352,9 +3353,7 @@ export default function App() {
                                 setThinkingOn(true);
                               }}
                             >
-                              <span className="ti-label">
-                                {t(lvl === "low" ? "effortLow" : lvl === "medium" ? "effortMedium" : "effortXhigh")}
-                              </span>
+                              <span className="ti-label">{effortLabel(lvl, t)}</span>
                               <span className="ti-check">
                                 {thinkEnabled && effort === lvl ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}
                               </span>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { agentLang, useI18n } from "../lib/i18n";
+import { effortLabel } from "../lib/effort";
 import { diffLines } from "../lib/diff";
 import { useConfirm } from "./ConfirmModal";
 import { BUILTIN_SKILLS } from "../lib/skills";
@@ -93,16 +94,23 @@ interface CodeMsg {
 }
 
 const THINK_MODES: ThinkMode[] = ["off", "normal", "deep"];
-/** Models with a native effort ladder (Qwen3.8) show the model's own rungs
- *  instead of Chaty's generic intensities — off still means enable_thinking
- *  false, which the ladder itself has no rung for. */
-const NATIVE_THINK_MODES: ThinkMode[] = ["off", "low", "normal", "deep"];
-/** thinkMode → the native rung it requests. */
+/** thinkMode → the native rung it maps onto, for a model whose ladder happens
+ *  to carry those names. Only a starting point now: a model with its own
+ *  ladder shows that ladder, however many rungs it has. */
 const EFFORT_OF: Partial<Record<ThinkMode, string>> = {
   low: "low",
   normal: "medium",
   deep: "xhigh",
 };
+/** Which of Chaty's own intensities a rung stands at — it still drives the
+ *  thinking budget and the prompt-side nudge, neither of which the model's
+ *  ladder says anything about. Position, not name, so a four-rung ladder
+ *  works as well as a three-rung one. */
+function intensityOf(levels: string[], rung: string): ThinkMode {
+  const i = levels.indexOf(rung);
+  if (i <= 0) return "low";
+  return i === levels.length - 1 ? "deep" : "normal";
+}
 
 const RAIL_DEFAULT = 240;
 const RAIL_MIN = 180;
@@ -580,7 +588,8 @@ export function CodeMode({
   const [bypass, setBypass] = useState(false);
   /** The model exposes a native reasoning-effort ladder (Qwen3.8) — the think
    *  switch then shows the model's own rungs instead of Chaty's intensities. */
-  const nativeEffort = (model?.effortLevels?.length ?? 0) > 0;
+  const effortLevels = useMemo(() => model?.effortLevels ?? [], [model?.effortLevels]);
+  const nativeEffort = effortLevels.length > 0;
   /** Set when a turn pauses on a loop the model could not get out of; consumed
    *  by the next turn so "Continue" picks the escape up where it stopped. */
   const stuckRef = useRef<StuckState | null>(null);
@@ -588,6 +597,25 @@ export function CodeMode({
     const v = localStorage.getItem("chaty.code.think");
     return v === "off" || v === "low" || v === "normal" || v === "deep" ? v : "normal";
   });
+  /** The rung chosen on the model's own ladder. Kept apart from `thinkMode`
+   *  because that is Chaty's intensity, which also survives models with no
+   *  ladder at all. */
+  const [codeEffort, setCodeEffort] = useState<string>(() => {
+    try {
+      return localStorage.getItem("chaty.code.effort") || "";
+    } catch {
+      return "";
+    }
+  });
+  /** The rung to show as chosen: the stored one while this model still offers
+   *  it, otherwise whatever Chaty's current intensity maps onto, otherwise the
+   *  ladder's second rung — which is where the old three-rung default sat. */
+  const rung = useMemo(() => {
+    if (effortLevels.includes(codeEffort)) return codeEffort;
+    const mapped = EFFORT_OF[thinkMode];
+    if (mapped && effortLevels.includes(mapped)) return mapped;
+    return effortLevels[Math.min(1, effortLevels.length - 1)] ?? "";
+  }, [effortLevels, codeEffort, thinkMode]);
   const [approval, setApproval] = useState<{ call: ToolCall; resolve: (ok: boolean) => void } | null>(null);
   /** Out-of-workspace access request from the agent (grant persists this session). */
   const [dirAsk, setDirAsk] = useState<{ dir: string; resolve: (ok: boolean) => void } | null>(null);
@@ -1319,7 +1347,7 @@ export function CodeMode({
       resume: resumeFrom ?? undefined,
       supportsThinking: model.supportsThinking,
       thinkSwitch: model.thinkSwitch,
-      effort: nativeEffort ? EFFORT_OF[thinkMode] : undefined,
+      effort: nativeEffort && thinkMode !== "off" ? rung : undefined,
       nCtx: model.nCtx ?? undefined,
       maxSteps,
       temperature,
@@ -1592,31 +1620,42 @@ export function CodeMode({
             );
           })()}
           <div className="cm-think-switch" title={t(nativeEffort ? "effortHint" : "cmThinkHint")}>
-            {(nativeEffort ? NATIVE_THINK_MODES : THINK_MODES).map((mode) => (
-              <button
-                key={mode}
-                className={`cm-think-tab ${thinkMode === mode ? "active" : ""}`}
-                onClick={() => {
-                  setThinkMode(mode);
-                  localStorage.setItem("chaty.code.think", mode);
-                }}
-                disabled={running}
-              >
-                {t(
-                  mode === "off"
-                    ? "cmThinkOff"
+            {/* A model with its own ladder shows that ladder, whatever its
+                length; `off` is Chaty's, because a ladder has no rung for
+                not thinking at all. */}
+            {(nativeEffort ? ["off", ...effortLevels] : THINK_MODES).map((tab) => {
+              const active = tab === "off" ? thinkMode === "off" : nativeEffort && thinkMode !== "off" && rung === tab;
+              return (
+                <button
+                  key={tab}
+                  className={`cm-think-tab ${active ? "active" : ""}`}
+                  onClick={() => {
+                    if (tab === "off") {
+                      setThinkMode("off");
+                      localStorage.setItem("chaty.code.think", "off");
+                      return;
+                    }
+                    if (!nativeEffort) {
+                      setThinkMode(tab as ThinkMode);
+                      localStorage.setItem("chaty.code.think", tab);
+                      return;
+                    }
+                    const mode = intensityOf(effortLevels, tab);
+                    setCodeEffort(tab);
+                    setThinkMode(mode);
+                    localStorage.setItem("chaty.code.effort", tab);
+                    localStorage.setItem("chaty.code.think", mode);
+                  }}
+                  disabled={running}
+                >
+                  {tab === "off"
+                    ? t("cmThinkOff")
                     : nativeEffort
-                      ? mode === "low"
-                        ? "effortLow"
-                        : mode === "normal"
-                          ? "effortMedium"
-                          : "effortXhigh"
-                      : mode === "normal"
-                        ? "cmThinkNormal"
-                        : "cmThinkDeep",
-                )}
-              </button>
-            ))}
+                      ? effortLabel(tab, t)
+                      : t(tab === "normal" ? "cmThinkNormal" : "cmThinkDeep")}
+                </button>
+              );
+            })}
           </div>
           <button
             className={`cm-bypass ${bypass ? "on" : ""}`}
