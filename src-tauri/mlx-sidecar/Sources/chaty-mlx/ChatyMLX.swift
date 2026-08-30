@@ -984,6 +984,7 @@ final class Engine: @unchecked Sendable {
             // Architectures mlx-swift-lm does not carry, taught to the
             // factory before it is asked for one. Idempotent.
             await MuseGlimmerRegistration.register()
+            await MuseGlimmerVisionRegistration.register()
             let loadText: @Sendable () async throws -> ModelContainer = {
                 try await LLMModelFactory.shared.loadContainer(
                     from: dir, using: #huggingFaceTokenizerLoader())
@@ -1004,7 +1005,9 @@ final class Engine: @unchecked Sendable {
                 // the vision weights — so load that and say vision is off,
                 // rather than refusing a model that mostly works.
                 guard useVLM, "\(error)".contains("unsupportedModelType") else { throw error }
-                log("no vision implementation for \(meta.arch ?? "?"); loading text-only")
+                log(
+                    "no vision implementation for \(meta.arch ?? "?"); loading text-only: "
+                        + "\(error)")
                 meta.multimodal = false
                 loadWarning = "vision-unsupported"
                 self.meta = meta

@@ -126,7 +126,7 @@ public struct MuseGlimmerConfiguration: Decodable, Sendable {
 
 /// RMS with no learnable weight — the checkpoint has none for q/k, and the
 /// scale it removes is restored by `qk_scale_factor`.
-private func rmsNormPlain(_ x: MLXArray, eps: Float) -> MLXArray {
+func rmsNormPlain(_ x: MLXArray, eps: Float) -> MLXArray {
     x * rsqrt(mean(x * x, axis: -1, keepDims: true) + eps)
 }
 
@@ -272,9 +272,18 @@ private class MuseGlimmerModelInner: Module {
         self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
     }
 
-    func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
-        var h = embedTokens(inputs)
-        if embedNorm { h = rmsNormPlain(h, eps: args.rmsNormEps) }
+    /// The embedding norm is part of building the embeddings, so a caller that
+    /// brings its own — the multimodal path, which scatters image features in
+    /// after norming them separately — has already applied it.
+    func embed(_ inputs: MLXArray) -> MLXArray {
+        let h = embedTokens(inputs)
+        return embedNorm ? rmsNormPlain(h, eps: args.rmsNormEps) : h
+    }
+
+    func callAsFunction(
+        _ inputs: MLXArray?, cache: [KVCache]? = nil, inputEmbeddings: MLXArray? = nil
+    ) -> MLXArray {
+        var h = inputEmbeddings ?? embed(inputs!)
 
         // Two masks, because the two kinds of layer see different spans: the
         // full layers attend over everything, the sliding ones over a 2048
@@ -302,6 +311,10 @@ public class MuseGlimmerModel: Module, LLMModel, KVCacheDimensionProvider {
     fileprivate let model: MuseGlimmerModelInner
     let config: MuseGlimmerConfiguration
 
+    /// Token embeddings, normed the way the model expects them — the
+    /// multimodal path builds on these before scattering image features in.
+    func embed(_ inputs: MLXArray) -> MLXArray { model.embed(inputs) }
+
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
 
     public init(_ args: MuseGlimmerConfiguration) {
@@ -315,7 +328,13 @@ public class MuseGlimmerModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        let h = model(inputs, cache: cache)
+        callAsFunction(inputs, cache: cache, inputEmbeddings: nil)
+    }
+
+    func callAsFunction(
+        _ inputs: MLXArray?, cache: [KVCache]?, inputEmbeddings: MLXArray?
+    ) -> MLXArray {
+        let h = model(inputs, cache: cache, inputEmbeddings: inputEmbeddings)
         var out = lmHead?(h) ?? model.embedTokens.asLinear(h)
         // Reference: softcap * tanh(logits * output_multiplier / softcap).
         out = out * config.outputMultiplier
@@ -342,56 +361,74 @@ public class MuseGlimmerModel: Module, LLMModel, KVCacheDimensionProvider {
         guard weights.keys.contains(where: { $0.hasPrefix("language_model.") }) else {
             return weights
         }
-        let renames = [
-            (".post_attention_layernorm.", ".post_attn_norm."),
-            (".pre_feedforward_layernorm.", ".post_attention_layernorm."),
-            (".post_feedforward_layernorm.", ".post_ffn_norm."),
-        ]
-        let offsetNorms = [
-            "input_layernorm.weight", "post_attn_norm.weight",
-            "post_attention_layernorm.weight", "post_ffn_norm.weight",
-        ]
+        return museGlimmerNormalize(
+            weights, heads: config.attentionHeads, headDim: config.headDim,
+            stripLanguagePrefix: true)
+    }
+}
 
-        var out: [String: MLXArray] = [:]
-        var gates: [String: MLXArray] = [:]
-        for (rawKey, value) in weights {
-            // The vision tower is not built here; its weights are dropped
-            // rather than left to fail against a model that has no slot.
-            if rawKey.hasPrefix("vision_") { continue }
-            var key = rawKey
-            if key.hasPrefix("language_model.") {
-                key = String(key.dropFirst("language_model.".count))
-            }
-            for (from, to) in renames where key.contains(from) {
-                key = key.replacingOccurrences(of: from, with: to)
-                break
-            }
-            if key.contains(".self_attn.gate_proj.") {
-                gates[key.replacingOccurrences(of: ".gate_proj.", with: ".q_proj.")] = value
-                continue
-            }
-            var w = value
-            if offsetNorms.contains(where: { key.hasSuffix($0) }) {
-                w = w + 1.0
-            }
-            out[key] = w
-        }
+/// Rewrite an HF export's language-model weights into the shape
+/// `MuseGlimmerModel` declares. Shared with the multimodal wrapper, which keeps
+/// the `language_model.` prefix because it nests the text model under exactly
+/// that key.
+func museGlimmerNormalize(
+    _ weights: [String: MLXArray], heads: Int, headDim: Int, stripLanguagePrefix: Bool
+) -> [String: MLXArray] {
+    let renames = [
+        (".post_attention_layernorm.", ".post_attn_norm."),
+        (".pre_feedforward_layernorm.", ".post_attention_layernorm."),
+        (".post_feedforward_layernorm.", ".post_ffn_norm."),
+    ]
+    let offsetNorms = [
+        "input_layernorm.weight", "post_attn_norm.weight",
+        "post_attention_layernorm.weight", "post_ffn_norm.weight",
+    ]
 
-        // `[q_head; gate_head]` per head, which is a reordering of output rows
-        // and so applies to a quantised tensor's packed weight, scales and
-        // biases the same way.
-        let H = config.attentionHeads
-        let D = config.headDim
-        for (key, gate) in gates {
-            guard let q = out[key] else { continue }
-            let cols = q.dim(1)
-            out[key] = concatenated(
-                [q.reshaped(H, D, cols), gate.reshaped(H, D, cols)], axis: 1
-            ).reshaped(2 * H * D, cols)
+    var out: [String: MLXArray] = [:]
+    var gates: [String: MLXArray] = [:]
+    for (rawKey, value) in weights {
+        // The text-only model has no slot for a vision tower, so its weights
+        // are dropped rather than left to fail the load; the multimodal
+        // wrapper builds one and keeps them untouched.
+        if rawKey.hasPrefix("vision_") {
+            if !stripLanguagePrefix { out[rawKey] = value }
+            continue
         }
-        return out
+        var key = rawKey
+        if stripLanguagePrefix, key.hasPrefix("language_model.") {
+            key = String(key.dropFirst("language_model.".count))
+        }
+        for (from, to) in renames where key.contains(from) {
+            key = key.replacingOccurrences(of: from, with: to)
+            break
+        }
+        if key.contains(".self_attn.gate_proj.") {
+            gates[key.replacingOccurrences(of: ".gate_proj.", with: ".q_proj.")] = value
+            continue
+        }
+        var w = value
+        if offsetNorms.contains(where: { key.hasSuffix($0) }) {
+            w = w + 1.0
+        }
+        out[key] = w
     }
 
+    // `[q_head; gate_head]` per head, which is a reordering of output rows
+    // and so applies to a quantised tensor's packed weight, scales and
+    // biases the same way.
+    let H = heads
+    let D = headDim
+    for (key, gate) in gates {
+        guard let q = out[key] else { continue }
+        let cols = q.dim(1)
+        out[key] = concatenated(
+            [q.reshaped(H, D, cols), gate.reshaped(H, D, cols)], axis: 1
+        ).reshaped(2 * H * D, cols)
+    }
+    return out
+}
+
+extension MuseGlimmerModel {
     /// LoRA attaches to the transformer blocks, as it does for every other
     /// model here.
     public var loraLayers: [Module] { model.layers }
