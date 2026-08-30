@@ -11,7 +11,7 @@ const END = "\x00END\x00";
 // last `<` that is still a prefix of a known marker (optionally a channel
 // opener awaiting its name) is held back; ordinary text tails (`a < b`,
 // `<div`) are left alone.
-const MARKER_WORDS = ["channel", "turn", "think", "message", "end", "return", "start"];
+const MARKER_WORDS = ["channel", "turn", "think", "message", "end", "return", "start", "eom", "eot"];
 const CHANNEL_NAMES = ["analysis", "thought", "thinking", "final"];
 function trimPartialMarker(s: string): string {
   const lt = s.lastIndexOf("<");
@@ -57,12 +57,28 @@ export function normalizeChannels(s: string): string {
   // pipe — a plain `<think>` is the Qwen convention this function's OUTPUT
   // uses and must pass through untouched.
   if (
-    !/<[|｜]?(channel|turn)\b|\b(channel|turn)[|｜]>|<(?:[|｜](?:think|message|end|return|start)|(?:think|message|end|return|start)[|｜])/i.test(
+    !/<[|｜]?(channel|turn)\b|\b(channel|turn)[|｜]>|<(?:[|｜](?:think|message|end|return|start|eom|eot)|(?:think|message|end|return|start|eom|eot)[|｜])|\bto=[\w.*-]+[ \t]*<[|｜]message[|｜]>/i.test(
       held,
     )
   )
     return held;
   const t = held
+    // ATEM (Muse Glimmer) addresses each span to a recipient rather than
+    // naming a channel: `to=self` is the reasoning, anything else — `to=user`,
+    // `to=<tool>` — is the turn leaving that channel. The opening
+    // `<|start|>assistant` is optional because the generation prompt already
+    // emitted it, so a fresh stream begins bare at ` to=self<|message|>`.
+    // These run before the generic `<|start|>` rule below, which would
+    // otherwise strip the tag and orphan the recipient.
+    .replace(
+      /(?:<[|｜]start[|｜]>[ \t]*assistant)?[ \t]*to=self[ \t]*<[|｜]message[|｜]>/gi,
+      THINK,
+    )
+    .replace(
+      /(?:<[|｜]start[|｜]>[ \t]*assistant)?[ \t]*to=[\w.*-]+[ \t]*<[|｜]message[|｜]>/gi,
+      FINAL,
+    )
+    .replace(/<[|｜](?:eom|eot)[|｜]>/gi, END)
     // Gemma 4 control tokens that should never render: <|think|>, turn markers.
     .replace(/<(?:[|｜]think[|｜]?|think[|｜])>\n?/gi, "")
     .replace(/<[|｜]?turn[|｜]?>[ \t]*(model|assistant|user|system|tool)?[ \t]*\n?/gi, "")

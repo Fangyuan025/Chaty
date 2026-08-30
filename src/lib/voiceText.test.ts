@@ -22,6 +22,31 @@ describe("normalizeChannels", () => {
     expect(normalizeChannels("<|channel>thought\nstill going")).toBe("<think>still going");
   });
 
+  // ATEM (Muse Glimmer) names a recipient instead of a channel, and the
+  // generation prompt has already emitted `<|start|>assistant`, so what the
+  // engine streams begins bare at ` to=self<|message|>`.
+  it("converts an ATEM turn addressed to self and then to the user", () => {
+    expect(
+      normalizeChannels(
+        " to=self<|message|>reasoning here<|eom|><|start|>assistant to=user<|message|>42<|eot|>",
+      ),
+    ).toBe("<think>reasoning here</think>42");
+  });
+
+  it("keeps a streaming ATEM thought open", () => {
+    expect(normalizeChannels(" to=self<|message|>still thinking")).toBe("<think>still thinking");
+  });
+
+  it("reads an ATEM turn that never reasons as plain answer text", () => {
+    expect(normalizeChannels(" to=user<|message|>direct answer<|eot|>")).toBe("direct answer");
+  });
+
+  it("treats a tool recipient as leaving the reasoning channel", () => {
+    expect(
+      normalizeChannels(" to=self<|message|>plan<|eom|><|start|>assistant to=fs.read<|message|>call"),
+    ).toBe("<think>plan</think>call");
+  });
+
   it("converts EVERY thought block, not just the first", () => {
     expect(
       normalizeChannels(
