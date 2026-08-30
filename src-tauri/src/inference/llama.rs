@@ -526,6 +526,17 @@ impl LlamaEngine {
                     if is_oom(&msg) {
                         bail!("加载模型权重时内存不足 (out of memory while loading the model weights)");
                     }
+                    // llama.cpp's null pointer says nothing. The file usually
+                    // does — read its header and pass on what it says.
+                    if let Some(why) = std::fs::File::open(path)
+                        .ok()
+                        .and_then(|f| gguf_diagnosis(std::io::BufReader::new(f)))
+                    {
+                        bail!(trf!(
+                            "无法加载 GGUF 模型 {path}:{why}",
+                            "cannot load the GGUF model {path}: {why}"
+                        ));
+                    }
                     return Err(e).with_context(|| format!("failed to load GGUF model: {path}"));
                 }
             };
@@ -1912,6 +1923,109 @@ pub(crate) const EFFORT_LOW: &str = "Reasoning effort is set to low. Keep your t
 /// Testing the append property directly, rather than looking for reasoning in
 /// the output, is what distinguishes a template that genuinely preserves the
 /// turn from one that merely passes the markup through as content.
+/// What is actually wrong with a GGUF the loader refused.
+///
+/// `llama_model_load_from_file` answers every failure with a null pointer, so
+/// the error that reaches the user says only "null result from llama cpp" —
+/// true, and useless: it cannot tell a broken file from an unsupported one
+/// from a machine out of memory. The file itself usually says why.
+///
+/// The giveaway for a bad conversion is that GGUF requires every architecture
+/// parameter to be keyed `<arch>.<name>`. A converter that writes the model's
+/// NAME into `general.architecture` (`"Qwen3-VL-2B-Thinking"` instead of
+/// `"qwen3vl"`) leaves a file whose arch matches nothing and which carries not
+/// one prefixed key — llama.cpp supports the model, but nothing in the file
+/// says which model it is.
+fn gguf_diagnosis<R: std::io::Read>(mut r: R) -> Option<String> {
+    fn take<R: std::io::Read>(r: &mut R, n: usize) -> Option<Vec<u8>> {
+        let mut b = vec![0u8; n];
+        r.read_exact(&mut b).ok()?;
+        Some(b)
+    }
+    fn u32le<R: std::io::Read>(r: &mut R) -> Option<u32> {
+        Some(u32::from_le_bytes(take(r, 4)?.try_into().ok()?))
+    }
+    fn u64le<R: std::io::Read>(r: &mut R) -> Option<u64> {
+        Some(u64::from_le_bytes(take(r, 8)?.try_into().ok()?))
+    }
+    fn string<R: std::io::Read>(r: &mut R) -> Option<String> {
+        let n = u64le(r)?;
+        // A length this large is a malformed file, not a long key.
+        if n > 1 << 20 {
+            return None;
+        }
+        String::from_utf8(take(r, n as usize)?).ok()
+    }
+    /// Read past a value without keeping it.
+    fn skip_value<R: std::io::Read>(r: &mut R, t: u32) -> Option<()> {
+        match t {
+            0 | 1 | 7 => take(r, 1).map(|_| ()),
+            2 | 3 => take(r, 2).map(|_| ()),
+            4 | 5 | 6 => take(r, 4).map(|_| ()),
+            10 | 11 | 12 => take(r, 8).map(|_| ()),
+            8 => string(r).map(|_| ()),
+            9 => {
+                let et = u32le(r)?;
+                let n = u64le(r)?;
+                if n > 8_000_000 {
+                    return None;
+                }
+                for _ in 0..n {
+                    skip_value(r, et)?;
+                }
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
+    let magic = take(&mut r, 4)?;
+    if magic != b"GGUF" {
+        return Some(trf!(
+            "这不是 GGUF 文件:开头不是 GGUF 魔数",
+            "not a GGUF file: it does not start with the GGUF magic"
+        ));
+    }
+    let _version = u32le(&mut r)?;
+    let _n_tensors = u64le(&mut r)?;
+    let n_kv = u64le(&mut r)?;
+    if n_kv > 100_000 {
+        return None;
+    }
+
+    let mut arch: Option<String> = None;
+    let mut keys: Vec<String> = Vec::new();
+    for _ in 0..n_kv {
+        let key = string(&mut r)?;
+        let t = u32le(&mut r)?;
+        if key == "general.architecture" && t == 8 {
+            arch = string(&mut r);
+        } else {
+            skip_value(&mut r, t)?;
+        }
+        keys.push(key);
+    }
+
+    let arch = arch?;
+    let prefix = format!("{arch}.");
+    if keys.iter().any(|k| k.starts_with(&prefix)) {
+        // A well-formed file whose architecture this build does not implement.
+        return Some(trf!(
+            "这个 llama.cpp 版本不认识架构 \"{arch}\"",
+            "this llama.cpp build does not know the architecture \"{arch}\""
+        ));
+    }
+    Some(trf!(
+        "GGUF 的 general.architecture 是 \"{arch}\" —— 那是模型的名字,不是架构标识,\
+         而且文件里没有任何 \"{arch}.\" 开头的元数据键。这个文件是转换工具写坏的,\
+         llama.cpp 无从知道该按哪种模型加载它;请换一个转换正确的 GGUF。",
+        "this file's general.architecture is \"{arch}\" — the model's name rather than \
+         an architecture, and it carries no \"{arch}.\" metadata keys at all. It was \
+         written by a broken converter, so llama.cpp cannot tell what to load it as. \
+         A correctly converted GGUF of the same model will work."
+    ))
+}
+
 fn probe_tool_role(model: &LlamaModel) -> bool {
     const REASONED: &str = "PROBE_REASONING\n</think>\n\nPROBE_ANSWER";
     let msg = |role: Role, content: &str| ChatMessage {
@@ -2381,6 +2495,52 @@ fn build_sampler(params: &GenParams) -> LlamaSampler {
 
 #[cfg(test)]
 mod tests {
+
+    /// A GGUF the loader refuses must come back with the reason, not with
+    /// llama.cpp's null pointer. The shapes that matter: a file that is not a
+    /// GGUF at all, and the one the owner hit — a converter that wrote the
+    /// model's NAME into `general.architecture`, leaving nothing keyed to it.
+    #[test]
+    fn a_refused_gguf_says_what_is_wrong_with_it() {
+        use std::io::Cursor;
+        fn gguf(arch: &str, extra_keys: &[&str]) -> Vec<u8> {
+            let mut b = Vec::new();
+            b.extend_from_slice(b"GGUF");
+            b.extend_from_slice(&3u32.to_le_bytes());
+            b.extend_from_slice(&0u64.to_le_bytes());
+            b.extend_from_slice(&((1 + extra_keys.len()) as u64).to_le_bytes());
+            let mut push = |b: &mut Vec<u8>, k: &str, v: &str| {
+                b.extend_from_slice(&(k.len() as u64).to_le_bytes());
+                b.extend_from_slice(k.as_bytes());
+                b.extend_from_slice(&8u32.to_le_bytes());
+                b.extend_from_slice(&(v.len() as u64).to_le_bytes());
+                b.extend_from_slice(v.as_bytes());
+            };
+            push(&mut b, "general.architecture", arch);
+            for k in extra_keys {
+                push(&mut b, k, "x");
+            }
+            b
+        }
+
+        let msg = super::gguf_diagnosis(Cursor::new(b"NOPE....".to_vec())).unwrap();
+        assert!(msg.contains("GGUF"), "{msg}");
+
+        // The owner's file: architecture is the model's name, nothing keyed to it.
+        let msg =
+            super::gguf_diagnosis(Cursor::new(gguf("Qwen3-VL-2B-Thinking", &["hidden_size"])))
+                .unwrap();
+        assert!(msg.contains("Qwen3-VL-2B-Thinking"), "{msg}");
+        assert!(msg.contains("converter") || msg.contains("转换"), "names the cause: {msg}");
+
+        // Well-formed, but an architecture this build does not implement.
+        let msg = super::gguf_diagnosis(Cursor::new(gguf("somearch", &["somearch.block_count"])))
+            .unwrap();
+        assert!(
+            msg.contains("does not know") || msg.contains("不认识"),
+            "unsupported, not malformed: {msg}"
+        );
+    }
 
     /// The Qwen3.5+ paradigm test parses the minor version instead of listing
     /// releases — 3.8 must qualify the day it ships, `qwen3`/`qwen3moe` must
