@@ -758,9 +758,18 @@ func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
     // The stored turn always carries the opening tag; what the model *generated*
     // does not when the template pre-opened it. Both conventions exist (Qwen3.5
     // pre-opens, Qwen3 emits the tag itself).
-    let inlineContent = "<think>\n" + reasoned
-    let generated =
+    var inlineContent = "<think>\n" + reasoned
+    var generated =
         first.hasSuffix("<think>\n") || first.hasSuffix("<think>") ? reasoned : inlineContent
+    // ATEM addresses spans to a recipient instead of tagging them, so a turn
+    // that reasoned looks nothing like the `<think>` spelling above and every
+    // shape would fail to append. The generation prompt stops after
+    // `<|start|>assistant`, so what the model emits begins at the recipient.
+    if first.hasSuffix("<|start|>assistant") {
+        generated =
+            " to=self<|message|>\(reasoning)<|eom|><|start|>assistant to=user<|message|>\(answer)"
+        inlineContent = generated
+    }
 
     func appends(toolRole: Bool, reasoningField: Bool) -> Bool {
         var turn: [String: any Sendable] = ["role": "assistant"]
