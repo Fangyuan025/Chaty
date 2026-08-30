@@ -243,88 +243,70 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## Chinese speech, and a picture that stops costing the conversation
+            ## Muse-Glimmer, on both engines
 
-            Chaty listens and answers in Chinese. Speech recognition was
-            English-only and text-to-speech had no Chinese voice at all, so the
-            whole voice section was hidden outside the English UI. Recognition
-            now runs multilingual Whisper when Chinese is in play, and a Chinese
-            reply is spoken by a local VITS voice while English keeps Kokoro,
-            decided per utterance. English speech did not get worse to make room
-            for it: multilingual Whisper is a real accuracy drop on English, so
-            English stays on `base.en` — the model already on disk, no
-            re-download and nothing orphaned — and the multilingual model is
-            fetched only when the UI is Chinese or the Chinese-voice switch is
-            on. Its files are pinned to a revision rather than to a moving
-            branch, so a size check can no longer pass on bytes that changed
-            underneath it. (#8, by @wisetwo)
+            Neither engine knew this architecture. llama.cpp had no
+            `muse-glimmer` at all and refused every GGUF outright; MLX answered
+            `unsupportedModelType`. Both now run it — chat, code, vision, and
+            its four native reasoning rungs — and they agree on what they
+            produce.
 
-            Around that: a voice model left half-downloaded now repairs itself
-            one file at a time instead of being fetched again from the start,
-            files land in a staging directory and are moved into place
-            atomically, the preview plays — WKWebView applies Safari's
-            user-activation rules, so the audio context is unlocked on the first
-            gesture rather than after the synthesis round-trip — and a preview
-            or transcription that fails says why. Live Mode stops racing the
-            microphone: the capture thread signals when it has actually released
-            the device and the next start waits for that, instead of guessing at
-            a delay.
+            Two of the departures are invisible in the checkpoint, which is
+            what made an implementation built from shapes alone produce noise.
+            The attention scale is `qk_scale_factor / head_dim`, the folded form
+            of scaling the QK-normalised queries and then letting attention
+            scale again; the same key names a different quantity in the two
+            configurations this model ships under, and reading one convention's
+            constant through the other's formula leaves the attention 11 times
+            too sharp. The token embeddings also pass through a
+            parameter-free RMS norm — parameter-free, so it leaves no weight
+            behind to notice is missing. Both weight layouts load: a packaged
+            MLX artifact fuses the attention gate into the queries and has its
+            norms folded, while a multimodal export keeps them apart and names
+            the four norms positionally, so the renames must not cascade.
 
-            A picture stopped throwing the conversation away. Through MLX, any
-            prompt carrying an image was evaluated from the very beginning — the
-            whole transcript, every turn, on the screenshot round and on every
-            round after it. Measured across seven local models in both thinking
-            modes: 0% of the window reused from the moment a screenshot entered
-            a conversation until the end of it. Two causes, both fixed. The chat
-            template rewrites a stored turn's reasoning when pixels force it to
-            render the history, and re-encoding a turn's text is not the inverse
-            of generating it — on Qwen3.5 2B the word "Chaty" comes back as a
-            different pair of tokens than the model emitted, and one pair is
-            enough to end the match. Chaty now replays the exact tokens each
-            turn occupies in the cache. Same sweep afterwards: 99-100% on every
-            round after a picture, all fourteen combinations.
+            It reads images. A 50-layer vision tower attends inside
+            32×32-patch windows except on every fourth layer, and a learned
+            position table is resampled to whatever grid the image actually
+            has. Each image expands to `<|image_start|>`, one token per merged
+            patch, then `<|image_end|>` — the markers are not decoration:
+            without them two images share one unbroken run of placeholders and
+            the cache cannot tell where the first one ends. With them, a
+            follow-up question after two pictures reuses 68% of the window,
+            the same as the other engine.
 
-            A second screenshot resumes the conversation instead of re-reading
-            it. That round used to start over, because a call carrying pixels
-            was assumed to be positionable only from the beginning. It is not —
-            the model takes its positions from the cache — so only the new
-            picture is read now and the conversation beneath it is kept. The
-            older screenshot also stays visible instead of being dropped to save
-            an encode that no longer happens.
+            Its reasoning arrives as reasoning. ATEM addresses each span to a
+            recipient rather than tagging it, so a whole turn's deliberation
+            used to be shown as the answer. It now travels in a field of its
+            own, which is where the model's own template looks for it.
 
-            And a screenshot in a long conversation stopped taking minutes. The
-            span a vision model reads in one pass ran from the start of the
-            prompt to the last picture in it, so a screenshot's cost was set by
-            the transcript underneath: 12.3k tokens took 187 seconds on a 35B,
-            and a real 50k round had produced nothing after ninety minutes with
-            20 GB of swap churning. The text below a picture is ordinary text
-            and now goes in chunks like any other; only the picture's own span
-            is one pass. A 48k-token conversation with a four-tile screenshot
-            reads in 13 seconds against a warm cache and 131 cold.
+            ## A model's own thinking ladder is drawn as it is
 
-            A turn that stops saying anything is now cut. Not a runaway thought
-            — the think budget is the only ceiling on how much a model may
-            reason, and that stays. This is the other failure: output carrying
-            no information at all. A 35B step ran to 31,416 tokens of "!" at 1.1
-            tokens a second, twenty minutes of it, because the only ceiling was
-            the token cap. Four hundred characters of one repeated character now
-            ends the step, the wreckage is kept out of the transcript rather
-            than handed back as a pattern to continue, and twice in a row pauses
-            instead of grinding. Separately, when the window tightens, the file
-            bodies inside earlier `write_file` calls are replaced by a line
-            naming the file — in one session four such turns were 82% of the
-            transcript, and the file is on disk if the model wants it back.
+            Chat listed 高 twice on a four-rung model, because anything that was
+            not low or medium took the same label — `high` and `xhigh` now have
+            names of their own. Code had the ladder written into the component:
+            four fixed tabs mapped to three rungs, so a four-rung model lost one
+            outright. The tabs now come from the model, however many rungs it
+            has. `Off` stays Chaty's, because a ladder has no rung for not
+            thinking at all.
 
-            A PDF the text extractor cannot read no longer kills the read. The
-            extractor asserts, rather than errors, on font encodings it has not
-            implemented — the encoding most Chinese-authored PDFs use is one of
-            them. The whole document is still tried first, and where it gives
-            out the pages are read one at a time, keeping every page that parses
-            and saying how many it could not: one textbook went from nothing at
-            all to 38,295 characters. The same guard covers attachments, browser
-            downloads, and knowledge-base indexing, where one bad file used to
-            be able to end a whole run. A PDF with no text in it — a scan — now
-            says that, instead of coming back as an empty document.
+            ## Under it
+
+            llama.cpp moved forward to a build that carries the architecture,
+            and every local GGUF was re-checked on it: ten models, unchanged
+            answers, prefix reuse from 75% to 93%. A model it refuses now says
+            why — whether the file is not a GGUF at all, or the build does not
+            know its architecture, or the converter wrote the model's name where
+            the architecture belongs. It also says why an embedded chat template
+            was rejected instead of silently falling back to ChatML, which is
+            what let a model speak the wrong protocol while looking like it
+            worked.
+
+            The renderer no longer reports a restart that did not happen: a page
+            replaced within the first seconds of a window's life is the window
+            opening, not a crash. And the interface is now available in
+            Brazilian Portuguese, placeholders included — thanks to the
+            community contributors on those PRs.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

@@ -1,5 +1,71 @@
 # Changelog
 
+## v2.1.5 — Muse-Glimmer, on both engines (2026-08-30)
+
+### Muse-Glimmer, end to end
+
+- **Both engines run it.** Neither knew the architecture: llama.cpp had no
+  `muse-glimmer` at all and refused every GGUF outright, and MLX answered
+  `unsupportedModelType`. Both now run it — chat, code, vision, and its four
+  native reasoning rungs — and agree on what they produce.
+
+- **Two departures that are invisible in the checkpoint.** The attention scale
+  is `qk_scale_factor / head_dim` — the folded form of scaling the QK-normalised
+  queries and then letting attention scale again. The same key names a different
+  quantity in the two configurations this model ships under, and reading one
+  convention's constant through the other's formula leaves the attention 11×
+  too sharp, which is noise rather than text. The token embeddings also pass
+  through a parameter-free RMS norm, which leaves no weight behind to notice is
+  missing.
+
+- **Both weight layouts load.** A packaged MLX artifact fuses the attention gate
+  into the queries and has its norms folded; a multimodal export keeps them
+  apart, names the four norms positionally, and stores them as offsets from 1.0.
+  The renames are positional and must not cascade — the export's
+  `post_attention_layernorm` is the norm after attention, while that same name
+  belongs to the one before the MLP in the packaged form.
+
+- **It reads images.** A 50-layer vision tower that attends inside 32×32-patch
+  windows except on every fourth layer, with a learned position table resampled
+  to whatever grid the image actually has. Each image expands to
+  `<|image_start|>`, one token per merged patch, then `<|image_end|>` — without
+  those markers two images share one unbroken run of placeholders and the cache
+  cannot tell where the first one ends. With them, a follow-up question after
+  two images reuses 68% of the window, the same as the GGUF engine.
+
+- **ATEM is read as reasoning and answer.** This model addresses each span to a
+  recipient instead of tagging it, so a whole turn's deliberation used to arrive
+  as answer text. Reasoning now travels in a field of its own, which is where
+  the model's template looks for it.
+
+### A model's own thinking ladder
+
+- **The rungs are the model's, however many there are.** Chat listed 高 twice
+  on a four-rung model, because anything that was not low or medium took the
+  same label; `high` and `xhigh` now have names of their own. Code had the
+  ladder written into the component — four fixed tabs mapped to three rungs —
+  so a four-rung model lost one outright. The tabs now come from the model, and
+  `Off` stays Chaty's, because a ladder has no rung for not thinking at all.
+
+### Under it
+
+- **llama.cpp moved forward** to a build that carries the architecture. Every
+  local GGUF was re-checked on it: ten models, unchanged answers, prefix reuse
+  from 75% to 93%.
+
+- **A model llama.cpp refuses now says why** — whether the file is not a GGUF at
+  all, or the build does not know its architecture, or the converter wrote the
+  model's name where the architecture belongs. It also says why an embedded chat
+  template was rejected instead of silently falling back to ChatML, which is
+  what let a model speak the wrong protocol while looking like it worked.
+
+- **The renderer no longer reports a restart that did not happen.** A page
+  replaced within the first seconds of a window's life is the window opening,
+  not a crash.
+
+- **Brazilian Portuguese** covers the interface, including the strings that
+  carry placeholders. Thanks to the community contributors on those PRs.
+
 ## v2.1.4 — Chinese speech, and a picture that stops costing the conversation (2026-08-28)
 
 ### Chinese speech, in and out

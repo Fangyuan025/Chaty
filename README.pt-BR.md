@@ -12,15 +12,17 @@ O Chaty roda LLMs abertos **100% offline** em um aplicativo desktop caprichado.
 Sem conta, sem nuvem, sem telemetria — com um agente de programação local, uma base de
 conhecimento para documentos, Deep Research e voz mãos-livres, tudo integrado.
 
-**Novidade — o [Qwen3.8](https://huggingface.co/Qwen/Qwen3.8-27B) roda nos dois motores, e sua
-escada nativa de esforço de raciocínio é um controle de verdade, não uma nota de rodapé.**
-[Como o Chaty se adaptou a ela ↓](#esforço-de-raciocínio-como-controle-de-primeira-classe)
+**Novidade — o [Muse-Glimmer](https://huggingface.co/meta-models/Muse-Glimmer-30B) roda nos
+dois motores, visão inclusive, com seus quatro degraus nativos de raciocínio como controles
+de verdade.**
+[Como o Chaty se adaptou a ele ↓](#esforço-de-raciocínio-como-controle-de-primeira-classe)
 
 [![Latest release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=19c37d)](../../releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Fangyuan025/Chaty/total?color=8a63d2&cacheSeconds=3600)](../../releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/Fangyuan025/Chaty/ci.yml?branch=main&label=CI)](../../actions)
 [![Windows · Vulkan](https://img.shields.io/badge/Windows-Vulkan-0078D6?logo=windows&logoColor=white)](../../releases)
 [![macOS · Metal + MLX](https://img.shields.io/badge/macOS-Metal_%2B_MLX-000000?logo=apple&logoColor=white)](../../releases)
+[![Muse-Glimmer · visão + 4 degraus](https://img.shields.io/badge/Muse--Glimmer-visão_%2B_4_degraus-6b4fbb)](#esforço-de-raciocínio-como-controle-de-primeira-classe)
 [![Qwen3.8 · reasoning effort](https://img.shields.io/badge/Qwen3.8-esforço_de_raciocínio-6b4fbb)](#esforço-de-raciocínio-como-controle-de-primeira-classe)
 [![100% offline](https://img.shields.io/badge/100%25-offline-19c37d)](https://chaty.ca)
 [![Rust + Tauri 2](https://img.shields.io/badge/Rust_+_Tauri_2-CE412B?logo=rust&logoColor=white)](#arquitetura)
@@ -43,17 +45,19 @@ escada nativa de esforço de raciocínio é um controle de verdade, não uma not
 - 🔒 **Privado de verdade** — cada modelo, documento e conversa fica no seu dispositivo. Sem cadastro, sem servidor, nada é enviado para fora.
 - ⚡ **Nativo e rápido** — núcleo em Rust + llama.cpp com offload de GPU **Vulkan / Metal**, autoajustado ao seu hardware e com fallback suave para CPU.
 - 🧰 **Muito além de um chat** — um agente de programação, uma base de conhecimento (RAG), Deep Research, voz mãos-livres e um Design Canvas autocorretivo — tudo offline.
-- 🧠 **Roda quase tudo** — Llama 3, Gemma 3 / 4, Qwen 3 / 3.5 / 3.6 / **3.8**, *qualquer* GGUF do Hugging Face — e **modelos MLX nativamente em Apple Silicon** — além do **modelo fine-tuned do próprio Chaty**.
+- 🧠 **Roda quase tudo** — Llama 3 / **Muse-Glimmer**, Gemma 3 / 4, Qwen 3 / 3.5 / 3.6 / **3.8**, *qualquer* GGUF do Hugging Face — e **modelos MLX nativamente em Apple Silicon** — além do **modelo fine-tuned do próprio Chaty**.
 - 💻 **Amigável com hardware modesto** — no primeiro uso, o *"Configure para mim"* escolhe um modelo do tamanho da sua RAM e baixa tudo em um clique.
 
 <br />
 
 ## Esforço de raciocínio como controle de primeira classe
 
-O [Qwen3.8](https://huggingface.co/Qwen/Qwen3.8-27B) traz uma **escada nativa de esforço de
-raciocínio** — `low` · `medium` · `xhigh` — que o modelo foi treinado para obedecer. Ela chega
-como um kwarg do chat template, então um runtime que a desconhece recebe o padrão (`xhigh`) em
-silêncio: você espera o raciocínio mais longo possível até para "quanto é 2 + 2".
+Alguns modelos trazem uma **escada nativa de esforço de raciocínio** que foram treinados para
+obedecer — o [Qwen3.8](https://huggingface.co/Qwen/Qwen3.8-27B) tem três degraus (`low` ·
+`medium` · `xhigh`), o [Muse-Glimmer](https://huggingface.co/meta-models/Muse-Glimmer-30B)
+tem quatro (`low` · `medium` · `high` · `xhigh`). O degrau chega como um kwarg do chat
+template, então um runtime que a desconhece recebe o padrão em silêncio: você espera o
+raciocínio mais longo possível até para "quanto é 2 + 2".
 
 O Chaty trata a escada como um controle que você realmente gira:
 
@@ -62,8 +66,9 @@ O Chaty trata a escada como um controle que você realmente gira:
 
 - **Chat** — o item de raciocínio no menu `+` abre um submenu com os degraus *do próprio
   modelo*; escolha um e ele vale para a próxima mensagem.
-- **Code** — o seletor Desligado / Normal / Profundo vira a escada nativa: **Desligado · Baixo ·
-  Médio · Alto**, para que um passo do agente pense pouco e siga em frente.
+- **Code** — o seletor Desligado / Normal / Profundo vira a escada do próprio modelo, com
+  quantos degraus ele tiver, para que um passo do agente pense pouco e siga em frente.
+  `Desligado` continua sendo do Chaty: uma escada não tem degrau para não pensar.
 - **Nos dois motores, com honestidade.** No MLX o degrau segue como kwarg do template. O
   llama.cpp não aceita kwargs próprios — então o Chaty reescreve o prompt renderizado para o
   degrau pedido, com resultado **idêntico byte a byte** ao que o template oficial produz.
@@ -245,7 +250,7 @@ Modelos só-texto mantêm o caminho de OCR, então nada regride — e ao atualiz
 
 - Conversas, modelos e índices moram numa única **pasta de dados local** — copie para fazer backup, limpe com um clique.
 - **Aceleração de GPU**: **Vulkan** multi-fabricante (Windows) e **Metal** (Apple Silicon, offload total em memória unificada), autoajuste ciente de VRAM com recuo em OOM e fallback para CPU.
-- **Qualquer `.gguf` — ou pasta MLX** — tokenizer e template de chat vêm do próprio modelo; tratamento de primeira classe para Llama 3, Gemma 3 / 4 e Qwen 3 / 3.5 / 3.6.
+- **Qualquer `.gguf` — ou pasta MLX** — tokenizer e template de chat vêm do próprio modelo; tratamento de primeira classe para Llama 3 e Muse-Glimmer (visão, e seu protocolo de raciocínio ATEM), Gemma 3 / 4 e Qwen 3 / 3.5 / 3.6 / 3.8 (incluindo suas escadas de esforço de raciocínio).
 - **Contexto ajustável** que adapta o comprimento treinado do modelo à sua memória e resume turnos antigos perto do limite; **troca segura de modelo** e controles completos de amostragem com presets salváveis.
 
 </td>

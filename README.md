@@ -12,8 +12,8 @@ Chaty runs open LLMs **100% offline** in a polished desktop app.
 No account, no cloud, no telemetry — with a local coding agent, a document
 knowledge base, Deep Research, and hands-free voice built right in.
 
-**New — [Qwen3.8](https://huggingface.co/Qwen/Qwen3.8-27B) runs on both engines, and its native
-reasoning-effort ladder is a real control, not a footnote.**
+**New — [Muse-Glimmer](https://huggingface.co/meta-models/Muse-Glimmer-30B) runs on both
+engines, vision and all, with its four native reasoning rungs as real controls.**
 [How Chaty adapted to it ↓](#reasoning-effort-as-a-first-class-control)
 
 [![Latest release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=19c37d)](../../releases/latest)
@@ -21,6 +21,7 @@ reasoning-effort ladder is a real control, not a footnote.**
 [![CI](https://img.shields.io/github/actions/workflow/status/Fangyuan025/Chaty/ci.yml?branch=main&label=CI)](../../actions)
 [![Windows · Vulkan](https://img.shields.io/badge/Windows-Vulkan-0078D6?logo=windows&logoColor=white)](../../releases)
 [![macOS · Metal + MLX](https://img.shields.io/badge/macOS-Metal_%2B_MLX-000000?logo=apple&logoColor=white)](../../releases)
+[![Muse-Glimmer · vision + 4 rungs](https://img.shields.io/badge/Muse--Glimmer-vision_%2B_4_rungs-6b4fbb)](#reasoning-effort-as-a-first-class-control)
 [![Qwen3.8 · reasoning effort](https://img.shields.io/badge/Qwen3.8-reasoning_effort-6b4fbb)](#reasoning-effort-as-a-first-class-control)
 [![100% offline](https://img.shields.io/badge/100%25-offline-19c37d)](https://chaty.ca)
 [![Rust + Tauri 2](https://img.shields.io/badge/Rust_+_Tauri_2-CE412B?logo=rust&logoColor=white)](#architecture)
@@ -43,17 +44,19 @@ reasoning-effort ladder is a real control, not a footnote.**
 - 🔒 **Truly private** — every model, document, and conversation stays on your device. No sign-up, no server, nothing phoned home.
 - ⚡ **Native and fast** — a Rust + llama.cpp core with **Vulkan / Metal** GPU offload that auto-tunes to your hardware and falls back gracefully to CPU.
 - 🧰 **More than a chat box** — a coding agent, a knowledge base (RAG), Deep Research, hands-free voice, and a self-healing Design Canvas — all offline.
-- 🧠 **Runs almost anything** — Llama 3, Gemma 3 / 4, Qwen 3 / 3.5 / 3.6 / **3.8**, *any* GGUF from Hugging Face — and **MLX models natively on Apple Silicon** — plus **Chaty's own fine-tuned model**.
+- 🧠 **Runs almost anything** — Llama 3 / **Muse-Glimmer**, Gemma 3 / 4, Qwen 3 / 3.5 / 3.6 / **3.8**, *any* GGUF from Hugging Face — and **MLX models natively on Apple Silicon** — plus **Chaty's own fine-tuned model**.
 - 💻 **Friendly to modest hardware** — a first-launch *“Set up for me”* picks a model sized to your RAM and downloads it in one click.
 
 <br />
 
 ## Reasoning effort as a first-class control
 
-[Qwen3.8](https://huggingface.co/Qwen/Qwen3.8-27B) ships a native **reasoning-effort
-ladder** — `low` · `medium` · `xhigh` — that the model was trained to obey. It arrives as a
-chat-template kwarg, so a runtime that doesn't know about it silently gets the default
-(`xhigh`) and you wait through maximum-length thinking for "what's 2 + 2".
+Some models ship a native **reasoning-effort ladder** they were trained to obey —
+[Qwen3.8](https://huggingface.co/Qwen/Qwen3.8-27B) has three rungs (`low` · `medium` ·
+`xhigh`), [Muse-Glimmer](https://huggingface.co/meta-models/Muse-Glimmer-30B) four (`low` ·
+`medium` · `high` · `xhigh`). The rung arrives as a chat-template kwarg, so a runtime that
+doesn't know about it silently gets the default and you wait through maximum-length thinking
+for "what's 2 + 2".
 
 Chaty treats the ladder as a control you actually turn:
 
@@ -62,8 +65,9 @@ Chaty treats the ladder as a control you actually turn:
 
 - **Chat** — the thinking item in the `+` menu opens a submenu of the model's *own* rungs;
   pick one and it applies to the next message.
-- **Code** — the Off / Normal / Deep switch becomes the native ladder: **Off · Low · Medium ·
-  High**, so an agent step can reason briefly and keep moving.
+- **Code** — the Off / Normal / Deep switch becomes the model's own ladder, however many
+  rungs it has, so an agent step can reason briefly and keep moving. `Off` stays Chaty's: a
+  ladder has no rung for not thinking at all.
 - **Both engines, honestly.** On MLX the rung rides along as the template kwarg. llama.cpp
   takes no custom kwargs — so Chaty rewrites the rendered prompt into the requested rung,
   producing output **byte-identical** to what the official template emits for it.
@@ -242,7 +246,7 @@ Text-only models keep the OCR path, so nothing regresses — and updating from a
 
 - Conversations, models, and indexes live in one **local data folder** — copy it to back up, clear it in a click.
 - **GPU acceleration**: cross-vendor **Vulkan** (Windows) and **Metal** (Apple Silicon, offload-all on unified memory), VRAM-aware auto-tuning with OOM back-off and CPU fallback.
-- **Any `.gguf` — or MLX folder** — tokenizer and chat template come from the model itself; first-class handling for Llama 3, Gemma 3 / 4, and Qwen 3 / 3.5 / 3.6 / 3.8 (including its reasoning-effort ladder).
+- **Any `.gguf` — or MLX folder** — tokenizer and chat template come from the model itself; first-class handling for Llama 3 and Muse-Glimmer (vision, and its ATEM reasoning protocol), Gemma 3 / 4, and Qwen 3 / 3.5 / 3.6 / 3.8 (including their reasoning-effort ladders).
 - **Adjustable context** that auto-fits the model's trained length to your memory and summarizes older turns near the limit; **safe model switching** and full sampling controls with saveable presets.
 
 </td>
