@@ -1151,7 +1151,7 @@ fn run_turn(
     // How much of `out` is actually resident in the KV. See the snapshot below.
     let mut decoded_len = 0usize;
 
-    let mut sampler = build_sampler(&req.params);
+    let mut sampler = build_sampler(model, &req.params);
     // Robust incremental UTF-8 assembly: accumulate raw token bytes and only
     // emit the valid-UTF-8 prefix, carrying any incomplete trailing bytes to
     // the next token. This never drops a byte (the old streaming decoder could
@@ -2465,7 +2465,7 @@ fn quant_name(ft: u32) -> &'static str {
     }
 }
 
-fn build_sampler(params: &GenParams) -> LlamaSampler {
+fn build_sampler(model: &LlamaModel, params: &GenParams) -> LlamaSampler {
     let seed = params.seed.map_or(0xFFFF_FFFF, |s| s as u32);
     // Repetition penalty applies to greedy and sampled decoding alike.
     let repeat = if params.repeat_penalty > 0.0 {
@@ -2473,7 +2473,9 @@ fn build_sampler(params: &GenParams) -> LlamaSampler {
     } else {
         1.0
     };
-    let penalties = LlamaSampler::penalties(64, repeat, 0.0, 0.0);
+    // `penalties` takes the vocabulary size ahead of the window; the four
+    // penalty values that follow are unchanged.
+    let penalties = LlamaSampler::penalties(model.n_vocab(), 64, repeat, 0.0, 0.0);
     if params.temperature <= 0.0 {
         LlamaSampler::chain_simple([penalties, LlamaSampler::greedy()])
     } else {

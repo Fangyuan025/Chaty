@@ -410,4 +410,11 @@ fn main() {
             dispatch(&cmd, args, id).await;
         });
     }
+    // stdin closed — the run is over. Rust never drops a `static`, so without
+    // this the model's Metal buffers are still alive when llama.cpp's own
+    // static destructors run, and its residency-set collection aborts the
+    // process on an assertion instead of exiting.
+    if let Some(engine) = engine_slot().lock().unwrap().take() {
+        engine.unload();
+    }
 }

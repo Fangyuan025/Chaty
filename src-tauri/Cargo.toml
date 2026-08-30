@@ -45,7 +45,12 @@ async-trait = "0.1"
 anyhow = "1"
 # Base llama.cpp binding (CPU). The GPU backend feature (vulkan/metal) is added
 # per-target by the `gpu-backend` shim when the `gpu` feature is on.
-llama-cpp-2 = { version = "0.1.154", features = ["sampler", "mtmd"] }
+#
+# Pinned to a git revision rather than the crates.io release: 0.1.154 is the
+# latest published version and its vendored llama.cpp predates
+# `LLM_ARCH_MUSE_GLIMMER`, so Muse-Glimmer GGUFs cannot load at all. The
+# crate's own main branch already tracks a llama.cpp that has it.
+llama-cpp-2 = { git = "https://github.com/utilityai/llama-cpp-rs", rev = "3d5f424f7cfb7cd3d1f9039440bd0286e29ca050", features = ["sampler", "mtmd"] }
 chaty-gpu-backend = { path = "gpu-backend", optional = true }
 sysinfo = "0.32"
 # Human-readable local timestamps in the user-attachable error log (already
