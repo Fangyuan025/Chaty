@@ -112,8 +112,16 @@ jobs:
       # without the Vulkan backend (same rationale as release.yml).
       CARGO_TARGET_DIR: C:\ct
       CMAKE_GENERATOR: Ninja
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
       - uses: actions/checkout@v5
+      # A git dependency is CLONED into `.cargo/git/checkouts/...`, where
+      # llama.cpp's bundled web UI nests one character past MAX_PATH. The
+      # crates.io release unpacked to a shorter path, so this only starts
+      # mattering once the dependency is pinned to a revision. Long paths in
+      # git, and cargo's fetch handed to that git rather than to libgit2.
+      - name: Allow long paths for the llama.cpp checkout
+        run: git config --global core.longpaths true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri, cache-targets: false }
