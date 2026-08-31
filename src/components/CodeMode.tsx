@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { agentLang, useI18n } from "../lib/i18n";
-import { effortLabel, thinkTabActive } from "../lib/effort";
+import { effortLabel, intensityOf, thinkTabActive } from "../lib/effort";
 import { diffLines } from "../lib/diff";
 import { useConfirm } from "./ConfirmModal";
 import { BUILTIN_SKILLS } from "../lib/skills";
@@ -102,15 +102,6 @@ const EFFORT_OF: Partial<Record<ThinkMode, string>> = {
   normal: "medium",
   deep: "xhigh",
 };
-/** Which of Chaty's own intensities a rung stands at — it still drives the
- *  thinking budget and the prompt-side nudge, neither of which the model's
- *  ladder says anything about. Position, not name, so a four-rung ladder
- *  works as well as a three-rung one. */
-function intensityOf(levels: string[], rung: string): ThinkMode {
-  const i = levels.indexOf(rung);
-  if (i <= 0) return "low";
-  return i === levels.length - 1 ? "deep" : "normal";
-}
 
 const RAIL_DEFAULT = 240;
 const RAIL_MIN = 180;

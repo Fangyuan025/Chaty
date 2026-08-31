@@ -34,3 +34,17 @@ export function thinkTabActive(
   if (tab === "off") return thinkMode === "off";
   return thinkMode !== "off" && rung === tab;
 }
+
+/** Which of Chaty's own intensities a rung stands at.
+ *
+ *  The intensity still drives the thinking budget and the prompt-side nudge,
+ *  neither of which the model's ladder says anything about. Read from the
+ *  rung's POSITION rather than its name, so a ladder of any length works —
+ *  and so a three-rung ladder lands exactly where the old fixed mapping put
+ *  it.
+ */
+export function intensityOf(levels: string[], rung: string): "off" | "low" | "normal" | "deep" {
+  const i = levels.indexOf(rung);
+  if (i <= 0) return "low";
+  return i === levels.length - 1 ? "deep" : "normal";
+}

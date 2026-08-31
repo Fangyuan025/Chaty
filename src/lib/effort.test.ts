@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { effortLabel, thinkTabActive } from "./effort";
+import { effortLabel, intensityOf, thinkTabActive } from "./effort";
 import { lookup, type TKey } from "./i18n";
 
 const zh = (key: TKey) => lookup(key, "zh");
@@ -60,5 +60,21 @@ describe("thinkTabActive", () => {
       thinkTabActive(tab, { nativeEffort: true, thinkMode: "off", rung: "high" }),
     );
     expect(lit).toEqual(["off"]);
+  });
+});
+
+describe("intensityOf", () => {
+  test("puts a three-rung ladder exactly where the old fixed mapping did", () => {
+    // Qwen3.8's ladder was hardcoded as low→low, medium→normal, xhigh→deep.
+    // Reading position instead of name must not move it.
+    const qwen = ["low", "medium", "xhigh"];
+    expect(intensityOf(qwen, "low")).toBe("low");
+    expect(intensityOf(qwen, "medium")).toBe("normal");
+    expect(intensityOf(qwen, "xhigh")).toBe("deep");
+  });
+
+  test("spreads a four-rung ladder across the same three intensities", () => {
+    const four = ["low", "medium", "high", "xhigh"];
+    expect(four.map((r) => intensityOf(four, r))).toEqual(["low", "normal", "normal", "deep"]);
   });
 });
