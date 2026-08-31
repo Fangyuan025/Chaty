@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { effortLabel } from "./effort";
+import { effortLabel, thinkTabActive } from "./effort";
 import { lookup, type TKey } from "./i18n";
 
 const zh = (key: TKey) => lookup(key, "zh");
@@ -31,5 +31,34 @@ describe("effortLabel", () => {
   test("shows a rung it has no name for verbatim", () => {
     // Better read as the model wrote it than mislabelled as a rung it isn't.
     expect(effortLabel("ultra", zh)).toBe("ultra");
+  });
+});
+
+describe("thinkTabActive", () => {
+  test("lights the chosen tab on a model with no ladder", () => {
+    // The ladder rework read `rung` for every model, and a model without one
+    // has no rung — so Normal and Deep stopped lighting up at all.
+    for (const mode of ["off", "normal", "deep"]) {
+      const lit = ["off", "normal", "deep"].filter((tab) =>
+        thinkTabActive(tab, { nativeEffort: false, thinkMode: mode, rung: "" }),
+      );
+      expect(lit).toEqual([mode]);
+    }
+  });
+
+  test("lights the chosen rung on a model with one", () => {
+    const tabs = ["off", "low", "medium", "high", "xhigh"];
+    const lit = tabs.filter((tab) =>
+      thinkTabActive(tab, { nativeEffort: true, thinkMode: "normal", rung: "high" }),
+    );
+    expect(lit).toEqual(["high"]);
+  });
+
+  test("lights `off` alone when thinking is off, whatever rung is remembered", () => {
+    const tabs = ["off", "low", "medium", "high", "xhigh"];
+    const lit = tabs.filter((tab) =>
+      thinkTabActive(tab, { nativeEffort: true, thinkMode: "off", rung: "high" }),
+    );
+    expect(lit).toEqual(["off"]);
   });
 });

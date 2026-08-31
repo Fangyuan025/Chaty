@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { agentLang, useI18n } from "../lib/i18n";
-import { effortLabel } from "../lib/effort";
+import { effortLabel, thinkTabActive } from "../lib/effort";
 import { diffLines } from "../lib/diff";
 import { useConfirm } from "./ConfirmModal";
 import { BUILTIN_SKILLS } from "../lib/skills";
@@ -1624,7 +1624,7 @@ export function CodeMode({
                 length; `off` is Chaty's, because a ladder has no rung for
                 not thinking at all. */}
             {(nativeEffort ? ["off", ...effortLevels] : THINK_MODES).map((tab) => {
-              const active = tab === "off" ? thinkMode === "off" : nativeEffort && thinkMode !== "off" && rung === tab;
+              const active = thinkTabActive(tab, { nativeEffort, thinkMode, rung });
               return (
                 <button
                   key={tab}

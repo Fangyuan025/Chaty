@@ -19,3 +19,18 @@ export function effortLabel(rung: string, t: (key: TKey) => string): string {
   const key = keys[rung];
   return key ? t(key) : rung;
 }
+
+/** Which tab of the code-mode thinking switch is lit.
+ *
+ *  Without a ladder the tab IS the mode. With one, every tab but `off` stands
+ *  for a rung of the model's own ladder, so what is lit follows the rung —
+ *  never the generic intensity that rung happens to map onto.
+ */
+export function thinkTabActive(
+  tab: string,
+  { nativeEffort, thinkMode, rung }: { nativeEffort: boolean; thinkMode: string; rung: string },
+): boolean {
+  if (!nativeEffort) return thinkMode === tab;
+  if (tab === "off") return thinkMode === "off";
+  return thinkMode !== "off" && rung === tab;
+}

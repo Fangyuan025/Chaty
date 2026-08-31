@@ -310,6 +310,14 @@ jobs:
             what let a model speak the wrong protocol while looking like it
             worked.
 
+            A multimodal MLX model now arrives with its processor
+            configuration. The downloader named the files it would take one by
+            one and that list never had `processor_config.json` in it; the
+            sidecar can synthesize a replacement for the few families it has a
+            recipe for, which is what made the loss look intermittent rather
+            than constant — vision worked on Qwen and Gemma and went quietly
+            missing on everything else.
+
             The renderer no longer reports a restart that did not happen: a page
             replaced within the first seconds of a window's life is the window
             opening, not a crash. And the interface is now available in

@@ -59,6 +59,15 @@
   template was rejected instead of silently falling back to ChatML, which is
   what let a model speak the wrong protocol while looking like it worked.
 
+- **A multimodal MLX model arrives with its processor configuration.** The
+  downloader named the files it would take one by one, and that list never had
+  `processor_config.json` in it. The sidecar can synthesize a replacement for
+  the few families it has a recipe for, which is what made this look
+  intermittent rather than constant: vision worked on Qwen and Gemma, and went
+  quietly missing on everything else. Every top-level `.json` now comes down —
+  a model folder's top-level JSON is configuration, and all of it is something
+  a loader may ask for.
+
 - **The renderer no longer reports a restart that did not happen.** A page
   replaced within the first seconds of a window's life is the window opening,
   not a crash.
