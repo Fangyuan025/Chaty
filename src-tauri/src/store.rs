@@ -106,8 +106,28 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Take the connection back after a panic poisoned its lock, the way the
+/// search state already does.
+///
+/// Treating poisoning as an error made one panic permanent: every later
+/// command failed on the poisoning alone, so the app stopped reading and
+/// writing conversations for the rest of the session and only a restart
+/// brought it back. SQLite finalizes a statement when it drops, so what is
+/// behind the lock is a usable connection rather than a half-written
+/// structure — and the recovery is logged, because a connection that really
+/// is broken should leave a trace instead of a silence.
+fn lock_connection(db: &Mutex<Connection>) -> std::sync::MutexGuard<'_, Connection> {
+    db.lock().unwrap_or_else(|poisoned| {
+        crate::errlog::append_error(
+            "store-lock-recovered",
+            "the conversation database lock was poisoned by an earlier panic; recovered",
+        );
+        poisoned.into_inner()
+    })
+}
+
 fn lock<'a>(db: &'a State<'_, Db>) -> Result<std::sync::MutexGuard<'a, Connection>, String> {
-    db.0.lock().map_err(|e| e.to_string())
+    Ok(lock_connection(&db.0))
 }
 
 /// Create or update a conversation (id supplied by the caller).
@@ -460,6 +480,33 @@ pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats,
 #[cfg(test)]
 mod tests {
     use rusqlite::{params, Connection};
+
+    /// One panic while a query held the lock used to end persistence for the
+    /// session: every later command failed on the poisoning rather than on
+    /// anything wrong with the database underneath it.
+    #[test]
+    fn a_poisoned_database_lock_is_taken_back() {
+        use std::sync::Mutex;
+        let db = Mutex::new(Connection::open_in_memory().expect("in-memory db"));
+        db.lock()
+            .unwrap()
+            .execute("CREATE TABLE t (v INTEGER)", [])
+            .expect("create");
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = db.lock().unwrap();
+            panic!("a query gave up while holding the connection");
+        }));
+        assert!(panicked.is_err(), "the fixture must actually panic");
+        assert!(db.lock().is_err(), "and must actually poison the lock");
+
+        let conn = super::lock_connection(&db);
+        conn.execute("INSERT INTO t VALUES (1)", []).expect("still writable");
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM t", [], |r| r.get(0))
+            .expect("still readable");
+        assert_eq!(n, 1);
+    }
 
     /// The schema plus the migrations `init_db` applies, on an in-memory DB.
     fn db() -> Connection {
