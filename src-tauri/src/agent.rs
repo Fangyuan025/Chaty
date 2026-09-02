@@ -3454,6 +3454,28 @@ impl BgJob {
 }
 
 static BG_JOBS: Mutex<Option<HashMap<u64, BgJob>>> = Mutex::new(None);
+/// Finished jobs stay readable after they are reported, but they were never
+/// dropped: a long session kept every command it had ever backgrounded, each
+/// holding its capped output for the life of the app. Keep the recent ones —
+/// far more than anything reads back — and let the rest go.
+const BG_KEEP_FINISHED: usize = 50;
+
+/// Drop all but the newest `BG_KEEP_FINISHED` jobs that have finished AND been
+/// reported. Ids increase, so the smallest are the oldest.
+fn bg_evict_finished(jobs: &mut HashMap<u64, BgJob>) {
+    let mut done: Vec<u64> = jobs
+        .iter()
+        .filter(|(_, j)| j.code.is_some() && j.reported)
+        .map(|(id, _)| *id)
+        .collect();
+    if done.len() <= BG_KEEP_FINISHED {
+        return;
+    }
+    done.sort_unstable();
+    for id in &done[..done.len() - BG_KEEP_FINISHED] {
+        jobs.remove(id);
+    }
+}
 static BG_NEXT_ID: AtomicU64 = AtomicU64::new(1);
 const BG_MAX_JOBS: usize = 8;
 const BG_TAIL_BYTES: usize = 8 * 1024;
@@ -3498,6 +3520,7 @@ pub fn agent_bash_bg(command: String) -> Result<u64, String> {
     let root = workspace()?;
     let mut reg = BG_JOBS.lock().unwrap();
     let jobs = reg.get_or_insert_with(HashMap::new);
+    bg_evict_finished(jobs);
     let running = jobs.values().filter(|j| j.code.is_none()).count();
     if running >= BG_MAX_JOBS {
         return Err(trf!(
@@ -4093,6 +4116,37 @@ mod tests {
 
     /// Windows consoles emit the ANSI codepage (GBK on Chinese systems) — the
     /// old lossy-UTF-8 decode turned every non-ASCII byte into mojibake.
+    /// Reported jobs were kept for the life of the app, so a long session
+    /// carried every command it had ever backgrounded — each still holding its
+    /// output buffer. Running jobs and unreported results must survive.
+    #[test]
+    fn finished_background_jobs_stop_accumulating() {
+        use std::sync::Arc;
+        let job = |code: Option<i32>, reported: bool| BgJob {
+            command: "sleep 0".into(),
+            started: std::time::Instant::now(),
+            output: Arc::new(Mutex::new(Vec::new())),
+            stderr_extra: None,
+            code,
+            reported,
+            pid: 0,
+        };
+        let mut jobs: HashMap<u64, BgJob> = HashMap::new();
+        for id in 0..200u64 {
+            jobs.insert(id, job(Some(0), true));
+        }
+        jobs.insert(900, job(None, false)); // still running
+        jobs.insert(901, job(Some(1), false)); // finished, not yet collected
+
+        super::bg_evict_finished(&mut jobs);
+
+        assert_eq!(jobs.len(), super::BG_KEEP_FINISHED + 2);
+        assert!(jobs.contains_key(&900), "a running job must never be dropped");
+        assert!(jobs.contains_key(&901), "an uncollected result must never be dropped");
+        assert!(jobs.contains_key(&199), "the newest finished job is kept");
+        assert!(!jobs.contains_key(&0), "the oldest finished job is dropped");
+    }
+
     #[test]
     fn console_output_decodes_the_ansi_codepage() {
         // Plain UTF-8 passes through unchanged on every platform.
