@@ -13,17 +13,23 @@ class FakeContext {
   constructor() {
     FakeContext.created.push(this);
   }
-  createBuffer() {
-    return { copyToChannel() {} };
+  currentTime = 0;
+  started: number[] = [];
+
+  createBuffer(_channels: number, length: number, sampleRate: number) {
+    return { duration: length / sampleRate, copyToChannel() {} };
   }
   createBufferSource() {
+    const ctx = this;
     return {
       buffer: null as unknown,
       onended: null as null | (() => void),
       connect() {},
       disconnect() {},
-      start(this: { onended: null | (() => void) }) {
-        this.onended?.();
+      start(this: { onended: null | (() => void) }, when?: number) {
+        ctx.started.push(when ?? ctx.currentTime);
+        // A scheduled clip has not finished merely because it was queued.
+        if (when === undefined) this.onended?.();
       },
       stop() {},
     };
@@ -115,5 +121,49 @@ describe("audio output recovers from a wedged context", () => {
     FakeContext.created[0].state = "interrupted";
     await speak().done;
     expect(FakeContext.created.length).toBe(2);
+  });
+});
+
+describe("speech queue stitches clips on the audio clock", () => {
+  beforeEach(() => {
+    FakeContext.behaviour = "ok";
+    FakeContext.created = [];
+    vi.useRealTimers();
+  });
+
+  async function freshQueue() {
+    vi.resetModules();
+    const { SpeechQueue } = await import("./audio");
+    return new SpeechQueue();
+  }
+
+  test("a clip starts exactly where the one before it ends", async () => {
+    // Waiting for `onended` to reach the main thread and only then building
+    // the next clip put an event loop between every sentence, which is what
+    // made speech choppy while the main thread was busy.
+    const q = await freshQueue();
+    const ctx = FakeContext.created[0];
+    const second = 24_000;
+    q.enqueue(new Float32Array(second), 24_000, "one"); // 1.0s
+    q.enqueue(new Float32Array(second / 2), 24_000, "two"); // 0.5s
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(ctx.started.length).toBe(2);
+    const [first, next] = ctx.started;
+    expect(next).toBeCloseTo(first + 1.0, 6);
+  });
+
+  test("a clip arriving after the queue drained does not start in the past", async () => {
+    const q = await freshQueue();
+    const ctx = FakeContext.created[0];
+    q.enqueue(new Float32Array(24_000), 24_000);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The clock has run well past everything queued.
+    ctx.currentTime = 60;
+    q.enqueue(new Float32Array(24_000), 24_000);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(ctx.started[1]).toBeGreaterThanOrEqual(60);
   });
 });

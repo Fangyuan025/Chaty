@@ -233,7 +233,10 @@ function resumeWithin(ctx: AudioContext): Promise<boolean> {
     const finish = (ok: boolean) => {
       if (settled) return;
       settled = true;
-      if (!ok) playbackWedged = true;
+      // Only the shared context carries a wedged flag — the speech queue owns
+      // its own and is rebuilt with the session, so marking it here would
+      // churn a context that was never the problem.
+      if (!ok && ctx === playbackContext) playbackWedged = true;
       resolve(ok);
     };
     const timer = setTimeout(() => finish(false), RESUME_TIMEOUT_MS);
@@ -329,11 +332,22 @@ export function playAudio(samples: Float32Array, sampleRate: number): Playback {
  * so a reply can be synthesized sentence-by-sentence and start playing before
  * the whole answer is generated. A single analyser feeds the speaking orb.
  */
+/** How far ahead of the clock a clip may be scheduled. Enough that `start()`
+ *  is never handed a time already in the past, small enough not to be heard. */
+const SCHEDULE_LEAD = 0.02;
+
 export class SpeechQueue {
   readonly analyser: AnalyserNode;
   private ctx: AudioContext;
+  /** Context time the next clip begins — the end of everything queued. */
+  private nextAt = 0;
+  private live = new Set<AudioBufferSourceNode>();
+  private timers = new Set<ReturnType<typeof setTimeout>>();
+  /** Resolves once every clip so far has been SCHEDULED (not played). */
   private tail: Promise<void> = Promise.resolve();
-  private current: AudioBufferSourceNode | null = null;
+  /** Resolves when the last clip scheduled so far stops sounding. */
+  private lastEnded: Promise<void> = Promise.resolve();
+  private resumed: Promise<boolean> | null = null;
   private stopped = false;
   private onClipStart?: (label: string) => void;
 
@@ -349,57 +363,70 @@ export class SpeechQueue {
 
   /** Queue a clip for playback after everything already queued. */
   enqueue(samples: Float32Array, sampleRate: number, label = "") {
-    this.tail = this.tail.then(() => this.playClip(samples, sampleRate, label));
+    if (this.stopped || samples.length === 0) return;
+    this.tail = this.tail.then(() => this.schedule(samples, sampleRate, label));
   }
 
-  private playClip(samples: Float32Array, sampleRate: number, label: string): Promise<void> {
-    if (this.stopped || samples.length === 0) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      // The resume has to be waited on. Starting a source on a context that
-      // never came back schedules a clip that never ends, and since each clip
-      // gates the next one, the whole queue stops with it.
-      void resumeWithin(this.ctx).then((ok) => {
-        if (this.stopped) {
-          resolve();
-          return;
-        }
-        if (!ok) {
-          console.warn(`speech queue output did not resume (state: ${this.ctx.state})`);
-          resolve();
-          return;
-        }
-        this.startClip(samples, sampleRate, label, resolve);
-      });
-    });
+  /** Resume once for the queue rather than once per clip: the wait belongs
+   *  before the first clip, not between every pair of them. */
+  private ready(): Promise<boolean> {
+    if (!this.resumed) this.resumed = resumeWithin(this.ctx);
+    return this.resumed;
   }
 
-  private startClip(
-    samples: Float32Array,
-    sampleRate: number,
-    label: string,
-    resolve: () => void,
-  ): void {
+  private async schedule(samples: Float32Array, sampleRate: number, label: string) {
+    if (this.stopped) return;
+    if (!(await this.ready())) {
+      console.warn(`speech queue output did not resume (state: ${this.ctx.state})`);
+      return;
+    }
+    if (this.stopped) return;
     try {
       const buffer = this.ctx.createBuffer(1, samples.length, sampleRate);
       buffer.copyToChannel(samples, 0);
       const src = this.ctx.createBufferSource();
       src.buffer = buffer;
       src.connect(this.analyser);
-      this.current = src;
-      src.onended = () => {
-        this.current = null;
-        resolve();
-      };
-      this.onClipStart?.(label);
-      src.start();
+
+      // Clips are stitched on the context clock, so the audio thread runs one
+      // into the next sample-accurately. Waiting for `onended` to come back to
+      // the main thread and only then building the next clip put a whole event
+      // loop between every sentence — audible as choppy speech whenever the
+      // main thread was busy, which during a spoken reply it always is.
+      const startAt = Math.max(this.ctx.currentTime + SCHEDULE_LEAD, this.nextAt);
+      this.live.add(src);
+      this.lastEnded = new Promise<void>((resolve) => {
+        src.onended = () => {
+          this.live.delete(src);
+          resolve();
+        };
+      });
+      src.start(startAt);
+      this.nextAt = startAt + buffer.duration;
+
+      if (this.onClipStart) {
+        const delay = Math.max(0, (startAt - this.ctx.currentTime) * 1000);
+        const timer = setTimeout(() => {
+          this.timers.delete(timer);
+          if (!this.stopped) this.onClipStart?.(label);
+        }, delay);
+        this.timers.add(timer);
+      }
     } catch {
-      resolve();
+      /* a clip that cannot be built is skipped rather than stalling the rest */
     }
   }
 
   /** Resolves once every queued clip has finished playing. */
   async whenIdle(): Promise<void> {
-    await this.tail;
+    // Clips can still arrive while waiting — settle only when nothing moved.
+    for (;;) {
+      const scheduled = this.tail;
+      const ended = this.lastEnded;
+      await scheduled;
+      await ended;
+      if (scheduled === this.tail && ended === this.lastEnded) return;
+    }
   }
 
   get isStopped() {
@@ -409,12 +436,18 @@ export class SpeechQueue {
   stop() {
     if (this.stopped) return;
     this.stopped = true;
-    try {
-      this.current?.stop();
-    } catch {
-      /* already stopped */
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
+    // Everything scheduled ahead of the clock has to be stopped, not just
+    // whatever happens to be sounding right now.
+    for (const src of this.live) {
+      try {
+        src.stop();
+      } catch {
+        /* not started, or already stopped */
+      }
     }
-    this.current = null;
+    this.live.clear();
     this.ctx.close().catch(() => {});
   }
 }
