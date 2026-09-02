@@ -403,6 +403,16 @@ fn chrome_path() -> Option<PathBuf> {
 #[cfg(test)]
 pub fn chrome_path_pub() -> Option<PathBuf> { chrome_path() }
 
+/// Clears the cached sender when the actor thread leaves, by any route.
+struct ForgetOnExit;
+impl Drop for ForgetOnExit {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = BROWSER.lock() {
+            *guard = None;
+        }
+    }
+}
+
 /// Ensure the actor is running; returns a sender to talk to it.
 fn ensure() -> Result<Sender<BrowserCmd>, String> {
     let mut guard = BROWSER.lock().unwrap();
@@ -413,7 +423,15 @@ fn ensure() -> Result<Sender<BrowserCmd>, String> {
     let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     std::thread::Builder::new()
         .name("chaty-browser".into())
-        .spawn(move || actor(rx, init_tx))
+        .spawn(move || {
+            // Whatever ends the actor — a clean Close, a failure, or a panic —
+            // takes the handle it was reached through with it. A sender left
+            // behind by a dead actor is not detectably dead: every later call
+            // fails on the send, the handle stays cached, and the browser is
+            // gone for the rest of the session with nothing to relaunch it.
+            let _forget = ForgetOnExit;
+            actor(rx, init_tx)
+        })
         .map_err(|e| trf!("无法启动浏览器线程:{}", "failed to start the browser thread: {}", e))?;
     match init_rx.recv() {
         Ok(Ok(())) => {
@@ -2472,6 +2490,28 @@ mod tests {
         assert!(BROWSER.lock().unwrap().is_none(), "changed toggle must close the browser");
         set_headless(start); // restore the process-wide default
         *BROWSER.lock().unwrap() = None;
+    }
+
+    /// A browser thread that dies takes its handle with it. Left cached, the
+    /// dead sender failed every later call with "the browser is closed" and
+    /// nothing ever replaced it — the tool was gone until the app restarted.
+    #[test]
+    fn a_dead_browser_thread_clears_its_handle() {
+        let (tx, rx) = std::sync::mpsc::channel::<BrowserCmd>();
+        *BROWSER.lock().unwrap() = Some(tx);
+
+        std::thread::spawn(move || {
+            let _forget = super::ForgetOnExit;
+            let _rx = rx;
+            panic!("the actor gave up");
+        })
+        .join()
+        .expect_err("the fixture must actually panic");
+
+        assert!(
+            BROWSER.lock().unwrap().is_none(),
+            "a dead actor must not leave a sender nothing can reach"
+        );
     }
 
     // The async-settle watcher is injected as text; a botched edit would break
