@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { applyCodeTheme } from "./lib/codeTheme";
 import { platform } from "@tauri-apps/plugin-os";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -12,7 +12,7 @@ import { LiveMode } from "./components/LiveMode";
 import { ModelInfoPanel } from "./components/ModelInfoPanel";
 import { WindowControls } from "./components/WindowControls";
 import { useI18n, type Lang, type TKey, detectLang } from "./lib/i18n";
-import { effortLabel } from "./lib/effort";
+import { clampRung, effortLabel } from "./lib/effort";
 import {
   decodeAudio,
   encodeAudio,
@@ -449,6 +449,13 @@ export default function App() {
       return "xhigh";
     }
   });
+  /** The rung this model will actually use — the remembered one while it
+   *  offers it, clamped to its own ladder otherwise. Both the menu and the
+   *  request read this, so what is ticked is what the model is asked for. */
+  const effortRung = useMemo(
+    () => clampRung(model?.effortLevels ?? [], effort),
+    [model?.effortLevels, effort],
+  );
   const [thinkEnabled, setThinkEnabled] = useState(() => {
     try {
       return localStorage.getItem("chaty.think") !== "0";
@@ -1923,7 +1930,7 @@ export default function App() {
     // and only when they are actually reasoning.
     const levels = model?.effortLevels ?? [];
     const effortParam =
-      levels.length > 0 && !wantNoThink && levels.includes(effort) ? effort : undefined;
+      levels.length > 0 && !wantNoThink && levels.includes(effortRung) ? effortRung : undefined;
 
     // Only tell the model today's date when the question is actually time-related,
     // otherwise short prompts can trigger the model to recite the date.
@@ -3347,7 +3354,7 @@ export default function App() {
                           {(model?.effortLevels ?? []).map((lvl) => (
                             <button
                               key={lvl}
-                              className={`tool-item ${thinkEnabled && effort === lvl ? "on" : ""}`}
+                              className={`tool-item ${thinkEnabled && effortRung === lvl ? "on" : ""}`}
                               onClick={() => {
                                 setEffort(lvl);
                                 setThinkingOn(true);
@@ -3355,7 +3362,7 @@ export default function App() {
                             >
                               <span className="ti-label">{effortLabel(lvl, t)}</span>
                               <span className="ti-check">
-                                {thinkEnabled && effort === lvl ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}
+                                {thinkEnabled && effortRung === lvl ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}
                               </span>
                             </button>
                           ))}

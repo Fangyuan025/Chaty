@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { effortLabel, intensityOf, thinkTabActive } from "./effort";
+import { clampRung, effortLabel, intensityOf, thinkTabActive } from "./effort";
 import { lookup, type TKey } from "./i18n";
 
 const zh = (key: TKey) => lookup(key, "zh");
@@ -76,5 +76,34 @@ describe("intensityOf", () => {
   test("spreads a four-rung ladder across the same three intensities", () => {
     const four = ["low", "medium", "high", "xhigh"];
     expect(four.map((r) => intensityOf(four, r))).toEqual(["low", "normal", "normal", "deep"]);
+  });
+});
+
+describe("clampRung", () => {
+  const qwen = ["low", "medium", "xhigh"];
+  const four = ["low", "medium", "high", "xhigh"];
+
+  test("keeps a rung the model offers", () => {
+    for (const r of qwen) expect(clampRung(qwen, r)).toBe(r);
+    for (const r of four) expect(clampRung(four, r)).toBe(r);
+  });
+
+  test("carries a rung across ladders of different lengths", () => {
+    // The choice is remembered per app, not per model. Left unresolved, the
+    // menu showed nothing ticked while the model fell back to its template
+    // default — so what was displayed and what was asked for disagreed.
+    expect(clampRung(qwen, "high")).toBe("xhigh");
+    expect(qwen).toContain(clampRung(qwen, "high"));
+  });
+
+  test("resolves to something the model actually has", () => {
+    for (const remembered of ["low", "medium", "high", "xhigh", "ultra"]) {
+      expect(qwen).toContain(clampRung(qwen, remembered));
+      expect(four).toContain(clampRung(four, remembered));
+    }
+  });
+
+  test("leaves a model without a ladder alone", () => {
+    expect(clampRung([], "high")).toBe("high");
   });
 });

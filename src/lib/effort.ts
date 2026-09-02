@@ -48,3 +48,21 @@ export function intensityOf(levels: string[], rung: string): "off" | "low" | "no
   if (i <= 0) return "low";
   return i === levels.length - 1 ? "deep" : "normal";
 }
+
+/** The rung a model will actually use, given one remembered from another.
+ *
+ *  The choice is kept per app, not per model, and ladders differ in length —
+ *  so a rung picked on a four-rung model can be absent from a three-rung one.
+ *  Left unresolved the menu shows nothing selected while the model quietly
+ *  falls back to whatever its template defaults to, which is not necessarily
+ *  what the menu last showed.
+ *
+ *  Clamped by position, so the intent survives the move: the third rung of
+ *  four becomes the third of three rather than the bottom one.
+ */
+export function clampRung(levels: string[], rung: string): string {
+  if (levels.length === 0 || levels.includes(rung)) return rung;
+  const ladder = ["low", "medium", "high", "xhigh"];
+  const from = ladder.indexOf(rung);
+  return levels[from < 0 ? levels.length - 1 : Math.min(from, levels.length - 1)];
+}
