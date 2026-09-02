@@ -41,6 +41,24 @@ describe("normalizeChannels", () => {
     expect(normalizeChannels(" to=user<|message|>direct answer<|eot|>")).toBe("direct answer");
   });
 
+  // The recipient arrives before the tag that terminates it, so without a hold
+  // ` to=self` renders as answer text at the head of every ATEM turn.
+  it("does not show a recipient that is still being typed", () => {
+    const opener = " to=self<|message|>thinking";
+    for (let i = 1; i <= opener.length; i++) {
+      expect(normalizeChannels(opener.slice(0, i))).not.toMatch(/to=|<[|｜]/);
+    }
+    expect(normalizeChannels("a<|eom|><|start|>assistant to=us")).toBe("a");
+  });
+
+  it("keeps a reply that merely ends on `to=`", () => {
+    // Held only where a span can open — the head of the stream or right after
+    // `<|start|>assistant` — so ordinary prose keeps its text.
+    for (const prose of ["set the param to=", "append ?to=user", "auto="]) {
+      expect(normalizeChannels(prose)).toBe(prose);
+    }
+  });
+
   it("treats a tool recipient as leaving the reasoning channel", () => {
     expect(
       normalizeChannels(" to=self<|message|>plan<|eom|><|start|>assistant to=fs.read<|message|>call"),

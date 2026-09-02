@@ -14,6 +14,25 @@ const END = "\x00END\x00";
 const MARKER_WORDS = ["channel", "turn", "think", "message", "end", "return", "start", "eom", "eot"];
 const CHANNEL_NAMES = ["analysis", "thought", "thinking", "final"];
 function trimPartialMarker(s: string): string {
+  return trimPartialRecipient(trimPartialTag(s));
+}
+
+/// ATEM opens a span with `to=<recipient><|message|>`, and the recipient
+/// arrives BEFORE the tag that terminates it — outside the `<` the tag rule
+/// looks behind. Until the tag lands, that text is protocol rather than
+/// answer, and rendering it flashes ` to=self` at the head of every reply.
+/// Only where a span can actually open — the head of the stream, or straight
+/// after `<|start|>assistant` — so a reply that ends on a literal `to=…` (a
+/// URL parameter, say) keeps its text instead of losing it to this rule.
+function trimPartialRecipient(s: string): string {
+  const m = /(?:^|(<[|｜]start[|｜]>[ \t]*assistant))[ \t]*to=[\w.*-]*$/.exec(s);
+  if (!m) return s;
+  // Keep the `<|start|>assistant` that opened it — the tag rules below are
+  // what erase that — and cut only the recipient still being typed.
+  return s.slice(0, m.index + (m[1]?.length ?? 0));
+}
+
+function trimPartialTag(s: string): string {
   const lt = s.lastIndexOf("<");
   if (lt === -1) return s;
   const tail = s.slice(lt);
