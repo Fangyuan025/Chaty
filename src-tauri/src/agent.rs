@@ -235,7 +235,7 @@ pub fn agent_grant_dir(path: String) -> Result<String, String> {
     }
     let canon = p.canonicalize().map_err(|e| e.to_string())?;
     let mut dirs = GRANTED_DIRS.lock().unwrap();
-    if !dirs.iter().any(|d| *d == canon) {
+    if !dirs.contains(&canon) {
         dirs.push(canon.clone());
     }
     Ok(canon.to_string_lossy().to_string())
@@ -738,7 +738,7 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
         let rel = rel_display(&root, entry.path());
         // A test relates if it mentions a changed stem — or IS a changed file.
         let related = stems.iter().any(|st| lower.contains(st.as_str()))
-            || rels.iter().any(|r| *r == rel);
+            || rels.contains(&rel);
         if !related {
             continue;
         }
@@ -1658,15 +1658,11 @@ pub async fn browser_refresh() -> Result<String, String> {
 /// each one downscales to a fully legible image, and EVERY pixel of the page
 /// stays in the set — full-page semantics, zero information loss. Encode
 /// transients also shrink: N small ViT passes replace one giant one.
-/// Returns the tile bounds (y, height) top-to-bottom.
-fn tile_bounds(width: u32, height: u32) -> Vec<(u32, u32)> {
-    // ~one 2x viewport per tile; a page up to 1.35 tiles stays a single image
-    // (normal pages keep the old behavior byte-for-byte).
-    tile_bounds_with(width, height, None)
-}
-
-/// Same as `tile_bounds`, with an optional content-aware boundary chooser:
-/// given a candidate cut row, return the FLATTEST row nearby (whitespace
+/// Returns the tile bounds (y, height) top-to-bottom. A page up to 1.35 tiles
+/// tall stays a single image, so normal pages are untouched.
+///
+/// `pick_cut` is an optional content-aware boundary chooser:
+/// given a candidate cut row, it returns the FLATTEST row nearby (whitespace
 /// between page sections). A hard cut at a fixed offset halved a product
 /// card and the model saw it in NEITHER half; overlapping tiles duplicated
 /// content and diluted multi-image attention (both measured on the owner's
@@ -3007,15 +3003,6 @@ fn decode_console_bytes(slice: &[u8]) -> String {
     String::from_utf8_lossy(slice).into_owned()
 }
 
-fn cap_utf8(bytes: Vec<u8>) -> String {
-    let truncated = bytes.len() > MAX_OUTPUT_BYTES;
-    let s = decode_console_bytes(&bytes[..bytes.len().min(MAX_OUTPUT_BYTES)]);
-    if truncated {
-        trf!("{s}\n… (输出已截断)", "{s}\n… (output truncated)")
-    } else {
-        s
-    }
-}
 
 /// Final decode of a shared (already tail-capped) buffer. The buffer keeps the
 /// TAIL on overflow — for shell output that's the right end to keep (the error
@@ -3178,13 +3165,13 @@ fn run_bash(
                 // model was asked to start.
                 if let Some(grace) = convert {
                     if started.elapsed() >= grace
-                        && tick % 25 == 0
+                        && tick.is_multiple_of(25)
                         && (server_signature(&shared_tail(&out_buf))
                             || server_signature(&shared_tail(&err_buf))
                             // Every ~3s ask the OS directly: banner-silent
                             // servers (buffered python http.server, custom
                             // node listeners) never print anything we match.
-                            || (tick % 75 == 0 && listening_socket(child.id())))
+                            || (tick.is_multiple_of(75) && listening_socket(child.id())))
                     {
                         match convert_running_to_bg(child, command, started, &out_buf, &err_buf) {
                             Ok(id) => {
@@ -3723,11 +3710,11 @@ mod tests {
     #[test]
     fn screenshot_tiles_cover_everything_and_spare_normal_pages() {
         // Normal 2x viewport (2560x1800): single image.
-        assert_eq!(tile_bounds(2560, 1800), vec![(0, 1800)]);
+        assert_eq!(tile_bounds_with(2560, 1800, None), vec![(0, 1800)]);
         // Slightly tall (≤1.35 tiles) still single.
-        assert_eq!(tile_bounds(2560, 2400), vec![(0, 2400)]);
+        assert_eq!(tile_bounds_with(2560, 2400, None), vec![(0, 2400)]);
         // The owner's Hello-Kitty page: 2560x10780, fixed cuts.
-        let tiles = tile_bounds(2560, 10780);
+        let tiles = tile_bounds_with(2560, 10780, None);
         assert!(tiles.len() >= 5, "tall page must segment: {tiles:?}");
         let tile_h = (2560f64 * 0.72) as u32;
         let mut y = 0;
@@ -4107,16 +4094,16 @@ mod tests {
     /// Windows consoles emit the ANSI codepage (GBK on Chinese systems) — the
     /// old lossy-UTF-8 decode turned every non-ASCII byte into mojibake.
     #[test]
-    fn cap_utf8_decodes_console_output() {
+    fn console_output_decodes_the_ansi_codepage() {
         // Plain UTF-8 passes through unchanged on every platform.
-        assert_eq!(cap_utf8("hello 世界".as_bytes().to_vec()), "hello 世界");
+        assert_eq!(decode_console_bytes("hello 世界".as_bytes()), "hello 世界");
         #[cfg(windows)]
         {
             // "找不到文件" (file not found) as GBK bytes — what a Chinese-locale
             // cmd.exe actually writes.
             let (gbk, _, _) = encoding_rs::GBK.encode("找不到文件 test");
             assert!(std::str::from_utf8(&gbk).is_err(), "fixture must not be valid UTF-8");
-            assert_eq!(cap_utf8(gbk.into_owned()), "找不到文件 test");
+            assert_eq!(decode_console_bytes(&gbk), "找不到文件 test");
         }
     }
 

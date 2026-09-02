@@ -494,10 +494,7 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
         session: &mut BrowserSession,
         r: Result<String, String>,
     ) -> Result<String, String> {
-        let mut text = match r {
-            Ok(t) => t,
-            Err(e) => return Err(e),
-        };
+        let mut text = r?;
         // Always advance the cursor (mark lines as seen), but only ATTACH on
         // pages the developer owns — localhost / local files. On someone
         // else's website the console is third-party noise; it stays available

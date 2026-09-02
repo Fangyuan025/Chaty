@@ -330,7 +330,7 @@ pub async fn list_hf_ggufs(repo: String, endpoint: Option<String>) -> Result<Vec
     if out.is_empty() {
         return Err(format!("该仓库没有 .gguf 文件: {repo}"));
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     Ok(out)
 }
 
@@ -403,7 +403,7 @@ fn params_from_name(name: &str) -> Option<f64> {
             if i < bytes.len() && (bytes[i] == b'b' || bytes[i] == b'B') {
                 // must be a token edge, not e.g. "…4Bit"
                 let next = bytes.get(i + 1);
-                let edge = next.map_or(true, |c| !c.is_ascii_alphanumeric());
+                let edge = next.is_none_or(|c| !c.is_ascii_alphanumeric());
                 // and not preceded by a letter ("IQ4B"?) — digit start is enough
                 let prev_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
                 if edge && prev_ok {
@@ -464,7 +464,7 @@ fn quant_label_of(stem: &str) -> String {
             || t.starts_with("MXFP")
             || ((t.starts_with('Q') || t.starts_with("IQ"))
                 && t.chars().nth(if t.starts_with("IQ") { 2 } else { 1 })
-                    .map_or(false, |c| c.is_ascii_digit()))
+                    .is_some_and(|c| c.is_ascii_digit()))
     };
     // scan '-'/'.'/'_'-separated tokens from the END; join trailing qualifier
     // parts split by '_' ("Q4_K_M" survives because we split on '-'/'.' only)

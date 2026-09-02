@@ -124,7 +124,7 @@ pub async fn load_model(
         let guard = state.model.read().await;
         (
             guard.as_ref().and_then(|m| m.size_mb).unwrap_or(0),
-            guard.as_ref().map_or(false, |m| m.backend == "mlx"),
+            guard.as_ref().is_some_and(|m| m.backend == "mlx"),
         )
     };
     let old = state.engine.write().await.take();
@@ -440,11 +440,11 @@ fn main_gguf_in_dir(dir: &std::path::Path) -> Option<PathBuf> {
         .ok()?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |x| x.eq_ignore_ascii_case("gguf")))
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("gguf")))
         .filter(|p| {
             !p.file_name()
                 .and_then(|s| s.to_str())
-                .map_or(false, |n| n.to_lowercase().contains("mmproj"))
+                .is_some_and(|n| n.to_lowercase().contains("mmproj"))
         })
         .collect();
     candidates.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
@@ -491,11 +491,11 @@ fn loose_main_ggufs(dir: &std::path::Path) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| {
             p.is_file()
-                && p.extension().map_or(false, |x| x.eq_ignore_ascii_case("gguf"))
+                && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("gguf"))
                 && !p
                     .file_name()
                     .and_then(|s| s.to_str())
-                    .map_or(false, |n| n.to_lowercase().contains("mmproj"))
+                    .is_some_and(|n| n.to_lowercase().contains("mmproj"))
         })
         .collect()
 }
@@ -521,7 +521,7 @@ pub fn migrate_or_prompt_models(app: &tauri::AppHandle) {
 
     // Already past the one-time gate (or no app-data dir) → keep the existing
     // silent behavior.
-    if marker.as_ref().map_or(true, |m| m.exists()) {
+    if marker.as_ref().is_none_or(|m| m.exists()) {
         migrate_models_layout(app);
         return;
     }
@@ -577,11 +577,11 @@ fn migrate_models_dir(dir: &std::path::Path) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
     let is_gguf =
-        |p: &PathBuf| p.extension().map_or(false, |x| x.eq_ignore_ascii_case("gguf"));
+        |p: &PathBuf| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("gguf"));
     let is_mmproj = |p: &PathBuf| {
         p.file_name()
             .and_then(|s| s.to_str())
-            .map_or(false, |n| n.to_lowercase().contains("mmproj"))
+            .is_some_and(|n| n.to_lowercase().contains("mmproj"))
     };
 
     // Pass 1: loose main GGUFs → their own folders.
@@ -754,7 +754,7 @@ fn dir_has_models(dir: &std::path::Path) -> bool {
             for e in sub.flatten() {
                 let p = e.path();
                 if p.is_file()
-                    && p.extension().map_or(false, |x| x.eq_ignore_ascii_case("gguf"))
+                    && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("gguf"))
                 {
                     return true;
                 }
@@ -940,7 +940,7 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
     let is_mmproj = |p: &PathBuf| {
         p.file_name()
             .and_then(|s| s.to_str())
-            .map_or(false, |n| n.to_lowercase().contains("mmproj"))
+            .is_some_and(|n| n.to_lowercase().contains("mmproj"))
     };
     // Multi-part GGUFs: only the first shard is loadable (llama.cpp pulls in
     // the rest); later shards must not show up as their own models.
@@ -962,7 +962,7 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
     let push = |path: PathBuf, out: &mut Vec<ModelEntry>, seen: &mut HashSet<PathBuf>| {
         if !path
             .extension()
-            .map_or(false, |x| x.eq_ignore_ascii_case("gguf"))
+            .is_some_and(|x| x.eq_ignore_ascii_case("gguf"))
             || is_mmproj(&path)
         {
             return;
@@ -1048,7 +1048,7 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
             }
         }
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     Ok(out)
 }
 
@@ -1076,7 +1076,7 @@ pub async fn delete_model_file(
             .map_err(|e| format!("文件夹不存在 (folder not found): {e}"))?;
         let in_models = model_dirs(&app)
             .iter()
-            .any(|d| d.canonicalize().map_or(false, |dc| canon.starts_with(&dc)));
+            .any(|d| d.canonicalize().is_ok_and(|dc| canon.starts_with(&dc)));
         if !in_models {
             return Err(
                 "该文件夹不在模型文件夹内，已拒绝删除 (folder is outside the models folder; refusing to delete)"
@@ -1099,7 +1099,7 @@ pub async fn delete_model_file(
     }
     if !target
         .extension()
-        .map_or(false, |x| x.eq_ignore_ascii_case("gguf"))
+        .is_some_and(|x| x.eq_ignore_ascii_case("gguf"))
     {
         return Err("只能删除 .gguf 模型文件 (only .gguf model files can be deleted)".into());
     }
@@ -1108,7 +1108,7 @@ pub async fn delete_model_file(
         .map_err(|e| format!("文件不存在 (file not found): {e}"))?;
     let in_models = model_dirs(&app)
         .iter()
-        .any(|d| d.canonicalize().map_or(false, |dc| canon.starts_with(&dc)));
+        .any(|d| d.canonicalize().is_ok_and(|dc| canon.starts_with(&dc)));
     if !in_models {
         return Err(
             "该文件不在模型文件夹内，已拒绝删除 (file is outside the models folder; refusing to delete)"
@@ -1131,10 +1131,10 @@ pub async fn delete_model_file(
     // sitting directly in a models root is deleted alone (plus its paired
     // mmproj when nothing else would use it).
     let parent = canon.parent().map(PathBuf::from);
-    let parent_is_models_root = parent.as_ref().map_or(true, |p| {
+    let parent_is_models_root = parent.as_ref().is_none_or(|p| {
         model_dirs(&app)
             .iter()
-            .any(|d| d.canonicalize().map_or(false, |dc| dc == *p))
+            .any(|d| d.canonicalize().is_ok_and(|dc| dc == *p))
     });
     if parent_is_models_root {
         let mmproj = crate::inference::llama::find_mmproj(&canon.to_string_lossy());

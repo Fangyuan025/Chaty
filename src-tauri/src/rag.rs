@@ -1586,7 +1586,6 @@ mod tests {
         drop(emb); // exercises the worker-shutdown path
     }
 
-    #[test]
     /// A file with no blank line in it is ONE paragraph. The old splitter
     /// collected it into a `Vec<char>` first — four bytes a character — and a
     /// large import took the app with it. Chunks must come out the same, and

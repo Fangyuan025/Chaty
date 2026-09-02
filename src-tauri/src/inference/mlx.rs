@@ -33,9 +33,9 @@ pub fn is_mlx_dir(path: &Path) -> bool {
     if !path.is_dir() || !path.join("config.json").is_file() {
         return false;
     }
-    std::fs::read_dir(path).map_or(false, |rd| {
+    std::fs::read_dir(path).is_ok_and(|rd| {
         rd.flatten().any(|e| {
-            e.path().extension().map_or(false, |x| x.eq_ignore_ascii_case("safetensors"))
+            e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("safetensors"))
         })
     })
 }
@@ -59,7 +59,7 @@ pub(crate) fn heal_wrapped_weight_prefix(dir: &Path) -> Result<()> {
     let shards: Vec<PathBuf> = std::fs::read_dir(dir)?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |x| x.eq_ignore_ascii_case("safetensors")))
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("safetensors")))
         .collect();
     if shards.is_empty() {
         return Ok(());
@@ -168,7 +168,7 @@ pub fn mlx_dir_has_vision(path: &Path) -> bool {
     std::fs::read_to_string(path.join("config.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .map_or(false, |v| v.get("vision_config").is_some())
+        .is_some_and(|v| v.get("vision_config").is_some())
 }
 
 /// Sum of the safetensors shards, in MiB — the honest weight footprint.
@@ -179,7 +179,7 @@ pub fn mlx_dir_size_mb(path: &Path) -> u64 {
                 .filter(|e| {
                     e.path()
                         .extension()
-                        .map_or(false, |x| x.eq_ignore_ascii_case("safetensors"))
+                        .is_some_and(|x| x.eq_ignore_ascii_case("safetensors"))
                 })
                 .filter_map(|e| e.metadata().ok())
                 .map(|m| m.len())
@@ -961,7 +961,7 @@ mod tests {
         assert_eq!(picked, full.join("chaty-mlx"), "must skip the bundle-less copy");
 
         // With no complete copy anywhere, fall back rather than find nothing.
-        let only_bare = vec![bare.join("chaty-mlx")];
+        let only_bare = [bare.join("chaty-mlx")];
         let picked2 = only_bare
             .iter()
             .find(|p| p.with_file_name("mlx-swift_Cmlx.bundle").exists())
@@ -1611,7 +1611,7 @@ mod mlx_mem_e2e {
         std::process::Command::new("ps")
             .args(["-p", &pid.to_string(), "-o", "pid="])
             .output()
-            .map_or(false, |o| !o.stdout.is_empty())
+            .is_ok_and(|o| !o.stdout.is_empty())
     }
 
     #[test]

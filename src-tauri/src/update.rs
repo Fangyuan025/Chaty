@@ -162,6 +162,6 @@ mod tests {
         assert!(ver_tuple("2.0.10") > ver_tuple("2.0.9"));
         assert!(ver_tuple("2.1.0") > ver_tuple("2.0.99"));
         assert_eq!(ver_tuple("v1.2.3"), ver_tuple("1.2.3"));
-        assert!(!(ver_tuple("2.0.4-beta.1") > ver_tuple("2.0.4-beta.1")));
+        assert!(ver_tuple("2.0.4-beta.1") <= ver_tuple("2.0.4-beta.1"));
     }
 }

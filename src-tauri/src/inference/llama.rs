@@ -59,6 +59,9 @@ use crate::errlog::chaty_data_dir;
 /// from in here, so every `cargo test` run stamped a false "gpu crashed"
 /// entry into the dev machine's user log (the errlog-pollution sin, third
 /// occurrence). The production caller logs; the state machine doesn't.
+// The production caller is inside `#[cfg(windows)]`; everywhere else this is
+// exercised only by its own test, which is the point of keeping it pure.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn gpu_guard_check(base: &Path) -> Option<i32> {
     let inflight = base.join(GPU_INFLIGHT);
     let cap_file = base.join(GPU_CAP);
@@ -1024,7 +1027,7 @@ fn run_turn(
     // How many prompt tokens the KV already held — the same observability the
     // MLX engine reports, and the number that shows an agent turn is a pure
     // append rather than a full re-read.
-    let mut kv_reused = 0u32;
+    let kv_reused: u32;
 
     if media_turn {
         let mtmd = mtmd.expect("media_turn implies mtmd");
@@ -2061,8 +2064,8 @@ fn gguf_diagnosis<R: std::io::Read>(mut r: R) -> Option<String> {
         match t {
             0 | 1 | 7 => take(r, 1).map(|_| ()),
             2 | 3 => take(r, 2).map(|_| ()),
-            4 | 5 | 6 => take(r, 4).map(|_| ()),
-            10 | 11 | 12 => take(r, 8).map(|_| ()),
+            4..=6 => take(r, 4).map(|_| ()),
+            10..=12 => take(r, 8).map(|_| ()),
             8 => string(r).map(|_| ()),
             9 => {
                 let et = u32le(r)?;
@@ -2349,7 +2352,7 @@ fn render_chat(model: &LlamaModel, messages: &[ChatMessage], add_ass: bool) -> R
     // Why the embedded template was rejected, kept for the fallback message
     // below: falling back silently turns a template this llama.cpp cannot parse
     // into a model that quietly speaks the wrong protocol.
-    let mut rejected = String::new();
+    let rejected: String;
     if let Ok(t) = model.chat_template(None) {
         match model.apply_chat_template(&t, &chat, add_ass) {
             Ok(p) => return Ok(p),
@@ -2669,7 +2672,7 @@ mod tests {
             b.extend_from_slice(&3u32.to_le_bytes());
             b.extend_from_slice(&0u64.to_le_bytes());
             b.extend_from_slice(&((1 + extra_keys.len()) as u64).to_le_bytes());
-            let mut push = |b: &mut Vec<u8>, k: &str, v: &str| {
+            let push = |b: &mut Vec<u8>, k: &str, v: &str| {
                 b.extend_from_slice(&(k.len() as u64).to_le_bytes());
                 b.extend_from_slice(k.as_bytes());
                 b.extend_from_slice(&8u32.to_le_bytes());
@@ -4391,7 +4394,7 @@ mod vision_engine {
         eprintln!("vision_ready={} mmproj={:?} warning={:?}", info.vision_ready, info.mmproj, info.warning);
         assert!(info.multimodal, "VLM must be flagged multimodal");
         assert!(info.vision_ready, "mmproj must be paired and loaded");
-        assert!(info.mmproj.as_deref().map_or(false, |p| p.to_lowercase().contains("mmproj")));
+        assert!(info.mmproj.as_deref().is_some_and(|p| p.to_lowercase().contains("mmproj")));
         assert!(info.warning.is_none(), "clean load expected, got {:?}", info.warning);
 
         // generate_collect (the one-shot vision path used by KB/Canvas/browser)
@@ -6316,6 +6319,9 @@ mod gguf_kv_e2e {
 /// Layers the model's next-token-prediction head occupies, read from the GGUF
 /// metadata (`<arch>.nextn_predict_layers`). llama.cpp has a C accessor for
 /// this; the Rust binding does not re-export it.
+/// Read only by the MTP draft test below — kept beside the note it belongs to
+/// rather than rediscovered when that integration is picked up.
+#[allow(dead_code)]
 pub(crate) fn nextn_layers(model: &LlamaModel) -> u32 {
     let arch = model.meta_val_str("general.architecture").unwrap_or_default();
     model
