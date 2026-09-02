@@ -198,12 +198,56 @@ export interface Playback {
 // original click is no longer considered active. Keep one output context and
 // unlock it on the first pointer/keyboard gesture, before synthesis begins.
 let playbackContext: AudioContext | null = null;
+/** Set when an output context stopped answering, so the next utterance builds
+ *  a fresh one instead of speaking into the dead one again. */
+let playbackWedged = false;
 
+/// WebKit parks a context as `interrupted` — an audio route change, the
+/// machine sleeping, another app taking the device — and `resume()` on one of
+/// those can reject or simply never settle. Replacing only a `closed` context
+/// left the wedged one in place for every later utterance, which is why speech
+/// that stopped stayed stopped until the app was restarted.
 function sharedPlaybackContext(): AudioContext {
-  if (!playbackContext || playbackContext.state === "closed") {
+  const state = playbackContext?.state as string | undefined;
+  if (!playbackContext || playbackWedged || state === "closed" || state === "interrupted") {
+    try {
+      void playbackContext?.close();
+    } catch {
+      /* already gone */
+    }
     playbackContext = new AudioContext();
+    playbackWedged = false;
   }
   return playbackContext;
+}
+
+/** How long `resume()` may take before the context counts as wedged. Long
+ *  enough that a busy machine is not mistaken for a dead device. */
+const RESUME_TIMEOUT_MS = 2_000;
+
+/** Resolves false when the context did not come back — rejected, or never
+ *  answered at all, which is the failure that has no error to catch. */
+function resumeWithin(ctx: AudioContext): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (!ok) playbackWedged = true;
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), RESUME_TIMEOUT_MS);
+    ctx.resume().then(
+      () => {
+        clearTimeout(timer);
+        finish(ctx.state === "running");
+      },
+      () => {
+        clearTimeout(timer);
+        finish(false);
+      },
+    );
+  });
 }
 
 /** Unlock Web Audio while a real user gesture is still active. */
@@ -249,16 +293,20 @@ export function playAudio(samples: Float32Array, sampleRate: number): Playback {
     resolveDone();
   };
   source.onended = finish;
-  void ctx
-    .resume()
-    .then(() => {
-      if (stopped) {
-        finish();
-        return;
-      }
-      source.start();
-    })
-    .catch(finish);
+  void resumeWithin(ctx).then((ok) => {
+    if (stopped) {
+      finish();
+      return;
+    }
+    if (!ok) {
+      // Nothing to catch here — the context simply stopped answering. Say so,
+      // and let the next utterance start over on a new one.
+      console.warn(`audio output did not resume (state: ${ctx.state}); replacing it`);
+      finish();
+      return;
+    }
+    source.start();
+  });
 
   return {
     analyser,
@@ -307,24 +355,46 @@ export class SpeechQueue {
   private playClip(samples: Float32Array, sampleRate: number, label: string): Promise<void> {
     if (this.stopped || samples.length === 0) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      try {
-        void this.ctx.resume();
-        const buffer = this.ctx.createBuffer(1, samples.length, sampleRate);
-        buffer.copyToChannel(samples, 0);
-        const src = this.ctx.createBufferSource();
-        src.buffer = buffer;
-        src.connect(this.analyser);
-        this.current = src;
-        src.onended = () => {
-          this.current = null;
+      // The resume has to be waited on. Starting a source on a context that
+      // never came back schedules a clip that never ends, and since each clip
+      // gates the next one, the whole queue stops with it.
+      void resumeWithin(this.ctx).then((ok) => {
+        if (this.stopped) {
           resolve();
-        };
-        this.onClipStart?.(label);
-        src.start();
-      } catch {
-        resolve();
-      }
+          return;
+        }
+        if (!ok) {
+          console.warn(`speech queue output did not resume (state: ${this.ctx.state})`);
+          resolve();
+          return;
+        }
+        this.startClip(samples, sampleRate, label, resolve);
+      });
     });
+  }
+
+  private startClip(
+    samples: Float32Array,
+    sampleRate: number,
+    label: string,
+    resolve: () => void,
+  ): void {
+    try {
+      const buffer = this.ctx.createBuffer(1, samples.length, sampleRate);
+      buffer.copyToChannel(samples, 0);
+      const src = this.ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(this.analyser);
+      this.current = src;
+      src.onended = () => {
+        this.current = null;
+        resolve();
+      };
+      this.onClipStart?.(label);
+      src.start();
+    } catch {
+      resolve();
+    }
   }
 
   /** Resolves once every queued clip has finished playing. */
