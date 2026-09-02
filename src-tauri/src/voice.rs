@@ -268,6 +268,24 @@ async fn ensure_extracted(
     Ok(dir)
 }
 
+/// Take a voice engine's lock, recovering it when an earlier panic poisoned it.
+///
+/// Treating poisoning as fatal made one bad synthesis permanent: every later
+/// call returned the same "lock poisoned" error for the life of the process,
+/// so voice appeared to die on its own and only came back with a restart. What
+/// the lock guards is a loaded model session, not a half-written structure, so
+/// it is taken back and used — and the poisoning is recorded, because a model
+/// that really is broken should leave a trace rather than a silence.
+fn engine_lock<'a, T>(engine: &'a Mutex<T>, what: &str) -> std::sync::MutexGuard<'a, T> {
+    engine.lock().unwrap_or_else(|poisoned| {
+        crate::errlog::append_error(
+            "voice-lock-recovered",
+            &format!("{what} lock was poisoned by an earlier panic; recovered and continuing"),
+        );
+        poisoned.into_inner()
+    })
+}
+
 fn stt_engine(dir: &Path, multilingual: bool) -> Result<&'static Mutex<WhisperRecognizer>> {
     let slot = if multilingual {
         &MULTILINGUAL_STT
@@ -458,7 +476,7 @@ pub async fn transcribe(
     tokio::task::spawn_blocking(move || -> Result<String> {
         let engine = stt_engine(&dir, multilingual)?;
         let audio = resample_to_16k(&samples, sample_rate);
-        let mut rec = engine.lock().map_err(|_| anyhow!("STT lock poisoned"))?;
+        let mut rec = engine_lock(engine, "STT");
         let raw = rec.transcribe(16000, &audio).text;
         let text = clean_transcript(raw.trim());
         eprintln!(
@@ -494,9 +512,7 @@ pub async fn synthesize(
         .await?;
         tokio::task::spawn_blocking(move || -> Result<(Vec<f32>, u32)> {
             let engine = chinese_tts_engine(&dir)?;
-            let mut tts = engine
-                .lock()
-                .map_err(|_| anyhow!("中文 TTS lock poisoned"))?;
+            let mut tts = engine_lock(engine, "中文 TTS");
             let audio = tts
                 // The Chinese voice is chosen from its OWN list — the two
                 // models share nothing but a slider, and folding the Kokoro
@@ -511,7 +527,7 @@ pub async fn synthesize(
         let dir = ensure_extracted(&models_dir, KOKORO_URL, KOKORO_DIR, kokoro_model_ready).await?;
         tokio::task::spawn_blocking(move || -> Result<(Vec<f32>, u32)> {
             let engine = english_tts_engine(&dir)?;
-            let mut tts = engine.lock().map_err(|_| anyhow!("TTS lock poisoned"))?;
+            let mut tts = engine_lock(engine, "TTS");
             let audio = tts
                 .create(&text, sid, speed)
                 .map_err(|e| anyhow!("合成失败: {e}"))?;
