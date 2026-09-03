@@ -476,7 +476,12 @@ async fn fetch_youtube(video_id: &str) -> Result<PageEx, String> {
 
 // Bilibili wants a plain browser — same identity http.rs already ships
 // (this was the last surviving copy-paste of the Safari string).
-const BILI_UA: &str = crate::http::BROWSER_UA;
+/// Bilibili's open API answers a plainly-identified client and refuses a
+/// browser one: interleaved against the same endpoint in the same second, the
+/// Safari user agent returned 412 with an anti-crawler page six times out of
+/// six while this returned 200 every time. A browser string without the
+/// cookies a browser would carry is exactly the fingerprint they screen for.
+const BILI_UA: &str = concat!("Chaty/", env!("CARGO_PKG_VERSION"), " (+https://chaty.ca)");
 
 /// Bilibili in-site video search via the public web-interface API (no key,
 /// no cookie — a Referer header is all it wants). Returns structured videos
@@ -496,9 +501,14 @@ async fn bilibili_search(query: &str) -> Result<Vec<SiteResult>, String> {
         .text()
         .await
         .map_err(|e| e.to_string())?;
-    let v: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    // Anti-crawl / rate limit → engine snapshot fallback. What that refusal
+    // actually looks like is an HTML page, not an error code in JSON, so
+    // failing to parse has to take the same road: reading it as an error left
+    // the fallback unreachable in the one case it exists for.
+    let Ok(v) = serde_json::from_str::<Value>(&body) else {
+        return engine_site_search("bilibili.com", query).await;
+    };
     if v["code"].as_i64() != Some(0) {
-        // Anti-crawl / rate limit → engine snapshot fallback.
         return engine_site_search("bilibili.com", query).await;
     }
     let mut out = Vec::new();
@@ -569,7 +579,14 @@ async fn fetch_bilibili(bvid: &str) -> Result<PageEx, String> {
         .text()
         .await
         .map_err(|e| e.to_string())?;
-    let v: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_str(&body).map_err(|_| {
+        // The refusal is an HTML page; a JSON parser's complaint about column 1
+        // told the reader nothing about what happened.
+        trf!(
+            "B站没有返回可解析的数据(多半是被限流了),稍后再试",
+            "Bilibili did not return readable data (most likely rate-limited) — try again shortly"
+        )
+    })?;
     if v["code"].as_i64() != Some(0) {
         return Err(format!(
             "B站视频不可用 (unavailable): {}",
