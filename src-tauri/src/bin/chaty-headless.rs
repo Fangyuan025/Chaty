@@ -383,6 +383,12 @@ fn main() {
     // Reap headless Chromes left by SIGKILLed bench runs before this one
     // launches its own (a live sibling's browser is skipped by pid check).
     chaty_lib::browser::sweep_orphan_browsers();
+    // Bench hook: point the automation browser at a real profile so a harness
+    // can drive a signed-in site the way the app does. The app sets this from
+    // its own data dir; headless otherwise runs on a throwaway profile.
+    if let Ok(dir) = std::env::var("CHATY_BROWSER_PROFILE") {
+        chaty_lib::browser::set_profile_dir(std::path::PathBuf::from(dir));
+    }
     // Bench A/B hook: flip hashline anchors on from the environment so the
     // whole session (read_file prefixes + edit_lines) runs in anchor mode.
     if std::env::var("CHATY_EDIT_ANCHORS").map(|v| v == "1").unwrap_or(false) {

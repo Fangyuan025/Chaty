@@ -56,9 +56,31 @@ enum BrowserCmd {
 const PAGE_DIGEST_JS: &str = r#"(function(){
   function vis(e){var r=e.getBoundingClientRect();if(r.width<2||r.height<2)return false;var s=getComputedStyle(e);return s.visibility!=='hidden'&&s.display!=='none';}
   var out=[];
-  var nodes=document.querySelectorAll("a,button,[role=button],[role=link],[role=menuitem],[role=tab],input,textarea,select,summary,[contenteditable=''],[contenteditable=true]");
-  for(var i=0;i<nodes.length&&out.length<90;i++){
+  // Standard ARIA roles a choice control actually uses — a quiz answer is a
+  // [role=radio] far more often than a button, and one that is not listed is
+  // one the agent cannot be told about. `[tabindex]` catches the rest: an
+  // unlabelled div a site made focusable and clickable. That last one needs
+  // cursor:pointer to stay out, or every scroll container joins the list.
+  var nodes=document.querySelectorAll("a,button,[role=button],[role=link],[role=menuitem],[role=tab],[role=radio],[role=checkbox],[role=switch],[role=option],[role=menuitemradio],[role=menuitemcheckbox],[role=treeitem],input,textarea,select,summary,[tabindex],[contenteditable=''],[contenteditable=true]");
+  var all=[];
+  for(var i=0;i<nodes.length;i++){
     var e=nodes[i];if(!vis(e))continue;
+    if(!e.matches("a,button,[role],input,textarea,select,summary,[contenteditable=''],[contenteditable=true]")
+       && getComputedStyle(e).cursor!=='pointer') continue;
+    all.push(e);
+  }
+  // What is on screen comes first. Taking the first N in document order gave
+  // a long page's list to whatever happened to be at the top of the DOM, so a
+  // dialog or a card the user just opened — the only thing they can act on —
+  // fell off the end.
+  var inView=[],off=[];
+  for(var i=0;i<all.length;i++){
+    var r=all[i].getBoundingClientRect();
+    (r.bottom>0&&r.top<innerHeight&&r.right>0&&r.left<innerWidth?inView:off).push(all[i]);
+  }
+  var ordered=inView.concat(off), CAP=120;
+  for(var i=0;i<ordered.length&&out.length<CAP;i++){
+    var e=ordered[i];
     var tag=e.tagName.toLowerCase();
     var t=((e.innerText||e.value||e.getAttribute('aria-label')||e.placeholder||'')+'').trim().replace(/\s+/g,' ').slice(0,80);
     // Glyph-only controls (▶ ✕ ☰ …) are unclickable-by-text for a text agent
@@ -68,10 +90,11 @@ const PAGE_DIGEST_JS: &str = r#"(function(){
     if(al&&al!==t&&t.replace(/[^\w一-鿿]/g,'').length<3){t=al.slice(0,80);}
     if(e.isContentEditable){ out.push('__L_EDITABLE__: '+(e.getAttribute('aria-label')||e.id||'')+' = "'+((e.innerText||'').trim().replace(/\s+/g,' ').slice(0,120))+'"'); }
     else if(tag==='a'){ if(t) out.push('__L_LINK__: "'+t+'"'); }
-    else if(tag==='button'||e.getAttribute('role')==='button'||e.type==='submit'||e.type==='button'){ if(t) out.push('__L_BUTTON__: "'+t+'"'); }
+    else if(tag==='button'||e.type==='submit'||e.type==='button'||/^(button|radio|checkbox|switch|option|tab|menuitem|menuitemradio|menuitemcheckbox|treeitem)$/.test(e.getAttribute('role')||'')||e.hasAttribute('tabindex')){ if(t) out.push('__L_BUTTON__: "'+t+'"'); }
     else if(tag==='input'||tag==='textarea'){ var h=e.placeholder||e.name||e.getAttribute('aria-label')||e.type||'text'; var v=(e.value||'').trim().replace(/\s+/g,' ').slice(0,120); out.push('__L_INPUT__ ['+(e.type||'text')+']: '+h+(v?(' = "'+v+'"'):'')); }
     else if(tag==='select'){ out.push('__L_SELECT__: '+(e.name||e.id||'')+' = "'+((e.options[e.selectedIndex]||{}).text||'')+'"'); }
   }
+  if(ordered.length>out.length){ out.push('__L_MORE__ '+(ordered.length-out.length)); }
   return out.length? out.join("\n") : "__L_NONE__";
 })()"#;
 
@@ -84,6 +107,14 @@ fn digest_js() -> String {
         .replace("__L_BUTTON__", if en { "button" } else { "按钮" })
         .replace("__L_INPUT__", if en { "input" } else { "输入框" })
         .replace("__L_SELECT__", if en { "select" } else { "下拉" })
+        .replace(
+            "__L_MORE__",
+            if en {
+                "(+ more not listed — scroll to bring them into view:)"
+            } else {
+                "(还有若干未列出,滚动到视口内即可看到:)"
+            },
+        )
         .replace(
             "__L_NONE__",
             if en { "(no obvious interactive elements)" } else { "(未发现明显的可交互元素)" },
@@ -1290,6 +1321,60 @@ impl BrowserSession {
         Ok(())
     }
 
+    /// Insert text the way the browser does for a keystroke, over CDP.
+    ///
+    /// Assigning `el.value` and firing an `input` event does not reach a React
+    /// component: React installs a value tracker on the node, so a direct
+    /// assignment is recorded as already-seen and `onChange` never runs. The
+    /// page then still believes the field is empty — its submit stays disabled
+    /// and an agent retypes forever. `Input.insertText` goes through the same
+    /// path a keypress does, which no framework can miss.
+    fn insert_text(&mut self, text: &str) -> Result<(), String> {
+        let sid = self.session_id.clone();
+        self.call(Some(&sid), "Input.insertText", json!({ "text": text }))?;
+        Ok(())
+    }
+
+    /// Where the element found by the last locate actually is, measured as
+    /// late as possible and checked against what is really under the point.
+    ///
+    /// Measuring and clicking are two round trips. On a page that scrolls or
+    /// animates in between — a card sliding in, a popover settling, a long
+    /// list smooth-scrolling to the target — the element has moved by the time
+    /// the mouse event is dispatched, so the click lands on nothing and still
+    /// reports success. The agent then sees an unchanged page and tries again
+    /// forever. Re-measure just before dispatching, confirm the point really
+    /// hits the element, and give an animation a couple of chances to finish.
+    fn settled_click_point(&mut self) -> Option<(f64, f64)> {
+        const MEASURE: &str = r#"(function(){
+            var e=window.__chatyLast; if(!e) return 'NOT_FOUND';
+            var r=e.getBoundingClientRect();
+            if(r.width<2||r.height<2) return 'NOT_FOUND';
+            if(r.top<0||r.bottom>innerHeight||r.left<0||r.right>innerWidth){
+                e.scrollIntoView({block:'center'});
+                r=e.getBoundingClientRect();
+            }
+            var x=Math.round(r.left+r.width/2), y=Math.round(r.top+r.height/2);
+            var at=document.elementFromPoint(x,y);
+            var ok=!!at&&(at===e||e.contains(at)||at.contains(e));
+            return JSON.stringify({x:x,y:y,ok:ok});
+        })()"#;
+        let mut last = None;
+        for attempt in 0..3 {
+            std::thread::sleep(Duration::from_millis(if attempt == 0 { 120 } else { 220 }));
+            let Ok(raw) = self.eval(MEASURE) else { continue };
+            let raw = raw.trim_matches('"').replace("\\\"", "\"");
+            let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
+            let (Some(x), Some(y)) = (v.get("x").and_then(|n| n.as_f64()), v.get("y").and_then(|n| n.as_f64()))
+            else { continue };
+            last = Some((x, y));
+            if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
+                return last;
+            }
+        }
+        last
+    }
+
     /// Click by visible text or CSS selector, then hand back the fresh page
     /// state (visible text + elements). Single-step wrapper over `click_once`.
     fn click(&mut self, selector: Option<&str>, text: Option<&str>) -> Result<String, String> {
@@ -1348,7 +1433,7 @@ impl BrowserSession {
             format!(
                 r#"(function(){{
                     var t={txt}.trim().replace(/\s+/g,' ').toLowerCase();
-                    var els=[].slice.call(document.querySelectorAll("a,button,[role=button],[role=link],[role=menuitem],[role=tab],input[type=submit],input[type=button],[onclick],summary,label"));
+                    var els=[].slice.call(document.querySelectorAll("a,button,[role=button],[role=link],[role=menuitem],[role=tab],[role=radio],[role=checkbox],[role=switch],[role=option],[role=menuitemradio],[role=menuitemcheckbox],[role=treeitem],input,textarea,select,summary,[tabindex],[contenteditable=''],[contenteditable=true],input[type=submit],input[type=button],[onclick],label"));
                     function vis(e){{var r=e.getBoundingClientRect();if(r.width<2||r.height<2)return false;var s=getComputedStyle(e);return s.visibility!=='hidden'&&s.display!=='none'&&s.pointerEvents!=='none';}}
                     // Match the visible text OR the aria-label: the page
                     // digest surfaces aria-labels for glyph-only buttons, so
@@ -1371,8 +1456,7 @@ impl BrowserSession {
                     if(!hit)return 'NOT_FOUND';
                     window.__chatyLast=hit; // anchor for the "near this element" digest
                     hit.scrollIntoView({{block:'center'}});
-                    var r=hit.getBoundingClientRect();
-                    return JSON.stringify({{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}});
+                    return 'FOUND';
                 }})()"#,
                 txt = json!(txt)
             )
@@ -1385,8 +1469,7 @@ impl BrowserSession {
                     if(el.tagName==='SELECT')return 'IS_SELECT';
                     window.__chatyLast=el;
                     el.scrollIntoView({{block:'center'}});
-                    var r=el.getBoundingClientRect();
-                    return JSON.stringify({{x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}});
+                    return 'FOUND';
                 }})()"#,
                 sel = json!(sel)
             )
@@ -1410,11 +1493,7 @@ impl BrowserSession {
         } else if found == "IS_SELECT" {
             "IS_SELECT"
         } else {
-            // The eval result is JSON-escaped; parse leniently.
-            let coords: Option<(f64, f64)> = serde_json::from_str::<Value>(&found.replace("\\\"", "\""))
-                .ok()
-                .and_then(|v| Some((v.get("x")?.as_f64()?, v.get("y")?.as_f64()?)));
-            match coords {
+            match self.settled_click_point() {
                 Some((x, y)) => {
                     // Validity BEFORE the click decides whether a submit could
                     // even fire. Checking after is wrong: a successful submit
@@ -1567,12 +1646,13 @@ impl BrowserSession {
                     el.dispatchEvent(new Event('input',{{bubbles:true}}));
                     el.dispatchEvent(new Event('change',{{bubbles:true}}));
                 }} else if(el.isContentEditable){{
-                    el.textContent={val};
-                    el.dispatchEvent(new InputEvent('input',{{bubbles:true}}));
+                    // Select what is there so the insertion replaces it.
+                    var rg=document.createRange();rg.selectNodeContents(el);
+                    var sl=window.getSelection();sl.removeAllRanges();sl.addRange(rg);
+                    return 'FOCUSED';
                 }} else {{
-                    el.value={val};
-                    el.dispatchEvent(new Event('input',{{bubbles:true}}));
-                    el.dispatchEvent(new Event('change',{{bubbles:true}}));
+                    try{{el.setSelectionRange(0,(el.value||'').length);}}catch(_){{try{{el.select();}}catch(__){{}}}}
+                    return 'FOCUSED';
                 }}
                 return 'OK';
             }})()"#,
@@ -1581,7 +1661,10 @@ impl BrowserSession {
         let what = selector.or(label).unwrap_or("(the page's single text field)");
         let r = self.eval(&js)?;
         let r = r.trim_matches('"');
-        if r == "OK" {
+        if r == "FOCUSED" {
+            self.insert_text(text)?;
+        }
+        if r == "OK" || r == "FOCUSED" {
             std::thread::sleep(Duration::from_millis(250));
             self.pump_pending();
             // Typing can trigger async validation / autocomplete — let it land
