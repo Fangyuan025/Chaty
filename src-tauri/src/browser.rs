@@ -41,7 +41,7 @@ enum BrowserCmd {
     Console { reply: Sender<Result<String, String>> },
     Refresh { reply: Sender<Result<String, String>> },
     Read { reply: Sender<Result<String, String>> },
-    Close,
+    Close(Sender<()>),
 }
 
 // Model-visible browser strings pick their language per session (WS2 单语化;
@@ -88,10 +88,19 @@ const PAGE_DIGEST_JS: &str = r#"(function(){
     // authors write exactly to disambiguate ("Move \"Fix login bug\" right").
     var al=(e.getAttribute('aria-label')||'').trim().replace(/\s+/g,' ');
     if(al&&al!==t&&t.replace(/[^\w一-鿿]/g,'').length<3){t=al.slice(0,80);}
+    // State, not just label. A greyed-out submit, a chosen answer, an
+    // already-matched tile all read exactly like their untouched selves
+    // without this — so an agent clicks a dead control forever, or loses
+    // track of what it has already picked.
+    var st='';
+    if(e.disabled||e.getAttribute('aria-disabled')==='true') st=' __L_DISABLED__';
+    else if(e.getAttribute('aria-selected')==='true'||e.getAttribute('aria-checked')==='true'
+            ||e.getAttribute('aria-pressed')==='true'||(e.checked===true&&tag==='input')) st=' __L_SELECTED__';
+    else if(e.getAttribute('aria-expanded')==='true') st=' __L_EXPANDED__';
     if(e.isContentEditable){ out.push('__L_EDITABLE__: '+(e.getAttribute('aria-label')||e.id||'')+' = "'+((e.innerText||'').trim().replace(/\s+/g,' ').slice(0,120))+'"'); }
-    else if(tag==='a'){ if(t) out.push('__L_LINK__: "'+t+'"'); }
-    else if(tag==='button'||e.type==='submit'||e.type==='button'||/^(button|radio|checkbox|switch|option|tab|menuitem|menuitemradio|menuitemcheckbox|treeitem)$/.test(e.getAttribute('role')||'')||e.hasAttribute('tabindex')){ if(t) out.push('__L_BUTTON__: "'+t+'"'); }
-    else if(tag==='input'||tag==='textarea'){ var h=e.placeholder||e.name||e.getAttribute('aria-label')||e.type||'text'; var v=(e.value||'').trim().replace(/\s+/g,' ').slice(0,120); out.push('__L_INPUT__ ['+(e.type||'text')+']: '+h+(v?(' = "'+v+'"'):'')); }
+    else if(tag==='a'){ if(t) out.push('__L_LINK__: "'+t+'"'+st); }
+    else if(tag==='button'||e.type==='submit'||e.type==='button'||/^(button|radio|checkbox|switch|option|tab|menuitem|menuitemradio|menuitemcheckbox|treeitem)$/.test(e.getAttribute('role')||'')||e.hasAttribute('tabindex')){ if(t) out.push('__L_BUTTON__: "'+t+'"'+st); }
+    else if(tag==='input'||tag==='textarea'){ var h=e.placeholder||e.name||e.getAttribute('aria-label')||e.type||'text'; var v=(e.value||'').trim().replace(/\s+/g,' ').slice(0,120); out.push('__L_INPUT__ ['+(e.type||'text')+']: '+h+(v?(' = "'+v+'"'):'')+st); }
     else if(tag==='select'){ out.push('__L_SELECT__: '+(e.name||e.id||'')+' = "'+((e.options[e.selectedIndex]||{}).text||'')+'"'); }
   }
   if(ordered.length>out.length){ out.push('__L_MORE__ '+(ordered.length-out.length)); }
@@ -107,6 +116,9 @@ fn digest_js() -> String {
         .replace("__L_BUTTON__", if en { "button" } else { "按钮" })
         .replace("__L_INPUT__", if en { "input" } else { "输入框" })
         .replace("__L_SELECT__", if en { "select" } else { "下拉" })
+        .replace("__L_DISABLED__", if en { "[disabled]" } else { "[已禁用]" })
+        .replace("__L_SELECTED__", if en { "[selected]" } else { "[已选中]" })
+        .replace("__L_EXPANDED__", if en { "[expanded]" } else { "[已展开]" })
         .replace(
             "__L_MORE__",
             if en {
@@ -136,6 +148,12 @@ const PAGE_TEXT_JS: &str = r#"(function(){
   if(t.length>cap){ t=t.slice(0,cap)+'\n__L_TRUNC__'; }
   return t||'__L_EMPTY__';
 })()"#;
+
+/// Separates the parts of a `rich_digest` inside the single string the browser
+/// hands back. Control characters, so it cannot collide with page text.
+const DIGEST_SEP: &str = "\u{0}\u{1}chaty\u{1}\u{0}";
+/// The same sentinel spelled for a JavaScript string literal.
+const SEP_JS: &str = "\\u0000\\u0001chaty\\u0001\\u0000";
 
 /// PAGE_TEXT_JS with the cap substituted and notes in the session language.
 fn page_text_js(cap: usize) -> String {
@@ -277,7 +295,12 @@ const FREEZE_ANIMATIONS_JS: &str = r#"(function(){
 })()"#;
 
 /// Process-wide handle to the browser actor thread. Lazily started.
-static BROWSER: Mutex<Option<Sender<BrowserCmd>>> = Mutex::new(None);
+/// The live actor's handle, tagged with which actor installed it. The tag is
+/// what makes teardown safe: an actor that exits must forget ITS OWN handle
+/// and never a successor's.
+static BROWSER: Mutex<Option<(u64, Sender<BrowserCmd>)>> = Mutex::new(None);
+/// Hands out actor tags. Wraps after 2^64 actors, which is not a concern.
+static ACTOR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Persistent profile dir for the interactive browser (set once at startup, so
 /// the user's logins survive across runs). `None` → throwaway profile (tests).
 static PROFILE_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -434,12 +457,24 @@ fn chrome_path() -> Option<PathBuf> {
 #[cfg(test)]
 pub fn chrome_path_pub() -> Option<PathBuf> { chrome_path() }
 
-/// Clears the cached sender when the actor thread leaves, by any route.
-struct ForgetOnExit;
+/// Clears the cached sender when the actor thread leaves, by any route — but
+/// only if the cache still holds THIS actor's handle.
+///
+/// Clearing unconditionally is a race with a fatal shape: a closed browser's
+/// actor finishes its teardown a moment after the next one has already been
+/// launched and cached, and wipes the newcomer's handle. Nothing detects that,
+/// because the sender still works — so every later call built a whole new
+/// browser, ran one command in it, and lost it again. What the user saw was
+/// browsing dying permanently after a single `browser_close`: navigation
+/// reported success while every page read came back blank, since the read
+/// happened in a brand-new window that had never been navigated anywhere.
+struct ForgetOnExit(u64);
 impl Drop for ForgetOnExit {
     fn drop(&mut self) {
         if let Ok(mut guard) = BROWSER.lock() {
-            *guard = None;
+            if guard.as_ref().is_some_and(|(id, _)| *id == self.0) {
+                *guard = None;
+            }
         }
     }
 }
@@ -447,9 +482,10 @@ impl Drop for ForgetOnExit {
 /// Ensure the actor is running; returns a sender to talk to it.
 fn ensure() -> Result<Sender<BrowserCmd>, String> {
     let mut guard = BROWSER.lock().unwrap();
-    if let Some(tx) = guard.as_ref() {
+    if let Some((_, tx)) = guard.as_ref() {
         return Ok(tx.clone());
     }
+    let id = ACTOR_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     let (tx, rx) = std::sync::mpsc::channel::<BrowserCmd>();
     let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     std::thread::Builder::new()
@@ -460,13 +496,13 @@ fn ensure() -> Result<Sender<BrowserCmd>, String> {
             // behind by a dead actor is not detectably dead: every later call
             // fails on the send, the handle stays cached, and the browser is
             // gone for the rest of the session with nothing to relaunch it.
-            let _forget = ForgetOnExit;
+            let _forget = ForgetOnExit(id);
             actor(rx, init_tx)
         })
         .map_err(|e| trf!("无法启动浏览器线程:{}", "failed to start the browser thread: {}", e))?;
     match init_rx.recv() {
         Ok(Ok(())) => {
-            *guard = Some(tx.clone());
+            *guard = Some((id, tx.clone()));
             Ok(tx)
         }
         Ok(Err(e)) => Err(e),
@@ -476,8 +512,17 @@ fn ensure() -> Result<Sender<BrowserCmd>, String> {
 
 /// Drop the actor (kills Chrome). Called on workspace switch / app teardown.
 pub fn shutdown() {
-    if let Some(tx) = BROWSER.lock().unwrap().take() {
-        let _ = tx.send(BrowserCmd::Close);
+    let Some((_, tx)) = BROWSER.lock().unwrap().take() else { return };
+    // Wait for Chrome to actually be gone. Returning while it is still dying
+    // meant the next navigate launched a second Chrome on the SAME profile
+    // directory — and a second Chrome hands its command line to the instance
+    // that already owns the profile and exits, so what we attached to was a
+    // browser on its way out: a blank page, and every page after it blank too,
+    // for the rest of the run. One close used to end browsing for good.
+    let (done, wait) = std::sync::mpsc::channel();
+    if tx.send(BrowserCmd::Close(done)).is_ok() {
+        // Bounded: a wedged actor must not hang the caller.
+        let _ = wait.recv_timeout(Duration::from_secs(5));
     }
 }
 
@@ -650,7 +695,11 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
                 let r = run(&mut session, headless, |s| s.rich_digest(12000));
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
-            BrowserCmd::Close => break,
+            BrowserCmd::Close(done) => {
+                session.kill();
+                let _ = done.send(());
+                return;
+            }
         }
     }
     session.kill();
@@ -677,6 +726,9 @@ struct BrowserSession {
     /// anything, and that call cannot be made from inside the pump loop, so
     /// they queue here and are drained after it.
     pending_sessions: Vec<String>,
+    /// What intercepted the last click that never reached its target, so the
+    /// error can name the overlay instead of just saying the click failed.
+    last_click_blocker: Option<String>,
     /// Main-frame URL, kept fresh by navigate() and Page.frameNavigated —
     /// gates console auto-attach to LOCAL pages only (real websites are full
     /// of third-party console noise the model must not drown in).
@@ -786,7 +838,7 @@ impl BrowserSession {
             return Err("CDP 会话附加失败 (failed to attach CDP session)".into());
         }
 
-        let mut s = BrowserSession { child, ws, session_id, next_id, console: Vec::new(), surfaced: 0, pending_sessions: Vec::new(), current_url: String::new(), _profile: _guard };
+        let mut s = BrowserSession { child, ws, session_id, next_id, console: Vec::new(), surfaced: 0, pending_sessions: Vec::new(), last_click_blocker: None, current_url: String::new(), _profile: _guard };
         // Enable the domains we consume. Runtime.enable surfaces console API
         // calls + uncaught exceptions; Log.enable surfaces browser log entries.
         let sid = s.session_id.clone();
@@ -1029,7 +1081,13 @@ impl BrowserSession {
     }
 
     fn pump_pending(&mut self) {
-        set_read_timeout(&self.ws, Duration::from_millis(120));
+        // Drain what has already arrived; don't sit waiting for more. Anything
+        // sent while this returns is still in the socket and the next drain
+        // takes it — and every one of these is called in a loop. A blocking
+        // window here is paid on EVERY call, and it is empty nearly every
+        // time, which put more than a hundred milliseconds on each poll of
+        // `wait_settled` and so on every click, type and scroll the agent made.
+        set_read_timeout(&self.ws, Duration::from_millis(2));
         for _ in 0..500 {
             match self.ws.read() {
                 Ok(Message::Text(t)) => {
@@ -1108,7 +1166,39 @@ impl BrowserSession {
     ///   2. then wait for quiet — no requests in flight and no change for
     ///      `quiet_ms` — capped by `max_ms` overall.
     /// Returns whether any work was observed.
-    fn wait_settled(&mut self, max_ms: u64, quiet_ms: u64) -> bool {
+    /// Wait for the page to finish reacting — without waiting on a page that
+    /// is merely alive.
+    ///
+    /// The rule used to be "no DOM mutation for `quiet_ms`", but the observer
+    /// watches `class` and `style` across the whole document, so any site with
+    /// an animation or a polling timer never goes quiet and every action spent
+    /// the entire budget. Measured against a lesson page: clicking a control
+    /// that changed nothing took 6.5 seconds, and a plain choice 1.5.
+    ///
+    /// Requests in flight are the signal that survives an animated page, so
+    /// they decide how long to wait. Mutations only answer "did anything
+    /// happen at all", which is worth a brief look when nothing went out on
+    /// the wire. Returning early on a page that is still working is not the
+    /// hazard it sounds like: the caller re-reads the page, and the repeat
+    /// gate above tolerates a single unchanged result for exactly this reason.
+    fn wait_settled(&mut self, max_ms: u64, _quiet_ms: u64) -> bool {
+        // Each poll costs an eval round trip of its own — on the order of a
+        // hundred milliseconds — so a budget counted in accumulated SLEEP runs
+        // about three times longer in real time than it reads. Budgets here
+        // are wall clock, and the sleep is short because the round trip
+        // already paces the loop.
+        const POLL: u64 = 40;
+        /// Nothing on the wire: how long to keep looking before calling it done.
+        const IDLE_LOOK: u64 = 700;
+        /// After the last response, time for the render it causes.
+        const RENDER_GRACE: u64 = 180;
+        /// Quiet means nothing pending AND no new mutations. Once the page has
+        /// been quiet this long it is done, and waiting out the rest of the
+        /// look window is pure latency on every click the agent makes.
+        const QUIET_EXIT: u64 = 130;
+        /// ...but look at least this long first, or a click whose effect starts
+        /// on the next frame reads as "already finished".
+        const MIN_LOOK: u64 = 200;
         fn parse(s: &str) -> Option<(u32, u64, u64)> {
             let mut it = s.split(':');
             Some((
@@ -1120,38 +1210,58 @@ impl BrowserSession {
         let raw = self.eval(SETTLE_POLL_JS).unwrap_or_default();
         let base = raw.trim_matches('"').to_string();
         if base == "none" {
-            // Fresh document (a navigation replaced ours) — the page already
-            // changed; just re-arm for the next action.
             self.install_settle();
             return true;
         }
         let base_n = parse(&base).map(|(_, _, n)| n).unwrap_or(0);
-        let work_ms = max_ms.min(2500); // phase-1 budget
-        let mut waited = 0u64;
-        let mut started = false;
-        while waited < max_ms {
-            std::thread::sleep(Duration::from_millis(100));
+        let started_at = std::time::Instant::now();
+        let mut saw_net = false;
+        let mut changed = false;
+        let mut last_n = base_n;
+        let mut quiet_since: Option<std::time::Instant> = None;
+        while (started_at.elapsed().as_millis() as u64) < max_ms {
+            std::thread::sleep(Duration::from_millis(POLL));
             self.pump_pending();
-            waited += 100;
             let raw = self.eval(SETTLE_POLL_JS).unwrap_or_default();
             let s = raw.trim_matches('"');
             if s == "none" {
                 self.install_settle();
                 return true;
             }
-            let Some((pending, since, n)) = parse(s) else { break };
-            if pending > 0 || n > base_n {
-                started = true;
+            let Some((pending, _since, n)) = parse(s) else { break };
+            if pending > 0 {
+                saw_net = true;
             }
-            if started {
-                if pending == 0 && since >= quiet_ms {
-                    break; // reacted, then went quiet
+            if n > base_n {
+                changed = true;
+            }
+            if saw_net && pending == 0 {
+                std::thread::sleep(Duration::from_millis(RENDER_GRACE));
+                return true;
+            }
+            // Nothing on the wire. Leave as soon as the DOM stops moving —
+            // most clicks are local (a selection, a class, a panel) and finish
+            // in a frame or two, and sitting out the whole look window put the
+            // better part of a second on every one of them. Mutations only
+            // hold the door open, never extend it: a page with a carousel or a
+            // clock never goes quiet, so the look window still ends it.
+            if !saw_net {
+                if n == last_n {
+                    let q = *quiet_since.get_or_insert_with(std::time::Instant::now);
+                    let elapsed = started_at.elapsed().as_millis() as u64;
+                    if elapsed >= MIN_LOOK && (q.elapsed().as_millis() as u64) >= QUIET_EXIT {
+                        break;
+                    }
+                } else {
+                    quiet_since = None;
                 }
-            } else if waited >= work_ms {
-                break; // nothing ever happened
+                if (started_at.elapsed().as_millis() as u64) >= IDLE_LOOK {
+                    break;
+                }
             }
+            last_n = n;
         }
-        started
+        changed
     }
 
     /// A compact digest of the page's interactive elements (used after navigate
@@ -1162,39 +1272,49 @@ impl BrowserSession {
         self.eval(&digest_js())
     }
 
-    /// Visible page text, capped at `cap` characters.
-    fn page_text(&mut self, cap: usize) -> Result<String, String> {
-        self.eval(&page_text_js(cap))
-    }
-
     /// The text substitute for a screenshot: the page's VISIBLE TEXT plus the
     /// interactive-element list (with current input values). Lets the model
     /// read everything that just appeared — dynamic rules, messages, results —
     /// as text, so it doesn't have to screenshot to "see" the page.
     fn rich_digest(&mut self, text_cap: usize) -> Result<String, String> {
-        let text = self.page_text(text_cap).unwrap_or_default();
-        let els = self.digest().unwrap_or_default();
+        // All three parts in ONE evaluation. Every `eval` is a round trip to
+        // the browser — on the order of a hundred milliseconds — and this
+        // digest is what every page tool returns, so gathering it in three
+        // calls made each click, type and scroll pay three of them. The parts
+        // are joined with a control-character sentinel rather than JSON so the
+        // page text passes through byte for byte (a region that legitimately
+        // starts with a quote keeps it), and each part is guarded on its own so
+        // one of them failing still leaves the others, as separate calls did.
+        //
         // The page text is capped from the top. On a long page that hides
-        // whatever appeared next to the control the agent just used, so add the
-        // enclosing region's text — that is where confirmations and inline
-        // errors live. Only when the cap actually bit, and only after an
-        // interaction (the anchor is unset otherwise).
+        // whatever appeared next to the control the agent just used, so the
+        // third part adds the enclosing region's text — that is where
+        // confirmations and inline errors live. Only when the cap actually bit;
+        // the region script itself returns nothing until an interaction has
+        // set the anchor.
+        let js = format!(
+            "(function(){{var g=function(f){{try{{return f()||'';}}catch(e){{return '';}}}};\
+             var t=g(function(){{return {text};}});\
+             var e=g(function(){{return {els};}});\
+             var n=t.length>{cap}?g(function(){{return {near};}}):'';\
+             return [t,e,n].join('{SEP_JS}');}})()",
+            text = page_text_js(text_cap),
+            els = digest_js(),
+            cap = text_cap,
+            near = NEAR_TEXT_JS.replace("__NEARCAP__", "1400"),
+        );
+        let raw = self.eval(&js).unwrap_or_default();
+        let mut parts = raw.split(DIGEST_SEP);
+        let text = parts.next().unwrap_or_default();
+        let els = parts.next().unwrap_or_default();
+        let region = parts.next().unwrap_or_default().trim();
         let mut near = String::new();
-        // `eval` hands back the plain string (no JSON quoting), so a result
-        // longer than the cap we asked for means page_text appended its
-        // truncation note — don't strip or unescape anything here, or a region
-        // that legitimately starts with a quote loses it.
-        if text.chars().count() > text_cap {
-            let t = self
-                .eval(&NEAR_TEXT_JS.replace("__NEARCAP__", "1400"))
-                .unwrap_or_default();
-            if t.trim().len() > 1 {
-                near = trf!(
-                    "\n\n刚操作的元素所在区域(长页面已截断,这里是重点):\n{}",
-                    "\n\nThe region around the element you just used (the page text above was truncated — this is the part that matters):\n{}",
-                    t.trim()
-                );
-            }
+        if region.len() > 1 {
+            near = trf!(
+                "\n\n刚操作的元素所在区域(长页面已截断,这里是重点):\n{}",
+                "\n\nThe region around the element you just used (the page text above was truncated — this is the part that matters):\n{}",
+                region
+            );
         }
         Ok(trf!(
             "页面可见文字(替代截图,直接读这个):\n{}{}\n\n可交互元素(按可见文字点击/向这些输入):\n{}",
@@ -1220,10 +1340,54 @@ impl BrowserSession {
         // land at their end state instantly instead of racing the capture.
         let _ = self.eval(FREEZE_ANIMATIONS_JS);
         let _ = self.eval(AUTOSCROLL_JS); // best-effort; ignore if it errors
-        // Settle for timer-driven DOM work (typed-in content, staged inserts)
-        // — CSS is already frozen, this only covers JS setTimeout chains.
-        std::thread::sleep(Duration::from_millis(500));
+        // The scroll pulls in lazy images and staged inserts; wait for those to
+        // finish rather than for a fixed guess. CSS is already frozen, so this
+        // only has to cover fetches and setTimeout chains.
+        self.wait_settled(1500, 250);
+        // "Full page" has to stop somewhere. An endless-scroll feed or a game
+        // map is tens of thousands of pixels tall: decoding one costs hundreds
+        // of megabytes before a single tile exists, and it splits into dozens
+        // of pictures no model can be shown — a screenshot of a page like that
+        // took the whole app down rather than answering. Capture a bounded
+        // window from wherever the page is now, which is the part being worked
+        // on; the rest is reachable by scrolling and capturing again.
+        let m = self
+            .eval("[Math.round(scrollY),innerWidth,Math.round(document.documentElement.scrollHeight)].join(',')")
+            .unwrap_or_default();
+        let n: Vec<f64> = m
+            .trim_matches('"')
+            .split(',')
+            .filter_map(|v| v.trim().parse().ok())
+            .collect();
+        if let [top, width, doc_h] = n[..] {
+            // Tiling cuts at width*0.72; six of those is already more than any
+            // model is shown in one prompt.
+            let cap = (width * 0.72 * 6.0).max(2000.0);
+            if doc_h > cap && width > 0.0 {
+                let y = top.min((doc_h - cap).max(0.0));
+                return self.capture_clip(0.0, y, width, cap);
+            }
+        }
         self.capture(true)
+    }
+
+    /// Capture one rectangle of the page (page coordinates, CSS pixels).
+    fn capture_clip(&mut self, x: f64, y: f64, w: f64, h: f64) -> Result<Vec<u8>, String> {
+        let sid = self.session_id.clone();
+        let r = self.call(
+            Some(&sid),
+            "Page.captureScreenshot",
+            json!({
+                "format": "png",
+                "captureBeyondViewport": true,
+                "clip": {"x": x, "y": y, "width": w, "height": h, "scale": 1},
+            }),
+        )?;
+        let b64 = r["data"].as_str().ok_or("截图无数据 (no screenshot data)")?;
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| format!("截图解码失败 (screenshot decode failed): {e}"))
     }
 
     /// Snapshot of just the current viewport (no scrolling) — pairs with
@@ -1264,8 +1428,10 @@ impl BrowserSession {
         // Also dispatch a scroll event — some lazy-load listeners don't fire on
         // programmatic scrollTo in headless Chrome.
         self.eval(&format!("{js};window.dispatchEvent(new Event('scroll'))"))?;
-        std::thread::sleep(Duration::from_millis(450)); // let lazy content load
-        self.pump_pending();
+        // Lazy-loaded sections arrive over the wire, so wait for the wire
+        // rather than for a fixed guess: a slow one gets the time it needs and
+        // a page with nothing to load costs a couple of polls.
+        self.wait_settled(1500, 250);
         let pos = self
             .eval("Math.round(window.scrollY)+' / '+Math.round(document.body.scrollHeight)")
             .unwrap_or_default();
@@ -1345,13 +1511,76 @@ impl BrowserSession {
     /// reports success. The agent then sees an unchanged page and tries again
     /// forever. Re-measure just before dispatching, confirm the point really
     /// hits the element, and give an animation a couple of chances to finish.
+    /// Dispatch the click and check that the intended element actually got it.
+    ///
+    /// A coordinate measured a moment ago can be wrong by the time the event
+    /// is sent: the page reflows, a panel finishes animating in, a scroll
+    /// container snaps back. The event then lands on whatever now occupies
+    /// that spot, and the tool reports a success that did something else
+    /// entirely — the failure that leaves an agent clicking the same button
+    /// forever because it is told, every time, that the click worked. So arm
+    /// the target with a listener, click, and ask whether it fired.
+    fn click_confirmed(&mut self, pre_blockers: &mut Option<String>) -> Result<&'static str, String> {
+        /// Records both whether the target got the click and what did, so a
+        /// failure can say what is in the way instead of just "no".
+        const ARM: &str = r#"(function(){
+            var e=window.__chatyLast;
+            if(!e||!e.isConnected) return 'GONE';
+            window.__chatyHit=0; window.__chatyGot='';
+            var on=function(){ window.__chatyHit=1; e.removeEventListener('click',on,true); };
+            e.addEventListener('click',on,true);
+            var doc=function(ev){
+                var t=ev.target||{};
+                var c=(t.className&&(t.className+'').split(' ')[0])||'';
+                window.__chatyGot=(t.tagName||'?')+(c?('.'+c):'');
+                document.removeEventListener('click',doc,true);
+            };
+            document.addEventListener('click',doc,true);
+            return 'ARMED';
+        })()"#;
+        // A full navigation throws the page's globals away, so `undefined` is
+        // not a miss — it is the click having worked well enough to leave.
+        const CHECK: &str = r#"(function(){
+            if(typeof window.__chatyHit==='undefined') return 'NAV';
+            return window.__chatyHit?'HIT':('MISS:'+(window.__chatyGot||'nothing'));
+        })()"#;
+        let mut missed = String::new();
+        for attempt in 0..3 {
+            let Some((x, y)) = self.settled_click_point() else {
+                return Ok("NOT_FOUND");
+            };
+            if self.eval(ARM).unwrap_or_default().contains("GONE") {
+                return Ok("NOT_FOUND");
+            }
+            if attempt == 0 {
+                // Validity BEFORE the click decides whether a submit could
+                // even fire. Checking after is wrong: a successful submit
+                // often calls form.reset(), which makes required fields
+                // empty (invalid) again and would fake a "blocked" report.
+                *pre_blockers = self.form_blockers();
+            }
+            self.mouse_click(x, y)?;
+            let got = self.eval(CHECK).unwrap_or_default();
+            let got = got.trim_matches('"');
+            if got == "HIT" || got == "NAV" {
+                return Ok("OK");
+            }
+            missed = got.trim_start_matches("MISS:").to_string();
+        }
+        self.last_click_blocker = (!missed.is_empty()).then_some(missed);
+        Ok("BLOCKED")
+    }
+
     fn settled_click_point(&mut self) -> Option<(f64, f64)> {
         const MEASURE: &str = r#"(function(){
             var e=window.__chatyLast; if(!e) return 'NOT_FOUND';
             var r=e.getBoundingClientRect();
             if(r.width<2||r.height<2) return 'NOT_FOUND';
             if(r.top<0||r.bottom>innerHeight||r.left<0||r.right>innerWidth){
-                e.scrollIntoView({block:'center'});
+                // 'instant': a site with scroll-behavior:smooth would otherwise
+                // hand back the rect from before the scroll had happened.
+                try{ e.scrollIntoView({block:'center',behavior:'instant'}); }
+                catch(_){ e.scrollIntoView({block:'center'}); }
                 r=e.getBoundingClientRect();
             }
             var x=Math.round(r.left+r.width/2), y=Math.round(r.top+r.height/2);
@@ -1359,20 +1588,40 @@ impl BrowserSession {
             var ok=!!at&&(at===e||e.contains(at)||at.contains(e));
             return JSON.stringify({x:x,y:y,ok:ok});
         })()"#;
-        let mut last = None;
-        for attempt in 0..3 {
-            std::thread::sleep(Duration::from_millis(if attempt == 0 { 120 } else { 220 }));
+        // Two things have to hold before a coordinate is worth clicking: the
+        // point must hit the element, and it must have stopped moving. A
+        // popover, modal or toast that is still animating in reports a
+        // perfectly valid rect that is stale by the time the event is
+        // dispatched — the click then lands on whatever occupies that spot,
+        // which is how a "successful" click ends up dismissing the very panel
+        // it was aiming at. Same point twice in a row means the motion is over.
+        const TOL: f64 = 2.0;
+        let mut prev: Option<(f64, f64)> = None;
+        let mut moving: Option<(f64, f64)> = None;
+        for attempt in 0..6 {
+            std::thread::sleep(Duration::from_millis(if attempt == 0 { 60 } else { 90 }));
             let Ok(raw) = self.eval(MEASURE) else { continue };
             let raw = raw.trim_matches('"').replace("\\\"", "\"");
             let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
             let (Some(x), Some(y)) = (v.get("x").and_then(|n| n.as_f64()), v.get("y").and_then(|n| n.as_f64()))
             else { continue };
-            last = Some((x, y));
-            if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
-                return last;
+            let on_target = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
+            if on_target {
+                if let Some((px, py)) = prev {
+                    if (px - x).abs() <= TOL && (py - y).abs() <= TOL {
+                        return Some((x, y));
+                    }
+                }
+                moving = Some((x, y));
             }
+            prev = Some((x, y));
         }
-        last
+        // Never fall back to a point the hit test rejected. Clicking a
+        // coordinate known to belong to something else is worse than saying so:
+        // it reports success while doing something the agent never asked for,
+        // and the agent, told it worked, has no reason to try another route.
+        // A target that hits but never settles is still worth a try.
+        moving
     }
 
     /// Click by visible text or CSS selector, then hand back the fresh page
@@ -1454,8 +1703,21 @@ impl BrowserSession {
                           ||pick(function(e){{return txts(e).some(function(s){{return s.lastIndexOf(t,0)===0;}});}})
                           ||pick(function(e){{return txts(e).some(function(s){{return s.indexOf(t)>=0;}});}});
                     if(!hit)return 'NOT_FOUND';
+                    // A disabled control swallows the click and changes
+                    // nothing. Reported as a success it reads as "it worked",
+                    // and the agent clicks it again, and again.
+                    if(hit.disabled||hit.getAttribute('aria-disabled')==='true') return 'DISABLED';
                     window.__chatyLast=hit; // anchor for the "near this element" digest
-                    hit.scrollIntoView({{block:'center'}});
+                    // Only scroll when the target is actually out of view, and
+                    // never smoothly: scrolling a page that does not need it
+                    // sets off scroll-snap and reveal animations, which move
+                    // the target out from under the coordinate we are about to
+                    // click. Left alone, a visible element stays put.
+                    var rr=hit.getBoundingClientRect();
+                    if(rr.top<0||rr.bottom>innerHeight||rr.left<0||rr.right>innerWidth){{
+                        try{{ hit.scrollIntoView({{block:'center',behavior:'instant'}}); }}
+                        catch(_){{ hit.scrollIntoView({{block:'center'}}); }}
+                    }}
                     return 'FOUND';
                 }})()"#,
                 txt = json!(txt)
@@ -1483,7 +1745,15 @@ impl BrowserSession {
                 d
             ));
         }
-        std::thread::sleep(Duration::from_millis(150)); // let a prior nav settle
+        // A navigation left over from the previous tool call must not eat this
+        // click. Ask the page whether it is ready instead of assuming a fixed
+        // wait: ready is the normal case and now costs one cheap round trip.
+        for _ in 0..8 {
+            if self.eval("document.readyState").unwrap_or_default().contains("complete") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(80));
+        }
         self.install_settle(); // so we can tell when this click's work finishes
         let mut pre_blockers: Option<String> = None;
         let found = self.eval(&js)?;
@@ -1492,19 +1762,10 @@ impl BrowserSession {
             "NOT_FOUND"
         } else if found == "IS_SELECT" {
             "IS_SELECT"
+        } else if found == "DISABLED" {
+            "DISABLED"
         } else {
-            match self.settled_click_point() {
-                Some((x, y)) => {
-                    // Validity BEFORE the click decides whether a submit could
-                    // even fire. Checking after is wrong: a successful submit
-                    // often calls form.reset(), which makes required fields
-                    // empty (invalid) again and would fake a "blocked" report.
-                    pre_blockers = self.form_blockers();
-                    self.mouse_click(x, y)?;
-                    "OK"
-                }
-                None => "NOT_FOUND",
-            }
+            self.click_confirmed(&mut pre_blockers)?
         };
         match clicked {
             "OK" => {
@@ -1512,7 +1773,9 @@ impl BrowserSession {
                 // if a navigation is in flight, wait for the destination to be
                 // ready — otherwise the digest would show the OLD page and the
                 // model would wrongly re-click (over-clicking Login/Next).
-                std::thread::sleep(Duration::from_millis(300));
+                // Just enough for the event to reach the page's handlers; the
+                // real waiting is `wait_settled` below, which has its own floor.
+                std::thread::sleep(Duration::from_millis(40));
                 self.pump_pending();
                 for _ in 0..12 {
                     let ready = self
@@ -1542,6 +1805,26 @@ impl BrowserSession {
                     ));
                 }
                 Ok(label.to_string())
+            }
+            "DISABLED" => {
+                let rich = self.rich_digest(2500).unwrap_or_default();
+                Err(trf!(
+                    "\"{}\" 现在是禁用状态,点它不会有任何反应。它通常要等某个前置条件满足才会变亮——先把该填的填完/该选的选上(下面是当前页面状态),再点它:\n\n{}",
+                    "\"{}\" is disabled right now — clicking it does nothing. Something has to happen before it goes live: finish the field or choice it is waiting on (the page state is below), then click it:\n\n{}",
+                    label,
+                    rich
+                ))
+            }
+            "BLOCKED" => {
+                let what = self.last_click_blocker.take().unwrap_or_default();
+                let d = self.digest().unwrap_or_default();
+                Err(trf!(
+                    "点了 \"{}\",但事件没有到达它{}。它多半被浮层/弹窗/Cookie 横幅挡住了,或者页面在点击时还在动。先关掉挡住的东西,或换个目标:\n{}",
+                    "Clicked \"{}\" but the event never reached it{}. Something is covering it — an overlay, dialog or cookie banner — or the page was still moving. Dismiss what's on top, or pick a different target:\n{}",
+                    label,
+                    if what.is_empty() { String::new() } else { trf!("(实际收到点击的是 {})", " (it landed on {} instead)", what) },
+                    d
+                ))
             }
             "IS_SELECT" => Err(trf!(
                 "这是下拉框,点击不会展开选项。改用 browser_type 选择:{{\"selector\":\"{}\",\"text\":\"<选项的可见文字>\"}}",
@@ -2401,6 +2684,75 @@ mod tests {
         shutdown();
     }
 
+    /// Browsing has to survive `browser_close`.
+    ///
+    /// The regression: the closed browser's actor cleared the cached handle as
+    /// it exited — but by then the NEXT browser had already been launched and
+    /// cached, so the newcomer's handle was wiped instead. Nothing looked
+    /// broken (the sender still worked), yet every call after that built a
+    /// fresh window, ran one command in it, and lost it. Navigation reported
+    /// success while every read came back blank, because the read ran in a
+    /// window that had never been navigated anywhere.
+    #[test]
+    #[ignore]
+    fn browsing_survives_a_close() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        let url = "data:text/html,<title>after-close</title><body><button>HELLO</button></body>";
+        for round in 1..=3 {
+            navigate(url).expect("navigate");
+            let page = read_page().unwrap_or_default();
+            assert!(
+                page.contains("HELLO"),
+                "round {round}: the page read back blank after a close — {page}"
+            );
+            shutdown();
+        }
+    }
+
+    /// A click must reach the element it names, or say it did not.
+    ///
+    /// The regression: the coordinate is measured, and by the time the event
+    /// is dispatched something else owns that spot — a cookie banner, a modal,
+    /// a panel that finished animating in. The event lands on the intruder,
+    /// and the tool reported success, so the agent had no way to know it had
+    /// clicked something else entirely and went on clicking forever.
+    #[test]
+    #[ignore]
+    fn click_lands_on_the_named_element_or_admits_it_did_not() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        // TARGET is real, visible and correctly labelled — and completely
+        // covered by a banner, exactly as a consent overlay covers a page.
+        let html = "<!doctype html><title>covered</title><body style='margin:0;height:900px'>\
+            <button id='t' style='position:absolute;top:100px;left:0;width:300px;height:60px'\
+                 onclick='window.hit=1'>TARGET</button>\
+            <div id='cover' style='position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9'\
+                 onclick='window.cover=(window.cover||0)+1'>consent</div>\
+            </body>";
+        let url = format!("data:text/html,{}", html.replace('#', "%23"));
+        navigate(&url).expect("navigate");
+        let outcome = click(None, Some("TARGET".into()));
+        let hit = eval("String(window.hit||0)").unwrap_or_default();
+        let cover = eval("String(window.cover||0)").unwrap_or_default();
+        // Missing is allowed — the banner really is in the way. Claiming the
+        // miss worked is not.
+        if outcome.is_ok() {
+            panic!("reported success while the banner took the click (target fired: {hit}, banner: {cover})");
+        }
+        // And the failure has to be useful: it names what is in the way.
+        let msg = outcome.unwrap_err();
+        assert!(
+            msg.contains("TARGET"),
+            "the error should name the target the agent asked for: {msg}"
+        );
+        shutdown();
+    }
+
     // Full CDP round-trip against the real Chrome. Ignored by default (needs a
     // browser). Run: cargo test -p chaty browser_cdp -- --ignored --nocapture
     #[test]
@@ -2564,7 +2916,7 @@ mod tests {
     fn headless_toggle_closes_the_open_browser() {
         let start = HEADLESS_PREF.load(std::sync::atomic::Ordering::Relaxed);
         let (tx, _rx) = std::sync::mpsc::channel::<BrowserCmd>();
-        *BROWSER.lock().unwrap() = Some(tx);
+        *BROWSER.lock().unwrap() = Some((0, tx));
         // Same value → no restart (don't kill a browser for a no-op write).
         set_headless(start);
         assert!(BROWSER.lock().unwrap().is_some(), "no-op toggle must keep the browser");
@@ -2581,10 +2933,10 @@ mod tests {
     #[test]
     fn a_dead_browser_thread_clears_its_handle() {
         let (tx, rx) = std::sync::mpsc::channel::<BrowserCmd>();
-        *BROWSER.lock().unwrap() = Some(tx);
+        *BROWSER.lock().unwrap() = Some((0, tx));
 
         std::thread::spawn(move || {
-            let _forget = super::ForgetOnExit;
+            let _forget = super::ForgetOnExit(0);
             let _rx = rx;
             panic!("the actor gave up");
         })
@@ -2595,6 +2947,33 @@ mod tests {
             BROWSER.lock().unwrap().is_none(),
             "a dead actor must not leave a sender nothing can reach"
         );
+    }
+
+    /// ...and it must not take the NEXT actor's handle with it. A close and a
+    /// relaunch overlap: the outgoing actor finishes its teardown after the
+    /// incoming one is already cached. Wiping the cache blindly there left
+    /// every later call building a browser of its own — navigation "worked"
+    /// and every read came back blank.
+    #[test]
+    fn a_dead_browser_thread_leaves_its_successor_alone() {
+        let (old_tx, old_rx) = std::sync::mpsc::channel::<BrowserCmd>();
+        let (new_tx, _new_rx) = std::sync::mpsc::channel::<BrowserCmd>();
+        *BROWSER.lock().unwrap() = Some((1, old_tx));
+
+        // The successor registers while the outgoing actor is still winding up.
+        *BROWSER.lock().unwrap() = Some((2, new_tx));
+        std::thread::spawn(move || {
+            let _forget = super::ForgetOnExit(1);
+            let _rx = old_rx;
+        })
+        .join()
+        .expect("fixture");
+
+        assert!(
+            matches!(*BROWSER.lock().unwrap(), Some((2, _))),
+            "the outgoing actor cleared the browser its successor had just installed"
+        );
+        *BROWSER.lock().unwrap() = None;
     }
 
     // The async-settle watcher is injected as text; a botched edit would break

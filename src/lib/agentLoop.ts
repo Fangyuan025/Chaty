@@ -2148,7 +2148,25 @@ export async function runAgentTurn(
   // duplicates (a real-app report: the agent never saw the "Thank you" and kept
   // submitting). Identical result → treat the repeat as degenerate.
   let lastResultText = "";
-  let uiRepeatChangedPage = true;
+  /** Consecutive UI actions whose result came back byte-identical. One is not
+   *  evidence of a dead control: a click during an animation, an audio line
+   *  still playing, a list still rendering — all no-ops that the very next
+   *  click completes. Two in a row is the dead one. */
+  let uiUnchangedStreak = 0;
+  /** The last few UI-action results, to catch a CYCLE rather than a repeat.
+   *  Alternating between two dead controls (click A, click B, click A …)
+   *  never produces two identical calls in a row, so the repeat counter above
+   *  never sees it, and the turn spends every step it has going nowhere. What
+   *  gives it away is the page: it keeps coming back to the same handful of
+   *  states. A flow that is genuinely progressing — next question, next page,
+   *  next wizard step — reads differently every time and never trips this. */
+  const uiResultRing: string[] = [];
+  const UI_CYCLE_WINDOW = 8;
+  /** Every tool whose result is "here is the page now". Scrolling and reading
+   *  belong here with clicking: a spin that alternates click → scroll → click
+   *  is the same dead end, and it is the results being identical — not which
+   *  tool produced them — that proves the page never moved. */
+  const PAGE_TOOLS = new Set(["browser_click", "browser_type", "browser_scroll", "browser_read"]);
   // Format slips (missing required arg) corrected without entering the
   // record; bounded so a stuck model still reaches the normal error path.
   // Per-tool empty-required-args slips (the sympy-12419 ladder): each slip
@@ -2813,13 +2831,16 @@ export async function runAgentTurn(
       // legitimately repeat and produce a NEW result each time (pagination
       // "Next"×3, add-to-cart ×2, wizard steps) — the ChatyWeb-Bench
       // admin-newest-user autopsy caught the breaker killing exactly that.
-      // But only while the page keeps CHANGING: an identical result means the
-      // click did nothing visible, and repeating a submit button in that state
-      // posts duplicates. Repeats after an ERROR stay degenerate too.
+      // But only while the page keeps changing. One identical result is not
+      // proof of a dead control — a click landing during an animation, on a
+      // story line still being read out, on a list still rendering, all do
+      // nothing and the next click works. Two identical results in a row is
+      // the dead one, and repeating a submit in that state posts duplicates.
+      // Repeats after an ERROR stay degenerate too.
       const uiRepeatOk =
         (call.name === "browser_click" || call.name === "browser_type") &&
         !lastResultErrored &&
-        uiRepeatChangedPage;
+        uiUnchangedStreak < 2;
       // update_plan repeats are harmless no-ops (nothing mutates), and this
       // model can pattern-lock on them hard: teaching + heat + extra chances
       // all failed (rounds 14/21 died in <80s). So repeats get a SOFT LOCK —
@@ -2843,14 +2864,20 @@ export async function runAgentTurn(
         call.name === "write_file" ||
         call.name === "read_file" ||
         failedBashRepeat;
+      // A click or type whose page keeps changing is not spinning, however
+      // many times it repeats: pressing CONTINUE through a story, Next through
+      // a wizard, a tile at a time through a word bank. Capping those at five
+      // stopped real work mid-flow. The dead cases are covered elsewhere — two
+      // identical results in a row clears `uiRepeatOk` below, and the cycle
+      // check above catches a rotation that keeps landing on the same states.
       const pauseAt = uiRepeatOk
-        ? 5
+        ? Number.POSITIVE_INFINITY
         : call.name === "update_plan"
           ? 8
           : call.name === "write_file" || call.name === "read_file" || failedBashRepeat
             ? 6
             : 2;
-      const warnAt = uiRepeatOk ? 4 : 1;
+      const warnAt = uiRepeatOk ? -1 : 1;
       if (softLockable && repeatCount >= 2 && repeatCount < pauseAt) {
         hotNext = true;
         if (failedBashRepeat) forceNoThinkNext = true;
@@ -2876,6 +2903,26 @@ export async function runAgentTurn(
         cb.onStep(stepObj);
         pushUser(toolResultMsg(call.name, note));
         continue;
+      }
+      // A cycle: the last several UI actions kept landing the page back on the
+      // same one or two states. Distinct calls, so the repeat counter is blind
+      // to it; distinct RESULTS are what says the page is moving, and here it
+      // is not.
+      if (
+        PAGE_TOOLS.has(call.name) &&
+        uiResultRing.length >= UI_CYCLE_WINDOW &&
+        new Set(uiResultRing).size <= 2
+      ) {
+        uiResultRing.length = 0;
+        cb.onFinal(
+          lang === "zh"
+            ? `连续 ${UI_CYCLE_WINDOW} 次点击/输入之后,页面一直在同样的一两个状态之间打转,没有真正前进,已暂停以免空转。这条路走不通:用 browser_read 看清当前页面,换一个元素或换一种做法(比如直接导航到目标地址),再点「继续」。`
+            : `After ${UI_CYCLE_WINDOW} clicks/types the page kept returning to the same one or two states — nothing is actually advancing, so this is paused rather than spun out. That path is a dead end: read the page with browser_read, then pick a different element or a different approach (navigating straight to the target URL, say), and hit "Continue".`,
+          undefined,
+          "steps",
+          { kind: "repeat", tool: call.name, key: callKey, count: UI_CYCLE_WINDOW },
+        );
+        return;
       }
       if (repeatCount >= pauseAt) {
         // One past the warning — pause instead of spinning to the step limit.
@@ -3409,7 +3456,13 @@ export async function runAgentTurn(
       lastResultErrored = resultText.startsWith("ERROR");
       // Did this call actually change what the page reports? Drives the
       // stateful-UI repeat allowance above (pagination yes, dead submit no).
-      uiRepeatChangedPage = resultText !== lastResultText;
+      uiUnchangedStreak = resultText === lastResultText ? uiUnchangedStreak + 1 : 0;
+      if (PAGE_TOOLS.has(call.name)) {
+        uiResultRing.push(resultText);
+        if (uiResultRing.length > UI_CYCLE_WINDOW) uiResultRing.shift();
+      } else {
+        uiResultRing.length = 0; // anything else breaks the cycle
+      }
       lastResultText = resultText;
       if (opts.signal.cancelled) return;
       cb.onStep(stepObj);
