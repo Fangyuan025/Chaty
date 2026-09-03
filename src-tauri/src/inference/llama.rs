@@ -434,7 +434,7 @@ impl LlamaEngine {
     pub fn load(path: &str, gpu_pref: Option<i32>, n_ctx_pref: Option<u32>) -> Result<(Self, ModelInfo)> {
         let backend = llama_backend()?;
         if !Path::new(path).exists() {
-            bail!("model file not found: {path}");
+            bail!(trf!("找不到模型文件:{path}", "model file not found: {path}"));
         }
 
         // ---- pre-flight: refuse loads that can only end in a swap-freeze ----
@@ -575,11 +575,17 @@ impl LlamaEngine {
                         continue;
                     }
                     if is_oom(&msg) {
-                        bail!("out of memory while allocating the model context");
+                        bail!(trf!(
+                            "内存不足,无法为该模型分配上下文。换更小的模型,或在设置里调低上下文长度。",
+                            "out of memory while allocating the model context — try a smaller model, or a shorter context in Settings."
+                        ));
                     }
-                    bail!("failed to initialize inference context: {msg}");
+                    bail!(trf!("推理上下文初始化失败:{msg}", "failed to initialize inference context: {msg}"));
                 }
-                Err(_) => bail!("inference thread exited during initialization"),
+                Err(_) => bail!(trf!(
+                    "推理线程在初始化期间退出",
+                    "the inference thread exited during initialization"
+                )),
             }
         };
 
@@ -2380,7 +2386,10 @@ fn render_chat(model: &LlamaModel, messages: &[ChatMessage], add_ass: bool) -> R
             }
         }
     }
-    bail!("no usable chat template (arch: {arch})")
+    bail!(trf!(
+        "没有可用的对话模板(架构:{arch})",
+        "no usable chat template (arch: {arch})"
+    ))
 }
 
 /// Merge any system messages into the first user turn (for templates that

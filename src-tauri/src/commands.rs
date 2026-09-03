@@ -1253,7 +1253,7 @@ pub async fn generate(
         let _ = on_event.send(StreamEvent::Error {
             message: "尚未加载模型".into(),
         });
-        return Err("no model loaded".into());
+        return Err(trf!("尚未加载模型", "no model loaded"));
     };
 
     // Clear any stale cancel request from a previous run, then hand a fresh
