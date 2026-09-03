@@ -1698,8 +1698,24 @@ impl BrowserSession {
                         if(tag==='button'||e.getAttribute('role')==='button'||ty==='button')return 1;
                         return 2;}}
                     var cand=els.filter(vis);
-                    function pick(pred){{var m=cand.filter(pred);if(!m.length)return null;m.sort(function(a,b){{return rank(a)-rank(b);}});return m[0];}}
+                    // How much text an element carries beyond what was asked
+                    // for. Anything WRAPPING the control matches the same
+                    // substring and carries the whole panel with it, so
+                    // without this the click lands on a container and the
+                    // control the agent named never hears about it.
+                    function tight(e){{var b=1e9;txts(e).forEach(function(s){{
+                        if(s.indexOf(t)>=0&&s.length<b)b=s.length;}});return b;}}
+                    function pick(pred){{var m=cand.filter(pred);if(!m.length)return null;
+                        m.sort(function(a,b){{return (tight(a)-tight(b))||(rank(a)-rank(b));}});return m[0];}}
+                    // A choice in a list usually wears a badge the page put
+                    // there — "1", "2)", "3." — while the page TEXT the agent
+                    // read shows only the words. Comparing with the badge off
+                    // both sides makes "jolie" find the row labelled "2 jolie",
+                    // and "2 jolie" find a row labelled just "jolie".
+                    function bare(s){{return s.replace(/^\s*\d{{1,2}}\s*[.)\]:、,]?\s+/,'');}}
+                    var tb=bare(t);
                     var hit=pick(function(e){{return txts(e).some(function(s){{return s===t;}});}})
+                          ||pick(function(e){{return txts(e).some(function(s){{return bare(s)===tb;}});}})
                           ||pick(function(e){{return txts(e).some(function(s){{return s.lastIndexOf(t,0)===0;}});}})
                           ||pick(function(e){{return txts(e).some(function(s){{return s.indexOf(t)>=0;}});}});
                     if(!hit)return 'NOT_FOUND';
@@ -2681,6 +2697,52 @@ mod tests {
         assert!(t0.elapsed() < Duration::from_secs(10), "eval unblocked late: {:?}", t0.elapsed());
         let console = console().unwrap_or_default();
         assert!(console.contains("[dialog] alert: boom-dialog"), "console: {console}");
+        shutdown();
+    }
+
+    /// Clicking by the words a person can actually read.
+    ///
+    /// The regression: a choice in a list wears a badge the page adds — "1",
+    /// "2)", "3." — so its element text is "2 jolie" while the page reads
+    /// "jolie". Asking for "jolie" fell through to a substring match, and the
+    /// PANEL wrapping all the choices contains that substring too. The panel
+    /// won, the click landed on it, and the tool reported success while
+    /// nothing at all was selected — the agent then tried every option in turn
+    /// and never got anywhere.
+    #[test]
+    #[ignore]
+    fn a_choice_is_clickable_by_the_words_on_screen() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        // The prompt sits above the choices, as it does on a real quiz, so the
+        // wrapper's midpoint is empty space — a click there selects nothing at
+        // all, which is what the failure looked like.
+        let html = "<!doctype html><title>choices</title><body style='margin:0'>\
+            <div id='panel' tabindex='0' style='cursor:pointer'\
+                 onclick='window.picked=window.picked||\"PANEL\"'>\
+              <p style='height:420px;margin:0'>Fill in the blank</p>\
+              <div role='radio' aria-checked='false' style='height:44px'\
+                   onclick='window.picked=\"one\"'><span>1</span> <span>mechante</span></div>\
+              <div role='radio' aria-checked='false' style='height:44px'\
+                   onclick='window.picked=\"two\"'><span>2</span> <span>jolie</span></div>\
+              <div role='radio' aria-checked='false' style='height:44px'\
+                   onclick='window.picked=\"three\"'><span>3</span> <span>tante</span></div>\
+            </div></body>";
+        let url = format!("data:text/html,{}", html.replace('#', "%23"));
+
+        // The words as they appear on screen, with no badge.
+        navigate(&url).expect("navigate");
+        click(None, Some("jolie".into())).expect("click by the visible word");
+        let picked = eval("String(window.picked)").unwrap_or_default();
+        assert!(picked.contains("two"), "clicked \"jolie\" and got {picked}");
+
+        // And the badge spelled out, which is how the element list shows it.
+        navigate(&url).expect("navigate");
+        click(None, Some("3 tante".into())).expect("click by the listed label");
+        let picked = eval("String(window.picked)").unwrap_or_default();
+        assert!(picked.contains("three"), "clicked \"3 tante\" and got {picked}");
         shutdown();
     }
 
