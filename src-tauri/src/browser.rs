@@ -398,6 +398,31 @@ pub fn sweep_orphan_browsers() {
     }
 }
 
+/// PIDs of browsers currently holding `profile` as their user-data-dir.
+///
+/// Chrome records its debugging endpoint inside the profile, which is how a
+/// leftover browser is normally found again — but that file is gone whenever
+/// the browser exited uncleanly, or an older build of this app deleted it on
+/// the way to a launch that could never succeed. The process list still knows.
+#[cfg(unix)]
+fn browsers_holding(profile: &std::path::Path) -> Vec<u32> {
+    let needle = format!("--user-data-dir={}", profile.display());
+    let Ok(out) = std::process::Command::new("ps").args(["-Ao", "pid,args"]).output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.contains(&needle) && !l.contains("--type="))
+        .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+        .collect()
+}
+#[cfg(not(unix))]
+fn browsers_holding(_profile: &std::path::Path) -> Vec<u32> {
+    // No safe way to match a command line here; the timeout message explains
+    // the situation instead.
+    Vec::new()
+}
+
 /// Candidate Chrome/Chromium executables by platform.
 fn chrome_path() -> Option<PathBuf> {
     #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
@@ -749,6 +774,12 @@ impl BrowserSession {
     /// `track_pid`: register the child in CHROME_PID for exit-time cleanup (the
     /// shared interactive browser); one-shot headless captures pass false.
     fn launch(headless: bool, track_pid: bool) -> Result<Self, String> {
+        Self::launch_once(headless, track_pid, true)
+    }
+
+    /// `may_recover` is false on the retry, so a browser that cannot be
+    /// cleared reports the failure instead of looping.
+    fn launch_once(headless: bool, track_pid: bool, may_recover: bool) -> Result<Self, String> {
         let exe = chrome_path().ok_or(
             "未找到 Chrome/Chromium,请先安装 Chrome。(No Chrome/Chromium found — install Google Chrome.)",
         )?;
@@ -830,9 +861,34 @@ impl BrowserSession {
                 let (port, ws_path) = loop {
                     if Instant::now() > deadline {
                         let _ = child.kill();
-                        return Err(
-                            "Chrome 未在预期时间内就绪 (Chrome did not become ready in time)".into()
-                        );
+                        let _ = child.wait();
+                        // A browser already owning this profile is the reason
+                        // this happens: ours never really started — Chrome
+                        // handed our command line to the one already there and
+                        // exited. Close that one and take the profile back,
+                        // rather than leaving the user with a browser that can
+                        // never open again.
+                        let stray = browsers_holding(&profile_path);
+                        if may_recover && !stray.is_empty() {
+                            for pid in &stray {
+                                // TERM, not KILL: it gets to save its session.
+                                let _ = std::process::Command::new("kill")
+                                    .args(["-TERM", &pid.to_string()])
+                                    .status();
+                            }
+                            let gone = Instant::now() + Duration::from_secs(6);
+                            while Instant::now() < gone
+                                && !browsers_holding(&profile_path).is_empty()
+                            {
+                                std::thread::sleep(Duration::from_millis(120));
+                            }
+                            return Self::launch_once(headless, track_pid, false);
+                        }
+                        return Err(trf!(
+                            "Chrome 未在预期时间内就绪。多半是另一个 Chrome 正占着同一个浏览器数据目录({});关掉那个窗口再试。",
+                            "Chrome did not become ready in time. Most likely another Chrome already has this browser profile open ({}) — close that window and try again.",
+                            profile_path.display()
+                        ));
                     }
                     if let Ok(content) = std::fs::read_to_string(&port_file) {
                         let mut lines = content.lines();
@@ -2789,6 +2845,56 @@ mod tests {
 
         let page = out.expect("navigating with a browser already on the profile");
         assert!(page.contains("ADOPTED"), "adopted browser did not load the page: {page}");
+    }
+
+    /// ...and if the endpoint record is gone, the stray browser is cleared.
+    ///
+    /// Chrome deletes that record when it exits cleanly, and an older build of
+    /// this app deleted it on the way to a launch that could never succeed —
+    /// so "a browser is holding the profile" and "there is nothing to adopt"
+    /// happen together, which is precisely the state that used to be
+    /// unrecoverable without the user hunting down a window.
+    #[test]
+    #[ignore]
+    fn a_stray_browser_with_no_endpoint_record_is_cleared() {
+        let Some(exe) = chrome_path() else {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("chaty-stray-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("profile dir");
+        set_headless(true);
+        set_profile_dir(dir.clone());
+
+        let mut stray = std::process::Command::new(&exe)
+            .arg("--headless=new")
+            .arg("--remote-debugging-port=0")
+            .arg(format!("--user-data-dir={}", dir.display()))
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            .arg("about:blank")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("stray chrome");
+        let port_file = dir.join("DevToolsActivePort");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !port_file.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(60));
+        }
+        assert!(port_file.exists(), "the stray browser never came up");
+        // The record an older build would already have thrown away.
+        std::fs::remove_file(&port_file).expect("remove endpoint record");
+
+        let out = navigate("data:text/html,<title>stray</title><body><button>RECOVERED</button></body>");
+        shutdown();
+        let _ = stray.kill();
+        let _ = stray.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let page = out.expect("navigating with an unreachable browser holding the profile");
+        assert!(page.contains("RECOVERED"), "did not recover the profile: {page}");
     }
 
     /// Clicking by the words a person can actually read.
