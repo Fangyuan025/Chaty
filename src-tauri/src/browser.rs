@@ -3171,8 +3171,18 @@ mod tests {
 
     // Toggling Settings → Code's hidden-browser preference must close the
     // running browser, or the setting silently applies "next session".
+    /// These tests share the one global browser handle, so they must not run
+    /// concurrently — CI runs the suite in parallel, where two of them
+    /// installing and clearing that handle around each other made a real
+    /// invariant look broken.
+    static BROWSER_TEST_LOCK: Mutex<()> = Mutex::new(());
+    fn serial_browser() -> std::sync::MutexGuard<'static, ()> {
+        BROWSER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn headless_toggle_closes_the_open_browser() {
+        let _serial = serial_browser();
         let start = HEADLESS_PREF.load(std::sync::atomic::Ordering::Relaxed);
         let (tx, _rx) = std::sync::mpsc::channel::<BrowserCmd>();
         *BROWSER.lock().unwrap() = Some((0, tx));
@@ -3191,6 +3201,7 @@ mod tests {
     /// nothing ever replaced it — the tool was gone until the app restarted.
     #[test]
     fn a_dead_browser_thread_clears_its_handle() {
+        let _serial = serial_browser();
         let (tx, rx) = std::sync::mpsc::channel::<BrowserCmd>();
         *BROWSER.lock().unwrap() = Some((0, tx));
 
@@ -3215,6 +3226,7 @@ mod tests {
     /// and every read came back blank.
     #[test]
     fn a_dead_browser_thread_leaves_its_successor_alone() {
+        let _serial = serial_browser();
         let (old_tx, old_rx) = std::sync::mpsc::channel::<BrowserCmd>();
         let (new_tx, _new_rx) = std::sync::mpsc::channel::<BrowserCmd>();
         *BROWSER.lock().unwrap() = Some((1, old_tx));
