@@ -566,7 +566,13 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
         headless: bool,
         mut f: impl FnMut(&mut BrowserSession) -> Result<T, String>,
     ) -> Result<T, String> {
-        let dead = session.child.try_wait().map(|s| s.is_some()).unwrap_or(true);
+        // An adopted browser has no process of ours to check; if it has gone
+        // away, the command below fails and the CDP error says so.
+        let dead = session
+            .child
+            .as_mut()
+            .map(|c| c.try_wait().map(|s| s.is_some()).unwrap_or(true))
+            .unwrap_or(false);
         if !dead {
             match f(session) {
                 Ok(v) => return Ok(v),
@@ -712,7 +718,9 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
 const CONSOLE_KEEP: usize = 400;
 
 struct BrowserSession {
-    child: std::process::Child,
+    /// `None` when this session ADOPTED a browser someone else started —
+    /// there is no process of ours to wait on or signal.
+    child: Option<std::process::Child>,
     ws: Ws,
     session_id: String,
     next_id: i64,
@@ -757,10 +765,26 @@ impl BrowserSession {
                 (g.path().to_path_buf(), Some(g))
             }
         };
+        let port_file = profile_path.join("DevToolsActivePort");
+        // A browser of ours may STILL BE OPEN on this profile — the app was
+        // force-quit, crashed, or reloaded in dev while its window stayed up.
+        // Chrome will not start a second browser on one profile: the new
+        // process hands its command line to the one already there and exits,
+        // so the launch below would wait out its deadline for a port that
+        // never appears, and browsing would stay broken until the user hunted
+        // down the stray window themselves. If the endpoint from last time
+        // still answers, that browser is ours to drive.
+        let adopted = std::fs::read_to_string(&port_file).ok().and_then(|c| {
+            let mut lines = c.lines();
+            let port = lines.next()?.trim().parse::<u16>().ok()?;
+            let path = lines.next()?.trim().to_string();
+            connect(&format!("ws://127.0.0.1:{port}{path}")).ok().map(|(ws, _)| ws)
+        });
         // Chrome only writes DevToolsActivePort AFTER init; a stale one from a
         // previous run of a persistent profile would be read as the wrong port.
-        let port_file = profile_path.join("DevToolsActivePort");
-        let _ = std::fs::remove_file(&port_file);
+        if adopted.is_none() {
+            let _ = std::fs::remove_file(&port_file);
+        }
 
         let mut cmd = std::process::Command::new(&exe);
         if headless {
@@ -769,7 +793,7 @@ impl BrowserSession {
             // Bring the automation window to the front so it's clearly visible.
             cmd.arg("--new-window").arg("--start-maximized");
         }
-        let mut child = cmd
+        let spawn_one = |cmd: &mut std::process::Command| cmd
             .arg("--remote-debugging-port=0")
             .arg(format!("--user-data-dir={}", profile_path.display()))
             .arg("--no-first-run")
@@ -790,35 +814,43 @@ impl BrowserSession {
             .arg("about:blank")
             .stderr(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("启动 Chrome 失败 (failed to launch Chrome): {e}"))?;
-        if track_pid {
-            CHROME_PID.store(child.id(), std::sync::atomic::Ordering::SeqCst);
-        }
+            .spawn();
 
-        // Chrome writes ws endpoint info to <profile>/DevToolsActivePort:
-        // line 1 = port, line 2 = /devtools/browser/<uuid>.
-        let deadline = Instant::now() + Duration::from_secs(15);
-        let (port, ws_path) = loop {
-            if Instant::now() > deadline {
-                let _ = child.kill();
-                return Err("Chrome 未在预期时间内就绪 (Chrome did not become ready in time)".into());
-            }
-            if let Ok(content) = std::fs::read_to_string(&port_file) {
-                let mut lines = content.lines();
-                if let (Some(p), Some(path)) = (lines.next(), lines.next()) {
-                    if let Ok(port) = p.trim().parse::<u16>() {
-                        break (port, path.trim().to_string());
-                    }
+        let (mut ws, child) = match adopted {
+            Some(ws) => (ws, None),
+            None => {
+                let mut child = spawn_one(&mut cmd)
+                    .map_err(|e| format!("启动 Chrome 失败 (failed to launch Chrome): {e}"))?;
+                if track_pid {
+                    CHROME_PID.store(child.id(), std::sync::atomic::Ordering::SeqCst);
                 }
+                // Chrome writes ws endpoint info to <profile>/DevToolsActivePort:
+                // line 1 = port, line 2 = /devtools/browser/<uuid>.
+                let deadline = Instant::now() + Duration::from_secs(15);
+                let (port, ws_path) = loop {
+                    if Instant::now() > deadline {
+                        let _ = child.kill();
+                        return Err(
+                            "Chrome 未在预期时间内就绪 (Chrome did not become ready in time)".into()
+                        );
+                    }
+                    if let Ok(content) = std::fs::read_to_string(&port_file) {
+                        let mut lines = content.lines();
+                        if let (Some(p), Some(path)) = (lines.next(), lines.next()) {
+                            if let Ok(port) = p.trim().parse::<u16>() {
+                                break (port, path.trim().to_string());
+                            }
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(60));
+                };
+                // Connect to the browser-level endpoint, open a page target, attach.
+                let url = format!("ws://127.0.0.1:{port}{ws_path}");
+                let (ws, _) = connect(&url)
+                    .map_err(|e| format!("连接 CDP 失败 (failed to connect CDP): {e}"))?;
+                (ws, Some(child))
             }
-            std::thread::sleep(Duration::from_millis(60));
         };
-
-        // Connect to the browser-level endpoint, open a page target, attach.
-        let url = format!("ws://127.0.0.1:{port}{ws_path}");
-        let (mut ws, _) = connect(&url)
-            .map_err(|e| format!("连接 CDP 失败 (failed to connect CDP): {e}"))?;
         set_read_timeout(&ws, Duration::from_secs(30));
 
         let mut next_id = 1i64;
@@ -834,7 +866,9 @@ impl BrowserSession {
         )?;
         let session_id = attached["sessionId"].as_str().unwrap_or_default().to_string();
         if session_id.is_empty() {
-            let _ = child.kill();
+            if let Some(mut c) = child {
+                let _ = c.kill();
+            }
             return Err("CDP 会话附加失败 (failed to attach CDP session)".into());
         }
 
@@ -1992,16 +2026,22 @@ impl BrowserSession {
     }
 
     fn kill(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            // An adopted browser is not ours to signal — ask it to close
+            // itself the way any CDP client would.
+            let _ = self.call(None, "Browser.close", json!({}));
+            return;
+        };
         CHROME_PID
             .compare_exchange(
-                self.child.id(),
+                child.id(),
                 0,
                 std::sync::atomic::Ordering::SeqCst,
                 std::sync::atomic::Ordering::SeqCst,
             )
             .ok();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -2698,6 +2738,57 @@ mod tests {
         let console = console().unwrap_or_default();
         assert!(console.contains("[dialog] alert: boom-dialog"), "console: {console}");
         shutdown();
+    }
+
+    /// A browser left open on our profile gets adopted, not fought with.
+    ///
+    /// The regression: force-quitting the app (or reloading it in dev) leaves
+    /// its browser window up, still holding the profile. Chrome will not start
+    /// a second browser on one profile — the new process hands its command
+    /// line to the one already running and exits — so the launcher waited out
+    /// its deadline and every browser tool failed with "Chrome did not become
+    /// ready in time", for good, until the user found the stray window and
+    /// closed it themselves.
+    #[test]
+    #[ignore]
+    fn a_browser_left_open_on_our_profile_is_adopted() {
+        let Some(exe) = chrome_path() else {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("chaty-adopt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("profile dir");
+        set_headless(true);
+        set_profile_dir(dir.clone());
+
+        // The window the last run left behind.
+        let mut stray = std::process::Command::new(&exe)
+            .arg("--headless=new")
+            .arg("--remote-debugging-port=0")
+            .arg(format!("--user-data-dir={}", dir.display()))
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            .arg("about:blank")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("stray chrome");
+        let port_file = dir.join("DevToolsActivePort");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !port_file.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(60));
+        }
+        assert!(port_file.exists(), "the stray browser never came up");
+
+        let out = navigate("data:text/html,<title>adopt</title><body><button>ADOPTED</button></body>");
+        shutdown();
+        let _ = stray.kill();
+        let _ = stray.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let page = out.expect("navigating with a browser already on the profile");
+        assert!(page.contains("ADOPTED"), "adopted browser did not load the page: {page}");
     }
 
     /// Clicking by the words a person can actually read.
