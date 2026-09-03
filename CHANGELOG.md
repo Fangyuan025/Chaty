@@ -1,5 +1,184 @@
 # Changelog
 
+## v2.1.6 — A click that lands, and a session that stops dying quietly (2026-09-03)
+
+### The agent's browser
+
+- **A click reports success only if the element it named got it.** A control
+  still settling — a popover animating in, a scroll container snapping back, a
+  banner sitting on top — is somewhere else by the time the event is sent, and
+  the event lands on whatever now occupies that spot. Reported as a success,
+  that is the failure an agent cannot escape: it is told the click worked, so
+  it has no reason to try anything else, and it clicks the same button until
+  the turn dies. The target is now armed before the click and asked afterwards
+  whether it fired; a miss names what is in the way, and a coordinate the hit
+  test rejects is never clicked at all.
+
+- **A choice can be clicked by the words that are on screen.** An answer in a
+  list wears a badge the page adds — `1`, `2)`, `3.` — so the element carries
+  "2 jolie" while the page reads "jolie". Asking for what you can read matched
+  neither exactly nor by prefix and fell through to a substring match, where
+  the panel wrapping every choice matched too, and won. The click landed on the
+  panel, well away from any option, and nothing was selected. Two rules, both
+  general: among elements that match, prefer the one carrying the least text
+  beyond what was asked for — anything wrapping a control always carries more —
+  and compare with a leading list badge removed from both sides.
+
+- **The element list says what state a control is in.** A greyed-out submit
+  read exactly like a live one, and an answer already chosen like an untouched
+  one, so a model clicked a dead button over and over and lost track of what it
+  had picked. Disabled, selected and expanded are now surfaced, and clicking a
+  disabled control says so instead of quietly doing nothing.
+
+- **One `browser_close` no longer ends browsing for the rest of the run.** The
+  closed browser's actor cleared the cached handle as it exited — by which time
+  the next browser had already been launched and cached, so it wiped its
+  successor's. Every later call then built a window of its own, ran one command
+  in it and lost it: navigation reported success while every read came back
+  blank, because the read happened in a window that had never been navigated
+  anywhere. Handles are tagged, and an actor forgets only its own.
+
+- **A browser left open from a previous run is taken back.** Force-quit the app,
+  or reload it in development, and its browser window stays up holding the
+  profile. Chrome will not start a second browser on one profile — the new
+  process hands its command line to the one already running and exits — so the
+  launcher waited out its deadline for a debugging port that was never coming,
+  and every browser tool answered "Chrome did not become ready in time" until
+  the user found the stray window themselves. The endpoint recorded in the
+  profile is tried first, and that browser is driven when it answers. When the
+  record is gone — Chrome removes it on a clean exit, and an older build of this
+  app removed it too — the process list still knows who holds the directory: it
+  is asked to quit, and the launch runs again.
+
+- **A dead browser thread no longer takes the tool with it.** A sender whose
+  thread has gone is not detectably dead; it only fails when something is sent.
+  So a thread that ended left its handle cached and every later call failed on
+  the send. The thread now drops the handle on its way out, whichever way it
+  leaves.
+
+- **The controls a quiz is actually built from are reachable.** A choice is a
+  `[role=radio]`, and the element list collected only `button`, `link`,
+  `menuitem` and `tab` — the three answers to a question were not in it. The
+  standard interactive roles are all collected now, along with anything a site
+  made focusable and clickable without saying so. The list was also capped
+  silently, so a long page spent its whole allowance on the header; what is on
+  screen comes first now, and a truncated list says it was truncated. Typing
+  goes in the way a browser types, so a React input registers the text instead
+  of reporting itself empty while the page's own button stays grey.
+
+- **A screenshot of a very long page stops taking the model down with it.** A
+  game map or an endless feed is tens of thousands of pixels tall: decoding one
+  costs hundreds of megabytes before a single tile exists, and it splits into
+  more pictures than any model can be shown. The capture is bounded to a window
+  around wherever the page is now.
+
+- **Interaction got about eight times faster.** Every drain of the browser's
+  event queue blocked on a read timeout that was empty nearly every time, and
+  the settle loop paid it on every poll. Draining what has arrived instead,
+  leaving as soon as the page goes quiet, and gathering the digest in one round
+  trip instead of three: on a real site a click went from 4.1s to 0.47s, a page
+  read from 130ms to 8ms, a scroll from 700ms to 260ms.
+
+- **Repeating a click is judged by whether the page moved.** Pressing Continue
+  through a story, or Next through a wizard, is not spinning while every press
+  advances the page — but it was cut off at five. Meanwhile alternating between
+  two dead controls never repeats a single call, so it ran unchecked to the
+  step limit: one live run spent eighty steps rotating three clicks on a page
+  that never changed. Identical calls are now fine while the page keeps
+  changing, and a rotation that keeps landing back on the same one or two
+  states is stopped.
+
+### Speech that stops coming back
+
+- **Speech that stopped no longer stays stopped until the app is restarted.**
+  The output context was replaced only when it reported `closed`. WebKit has
+  another state — `interrupted`, reached by an audio route change, the machine
+  sleeping, another app taking the device — and `resume()` on one of those can
+  reject, or simply never settle. Neither was handled, so the same dead context
+  was reused for every later utterance. A resume now has a deadline; missing it
+  marks the context unusable and the next utterance starts on a fresh one.
+
+- **One bad synthesis no longer ends voice for the session.** The speech
+  engines live behind locks for the life of the process, and a panic inside any
+  one call poisons the lock it was holding — so every later call failed on the
+  poisoning alone, with the model perfectly fine. What these locks guard is a
+  loaded model rather than a half-written structure, so the guard is taken back
+  and used, and the recovery is written to the error log.
+
+- **Spoken replies are stitched on the audio clock.** Each clip was built and
+  started only after the previous one's end had made its way back to the main
+  thread — which, during a spoken reply, is streaming tokens, rendering, and
+  driving IPC. A whole event loop landed at every sentence boundary, exactly
+  where it is most audible. Clips are now scheduled against the context clock,
+  so the audio thread runs them together whatever the main thread is doing.
+
+- **English dictation stops coming back as one word repeated.** The tail
+  padding handed to Whisper sat inside a band that makes the English model
+  degenerate: "hello world, this is a voice test" transcribed as "Hello" twelve
+  times. Swept against the model rather than reasoned about — 0 is clean, 100
+  through 300 are broken, 400 and up are clean again — and the padding now sits
+  well clear of the band.
+
+### A long-running app
+
+- **One panic no longer ends persistence for the session.** The conversation
+  database sits behind a lock for the life of the app, and a panic anywhere
+  inside a query poisoned it; every command after that failed on the poisoning
+  alone, so the app quietly stopped reading and writing conversations. SQLite
+  finalizes a statement when it drops, so what comes back is a usable
+  connection.
+
+- **Finished background jobs stop accumulating.** Only running jobs were
+  counted against a limit, so a session that backgrounded a hundred commands
+  kept a hundred entries, each with its buffer, for as long as the app was
+  open. Results stay readable far longer than anything reads them back, but the
+  oldest now give way; a job still running, or one whose result nobody has
+  collected, is never touched.
+
+### The thinking ladder
+
+- **The menu ticks the rung the model will actually use.** The chosen rung is
+  remembered per app while ladders differ in length, so a rung picked on a
+  four-rung model can be absent from the three-rung one you switch to. The menu
+  then ticked nothing while the engine, handed no rung at all, let the template
+  fall back to its own default — what was displayed and what the model was
+  asked for had come apart. The rung is resolved against the ladder in front of
+  it, and clamping is by position, so the third rung of four becomes the third
+  of three rather than the bottom one.
+
+- **Code mode lights the depth you chose.** Drawing each model's own rungs made
+  every tab read a rung, and a model without a ladder has none — so Normal and
+  Deep stopped highlighting at all. (Shipped in a v2.1.5 rebuild; listed here
+  for anyone who installed v2.1.5 on release day.)
+
+- **A multimodal MLX model arrives with its processor configuration.** The
+  downloader named the files it would take one by one, and that list never had
+  `processor_config.json` in it. The sidecar can synthesize a replacement for
+  the few families it has a recipe for, which is what made this look
+  intermittent rather than constant: vision worked on Qwen and Gemma and went
+  quietly missing on everything else. Every top-level `.json` now comes down.
+  (Also from that v2.1.5 rebuild.)
+
+### Elsewhere
+
+- **Six load failures now speak the reader's language.** Every user-facing
+  message in the engine is bilingual — 179 of them in one file — except six,
+  which a Chinese interface reported in English. One is the out-of-memory
+  refusal, among the likeliest failures anyone meets. Found by running the
+  failures rather than reading the code.
+
+- **Bilibili links work again, and a refusal reads like one.** Chaty asked
+  Bilibili's API with a Safari user agent; a browser string without the cookies
+  a browser carries is the fingerprint they screen for, and the same endpoint
+  in the same second returned 412 six times out of six for it and 200 every
+  time for a plainly identified client. Chaty now says who it is.
+
+- **Protocol stops flashing at the head of a reply.** A model that addresses
+  each span to a recipient sends that recipient before the tag that terminates
+  it, and the hold for half-arrived markers only looked behind the last `<` —
+  so ` to=self` was rendered as answer text at the head of every turn until the
+  tag landed.
+
 ## v2.1.5 — Muse-Glimmer, on both engines (2026-08-30)
 
 ### Muse-Glimmer, end to end
