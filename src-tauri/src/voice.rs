@@ -315,7 +315,13 @@ fn stt_engine(dir: &Path, multilingual: bool) -> Result<&'static Mutex<WhisperRe
         } else {
             "en".into()
         },
-        tail_paddings: Some(300),
+        // Silence appended after the audio so a final word spoken right up to
+        // the cut is not lost. How much matters far more than it looks: swept
+        // against this model, 100-300 makes base.en degenerate — "hello world,
+        // this is a voice test" came back as "Hello" twelve times, and at 100
+        // and 200 a sentence also lost its second half — while 0 and anything
+        // from 400 up transcribe it correctly. 300 was the value that shipped.
+        tail_paddings: Some(1000),
         num_threads: Some(voice_threads()),
         ..Default::default()
     };
