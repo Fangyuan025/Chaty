@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, useLayoutEffect } from "react";
 import { applyCodeTheme } from "./lib/codeTheme";
 import { platform } from "@tauri-apps/plugin-os";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -13,6 +13,9 @@ import { ModelInfoPanel } from "./components/ModelInfoPanel";
 import { WindowControls } from "./components/WindowControls";
 import { useI18n, type Lang, type TKey, detectLang } from "./lib/i18n";
 import { clampRung, effortLabel } from "./lib/effort";
+import { watchContentHeight } from "./lib/autoGrow";
+/** Ceiling for the chat composer, matching `.input-row textarea` max-height. */
+const COMPOSER_MAX_H = 200;
 import {
   decodeAudio,
   encodeAudio,
@@ -406,6 +409,18 @@ export default function App() {
       })
       .catch(console.error);
   }, []);
+
+  /** The composer follows its content: a one-row textarea would otherwise keep
+   *  a single line's height and scroll whatever does not fit — which at a
+   *  larger UI scale is the placeholder itself, wrapped, in a box too short
+   *  for it. Re-measured on width changes too, not only on typing. */
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    const row = el?.parentElement;
+    if (!el || !row) return;
+    return watchContentHeight(el, row, COMPOSER_MAX_H);
+  }, [input]);
 
   const [showSettings, setShowSettings] = useState(false);
   const [showCmdk, setShowCmdk] = useState(false);
@@ -3499,6 +3514,7 @@ export default function App() {
                 )}
               </div>
               <textarea
+                ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={onKeyDown}

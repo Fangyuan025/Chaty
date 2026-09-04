@@ -362,10 +362,16 @@ pub fn note_frontend_ready() {
         let up = previous_uptime.unwrap_or_default().as_secs();
         crate::errlog::append_error(
             "webview-reload",
-            &format!(
-                "the interface reloaded without the app restarting (page load #{n}, \
-                 after {up}s on the previous one); anything it was running at that \
-                 moment — a code-mode run included — died with it"
+            &trf!(
+                "界面在 app 未重启的情况下自行重载(第 {} 次加载,上一个页面存活 {}s)。\
+                 聊天回复不受影响:生成由 app 持有,页面回来后会自动接上继续。\
+                 但 code 模式的运行跑在页面里,会随之中断。",
+                "the interface reloaded without the app restarting (page load #{}, \
+                 after {}s on the previous one). A chat reply is unaffected — the app \
+                 owns the generation and the page picks it back up — but a code-mode \
+                 run lives in the page and was interrupted",
+                n,
+                up
             ),
         );
     }
@@ -1254,6 +1260,18 @@ pub fn set_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), Stri
     Ok(())
 }
 
+/// Is the reply this request asks for already being generated?
+///
+/// The same turn can arrive twice: a page reload replays the request that was
+/// in flight when the page went away, so the interface issues one call and the
+/// command runs a second time for the same message.
+fn turn_already_running(state: &AppState, to: &SaveTarget) -> bool {
+    state.live.lock().ok().is_some_and(|l| {
+        l.as_ref()
+            .is_some_and(|t| t.conversation_id == to.conversation_id && t.message_id == to.message_id)
+    })
+}
+
 /// Hold a streaming reply in the app instead of in the page that asked for it.
 ///
 /// A turn can outlive its window: the webview is replaced mid-generation and
@@ -1263,18 +1281,26 @@ pub fn set_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), Stri
 /// the app, so the answer exists somewhere other than a page that may be gone.
 /// And the listener is a slot rather than a fixed channel, so a page that
 /// arrives later can take over and watch the rest of the reply arrive live.
-fn live_sink(state: &AppState, to: SaveTarget, onward: Channel<StreamEvent>) -> Channel<StreamEvent> {
+fn live_sink(
+    state: &AppState,
+    to: SaveTarget,
+    onward: Channel<StreamEvent>,
+) -> (Channel<StreamEvent>, std::sync::Arc<std::sync::Mutex<String>>, u64) {
+    static TURN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = TURN_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let listener = std::sync::Arc::new(std::sync::Mutex::new(Some(onward)));
     if let Ok(mut live) = state.live.lock() {
         *live = Some(crate::state::LiveTurn {
+            id,
             conversation_id: to.conversation_id.clone(),
             message_id: to.message_id.clone(),
             text: text.clone(),
             listener: listener.clone(),
         });
     }
-    Channel::new(move |body: tauri::ipc::InvokeResponseBody| {
+    let kept = text.clone();
+    let sink = Channel::new(move |body: tauri::ipc::InvokeResponseBody| {
         let tauri::ipc::InvokeResponseBody::Json(raw) = &body else { return Ok(()) };
         let Ok(ev) = serde_json::from_str::<StreamEvent>(raw) else { return Ok(()) };
         if let StreamEvent::Token { text: piece } = &ev {
@@ -1290,7 +1316,8 @@ fn live_sink(state: &AppState, to: SaveTarget, onward: Channel<StreamEvent>) -> 
             }
         }
         Ok(())
-    })
+    });
+    (sink, kept, id)
 }
 
 /// What a page that has just loaded needs in order to rejoin a turn already
@@ -1359,9 +1386,26 @@ pub async fn generate(
 
     // When the caller says where the reply belongs, the app holds on to it —
     // so a turn that finishes after its page is gone is not lost with it.
-    let sink = match save.clone() {
-        Some(to) => live_sink(&state, to, on_event.clone()),
-        None => on_event.clone(),
+    // The same turn can arrive twice. A page reload replays the request that
+    // was in flight when the page went away — the interface issued ONE call and
+    // this command runs a second time for the same message — and starting a
+    // second generation for one reply is not a duplicate that cancels out: two
+    // generations run at once on one model, the newcomer takes the slot with
+    // nothing in it, and the answer the user was watching is replaced by one
+    // starting over from the beginning. The turn already running IS this turn.
+    if save.as_ref().is_some_and(|to| turn_already_running(&state, to)) {
+        return Ok(());
+    }
+
+    // `mine` is this turn's own copy of the text. Reading it back out of the
+    // shared slot would be wrong: turns overlap, and one that finishes after
+    // another has started would find the newcomer's empty text there.
+    let (sink, mine, turn_id) = match save.clone() {
+        Some(to) => {
+            let (s, t, id) = live_sink(&state, to, on_event.clone());
+            (s, Some(t), Some(id))
+        }
+        None => (on_event.clone(), None, None),
     };
 
     let outcome = backend.generate(request, sink, cancel).await;
@@ -1369,13 +1413,8 @@ pub async fn generate(
     // The turn is over, however it ended. Write the reply down and let go of
     // it — a page that was replaced mid-generation finds it in the
     // conversation, complete, instead of finding nothing.
-    if let Some(to) = save {
-        let text = state
-            .live
-            .lock()
-            .ok()
-            .and_then(|l| l.as_ref().map(|t| t.text.lock().map(|s| s.clone()).unwrap_or_default()))
-            .unwrap_or_default();
+    if let (Some(to), Some(mine)) = (save, mine) {
+        let text = mine.lock().map(|t| t.clone()).unwrap_or_default();
         if !text.trim().is_empty() {
             let _ = crate::store::save_message(
                 app.state(),
@@ -1386,8 +1425,11 @@ pub async fn generate(
                 None,
             );
         }
+        // Let go of the slot only if it is still this turn's.
         if let Ok(mut l) = state.live.lock() {
-            *l = None;
+            if l.as_ref().is_some_and(|t| Some(t.id) == turn_id) {
+                *l = None;
+            }
         }
     }
 
@@ -1571,6 +1613,44 @@ mod tests {
             .expect("a send to a page that is gone must not end the turn");
     }
 
+    /// One reply, one generation — however many times the request arrives.
+    ///
+    /// The regression, caught on a live run: a page reload replays the request
+    /// that was in flight when the page went away. The interface had issued a
+    /// single call; the command ran twice for the same message. Two
+    /// generations then ran at once on one model, and the second — with
+    /// nothing in it yet — took the slot, so the page that came back attached
+    /// to the empty one and watched a reply start over from the beginning
+    /// while the real one carried on unseen.
+    #[test]
+    fn the_same_turn_arriving_twice_starts_one_generation() {
+        use super::{AppState, Channel, SaveTarget, StreamEvent};
+        let state = AppState::default();
+        let to = SaveTarget {
+            conversation_id: "c1".into(),
+            message_id: "m1".into(),
+        };
+        assert!(!super::turn_already_running(&state, &to), "nothing is running yet");
+
+        let dead: Channel<StreamEvent> = Channel::new(|_| Ok(()));
+        let (sink, _text, _id) = super::live_sink(&state, to.clone(), dead);
+        sink.send(StreamEvent::Token { text: "1\n2\n".into() }).unwrap();
+
+        // The replay: same conversation, same message.
+        assert!(
+            super::turn_already_running(&state, &to),
+            "a second call for the same reply must not start a second generation"
+        );
+        // A different reply in the same conversation is a real turn of its own.
+        assert!(
+            !super::turn_already_running(
+                &state,
+                &SaveTarget { conversation_id: "c1".into(), message_id: "m2".into() }
+            ),
+            "a different message is a different turn"
+        );
+    }
+
     /// A turn belongs to the app, not to the page that asked for it.
     ///
     /// The regression: the webview can be replaced mid-generation. Every send
@@ -1587,7 +1667,7 @@ mod tests {
 
         // The page that asked is already gone: every forward fails.
         let dead: Channel<StreamEvent> = Channel::new(|_| Err(tauri::Error::WebviewNotFound));
-        let sink = super::live_sink(
+        let (sink, _text, _id) = super::live_sink(
             &state,
             SaveTarget {
                 conversation_id: "c1".into(),

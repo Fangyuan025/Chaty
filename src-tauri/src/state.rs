@@ -29,6 +29,10 @@ pub struct AppState {
 
 /// A generation in progress, held by the app rather than by a page.
 pub struct LiveTurn {
+    /// Which turn this is. A turn must only ever read and clear its OWN entry:
+    /// turns overlap, and one that finishes after another has started would
+    /// otherwise read the newcomer's (empty) text and then wipe its slot.
+    pub id: u64,
     /// Where the reply belongs, so it can be written down and found again.
     pub conversation_id: String,
     pub message_id: String,

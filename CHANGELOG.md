@@ -2,6 +2,48 @@
 
 ## v2.1.6 — A click that lands, and a session that stops dying quietly (2026-09-03)
 
+### A reply that outlives its window
+
+- **A generation is no longer bound to the page that asked for it.** The
+  interface can be replaced under a running turn — the webview reloads and
+  takes the JS context with it — and three separate things made that fatal.
+  The llama.cpp sink returned the failure from sending to a listener that had
+  gone away, so the first token after the page disappeared ended the turn. The
+  reply existed nowhere else, since tokens accumulated in that page's memory
+  and reached the conversation only when the turn finished. And there was no
+  way back into a turn already running. Now the app holds the turn: nobody
+  listening is not a reason to stop, the text is written to the conversation
+  when the turn ends however it ends, and a page that comes up asks whether one
+  is in flight — if it is, the conversation opens on its own, everything
+  generated before that page arrived is already there, and the rest streams in
+  as it is produced.
+
+- **One reply, one generation.** A reload replays the request that was in
+  flight, so the interface issued a single call and the command ran twice for
+  the same message. Two generations then ran at once on one model, and the
+  second — with nothing in it yet — took the slot, so the page that came back
+  attached to the empty one and watched a reply start over from the beginning
+  while the real one carried on unseen.
+
+- **The log says what a reload actually costs.** It claimed everything in
+  flight died with the page. A chat reply no longer does; a code-mode run,
+  which lives in the page, still does.
+
+### Around the interface
+
+- **The composer stops losing a line to a scrollbar.** At a UI scale that lands
+  on a fractional device pixel ratio — 110% and 120% — sub-pixel rounding left
+  the text about a pixel wider than its box, and the horizontal scrollbar that
+  appeared for it ate fifteen pixels of HEIGHT. Measured in the app: at 100%
+  the content box is the full 39px, at 110% it is 24px, which is the placeholder
+  clipped under a grey bar. A textarea wraps, so there was never anything to
+  scroll sideways. The composer also follows its content now, growing to fit a
+  wrapped line instead of scrolling it.
+
+- **The error log can be emptied** from Settings, next to the button that opens
+  it — with the same confirmation any destructive action gets. Once a report has
+  been sent, everything before it is noise in front of the next real entry.
+
 ### The agent's browser
 
 - **A click reports success only if the element it named got it.** A control

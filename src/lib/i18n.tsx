@@ -879,6 +879,12 @@ export const T = {
     en: "App errors are recorded to chaty-error.log automatically. Please attach it when filing an issue — it speeds up diagnosis a lot.", pt: "Os erros da aplicação são registrados no chaty-error.log automaticamente. Anexe-o quando for abrir uma issue — acelera bastante o diagnóstico."
   },
   errorLogOpen: { zh: "打开错误日志", en: "Open error log", pt: "Abrir log de erro" },
+  errorLogClear: { zh: "清空日志", en: "Clear log", pt: "Limpar log" },
+  confirmClearErrorLog: {
+    zh: "清空错误日志?已记录的报错会全部删除,之后新的报错仍会照常记录。",
+    en: "Clear the error log? Everything recorded so far is deleted; new errors are still recorded afterwards.",
+    pt: "Limpar o log de erro? Tudo o que foi registrado até agora será apagado; novos erros continuarão sendo registrados."
+  },
   conversionSuspect: {
     zh: "该模型家族与当前内置引擎的兼容性存在已知问题(转换元数据或引擎版本尚未跟上),回复可能退化为空白或乱码。macOS 上请改用该模型的 MLX 版本(运行正常);GGUF 需等待后续版本升级引擎。",
     en: "This model family has known compatibility issues with the bundled engine (conversion metadata or engine version lag) — replies may degenerate into blanks or noise. On macOS use the model's MLX build (works well); GGUF support awaits an engine upgrade.", pt: "Esta família de modelos tem problemas de compatibilidade conhecidos com o motor (falha de conversão ou atraso na versão) — as respostas podem degenerar em ruído ou vazio. No macOS, prefira o modelo MLX (funciona bem); o suporte GGUF requer atualização do motor."

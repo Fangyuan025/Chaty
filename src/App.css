@@ -2030,6 +2030,21 @@ body.resizing-x {
 .field-row .data-btn {
   flex: none;
 }
+/* Error log: "open" and "clear" act on the same file, so they stack in one
+   row rather than taking a row each. The row grows to fit them. */
+.log-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.log-actions .lang-switch,
+.log-actions .data-btn {
+  width: 100%;
+}
+.log-actions .data-btn {
+  justify-content: center;
+}
 /* Little palette swatch inside scheme segment buttons. */
 .scheme-dot {
   display: inline-block;
@@ -3682,6 +3697,17 @@ a:focus-visible,
   font: inherit;
   font-size: 15px;
   line-height: 1.5;
+  /* A flex item will not shrink below its own content unless told to: the
+     default `min-width: auto` lets the placeholder's intrinsic width set a
+     floor, so the box refuses to narrow and pushes the buttons out of the row. */
+  min-width: 0;
+  /* A textarea wraps, so there is never anything to scroll sideways — but at a
+     UI scale that lands on a fractional device pixel ratio (110% and 120% here)
+     sub-pixel rounding leaves the content about a pixel wider than its box, and
+     the horizontal scrollbar that appears for it eats fifteen pixels of HEIGHT.
+     Measured in the app: at 100% the content box is the full 39px, at 110% it
+     is 24px — a line and a half of text, clipped, under a grey bar. */
+  overflow-x: hidden;
   color: var(--text);
   background: transparent;
   border: none;
@@ -5765,6 +5791,8 @@ button.tool-parent {
   font: inherit;
   font-size: 15px;
   line-height: 1.5;
+  min-width: 0; /* shrink with the row — see `.input-row textarea` */
+  overflow-x: hidden; /* no sideways scrollbar stealing height — same reason */
   color: var(--text);
   background: transparent;
   border: none;

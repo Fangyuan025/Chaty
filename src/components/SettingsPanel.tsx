@@ -14,6 +14,7 @@ import {
   ragClearAll,
   openModelsDir,
   openErrorLog,
+  clearErrorLog,
   openExternal,
   synthesize,
   type UpdateInfo,
@@ -720,9 +721,32 @@ export function SettingsPanel({
                 <Switch on={value.reduceMotion} onToggle={() => set("reduceMotion", !value.reduceMotion)} />
               </SetRow>
               <SetRow label={t("errorLog")} hint={t("errorLogHint")}>
-                <div className="lang-switch">
-                  <button type="button" onClick={() => { void openErrorLog().catch(() => {}); }}>
-                    {t("errorLogOpen")}
+                {/* Open and clear sit one above the other: they act on the same
+                    file, so a row each would read as two unrelated settings. */}
+                <div className="log-actions">
+                  <div className="lang-switch">
+                    <button type="button" onClick={() => { void openErrorLog().catch(() => {}); }}>
+                      {t("errorLogOpen")}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="data-btn danger"
+                    onClick={async () => {
+                      if (
+                        !(await confirm({
+                          message: t("confirmClearErrorLog"),
+                          title: t("errorLogClear"),
+                          confirmLabel: t("errorLogClear"),
+                          danger: true,
+                        }))
+                      ) {
+                        return;
+                      }
+                      void clearErrorLog().catch(console.error);
+                    }}
+                  >
+                    {t("errorLogClear")}
                   </button>
                 </div>
               </SetRow>

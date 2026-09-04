@@ -178,6 +178,23 @@ pub fn open_error_log() -> Result<(), String> {
     crate::commands::open_default(&path.to_string_lossy())
 }
 
+/// Empty the log, keeping the file so the next write and the next open both
+/// still work. Offered next to "open" because the log is the one place a user
+/// is asked to look at and hand over: once a report has been sent, or once an
+/// old problem is fixed, everything before this point is noise that makes the
+/// next real entry harder to find.
+#[tauri::command]
+pub fn clear_error_log() -> Result<(), String> {
+    let path = error_log_path();
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::write(&path, b"")
+        .map_err(|e| trf!("清空日志失败:{}", "could not clear the log: {}", e))?;
+    append_error("info", "log cleared");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

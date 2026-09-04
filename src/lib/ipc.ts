@@ -1215,6 +1215,10 @@ export async function logAppError(kind: string, detail: string): Promise<void> {
   await invoke("log_app_error", { kind, detail });
 }
 /** Open logs/chaty-error.log in the OS default viewer. */
+export async function clearErrorLog(): Promise<void> {
+  await invoke("clear_error_log");
+}
+
 export async function openErrorLog(): Promise<void> {
   await invoke("open_error_log");
 }

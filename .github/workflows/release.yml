@@ -251,6 +251,28 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
+            ## A reply that outlives its window
+
+            The interface can be replaced under a running turn — the webview
+            reloads and takes the JS context with it — and until now the reply
+            went with it. Three things made that certain. The llama.cpp sink
+            returned the failure from sending to a listener that had gone away,
+            so the first token after the page disappeared ended the turn. The
+            reply existed nowhere else, because tokens accumulated in that
+            page's memory and reached the conversation only at the end. And
+            there was no way back into a turn already running.
+
+            The app holds the turn now. Nobody listening is not a reason to
+            stop generating. The text is written to the conversation when the
+            turn ends, however it ends. And a page that comes up asks whether
+            one is in flight: if it is, that conversation opens on its own,
+            everything generated before this page existed is already in it, and
+            the rest arrives as it is produced. A reload also used to replay the
+            request that was in flight, starting a SECOND generation for the
+            same reply — two at once on one model, the newcomer empty and
+            holding the slot, so the page came back to a reply starting over
+            from the beginning while the real one carried on unseen.
+
             ## A click that lands
 
             Driving a real lesson on a real site, question after question,

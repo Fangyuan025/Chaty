@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { agentLang, useI18n } from "../lib/i18n";
+import { watchContentHeight } from "../lib/autoGrow";
+/** Matches `.cm-input` max-height. */
+const CM_COMPOSER_MAX_H = 200;
 import { effortLabel, intensityOf, thinkTabActive } from "../lib/effort";
 import { diffLines } from "../lib/diff";
 import { useConfirm } from "./ConfirmModal";
@@ -568,6 +571,16 @@ export function CodeMode({
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<CodeMsg[]>([]);
   const [input, setInput] = useState("");
+  /** The composer follows its content — see `watchContentHeight`. Without it a
+   *  one-row textarea keeps a single line's height and scrolls the rest, which
+   *  at a larger UI scale is the placeholder itself. */
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    const row = el?.parentElement;
+    if (!el || !row) return;
+    return watchContentHeight(el, row, CM_COMPOSER_MAX_H);
+  }, [input]);
   // Files the user attached to the next Code turn — same as chat: documents
   // (PDF/Word/Excel/text/code, extracted to text), and images (vision models
   // see the pixels; text-only models get OCR text).
@@ -1875,6 +1888,7 @@ export function CodeMode({
               </div>
             )}
             <textarea
+              ref={inputRef}
               className="cm-input"
               placeholder={
                 !model
