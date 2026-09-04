@@ -42,6 +42,7 @@ import { thinkPart as turnReasoning, stripThink as turnAnswer } from "./lib/agen
 import { copyToClipboard } from "./lib/clipboard";
 import {
   cancelGeneration,
+  attachGeneration,
   checkUpdate,
   deleteConversation,
   fetchUrl,
@@ -354,6 +355,58 @@ export default function App() {
       window.removeEventListener("unhandledrejection", onRej);
     };
   }, []);
+  // A turn that was still generating when this page loaded.
+  //
+  // The webview can be replaced under a running turn — it happens, and the
+  // page it takes with it holds the only copy of the answer. The app keeps
+  // generating regardless, so a page that comes up asks whether there is a
+  // turn in flight; if there is, it opens that conversation, shows everything
+  // generated before it arrived, and receives the rest as it is produced.
+  // Nothing to rejoin is the normal answer and costs one call.
+  useEffect(() => {
+    let live: { conversationId: string; messageId: string } | null = null;
+    let acc = "";
+    void attachGeneration((ev) => {
+      if (!live) return;
+      if (ev.type === "token") {
+        acc += ev.text;
+        setMessages((cur) =>
+          cur.map((m) => (m.id === live!.messageId ? { ...m, content: acc } : m)),
+        );
+      } else if (ev.type === "done" || ev.type === "error") {
+        if (ev.type === "error") acc += `\n\n**${ev.message}**`;
+        setMessages((cur) =>
+          cur.map((m) => (m.id === live!.messageId ? { ...m, content: acc } : m)),
+        );
+        setBusy(false);
+        setStreamingId(null);
+        void refreshConversations().catch(console.error);
+      }
+    })
+      .then(async (turn) => {
+        if (!turn) return;
+        live = { conversationId: turn.conversationId, messageId: turn.messageId };
+        acc = turn.text;
+        const stored = await getMessages(turn.conversationId).catch(() => []);
+        const rows = stored.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          images: m.images,
+        }));
+        // The reply is still being written, so it is not in the conversation
+        // yet — put the bubble back where it was.
+        if (!rows.some((m) => m.id === turn.messageId)) {
+          rows.push({ id: turn.messageId, role: "assistant", content: turn.text, images: undefined });
+        }
+        setMessages(rows);
+        setConversationId(turn.conversationId);
+        setStreamingId(turn.messageId);
+        setBusy(true);
+      })
+      .catch(console.error);
+  }, []);
+
   const [showSettings, setShowSettings] = useState(false);
   const [showCmdk, setShowCmdk] = useState(false);
   const [canvasOpen, setCanvasOpen] = useState(false);
@@ -2089,6 +2142,9 @@ export default function App() {
             renderMsg();
           }
         },
+        // The app owns this turn: it keeps generating if this page goes away,
+        // and hands the rest to whichever page comes back.
+        { conversationId: convId, messageId: asstId },
       );
     } catch (e) {
       console.error(e);

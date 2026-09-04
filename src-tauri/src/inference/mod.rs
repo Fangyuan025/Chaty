@@ -102,8 +102,16 @@ pub struct GenRequest {
     pub params: GenParams,
 }
 
+/// The conversation and message a streaming reply belongs to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveTarget {
+    pub conversation_id: String,
+    pub message_id: String,
+}
+
 /// Streaming protocol pushed to the frontend over a Tauri `Channel`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum StreamEvent {
     /// Generation accepted; prompt is being processed.
@@ -120,7 +128,7 @@ pub enum StreamEvent {
     Error { message: String },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenStats {
     pub prompt_tokens: u32,

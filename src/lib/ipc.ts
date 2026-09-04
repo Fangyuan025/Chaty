@@ -37,6 +37,10 @@ export interface GenParams {
 export interface GenRequest {
   messages: ChatMessage[];
   params?: Partial<GenParams>;
+  /** Where the finished reply belongs. Given this, the app keeps the reply
+   *  itself: a turn outlives the page that asked for it, and one that ends
+   *  after the webview was replaced is written down rather than lost. */
+  save?: { conversationId: string; messageId: string };
 }
 
 export interface ModelInfo {
@@ -737,10 +741,36 @@ export async function setTrayLanguage(lang: string): Promise<void> {
 export async function generate(
   request: GenRequest,
   onEvent: (event: StreamEvent) => void,
+  /** Where the reply belongs. With it, the app owns the turn: generation is
+   *  not stopped by this page going away, and a page that comes back can pick
+   *  the stream up where it left off. */
+  save?: { conversationId: string; messageId: string },
 ): Promise<void> {
   const channel = new Channel<StreamEvent>();
   channel.onmessage = onEvent;
-  await invoke("generate", { request, onEvent: channel });
+  await invoke("generate", { request, save: save ?? null, onEvent: channel });
+}
+
+/** A turn that was still generating when this page loaded. */
+export interface LiveTurnInfo {
+  conversationId: string;
+  messageId: string;
+  /** Everything generated before this page arrived. */
+  text: string;
+}
+
+/** Take over an in-flight turn, if there is one.
+ *
+ *  Called once as the interface comes up. Normally there is nothing and this
+ *  answers null. After the webview was replaced mid-generation there is: the
+ *  app kept generating, and this hands over the text so far and makes this
+ *  page the listener for the rest. */
+export async function attachGeneration(
+  onEvent: (event: StreamEvent) => void,
+): Promise<LiveTurnInfo | null> {
+  const channel = new Channel<StreamEvent>();
+  channel.onmessage = onEvent;
+  return (await invoke("attach_generation", { onEvent: channel })) as LiveTurnInfo | null;
 }
 
 /** Request the in-flight generation to stop early. */

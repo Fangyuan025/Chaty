@@ -12,7 +12,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::{Manager, State};
 
 use crate::inference::llama::LlamaEngine;
-use crate::inference::{GenRequest, InferenceBackend, ModelInfo, StreamEvent};
+use crate::inference::{GenRequest, InferenceBackend, ModelInfo, SaveTarget, StreamEvent};
 use crate::state::AppState;
 
 /// Phase + fraction streamed to the UI while a model loads.
@@ -323,11 +323,23 @@ fn reload_is_notable(previous_page_uptime: Option<std::time::Duration>) -> bool 
 /// The frontend reporting that it has just booted.
 ///
 /// Called once per page load. A call that REPLACES a page which had been up a
-/// while means the webview reloaded underneath us — WebKit kills a renderer
-/// that grows too large and brings it back empty — and whatever the interface
+/// while means the webview reloaded underneath us, and whatever the interface
 /// was running died with the JS context, silently, because there is no JS left
 /// to notice. That is the only evidence such a thing happened, so it goes in
 /// the error log where a report can quote it.
+///
+/// What causes it is not settled. One occurrence was traced through the system
+/// log: the Mac was locked, the system was trying to suspend the web process,
+/// and a streaming reply — one JavaScript evaluation per token — took a
+/// foreground assertion each time and cancelled the suspension, around thirty
+/// times in the four seconds before the page was replaced. The replacement
+/// itself came from the native side (`WebPageProxy::reload`, a new web process
+/// launched for it) and NOT from the renderer dying: the old one exited
+/// eighteen milliseconds AFTER the reload, as its consequence. It was not the
+/// page's own JavaScript either — the reload this app issues at startup shows
+/// a different signature entirely, keeping the same process. Whatever issues
+/// it, the loss is real and worth recording; guessing at the cause in this
+/// message is not.
 ///
 /// The reloads Chaty causes itself at startup are not that, and logging them
 /// buried the signal under two false entries per launch.
@@ -1242,11 +1254,95 @@ pub fn set_tray_language(app: tauri::AppHandle, lang: String) -> Result<(), Stri
     Ok(())
 }
 
+/// Hold a streaming reply in the app instead of in the page that asked for it.
+///
+/// A turn can outlive its window: the webview is replaced mid-generation and
+/// every send after that goes nowhere. Three things follow, and this handles
+/// all three. The send failure is dropped rather than returned, so generation
+/// is never stopped by the absence of a listener. The text is accumulated in
+/// the app, so the answer exists somewhere other than a page that may be gone.
+/// And the listener is a slot rather than a fixed channel, so a page that
+/// arrives later can take over and watch the rest of the reply arrive live.
+fn live_sink(state: &AppState, to: SaveTarget, onward: Channel<StreamEvent>) -> Channel<StreamEvent> {
+    let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let listener = std::sync::Arc::new(std::sync::Mutex::new(Some(onward)));
+    if let Ok(mut live) = state.live.lock() {
+        *live = Some(crate::state::LiveTurn {
+            conversation_id: to.conversation_id.clone(),
+            message_id: to.message_id.clone(),
+            text: text.clone(),
+            listener: listener.clone(),
+        });
+    }
+    Channel::new(move |body: tauri::ipc::InvokeResponseBody| {
+        let tauri::ipc::InvokeResponseBody::Json(raw) = &body else { return Ok(()) };
+        let Ok(ev) = serde_json::from_str::<StreamEvent>(raw) else { return Ok(()) };
+        if let StreamEvent::Token { text: piece } = &ev {
+            if let Ok(mut acc) = text.lock() {
+                acc.push_str(piece);
+            }
+        }
+        // Onward to whoever is listening now. Nobody may be, and that is not
+        // this function's problem.
+        if let Ok(l) = listener.lock() {
+            if let Some(ch) = l.as_ref() {
+                let _ = ch.send(ev);
+            }
+        }
+        Ok(())
+    })
+}
+
+/// What a page that has just loaded needs in order to rejoin a turn already
+/// in flight: where it belongs, and everything generated so far.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveTurnInfo {
+    pub conversation_id: String,
+    pub message_id: String,
+    /// The reply as it stands. The page renders this, then receives the rest.
+    pub text: String,
+}
+
+/// Take over receiving an in-flight turn.
+///
+/// Called by every page as it comes up. Normally there is nothing in flight
+/// and this answers `None`. After the webview was replaced mid-generation
+/// there is: the app kept generating, and the new page is handed the text so
+/// far and becomes the listener for the rest — so the answer keeps streaming
+/// into the conversation it belongs to instead of the user losing it.
+#[tauri::command]
+pub fn attach_generation(
+    state: State<'_, AppState>,
+    on_event: Channel<StreamEvent>,
+) -> Option<LiveTurnInfo> {
+    attach_to_live(&state, on_event)
+}
+
+/// The body of [`attach_generation`], reachable without a Tauri app.
+fn attach_to_live(state: &AppState, on_event: Channel<StreamEvent>) -> Option<LiveTurnInfo> {
+    let live = state.live.lock().ok()?;
+    let turn = live.as_ref()?;
+    let text = turn.text.lock().map(|t| t.clone()).unwrap_or_default();
+    if let Ok(mut l) = turn.listener.lock() {
+        *l = Some(on_event);
+    }
+    Some(LiveTurnInfo {
+        conversation_id: turn.conversation_id.clone(),
+        message_id: turn.message_id.clone(),
+        text,
+    })
+}
+
 /// Stream a completion. Tokens arrive on `on_event` as [`StreamEvent`]s.
 #[tauri::command]
 pub async fn generate(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     request: GenRequest,
+    // `save` says where the reply belongs. Given it, the app owns the turn: it
+    // survives the page, and a page that comes back picks the stream up again.
+    save: Option<SaveTarget>,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
     let Some(backend) = state.backend().await else {
@@ -1261,9 +1357,41 @@ pub async fn generate(
     state.cancel.store(false, Ordering::SeqCst);
     let cancel = state.cancel.clone();
 
-    backend
-        .generate(request, on_event.clone(), cancel)
-        .await
+    // When the caller says where the reply belongs, the app holds on to it —
+    // so a turn that finishes after its page is gone is not lost with it.
+    let sink = match save.clone() {
+        Some(to) => live_sink(&state, to, on_event.clone()),
+        None => on_event.clone(),
+    };
+
+    let outcome = backend.generate(request, sink, cancel).await;
+
+    // The turn is over, however it ended. Write the reply down and let go of
+    // it — a page that was replaced mid-generation finds it in the
+    // conversation, complete, instead of finding nothing.
+    if let Some(to) = save {
+        let text = state
+            .live
+            .lock()
+            .ok()
+            .and_then(|l| l.as_ref().map(|t| t.text.lock().map(|s| s.clone()).unwrap_or_default()))
+            .unwrap_or_default();
+        if !text.trim().is_empty() {
+            let _ = crate::store::save_message(
+                app.state(),
+                to.message_id,
+                to.conversation_id,
+                "assistant".into(),
+                text,
+                None,
+            );
+        }
+        if let Ok(mut l) = state.live.lock() {
+            *l = None;
+        }
+    }
+
+    outcome
         .map_err(|e| {
             let msg = format!("{e:#}");
             let _ = on_event.send(StreamEvent::Error {
@@ -1429,6 +1557,81 @@ mod tests {
     /// must not be reported: it lands in the same second the process starts,
     /// and reporting it put two false entries in the log on every launch —
     /// which is exactly the noise that makes a real one unreadable.
+    /// Nobody listening is not a reason to stop generating.
+    ///
+    /// The llama.cpp sink returned the send failure, so the first token after
+    /// the page went away ended the turn. A reply the user was waiting for
+    /// died because the window it was headed for had been replaced.
+    #[test]
+    fn a_dead_listener_does_not_stop_generation() {
+        use crate::inference::llama::EventSink;
+        use super::{Channel, StreamEvent};
+        let dead: Channel<StreamEvent> = Channel::new(|_| Err(tauri::Error::WebviewNotFound));
+        dead.emit(StreamEvent::Token { text: "x".into() })
+            .expect("a send to a page that is gone must not end the turn");
+    }
+
+    /// A turn belongs to the app, not to the page that asked for it.
+    ///
+    /// The regression: the webview can be replaced mid-generation. Every send
+    /// after that fails; the first failure used to abort the turn, and the
+    /// answer — minutes of it — existed nowhere but the page that had just
+    /// been thrown away. Now generation carries on with nobody listening, and
+    /// the page that comes up next is handed what it missed and receives the
+    /// rest live.
+    #[test]
+    fn a_turn_survives_its_page_and_is_handed_to_the_next_one() {
+        use super::{AppState, Channel, SaveTarget, StreamEvent};
+        use std::sync::{Arc, Mutex};
+        let state = AppState::default();
+
+        // The page that asked is already gone: every forward fails.
+        let dead: Channel<StreamEvent> = Channel::new(|_| Err(tauri::Error::WebviewNotFound));
+        let sink = super::live_sink(
+            &state,
+            SaveTarget {
+                conversation_id: "c1".into(),
+                message_id: "m1".into(),
+            },
+            dead,
+        );
+
+        for piece in ["海边", "的"] {
+            sink.send(StreamEvent::Token { text: piece.into() })
+                .expect("a listener that has gone away must not fail the send");
+        }
+
+        // A new page comes up and takes over.
+        let heard: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let ear = heard.clone();
+        let fresh: Channel<StreamEvent> = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(raw) = body {
+                if let Ok(StreamEvent::Token { text }) = serde_json::from_str::<StreamEvent>(&raw) {
+                    ear.lock().unwrap().push_str(&text);
+                }
+            }
+            Ok(())
+        });
+        let info = super::attach_to_live(&state, fresh).expect("a turn was in flight");
+        assert_eq!(info.conversation_id, "c1");
+        assert_eq!(info.message_id, "m1");
+        assert_eq!(info.text, "海边的", "handed everything generated before it arrived");
+
+        // ...and receives the rest as it is produced.
+        sink.send(StreamEvent::Token { text: "清晨".into() }).unwrap();
+        assert_eq!(&*heard.lock().unwrap(), "清晨", "the rest streams to the new page");
+
+        // The whole reply is there to be written down when the turn ends.
+        let all = state
+            .live
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|t| t.text.lock().unwrap().clone())
+            .unwrap_or_default();
+        assert_eq!(all, "海边的清晨");
+    }
+
     #[test]
     fn a_reload_is_reported_only_when_it_replaced_a_live_page() {
         // First load of the process — nothing was replaced.

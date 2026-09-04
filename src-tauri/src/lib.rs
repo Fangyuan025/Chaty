@@ -320,6 +320,7 @@ pub fn run() {
             commands::get_hardware_info,
             commands::get_gpu_usage,
             commands::note_frontend_ready,
+            commands::attach_generation,
             commands::get_gpu_layer_cap,
             commands::reset_gpu_layer_cap,
             commands::write_text_file,

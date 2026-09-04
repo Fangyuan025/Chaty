@@ -973,7 +973,14 @@ pub trait EventSink {
 }
 impl EventSink for Channel<StreamEvent> {
     fn emit(&self, ev: StreamEvent) -> Result<()> {
-        self.send(ev)?;
+        // A listener that has gone away is NOT a reason to stop generating.
+        // The page can be replaced under a running turn — the webview reloads
+        // and takes the JS context with it — and every send after that fails.
+        // Propagating the first one aborted the turn, so a long answer minutes
+        // in died because nobody was listening any more. The work continues;
+        // where the text ends up is the caller's business, not the sink's.
+        // (The MLX backend already drops send failures this way.)
+        let _ = self.send(ev);
         Ok(())
     }
 }
