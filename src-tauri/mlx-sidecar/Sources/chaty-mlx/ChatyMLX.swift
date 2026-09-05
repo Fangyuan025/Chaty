@@ -889,6 +889,8 @@ func inspectModelDir(_ dir: URL) -> ModelMeta {
 
 final class Engine: @unchecked Sendable {
     var container: ModelContainer?
+    /// The checkpoint's multi-token-prediction head, when it ships one.
+    var mtp: MTPSetup?
     var meta = ModelMeta()
     var modelDir: URL?
     var nCtxCap = 0
@@ -1014,6 +1016,21 @@ final class Engine: @unchecked Sendable {
                 container = try await withError { try await loadText() }
             }
             self.container = container
+            // A checkpoint that ships a multi-token-prediction head gets one
+            // loaded now; everything else carries on exactly as before. A head
+            // that cannot be loaded costs the speedup, never the model.
+            let (mtp, mtpNote) = MTPSetup.discover(directory: dir)
+            self.mtp = mtp
+            if let mtpNote {
+                FileHandle.standardError.write(Data(("chaty-mlx: " + mtpNote + "\n").utf8))
+            } else if let mtp {
+                FileHandle.standardError.write(
+                    Data(
+                        ("chaty-mlx: MTP head loaded ("
+                            + (mtp.tuner == nil
+                                ? "depth \(mtp.depth), pinned" : "depth chosen by measurement")
+                            + ")\n").utf8))
+            }
             // Ask the loaded template itself, rather than guessing from a name.
             let shape = await container.perform { ctx in probeHistoryShape(ctx.tokenizer) }
             meta.toolRole = shape.toolRole
@@ -1903,9 +1920,211 @@ final class Engine: @unchecked Sendable {
         var reason = "eos"
         let maxTokens = gp.maxTokens ?? Int.max
 
+        // ---- multi-token prediction -------------------------------------
+        // The head guesses a run of tokens; the trunk checks the whole run in
+        // ONE forward pass. Every token that survives is one the trunk itself
+        // chose — the first guess it disagrees with ends the run, and the
+        // trunk's own choice at that position is kept. What comes out is what
+        // plain decoding would have produced; only the number of forward
+        // passes changes, and on this hardware that is what costs time.
+        let speculation = self.mtp
+        let hiddenSource = context.model as? HiddenStateProviding
+        var mtpCache: [KVCache] = speculation?.head.newCache() ?? []
+        let mtpStats = ProcessInfo.processInfo.environment["CHATY_MLX_MTP_STATS"] == "1"
+        var mtpRounds = 0
+        var mtpAccepted = 0
+        var mtpHits: [Int] = []
+        var mtpTries: [Int] = []
+        // Both of these end at a read-back, which synchronises — so wall time
+        // around them is the real cost, with nothing extra forced.
+        var tDraft = 0.0, tVerify = 0.0, redos = 0
+        /// Tokens already settled by a verified run, waiting their turn.
+        var settled: [Int] = []
+        /// The trunk's hidden state for the last position it consumed — the
+        /// head's starting point for its first guess.
+        var trunkHidden: MLXArray? = nil
+        var draftSampler: LogitSampler? = nil
+        if let speculation, hiddenSource != nil {
+            var dp = GenerateParameters(
+                temperature: speculation.sampler.temperature,
+                topP: speculation.sampler.topP)
+            dp.topK = speculation.sampler.topK
+            draftSampler = dp.sampler()
+        }
+
+        /// One trunk pass over `toks`, keeping the hidden states.
+        func trunkEval(_ toks: [Int]) -> (logits: MLXArray, hidden: MLXArray)? {
+            guard let hiddenSource else { return nil }
+            let t = LMInput.Text(tokens: MLXArray(toks.map(Int32.init)))
+            let (out, h) = withPreparedCache(cache, lengths: t.sequenceLengths) {
+                hiddenSource.hiddenStates(t[text: .newAxis], cache: cache, state: state)
+            }
+            state = out.state
+            return (out.logits, h)
+        }
+
+        /// Sample from a hidden state the head produced, leaving the answer
+        /// on the GPU so the next guess can be fed from it directly.
+        func draftFrom(_ h: MLXArray) -> MLXArray? {
+            guard let hiddenSource, let draftSampler else { return nil }
+            let l = hiddenSource.logits(fromHidden: h)[0..., -1, 0...]
+            return draftSampler.sample(logits: l)
+        }
+
+        /// Refill `settled` by drafting `depth` tokens and having the trunk
+        /// check them. `tok` is the token the trunk has NOT consumed yet.
+        func speculate(from tok: Int, depth: Int) -> Bool {
+            guard let speculation, let hiddenSource, let h0 = trunkHidden else { return false }
+
+            // `mtp_position_mode: local`: the head's positions belong to the
+            // draft window, not to the conversation. Its cache starts empty
+            // every round, so guess two is at position one however many
+            // thousand tokens the trunk is into the answer.
+            // Guess forward from the token about to be consumed.
+            // The guesses chain on the GPU: each one is fed straight back in
+            // as an embedding without ever coming back to the CPU. Reading a
+            // token id costs a synchronisation, and three of those per round
+            // is most of what a round wins.
+            let tD0 = Date()
+            var draftIds: [MLXArray] = []
+            var h = h0
+            var previous = MLXArray([Int32(tok)])
+            for _ in 0 ..< depth {
+                let e = hiddenSource.embed(previous)[.newAxis]
+                h = speculation.head(embedding: e, hidden: h, cache: mtpCache.first)
+                guard let next = draftFrom(h) else { return false }
+                draftIds.append(next)
+                previous = next
+            }
+            let drafts = concatenated(draftIds).asArray(Int32.self).map(Int.init)
+            if mtpStats { tDraft += Date().timeIntervalSince(tD0) }
+
+            // One pass over the token AND every guess: the trunk's answer at
+            // each position is the token that really follows it. Leaving the
+            // last guess out of the batch makes it unverifiable — it can never
+            // be accepted, so a depth of three would only ever pay for two.
+            let checked = [tok] + drafts
+
+            // This trunk is a hybrid: three layers in four keep a RECURRENT
+            // state, and a recurrent state cannot be rewound — `trim` on those
+            // caches does nothing and says so. Letting them read guesses that
+            // are then rejected leaves them having absorbed tokens the answer
+            // never contained, permanently, and the reply degenerates into
+            // repetition within a few rounds. The recurrent state is small and
+            // fixed-size, so it is copied before anything speculative is read
+            // and put back when a run is cut short; the attention caches are
+            // large and rewindable, so they are trimmed instead of copied.
+            let rewindable = cache.filter { $0.isTrimmable }
+            let recurrent = cache.filter { !$0.isTrimmable }
+            let snapshot = recurrent.map { $0.copy() }
+            // The rope state advances with the batch too, and rewinding the
+            // caches without it leaves the next pass computing positions for
+            // tokens that were thrown away.
+            let savedState = state
+
+            let tV0 = Date()
+            guard let (logits, hidden) = trunkEval(checked) else { return false }
+
+            // Verification draws from the trunk with the SAME sampler plain
+            // decoding would have used. Reading the trunk's most likely token
+            // instead is the tempting shortcut and it is wrong: the reply is
+            // then greedy whatever temperature was asked for, so turning the
+            // head on would quietly change the answer rather than just hasten
+            // it. What makes the run lossless is that every emitted token is a
+            // fresh draw from the trunk's own distribution — whether it
+            // happened to match the guess only decides how far the run gets.
+            //
+            // A penalty, when there is one, is applied to the guesses on a
+            // COPY: its state must follow the tokens that are actually kept,
+            // and rounds throw guesses away. The copy is right for every
+            // position up to the first disagreement — the only positions whose
+            // answers are used — because up to there the guesses and the draws
+            // are the same tokens. The real processor is advanced below, over
+            // what survives.
+            //
+            // Reading position by position would cost a GPU synchronisation
+            // each time, and a round that synchronises seven times cannot beat
+            // plain decoding that synchronises once however many tokens it
+            // wins — so the draws are built as one graph and read back once.
+            let drawn: MLXArray
+            if var penalties = processor {
+                var perPosition: [MLXArray] = []
+                for i in 0 ..< checked.count {
+                    let l = penalties.process(logits: logits[0..., i, 0...])
+                    let y = sampler.sample(logits: l)
+                    penalties.didSample(token: y)
+                    perPosition.append(y)
+                }
+                drawn = concatenated(perPosition)
+            } else {
+                drawn = sampler.sample(logits: logits[0])
+            }
+            let truths = drawn.asArray(Int32.self)
+            if mtpStats { tVerify += Date().timeIntervalSince(tV0) }
+
+            var accepted: [Int] = []
+            var kept = 1  // the token itself is always consumed
+            for i in 0 ..< checked.count {
+                let truth = Int(truths[i])
+                accepted.append(truth)
+                if i >= drafts.count { break }  // the bonus token, nothing to check
+                if truth != drafts[i] { break }  // the run ends here
+                kept += 1
+            }
+            for t in accepted { processor?.didSample(token: MLXArray(Int32(t))) }
+
+            // Everything the trunk read past the accepted run never happened.
+            // The trunk consumed `checked.count` positions and keeps `kept`;
+            // the head consumed one position per guess and keeps the guesses
+            // that survived, which is one fewer than the trunk's count.
+            if mtpStats {
+                mtpRounds += 1
+                for i in 0 ..< min(drafts.count, accepted.count) where i < accepted.count {
+                    if i >= mtpHits.count { mtpHits.append(0); mtpTries.append(0) }
+                    if i < kept - 1 { mtpHits[i] += 1 }
+                    if i <= kept - 1 { mtpTries[i] += 1 }
+                }
+                mtpAccepted += accepted.count
+            }
+
+            var lastHidden = hidden
+            if kept < checked.count {
+                // Put every layer back to where it stood before the guesses,
+                // then let it read exactly the tokens that survived. One extra
+                // pass, and only when a run was cut short.
+                for (var c, saved) in zip(recurrent, snapshot) {
+                    c.state = saved.state
+                    c.metaState = saved.metaState
+                }
+                for c in rewindable { _ = c.trim(checked.count) }
+                state = savedState
+                guard let redo = trunkEval(Array(checked.prefix(kept))) else { return false }
+                lastHidden = redo.hidden
+                if mtpStats { redos += 1 }
+            }
+            // The head read one position per guess; the guesses that did not
+            // survive have to leave its context too, or every later round
+            // attends to tokens the answer never contained.
+            let headOvershoot = drafts.count - (kept - 1)
+            if headOvershoot > 0 {
+                for c in mtpCache { _ = c.trim(headOvershoot) }
+            }
+
+            trunkHidden = lastHidden[0..., (kept - 1) ..< kept, 0...]
+            settled = accepted
+            speculation.tuner?.credit(accepted.count)
+            return !settled.isEmpty
+        }
+
         // The final prompt token, evaluated with the threaded state so its
         // logits (which pick the first generated token) are position-true.
-        var tok = sample(stepEval(tokens[total - 1]))
+        var tok: Int
+        if speculation != nil, let first = trunkEval([tokens[total - 1]]) {
+            trunkHidden = first.hidden[0..., (first.hidden.dim(1) - 1)..., 0...]
+            tok = sample(first.logits)
+        } else {
+            tok = sample(stepEval(tokens[total - 1]))
+        }
         while true {
             if cancelFlag.isSet {
                 reason = "cancelled"
@@ -1914,9 +2133,31 @@ final class Engine: @unchecked Sendable {
             if tok == unknownId || stopIds.contains(tok) { break }
             done += 1
             // Kick the next forward off, then detokenize/emit the current
-            // token while the GPU runs it.
-            let logits = stepEval(tok)
-            asyncEval(logits)
+            // token while the GPU runs it. With a head in play the "next
+            // forward" checks a whole run of guesses at once, and what it
+            // settles is queued.
+            var logits: MLXArray? = nil
+            if let speculation {
+                if settled.isEmpty {
+                    let depth = speculation.nextDepth()
+                    if depth > 0 {
+                        _ = speculate(from: tok, depth: depth)
+                    } else if let step = trunkEval([tok]) {
+                        // Plain decoding, but down the path that keeps hidden
+                        // states: the next round can only guess if it has the
+                        // trunk's hidden for the token just consumed, so an
+                        // unspeculated step still has to come back this way.
+                        asyncEval(step.logits)
+                        trunkHidden = step.hidden[0..., (step.hidden.dim(1) - 1)..., 0...]
+                        logits = step.logits
+                        speculation.tuner?.credit(1)
+                    }
+                }
+            } else {
+                let l = stepEval(tok)
+                asyncEval(l)
+                logits = l
+            }
             detok.append(token: tok)
             generatedIds.append(tok)
             if dumpTokens { dumpIds.append(tok) }
@@ -1935,13 +2176,38 @@ final class Engine: @unchecked Sendable {
                 reason = "context"
                 break
             }
-            tok = sample(logits)
+            if let logits {
+                tok = sample(logits)
+            } else if !settled.isEmpty {
+                tok = settled.removeFirst()
+            } else {
+                // The head could not be used for this step (a trunk that keeps
+                // its hidden states, a head that failed to load): fall back to
+                // one ordinary step rather than ending the turn.
+                tok = sample(stepEval(tok))
+            }
         }
         if dumpTokens {
             let whole = context.tokenizer.decode(tokenIds: dumpIds)
             log("STREAMED[\(dumpStreamed.count)]>>>" + dumpStreamed + "<<<END")
             log("WHOLE[\(whole.count)]>>>" + whole + "<<<END")
             log("MATCH=\(dumpStreamed == whole)")
+        }
+        speculation?.tuner?.end()
+        if mtpStats, mtpRounds > 0 {
+            let rates = zip(mtpHits, mtpTries).map { t in
+                t.1 > 0 ? String(format: "%.3f", Double(t.0) / Double(t.1)) : "-"
+            }
+            FileHandle.standardError.write(
+                Data(
+                    ("chaty-mlx: MTP rounds=\(mtpRounds) tokens=\(mtpAccepted) "
+                        + "per-token=\(String(format: "%.2f", Double(mtpAccepted) / Double(mtpRounds))) "
+                        + "acceptance=[\(rates.joined(separator: ", "))] "
+                        + "draft=\(String(format: "%.1f", tDraft))s verify=\(String(format: "%.1f", tVerify))s "
+                        + "redos=\(redos)"
+                        + (speculation?.tuner.map {
+                            " depth=\($0.settled) tok/s-by-depth=[\($0.summary)]"
+                        } ?? "") + "\n").utf8))
         }
         let dt = max(Date().timeIntervalSince(started), 0.001)
         self.finish(

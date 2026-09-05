@@ -14,7 +14,14 @@ let package = Package(
     name: "chaty-mlx",
     platforms: [.macOS(.v14)],
     dependencies: [
-        .package(url: "https://github.com/ml-explore/mlx-swift-lm", from: "3.31.3"),
+        // Our fork, one commit ahead of 3.31.4: Qwen3.5 hands back the hidden
+        // states its multi-token-prediction head consumes (`HiddenStateProviding`).
+        // Everything that head needs is internal to MLXVLM upstream, so without
+        // this the sidecar cannot drive it and the speedup is unreachable.
+        // macOS-only target, so a git dependency costs nothing on Windows.
+        .package(
+            url: "https://github.com/Fangyuan025/mlx-swift-lm",
+            revision: "c11767bc3aa01f33683ef39fa5adb9ad47f214ef"),
         // mlx-swift-lm is tokenizer-agnostic; the swift-transformers tokenizer
         // is injected in OUR module via MLXHuggingFace's macros.
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.0.0"),
