@@ -18,10 +18,11 @@ use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::context::params::{LlamaContextParams, LlamaContextType};
 use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
+use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
 use llama_cpp_2::mtmd::{
@@ -223,7 +224,9 @@ fn llama_backend() -> Result<&'static LlamaBackend> {
         return Ok(b);
     }
     let mut backend = LlamaBackend::init().context("failed to initialize llama.cpp backend")?;
-    backend.void_logs();
+    if std::env::var("CHATY_LLAMA_LOG").as_deref() != Ok("1") {
+        backend.void_logs();
+    }
     let _ = LLAMA_BACKEND.set(backend);
     Ok(LLAMA_BACKEND.get().unwrap())
 }
@@ -252,6 +255,29 @@ fn probe_n_layer(backend: &LlamaBackend, path: &str) -> Option<u32> {
             0 => None,
             n => Some(n),
         })
+}
+
+/// How many multi-token-prediction (`nextn`) layers the file declares.
+///
+/// These layers are a small head trained to guess the tokens the model is
+/// about to produce, and llama.cpp skips them unless the load asks for them —
+/// so whether to ask has to be decided before the model is loaded. The
+/// question is answered from metadata rather than by trying: a load that has
+/// to fail and be retried costs a full pass over a file that can be tens of
+/// gigabytes.
+fn probe_mtp_layers(backend: &LlamaBackend, path: &str) -> u32 {
+    let params = LlamaModelParams::default().with_vocab_only(true);
+    let Ok(model) = LlamaModel::load_from_file(backend, path, &params) else {
+        return 0;
+    };
+    let Ok(arch) = model.meta_val_str("general.architecture") else {
+        return 0;
+    };
+    model
+        .meta_val_str(&format!("{arch}.nextn_predict_layers"))
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0)
 }
 
 /// Find the vision encoder (mmproj) GGUF paired with a model file.
@@ -508,8 +534,18 @@ impl LlamaEngine {
         // of memory, return a clear error instead of a cryptic crash.
         let mut layers = requested.max(0);
         let mut oom_fallback = false;
+        // Whether this file carries an MTP head, decided from metadata before
+        // the weights are read — `load_mtp` has to be set on the load itself.
+        // An off switch, for comparing against plain decoding and for backing
+        // out of the head without rebuilding.
+        let mtp = std::env::var("CHATY_MTP").as_deref() != Ok("0")
+            && probe_mtp_layers(backend, path) > 0;
         let (model, tx, handle, mtmd_err) = loop {
-            let params = LlamaModelParams::default().with_n_gpu_layers(layers.max(0) as u32);
+            let params = LlamaModelParams::default()
+                .with_n_gpu_layers(layers.max(0) as u32)
+                // The head's layers are extra ones plain decoding never
+                // touches, so llama.cpp leaves them on disk unless asked.
+                .with_load_mtp(mtp);
             // macOS: load via malloc instead of mmap. Freeing malloc'd weights
             // is synchronous, whereas the Metal-wired pages of an mmap'd MoE
             // model have been observed to never return to the kernel after
@@ -557,7 +593,10 @@ impl LlamaEngine {
             let handle = std::thread::Builder::new()
                 .name("chaty-llama".into())
                 .spawn(move || {
-                    worker(worker_model, n_ctx, n_threads, worker_mmproj, worker_gpu, rx, init_tx)
+                    worker(
+                        worker_model, n_ctx, n_threads, worker_mmproj, worker_gpu, mtp, rx,
+                        init_tx,
+                    )
                 })
                 .context("failed to start inference thread")?;
 
@@ -839,12 +878,143 @@ impl InferenceBackend for LlamaEngine {
 
 /// Owns the persistent context for one model and serves jobs until the engine
 /// (and its `Sender`) is dropped.
+/// How far ahead the MTP head is asked to guess, and how sure of a guess it
+/// has to be to make it.
+///
+/// Both are measured, not assumed. On an M4 Pro with the 4B design model,
+/// against 53.0 tok/s of plain decoding: one guess at a time is 56.3, two is
+/// 54.3, and three is 49.9 — slower than not guessing at all. The head's own
+/// context has to read every token the model reads, so a round that wins
+/// nothing still costs a pass; and this model is a hybrid, where rewinding a
+/// rejected guess means restoring recurrent state rather than just dropping
+/// cache rows, which is dear enough that a deep draft loses more on its
+/// mistakes than it gains on its hits.
+///
+/// The confidence gate does the adaptive part: llama.cpp drops a guess the
+/// head is unsure of instead of spending a round verifying it. Loosening it to
+/// 0.4 was worth more than any depth change (56.3 against 54.7 at 0.6), and
+/// tightening it past that only buys back rounds the head would have won.
+const MTP_DRAFT_MAX: i32 = 1;
+const MTP_DRAFT_P_MIN: f32 = 0.4;
+
+/// The decoder for one loaded model.
+///
+/// A checkpoint that ships a multi-token-prediction head can be decoded with
+/// it: the head guesses a short run of tokens, and the model checks the whole
+/// run in ONE pass instead of one pass per token. Every token that survives is
+/// one the model's own sampler drew, and the first guess it disagrees with
+/// ends the run — so the reply is the reply plain decoding would have given,
+/// and only the number of passes changes.
+///
+/// The head needs a context of its own, and the two must stay in lockstep:
+/// anything that rewinds or clears one has to do the same to the other, or the
+/// head starts guessing from a conversation that is no longer there. That is
+/// why clearing goes through here rather than through the context directly.
+enum Decoder<'m> {
+    Plain(LlamaContext<'m>),
+    /// Boxed because `MtpSpeculative` carries two contexts inline.
+    Speculative {
+        spec: Box<MtpSpeculative<'m>>,
+        /// Cleared the moment the head loses track of the decode. From then on
+        /// this decodes exactly like `Plain` — the head's guesses would be
+        /// drawn from a conversation the model is no longer having, and a
+        /// wrong guess that gets verified is not wrong output, but a head that
+        /// cannot be fed is an error on every single decode.
+        head: bool,
+    },
+}
+
+impl<'m> Decoder<'m> {
+    fn ctx(&self) -> &LlamaContext<'m> {
+        match self {
+            Self::Plain(ctx) => ctx,
+            Self::Speculative { spec, .. } => spec.target_context(),
+        }
+    }
+
+    fn ctx_mut(&mut self) -> &mut LlamaContext<'m> {
+        match self {
+            Self::Plain(ctx) => ctx,
+            Self::Speculative { spec, .. } => spec.target_context_mut(),
+        }
+    }
+
+    /// The head, while it can still be trusted.
+    fn spec_mut(&mut self) -> Option<&mut MtpSpeculative<'m>> {
+        match self {
+            Self::Speculative { spec, head: true } => Some(spec),
+            _ => None,
+        }
+    }
+
+    /// Stop using the head for the rest of this model's life. Called when it
+    /// has failed once: a head that has fallen out of step with the model
+    /// cannot be resynchronised without re-reading the whole conversation,
+    /// which costs more than the speedup is worth.
+    fn disable_head(&mut self, why: &str) {
+        if let Self::Speculative { head, .. } = self {
+            if *head {
+                eprintln!("MTP head switched off ({why}); decoding without it");
+            }
+            *head = false;
+        }
+    }
+
+    /// Decode a batch, and let the head see the same batch. The head reads the
+    /// model's hidden state for every token in it, so a batch it never sees is
+    /// a hole in what it can guess from.
+    fn decode(&mut self, batch: &mut LlamaBatch) -> Result<()> {
+        match self {
+            Self::Plain(ctx) => ctx.decode(batch).context("decode failed"),
+            Self::Speculative { spec, head } => {
+                spec.target_context_mut().decode(batch).context("decode failed")?;
+                if !*head {
+                    return Ok(());
+                }
+                if let Err(e) = spec.process(batch) {
+                    // The model read the batch — that part is done and the
+                    // reply is unaffected. Only the head is behind now, so it
+                    // is switched off rather than failing the turn.
+                    eprintln!("MTP head switched off (lost track of the decode: {e})");
+                    *head = false;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn clear_kv_cache(&mut self) {
+        match self {
+            Self::Plain(ctx) => ctx.clear_kv_cache(),
+            Self::Speculative { spec, .. } => {
+                spec.target_context_mut().clear_kv_cache();
+                spec.draft_context_mut().clear_kv_cache();
+            }
+        }
+    }
+
+    /// Drop `[p0, p1)` from both caches. True only when BOTH gave the range up:
+    /// a rewind that half happened is worse than one that did not, because the
+    /// two halves then describe different conversations.
+    fn clear_kv_cache_seq(&mut self, seq: Option<u32>, p0: Option<u32>, p1: Option<u32>) -> bool {
+        match self {
+            Self::Plain(ctx) => ctx.clear_kv_cache_seq(seq, p0, p1) == Ok(true),
+            Self::Speculative { spec, .. } => {
+                let tgt = spec.target_context_mut().clear_kv_cache_seq(seq, p0, p1) == Ok(true);
+                let dft = spec.draft_context_mut().clear_kv_cache_seq(seq, p0, p1) == Ok(true);
+                tgt && dft
+            }
+        }
+    }
+}
+
 fn worker(
     model: Arc<LlamaModel>,
     n_ctx: u32,
     n_threads: i32,
     mmproj: Option<String>,
     use_gpu: bool,
+    mtp: bool,
     rx: Receiver<Job>,
     init: Sender<Result<Option<String>, String>>,
 ) {
@@ -858,12 +1028,20 @@ fn worker(
     let ctx_params = LlamaContextParams::default()
         .with_n_ctx(NonZeroU32::new(n_ctx))
         .with_n_threads(n_threads)
-        .with_n_threads_batch(n_threads);
+        .with_n_threads_batch(n_threads)
+        // Rollback points for the recurrent half of a hybrid model. A run of
+        // guesses that is only partly accepted has to be rewound, and a
+        // recurrent state cannot be replayed out of the cache the way
+        // attention can — without somewhere to rewind TO, llama.cpp refuses
+        // partial removal and the speculative path is unusable. Costs nothing
+        // on a model with no recurrent layers, and llama.cpp clamps it to zero
+        // on architectures that cannot roll back at all.
+        .with_n_rs_seq(if mtp { MTP_DRAFT_MAX as u32 } else { 0 });
     // Flash attention (less KV memory + faster long-context decode, a real win on
     // Metal) is left at llama.cpp's default policy (AUTO), which enables it
     // automatically on Apple Silicon when the model supports it. To force it,
     // `with_flash_attention_policy(..)` takes a raw `llama_flash_attn_type`.
-    let mut ctx = match model.new_context(backend, ctx_params) {
+    let ctx = match model.new_context(backend, ctx_params.clone()) {
         Ok(c) => c,
         Err(e) => {
             // Almost always a VRAM/RAM OOM allocating the KV cache + compute
@@ -872,6 +1050,47 @@ fn worker(
             return;
         }
     };
+    // Pair the model with its own MTP head when it has one. A failure here is
+    // a lost speedup, not a lost model: fall back to plain decoding and say
+    // why, rather than failing a load that would otherwise have worked.
+    let mut dec = Decoder::Plain(ctx);
+    if mtp {
+        // The head's own context keeps no rollback snapshots — it is the
+        // model's cache that gets rewound when a run is cut short — and it has
+        // to name the context it is drafting for, which is how llama.cpp finds
+        // the hidden states to guess from.
+        let draft_params = ctx_params
+            .clone()
+            .with_context_type(LlamaContextType::Mtp)
+            .with_n_rs_seq(0);
+        match model.new_context_with_ctx_other(backend, draft_params, dec.ctx()) {
+            Ok(draft) => {
+                // `MtpSpeculative::new` consumes both contexts and hands
+                // neither back, so the target is moved out and re-made if the
+                // pairing is rejected.
+                let Decoder::Plain(target) = dec else { unreachable!() };
+                let params = MtpSpeculativeParams {
+                    n_max: MTP_DRAFT_MAX,
+                    n_min: 0,
+                    p_min: MTP_DRAFT_P_MIN,
+                };
+                match MtpSpeculative::new(target, draft, params) {
+                    Ok(spec) => dec = Decoder::Speculative { spec: Box::new(spec), head: true },
+                    Err(e) => {
+                        eprintln!("MTP head unusable ({e}); decoding without it");
+                        match model.new_context(backend, ctx_params) {
+                            Ok(c) => dec = Decoder::Plain(c),
+                            Err(e) => {
+                                let _ = init.send(Err(format!("{e:#}")));
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => eprintln!("MTP draft context unavailable ({e}); decoding without it"),
+        }
+    }
     // Vision encoder (mmproj), when the model ships one. A failure here is
     // non-fatal: the model still chats, images are just unavailable.
     let mut mtmd_err: Option<String> = None;
@@ -908,7 +1127,7 @@ fn worker(
             Job::Generate { req, sink, cancel, done } => {
                 let result = run_turn(
                     &model,
-                    &mut ctx,
+                    &mut dec,
                     &mut cached,
                     mtmd.as_ref(),
                     &mut media_cache,
@@ -923,7 +1142,7 @@ fn worker(
                 let sink = StringSink { buf: std::cell::RefCell::new(String::new()) };
                 let result = run_turn(
                     &model,
-                    &mut ctx,
+                    &mut dec,
                     &mut cached,
                     mtmd.as_ref(),
                     &mut media_cache,
@@ -942,7 +1161,7 @@ fn worker(
 /// Decode `tokens[from..]` into the context in `n_batch`-sized chunks, setting
 /// logits on the final token. `n_batch` must be ≥ 1.
 fn decode_prompt(
-    ctx: &mut LlamaContext,
+    dec: &mut Decoder,
     batch: &mut LlamaBatch,
     tokens: &[LlamaToken],
     from: usize,
@@ -958,7 +1177,7 @@ fn decode_prompt(
         for (j, tok) in tokens[pos..end].iter().enumerate() {
             batch.add(*tok, (pos + j) as i32, &[0], pos + j == n_prompt - 1)?;
         }
-        ctx.decode(batch).context("decode failed")?;
+        dec.decode(batch)?;
         pos = end;
         on_batch(pos, n_prompt);
     }
@@ -986,9 +1205,98 @@ impl EventSink for Channel<StreamEvent> {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// One speculative round: guess, check the whole guess in one pass, and keep
+/// the run the model agrees with.
+///
+/// `token` is the token the model has drawn but not yet read back. The head
+/// guesses what follows it; the model then reads `[token, guess…]` in a single
+/// pass, which gives it an opinion at every one of those positions at once.
+/// Walking those opinions in order, a guess that matches is a token the model
+/// would have produced anyway, and the first that does not ends the run — the
+/// model's own draw is kept in its place. So the returned run is exactly what
+/// plain decoding would have given: the tokens are drawn with the SAME
+/// sampler, and the guesses only decide how many passes it took to get them.
+///
+/// Returns the tokens to emit. The last is the one the model has not read back
+/// — the next round's starting point — and every earlier one is in the cache.
+/// The run is never empty.
+fn speculate(
+    dec: &mut Decoder,
+    sampler: &mut LlamaSampler,
+    batch: &mut LlamaBatch,
+    token: LlamaToken,
+    n_past: i32,
+    cached: &[LlamaToken],
+) -> Result<Option<(Vec<LlamaToken>, usize)>> {
+    let spec = dec.spec_mut().context("no MTP head")?;
+    let drafts = spec.draft(n_past, token, cached).context("MTP draft failed")?;
+    // Guessing left the guesses in the head's own cache, at the very positions
+    // the model is about to be asked about. Take them back out: the head has
+    // to re-read those positions as the model saw them, from the model's
+    // hidden state, and it cannot read a position it already holds. This is
+    // needed even when nothing was guessed — deciding not to guess costs a
+    // position too, and the next ordinary step would then land on it.
+    spec.draft_context_mut().clear_kv_cache_seq(Some(0), Some(n_past as u32), None).ok();
+    if drafts.is_empty() {
+        // The head was not confident enough to guess anything. Nothing is left
+        // open — llama.cpp only holds a draft it actually produced — so this
+        // is not an error, just an ordinary step for the caller to take.
+        return Ok(None);
+    }
+
+    batch.clear();
+    // Logits at every position: the whole point is to have the model's opinion
+    // about each guess, not only about the last one.
+    batch.add(token, n_past, &[0], true)?;
+    for (i, d) in drafts.iter().enumerate() {
+        batch.add(*d, n_past + 1 + i as i32, &[0], true)?;
+    }
+    dec.decode(batch)?;
+
+    // Draw at each position with the real sampler, in order, stopping at the
+    // first draw the guess did not predict. `ids` is the accepted run plus the
+    // model's own token at the position the run ended — always at least one.
+    let mut ids: Vec<LlamaToken> = Vec::with_capacity(drafts.len() + 1);
+    for (i, d) in drafts.iter().enumerate() {
+        let id = sampler.sample(dec.ctx(), i as i32);
+        sampler.accept(id);
+        ids.push(id);
+        if id != *d {
+            break;
+        }
+    }
+    if ids.len() == drafts.len() {
+        // Every guess held: the position after the last one is a token the
+        // model just produced for free.
+        let id = sampler.sample(dec.ctx(), drafts.len() as i32);
+        sampler.accept(id);
+        ids.push(id);
+    }
+
+    // Past this point the round has happened: the model read the batch and drew
+    // every token in `ids` itself, so the run is what the reply is made of
+    // whatever becomes of the head. Nothing here may return an error — the
+    // caller answers one by taking an ordinary step, which would decode
+    // `token` a second time at a position the model already holds.
+    let accepted = u16::try_from(ids.len() - 1).unwrap_or(u16::MAX);
+    match dec.spec_mut() {
+        // Telling the head what survived is bookkeeping for the NEXT round.
+        Some(spec) => {
+            if let Err(e) = spec.accept(accepted) {
+                dec.disable_head(&format!("accept refused: {e}"));
+            }
+        }
+        // The head fell over while verifying (`decode` switches it off rather
+        // than failing a decode the model completed). It will not be asked
+        // again; this run still stands.
+        None => {}
+    }
+    Ok(Some((ids, drafts.len())))
+}
+
 fn run_turn(
     model: &LlamaModel,
-    ctx: &mut LlamaContext,
+    dec: &mut Decoder,
     cached: &mut Vec<LlamaToken>,
     mtmd: Option<&MtmdContext>,
     media_cache: &mut Option<MediaCache>,
@@ -1030,7 +1338,7 @@ fn run_turn(
         sink.emit(StreamEvent::Token { text: "<think>\n".to_string() })?;
     }
 
-    let n_batch = (ctx.n_batch() as usize).max(1);
+    let n_batch = (dec.ctx().n_batch() as usize).max(1);
     let mut batch = LlamaBatch::new(n_batch, 1);
 
     // ---- prefill: two regimes sharing one generation loop below ----
@@ -1055,7 +1363,7 @@ fn run_turn(
         // unset on this path made the media cache invisible and, worse, made
         // it look broken.
         let (pos, reused_media) = prefill_media(
-            ctx,
+            dec.ctx_mut(),
             mtmd,
             media_cache,
             &prompt,
@@ -1076,7 +1384,7 @@ fn run_turn(
         // Leaving the media regime: the KV holds media embeddings the token
         // cache can't account for — start clean.
         if media_cache.take().is_some() {
-            ctx.clear_kv_cache();
+            dec.clear_kv_cache();
             cached.clear();
         }
 
@@ -1091,7 +1399,7 @@ fn run_turn(
         let n_prompt = tokens.len();
 
         if n_prompt + 4 >= n_ctx as usize {
-            ctx.clear_kv_cache();
+            dec.clear_kv_cache();
             cached.clear();
             bail!("提示词 {n_prompt} tokens 超出上下文窗口 {n_ctx}，请新建对话或缩短输入。(Prompt exceeds the {n_ctx}-token context window — start a new chat or shorten the input.)");
         }
@@ -1113,16 +1421,16 @@ fn run_turn(
         // leave the previous conversation's state in place and the model
         // would see BOTH conversations at once. Fall back to a full clear.
         if prefix < cached.len()
-            && ctx.clear_kv_cache_seq(Some(0), Some(prefix as u32), None) != Ok(true)
+            && !dec.clear_kv_cache_seq(Some(0), Some(prefix as u32), None)
         {
-            ctx.clear_kv_cache();
+            dec.clear_kv_cache();
             cached.clear();
             prefix = 0;
         }
         cached.truncate(prefix);
 
         if cancel.load(Ordering::Relaxed) {
-            ctx.clear_kv_cache();
+            dec.clear_kv_cache();
             cached.clear();
             return done_event(sink, n_prompt as u32, 0, 0.0, "cancelled");
         }
@@ -1144,11 +1452,11 @@ fn run_turn(
         // tolerate partial KV reuse (llama.cpp's decode returns an error); if so,
         // clear the KV and decode the whole prompt fresh. If that still fails, reset
         // state so the next turn / new chat starts clean instead of staying broken.
-        if let Err(e) = decode_prompt(ctx, &mut batch, &tokens, prefix, n_batch, progress(prefix)) {
+        if let Err(e) = decode_prompt(dec, &mut batch, &tokens, prefix, n_batch, progress(prefix)) {
             eprintln!("prompt decode (reuse from {prefix}) failed: {e:#}; retrying from a clean KV");
-            ctx.clear_kv_cache();
-            if let Err(e2) = decode_prompt(ctx, &mut batch, &tokens, 0, n_batch, progress(0)) {
-                ctx.clear_kv_cache();
+            dec.clear_kv_cache();
+            if let Err(e2) = decode_prompt(dec, &mut batch, &tokens, 0, n_batch, progress(0)) {
+                dec.clear_kv_cache();
                 cached.clear();
                 return Err(e2).context("prompt decode failed");
             }
@@ -1157,6 +1465,15 @@ fn run_turn(
         *cached = tokens; // KV now holds the full prompt
         n_prompt_pos = n_prompt as i32;
         idx = batch.n_tokens() - 1;
+        // The head guesses from the conversation so far; tell it what that is.
+        // Everything but the last token, which is the one the model has just
+        // been asked about and has not yet answered.
+        if let Some(spec) = dec.spec_mut() {
+            let prompt_in_kv = cached[..cached.len().saturating_sub(1)].to_vec();
+            if let Err(e) = spec.begin(&prompt_in_kv) {
+                eprintln!("MTP head could not take the prompt ({e}); decoding without it");
+            }
+        }
     }
 
     // Diagnostic parity with the MLX engine's CHATY_MLX_DUMP_TOKENS: the exact
@@ -1203,13 +1520,26 @@ fn run_turn(
     let mut stopped = false;
     let mut stop_reason = "eos";
 
+    // What the head cost and won this turn, for `CHATY_MTP_STATS=1`.
+    let mtp_stats = std::env::var("CHATY_MTP_STATS").as_deref() == Ok("1");
+    let (mut mtp_rounds, mut mtp_drafted, mut mtp_kept, mut mtp_declined) = (0u32, 0u32, 0u32, 0u32);
+    // Tokens a speculative round has already settled but not yet emitted. The
+    // last of them is the one the model has NOT read back — every earlier one
+    // is in the cache already — so the run ends when this empties.
+    let mut settled: std::collections::VecDeque<LlamaToken> = std::collections::VecDeque::new();
     loop {
         if cancel.load(Ordering::Relaxed) {
             stop_reason = "cancelled";
             break;
         }
-        let token = sampler.sample(ctx, idx);
-        sampler.accept(token);
+        let token = match settled.pop_front() {
+            Some(t) => t,
+            None => {
+                let t = sampler.sample(dec.ctx(), idx);
+                sampler.accept(t);
+                t
+            }
+        };
         if model.is_eog_token(token) {
             break;
         }
@@ -1286,26 +1616,85 @@ fn run_turn(
             stop_reason = "context";
             break;
         }
-        batch.clear();
-        batch.add(token, n_past, &[0], true)?;
-        n_past += 1;
-        if let Err(e) = ctx.decode(&mut batch) {
-            // The ledger must never run ahead of the cache — reset both
-            // rather than leaving a phantom token the next turn would reuse.
-            ctx.clear_kv_cache();
-            cached.clear();
-            *media_cache = None;
-            return Err(e).context("decode failed");
+        // Every settled token but the last is already in the cache: the round
+        // that produced them read them all in one pass.
+        if !settled.is_empty() {
+            decoded_len = out.len();
+            continue;
         }
-        if !media_turn {
-            cached.push(token);
+        // A run needs room for the guesses as well as the token itself, and
+        // the head cannot be asked for a shorter one — its ceiling was fixed
+        // when it was paired with the model. Near the end of the window, step.
+        // An image turn is prefilled by the vision helper, whose batches this
+        // code never sees — so the head has not been fed them and must not be
+        // asked to guess from a conversation it only half knows.
+        let room = !media_turn
+            && dec.spec_mut().is_some()
+            && n_past + 1 + MTP_DRAFT_MAX < n_ctx as i32;
+        let round = if room {
+            match speculate(dec, &mut sampler, &mut batch, token, n_past, cached) {
+                Ok(Some((r, drafted))) => {
+                    MTP_TOKENS_WON.fetch_add((r.len() - 1) as u64, Ordering::Relaxed);
+                    if mtp_stats {
+                        mtp_rounds += 1;
+                        mtp_drafted += drafted as u32;
+                        mtp_kept += (r.len() - 1) as u32;
+                    }
+                    Some(r)
+                }
+                // The head declined to guess — the reply just advances one
+                // token, as it would without a head at all.
+                Ok(None) => {
+                    if mtp_stats {
+                        mtp_declined += 1;
+                    }
+                    None
+                }
+                // Every error `speculate` returns is raised before the model
+                // reads anything, so an ordinary step from here is safe.
+                Err(e) => {
+                    dec.disable_head(&format!("round failed: {e:#}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        match round {
+            Some(ids) => {
+                // The model read `token` and every guess it accepted; the last
+                // id it drew is the next token and is not in the cache yet.
+                n_past += ids.len() as i32;
+                cached.push(token);
+                cached.extend(ids.iter().take(ids.len() - 1).copied());
+                // Drop the guesses the model disagreed with. They were decoded
+                // into the cache and describe a reply that is not being given.
+                dec.clear_kv_cache_seq(Some(0), Some(n_past as u32), None);
+                settled.extend(ids);
+            }
+            None => {
+                batch.clear();
+                batch.add(token, n_past, &[0], true)?;
+                n_past += 1;
+                if let Err(e) = dec.decode(&mut batch) {
+                    // The ledger must never run ahead of the cache — reset both
+                    // rather than leaving a phantom token the next turn would reuse.
+                    dec.clear_kv_cache();
+                    cached.clear();
+                    *media_cache = None;
+                    return Err(e).context("decode failed");
+                }
+                if !media_turn {
+                    cached.push(token);
+                }
+                idx = batch.n_tokens() - 1;
+            }
         }
         // The text of everything the KV now holds. A token reaches the cache
         // only here, at the end of its iteration — a stop sequence breaks out
         // above, with that token's piece already in `out` but never decoded —
         // so the snapshot has to be taken after the decode, not before.
         decoded_len = out.len();
-        idx = batch.n_tokens() - 1;
     }
     // Flush the unsent tail (unless we halted on a stop sequence).
     if !stopped {
@@ -1320,6 +1709,20 @@ fn run_turn(
         }
     }
 
+    if mtp_stats && (mtp_rounds > 0 || mtp_declined > 0) {
+        let rate = if mtp_drafted > 0 {
+            f64::from(mtp_kept) / f64::from(mtp_drafted)
+        } else {
+            0.0
+        };
+        eprintln!(
+            "MTP rounds={mtp_rounds} declined={mtp_declined} drafted={mtp_drafted} \
+             kept={mtp_kept} acceptance={rate:.3} \
+             per-round={:.2} wall={:.2}s",
+            if mtp_rounds > 0 { f64::from(mtp_kept + mtp_rounds) / f64::from(mtp_rounds) } else { 0.0 },
+            start.elapsed().as_secs_f64()
+        );
+    }
     if dump_gen {
         let pieces: Vec<String> = gen_ids
             .iter()
@@ -3303,7 +3706,9 @@ mod agent_e2e {
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_threads(nt)
             .with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
 
         let ws = std::env::temp_dir().join(format!("chaty-agent-sf-e2e-{}", std::process::id()));
         std::fs::create_dir_all(ws.join("src")).unwrap();
@@ -3393,7 +3798,9 @@ mod agent_e2e {
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_threads(nt)
             .with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
 
         let ws = std::env::temp_dir().join(format!("chaty-agent-refactor-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&ws).unwrap();
@@ -3536,7 +3943,9 @@ if __name__ == "__main__":
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_threads(nt)
             .with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
 
         let ws = std::env::temp_dir().join(format!("chaty-agent-video-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&ws).unwrap();
@@ -3635,7 +4044,9 @@ if __name__ == "__main__":
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_threads(nt)
             .with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
 
         let ws = std::env::temp_dir().join(format!("chaty-agent-web-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&ws).unwrap();
@@ -3735,7 +4146,9 @@ if __name__ == "__main__":
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_threads(nt)
             .with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
 
         let ws = std::env::temp_dir().join(format!("chaty-agent-flaky-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&ws).unwrap();
@@ -3864,7 +4277,9 @@ if __name__ == "__main__":
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_threads(nt)
             .with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
 
         let ws = std::env::temp_dir().join(format!("chaty-agent-smart-{}", std::process::id()));
         std::fs::create_dir_all(ws.join("src")).unwrap();
@@ -3989,7 +4404,9 @@ if __name__ == "__main__":
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_threads(nt)
             .with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
 
         // A realistic mini-project with a FAILING test the agent must fix:
         // calc.py is missing `subtract`, which test_calc.py exercises.
@@ -4123,7 +4540,9 @@ if __name__ == "__main__":
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_threads(nt)
             .with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
 
         let ws = std::env::temp_dir().join(format!("chaty-agent-meta-{}", std::process::id()));
         std::fs::create_dir_all(&ws).unwrap();
@@ -4274,7 +4693,9 @@ mod vision_e2e {
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_threads(nt)
             .with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
 
         let mtmd_params = MtmdContextParams {
             use_gpu: true,
@@ -4292,7 +4713,7 @@ mod vision_e2e {
             .expect("write test image");
 
         let ask = |messages: Vec<ChatMessage>,
-                   ctx: &mut LlamaContext,
+                   ctx: &mut Decoder,
                    cached: &mut Vec<LlamaToken>,
                    media_cache: &mut Option<MediaCache>|
          -> String {
@@ -4601,7 +5022,9 @@ mod browser_task_probe {
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
         let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
         let mut cached: Vec<LlamaToken> = Vec::new();
         let mut media_cache: Option<MediaCache> = None;
 
@@ -4754,7 +5177,9 @@ mod browser_tasks_e2e {
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_threads(nt)
             .with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
         let mut cached: Vec<LlamaToken> = Vec::new();
         let mut media_cache: Option<MediaCache> = None;
 
@@ -5154,7 +5579,9 @@ mod prefill_progress_e2e {
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_threads(nt)
             .with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
         let mut cached: Vec<LlamaToken> = Vec::new();
         let mut media_cache: Option<MediaCache> = None;
         let cancel = AtomicBool::new(false);
@@ -5365,7 +5792,9 @@ mod media_prefill_e2e {
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
         let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
         let mut cached: Vec<LlamaToken> = Vec::new();
         let mut media_cache: Option<MediaCache> = None;
         let cancel = AtomicBool::new(false);
@@ -5499,7 +5928,9 @@ pw.addEventListener("input",render);render();
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
         let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
         let mut cached: Vec<LlamaToken> = Vec::new();
         let mut media_cache: Option<MediaCache> = None;
 
@@ -5655,7 +6086,9 @@ document.getElementById("submit").addEventListener("click",function(){
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
         let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
         let mut cached: Vec<LlamaToken> = Vec::new();
         let mut media_cache: Option<MediaCache> = None;
 
@@ -5848,7 +6281,9 @@ mod visual_verify_e2e {
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
         let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
         let mut cached: Vec<LlamaToken> = Vec::new();
         let mut media_cache: Option<MediaCache> = None;
 
@@ -6004,7 +6439,9 @@ document.getElementById("check").addEventListener("click",function(){
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
         let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
         let mut cached: Vec<LlamaToken> = Vec::new();
         let mut media_cache: Option<MediaCache> = None;
 
@@ -6141,7 +6578,9 @@ mod real_scenarios_e2e {
         done: &dyn Fn() -> bool,
     ) -> Report {
         let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
-        let mut ctx = model.new_context(backend, ctx_params).expect("ctx");
+        // The engine decodes through a `Decoder`; without a head that is just
+        // the context.
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
         let mut cached: Vec<LlamaToken> = Vec::new();
         let mut media_cache: Option<MediaCache> = None;
         let mut messages = vec![
@@ -6332,113 +6771,112 @@ mod gguf_kv_e2e {
         engine.unload();
     }
 }
-/// Layers the model's next-token-prediction head occupies, read from the GGUF
-/// metadata (`<arch>.nextn_predict_layers`). llama.cpp has a C accessor for
-/// this; the Rust binding does not re-export it.
-/// Read only by the MTP draft test below — kept beside the note it belongs to
-/// rather than rediscovered when that integration is picked up.
-#[allow(dead_code)]
-pub(crate) fn nextn_layers(model: &LlamaModel) -> u32 {
-    let arch = model.meta_val_str("general.architecture").unwrap_or_default();
-    model
-        .meta_val_str(&format!("{arch}.nextn_predict_layers"))
-        .ok()
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .unwrap_or(0)
-}
+/// Tokens the MTP head has won since the process started — every token a
+/// speculative round settled beyond the one it was given. Process-wide because
+/// it is the only way to see from outside that the head is still working: the
+/// head switches itself off on any failure, and without a count that shows up
+/// as nothing at all except a reply that took longer.
+pub(crate) static MTP_TOKENS_WON: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
-/// What llama.cpp's multi-token-prediction drafter needs before it will draft,
-/// pinned as an executable note. Everything an MTP integration does is
-/// downstream of these four facts, and each one cost a round of guessing:
+/// The MTP head, end to end through the engine.
+///
+/// Four facts about llama.cpp's drafter are load-bearing here, and each one
+/// cost a round of guessing to find:
 ///
 /// - the draft context is a SECOND context over the same model, asked for with
-///   `LlamaContextType::Mtp`, and it stands up with GPU offload just fine;
-/// - the target's prompt must be decoded with an output requested on EVERY
-///   position — the nextn head reads hidden states, and llama.cpp only
-///   produces the rows a batch asked for;
-/// - `process` must see each prefill batch, and `begin` only afterwards: it
-///   inspects the DRAFT context's position and warns if the prompt never
-///   reached it;
-/// - `draft`'s `n_past` is the number of tokens resident in the cache, and
-///   `id_last` is the last of them — a token whose hidden state already exists.
-///   Drafting from a token that has not been decoded yet cannot work.
+///   `LlamaContextType::Mtp`, and the model must have been loaded with
+///   `with_load_mtp(true)` or its layers were never read off disk;
+/// - it keeps no rollback snapshots of its own (`n_rs_seq` 0) — it is the
+///   model's cache that gets rewound — while the model's context needs as many
+///   as the draft is long, or a hybrid architecture refuses partial removal
+///   and every partly-accepted run is unrecoverable;
+/// - `process` must see every batch the model decodes, and `begin` only
+///   afterwards: it inspects the DRAFT context's position and warns if the
+///   prompt never reached it;
+/// - drafting leaves the guesses in the draft context's own cache at the
+///   positions the model is about to be asked about, so they have to be
+///   trimmed back out before verification — including when the head declined
+///   to guess, which costs a position too.
 ///
-///   CHATY_TEST_MTP=<gguf with nextn layers> [CHATY_TEST_MTP_GPU=999] \
-///     cargo test --lib mtp_probe -- --ignored --nocapture
+///   CHATY_TEST_MTP=<gguf with nextn layers> \
+///     cargo test -p chaty --lib mtp_head -- --ignored --nocapture --test-threads=1
 #[cfg(test)]
-mod mtp_probe {
+mod mtp_head {
     use super::*;
-    use llama_cpp_2::context::params::LlamaContextType;
-    use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
+    use crate::inference::{ChatMessage, GenParams, GenRequest, InferenceBackend, Role};
+    use std::sync::atomic::AtomicBool;
 
+    fn ask(engine: &LlamaEngine, content: &str) -> String {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let req = GenRequest {
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: content.into(),
+                images: vec![],
+                reasoning_content: None,
+            }],
+            params: GenParams { max_tokens: 64, think: Some(false), ..Default::default() },
+        };
+        rt.block_on(engine.generate_collect(req, Arc::new(AtomicBool::new(false))))
+            .expect("generate")
+    }
+
+    /// The head has to earn tokens AND leave the answer alone. Either half
+    /// alone is worthless: a head that is quietly switched off still answers
+    /// correctly, and one that wins tokens by changing the reply is a bug that
+    /// looks like a speedup.
     #[test]
     #[ignore]
-    fn mtp_draft_context_stands_up_and_drafts() {
+    fn the_head_wins_tokens_without_changing_the_answer() {
         let path = std::env::var("CHATY_TEST_MTP").expect("set CHATY_TEST_MTP=<gguf>");
         let backend = llama_backend().expect("backend");
-        let gpu: u32 = std::env::var("CHATY_TEST_MTP_GPU")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-        let model = LlamaModel::load_from_file(
-            backend,
-            &path,
-            &LlamaModelParams::default().with_n_gpu_layers(gpu),
-        )
-        .expect("load model");
         assert!(
-            nextn_layers(&model) > 0,
+            probe_mtp_layers(backend, &path) > 0,
             "this model carries no nextn layers — nothing to draft with"
         );
 
-        let base = || {
-            LlamaContextParams::default()
-                .with_n_ctx(NonZeroU32::new(2048))
-                .with_n_threads(4)
-                .with_n_threads_batch(4)
-        };
-        let target = model.new_context(backend, base()).expect("target context");
-        let draft = model
-            .new_context(backend, base().with_context_type(LlamaContextType::Mtp))
-            .expect("MTP draft context");
+        let question = "Name the capital of France. Answer with one word only.";
 
-        let mut spec = MtpSpeculative::new(target, draft, MtpSpeculativeParams::default())
-            .expect("MtpSpeculative::new");
+        MTP_TOKENS_WON.store(0, Ordering::Relaxed);
+        let (engine, _) = LlamaEngine::load(&path, None, Some(2048)).expect("load with head");
+        let with_head = ask(&engine, question);
+        let won = MTP_TOKENS_WON.load(Ordering::Relaxed);
+        engine.unload();
 
-        let prompt = model
-            .str_to_token("The capital of France is", AddBos::Always)
-            .expect("tokenize");
-
-        // An output on every position, or the nextn head has no hidden states
-        // to read; `process` before `begin`, or the drafter has no prompt.
-        let mut batch = LlamaBatch::new(512, 1);
-        for (i, t) in prompt.iter().enumerate() {
-            batch.add(*t, i as i32, &[0], true).expect("add");
-        }
-        spec.target_context_mut().decode(&mut batch).expect("decode prompt");
-        spec.process(&batch).expect("process");
-        spec.begin(&prompt).expect("begin");
-
-        let last = *prompt.last().unwrap();
-        let drafted = spec
-            .draft(prompt.len() as i32, last, &prompt)
-            .expect("draft");
-        eprintln!(
-            "MTP drafted {} token(s): {:?}",
-            drafted.len(),
-            drafted
-                .iter()
-                .map(|t| String::from_utf8_lossy(&piece_bytes(&model, *t)).to_string())
-                .collect::<Vec<_>>()
+        assert!(
+            won > 0,
+            "the head never won a token — it was switched off, or never asked: {with_head:?}"
         );
-        // `accept` is only valid while a draft is pending — an empty one is not.
-        if !drafted.is_empty() {
-            spec.accept(drafted.len() as u16).expect("accept");
-        }
-        assert!(!drafted.is_empty(), "an MTP model should draft at least one token");
+        assert!(
+            with_head.to_lowercase().contains("paris"),
+            "expected 'Paris' with the head on: {with_head:?}"
+        );
+    }
+
+    /// Turning the head off must leave an ordinary, working engine — this is
+    /// the path every model without a head already takes, and the one the head
+    /// falls back to when it fails.
+    #[test]
+    #[ignore]
+    fn the_same_model_answers_with_the_head_off() {
+        let path = std::env::var("CHATY_TEST_MTP").expect("set CHATY_TEST_MTP=<gguf>");
+        // SAFETY: single-threaded by construction — this suite must be run with
+        // --test-threads=1, which loading a model at all already requires.
+        unsafe { std::env::set_var("CHATY_MTP", "0") };
+        MTP_TOKENS_WON.store(0, Ordering::Relaxed);
+        let (engine, _) = LlamaEngine::load(&path, None, Some(2048)).expect("load without head");
+        let plain = ask(&engine, "Name the capital of France. Answer with one word only.");
+        engine.unload();
+        unsafe { std::env::remove_var("CHATY_MTP") };
+
+        assert_eq!(MTP_TOKENS_WON.load(Ordering::Relaxed), 0, "the head ran despite CHATY_MTP=0");
+        assert!(
+            plain.to_lowercase().contains("paris"),
+            "expected 'Paris' with the head off: {plain:?}"
+        );
     }
 }
-
 
 #[cfg(test)]
 mod think_off_prefix {
