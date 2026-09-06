@@ -775,6 +775,7 @@ func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
         inlineContent = generated
     }
 
+    let probeResult = "PROBE_TOOL_RESULT"
     func appends(toolRole: Bool, reasoningField: Bool) -> Bool {
         var turn: [String: any Sendable] = ["role": "assistant"]
         if reasoningField {
@@ -784,16 +785,28 @@ func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
             turn["content"] = inlineContent
         }
         let second =
-            opening + [turn, ["role": toolRole ? "tool" : "user", "content": "result"]]
+            opening + [turn, ["role": toolRole ? "tool" : "user", "content": probeResult]]
         guard let p = render(second) else { return false }
-        return p.hasPrefix(first + generated)
+        // The turn has to APPEND — anything else and every round re-reads the
+        // conversation — and the result has to actually be in there. A template
+        // with no branch for a role can drop the message instead of failing,
+        // which appends perfectly well and hands the model nothing.
+        return p.hasPrefix(first + generated) && p.contains(probeResult)
     }
-    // Least invasive first: today's shape, then one dial, then both.
+    // Most faithful FIRST. Both orders append on a Qwen3.5-family template, and
+    // taking the least invasive one — which is what this used to do — put every
+    // tool result in as plain user text. That template reads a tool result only
+    // when it arrives in the tool role: it scans backwards for the last real
+    // user query, skipping the tool turns, and everything downstream of that
+    // scan (which reasoning survives, and what the model was TRAINED to treat
+    // as its own output rather than as the user speaking) then keys off the
+    // wrong message. The symptom is a model that announces the user has sent a
+    // new request, halfway through working on the old one.
     for shape in [
-        HistoryShape(toolRole: false, reasoningField: false),
+        HistoryShape(toolRole: true, reasoningField: true),
         HistoryShape(toolRole: true, reasoningField: false),
         HistoryShape(toolRole: false, reasoningField: true),
-        HistoryShape(toolRole: true, reasoningField: true),
+        HistoryShape(toolRole: false, reasoningField: false),
     ] where appends(toolRole: shape.toolRole, reasoningField: shape.reasoningField) {
         return shape
     }

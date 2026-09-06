@@ -2582,18 +2582,32 @@ fn probe_tool_role(model: &LlamaModel) -> bool {
     } else {
         stored.clone()
     };
+    const PROBE_RESULT: &str = "PROBE_TOOL_RESULT";
     let appends = |tool_role: Role| {
         let second = [
             opening[0].clone(),
             opening[1].clone(),
             msg(Role::Assistant, &stored),
-            msg(tool_role, "result"),
+            msg(tool_role, PROBE_RESULT),
         ];
         render_chat(model, &second, true)
-            .map(|p| p.starts_with(&format!("{first}{generated}")))
+            .map(|p| {
+                // The turn has to APPEND, and the result has to actually be in
+                // there. A template with no branch for a role can drop the
+                // message rather than fail — which appends perfectly well and
+                // hands the model nothing.
+                p.starts_with(&format!("{first}{generated}")) && p.contains(PROBE_RESULT)
+            })
             .unwrap_or(false)
     };
-    appends(Role::Tool) && !appends(Role::User)
+    // Whether the template HAS a tool role, not whether the user role also
+    // happens to work. It usually does — a user turn is a user turn — and
+    // requiring it to fail meant the tool role was rejected on exactly the
+    // templates that support it best. A Qwen3.5 template scans backwards for
+    // the last real user query, skipping tool turns; a tool result arriving as
+    // plain user text is counted as the user asking something new, and the
+    // model says so, halfway through the work it was already doing.
+    appends(Role::Tool)
 }
 
 pub(crate) fn effort_levels_of(template: &str) -> Vec<String> {

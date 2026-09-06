@@ -5,20 +5,15 @@
  *
  *   npx tsx scripts/capture-prompt-golden.mts
  *
- * The date/time line is the prompt's only nondeterminism — it is neutralized
- * with the same regexes the test uses (keep them in sync).
+ * The prompt is fully deterministic: the clock that used to sit in it moved to
+ * the turn's own user message, because a system prompt that changes every
+ * minute is a system prompt no KV cache can be resumed past.
  */
 (globalThis as Record<string, unknown>).window = globalThis;
 const { mockIPC } = await import("@tauri-apps/api/mocks");
 mockIPC(() => Promise.resolve(null));
 const { systemPrompt, agentSetEditAnchors } = await import("../src/lib/agentLoop");
 const { writeFileSync, mkdirSync } = await import("node:fs");
-
-export function neutralizeDate(p: string): string {
-  return p
-    .replace(/当前日期时间:[^\n]+/g, "当前日期时间:<DATE>")
-    .replace(/Current date & time: [^\n]+/g, "Current date & time: <DATE>");
-}
 
 const out: Record<string, string> = {};
 for (const zh of [true, false]) {
@@ -37,7 +32,7 @@ for (const zh of [true, false]) {
           vision ? "vision" : browserText ? "textbrowser" : "plain",
           anchors ? "anchors" : "exact",
         ].join(".");
-        out[key] = neutralizeDate(systemPrompt("/ws", zh, mode, undefined, vision, browserText));
+        out[key] = systemPrompt("/ws", zh, mode, undefined, vision, browserText);
       }
     }
   }

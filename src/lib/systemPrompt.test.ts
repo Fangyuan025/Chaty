@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 (globalThis as Record<string, unknown>).window = globalThis;
 const { mockIPC } = await import("@tauri-apps/api/mocks");
 mockIPC(() => Promise.resolve(null));
-const { systemPrompt, agentSetEditAnchors } = await import("./agentLoop");
+const { systemPrompt, agentSetEditAnchors, nowLine } = await import("./agentLoop");
 
 const variants = [
   { zh: true, vision: false, label: "zh plain", maxChars: 3600 },
@@ -104,5 +104,40 @@ describe("systemPrompt behavior contracts", () => {
       agentSetEditAnchors(false);
     }
     expect(systemPrompt("/ws", false, "normal", undefined, false)).toContain("- edit_file:");
+  });
+  /** The prompt prefix is what the KV cache is resumed from. A system prompt
+   *  that says what time it is invalidates itself every sixty seconds, and the
+   *  turn that follows re-reads the whole conversation to rebuild a cache it
+   *  already had — on a hybrid model, which cannot rewind its recurrent state,
+   *  it throws the cache away entirely rather than trimming it. The clock lives
+   *  on the turn's user message instead; this pins it there. */
+  test("the system prompt does not change as the clock does", () => {
+    const RealDate = Date;
+    const build = () => systemPrompt("/ws", true, "normal", undefined, false, false, [], "");
+    const first = build();
+    try {
+      const later = new RealDate(RealDate.now() + 3 * 3600_000 + 61_000);
+      // @ts-expect-error narrow test shim: a Date that is always "later"
+      globalThis.Date = class extends RealDate {
+        constructor(...a: ConstructorParameters<typeof RealDate>) {
+          if (a.length) super(...a);
+          else super(later.getTime());
+        }
+        static now() {
+          return later.getTime();
+        }
+      };
+      expect(build()).toBe(first);
+    } finally {
+      globalThis.Date = RealDate;
+    }
+  });
+
+  test("the turn's own message carries the clock", () => {
+    const at = new Date("2026-09-06T01:23:00");
+    expect(nowLine(true, at)).toContain("01:23");
+    expect(nowLine(false, at)).toMatch(/Current date & time/);
+    // At the tail, so it is never part of what an earlier turn established.
+    expect(nowLine(true, at).startsWith("\n\n")).toBe(true);
   });
 });
