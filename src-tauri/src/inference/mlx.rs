@@ -1587,23 +1587,17 @@ mod mlx_vlm_e2e {
         eprintln!("turn2 answer: {answer2:?}, prefills: {prefills2:?}");
         assert!(answer2.to_lowercase().contains("paris"), "expected 'Paris' in: {answer2}");
         assert!(!prefills2.is_empty(), "long follow-up must emit prefill progress");
-        // What decides this is whether the model's memory can rewind, not
-        // which VLM it happens to be. Naming the one dense arch this was
-        // written against made every *other* dense VLM — Gemma 4 among them —
-        // fail for doing exactly the right thing.
-        let hybrid = arch.starts_with("qwen3_5") || arch.starts_with("qwen3_6");
-        if hybrid {
-            assert_eq!(
-                prefills2[0].0, 0,
-                "hybrid VLM re-prefills from zero (Mamba state can't rewind)"
-            );
-        } else {
-            assert!(
-                prefills2[0].0 > 0,
-                "dense VLM must resume past the cached image prefix, got {:?}",
-                prefills2
-            );
-        }
+        // This follow-up only ADDS to what turn 1 left cached, and growing a
+        // recurrent state forward is the one thing it can do — what a hybrid
+        // cannot do is rewind to a midpoint. So every arch must resume here,
+        // hybrid included; this used to assert the opposite for Qwen3.5/3.6,
+        // which described a loop that rewrote the turn it had just generated
+        // rather than anything the architecture imposes.
+        assert!(
+            prefills2[0].0 > 0,
+            "an appended turn must resume past the cached image prefix ({arch}), got {:?}",
+            prefills2
+        );
         engine.unload();
     }
 }
