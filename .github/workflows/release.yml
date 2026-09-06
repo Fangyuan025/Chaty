@@ -251,116 +251,57 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## A reply that outlives its window
+            ## A long run that stops starting over
 
-            The interface can be replaced under a running turn — the webview
-            reloads and takes the JS context with it — and until now the reply
-            went with it. Three things made that certain. The llama.cpp sink
-            returned the failure from sending to a listener that had gone away,
-            so the first token after the page disappeared ended the turn. The
-            reply existed nowhere else, because tokens accumulated in that
-            page's memory and reached the conversation only at the end. And
-            there was no way back into a turn already running.
+            A prompt is resumed from the engine's cache up to the first token
+            that differs from last time. On the architectures the Qwen3.5
+            family uses that is all-or-nothing: three quarters of their layers
+            keep a recurrent state that cannot be rewound to a midpoint, so
+            anything the cache cannot account for throws all of it away and the
+            conversation is read from the beginning. Six things in code mode
+            were doing exactly that.
 
-            The app holds the turn now. Nobody listening is not a reason to
-            stop generating. The text is written to the conversation when the
-            turn ends, however it ends. And a page that comes up asks whether
-            one is in flight: if it is, that conversation opens on its own,
-            everything generated before this page existed is already in it, and
-            the rest arrives as it is produced. A reload also used to replay the
-            request that was in flight, starting a SECOND generation for the
-            same reply — two at once on one model, the newcomer empty and
-            holding the slot, so the page came back to a reply starting over
-            from the beginning while the real one carried on unseen.
+            The clock sat in the system prompt, to the minute, so a turn that
+            began in a new minute matched about twenty tokens and re-read the
+            rest. The answer that ended a turn was never written down, so every
+            continuation started cold — and the model could not see what it had
+            last told you. Tool results arrived as if you had typed them, which
+            a Qwen3.5 template counts as a new request: the model would
+            announce that you had sent one halfway through the work it was
+            already doing, and repeat your request back at you. The closing tag
+            of a tool call went missing, and one round threw away 5006 cached
+            tokens over the four it could not account for. Two paths recorded a
+            turn their own way. And a repeated call — usually progress,
+            re-running the tests after an edit — turned reasoning off for one
+            step, which re-renders the whole history, and then back again.
 
-            ## A click that lands
+            After: a median of 99% of each prompt resumed from cache on both
+            engines, across turn boundaries as well as within a turn. A first
+            turn still costs a full read, so does a conversation crossing the
+            point where its history must be compacted, and so does the first
+            turn after the app restarts — the cache lives in memory and does
+            not outlive the process. The turn after that resumes 99% again.
 
-            Driving a real lesson on a real site, question after question,
-            turned up a failure an agent cannot escape on its own: a click that
-            reports success without having reached anything. A control still
-            settling — a popover animating in, a scroll container snapping
-            back, a banner sitting on top — is somewhere else by the time the
-            event is sent, and the event lands on whatever now occupies that
-            spot. Told it worked, the model has no reason to try anything else,
-            and it clicks the same button until the turn dies. The target is
-            now armed before the click and asked afterwards whether it fired. A
-            miss names what is in the way, and a coordinate the hit test
-            rejects is never clicked at all.
+            ## Speculative decoding, on models that bring their own head
 
-            A choice can also be clicked by the words that are actually on
-            screen. An answer in a list wears a badge the page adds — `1`,
-            `2)`, `3.` — so the element carries "2 jolie" while the page reads
-            "jolie". Asking for what you can read fell through to a substring
-            match, where the panel wrapping every choice matched too, and won:
-            the click landed on the panel, well away from any option, and
-            nothing was selected. Among elements that match, the one carrying
-            the least text beyond what was asked for now wins — anything
-            wrapping a control always carries more — and a leading list badge
-            is ignored on both sides.
+            Some checkpoints carry a small block trained to guess the tokens
+            the model is about to produce. The model then checks a whole run of
+            guesses in one pass instead of one pass per token, and every token
+            that survives is one its own sampler drew — the reply is the reply
+            it would have given either way. Both engines can drive it now.
 
-            The element list says what state a control is in, too. A greyed-out
-            submit read exactly like a live one, and an answer already chosen
-            like an untouched one, so a model clicked a dead button over and
-            over and lost track of what it had picked.
+            It ships off, and marked experimental. Measured, it is a large win
+            on text whose continuation is obvious and roughly a wash on
+            ordinary prose, and nothing readable before a reply starts says
+            which one it will be; a default that is sometimes slower is not a
+            default. The switch is in Settings → Model, offered only on models
+            that actually carry a head — read from the file, not assumed.
 
-            ## A session that stops dying quietly
-
-            Several long-lived things in Chaty could die in a way nothing
-            noticed and nothing recovered from, leaving a restart as the only
-            way out. One `browser_close` used to end browsing for the rest of
-            the run: the closed browser's actor cleared the cached handle as it
-            exited, by which time the next browser had already been cached, so
-            it wiped its successor's. Navigation then reported success while
-            every read came back blank, because the read happened in a window
-            that had never been navigated anywhere.
-
-            A browser left open by a previous run — after a force quit, or a
-            crash — held the profile, and Chrome will not start a second
-            browser on one profile, so the launcher waited out its deadline for
-            a debugging port that was never coming. That window is now adopted
-            when it can be reached and asked to quit when it cannot.
-
-            Speech that stopped stayed stopped: the output context was replaced
-            only when it reported `closed`, and WebKit has another state that a
-            route change or the machine sleeping reaches. One panic inside a
-            query poisoned the conversation database's lock, and the app
-            quietly stopped reading and writing conversations. One panic inside
-            a synthesis did the same to voice.
-
-            ## Faster, and smoother to listen to
-
-            Every drain of the browser's event queue blocked on a read timeout
-            that was empty nearly every time, and the settle loop paid it on
-            every poll. Draining what has arrived instead, leaving as soon as
-            the page goes quiet, and gathering the page digest in one round
-            trip instead of three: on a real site a click went from 4.1s to
-            0.47s, a page read from 130ms to 8ms.
-
-            Spoken replies are stitched on the audio clock. Each clip used to
-            be built only after the previous one's end had made its way back to
-            the main thread — which, during a spoken reply, is streaming
-            tokens, rendering and driving IPC — so a whole event loop landed at
-            every sentence boundary, exactly where it is most audible.
-
-            ## Under it
-
-            The thinking menu ticks the rung the model will actually use: the
-            chosen rung is remembered per app while ladders differ in length,
-            so one picked on a four-rung model could be absent from the
-            three-rung one you switched to, and the engine was handed nothing
-            at all. Six engine load failures — the out-of-memory refusal among
-            them — now speak the reader's language instead of English. Bilibili
-            links work again: a browser user agent without the cookies a
-            browser carries is the fingerprint that endpoint screens for.
-            Finished background jobs stop accumulating for as long as the app
-            is open. And a model that addresses each span to a recipient no
-            longer flashes that recipient as answer text at the head of every
-            reply.
-
-            Two fixes that reached v2.1.5 as a rebuild are in here for anyone
-            who installed that version on release day: code mode lights the
-            thinking depth you chose again, and a multimodal MLX model arrives
-            with the processor configuration its vision needs.
+            Three things that reached v2.1.6 as a rebuild are in here for
+            anyone who installed that version on release day: a chat reply now
+            survives the interface reloading under it, the composer stops
+            losing a line to a scrollbar at 110% and 120% UI scale, and the
+            error log can be emptied from Settings.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

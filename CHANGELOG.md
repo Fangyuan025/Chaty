@@ -1,5 +1,117 @@
 # Changelog
 
+## v2.1.7 — A long run that stops starting over (2026-09-06)
+
+### A long run stops starting over
+
+A prompt is resumed from the engine's cache up to the first token that differs
+from last time. On the architectures the Qwen3.5 family uses, a difference is
+not a partial resume: three quarters of their layers keep a recurrent state
+that cannot be rewound to a midpoint, so anything the cache cannot account for
+throws all of it away and the conversation is read from the beginning. Six
+things in code mode were doing exactly that, and one audit found each of them —
+the production loop driven for real, every prompt on its way to the engine
+measured against the one before it.
+
+- **The clock was in the system prompt, to the minute.** The system prompt is
+  the first thing in every prompt, so a turn that began in a new minute matched
+  the cache for about twenty tokens and re-read everything after them. It rides
+  on the turn's own message now, where it grounds "today" and "now" exactly as
+  before and changes nothing that came before it.
+
+- **The answer that ended a turn was never written down.** The engine held
+  those tokens; the next turn's prompt did not contain them, so the cache had
+  to be trimmed and could not be. Measured at 0% of the prompt resumed on every
+  continuation, against 89–99% within a turn. The model could not see what it
+  had last told you, either.
+
+- **Tool results arrived as if you had typed them.** The probe that decides how
+  to store a turn asked only "does this still append?" and took the first shape
+  that did — starting from tool results as plain user text, which appends
+  perfectly well. A Qwen3.5 template reads a tool result only in the tool role:
+  it scans back for the last thing the user actually asked, skipping tool
+  turns, and a result arriving as user text is counted as a new request. The
+  model would then announce that you had sent one, halfway through the work it
+  was already doing, and repeat your request back at you. The probe prefers the
+  most faithful shape that appends now, and checks the result survives into the
+  rendered prompt at all — a template with no branch for a role can drop the
+  message instead of failing, which appends beautifully and hands the model
+  nothing.
+
+- **The closing tag of a tool call went missing.** Generation stops at
+  `</tool_call>`, and the stop text is trimmed from what the app receives — but
+  the model wrote those tokens and the engine cached them. One round matched
+  5006 of 5010 cached tokens and threw all 5006 away over the four it could not
+  account for.
+
+- **Two paths recorded a turn their own way**, so a template that reads
+  reasoning from a field of its own saw an empty thought followed by content
+  that still had the reasoning inside it. Every path records a turn through one
+  door now.
+
+- **A repeated call cost the conversation twice over.** Turning reasoning off
+  for a single step re-renders the whole history — the engine puts an empty
+  thought in front of every past turn when reasoning is off — so the prompt
+  stopped matching, the conversation was read again, and the step after it
+  flipped back and read it again. The breakers that fire on a repeated call
+  keep the hotter sampling, which is what actually changes the next answer, and
+  leave the flag alone; a repeated call is usually progress here, re-running
+  the tests after an edit being the obvious case.
+
+Measured after, on the same long task through the same loop: a median of 99% of
+each prompt resumed from cache on both engines, across turn boundaries as well
+as within a turn. What still costs a full read is a first turn, a conversation
+crossing the point where its history has to be compacted, and the first turn
+after the app restarts — the cache lives in memory and does not outlive the
+process. The turn after that one resumes 99% again.
+
+### Speculative decoding, on models that bring their own head
+
+- **A model that ships a prediction head can use it.** Some checkpoints carry a
+  small extra block trained to guess the tokens the model is about to produce;
+  the model then checks a whole run of guesses in one pass instead of one pass
+  per token. Both engines can drive it now, and every token that survives is
+  one the model's own sampler drew — the reply is the reply it would have given
+  either way.
+
+- **It ships off, and marked experimental.** Measured, it is a large win on
+  text whose continuation is obvious and roughly a wash on ordinary prose, and
+  nothing readable before a reply starts says which one it will be. A default
+  that is sometimes slower is not a default. The switch is in Settings → Model,
+  offered only on models that actually carry a head — read from the file rather
+  than assumed, and greyed out with a reason on everything else.
+
+- **How far ahead to guess is measured, not assumed.** The depth the
+  checkpoints suggest was the slowest setting on the hardware this was measured
+  on: deeper means wrong more often, and a wrong guess is paid for twice on a
+  model whose layers cannot be rewound. Chat and code mode share one engine and
+  therefore one answer; forgetting to pass the setting down a loading path is a
+  compile error now rather than something to notice later.
+
+### From the v2.1.6 rebuild
+
+These reached v2.1.6 as a rebuild a day after it went out; they are listed here
+for anyone who installed v2.1.6 on release day.
+
+- **A generation is no longer bound to the page that asked for it.** The
+  interface can be replaced under a running turn — the webview reloads and
+  takes the JS context with it — and the reply went with it. The app holds the
+  turn now: nobody listening is not a reason to stop, the text is written to
+  the conversation when the turn ends however it ends, and a page that comes up
+  asks whether one is in flight — if it is, the conversation opens on its own,
+  everything generated before that page arrived is already there, and the rest
+  streams in as it is produced. A reload also replayed the request that was in
+  flight, so one reply started a second generation that took the slot while the
+  real one carried on unseen.
+
+- **The composer stops losing a line to a scrollbar** at 110% and 120% UI
+  scale, where a fractional device pixel ratio left the text a pixel wider than
+  its box and the horizontal scrollbar that appeared for it ate fifteen pixels
+  of height. It grows to fit a wrapped line now instead of scrolling it.
+
+- **The error log can be emptied** from Settings, next to the button that opens
+  it, with the confirmation any destructive action gets.
+
 ## v2.1.6 — A click that lands, and a session that stops dying quietly (2026-09-03)
 
 ### A reply that outlives its window
