@@ -320,6 +320,14 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
             Ok(q) => res(search::web_search(q).await),
             Err(e) => Err(e),
         },
+        // The agent's `web_fetch` goes through this. Without it every web task
+        // in the bench failed on the tool rather than on the work, which is
+        // indistinguishable from a page being down and made the whole web side
+        // of code mode untestable.
+        "fetch_page_ex" => match req_s(&args, "url") {
+            Ok(u) => res(chaty_lib::webx::fetch_page_ex(u, b_arg(&args, "raw")).await),
+            Err(e) => Err(e),
+        },
         "fetch_url" => match req_s(&args, "url") {
             Ok(u) => res(search::fetch_url(u).await),
             Err(e) => Err(e),
