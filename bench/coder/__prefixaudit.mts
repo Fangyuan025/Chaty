@@ -37,8 +37,18 @@ const bin =
 const model = process.env.CHATY_BENCH_MODEL as string;
 const nCtx = Number(process.env.CHATY_BENCH_NCTX ?? 32768);
 
-const bridge = new Bridge(bin);
+let bridge = new Bridge(bin);
 const info = (await bridge.call("load_model", { path: model, nCtx })) as Record<string, unknown>;
+/** Throw the engine away and load the model afresh — what quitting and
+ *  reopening the app does. Everything the engine had cached is gone; the
+ *  question is whether the turn AFTER that gets its cache back. */
+async function restartEngine(ws: string) {
+  bridge.kill();
+  bridge = new Bridge(bin);
+  await bridge.call("load_model", { path: model, nCtx });
+  await bridge.call("agent_set_workspace", { path: ws });
+  console.log("  *** engine restarted (cache thrown away) ***");
+}
 if (!info?.loaded) throw new Error("model did not load");
 console.log(
   `model: ${info.modelName} backend=${info.backend} toolRole=${info.toolRole} ` +
@@ -122,6 +132,8 @@ for (let t = 1; t <= TURNS; t++) {
   cards.push({ role: "user", text: input, steps: [] });
   const asst: Card = { role: "assistant", text: "", steps: [] };
   cards.push(asst);
+  if (process.env.RESTART_AFTER && t === Number(process.env.RESTART_AFTER) + 1)
+    await restartEngine(ws);
   console.log(
     `\n--- turn ${t} (history: ${replay ? "replayed tail" : "summary fallback"}, ` +
       `${(history as unknown[]).length} msgs) ---`,
