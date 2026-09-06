@@ -2584,7 +2584,7 @@ export async function runAgentTurn(
       // which discards a pathological loop on purpose.
       if (budgetTripped) {
         const kept = thinking.length > 2400 ? `…${thinking.slice(-2400)}` : thinking;
-        messages.push({ role: "assistant", content: `<think>\n${kept}\n</think>` });
+        storeAssistantTurn(messages, `<think>\n${kept}\n</think>`, opts.reasoningField);
         pushUser(
           lang === "zh"
             ? "思考预算已用完。以上思考已保留——现在基于它直接执行下一步(发工具调用或给出答案),不要再展开思考。"
@@ -2842,7 +2842,7 @@ export async function runAgentTurn(
         // Verbatim — see the parse-failure path above. The model is being told
         // its arguments were wrong; it needs to see the call it made, and the
         // prompt needs to reproduce what was generated.
-        messages.push({ role: "assistant", content: raw });
+        storeAssistantTurn(messages, raw, opts.reasoningField);
         pushUser(note);
         continue;
       }
