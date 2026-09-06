@@ -65,8 +65,10 @@ export interface GenSettings {
   /** GPU offload: -1 = auto‑tune by VRAM, 0 = CPU only, >0 = that many layers. */
   gpuLayers: number;
   /** Decode with the model's own multi-token-prediction head, on the models
-   *  that ship one. Experimental: it is a speedup on some models and a small
-   *  loss on others, and the app cannot tell which before trying. */
+   *  that ship one. Off by default, and experimental: measured, it is a large
+   *  win on text whose continuation is obvious and a small loss on ordinary
+   *  prose, and nothing the app can read beforehand says which a reply will
+   *  be. A default that is sometimes slower is not a default. */
   speculative: boolean;
   /** Context window to load the model with: 0 = memory-friendly default (≤8192),
    *  >0 = that many tokens (clamped to the model's trained length). */
@@ -149,7 +151,7 @@ export const defaultSettings: GenSettings = {
   // stored from then on, so the Chinese interface can turn it off.
   chineseVoice: false,
   gpuLayers: -1,
-  speculative: true,
+  speculative: false,
   contextLength: 0,
   ragTopK: 8,
   // 64, was 32: the CalendarApp repro showed 32 starves app-scale one-shots,

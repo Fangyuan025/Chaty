@@ -113,9 +113,9 @@ pub async fn load_model(
     }
 
     // Decode with the model's own multi-token-prediction head when it has one.
-    // `None` means yes, so a caller that predates the setting behaves the way
-    // the setting defaults.
-    let speculative = speculative.unwrap_or(true);
+    // `None` means no, matching the setting's default: a caller that does not
+    // ask for it does not get it.
+    let speculative = speculative.unwrap_or(false);
 
     let _ = on_progress.send(LoadProgress { phase: "eject", frac: 0.0 });
 

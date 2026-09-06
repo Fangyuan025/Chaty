@@ -146,8 +146,9 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
         "load_model" => {
             let path = req_s(&args, "path");
             let n_ctx = u_arg(&args, "n_ctx").map(|v| v as u32);
-            // Mirrors the Tauri command: absent means the setting's default.
-            let speculative = b_arg(&args, "speculative").unwrap_or(true);
+            // Mirrors the Tauri command: absent means the setting's default,
+            // which is off.
+            let speculative = b_arg(&args, "speculative").unwrap_or(false);
             match path {
                 Ok(p) => res(load_engine(&p, n_ctx, speculative)),
                 Err(e) => Err(e),

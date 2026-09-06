@@ -515,11 +515,16 @@ export interface LoadProgress {
   frac: number;
 }
 
+/// `speculative` is required rather than optional on purpose. It is a property
+/// of the loaded engine, which chat and code mode share — one of them cannot
+/// have the head and the other not — so the only way the two could ever
+/// disagree is a load path that forgot to pass the setting. Requiring it here
+/// makes that a compile error instead of something to notice later.
 export async function loadModel(
   path: string,
-  gpuLayers?: number,
-  nCtx?: number,
-  speculative?: boolean,
+  gpuLayers: number | undefined,
+  nCtx: number | undefined,
+  speculative: boolean,
   onProgress?: (p: LoadProgress) => void,
 ): Promise<ModelInfo> {
   const channel = new Channel<LoadProgress>();

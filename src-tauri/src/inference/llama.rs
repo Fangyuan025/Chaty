@@ -6821,9 +6821,8 @@ mod mtp_head {
     use crate::inference::{ChatMessage, GenParams, GenRequest, InferenceBackend, Role};
     use std::sync::atomic::AtomicBool;
 
-    fn ask(engine: &LlamaEngine, content: &str) -> String {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let req = GenRequest {
+    fn request(content: &str) -> GenRequest {
+        GenRequest {
             messages: vec![ChatMessage {
                 role: Role::User,
                 content: content.into(),
@@ -6831,9 +6830,31 @@ mod mtp_head {
                 reasoning_content: None,
             }],
             params: GenParams { max_tokens: 64, think: Some(false), ..Default::default() },
-        };
-        rt.block_on(engine.generate_collect(req, Arc::new(AtomicBool::new(false))))
+        }
+    }
+
+    /// The collecting path — what a title, a tool result, or the bench asks for.
+    fn ask(engine: &LlamaEngine, content: &str) -> String {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(engine.generate_collect(request(content), Arc::new(AtomicBool::new(false))))
             .expect("generate")
+    }
+
+    /// The streaming path — what a reply in either mode actually runs on.
+    fn stream(engine: &LlamaEngine, content: &str) -> String {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(String::new()));
+        let into = seen.clone();
+        let sink: Channel<StreamEvent> = Channel::new(move |body: tauri::ipc::InvokeResponseBody| {
+            if let tauri::ipc::InvokeResponseBody::Json(text) = &body {
+                into.lock().unwrap().push_str(text);
+            }
+            Ok(())
+        });
+        rt.block_on(engine.generate(request(content), sink, Arc::new(AtomicBool::new(false))))
+            .expect("generate");
+        let out = seen.lock().unwrap().clone();
+        out
     }
 
     /// The head has to earn tokens AND leave the answer alone. Either half
@@ -6856,7 +6877,6 @@ mod mtp_head {
         let (engine, _) = LlamaEngine::load(&path, None, Some(2048), true).expect("load with head");
         let with_head = ask(&engine, question);
         let won = MTP_TOKENS_WON.load(Ordering::Relaxed);
-        engine.unload();
 
         assert!(
             won > 0,
@@ -6866,6 +6886,18 @@ mod mtp_head {
             with_head.to_lowercase().contains("paris"),
             "expected 'Paris' with the head on: {with_head:?}"
         );
+
+        // Chat and code mode are the same engine and the same head. They reach
+        // it through different calls — one streams, one collects — and if the
+        // head ever lived on one of those paths rather than on the engine, the
+        // switch would apply to one mode and not the other.
+        MTP_TOKENS_WON.store(0, Ordering::Relaxed);
+        let streamed = stream(&engine, question);
+        assert!(
+            MTP_TOKENS_WON.load(Ordering::Relaxed) > 0,
+            "the head won tokens when collecting but not when streaming: {streamed:?}"
+        );
+        engine.unload();
     }
 
     /// Turning the head off must leave an ordinary, working engine — this is
@@ -6890,6 +6922,137 @@ mod mtp_head {
             "expected 'Paris' with the head off: {plain:?}"
         );
     }
+}
+
+/// What a wider decode actually costs.
+///
+/// Speculative decoding rests on one assumption: checking a run of N guesses in
+/// one forward pass costs about what checking one token costs, because the pass
+/// is bound by reading the weights and the weights are read once either way. If
+/// that holds, N tokens arrive for the price of one. If it does not, no amount
+/// of guessing well can pay for itself.
+///
+/// This measures the assumption instead of trusting it, on whatever model is
+/// pointed at — run it on the model in question and on a plain attention model
+/// to see the difference.
+///
+///   CHATY_TEST_GGUF=<model.gguf> \
+///     cargo test -p chaty --lib decode_width_cost -- --ignored --nocapture --test-threads=1
+#[cfg(test)]
+mod decode_width_cost {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn a_wider_decode_should_cost_about_what_a_narrow_one_costs() {
+        let Ok(path) = std::env::var("CHATY_TEST_GGUF") else {
+            eprintln!("SKIP: set CHATY_TEST_GGUF=/path/to/model.gguf");
+            return;
+        };
+        let backend = llama_backend().expect("backend");
+        let model = Arc::new(
+            LlamaModel::load_from_file(
+                backend,
+                &path,
+                &LlamaModelParams::default().with_n_gpu_layers(999).with_use_mmap(false),
+            )
+            .expect("load model"),
+        );
+        let mut ctx = model
+            .new_context(
+                backend,
+                LlamaContextParams::default()
+                    .with_n_ctx(NonZeroU32::new(4096))
+                    // The engine sets these; leaving them at llama.cpp's
+                    // default measures a context the app never creates.
+                    .with_n_threads(crate::gpu::cpu_worker_threads() as i32)
+                    .with_n_threads_batch(crate::gpu::cpu_worker_threads() as i32),
+            )
+            .expect("context");
+
+        let all_logits = std::env::var("WIDTH_LAST_ONLY").as_deref() != Ok("1");
+        let filler = model
+            .str_to_token("The quick brown fox jumps over the lazy dog. ", AddBos::Always)
+            .expect("tokenize");
+        let mut batch = LlamaBatch::new(512, 1);
+
+        // Wake the GPU up before anything is recorded. Measured cold, the
+        // FIRST width in the loop reads three to five times slower than the
+        // same width measured later — the clocks are still ramping — and the
+        // whole curve is then a story about that rather than about width.
+        {
+            batch.clear();
+            for (i, t) in filler.iter().enumerate() {
+                batch.add(*t, i as i32, &[0], i == filler.len() - 1).expect("add");
+            }
+            ctx.decode(&mut batch).expect("warm prefill");
+            for k in 0..300 {
+                batch.clear();
+                batch
+                    .add(filler[k % filler.len()], filler.len() as i32 + k as i32, &[0], true)
+                    .expect("add");
+                ctx.decode(&mut batch).expect("warm decode");
+            }
+        }
+
+        // Two passes over the widths; the second is reported. Anything that
+        // drifts over the run shows up as a difference between them.
+        for pass in 1..=2 {
+        for width in [1usize, 2, 4, 8] {
+            ctx.clear_kv_cache();
+            // Some history first: a decode into an empty cache is not the
+            // regime speculative decoding runs in.
+            batch.clear();
+            for (i, t) in filler.iter().enumerate() {
+                batch.add(*t, i as i32, &[0], i == filler.len() - 1).expect("add");
+            }
+            ctx.decode(&mut batch).expect("prefill");
+            let mut pos = filler.len() as i32;
+
+            // Warm the GPU on this width before anything is recorded, then
+            // take the MEDIAN of many rounds: a mean over a handful of passes
+            // measures whatever else the machine was doing.
+            let rounds = 80;
+            let warm = 20;
+            let mut samples: Vec<f64> = Vec::with_capacity(rounds);
+            for r in 0..(rounds + warm) {
+                batch.clear();
+                for k in 0..width {
+                    // Verification needs an opinion at every position; this
+                    // switch measures what asking for them costs.
+                    let want = all_logits || k == width - 1;
+                    batch.add(filler[k % filler.len()], pos + k as i32, &[0], want).expect("add");
+                }
+                let t0 = Instant::now();
+                ctx.decode(&mut batch).expect("decode");
+                let dt = t0.elapsed().as_secs_f64();
+                pos += width as i32;
+                if r >= warm {
+                    samples.push(dt);
+                }
+                // Keep the history bounded so later widths are not measured
+                // against a much longer context than earlier ones.
+                if pos > 2048 {
+                    ctx.clear_kv_cache();
+                    batch.clear();
+                    for (i, t) in filler.iter().enumerate() {
+                        batch.add(*t, i as i32, &[0], i == filler.len() - 1).expect("add");
+                    }
+                    ctx.decode(&mut batch).expect("re-prefill");
+                    pos = filler.len() as i32;
+                }
+            }
+            samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let median = samples[samples.len() / 2];
+            eprintln!(
+                "pass{pass} width {width}: {:.1} ms per pass, {:.2} ms per token",
+                median * 1000.0,
+                median * 1000.0 / width as f64
+            );
+        }
+        }
+    }
+
 }
 
 #[cfg(test)]
