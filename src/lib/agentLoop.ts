@@ -2953,7 +2953,15 @@ export async function runAgentTurn(
       const warnAt = uiRepeatOk ? -1 : 1;
       if (softLockable && repeatCount >= 2 && repeatCount < pauseAt) {
         hotNext = true;
-        if (failedBashRepeat) forceNoThinkNext = true;
+        // Heat only — NOT the think flag. Turning thinking off for one step
+        // re-renders the whole history (the engine puts an empty think block
+        // in front of every assistant turn when reasoning is off), so the
+        // prompt stops matching the cache and the conversation is read again
+        // from the beginning — twice, because the step after flips back.
+        // Measured on a 4B run: every zero-reuse round in the whole session
+        // was a step where this flag changed, and nothing else was. A repeated
+        // call is usually legitimate here anyway — re-running the tests after
+        // an edit is the same call and real progress.
         const first = currentPlan.find((t) => t.status !== "done")?.content;
         const note =
           call.name === "update_plan"
@@ -3023,7 +3031,6 @@ export async function runAgentTurn(
         // successful-looking call (round 14: plan → plan → plan → pause in
         // 49s). Keep its retry hot but thinking.
         hotNext = true;
-        if (!uiRepeatOk && call.name !== "update_plan") forceNoThinkNext = true;
         // A failed BUILD/TEST command re-sent verbatim is hoping, not
         // verifying (round 23: three identical `swift build`s after a red).
         // The fix lives in the CODE at the file:line the error names.

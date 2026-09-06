@@ -29,7 +29,7 @@ import path from "node:path";
 import { Bridge } from "../lib/bridge.mts";
 
 type Msg = { role: string; content: string };
-type Call = { turn: number; msgs: Msg[]; promptTokens?: number; reused?: number; reply?: string };
+type Call = { turn: number; msgs: Msg[]; promptTokens?: number; reused?: number; reply?: string; think?: unknown; effort?: unknown };
 
 const bin =
   process.env.CHATY_HEADLESS_BIN ??
@@ -57,7 +57,8 @@ mockIPC(async (cmd: string, args?: Record<string, never>) => {
     role: String(m.role),
     content: String(m.content ?? "") + (m.reasoning_content ? ` R:${m.reasoning_content}` : ""),
   }));
-  const rec: Call = { turn, msgs, reply: "" };
+  const prm = (a.request as { params?: Record<string, unknown> })?.params ?? {};
+  const rec: Call = { turn, msgs, reply: "", think: prm.think, effort: prm.effort };
   calls.push(rec);
   // `generate` streams through `onEvent` — the same key bridge.ipc reads.
   // Getting this wrong hands the loop an empty reply and every measurement
@@ -114,7 +115,10 @@ for (let t = 1; t <= TURNS; t++) {
   turn = t;
   const replay = replayableTail(cards as never);
   const history = (replay ?? cards.map((c) => ({ role: c.role, content: c.text }))) as never;
-  const input = t === 1 ? TASK : "继续";
+  // FOLLOWUPS lets the audit reproduce the owner's shape: one long working
+  // turn, then a run of short questions that call no tools at all.
+  const followups = (process.env.FOLLOWUPS ?? "").split("|").filter(Boolean);
+  const input = t === 1 ? TASK : (followups[t - 2] ?? "继续");
   cards.push({ role: "user", text: input, steps: [] });
   const asst: Card = { role: "assistant", text: "", steps: [] };
   cards.push(asst);
@@ -222,7 +226,8 @@ for (let i = 0; i < calls.length; i++) {
   console.log(
     `t${c.turn} #${String(i).padStart(2)} msgs=${String(c.msgs.length).padStart(3)}` +
       ` prompt=${String(c.promptTokens ?? "?").padStart(6)}` +
-      ` reused=${String(c.reused ?? "?").padStart(6)} (${String(pct).padStart(3)}%)  ${note}${stored}`,
+      ` reused=${String(c.reused ?? "?").padStart(6)} (${String(pct).padStart(3)}%)` +
+      ` think=${String(c.think)} ${note}${stored}`,
   );
   if (process.env.SHOW_REPLIES === "1") {
     const r = c.reply ?? "";
