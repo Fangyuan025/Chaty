@@ -2073,6 +2073,12 @@ body.resizing-x {
   cursor: pointer;
   transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
 }
+/* Unavailable, not merely off: a switch that looks exactly like "off" but
+   refuses the click reads as a bug. The row's own hint says why. */
+.set-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .set-switch.on,
 .skill-row.on .skill-row-toggle {
   background: var(--accent);

@@ -64,6 +64,10 @@ export interface GenSettings {
   voiceSidZh: number;
   /** GPU offload: -1 = auto‑tune by VRAM, 0 = CPU only, >0 = that many layers. */
   gpuLayers: number;
+  /** Decode with the model's own multi-token-prediction head, on the models
+   *  that ship one. Experimental: it is a speedup on some models and a small
+   *  loss on others, and the app cannot tell which before trying. */
+  speculative: boolean;
   /** Context window to load the model with: 0 = memory-friendly default (≤8192),
    *  >0 = that many tokens (clamped to the model's trained length). */
   contextLength: number;
@@ -145,6 +149,7 @@ export const defaultSettings: GenSettings = {
   // stored from then on, so the Chinese interface can turn it off.
   chineseVoice: false,
   gpuLayers: -1,
+  speculative: true,
   contextLength: 0,
   ragTopK: 8,
   // 64, was 32: the CalendarApp repro showed 32 starves app-scale one-shots,
@@ -313,9 +318,24 @@ function LimitField({
   );
 }
 
-function Switch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+function Switch({
+  on,
+  onToggle,
+  disabled,
+}: {
+  on: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+}) {
   return (
-    <button type="button" role="switch" aria-checked={on} className={`set-switch ${on ? "on" : ""}`} onClick={onToggle}>
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      disabled={disabled}
+      className={`set-switch ${on ? "on" : ""}`}
+      onClick={onToggle}
+    >
       <span className="set-knob" />
     </button>
   );
@@ -329,6 +349,7 @@ export function SettingsPanel({
   maxTokensLimit = 4096,
   ctxTrainLimit,
   layersLimit,
+  specSupported,
   onReloadModel,
   reloading = false,
   onDataCleared,
@@ -342,6 +363,10 @@ export function SettingsPanel({
   /** The loaded model's layer count — ceiling for the GPU-offload slider
    *  (a hardcoded 80 clipped every deeper model). */
   layersLimit?: number | null;
+  /** The loaded model carries a multi-token-prediction head. `false`/absent
+   *  greys the speculative-decoding switch out: there is nothing for it to do
+   *  on a model that has no head. */
+  specSupported?: boolean;
   /** The loaded model's trained context length, used as the slider ceiling. */
   ctxTrainLimit?: number | null;
   /** Reload the current model so context/GPU changes take effect. Absent = no model. */
@@ -988,6 +1013,18 @@ export function SettingsPanel({
                   );
                 })()}
               <div className="settings-hint">{t("ctxHint")}</div>
+
+              <SetRow
+                label={`${t("specDecode")} · ${t("experimental")}`}
+                hint={specSupported ? t("specDecodeHint") : t("specDecodeUnsupported")}
+              >
+                <Switch
+                  on={value.speculative && !!specSupported}
+                  disabled={!specSupported}
+                  onToggle={() => set("speculative", !value.speculative)}
+                />
+              </SetRow>
+
               {onReloadModel && (
                 <button className="settings-reload" onClick={onReloadModel} disabled={reloading}>
                   {reloading ? "…" : t("reloadApply")}

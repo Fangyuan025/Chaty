@@ -54,6 +54,12 @@ export interface ModelInfo {
   nCtxTrain?: number | null;
   nCtx?: number | null;
   nLayer?: number | null;
+  /** The model file carries a multi-token-prediction head, so speculative
+   *  decoding is available for it. Stays true when the setting is off — it is
+   *  what the settings switch is enabled on. */
+  speculative: boolean;
+  /** Speculative decoding is actually running for this load. */
+  speculativeOn: boolean;
   gpuLayers: number;
   gpuName?: string | null;
   modelName?: string | null;
@@ -513,11 +519,18 @@ export async function loadModel(
   path: string,
   gpuLayers?: number,
   nCtx?: number,
+  speculative?: boolean,
   onProgress?: (p: LoadProgress) => void,
 ): Promise<ModelInfo> {
   const channel = new Channel<LoadProgress>();
   if (onProgress) channel.onmessage = onProgress;
-  return await invoke<ModelInfo>("load_model", { path, gpuLayers, nCtx, onProgress: channel });
+  return await invoke<ModelInfo>("load_model", {
+    path,
+    gpuLayers,
+    nCtx,
+    speculative,
+    onProgress: channel,
+  });
 }
 
 export async function getModel(): Promise<ModelInfo | null> {

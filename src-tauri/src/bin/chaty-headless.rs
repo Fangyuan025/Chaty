@@ -93,7 +93,7 @@ fn res<T: serde::Serialize>(r: Result<T, String>) -> Result<Value, String> {
     r.and_then(ok)
 }
 
-fn load_engine(path: &str, n_ctx: Option<u32>) -> Result<ModelInfo, String> {
+fn load_engine(path: &str, n_ctx: Option<u32>, speculative: bool) -> Result<ModelInfo, String> {
     let (engine, info): (Engine, ModelInfo) = if path == "mock" {
         let e = MockBackend::new("mock");
         let info = ModelInfo {
@@ -107,6 +107,8 @@ fn load_engine(path: &str, n_ctx: Option<u32>) -> Result<ModelInfo, String> {
             n_ctx_train: Some(16384),
             n_ctx,
             n_layer: None,
+            speculative: false,
+            speculative_on: false,
             gpu_layers: 0,
             gpu_name: None,
             model_name: Some("mock".into()),
@@ -127,10 +129,10 @@ fn load_engine(path: &str, n_ctx: Option<u32>) -> Result<ModelInfo, String> {
         };
         (Arc::new(e), info)
     } else if Path::new(path).join("config.json").is_file() {
-        let (e, info) = MlxEngine::load(path, n_ctx, |_| {}).map_err(|e| e.to_string())?;
+        let (e, info) = MlxEngine::load(path, n_ctx, speculative, |_| {}).map_err(|e| e.to_string())?;
         (Arc::new(e), info)
     } else {
-        let (e, info) = LlamaEngine::load(path, None, n_ctx).map_err(|e| e.to_string())?;
+        let (e, info) = LlamaEngine::load(path, None, n_ctx, speculative).map_err(|e| e.to_string())?;
         (Arc::new(e), info)
     };
     if let Some(old) = engine_slot().lock().unwrap().replace(engine) {
@@ -144,8 +146,10 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
         "load_model" => {
             let path = req_s(&args, "path");
             let n_ctx = u_arg(&args, "n_ctx").map(|v| v as u32);
+            // Mirrors the Tauri command: absent means the setting's default.
+            let speculative = b_arg(&args, "speculative").unwrap_or(true);
             match path {
-                Ok(p) => res(load_engine(&p, n_ctx)),
+                Ok(p) => res(load_engine(&p, n_ctx, speculative)),
                 Err(e) => Err(e),
             }
         }

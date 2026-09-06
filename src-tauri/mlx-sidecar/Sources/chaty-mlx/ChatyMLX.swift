@@ -67,6 +67,10 @@ struct WireCmd: Decodable {
     let cmd: String
     let path: String?
     let nCtx: Int?
+    /// Decode with the checkpoint's multi-token-prediction head when it has
+    /// one. Absent means yes — an older caller that does not know about the
+    /// setting gets the behaviour the setting defaults to.
+    let speculative: Bool?
     let messages: [WireMessage]?
     let params: WireParams?
 }
@@ -944,7 +948,7 @@ final class Engine: @unchecked Sendable {
     /// a visible gap (mirrors the llama.cpp engine's behaviour).
     static let prefillEventThreshold = 256
 
-    func load(path: String, nCtx: Int?) async {
+    func load(path: String, nCtx: Int?, speculative: Bool) async {
         let dir = URL(fileURLWithPath: path)
         var meta = inspectModelDir(dir)
         var loadWarning: String?
@@ -1019,7 +1023,8 @@ final class Engine: @unchecked Sendable {
             // A checkpoint that ships a multi-token-prediction head gets one
             // loaded now; everything else carries on exactly as before. A head
             // that cannot be loaded costs the speedup, never the model.
-            let (mtp, mtpNote) = MTPSetup.discover(directory: dir)
+            let mtpDeclared = MTPSetup.declared(directory: dir)
+            let (mtp, mtpNote) = MTPSetup.discover(directory: dir, enabled: speculative)
             self.mtp = mtp
             if let mtpNote {
                 FileHandle.standardError.write(Data(("chaty-mlx: " + mtpNote + "\n").utf8))
@@ -1124,6 +1129,12 @@ final class Engine: @unchecked Sendable {
                 // browsing session look like it re-read everything from scratch.
                 // Qwen3.5/3.6 take three without complaint.
                 "multiImage": (meta.arch ?? "").lowercased() != "gemma4",
+                // Whether the checkpoint carries a multi-token-prediction head,
+                // and whether one is running. The first stays true with the
+                // feature switched off — it is what the app offers the switch
+                // on.
+                "speculative": mtpDeclared,
+                "speculativeOn": mtp != nil,
             ]
             if let v = meta.arch { info["arch"] = v }
             if let v = meta.nLayer { info["nLayer"] = v }
@@ -2333,7 +2344,8 @@ struct ChatyMLX {
                         out.error("load 缺少 path (load requires path)")
                         continue
                     }
-                    await engine.load(path: path, nCtx: cmd.nCtx)
+                    await engine.load(
+                        path: path, nCtx: cmd.nCtx, speculative: cmd.speculative ?? true)
                 case "generate":
                     guard let messages = cmd.messages else {
                         out.error("generate 缺少 messages (generate requires messages)")

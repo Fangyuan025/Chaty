@@ -457,7 +457,16 @@ impl LlamaEngine {
     ///
     /// `gpu_pref`: `None`/negative = auto‑tune by VRAM, `Some(0)` = force CPU,
     /// `Some(n>0)` = offload exactly `n` layers.
-    pub fn load(path: &str, gpu_pref: Option<i32>, n_ctx_pref: Option<u32>) -> Result<(Self, ModelInfo)> {
+    /// `speculative` is the user's setting for decoding with the model's own
+    /// multi-token-prediction head. It only matters for a model that HAS one;
+    /// the returned `ModelInfo` reports both facts separately so the UI can
+    /// offer the switch on exactly the models it does something for.
+    pub fn load(
+        path: &str,
+        gpu_pref: Option<i32>,
+        n_ctx_pref: Option<u32>,
+        speculative: bool,
+    ) -> Result<(Self, ModelInfo)> {
         let backend = llama_backend()?;
         if !Path::new(path).exists() {
             bail!(trf!("找不到模型文件:{path}", "model file not found: {path}"));
@@ -536,10 +545,13 @@ impl LlamaEngine {
         let mut oom_fallback = false;
         // Whether this file carries an MTP head, decided from metadata before
         // the weights are read — `load_mtp` has to be set on the load itself.
-        // An off switch, for comparing against plain decoding and for backing
-        // out of the head without rebuilding.
-        let mtp = std::env::var("CHATY_MTP").as_deref() != Ok("0")
-            && probe_mtp_layers(backend, path) > 0;
+        // Whether the FILE has a head, and whether it will be used. The first
+        // is what the settings switch is enabled on, so it is read even when
+        // the switch is off. `CHATY_MTP=0` overrides the setting — a way to
+        // compare against plain decoding without touching the UI.
+        let has_head = probe_mtp_layers(backend, path) > 0;
+        let mtp =
+            has_head && speculative && std::env::var("CHATY_MTP").as_deref() != Ok("0");
         let (model, tx, handle, mtmd_err) = loop {
             let params = LlamaModelParams::default()
                 .with_n_gpu_layers(layers.max(0) as u32)
@@ -795,6 +807,8 @@ impl LlamaEngine {
             n_ctx_train: Some(n_ctx_train),
             n_ctx: Some(n_ctx),
             n_layer: Some(model.n_layer()),
+            speculative: has_head,
+            speculative_on: mtp,
             gpu_layers,
             gpu_name,
             model_name,
@@ -4827,7 +4841,7 @@ mod vision_engine {
                 return;
             }
         };
-        let (engine, info) = LlamaEngine::load(&model_path, None, Some(4096)).expect("load");
+        let (engine, info) = LlamaEngine::load(&model_path, None, Some(4096), true).expect("load");
         eprintln!("vision_ready={} mmproj={:?} warning={:?}", info.vision_ready, info.mmproj, info.warning);
         assert!(info.multimodal, "VLM must be flagged multimodal");
         assert!(info.vision_ready, "mmproj must be paired and loaded");
@@ -4912,7 +4926,7 @@ mod vision_engine {
             eprintln!("SKIP: no Chrome"); return;
         }
         std::env::set_var("CHATY_BROWSER_HEADLESS", "1");
-        let (engine, info) = LlamaEngine::load(&model_path, None, Some(4096)).expect("load");
+        let (engine, info) = LlamaEngine::load(&model_path, None, Some(4096), true).expect("load");
         assert!(info.vision_ready);
 
         let html = "<!doctype html><html><head><title>Invoice</title></head>\
@@ -6740,7 +6754,7 @@ mod gguf_kv_e2e {
             eprintln!("SKIP: set CHATY_TEST_GGUF=/path/to/model.gguf");
             return;
         };
-        let (engine, info) = LlamaEngine::load(&path, None, Some(4096)).expect("load");
+        let (engine, info) = LlamaEngine::load(&path, None, Some(4096), true).expect("load");
         eprintln!("arch: {:?}", info.arch);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let run = |content: &str| -> String {
@@ -6839,7 +6853,7 @@ mod mtp_head {
         let question = "Name the capital of France. Answer with one word only.";
 
         MTP_TOKENS_WON.store(0, Ordering::Relaxed);
-        let (engine, _) = LlamaEngine::load(&path, None, Some(2048)).expect("load with head");
+        let (engine, _) = LlamaEngine::load(&path, None, Some(2048), true).expect("load with head");
         let with_head = ask(&engine, question);
         let won = MTP_TOKENS_WON.load(Ordering::Relaxed);
         engine.unload();
@@ -6865,7 +6879,7 @@ mod mtp_head {
         // --test-threads=1, which loading a model at all already requires.
         unsafe { std::env::set_var("CHATY_MTP", "0") };
         MTP_TOKENS_WON.store(0, Ordering::Relaxed);
-        let (engine, _) = LlamaEngine::load(&path, None, Some(2048)).expect("load without head");
+        let (engine, _) = LlamaEngine::load(&path, None, Some(2048), true).expect("load without head");
         let plain = ask(&engine, "Name the capital of France. Answer with one word only.");
         engine.unload();
         unsafe { std::env::remove_var("CHATY_MTP") };

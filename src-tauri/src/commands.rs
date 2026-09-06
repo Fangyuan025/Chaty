@@ -53,6 +53,7 @@ pub async fn load_model(
     path: String,
     gpu_layers: Option<i32>,
     n_ctx: Option<u32>,
+    speculative: Option<bool>,
     on_progress: Channel<LoadProgress>,
 ) -> Result<ModelInfo, String> {
     // Stored paths from before the folder-layout migration point at
@@ -110,6 +111,11 @@ pub async fn load_model(
                 .into(),
         );
     }
+
+    // Decode with the model's own multi-token-prediction head when it has one.
+    // `None` means yes, so a caller that predates the setting behaves the way
+    // the setting defaults.
+    let speculative = speculative.unwrap_or(true);
 
     let _ = on_progress.send(LoadProgress { phase: "eject", frac: 0.0 });
 
@@ -228,7 +234,7 @@ pub async fn load_model(
         let chan = on_progress.clone();
         let gate = gate.clone();
         tokio::task::spawn_blocking(move || {
-            crate::inference::mlx::MlxEngine::load(&path, n_ctx, move |frac| {
+            crate::inference::mlx::MlxEngine::load(&path, n_ctx, speculative, move |frac| {
                 if gate.permit(frac) {
                     let _ = chan.send(LoadProgress { phase: "weights", frac });
                 }
@@ -238,7 +244,7 @@ pub async fn load_model(
         .await
     } else {
         tokio::task::spawn_blocking(move || {
-            LlamaEngine::load(&path, gpu_layers, n_ctx)
+            LlamaEngine::load(&path, gpu_layers, n_ctx, speculative)
                 .map(|(engine, info)| (Arc::new(engine) as Arc<dyn InferenceBackend>, info))
         })
         .await

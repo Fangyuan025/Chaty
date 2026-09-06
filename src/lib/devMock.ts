@@ -21,6 +21,10 @@ const MODEL = {
   nCtxTrain: 262144,
   nCtx: 40960,
   nLayer: 48,
+  // The preview exercises the enabled half of the speculative-decoding switch;
+  // the disabled half is what every model without a head shows.
+  speculative: true,
+  speculativeOn: true,
   gpuLayers: 48,
   gpuName: "Apple M4 Pro",
   modelName: "Qwen3.6 35B A3B",

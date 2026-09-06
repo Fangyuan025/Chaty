@@ -208,6 +208,17 @@ pub struct ModelInfo {
     pub multi_image: bool,
     /// Path of the paired mmproj GGUF, when one was found.
     pub mmproj: Option<String>,
+    /// The model file carries a multi-token-prediction head — the extra block
+    /// speculative decoding guesses with. A capability of the FILE, so it stays
+    /// true when the user has the feature switched off; the settings toggle is
+    /// enabled on this and greyed out on everything else.
+    #[serde(default)]
+    pub speculative: bool,
+    /// Speculative decoding is actually running for this load: the model has a
+    /// head, the setting allows it, and the head loaded. Never true when
+    /// `speculative` is false.
+    #[serde(default)]
+    pub speculative_on: bool,
     /// Non-fatal load warning code for the UI (e.g. "gpu-oom" when the GPU
     /// offload had to be reduced to fit memory). `None` on a clean load.
     pub warning: Option<String>,

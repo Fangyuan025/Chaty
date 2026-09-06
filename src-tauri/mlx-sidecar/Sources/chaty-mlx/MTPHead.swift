@@ -298,11 +298,36 @@ struct MTPSetup {
     /// The depth to draft at this round.
     func nextDepth() -> Int { tuner?.begin() ?? depth }
 
+    /// Whether this checkpoint carries a head this implementation can serve —
+    /// read from the files, with nothing loaded.
+    ///
+    /// Separate from `discover` because it answers a different question. This
+    /// one decides whether the app offers speculative decoding for the model at
+    /// all; `discover` decides whether it is running right now. Turning the
+    /// feature off must not make the switch that turns it back on disappear.
+    static func declared(directory: URL) -> Bool {
+        guard let data = try? Data(contentsOf: directory.appending(component: "config.json")),
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let extra = root["mlx_lm_extra_tensors"] as? [String: Any],
+            extra["mtp_file"] is String
+        else { return false }
+        guard
+            let contractData = try? JSONSerialization.data(
+                withJSONObject: (root["mtplx_mtp_contract"] as? [String: Any]) ?? [:]),
+            let contract = try? JSONDecoder().decode(MTPContract.self, from: contractData)
+        else { return false }
+        return contract.isSupported
+    }
+
     /// Read `config.json` + `mtplx_runtime.json` and load the head if both the
     /// file and the contract are ones this implementation can serve.
-    static func discover(directory: URL) -> (setup: MTPSetup?, note: String?) {
-        // An off switch, for comparing against plain decoding and for backing
-        // out of the head without rebuilding.
+    ///
+    /// `enabled` is the user's setting; `CHATY_MLX_MTP=0` overrides it, for
+    /// comparing against plain decoding without touching the UI.
+    static func discover(directory: URL, enabled: Bool) -> (setup: MTPSetup?, note: String?) {
+        if !enabled {
+            return (nil, nil)  // switched off: an ordinary load, nothing to report
+        }
         if ProcessInfo.processInfo.environment["CHATY_MLX_MTP"] == "0" {
             return (nil, "MTP head disabled (CHATY_MLX_MTP=0)")
         }

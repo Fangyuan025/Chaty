@@ -518,6 +518,16 @@ export const T = {
   gpuOff: { zh: "关闭", en: "Off", pt: "Desligado" },
   gpuCustom: { zh: "自定义", en: "Custom", pt: "Personalizado" },
   gpuLayersLabel: { zh: "GPU 层数", en: "GPU layers", pt: "Camadas na GPU" },
+  specDecode: { zh: "推测解码", en: "Speculative decoding", pt: "Decodificação especulativa" },
+  experimental: { zh: "实验性", en: "experimental", pt: "experimental" },
+  specDecodeHint: {
+    zh: "用模型自带的预测头先猜出接下来的几个词，再让模型一次性校验，回答内容不变、只是更快。加速幅度随模型和内容而定，更改将在下次加载模型时生效。",
+    en: "The model's own prediction head guesses the next few tokens and the model checks them in one pass — same reply, fewer passes. How much it helps depends on the model and on what is being written. Changes apply on the next model load.",
+  },
+  specDecodeUnsupported: {
+    zh: "当前模型不带预测头，无法使用。",
+    en: "The loaded model carries no prediction head, so there is nothing to speculate with.",
+  },
   gpuHint: {
     zh: "自动模式会按显存把尽量多的层放到 GPU。更改将在下次加载模型时生效。",
     en: "Auto fills the GPU with as many layers as VRAM allows. Changes apply on the next model load.", pt: "Auto preenche a GPU com o máximo de camadas que a VRAM permitir. As alterações se aplicam no próximo carregamento de modelo."

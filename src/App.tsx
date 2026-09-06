@@ -665,7 +665,7 @@ export default function App() {
         if (!target) return;
         setLoadingModel(true);
         try {
-          const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
+          const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress);
           // A different tokenizer charges differently — start the ratio over.
           resetCalibration();
           setModel(info);
@@ -1422,7 +1422,7 @@ export default function App() {
     if (busy || model?.path === path) return;
     setLoadingModel(true);
     try {
-      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress);
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -1442,7 +1442,7 @@ export default function App() {
     if (!model || busy || loadingModel) return;
     setLoadingModel(true);
     try {
-      const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
+      const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress);
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -1505,7 +1505,7 @@ export default function App() {
       const path = await pickModelFolder();
       if (!path) return;
       setLoadingModel(true);
-      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, onLoadProgress);
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress);
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -2798,6 +2798,7 @@ export default function App() {
             maxTokensLimit={Math.max(1024, model?.nCtx ?? 4096)}
             ctxTrainLimit={model?.nCtxTrain}
             layersLimit={model?.nLayer}
+            specSupported={model?.speculative}
             onReloadModel={model ? () => void reloadModel() : undefined}
             reloading={loadingModel}
             onDataCleared={() => {
