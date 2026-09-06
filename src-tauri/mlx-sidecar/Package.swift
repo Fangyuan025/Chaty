@@ -22,6 +22,15 @@ let package = Package(
         .package(
             url: "https://github.com/Fangyuan025/mlx-swift-lm",
             revision: "c11767bc3aa01f33683ef39fa5adb9ad47f214ef"),
+        // Root-level pin: mlx-swift 0.31.5 raised its manifest to Swift tools
+        // 6.3, which only Xcode 26 speaks — and the release runner builds the
+        // Metal shaders with Xcode 16 (Xcode 26 ships its Metal toolchain as a
+        // separate download). The fork above is pinned to a revision rather
+        // than a range, so SwiftPM can no longer back off to a version whose
+        // manifest the installed toolchain can read, and resolution simply
+        // fails. 0.31.4 is the newest whose manifest a 6.1 toolchain reads.
+        // Drop this once the runner builds Metal with Xcode 26.
+        .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.4"),
         // mlx-swift-lm is tokenizer-agnostic; the swift-transformers tokenizer
         // is injected in OUR module via MLXHuggingFace's macros.
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.0.0"),
