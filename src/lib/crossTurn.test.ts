@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 (globalThis as Record<string, unknown>).window = globalThis;
 const { mockIPC } = await import("@tauri-apps/api/mocks");
 mockIPC(() => Promise.resolve(null));
-const { replayableTail } = await import("./agentLoop");
+const { replayableTail, storeAssistantTurn } = await import("./agentLoop");
 
 type Tail = NonNullable<Parameters<typeof replayableTail>[0][number]["prompt"]>;
 type Msg = { role: string; prompt?: Tail };
@@ -50,5 +50,28 @@ describe("a turn continues from what the last one actually sent", () => {
 
   test("an empty record is not a record", () => {
     expect(replayableTail([{ role: "assistant", prompt: [] }])).toBeNull();
+  });
+});
+
+describe("a stored turn reproduces what the model generated", () => {
+  test("the tool-call closer trimmed by the stop sequence is put back", () => {
+    const msgs: { role: string; content: string; reasoning_content?: string }[] = [];
+    // What the app receives: generation stopped AT `</tool_call>`, so the
+    // closer is not in the text even though the model produced it.
+    storeAssistantTurn(msgs as never, '<think>\nplan\n</think>\n\n<tool_call>{"name":"ls"}', false);
+    expect(msgs[0].content.endsWith("</tool_call>")).toBe(true);
+  });
+
+  test("a turn that already closes its call is left alone", () => {
+    const msgs: { role: string; content: string }[] = [];
+    const turn = '<tool_call>{"name":"ls"}</tool_call>';
+    storeAssistantTurn(msgs as never, turn, false);
+    expect(msgs[0].content).toBe(turn);
+  });
+
+  test("prose with no call is untouched", () => {
+    const msgs: { role: string; content: string }[] = [];
+    storeAssistantTurn(msgs as never, "all done", false);
+    expect(msgs[0].content).toBe("all done");
   });
 });

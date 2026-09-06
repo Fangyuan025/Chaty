@@ -601,6 +601,17 @@ export function storeAssistantTurn(
   turn: string,
   reasoningField: boolean | undefined,
 ): void {
+  // Generation stops AT `</tool_call>` (it is a stop sequence), and the stop
+  // text is trimmed from what the app receives — but the model produced those
+  // tokens and the engine has them in its cache. A turn stored without the
+  // closer is four tokens shorter than what the cache holds, and on a hybrid
+  // model that is not a four-token trim: its recurrent layers cannot be
+  // rewound, so the whole conversation is re-read. Measured on a 35B run: one
+  // round in thirty-two matched 5006 of 5010 cached tokens and threw all 5006
+  // away. Put the closer back, which is also what the model actually wrote.
+  const opened = turn.split("<tool_call>").length - 1;
+  const closed = turn.split("</tool_call>").length - 1;
+  if (opened > closed) turn += "</tool_call>";
   // Where the template reads thinking from its own field, the content must
   // hold the answer alone — leaving it inline reaches such a template as an
   // empty thought followed by this turn's markup.
@@ -2635,7 +2646,7 @@ export async function runAgentTurn(
           // and EVERY remaining step of the turn re-read the transcript. The
           // recovery paths are exactly where a session is already struggling;
           // they are the worst place to also make it slow.
-          messages.push({ role: "assistant", content: raw });
+          storeAssistantTurn(messages, raw, opts.reasoningField);
           pushUser(
             lang === "zh"
               ? '你上一个工具调用的格式无效。请严格用一行 <tool_call>{"name":"...","arguments":{...}}</tool_call> 重新调用。'
