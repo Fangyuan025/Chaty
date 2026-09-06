@@ -68,8 +68,8 @@ struct WireCmd: Decodable {
     let path: String?
     let nCtx: Int?
     /// Decode with the checkpoint's multi-token-prediction head when it has
-    /// one. Absent means yes — an older caller that does not know about the
-    /// setting gets the behaviour the setting defaults to.
+    /// one. Absent means no, matching the setting's default: a caller that
+    /// does not ask for it does not get it.
     let speculative: Bool?
     let messages: [WireMessage]?
     let params: WireParams?
@@ -1029,11 +1029,20 @@ final class Engine: @unchecked Sendable {
             if let mtpNote {
                 FileHandle.standardError.write(Data(("chaty-mlx: " + mtpNote + "\n").utf8))
             } else if let mtp {
+                // Run one speculative round's worth of shapes now, on a
+                // throwaway cache, so the FIRST reply does not pay to compile
+                // them. Metal builds a pipeline per kernel and batch width the
+                // first time it sees one, and speculation introduces widths
+                // plain decoding never uses: measured at 6 seconds spread
+                // across the first reply, which read as the head being slow
+                // rather than as a one-off.
+                await warmSpeculation(mtp)
                 FileHandle.standardError.write(
                     Data(
                         ("chaty-mlx: MTP head loaded ("
-                            + (mtp.tuner == nil
-                                ? "depth \(mtp.depth), pinned" : "depth chosen by measurement")
+                            + (mtp.governor == nil
+                                ? "depth \(mtp.depth), pinned"
+                                : "depth ≤\(mtp.depth), gated by confidence")
                             + ")\n").utf8))
             }
             // Ask the loaded template itself, rather than guessing from a name.
@@ -1946,6 +1955,7 @@ final class Engine: @unchecked Sendable {
         var mtpAccepted = 0
         var mtpHits: [Int] = []
         var mtpTries: [Int] = []
+        var mtpDeclined = 0
         // Both of these end at a read-back, which synchronises — so wall time
         // around them is the real cost, with nothing extra forced.
         var tDraft = 0.0, tVerify = 0.0, redos = 0
@@ -1975,11 +1985,24 @@ final class Engine: @unchecked Sendable {
         }
 
         /// Sample from a hidden state the head produced, leaving the answer
-        /// on the GPU so the next guess can be fed from it directly.
-        func draftFrom(_ h: MLXArray) -> MLXArray? {
+        /// on the GPU so the next guess can be fed from it directly, along with
+        /// how sure the head is of it.
+        ///
+        /// The confidence comes back on the GPU too, so it costs no extra
+        /// synchronisation: it is read in the same round trip as the token id
+        /// that has to be read anyway.
+        func draftFrom(_ h: MLXArray) -> (id: MLXArray, p: MLXArray)? {
             guard let hiddenSource, let draftSampler else { return nil }
             let l = hiddenSource.logits(fromHidden: h)[0..., -1, 0...]
-            return draftSampler.sample(logits: l)
+            let id = draftSampler.sample(logits: l)
+            // The probability the head gives the token it just chose. Gathered
+            // with `takeAlong` rather than subscripted by a lazy index: the
+            // sampler's answer is an array on the GPU, and using it as a
+            // subscript takes the sidecar down.
+            let p = MLX.takeAlong(
+                MLX.softmax(l.asType(.float32), axis: -1), id.reshaped(1, 1), axis: -1
+            ).reshaped(1)
+            return (id, p)
         }
 
         /// Refill `settled` by drafting `depth` tokens and having the trunk
@@ -1998,17 +2021,46 @@ final class Engine: @unchecked Sendable {
             // is most of what a round wins.
             let tD0 = Date()
             var draftIds: [MLXArray] = []
+            var draftPs: [MLXArray] = []
             var h = h0
             var previous = MLXArray([Int32(tok)])
             for _ in 0 ..< depth {
                 let e = hiddenSource.embed(previous)[.newAxis]
                 h = speculation.head(embedding: e, hidden: h, cache: mtpCache.first)
                 guard let next = draftFrom(h) else { return false }
-                draftIds.append(next)
-                previous = next
+                draftIds.append(next.id)
+                draftPs.append(next.p)
+                previous = next.id
             }
-            let drafts = concatenated(draftIds).asArray(Int32.self).map(Int.init)
+            let headSteps = draftIds.count
+            var drafts = concatenated(draftIds).asArray(Int32.self).map(Int.init)
+            let confidence = concatenated(draftPs).asArray(Float.self)
             if mtpStats { tDraft += Date().timeIntervalSince(tD0) }
+
+            // Keep only the guesses the head is actually sure of, and stop at
+            // the first one it is not.
+            //
+            // This is what makes a round safe to take. A guess that survives
+            // wins a token; a guess that does not costs the round a WIDER
+            // trunk pass and then a second pass to put the recurrent layers
+            // back where they were — three quarters of this model's layers
+            // cannot be rewound, only re-run. So a wrong guess costs about two
+            // and a half plain steps, and at that price a round only pays if
+            // it is right most of the time. Measured throughput cannot tell
+            // this apart in advance; the head's own confidence can, and it
+            // knows per token rather than per few dozen.
+            if let weak = confidence.firstIndex(where: { $0 < speculation.minConfidence }) {
+                drafts.removeSubrange(weak...)
+            }
+            if drafts.isEmpty {
+                // Nothing worth checking. Give the head back the positions it
+                // read while deciding — it cannot re-read a position it still
+                // holds — and let the caller take an ordinary step.
+                for c in mtpCache { _ = c.trim(headSteps) }
+                if mtpStats { mtpDeclined += 1 }
+                speculation.governor?.record(extra: 0)
+                return false
+            }
 
             // One pass over the token AND every guess: the trunk's answer at
             // each position is the token that really follows it. Leaving the
@@ -2116,14 +2168,14 @@ final class Engine: @unchecked Sendable {
             // The head read one position per guess; the guesses that did not
             // survive have to leave its context too, or every later round
             // attends to tokens the answer never contained.
-            let headOvershoot = drafts.count - (kept - 1)
+            let headOvershoot = headSteps - (kept - 1)
             if headOvershoot > 0 {
                 for c in mtpCache { _ = c.trim(headOvershoot) }
             }
 
             trunkHidden = lastHidden[0..., (kept - 1) ..< kept, 0...]
             settled = accepted
-            speculation.tuner?.credit(accepted.count)
+            speculation.governor?.record(extra: max(0, accepted.count - 1))
             return !settled.isEmpty
         }
 
@@ -2150,9 +2202,12 @@ final class Engine: @unchecked Sendable {
             var logits: MLXArray? = nil
             if let speculation {
                 if settled.isEmpty {
-                    let depth = speculation.nextDepth()
-                    if depth > 0 {
-                        _ = speculate(from: tok, depth: depth)
+                    // The governor can put the head down for a stretch; when it
+                    // has, this decodes exactly as it would with no head at
+                    // all — no guess, no head pass, nothing to pay back.
+                    let run = speculation.governor?.shouldSpeculate() ?? true
+                    if run {
+                        _ = speculate(from: tok, depth: speculation.depth)
                     } else if let step = trunkEval([tok]) {
                         // Plain decoding, but down the path that keeps hidden
                         // states: the next round can only guess if it has the
@@ -2161,7 +2216,6 @@ final class Engine: @unchecked Sendable {
                         asyncEval(step.logits)
                         trunkHidden = step.hidden[0..., (step.hidden.dim(1) - 1)..., 0...]
                         logits = step.logits
-                        speculation.tuner?.credit(1)
                     }
                 }
             } else {
@@ -2204,21 +2258,19 @@ final class Engine: @unchecked Sendable {
             log("WHOLE[\(whole.count)]>>>" + whole + "<<<END")
             log("MATCH=\(dumpStreamed == whole)")
         }
-        speculation?.tuner?.end()
         if mtpStats, mtpRounds > 0 {
             let rates = zip(mtpHits, mtpTries).map { t in
                 t.1 > 0 ? String(format: "%.3f", Double(t.0) / Double(t.1)) : "-"
             }
             FileHandle.standardError.write(
                 Data(
-                    ("chaty-mlx: MTP rounds=\(mtpRounds) tokens=\(mtpAccepted) "
+                    ("chaty-mlx: MTP rounds=\(mtpRounds) declined=\(mtpDeclined) tokens=\(mtpAccepted) "
                         + "per-token=\(String(format: "%.2f", Double(mtpAccepted) / Double(mtpRounds))) "
                         + "acceptance=[\(rates.joined(separator: ", "))] "
                         + "draft=\(String(format: "%.1f", tDraft))s verify=\(String(format: "%.1f", tVerify))s "
                         + "redos=\(redos)"
-                        + (speculation?.tuner.map {
-                            " depth=\($0.settled) tok/s-by-depth=[\($0.summary)]"
-                        } ?? "") + "\n").utf8))
+                        + (speculation?.governor.map { " " + $0.summary } ?? "")
+                        + "\n").utf8))
         }
         let dt = max(Date().timeIntervalSince(started), 0.001)
         self.finish(
@@ -2226,6 +2278,27 @@ final class Engine: @unchecked Sendable {
             generated: recorded + generatedIds, images: imageKeys, state: recordedState,
             evaluated: total + done, reused: reused,
             lastGeneratedIds: generatedIds, lastTokenizer: context.tokenizer)
+    }
+
+    /// Compile what a speculative round needs, before a reply needs it.
+    private func warmSpeculation(_ mtp: MTPSetup) async {
+        guard let container else { return }
+        await container.perform { context in
+            guard let hiddenSource = context.model as? HiddenStateProviding else { return }
+            let cache = context.model.newCache(parameters: nil)
+            let ids = MLXArray([Int32(0), Int32(0)])
+            let t = LMInput.Text(tokens: ids)
+            // The widths a round uses: two for the verify pass, one for the
+            // ordinary step a declined round falls back to.
+            let (out, h) = withPreparedCache(cache, lengths: t.sequenceLengths) {
+                hiddenSource.hiddenStates(t[text: .newAxis], cache: cache, state: nil)
+            }
+            let e = hiddenSource.embed(ids[0 ..< 1])[.newAxis]
+            let hh = mtp.head(
+                embedding: e, hidden: h[0..., 0 ..< 1, 0...], cache: mtp.head.newCache().first)
+            let l = hiddenSource.logits(fromHidden: hh)[0..., -1, 0...]
+            eval(out.logits, MLX.softmax(l.asType(.float32), axis: -1))
+        }
     }
 
     private func finish(
@@ -2345,7 +2418,7 @@ struct ChatyMLX {
                         continue
                     }
                     await engine.load(
-                        path: path, nCtx: cmd.nCtx, speculative: cmd.speculative ?? true)
+                        path: path, nCtx: cmd.nCtx, speculative: cmd.speculative ?? false)
                 case "generate":
                     guard let messages = cmd.messages else {
                         out.error("generate 缺少 messages (generate requires messages)")

@@ -287,16 +287,24 @@ extension MTPHead {
 /// is every model but this family and is not an error.
 struct MTPSetup {
     var head: MTPHead
-    /// The depth to draft at when nothing is measuring — a pinned override, or
-    /// the checkpoint's own default until `tuner` has an opinion.
+    /// How many guesses a round may make at most. The confidence gate decides
+    /// how many it actually makes — a run stops at the first guess the head is
+    /// unsure of — so this is a ceiling rather than a length.
     var depth: Int
     var sampler: MTPSampler
-    /// Measures the depth instead of trusting the checkpoint. `nil` when the
-    /// depth was pinned by hand.
-    var tuner: MTPDepthTuner?
+    /// Watches whether the head is earning the cost of being run at all.
+    /// `nil` when the depth was pinned by hand, which is a request to measure
+    /// one configuration rather than to be governed.
+    var governor: MTPGovernor?
+    /// How sure the head has to be of a guess before it is worth checking.
+    ///
+    /// Not a quality knob — every emitted token is drawn from the trunk either
+    /// way. It is a price: on this architecture a rejected guess costs about
+    /// two and a half plain steps, so a round is only worth taking when the
+    /// guess is very likely right.
+    var minConfidence: Float = 0.5
 
-    /// The depth to draft at this round.
-    func nextDepth() -> Int { tuner?.begin() ?? depth }
+
 
     /// Whether this checkpoint carries a head this implementation can serve —
     /// read from the files, with nothing loaded.
@@ -381,22 +389,34 @@ struct MTPSetup {
                 directory: directory, file: file, config: cfg, contract: runtime.mtpContract,
                 bits: (quant?["bits"] as? Int) ?? 8,
                 groupSize: (quant?["group_size"] as? Int) ?? 64)
-            let depth = max(1, min(runtime.mtpDepthDefault, runtime.mtpDepthMax))
-            // Pinning a depth turns the tuner off: an explicit number is an
-            // instruction, and a measurement that overrides it is a bug.
+            // How far ahead to guess, measured rather than taken from the
+            // checkpoint. Against 7.1 tok/s of plain decoding on an M4 Pro:
+            // one guess at a time gives 8.8-9.3 on a list of numbers, three
+            // gives 7.7-8.3 — and on code three is 6.9-7.3, SLOWER than not
+            // guessing. Three quarters of this model's layers are recurrent
+            // and cannot be rewound, so a rejected guess is paid for with a
+            // second pass to put them back; a deeper run is more chances to be
+            // wrong, and each one is dear.
+            let depth = max(1, min(runtime.mtpDepthDefault, runtime.mtpDepthMax, measuredDepthCap))
+            let minConfidence =
+                ProcessInfo.processInfo.environment["CHATY_MLX_MTP_PMIN"].flatMap(Float.init) ?? 0.5
+            // Pinning a depth also turns the governor off: an explicit
+            // configuration is an instruction to measure it, not to be
+            // second-guessed halfway through.
             if let override = ProcessInfo.processInfo.environment["CHATY_MLX_MTP_DEPTH"],
                 let d = Int(override), d >= 0
             {
                 return (
                     MTPSetup(
                         head: head, depth: max(0, min(d, runtime.mtpDepthMax)),
-                        sampler: runtime.recommendedDraftSampler, tuner: nil), nil
+                        sampler: runtime.recommendedDraftSampler, governor: nil,
+                        minConfidence: minConfidence), nil
                 )
             }
             return (
                 MTPSetup(
                     head: head, depth: depth, sampler: runtime.recommendedDraftSampler,
-                    tuner: MTPDepthTuner(maxDepth: runtime.mtpDepthMax)), nil
+                    governor: MTPGovernor(), minConfidence: minConfidence), nil
             )
         } catch {
             // A head that will not load is a lost speedup, not a lost model.
@@ -405,159 +425,99 @@ struct MTPSetup {
     }
 }
 
-/// Picks the draft depth from what the machine actually delivers.
+/// Decides whether the head is worth running at all right now.
 ///
-/// How many guesses are worth making is not a property of the checkpoint. A
-/// deeper run wins more tokens per round, but every extra guess costs a head
-/// step (with a full-vocabulary projection) and widens the batch the trunk has
-/// to verify — and when a guess is rejected the whole round pays for a redo.
-/// Where those curves cross depends on the GPU, on how loaded it is, and on
-/// what is being written: the same head that nearly halves the time on a list
-/// of numbers loses to plain decoding on ordinary prose. `mtp_depth_default` in
-/// the checkpoint knows none of that; on this machine following it costs about
-/// a third of the speedup.
+/// The confidence gate keeps the head from checking guesses it doubts, which
+/// is what stops a bad round from costing two and a half plain steps. What it
+/// cannot avoid is the head's OWN forward pass: deciding not to guess still
+/// costs one, and on text the head is never confident about — ordinary prose,
+/// where the next word is a real choice rather than the obvious continuation —
+/// that is paid on every token and buys nothing. Measured at about 2%.
 ///
-/// So the depth is measured instead of assumed, in BLOCKS of consecutive
-/// rounds rather than one round at a time. Changing the depth changes the width
-/// of the batch the trunk verifies, and the first round at a new width costs
-/// noticeably more than the ones after it. Timed one round at a time, every
-/// candidate measures the cost of switching to it rather than the cost of
-/// running it — which flatters whichever depth happens to be running already
-/// and makes the choice self-confirming. A block pays that cost once, throws
-/// away the rounds it lands on, and times the steady state.
+/// So the head is also watched at a coarser grain: over a window of rounds,
+/// how many tokens did it actually WIN? If the answer is "not enough to cover
+/// running it", it is put down for a while and the reply proceeds exactly as
+/// it would with no head at all — not approximately, exactly: `speculate` is
+/// not called, so there is nothing to pay for. It is picked back up
+/// periodically, because a reply that starts as prose may turn into a table.
 ///
-/// Depth 0 — "do not guess" — is one of the candidates, so a head that is not
-/// earning its keep on this text is simply switched off until it is.
-final class MTPDepthTuner {
-    /// Consecutive rounds spent at one depth before the choice is reconsidered.
-    private let blockLength = 12
-    /// Rounds at the start of a block that are not counted: the switch itself.
-    private let settling = 3
-    /// Rounds the winner runs before a rival is re-checked. Doubles up to
-    /// `probeCeiling` while the winner holds, so a settled turn spends almost
-    /// nothing on measurement; back to the floor the moment it changes.
-    private let probeFloor = 120
-    private let probeCeiling = 960
-    /// Old blocks fade at this rate, per counted round.
-    private let decay = 0.97
+/// Deliberately NOT a throughput measurement. Timing rounds means timing the
+/// machine, and the machine is doing other things; the count of tokens won is
+/// exact, free, and answers the only question that matters.
+/// The deepest run worth making on the hardware this has been measured on.
+/// A checkpoint that asks for more is asking for something that costs time
+/// here; `CHATY_MLX_MTP_DEPTH` overrides it for measuring another machine.
+let measuredDepthCap = 1
 
-    private struct Arm {
-        var tokens = 0.0
-        var seconds = 0.0
-        var rounds = 0
-        var rate: Double { seconds > 0 ? tokens / seconds : 0 }
-    }
+final class MTPGovernor {
+    /// Rounds the head gets to prove itself before the window is judged.
+    /// Short on purpose: every round in a window that turns out to be losing
+    /// was decoded at a loss, and a reply is only a few hundred rounds long.
+    private let window = 24
+    /// Extra tokens per attempt below which the head is not covering its cost.
+    ///
+    /// Set LOW on purpose — this is a floor for "clearly not working", not an
+    /// optimizer. Standing the head down changes WHICH positions it is later
+    /// judged on, so a threshold tight enough to act on ordinary text feeds
+    /// itself: a nap skips a stretch the head would have won, the next window
+    /// lands somewhere worse, and it naps again. Measured, that cost code —
+    /// which wins reliably — a seven percent reply. The head is left running
+    /// unless it is winning almost nothing at all.
+    private let worthwhile = 0.2
+    /// Tokens to wait before trying again, and the ceiling it backs off to.
+    /// Windows in a row that must come out badly before the head is put down.
+    /// One is not evidence: a single window of 24 rounds swings widely even on
+    /// text the head is doing well at, and acting on one silenced the head for
+    /// two whole replies in the middle of the content it wins most on.
+    private let strikes = 2
+    /// Tokens to wait before trying again. Short enough that a nap does not
+    /// swallow a whole reply — the writing changes within one.
+    private let restFloor = 192
+    private let restCeiling = 1536
 
-    private let depths: [Int]
-    private var arms: [Int: Arm]
+    private var attempts = 0
+    private var won = 0
+    private var bad = 0
+    private var rest = 0  // tokens still to pass before the head is tried again
+    private var restLength: Int
+    /// Last judgement, for the stats line.
+    private(set) var naps = 0
 
-    // The block in progress.
-    private var blockDepth = 0
-    private var blockLeft = 0
-    private var blockRound = 0
+    init() { restLength = restFloor }
 
-    // Scheduling.
-    private var warmup = 0
-    private var sinceProbe = 0
-    private var probeAfter: Int
-    private var probeCursor = 0
-    private var lastBest: Int?
-
-    // The round being timed.
-    private var openDepth: Int?
-    private var openCounted = false
-    private var openAt = Date.distantPast
-    private var openTokens = 0
-
-    init(maxDepth: Int) {
-        depths = Array(0 ... max(1, maxDepth))
-        arms = Dictionary(uniqueKeysWithValues: depths.map { ($0, Arm()) })
-        probeAfter = probeFloor
-    }
-
-    /// The depth to draft at now. Closes the previous round first: the window
-    /// that ends here is everything that round cost, including emitting the
-    /// tokens it won.
-    func begin() -> Int {
-        flush()
-        if blockLeft == 0 { openBlock() }
-        blockLeft -= 1
-        blockRound += 1
-        openDepth = blockDepth
-        openCounted = blockRound > settling
-        openAt = Date()
-        openTokens = 0
-        return blockDepth
-    }
-
-    /// How many tokens the round in progress settled.
-    func credit(_ tokens: Int) { openTokens += tokens }
-
-    /// Close the last round (the turn is over and nothing more will be timed).
-    func end() { flush() }
-
-    /// The depth currently believed best, for reporting.
-    var settled: Int { best }
-
-    /// What the tuner has measured, one entry per depth, for reporting.
-    var summary: String {
-        depths.map { d in
-            let a = arms[d] ?? Arm()
-            return a.rounds > 0
-                ? "\(d):\(String(format: "%.1f", a.rate))"
-                : "\(d):-"
-        }.joined(separator: " ")
-    }
-
-    /// Ties go to the shallower depth — guessing less is cheaper to be wrong
-    /// about — so the search runs from the deepest down and keeps the last of
-    /// equal rates.
-    private var best: Int {
-        depths.reversed().max(by: { (arms[$0]?.rate ?? 0) < (arms[$1]?.rate ?? 0) }) ?? 0
-    }
-
-    private func openBlock() {
-        blockRound = 0
-        blockLeft = blockLength
-        // Every candidate gets one block before any of them is trusted.
-        if warmup < depths.count {
-            blockDepth = depths[warmup]
-            warmup += 1
-            return
+    /// Whether to run the head for the token about to be decoded.
+    func shouldSpeculate() -> Bool {
+        if rest > 0 {
+            rest -= 1
+            return false
         }
-        let winner = best
-        // A winner that holds is re-checked less and less often; one that
-        // changes means the text changed, and the schedule starts over.
-        if let lastBest {
-            probeAfter = winner == lastBest ? min(probeAfter * 2, probeCeiling) : probeFloor
-        }
-        lastBest = winner
-        let rivals = depths.filter { $0 != winner }
-        if sinceProbe >= probeAfter, !rivals.isEmpty {
-            sinceProbe = 0
-            blockDepth = rivals[probeCursor % rivals.count]
-            probeCursor += 1
+        return true
+    }
+
+    /// One round happened: `extra` is how many tokens it won beyond the one
+    /// the trunk was going to produce anyway. A declined round wins nothing.
+    func record(extra: Int) {
+        attempts += 1
+        won += extra
+        guard attempts >= window else { return }
+        let rate = Double(won) / Double(attempts)
+        if rate < worthwhile {
+            bad += 1
+            if bad >= strikes {
+                rest = restLength
+                restLength = min(restLength * 2, restCeiling)
+                naps += 1
+                bad = 0
+            }
         } else {
-            sinceProbe += blockLength
-            blockDepth = winner
+            // Earning its keep: forget the strike and come back sooner.
+            bad = 0
+            restLength = restFloor
         }
+        attempts = 0
+        won = 0
     }
 
-    private func flush() {
-        guard let depth = openDepth, openCounted, openTokens > 0 else {
-            openDepth = nil
-            return
-        }
-        let seconds = Date().timeIntervalSince(openAt)
-        openDepth = nil
-        // A round interrupted by something outside decoding (the turn being
-        // cancelled, a long pause in the consumer) would otherwise be recorded
-        // as that depth being catastrophically slow.
-        guard seconds > 0, seconds < 5 else { return }
-        var arm = arms[depth] ?? Arm()
-        arm.tokens = arm.tokens * decay + Double(openTokens)
-        arm.seconds = arm.seconds * decay + seconds
-        arm.rounds += 1
-        arms[depth] = arm
-    }
+    var summary: String { "naps=\(naps)" }
 }
+
