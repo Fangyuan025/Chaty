@@ -12,11 +12,6 @@ O Chaty roda LLMs abertos **100% offline** em um aplicativo desktop caprichado.
 Sem conta, sem nuvem, sem telemetria — com um agente de programação local, uma base de
 conhecimento para documentos, Deep Research e voz mãos-livres, tudo integrado.
 
-**Novidade — o [Muse-Glimmer](https://huggingface.co/meta-models/Muse-Glimmer-30B) roda nos
-dois motores, visão inclusive, com seus quatro degraus nativos de raciocínio como controles
-de verdade.**
-[Como o Chaty se adaptou a ele ↓](#esforço-de-raciocínio-como-controle-de-primeira-classe)
-
 [![Latest release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=19c37d)](../../releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Fangyuan025/Chaty/total?color=8a63d2&cacheSeconds=3600)](../../releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/Fangyuan025/Chaty/ci.yml?branch=main&label=CI)](../../actions)
