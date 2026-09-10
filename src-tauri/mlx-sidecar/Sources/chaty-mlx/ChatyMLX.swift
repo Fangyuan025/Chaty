@@ -1972,6 +1972,12 @@ final class Engine: @unchecked Sendable {
         // Both of these end at a read-back, which synchronises — so wall time
         // around them is the real cost, with nothing extra forced.
         var tDraft = 0.0, tVerify = 0.0, redos = 0
+        // What a rejected guess actually costs, split in two. Both are
+        // avoidable in principle — the trunk pass that verifies the batch
+        // already computes the state after every position, it just does not
+        // hand any of them back — so they are worth measuring before anyone
+        // pays to make the recurrence give them up.
+        var tSnapshot = 0.0, tRedo = 0.0
         /// Tokens already settled by a verified run, waiting their turn.
         var settled: [Int] = []
         /// The trunk's hidden state for the last position it consumed — the
@@ -2092,7 +2098,14 @@ final class Engine: @unchecked Sendable {
             // large and rewindable, so they are trimmed instead of copied.
             let rewindable = cache.filter { $0.isTrimmable }
             let recurrent = cache.filter { !$0.isTrimmable }
+            let tS0 = Date()
             let snapshot = recurrent.map { $0.copy() }
+            if mtpStats {
+                // `copy()` is lazy in MLX; without forcing it here the cost
+                // lands in whatever evaluates next and the number is a lie.
+                eval(snapshot.flatMap { $0.state })
+                tSnapshot += Date().timeIntervalSince(tS0)
+            }
             // The rope state advances with the batch too, and rewinding the
             // caches without it leaves the next pass computing positions for
             // tokens that were thrown away.
@@ -2168,6 +2181,7 @@ final class Engine: @unchecked Sendable {
                 // Put every layer back to where it stood before the guesses,
                 // then let it read exactly the tokens that survived. One extra
                 // pass, and only when a run was cut short.
+                let tR0 = Date()
                 for (var c, saved) in zip(recurrent, snapshot) {
                     c.state = saved.state
                     c.metaState = saved.metaState
@@ -2176,7 +2190,11 @@ final class Engine: @unchecked Sendable {
                 state = savedState
                 guard let redo = trunkEval(Array(checked.prefix(kept))) else { return false }
                 lastHidden = redo.hidden
-                if mtpStats { redos += 1 }
+                if mtpStats {
+                    eval(lastHidden)
+                    tRedo += Date().timeIntervalSince(tR0)
+                    redos += 1
+                }
             }
             // The head read one position per guess; the guesses that did not
             // survive have to leave its context too, or every later round
@@ -2281,7 +2299,9 @@ final class Engine: @unchecked Sendable {
                         + "per-token=\(String(format: "%.2f", Double(mtpAccepted) / Double(mtpRounds))) "
                         + "acceptance=[\(rates.joined(separator: ", "))] "
                         + "draft=\(String(format: "%.1f", tDraft))s verify=\(String(format: "%.1f", tVerify))s "
-                        + "redos=\(redos)"
+                        + "redos=\(redos) "
+                        + String(
+                            format: "snap=%.1fs redo=%.1fs", tSnapshot, tRedo)
                         + (speculation?.governor.map { " " + $0.summary } ?? "")
                         + "\n").utf8))
         }
