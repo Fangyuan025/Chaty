@@ -76,6 +76,10 @@ pub fn run() {
     // the OS crash reports left behind by the previous run.
     #[cfg(target_os = "macos")]
     crate::errlog::sweep_native_crash_reports();
+    // ...and everywhere, report work the previous run started and never
+    // finished. Windows has no crash report to sweep, so without this a death
+    // inside native code leaves the log empty (issue #13).
+    crate::errlog::sweep_inflight();
     // Browsers whose Chaty died without destructors (the exit handler
     // `_exit()`s, crashes, killed bench bridges) keep running headless —
     // reap them before this run launches its own.

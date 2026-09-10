@@ -267,9 +267,49 @@ fn with_db<T>(
             "ALTER TABLE docs ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
             [],
         );
+        let dropped = repair_incomplete_docs(&conn);
+        if dropped > 0 {
+            crate::errlog::append_error(
+                "kb-repair",
+                &format!(
+                    "移除了 {dropped} 个索引未完成的文档(需要重新导入) \
+                     (removed {dropped} document(s) whose indexing never \
+                     finished — re-import them)"
+                ),
+            );
+        }
         *guard = Some(conn);
     }
     f(guard.as_ref().unwrap())
+}
+
+/// Take out documents whose indexing never finished, and report how many.
+///
+/// A document is complete only when its recorded count matches the chunks
+/// actually stored for it; anything else is wreckage — the process died
+/// mid-embed, or an error left the row behind. Such a document is worse than
+/// a missing one: it sits in the list looking ready, gets ticked, and then
+/// contributes nothing to the answer, which is how issue #13 read from the
+/// user's side ("已经添加进去,但…模型不用知识库回答"). Run on open, so a
+/// machine that already carries one is repaired by updating rather than by
+/// being told to go and delete it by hand.
+fn repair_incomplete_docs(conn: &Connection) -> usize {
+    let dropped = conn
+        .execute(
+            // `chunks = 0` is the ingest's own "still indexing" state, so a
+            // row still wearing it belongs to a run that is no longer here —
+            // a document with nothing in it is never a legitimate result
+            // (an empty extraction is refused long before any row is written).
+            "DELETE FROM docs WHERE chunks < 1 OR chunks <> (
+               SELECT COUNT(*) FROM chunks WHERE chunks.doc_id = docs.id
+             )",
+            [],
+        )
+        .unwrap_or(0);
+    // Foreign keys are not enforced on this connection, so the cascade is done
+    // by hand — the same sweep the ingest path already does before an insert.
+    let _ = conn.execute("DELETE FROM chunks WHERE doc_id NOT IN (SELECT id FROM docs)", []);
+    dropped
 }
 
 fn vec_to_blob(v: &[f32]) -> Vec<u8> {
@@ -927,6 +967,28 @@ pub async fn rag_add_document(
         .unwrap_or("")
         .to_lowercase();
     let is_image = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif");
+    // Say what is being indexed BEFORE indexing it. Everything below can end
+    // the process outright rather than returning an error — the vision model
+    // captioning a PDF's embedded figures and the embedder both allocate on
+    // top of a chat model that is already resident — and on Windows such a
+    // death leaves no crash report to sweep. The marker is what turns "it just
+    // closes, the log is empty" (issue #13) into a file name and a phase.
+    //
+    // The NAME only, never the full path: this log exists to be pasted into a
+    // public issue, and a directory tree is somebody's home folder.
+    let crumb = crate::errlog::Inflight::begin(
+        "kb-index",
+        &format!(
+            "{} ({ext}, {})",
+            std::path::Path::new(&path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "document".into()),
+            std::fs::metadata(&path)
+                .map(|m| format!("{:.1} MB", m.len() as f64 / 1_048_576.0))
+                .unwrap_or_else(|_| "size unknown".into()),
+        ),
+    );
     let (ocr_text, vision_text) = if is_image {
         // (1) Vision caption — best-effort; skipped when no vision model is loaded.
         let vision_text = vision_caption(&app, &path, &on_progress).await;
@@ -993,6 +1055,7 @@ pub async fn rag_add_document(
             .map(|s| s.replace('\\', "/"))
             .unwrap_or_else(basename);
         let _ = on_progress.send(RagProgress { phase: "extract", frac: 0.0 });
+        crumb.update(&format!("{name}: extracting text"));
         let text = match ocr_text {
             // Image: combine the vision description with any OCR'd text so the
             // chunk is retrievable by visual content AND literal text.
@@ -1040,12 +1103,17 @@ pub async fn rag_add_document(
                 [],
             )
             .map_err(|e| e.to_string())?;
+            // chunks = 0 means "indexing, not usable yet". The real count is
+            // written once every chunk is in — see the update below. Recording
+            // the final count HERE was issue #13's second symptom: a run that
+            // died mid-embed left a document that claimed 1500 chunks, held a
+            // handful, and answered nothing, while looking perfectly indexed.
             conn.execute(
                 "INSERT INTO docs(name, path, chunks, created_at) VALUES(?1, ?2, ?3, ?4)",
                 params![
                     name,
                     path,
-                    chunks.len() as i64,
+                    0i64,
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs() as i64)
@@ -1062,10 +1130,26 @@ pub async fn rag_add_document(
             .map_err(|e| e.to_string())
         })?;
 
-        // Embed in small batches, streaming progress.
+        // Embed in small batches, streaming progress. Anything that goes
+        // wrong from here on has a half-written document to answer for, so it
+        // leaves through `fail`, which takes it back out.
         let total = chunks.len();
+        let fail = |e: String| -> String {
+            let _ = with_db(&app, |conn| {
+                conn.execute("DELETE FROM chunks WHERE doc_id = ?1", params![doc_id])
+                    .map_err(|x| x.to_string())?;
+                conn.execute("DELETE FROM docs WHERE id = ?1", params![doc_id])
+                    .map_err(|x| x.to_string())?;
+                Ok(())
+            });
+            e
+        };
         for (i, batch) in chunks.chunks(8).enumerate() {
-            let embs = embed(&app, batch.to_vec())?;
+            crumb.update(&format!(
+                "{name}: embedding chunk {}/{total}",
+                (i * 8 + batch.len()).min(total)
+            ));
+            let embs = embed(&app, batch.to_vec()).map_err(&fail)?;
             with_db(&app, |conn| {
                 for (j, (text, emb)) in batch.iter().zip(&embs).enumerate() {
                     conn.execute(
@@ -1075,10 +1159,21 @@ pub async fn rag_add_document(
                     .map_err(|e| e.to_string())?;
                 }
                 Ok(())
-            })?;
+            })
+            .map_err(&fail)?;
             let done = ((i * 8 + batch.len()) as f32 / total as f32).min(1.0);
             let _ = on_progress.send(RagProgress { phase: "embed", frac: done });
         }
+        // Every chunk is in: the document is usable, and now says so.
+        with_db(&app, |conn| {
+            conn.execute(
+                "UPDATE docs SET chunks = ?1 WHERE id = ?2",
+                params![total as i64, doc_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .map_err(&fail)?;
         let _ = on_progress.send(RagProgress { phase: "done", frac: 1.0 });
         Ok(())
     })
@@ -1493,6 +1588,59 @@ pub async fn rag_download_model(
 
 #[cfg(test)]
 mod tests {
+    /// A half-indexed document is taken back out on open, and a whole one is
+    /// left alone. This is issue #13's second symptom: the crash left a doc
+    /// row claiming every chunk while holding a few, so the document looked
+    /// ready, could be ticked, and answered nothing.
+    #[test]
+    fn a_document_that_never_finished_indexing_is_removed_on_open() {
+        use rusqlite::params;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE docs(id INTEGER PRIMARY KEY, name TEXT NOT NULL, path TEXT,
+               chunks INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+             CREATE TABLE chunks(id INTEGER PRIMARY KEY, doc_id INTEGER NOT NULL,
+               seq INTEGER NOT NULL, text TEXT NOT NULL, embedding BLOB NOT NULL);",
+        )
+        .unwrap();
+        let add = |id: i64, name: &str, claimed: i64, actual: i64| {
+            conn.execute(
+                "INSERT INTO docs(id, name, chunks, created_at) VALUES(?1, ?2, ?3, 0)",
+                params![id, name, claimed],
+            )
+            .unwrap();
+            for seq in 0..actual {
+                conn.execute(
+                    "INSERT INTO chunks(doc_id, seq, text, embedding) VALUES(?1, ?2, 'x', X'00')",
+                    params![id, seq],
+                )
+                .unwrap();
+            }
+        };
+        add(1, "whole.pdf", 3, 3); // finished
+        add(2, "crashed.pdf", 1500, 4); // died mid-embed — the reported shape
+        add(3, "started.pdf", 0, 0); // died before the first batch landed
+        // A doc claiming 0 and holding 0 is only "complete" if nothing was
+        // ever meant to be there, which the ingest refuses to create — so it
+        // goes too, and the counts below say which survived.
+        assert_eq!(super::repair_incomplete_docs(&conn), 2);
+
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM docs ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(names, vec!["whole.pdf".to_string()], "only the finished one stays");
+        let orphans: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chunks WHERE doc_id <> 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(orphans, 0, "their chunks go with them");
+        // Idempotent: a second open finds nothing left to repair.
+        assert_eq!(super::repair_incomplete_docs(&conn), 0);
+    }
+
     /// A parser that asserts must reach the caller as an error, never as a
     /// panic — `pdf-extract` asserts on font encodings it has not implemented
     /// (`assert!(name == "Identity-H")`), which is most CJK-authored PDFs.

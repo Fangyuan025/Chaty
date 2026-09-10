@@ -123,6 +123,112 @@ pub fn sweep_native_crash_reports() {
     let _ = std::fs::write(&mark, "swept\n");
 }
 
+// ── Inflight breadcrumbs (issue #13) ────────────────────────────────────────
+// Some work can take the whole process down without unwinding: an allocation
+// that fails inside a native library, a GPU driver that aborts, a stack that
+// overflows. No panic hook runs, no Result is ever returned, and the window
+// simply vanishes. On macOS the OS at least leaves a crash report for the
+// startup sweep to find; on Windows nothing is left at all, which is how
+// issue #13 arrived — "闪退没有记录错误日志", an empty log after every attempt.
+//
+// So the risky work says what it is doing BEFORE it does it. The marker is
+// removed when the work returns, by whatever route; one still on disk at the
+// next startup belongs to a run that died mid-way, and it carries enough to
+// name the file and the phase it died in.
+
+fn inflight_dir_in(base: &std::path::Path) -> PathBuf {
+    let dir = base.join("logs").join("inflight");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// One marker, removed on drop. Keep it alive for as long as the work runs.
+pub struct Inflight {
+    path: Option<PathBuf>,
+}
+
+impl Inflight {
+    fn begin_at(base: &std::path::Path, kind: &str, detail: &str) -> Self {
+        let safe: String = kind
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .take(40)
+            .collect();
+        let path = inflight_dir_in(base).join(format!("{safe}.inflight"));
+        let me = Self { path: Some(path) };
+        me.update(detail);
+        me
+    }
+
+    /// Begin a marker for `kind`. Inert in test builds — a `cargo test` must
+    /// never leave breadcrumbs in the owner's real app-data (the same sin the
+    /// error log itself has been taught three times).
+    pub fn begin(kind: &str, detail: &str) -> Self {
+        #[cfg(test)]
+        {
+            let _ = (kind, detail);
+            Self { path: None }
+        }
+        #[cfg(not(test))]
+        Self::begin_at(&chaty_data_dir(), kind, detail)
+    }
+
+    /// Replace what the marker says. Called as the work moves on, so a crash
+    /// report names the phase it died in rather than only the file.
+    pub fn update(&self, detail: &str) {
+        let Some(p) = &self.path else { return };
+        let capped: String = detail.chars().take(2000).collect();
+        let _ = std::fs::write(p, capped);
+    }
+}
+
+impl Drop for Inflight {
+    fn drop(&mut self) {
+        if let Some(p) = &self.path {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+/// Markers left behind by a previous run, as `(kind, detail)`. Pure over a
+/// base dir so the state machine is testable without the real app-data.
+fn take_inflight_in(base: &std::path::Path) -> Vec<(String, String)> {
+    let dir = inflight_dir_in(base);
+    let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut out: Vec<(String, String)> = rd
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "inflight"))
+        .map(|e| {
+            let kind = e
+                .path()
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let detail = std::fs::read_to_string(e.path()).unwrap_or_default();
+            let _ = std::fs::remove_file(e.path());
+            (kind, detail)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Startup: report work the previous run never finished. The entry is what
+/// the next issue report will be built from, so it says plainly that the
+/// process died rather than leaving a reader to infer it from a gap.
+pub fn sweep_inflight() {
+    for (kind, detail) in take_inflight_in(&chaty_data_dir()) {
+        append_error(
+            "died-during",
+            &format!(
+                "上一次运行在这一步中途退出(未留下崩溃可捕获的错误),\
+                 提 issue 请附上本条 (the previous run vanished during this \
+                 step — no catchable error was raised):\n{kind}: {detail}"
+            ),
+        );
+    }
+}
+
 thread_local! {
     /// Set while a panic is EXPECTED and will be caught — a parser that
     /// asserts its way out of a file it cannot read. The log is for faults the
@@ -215,6 +321,35 @@ mod tests {
         let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
         assert!(crash_reports_in(&dir, Some(future)).is_empty());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A breadcrumb survives the run that wrote it and is reported exactly
+    /// once — the whole point being a crash that leaves nothing else behind.
+    #[test]
+    fn inflight_survives_a_death_and_is_swept_once() {
+        let base = std::env::temp_dir().join(format!("chaty-inflight-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+
+        // A run that finishes cleans up after itself, however it returns.
+        {
+            let _crumb = Inflight::begin_at(&base, "kb-index", "notes.pdf");
+        }
+        assert!(take_inflight_in(&base).is_empty(), "a completed step leaves nothing");
+
+        // A run that dies cannot drop its guard — leak it to model that.
+        let crumb = Inflight::begin_at(&base, "kb-index", "book.pdf, 12 MB");
+        crumb.update("book.pdf, 12 MB — embedding chunk 240/1500");
+        std::mem::forget(crumb);
+
+        let found = take_inflight_in(&base);
+        assert_eq!(found.len(), 1, "the marker outlives the process: {found:?}");
+        assert_eq!(found[0].0, "kb-index");
+        assert!(found[0].1.contains("240/1500"), "carries the phase: {:?}", found[0].1);
+        assert!(
+            take_inflight_in(&base).is_empty(),
+            "swept once — a second start must not re-report it"
+        );
+        std::fs::remove_dir_all(&base).ok();
     }
 
     /// Entries append with a HUMAN-readable timestamp + separator, rotation
