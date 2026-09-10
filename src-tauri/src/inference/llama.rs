@@ -185,7 +185,7 @@ pub fn gpu_layer_cap() -> Option<i32> {
 /// Removes the marker when load() returns — normally OR with an error. Only
 /// a process death leaves it behind, which is exactly the signal we want.
 /// Armed on Windows only (see apply_gpu_crash_guard).
-struct LoadGuard(Option<std::path::PathBuf>);
+pub(crate) struct LoadGuard(Option<std::path::PathBuf>);
 impl LoadGuard {
     /// `layers` is what this load is about to attempt. If the process dies, the
     /// marker survives carrying that number, and the next start offers half —
@@ -195,7 +195,7 @@ impl LoadGuard {
         let _ = std::fs::write(&p, layers.to_string());
         Self(Some(p))
     }
-    fn arm(layers: i32) -> Self {
+    pub(crate) fn arm(layers: i32) -> Self {
         if cfg!(windows) {
             Self::arm_at(&chaty_data_dir(), layers)
         } else {
@@ -243,7 +243,7 @@ pub fn llama_backend_pub() -> Result<&'static LlamaBackend> {
 /// NOTE: `n_layer()` returns 0 in vocab-only mode (the architecture isn't
 /// built), so we read `<arch>.block_count` from the GGUF metadata, which *is*
 /// available.
-fn probe_n_layer(backend: &LlamaBackend, path: &str) -> Option<u32> {
+pub(crate) fn probe_n_layer(backend: &LlamaBackend, path: &str) -> Option<u32> {
     let params = LlamaModelParams::default().with_vocab_only(true);
     let model = LlamaModel::load_from_file(backend, path, &params).ok()?;
     let arch = model.meta_val_str("general.architecture").ok()?;

@@ -84,6 +84,42 @@ fn embed_model_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .join(EMBED_FILE))
 }
 
+/// How many of the embedder's layers may go on the GPU.
+///
+/// This load happens with a chat model ALREADY resident, which is the one case
+/// where "offload everything" is certain to be wrong: a card with room for a 9B
+/// is not a card with room for a 9B and 730 MB more. And an over-ask is not an
+/// allocation error to back off from — the Vulkan driver takes the process down
+/// with it (issue #9), which is how an import could end with the window
+/// vanishing and nothing at all in the log (issue #13). Sizing is therefore the
+/// chat model's: against what is FREE, under any cap a previous crash left.
+///
+/// Not gated on the platform even though only one uses the answer — a branch
+/// the development machine never compiles is a branch nothing checks. macOS
+/// therefore compiles it and never calls it, which is the point.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn embedder_gpu_layers(backend: &llama_cpp_2::llama_backend::LlamaBackend, path: &str) -> i32 {
+    if cfg!(target_os = "macos") {
+        return 0;
+    }
+    let want = crate::gpu::detect_gpu().and_then(|g| {
+        crate::inference::llama::probe_n_layer(backend, path)
+            .map(|nl| crate::gpu::auto_gpu_layers(std::path::Path::new(path), nl, g.vram_mb))
+    });
+    embedder_layers(want, crate::inference::llama::gpu_layer_cap())
+}
+
+/// The decision itself, separated from the machinery needed to ask the
+/// questions: what VRAM allows, and what a previous crash allows.
+///
+/// `None` means the question could not be answered — no GPU, or a file whose
+/// layer count would not read. Neither is a reason to guess upward with a chat
+/// model already on the card; the CPU is slower and survives.
+fn embedder_layers(want: Option<i32>, cap: Option<i32>) -> i32 {
+    let want = want.unwrap_or(0);
+    cap.map_or(want, |c| want.min(c))
+}
+
 fn embedder_start(model_path: &PathBuf) -> Result<Embedder, String> {
     let path = model_path.to_string_lossy().to_string();
     let (tx, rx) = std::sync::mpsc::channel::<EmbedJob>();
@@ -108,8 +144,16 @@ fn embedder_start(model_path: &PathBuf) -> Result<Embedder, String> {
             let params = LlamaModelParams::default()
                 .with_n_gpu_layers(0)
                 .with_use_mmap(false);
+            // Everywhere else the embedder goes on the GPU — but sized the way
+            // the chat model is sized, not by asking for all of it.
             #[cfg(not(target_os = "macos"))]
-            let params = LlamaModelParams::default().with_n_gpu_layers(999);
+            let layers = embedder_gpu_layers(backend, &path);
+            #[cfg(not(target_os = "macos"))]
+            let params = LlamaModelParams::default().with_n_gpu_layers(layers.max(0) as u32);
+            // A death in here is remembered: the same guard the chat model arms,
+            // so the next attempt asks for less instead of repeating this one.
+            #[cfg(not(target_os = "macos"))]
+            let _crash_guard = crate::inference::llama::LoadGuard::arm(layers);
             let model = match LlamaModel::load_from_file(backend, &path, &params) {
                 Ok(m) => m,
                 Err(e) => {
@@ -1616,6 +1660,31 @@ pub async fn rag_download_model(
 
 #[cfg(test)]
 mod tests {
+    /// The embedder shares a card with a chat model that is already on it, so
+    /// "offload everything" is the one answer that is certainly wrong — and an
+    /// over-ask is not an error to retry, it is a Vulkan driver taking the
+    /// process down (issue #13 arrived as an import that closed the window and
+    /// logged nothing). What VRAM allows and what a previous crash allows both
+    /// bind; neither is optional.
+    #[test]
+    fn the_embedder_never_asks_for_more_gpu_than_it_is_allowed() {
+        use super::embedder_layers;
+        assert_eq!(embedder_layers(Some(20), None), 20, "no crash, no cap: what fits");
+        assert_eq!(embedder_layers(Some(20), Some(4)), 4, "a cap from a crash binds");
+        assert_eq!(
+            embedder_layers(Some(3), Some(9)),
+            3,
+            "a cap wider than the ask leaves it alone"
+        );
+        assert_eq!(embedder_layers(Some(20), Some(0)), 0, "CPU-only after a crash");
+        assert_eq!(embedder_layers(None, None), 0, "no GPU, or an unreadable file: CPU");
+        assert_eq!(
+            embedder_layers(None, Some(40)),
+            0,
+            "an unanswered question is never widened by a generous cap"
+        );
+    }
+
     /// A half-indexed document is taken back out on open, and a whole one is
     /// left alone. This is issue #13's second symptom: the crash left a doc
     /// row claiming every chunk while holding a few, so the document looked
