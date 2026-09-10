@@ -1088,7 +1088,11 @@ export function SettingsPanel({
                 <Switch on={value.autoLoadLast} onToggle={() => set("autoLoadLast", !value.autoLoadLast)} />
               </SetRow>
               <SetRow label={t("modelsFolder")} hint={t("modelsFolderHint")}>
-                <div className="lang-switch">
+                {/* Three independent actions, not a choice between three
+                    states — `lang-switch` would draw them as one segmented
+                    control with an active segment, which is a lie about what
+                    they do. `row-btns` is what the voice-sample buttons use. */}
+                <div className="row-btns">
                   <button type="button" className="data-btn" onClick={() => void openModelsDir().catch(console.error)}>
                     {t("openModelsDir")}
                   </button>
