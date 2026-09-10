@@ -91,7 +91,13 @@ fn crash_reports_in(dir: &std::path::Path, newer_than: Option<std::time::SystemT
         .flatten()
         .filter(|e| {
             let name = e.file_name().to_string_lossy().to_lowercase();
-            (name.starts_with("chaty") && (name.ends_with(".ips") || name.ends_with(".crash")))
+            // `chaty_lib-<hash>` is cargo's name for this crate's TEST binary.
+            // Its crashes are a developer's, not the app's — and sweeping them
+            // stamped a probe's deliberate abort into the owner's real log as a
+            // "native crash", the same test-pollution this module guards
+            // against everywhere else.
+            (name.starts_with("chaty") && !name.starts_with("chaty_lib"))
+                && (name.ends_with(".ips") || name.ends_with(".crash"))
                 && match (newer_than, e.metadata().and_then(|m| m.modified())) {
                     (Some(mark), Ok(mtime)) => mtime > mark,
                     (None, _) => true,
@@ -314,8 +320,10 @@ mod tests {
         std::fs::write(dir.join("Chaty-2026-08-05-101010.ips"), "{}").unwrap();
         std::fs::write(dir.join("chaty-2026-08-05-090909.crash"), "x").unwrap();
         std::fs::write(dir.join("Safari-2026-08-05.ips"), "{}").unwrap();
+        // A cargo test binary of this crate: not the app, never the app's log.
+        std::fs::write(dir.join("chaty_lib-1b69b284be1a0ec0-2026-09-10-123310.ips"), "{}").unwrap();
         let all = crash_reports_in(&dir, None);
-        assert_eq!(all.len(), 2, "ours only: {all:?}");
+        assert_eq!(all.len(), 2, "ours only, and not the test binary's: {all:?}");
         assert!(all.iter().all(|n| n.to_lowercase().starts_with("chaty")));
         // Watermark in the future → nothing new.
         let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
