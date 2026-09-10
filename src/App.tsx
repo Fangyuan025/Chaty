@@ -2800,6 +2800,7 @@ export default function App() {
             layersLimit={model?.nLayer}
             specSupported={model?.speculative}
             onReloadModel={model ? () => void reloadModel() : undefined}
+            onModelsChanged={() => void refreshModels()}
             reloading={loadingModel}
             onDataCleared={() => {
               handleNewChat();

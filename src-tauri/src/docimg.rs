@@ -204,6 +204,21 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    /// Point this at a real file to see what the image walk actually pulls out
+    /// of it. Skipped unless CHATY_DOCIMG_PROBE names one — a scanned PDF is
+    /// the interesting case (its pages ARE the images) and those belong to
+    /// whoever is holding one, not to the repo.
+    #[test]
+    fn docimg_probe() {
+        let Ok(path) = std::env::var("CHATY_DOCIMG_PROBE") else { return };
+        let imgs = extract_embedded_images(&path, 6);
+        println!("PROBE {} image(s) from {path}", imgs.len());
+        for i in &imgs {
+            let size = std::fs::metadata(i).map(|m| m.len()).unwrap_or(0);
+            println!("PROBE   {i} ({size} bytes)");
+        }
+    }
+
     fn png_bytes(w: u32, h: u32, color: [u8; 3]) -> Vec<u8> {
         let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(color)));
         let mut buf = Vec::new();

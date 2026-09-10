@@ -515,30 +515,38 @@ pub(crate) fn models_write_dir(app: &tauri::AppHandle) -> Result<PathBuf, String
         .join("models"))
 }
 
-/// Directories scanned for `.gguf` files: the folder the user chose (first, so
-/// it wins for anything that takes the first hit), a `models/` folder next to
-/// the executable (the install dir) and one under app-data (always writable).
+/// Which roots are scanned, given a choice and the defaults.
 ///
-/// The defaults stay in the list even when a folder is chosen: someone who
-/// picks a new home should not watch the models they already had disappear.
-fn model_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(root) = models_root(app) {
-        dirs.push(root);
+/// A chosen folder REPLACES them rather than joining them. "Change location"
+/// has to mean what it says: scanning the old places as well leaves the picker
+/// showing exactly what it showed before, so the setting reads as broken —
+/// which is how it was first reported. Nothing is deleted by this; the models
+/// in the old locations are still on disk, and Reset lists them again.
+fn roots_for(chosen: Option<PathBuf>, defaults: Vec<PathBuf>) -> Vec<PathBuf> {
+    match chosen {
+        Some(root) => vec![root],
+        None => defaults,
     }
+}
+
+/// Directories scanned for models: the folder the user chose, or — when none
+/// has been — a `models/` folder next to the executable (the install dir),
+/// one under app-data (always writable), and one in the app's resources.
+fn model_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut defaults = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            dirs.push(parent.join("models"));
+            defaults.push(parent.join("models"));
         }
     }
     if let Ok(data) = app.path().app_data_dir() {
-        dirs.push(data.join("models"));
+        defaults.push(data.join("models"));
     }
     if let Ok(res) = app.path().resource_dir() {
-        dirs.push(res.join("models"));
+        defaults.push(res.join("models"));
     }
-    dirs.dedup();
-    dirs
+    defaults.dedup();
+    roots_for(models_root(app), defaults)
 }
 
 /// One-time layout migration: every loose `*.gguf` sitting directly in a
@@ -849,20 +857,38 @@ pub fn open_models_dir(app: tauri::AppHandle) -> Result<String, String> {
     // in the opened folder matches what the picker lists.
     migrate_models_layout(&app);
 
-    let dir = model_dirs(&app)
-        .into_iter()
-        .find(|d| dir_has_models(d))
-        .map_or_else(
-            || -> Result<PathBuf, String> {
-                let d = models_write_dir(&app)?;
-                std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
-                Ok(d)
-            },
-            Ok,
-        )?;
+    // An explicit choice wins outright, empty or not. Falling through to
+    // "the first root that has models in it" is right when nobody has chosen
+    // anything — an upgrader's models often sit next to the exe — but once a
+    // folder has been picked, opening a different one makes the setting look
+    // like it did nothing (and the newly chosen folder is empty precisely
+    // when the user most wants it opened, to put something in it).
+    let dir = folder_to_reveal(
+        models_root(&app),
+        model_dirs(&app).into_iter().find(|d| dir_has_models(d)),
+        models_write_dir(&app)?,
+    );
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.to_string_lossy().to_string();
     open_default(&path)?;
     Ok(path)
+}
+
+/// Which folder "open models folder" should reveal.
+///
+/// An explicit choice wins outright, empty or not. Preferring "the first root
+/// that actually has models in it" is right when nobody has chosen anything —
+/// an upgrader's models often sit next to the exe, and opening an empty
+/// app-data folder would show them nothing they recognise. But once a folder
+/// has been picked, opening a different one makes the setting look like it did
+/// nothing; and a chosen folder is emptiest exactly when the user most wants
+/// it opened, which is to put the first model into it.
+fn folder_to_reveal(
+    chosen: Option<PathBuf>,
+    first_with_models: Option<PathBuf>,
+    write_dir: PathBuf,
+) -> PathBuf {
+    chosen.or(first_with_models).unwrap_or(write_dir)
 }
 
 /// What Settings shows for the models folder.
@@ -932,22 +958,45 @@ fn check_models_root(dir: &Path) -> Result<(), String> {
 /// invisible: a folder that cannot be written to takes every later download
 /// down with it, one at a time, far from here. A directory that exists and
 /// accepts a file is the whole contract.
+/// What changed, so the UI can say it out loud.
+#[derive(serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelsRootChange {
+    /// Models that were listed before and are not any more — they live in the
+    /// locations this choice replaced. Nothing was moved or deleted; they come
+    /// back on Reset. Reported because a list quietly getting shorter is the
+    /// kind of thing a user discovers much later and mistrusts.
+    pub hidden: usize,
+}
+
 #[tauri::command]
-pub fn set_models_root(app: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
+pub fn set_models_root(
+    app: tauri::AppHandle,
+    path: Option<String>,
+) -> Result<ModelsRootChange, String> {
     let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
     let marker = base.join(MODELS_ROOT_FILE);
-    let Some(raw) = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) else {
-        let _ = std::fs::remove_file(&marker);
-        return Ok(());
-    };
-    let dir = PathBuf::from(&raw);
-    check_models_root(&dir)?;
-    std::fs::write(&marker, &raw).map_err(|e| e.to_string())?;
-    // Loose GGUFs dropped into the new folder get the same one-folder-per-model
-    // tidy-up the default roots receive, so the picker lists them immediately.
-    migrate_models_dir(&dir);
-    Ok(())
+    // Counted through the real listing rather than guessed at, before and
+    // after, so the number means "models that disappeared from your picker"
+    // however the roots are resolved.
+    let before = list_models(app.clone()).map(|m| m.len()).unwrap_or(0);
+    match path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+        None => {
+            let _ = std::fs::remove_file(&marker);
+        }
+        Some(raw) => {
+            let dir = PathBuf::from(&raw);
+            check_models_root(&dir)?;
+            std::fs::write(&marker, &raw).map_err(|e| e.to_string())?;
+            // Loose GGUFs dropped into the new folder get the same
+            // one-folder-per-model tidy-up the default roots receive, so the
+            // picker lists them immediately.
+            migrate_models_dir(&dir);
+        }
+    }
+    let after = list_models(app).map(|m| m.len()).unwrap_or(0);
+    Ok(ModelsRootChange { hidden: before.saturating_sub(after) })
 }
 
 /// Reveal the app's data folder (conversation DB, models, KB indexes) in the
@@ -1801,6 +1850,57 @@ mod tests {
         );
         assert!(is_models_root(&roots, None), "no parent at all is treated as a root");
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// A chosen folder REPLACES the default locations. Adding to them instead
+    /// was the first attempt, and it made the setting look inert: point it at
+    /// a fresh folder and the picker lists exactly what it listed before.
+    #[test]
+    fn a_chosen_folder_replaces_the_default_locations() {
+        use super::roots_for;
+        let chosen = PathBuf::from("/Volumes/Big/Models");
+        let defaults = vec![
+            PathBuf::from("/Applications/Chaty.app/models"),
+            PathBuf::from("/Users/me/Library/App/models"),
+        ];
+        assert_eq!(
+            roots_for(Some(chosen.clone()), defaults.clone()),
+            vec![chosen],
+            "the chosen folder is the only one scanned"
+        );
+        assert_eq!(
+            roots_for(None, defaults.clone()),
+            defaults,
+            "with no choice, every default location is scanned"
+        );
+    }
+
+    /// "Open models folder" must reveal the folder the user chose, even when
+    /// it is still empty. Falling through to "the first root that has models
+    /// in it" sent them back to the old directory — which is what the setting
+    /// was supposed to move them away from, and made it look inert.
+    #[test]
+    fn open_models_folder_reveals_the_chosen_one_even_when_empty() {
+        use super::folder_to_reveal;
+        let chosen = PathBuf::from("/Volumes/Big/Models");
+        let old_root = PathBuf::from("/Users/me/Library/App/models");
+        let write = PathBuf::from("/Users/me/Library/App/models");
+
+        assert_eq!(
+            folder_to_reveal(Some(chosen.clone()), Some(old_root.clone()), write.clone()),
+            chosen,
+            "an empty chosen folder still wins over a full default one"
+        );
+        assert_eq!(
+            folder_to_reveal(None, Some(old_root.clone()), write.clone()),
+            old_root,
+            "with no choice made, the root that actually holds models"
+        );
+        assert_eq!(
+            folder_to_reveal(None, None, write.clone()),
+            write,
+            "and with nothing anywhere, the folder downloads go to"
+        );
     }
 
     /// A folder is only accepted once it has actually taken a file. Getting

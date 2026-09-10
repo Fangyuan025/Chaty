@@ -613,8 +613,8 @@ export const T = {
   },
   modelsFolder: { zh: "模型文件夹", en: "Models folder", pt: "Pasta de modelos" },
   modelsFolderHint: {
-    zh: "放入 GGUF 文件或 MLX 模型文件夹即可被识别",
-    en: "Drop GGUF files or MLX model folders here to make them available", pt: "Arraste arquivos GGUF ou pastas de modelo MLX aqui para disponibilizá-los"
+    zh: "放入 GGUF 文件或 MLX 模型文件夹即可被识别。更改位置后只读取新目录",
+    en: "Drop GGUF files or MLX model folders here to make them available. Changing the location makes it the only folder read", pt: "Arraste arquivos GGUF ou pastas de modelo MLX aqui para disponibilizá-los. Alterar o local faz dele a única pasta lida"
   },
   modelsDirHintToast: {
     zh: "将模型文件放入此文件夹后，重新打开模型选择器即可看到",
@@ -828,6 +828,11 @@ export const T = {
   openModelsDir: { zh: "打开模型文件夹", en: "Open models folder", pt: "Abrir pasta de modelos" },
   changeModelsDir: { zh: "更改位置", en: "Change location", pt: "Alterar local" },
   resetModelsDir: { zh: "恢复默认", en: "Reset to default", pt: "Restaurar padrão" },
+  modelsDirHidden: {
+    zh: "旧位置的 {n} 个模型不再显示在列表里（文件没有被移动或删除，点「恢复默认」即可重新看到）",
+    en: "{n} model(s) in the previous locations are no longer listed. Nothing was moved or deleted — Reset to default lists them again.",
+    pt: "{n} modelo(s) nos locais anteriores deixaram de ser listados. Nada foi movido ou excluído — Restaurar padrão os lista novamente.",
+  },
   modelsDirMissing: {
     zh: "当前找不到这个文件夹（磁盘未连接？），暂时使用默认位置",
     en: "not reachable right now (disk not connected?) — using the default folder meanwhile",

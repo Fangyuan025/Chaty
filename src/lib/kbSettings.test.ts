@@ -27,6 +27,7 @@ function capture() {
     ch?.onmessage?.({ phase: "done", frac: 1 });
     if (cmd === "get_models_root")
       return { custom: "D:\\ChatyModels", effective: "D:\\ChatyModels", available: true };
+    if (cmd === "set_models_root") return { hidden: 3 };
     return null;
   });
   return seen;
@@ -59,6 +60,12 @@ describe("models folder (#12)", () => {
     await setModelsRoot("D:\\ChatyModels");
     await setModelsRoot(null);
     expect(seen.map((s) => s.args.path)).toEqual(["D:\\ChatyModels", null]);
+  });
+
+  it("reports how many models the change hid, so the list cannot shrink silently", async () => {
+    capture();
+    const change = await setModelsRoot("D:\\ChatyModels");
+    expect(change.hidden).toBe(3);
   });
 
   it("reports what the backend says about reachability", async () => {

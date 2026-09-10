@@ -476,11 +476,18 @@ export async function getModelsRoot(): Promise<ModelsRootInfo> {
   return invoke<ModelsRootInfo>("get_models_root");
 }
 
+/** What a models-folder change did to the picker. */
+export interface ModelsRootChange {
+  /** Models that were listed before and are not any more: they live in the
+   *  locations this choice replaced. Nothing was moved or deleted. */
+  hidden: number;
+}
+
 /** Choose where models live; `null` restores the default folder. Rejects a
  *  folder that does not exist or cannot be written to, so the failure surfaces
  *  here rather than on some later download. */
-export async function setModelsRoot(path: string | null): Promise<void> {
-  await invoke("set_models_root", { path });
+export async function setModelsRoot(path: string | null): Promise<ModelsRootChange> {
+  return invoke<ModelsRootChange>("set_models_root", { path });
 }
 
 /** Reveal the app data folder (DB, models, indexes) for manual backup. */

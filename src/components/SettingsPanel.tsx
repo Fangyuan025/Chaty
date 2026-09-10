@@ -362,6 +362,7 @@ export function SettingsPanel({
   layersLimit,
   specSupported,
   onReloadModel,
+  onModelsChanged,
   reloading = false,
   onDataCleared,
 }: {
@@ -382,6 +383,9 @@ export function SettingsPanel({
   ctxTrainLimit?: number | null;
   /** Reload the current model so context/GPU changes take effect. Absent = no model. */
   onReloadModel?: () => void;
+  /** The set of installed models may have changed — e.g. the models folder
+   *  now points somewhere else, so the picker is listing the wrong disk. */
+  onModelsChanged?: () => void;
   reloading?: boolean;
   /** Called after the user clears all conversations, so the app can reset. */
   onDataCleared?: () => void;
@@ -411,6 +415,7 @@ export function SettingsPanel({
   const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
   const [modelsRoot, setModelsRootState] = useState<ModelsRootInfo | null>(null);
   const [rootError, setRootError] = useState("");
+  const [rootHidden, setRootHidden] = useState(0);
   const tipRef = useRef<HTMLDivElement | null>(null);
   const tipAnchor = useRef<DOMRect | null>(null);
 
@@ -516,27 +521,30 @@ export function SettingsPanel({
 
   /** Pick a folder for models. The backend refuses one it cannot write to, and
    *  that refusal is shown here rather than surfacing on a later download. */
-  async function chooseModelsFolder() {
+  async function applyModelsRoot(dir: string | null) {
     setRootError("");
-    const dir = await openDialog({ directory: true });
-    if (typeof dir !== "string") return;
+    setRootHidden(0);
     try {
-      await setModelsRoot(dir);
+      const change = await setModelsRoot(dir);
       refreshModelsRoot();
+      // The picker is now listing a different disk. Without this the setting
+      // only appeared to work after a restart, which reads as not working.
+      onModelsChanged?.();
+      // A chosen folder replaces the old locations, so models kept there stop
+      // being listed. Say how many rather than letting the list quietly shrink.
+      setRootHidden(change.hidden);
     } catch (e) {
       setRootError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  async function resetModelsFolder() {
-    setRootError("");
-    try {
-      await setModelsRoot(null);
-      refreshModelsRoot();
-    } catch (e) {
-      setRootError(e instanceof Error ? e.message : String(e));
-    }
+  async function chooseModelsFolder() {
+    const dir = await openDialog({ directory: true });
+    if (typeof dir !== "string") return;
+    await applyModelsRoot(dir);
   }
+
+  const resetModelsFolder = () => applyModelsRoot(null);
 
   // ---- Voice preview ----
   /** Which sample is playing — the two voices are separate models, so each
@@ -1113,6 +1121,9 @@ export function SettingsPanel({
                     <> — {t("modelsDirMissing")}</>
                   )}
                 </div>
+              )}
+              {rootHidden > 0 && (
+                <div className="settings-hint">{t("modelsDirHidden").replace("{n}", String(rootHidden))}</div>
               )}
               {rootError && <div className="settings-hint settings-error">{rootError}</div>}
 

@@ -1084,14 +1084,30 @@ pub async fn rag_add_document(
                 parts.join("\n\n")
             }
             None => {
-                let mut t = extract_text(&path)?;
-                // Vision captions of the document's embedded images — indexed
-                // alongside the text so figures are findable by what they show.
-                if !embedded_captions.is_empty() {
-                    t.push_str("\n\n");
-                    t.push_str(&embedded_captions.join("\n\n"));
+                // Vision captions of the document's embedded images are indexed
+                // alongside the text so figures are findable by what they show —
+                // and when there is no text to stand beside, they ARE the
+                // document. A scan is pages of pictures; having just described
+                // those pictures and then reporting "no extractable text" threw
+                // away the one reading of the file we had.
+                let extracted = extract_text(&path);
+                match (extracted, embedded_captions.is_empty()) {
+                    (Ok(mut t), false) => {
+                        t.push_str("\n\n");
+                        t.push_str(&embedded_captions.join("\n\n"));
+                        t
+                    }
+                    (Ok(t), true) => t,
+                    // Nothing described and nothing extracted: the extraction
+                    // error is the honest thing to report.
+                    (Err(e), true) => return Err(e),
+                    (Err(_), false) => format!(
+                        "[本文档没有文字层,以下内容来自对页面图像的识别 \
+                         (no text layer in this document — what follows is read \
+                         from its images)]\n\n{}",
+                        embedded_captions.join("\n\n")
+                    ),
                 }
-                t
             }
         };
         let chars = text.chars().count();
