@@ -1,5 +1,71 @@
 # Changelog
 
+## v2.1.8 — An import that finishes (2026-09-10)
+
+### A book that closed the app now imports
+
+- **Dense text no longer takes the embedder down with it.** A 348-page book
+  in Chinese closed the app every time it was imported, and left nothing in
+  the log. The note the previous release taught indexing to leave named the
+  moment: the first batch of pieces. The embedding model reads each piece in a
+  single pass — llama.cpp cannot split one for it — and that pass was sized at
+  512 tokens while pieces were cut at 1020. English runs near 200 tokens a
+  piece and never came close; 800 characters of Chinese runs near 650, and 283
+  of that book's 377 pieces were over the line. Past it llama.cpp does not
+  return an error, it aborts the process. The pass now holds a whole piece, and
+  a piece is cut to whatever the pass actually got rather than to what it was
+  assumed to get.
+
+- **The embedder stops asking a full card for everything it has.** Found on
+  the way to the crash above, and not its cause: it was loaded asking for
+  every layer on the GPU, with no look at what was free and a chat model
+  already on the same card. The chat model has always been sized against free
+  memory, because a graphics driver answers an over-ask by ending the process
+  rather than returning an error. The embedder now uses the same rule, from the
+  same code.
+
+- **Indexing runs on the GPU on a Mac too, 4.5× faster.** It had been held on
+  the CPU since a Metal load was seen to leave its memory wired after the model
+  was unloaded. It now loads the way the chat model does — through malloc, with
+  Metal's residency sets off — and is sized by the same rule, against what Metal
+  and the machine both still have free. Measured on the book above before it
+  moved: 377 pieces in 36 s against 164 s on the CPU, no memory left wired after
+  unloading, and vectors that agree with the CPU's to a cosine of 0.997 at worst
+  — so what a question finds does not change, only how long importing takes.
+
+### The agent can press a key
+
+- **`browser_key`.** The browser tools could click and fill a field, and there
+  was no way to press a key: nothing submitted a form that wants Enter, nothing
+  dismissed a dialog with Escape, no Tab between fields, no arrows through a
+  list, no shortcuts. Typing into a field sends no keystroke at all — it is the
+  right way to fill a form and no way to do anything a key means. The new tool
+  sends real key events, optionally focusing a field first, and refuses a key
+  it does not know rather than sending something else.
+
+### From the v2.1.7 rebuild
+
+These reached v2.1.7 as a rebuild after it went out; they are listed here for
+anyone who installed v2.1.7 on release day.
+
+- **An import that takes the app down leaves a trace.** Some failures do not
+  unwind, and on Windows the system leaves no crash report either, so the log
+  was empty. Indexing writes down what it is about to do before doing it, and a
+  note that outlives the process is reported at the next start with the file,
+  its size and the phase it stopped in — which is how the crash above was found.
+
+- **A document that did not finish indexing is no longer listed as though it
+  had**; one already left behind is cleared when the knowledge base opens.
+
+- **A scanned document is read from its pictures** instead of being refused,
+  and **describing a document's figures can be switched off** under the
+  citations slider in Settings → Chat.
+
+- **Models can live somewhere other than the system drive.** Settings → Model
+  takes a folder; the chosen folder replaces the default locations rather than
+  joining them, nothing is moved or deleted, and restoring the default lists
+  the old locations again.
+
 ## v2.1.7 — A long run that stops starting over (2026-09-06)
 
 ### A long run stops starting over

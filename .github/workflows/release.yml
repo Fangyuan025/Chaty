@@ -251,92 +251,39 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## A long run that stops starting over
+            ## A book that closed the app now imports
 
-            A prompt is resumed from the engine's cache up to the first token
-            that differs from last time. On the architectures the Qwen3.5
-            family uses that is all-or-nothing: three quarters of their layers
-            keep a recurrent state that cannot be rewound to a midpoint, so
-            anything the cache cannot account for throws all of it away and the
-            conversation is read from the beginning. Six things in code mode
-            were doing exactly that.
+            A 348-page book in Chinese closed the app every time it was
+            imported, and left nothing in the log. The note the previous
+            release taught indexing to leave named the moment — the first batch
+            of pieces — and the cause was a size: the embedding model reads each
+            piece in one pass, llama.cpp cannot split it, and the pass held 512
+            tokens while pieces were cut at 1020. English runs near 200 tokens a
+            piece and never came close; Chinese runs near 650, and past the line
+            llama.cpp does not return an error, it ends the process. The pass now
+            holds a whole piece, and the whole book indexes.
 
-            The clock sat in the system prompt, to the minute, so a turn that
-            began in a new minute matched about twenty tokens and re-read the
-            rest. The answer that ended a turn was never written down, so every
-            continuation started cold — and the model could not see what it had
-            last told you. Tool results arrived as if you had typed them, which
-            a Qwen3.5 template counts as a new request: the model would
-            announce that you had sent one halfway through the work it was
-            already doing, and repeat your request back at you. The closing tag
-            of a tool call went missing, and one round threw away 5006 cached
-            tokens over the four it could not account for. Two paths recorded a
-            turn their own way. And a repeated call — usually progress,
-            re-running the tests after an edit — turned reasoning off for one
-            step, which re-renders the whole history, and then back again.
+            On the way there, the embedder also stopped asking a shared graphics
+            card for every layer it has, and on a Mac it now runs on the GPU:
+            377 pieces in 36 s instead of 164, with the same vectors to within a
+            cosine of 0.997 and no memory left behind when it unloads.
 
-            After: a median of 99% of each prompt resumed from cache on both
-            engines, across turn boundaries as well as within a turn. A first
-            turn still costs a full read, so does a conversation crossing the
-            point where its history must be compacted, and so does the first
-            turn after the app restarts — the cache lives in memory and does
-            not outlive the process. The turn after that resumes 99% again.
+            ## The agent can press a key
 
-            ## Speculative decoding, on models that bring their own head
+            The browser tools could click and fill a field, and there was no way
+            to press a key — no Enter to submit, no Escape to dismiss, no Tab,
+            no arrows, no shortcuts. Typing into a field sends no keystroke at
+            all. `browser_key` sends real ones, optionally focusing a field
+            first.
 
-            Some checkpoints carry a small block trained to guess the tokens
-            the model is about to produce. The model then checks a whole run of
-            guesses in one pass instead of one pass per token, and every token
-            that survives is one its own sampler drew — the reply is the reply
-            it would have given either way. Both engines can drive it now.
-
-            It ships off, and marked experimental. Measured, it is a large win
-            on text whose continuation is obvious and roughly a wash on
-            ordinary prose, and nothing readable before a reply starts says
-            which one it will be; a default that is sometimes slower is not a
-            default. The switch is in Settings → Model, offered only on models
-            that actually carry a head — read from the file, not assumed.
-
-            ## A document that fails to import says so
-
-            An import that takes the app down now leaves a trace. Some failures
-            do not unwind — an allocation that fails inside a native library, a
-            driver that aborts — so nothing is raised and, on Windows, the
-            system leaves no crash report either: the window closes and the log
-            is empty. Indexing writes down what it is about to do, and a note
-            that outlives the process is reported at the next start with the
-            file, its size and the phase it stopped in.
-
-            A document that did not finish indexing is no longer listed as
-            though it had: its record went in claiming every piece before one
-            had been stored, so an interrupted import left something that
-            looked ready and answered nothing. And a scanned document is now
-            read from its pictures — the vision model already described the
-            figures inside, but extraction failed first and threw them away.
-            Describing those figures can be switched off, under the citations
-            slider in Settings → Chat; it is the most memory-hungry part of an
-            import, running on top of the model already loaded.
-
-            ## Models can live somewhere other than the system drive
-
-            Settings → Model takes a folder. Weights are the largest thing this
-            app puts on a disk by two orders of magnitude, and both default
-            locations sit on the system drive — which on Windows meant C:, or
-            nowhere. The folder is checked by writing a file to it before it is
-            accepted, so a folder that cannot be written to is refused there
-            rather than breaking every download after it.
-
-            The chosen folder is the folder: it replaces the default locations
-            rather than joining them, so the picker shows what is actually
-            there. Nothing is moved or deleted, restoring the default lists the
-            old locations again, and the models that stop being listed are
-            counted at the moment of the change.
-
-            Three things that reached v2.1.6 as a rebuild are in here for
-            anyone who installed that version on release day: a chat reply now
-            survives the interface reloading under it, the composer stops
-            losing a line to a scrollbar at 110% and 120% UI scale, and the
-            error log can be emptied from Settings.
+            Several things reached v2.1.7 as a rebuild after it went out and are
+            in here for anyone who installed it on release day: an import that
+            closes the app now leaves a note naming the file and the step it
+            stopped in (it is how the crash above was found), a document that
+            never finished indexing is no longer listed as though it had, a
+            scanned PDF is read from its pictures, describing a document's
+            figures can be switched off, and models can live on a drive other
+            than the system one.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
