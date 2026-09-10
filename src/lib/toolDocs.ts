@@ -134,6 +134,10 @@ export const DOC_LINES: Record<string, Bi> = {
     zh: "- browser_click: 点击元素,优先用 text 按可见文字;已想好顺序的多个目标必须一次用 steps 传完。args: { \"text\"?, \"selector\"?, \"steps\"?: [{ \"text\"?, \"selector\"? }] }",
     en: "- browser_click: click an element — prefer text (visible label); when you already know a sequence of targets, pass them ALL in one steps call. args: { \"text\"?, \"selector\"?, \"steps\"?: [{ \"text\"?, \"selector\"? }] }",
   },
+  browser_key: {
+    zh: "- browser_key: 按键 —— browser_type 只填内容、不发按键。Enter/Escape/Tab/方向键/Ctrl+字母;给 label 或 selector 可先聚焦。args: { \"key\": \"Enter\", \"keys\"?: [\"Tab\",\"Enter\"], \"label\"? }",
+    en: "- browser_key: press keys — browser_type fills content and sends no keystroke. Enter/Escape/Tab/arrows/Ctrl+letter; label or selector focuses first. args: { \"key\": \"Enter\", \"keys\"?: [\"Tab\",\"Enter\"], \"label\"? }",
+  },
   browser_type: {
     zh: "- browser_type: 填输入框,也用于下拉框(text=选项可见文字);多个字段一次用 steps 填完。args: { \"text\"?, \"label\"?, \"selector\"?, \"steps\"?: [{ \"text\", \"label\"?, \"selector\"? }] }",
     en: "- browser_type: fill inputs, also selects dropdowns (text = the option's visible label); fill several fields in one steps call. args: { \"text\"?, \"label\"?, \"selector\"?, \"steps\"?: [{ \"text\", \"label\"?, \"selector\"? }] }",

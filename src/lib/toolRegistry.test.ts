@@ -61,6 +61,7 @@ describe("derived sets match the pre-M0 literals", () => {
         "browser_console",
         "browser_click",
         "browser_type",
+        "browser_key",
         "browser_scroll",
         "browser_eval",
       ]),
@@ -94,6 +95,7 @@ describe("derived sets match the pre-M0 literals", () => {
       bg_kill: ["id"],
       browser_click: ["text|label|selector|sel|steps"],
       browser_type: ["text|value|steps"],
+      browser_key: ["key|keys"],
       browser_eval: ["expression|expr|code"],
     });
   });

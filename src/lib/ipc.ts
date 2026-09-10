@@ -1130,6 +1130,21 @@ export async function browserType(
     steps: steps ?? null,
   });
 }
+/** Press keys in the page — Enter to submit, Escape to dismiss, Tab to move on,
+ *  arrows to walk a list, Ctrl/Cmd combos for shortcuts. `selector`/`label`
+ *  focuses a field first; without one the keys go wherever focus already is. */
+export async function browserKey(
+  keys: string[],
+  selector?: string,
+  label?: string,
+): Promise<string> {
+  return await invoke<string>("browser_key", {
+    keys,
+    key: null,
+    selector: selector ?? null,
+    label: label ?? null,
+  });
+}
 export async function browserConsole(): Promise<string> {
   return await invoke<string>("browser_console");
 }

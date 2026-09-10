@@ -364,6 +364,10 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
             )
             .await)
         }
+        "browser_key" => {
+            let keys = args.get("keys").cloned().and_then(|v| serde_json::from_value(v).ok());
+            res(ag::browser_key(keys, s_arg(&args, "key"), s_arg(&args, "selector"), s_arg(&args, "label")).await)
+        }
         "browser_console" => res(ag::browser_console().await),
         "browser_close" => res(ag::browser_close().await),
         // MCP (2.0): the bench drives real servers through the real client.

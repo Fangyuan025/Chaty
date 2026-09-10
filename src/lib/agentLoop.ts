@@ -27,6 +27,7 @@ import {
   browserEval,
   browserClick,
   browserType,
+  browserKey,
   browserConsole,
   browserRead,
   browserClose,
@@ -1474,6 +1475,15 @@ async function execTool(
       if (!text && !sel) return { result: 'ERROR: 需要 "text"(优先)或 "selector" (need "text" or "selector")' };
       return { result: await browserClick(sel || undefined, text || undefined) };
     }
+    case "browser_key": {
+      // One key or several; models write either shape.
+      const raw = Array.isArray(a.keys) ? a.keys : [a.key ?? a.text];
+      const keys = raw.map((k) => asStr(k)).filter((k): k is string => !!k);
+      if (!keys.length) return { result: 'ERROR: 需要 "key"(如 "Enter")或 "keys" (need "key" e.g. "Enter", or "keys")' };
+      const sel = asStr(a.selector) || asStr(a.sel);
+      const label = asStr(a.label) || asStr(a.field) || asStr(a.placeholder);
+      return { result: await browserKey(keys, sel || undefined, label || undefined) };
+    }
     case "browser_type": {
       // Batch: {steps:[{text,label|selector}, …]} fills fields in order.
       const rawSteps = Array.isArray(a.steps) ? a.steps : null;
@@ -2231,7 +2241,7 @@ export async function runAgentTurn(
    *  belong here with clicking: a spin that alternates click → scroll → click
    *  is the same dead end, and it is the results being identical — not which
    *  tool produced them — that proves the page never moved. */
-  const PAGE_TOOLS = new Set(["browser_click", "browser_type", "browser_scroll", "browser_read"]);
+  const PAGE_TOOLS = new Set(["browser_click", "browser_type", "browser_key", "browser_scroll", "browser_read"]);
   // Format slips (missing required arg) corrected without entering the
   // record; bounded so a stuck model still reaches the normal error path.
   // Per-tool empty-required-args slips (the sympy-12419 ladder): each slip

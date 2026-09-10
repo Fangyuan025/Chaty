@@ -38,6 +38,7 @@ enum BrowserCmd {
     ClickSeq { steps: Vec<(Option<String>, Option<String>)>, reply: Sender<Result<String, String>> },
     Type { selector: Option<String>, label: Option<String>, text: String, reply: Sender<Result<String, String>> },
     TypeSeq { steps: Vec<(Option<String>, Option<String>, String)>, reply: Sender<Result<String, String>> },
+    Key { keys: Vec<String>, selector: Option<String>, label: Option<String>, reply: Sender<Result<String, String>> },
     Console { reply: Sender<Result<String, String>> },
     Refresh { reply: Sender<Result<String, String>> },
     Read { reply: Sender<Result<String, String>> },
@@ -48,6 +49,111 @@ enum BrowserCmd {
 // this module was the one surface that missed the v1.8.5 pass). The
 // formatting itself comes from agent.rs's `trf!` — this file used to declare
 // `btr!`, a byte-identical second copy of the same three lines.
+
+/// One key press, described the way CDP's `Input.dispatchKeyEvent` wants it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct KeyStroke {
+    /// CDP modifier bitmask: Alt 1, Ctrl 2, Meta 4, Shift 8.
+    pub modifiers: u32,
+    pub key: String,
+    pub code: String,
+    pub vk: u32,
+    /// The character the press inserts, when it inserts one. Enter needs it to
+    /// submit a form; a shortcut like Ctrl+A must NOT carry one, or the page
+    /// receives the letter as well as the command.
+    pub text: Option<String>,
+}
+
+/// Parse `"Enter"`, `"ctrl+a"`, `"Shift+Tab"` into what the protocol needs.
+///
+/// A table rather than a guess: a key event with the wrong `windowsVirtualKeyCode`
+/// is delivered and ignored, which looks exactly like a page that did not
+/// respond — the worst failure to debug from the outside.
+pub(crate) fn parse_key(spec: &str) -> Option<KeyStroke> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return None;
+    }
+    let mut modifiers = 0u32;
+    let mut last = spec;
+    // Split on '+' but keep a literal '+' as the key itself ("ctrl++").
+    let parts: Vec<&str> = spec.split('+').collect();
+    for (i, raw) in parts.iter().enumerate() {
+        let p = raw.trim();
+        let is_last = i + 1 == parts.len();
+        if is_last && !p.is_empty() {
+            last = p;
+            break;
+        }
+        match p.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => modifiers |= 2,
+            "shift" => modifiers |= 8,
+            "alt" | "option" | "opt" => modifiers |= 1,
+            "cmd" | "meta" | "command" | "win" | "super" => modifiers |= 4,
+            "" => last = "+",  // "ctrl++" — the trailing empty piece means '+'
+            _ => return None,  // an unknown modifier is a typo, not a key
+        }
+    }
+
+    let named = |key: &str, code: &str, vk: u32, text: Option<&str>| {
+        Some(KeyStroke {
+            modifiers,
+            key: key.to_string(),
+            code: code.to_string(),
+            vk,
+            text: text.map(str::to_string),
+        })
+    };
+    match last.to_ascii_lowercase().as_str() {
+        // Enter carries "\r": without it a form does not submit, which is the
+        // single most common reason to press a key at all.
+        "enter" | "return" => named("Enter", "Enter", 13, Some("\r")),
+        // Tab carries nothing: it moves focus, and a contenteditable would
+        // otherwise receive an actual tab character as well.
+        "tab" => named("Tab", "Tab", 9, None),
+        "escape" | "esc" => named("Escape", "Escape", 27, None),
+        "backspace" | "bksp" => named("Backspace", "Backspace", 8, None),
+        "delete" | "del" => named("Delete", "Delete", 46, None),
+        "space" | "spacebar" => named(" ", "Space", 32, Some(" ")),
+        "arrowup" | "up" => named("ArrowUp", "ArrowUp", 38, None),
+        "arrowdown" | "down" => named("ArrowDown", "ArrowDown", 40, None),
+        "arrowleft" | "left" => named("ArrowLeft", "ArrowLeft", 37, None),
+        "arrowright" | "right" => named("ArrowRight", "ArrowRight", 39, None),
+        "home" => named("Home", "Home", 36, None),
+        "end" => named("End", "End", 35, None),
+        "pageup" | "pgup" => named("PageUp", "PageUp", 33, None),
+        "pagedown" | "pgdn" | "pgdown" => named("PageDown", "PageDown", 34, None),
+        other => {
+            let mut chars = other.chars();
+            let c = chars.next()?;
+            if chars.next().is_some() || !c.is_ascii_alphanumeric() {
+                return None;  // multi-char and not a name we know
+            }
+            let upper = c.to_ascii_uppercase();
+            let code = if c.is_ascii_digit() {
+                format!("Digit{upper}")
+            } else {
+                format!("KeyX").replace('X', &upper.to_string())
+            };
+            // A letter pressed WITH ctrl/cmd/alt is a command, not typing: no
+            // text, or the page gets the character too. Shift alone still types.
+            let text = if modifiers & (1 | 2 | 4) != 0 {
+                None
+            } else if modifiers & 8 != 0 {
+                Some(upper.to_string())
+            } else {
+                Some(c.to_ascii_lowercase().to_string())
+            };
+            Some(KeyStroke {
+                modifiers,
+                key: text.clone().unwrap_or_else(|| c.to_ascii_lowercase().to_string()),
+                code,
+                vk: upper as u32,
+                text,
+            })
+        }
+    }
+}
 
 /// JS that returns a compact list of the page's interactive elements, so the
 /// model clicks/types against real visible text rather than guessed selectors.
@@ -705,6 +811,12 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
             }
             BrowserCmd::ClickSeq { steps, reply } => {
                 let r = run(&mut session, headless, |s| s.click_seq(&steps));
+                let _ = reply.send(with_console_errors(&mut session, r));
+            }
+            BrowserCmd::Key { keys, selector, label, reply } => {
+                let r = run(&mut session, headless, |s| {
+                    s.press_keys(&keys, selector.as_deref(), label.as_deref())
+                });
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Type { selector, label, text, reply } => {
@@ -1591,6 +1703,133 @@ impl BrowserSession {
         Ok(())
     }
 
+    /// Focus a field by selector or label, without changing its value.
+    ///
+    /// The finder mirrors `type_once`'s, so "the field browser_type would have
+    /// filled" and "the field this key goes to" are the same field.
+    fn focus_field(&mut self, selector: Option<&str>, label: Option<&str>) -> Result<String, String> {
+        let finder = if let Some(sel) = selector.filter(|s| !s.is_empty()) {
+            format!("document.querySelector({})", serde_json::to_string(sel).unwrap_or_default())
+        } else if let Some(lbl) = label.filter(|l| !l.is_empty()) {
+            format!(
+                r#"(function(){{
+                    var want={};
+                    var fields=[].slice.call(document.querySelectorAll("input,textarea,select,[contenteditable=''],[contenteditable=true]"));
+                    var t=function(e){{return ((e.getAttribute&&(e.getAttribute('aria-label')||e.getAttribute('placeholder')||e.getAttribute('name')))||'').toLowerCase();}};
+                    var w=want.toLowerCase();
+                    return fields.find(function(e){{return t(e).indexOf(w)>=0;}})||null;
+                }})()"#,
+                serde_json::to_string(lbl).unwrap_or_default()
+            )
+        } else {
+            "null".to_string()
+        };
+        let js = format!(
+            r#"(function(){{var el={finder};if(!el)return "NONE";
+               el.scrollIntoView({{block:'center'}});el.focus();return "OK";}})()"#
+        );
+        let r = self.eval(&js)?;
+        let what = selector.or(label).unwrap_or("(focused element)");
+        if r.trim_matches('"') == "OK" {
+            Ok(what.to_string())
+        } else {
+            let d = self.digest().unwrap_or_default();
+            Err(trf!(
+                "未找到要聚焦的元素:{}。页面上的可交互元素:\n{}",
+                "No element to focus matched: {}. Interactive elements on this page:\n{}",
+                what,
+                d
+            ))
+        }
+    }
+
+    /// Send one key the way a keyboard does: down, then up.
+    ///
+    /// `Input.insertText` (what browser_type uses) puts characters in a field
+    /// and nothing else — no keydown reaches the page, which is correct for
+    /// filling a form and useless for everything a key MEANS. Enter submits,
+    /// Escape dismisses, Tab moves on, the arrows walk a combobox, Ctrl+A
+    /// selects: none of those are text, and none of them were reachable.
+    fn dispatch_key(&mut self, k: &KeyStroke) -> Result<(), String> {
+        let sid = self.session_id.clone();
+        for phase in ["keyDown", "keyUp"] {
+            // `windowsVirtualKeyCode` only. Its sibling `nativeVirtualKeyCode`
+            // is the HOST's code, not Windows': sending the Windows value for
+            // Escape (27) told a Mac it was the Minus key, and Chrome answered
+            // one Escape with 3764 further keydowns in 470 ms. One number that
+            // means different keys on different machines is worse than none.
+            let mut ev = json!({
+                "type": phase,
+                "key": k.key,
+                "code": k.code,
+                "windowsVirtualKeyCode": k.vk,
+                "modifiers": k.modifiers,
+            });
+            // Only the press inserts; repeating the text on release would type
+            // everything twice.
+            if phase == "keyDown" {
+                if let Some(t) = &k.text {
+                    ev["text"] = json!(t);
+                    ev["unmodifiedText"] = json!(t);
+                }
+            }
+            self.call(Some(&sid), "Input.dispatchKeyEvent", ev)?;
+        }
+        Ok(())
+    }
+
+    /// Press keys in order, optionally focusing a field first.
+    fn press_keys(
+        &mut self,
+        keys: &[String],
+        selector: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<String, String> {
+        let strokes: Vec<(String, KeyStroke)> = keys
+            .iter()
+            .map(|spec| {
+                parse_key(spec)
+                    .map(|k| (spec.clone(), k))
+                    .ok_or_else(|| {
+                        trf!(
+                            "无法识别的按键 {:?}。可用:Enter/Tab/Escape/Backspace/Delete/Space/方向键/Home/End/PageUp/PageDown、单个字母数字,可加 Ctrl+ Shift+ Alt+ Cmd+ 前缀",
+                            "unrecognized key {:?}. Available: Enter/Tab/Escape/Backspace/Delete/Space/arrows/Home/End/PageUp/PageDown, or one letter or digit, each optionally prefixed with Ctrl+ Shift+ Alt+ Cmd+",
+                            spec
+                        )
+                    })
+            })
+            .collect::<Result<_, String>>()?;
+
+        // Focusing is optional: with no target the keys go wherever the page's
+        // focus already is, which is what a person pressing Escape means.
+        let focused = if selector.is_some() || label.is_some() {
+            Some(self.focus_field(selector, label)?)
+        } else {
+            None
+        };
+        for (_, k) in &strokes {
+            self.dispatch_key(k)?;
+        }
+        // The same settle typing gets: a key is far MORE likely than typing to
+        // start something (a submit, a route change, a dialog), so reporting
+        // the page before it lands would describe the page the key replaced.
+        std::thread::sleep(Duration::from_millis(250));
+        self.pump_pending();
+        self.wait_settled(2500, 300);
+        let rich = self.rich_digest(3500).unwrap_or_default();
+        let pressed = strokes.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(", ");
+        Ok(match focused {
+            Some(what) => trf!(
+                "已在 {} 上按下 {}\n\n{}",
+                "Pressed {1} on {0}\n\n{2}",
+                what,
+                pressed,
+                rich
+            ),
+            None => trf!("已按下 {}\n\n{}", "Pressed {}\n\n{}", pressed, rich),
+        })
+    }
+
     /// Where the element found by the last locate actually is, measured as
     /// late as possible and checked against what is really under the point.
     ///
@@ -2248,6 +2487,15 @@ pub fn type_seq(steps: Vec<(Option<String>, Option<String>, String)>) -> Result<
     dispatch(|reply| BrowserCmd::TypeSeq { steps, reply })
 }
 
+/// Press keys, optionally focusing a field first.
+pub fn press_keys(
+    keys: Vec<String>,
+    selector: Option<String>,
+    label: Option<String>,
+) -> Result<String, String> {
+    dispatch(|reply| BrowserCmd::Key { keys, selector, label, reply })
+}
+
 pub fn console() -> Result<String, String> {
     dispatch(|reply| BrowserCmd::Console { reply })
 }
@@ -2456,6 +2704,49 @@ mod tempdir {
 
 #[cfg(test)]
 mod tests {
+    /// A key event with the wrong virtual key code is delivered and ignored,
+    /// which from the outside is indistinguishable from a page that did not
+    /// react — so the table is pinned rather than trusted.
+    #[test]
+    fn key_specs_parse_into_what_the_protocol_needs() {
+        use super::parse_key;
+
+        // Enter carries a carriage return: without it a form does not submit,
+        // which is the main reason to press a key at all.
+        let enter = parse_key("Enter").expect("Enter");
+        assert_eq!((enter.vk, enter.code.as_str()), (13, "Enter"));
+        assert_eq!(enter.text.as_deref(), Some("\r"));
+        assert_eq!(parse_key("return").unwrap(), enter, "an alias is the same key");
+
+        // Tab must NOT carry text, or a contenteditable receives a tab as well
+        // as moving focus.
+        assert_eq!(parse_key("Tab").unwrap().text, None);
+
+        // Modifiers: Alt 1, Ctrl 2, Meta 4, Shift 8.
+        assert_eq!(parse_key("Escape").unwrap().modifiers, 0);
+        assert_eq!(parse_key("ctrl+a").unwrap().modifiers, 2);
+        assert_eq!(parse_key("Shift+Tab").unwrap().modifiers, 8);
+        assert_eq!(parse_key("Cmd+Enter").unwrap().modifiers, 4);
+        assert_eq!(parse_key("ctrl+shift+p").unwrap().modifiers, 2 | 8);
+
+        // A shortcut is a command, not typing: carrying text would give the
+        // page the letter as well as the command.
+        assert_eq!(parse_key("ctrl+a").unwrap().text, None);
+        assert_eq!(parse_key("a").unwrap().text.as_deref(), Some("a"));
+        assert_eq!(parse_key("shift+a").unwrap().text.as_deref(), Some("A"));
+
+        // Codes follow the physical-key naming the protocol expects.
+        assert_eq!(parse_key("a").unwrap().code, "KeyA");
+        assert_eq!(parse_key("7").unwrap().code, "Digit7");
+        assert_eq!(parse_key("down").unwrap().code, "ArrowDown");
+        assert_eq!(parse_key("pgdn").unwrap().vk, 34);
+
+        // Refused rather than silently sent as something else.
+        assert!(parse_key("").is_none());
+        assert!(parse_key("F13").is_none(), "not in the table");
+        assert!(parse_key("hyper+a").is_none(), "an unknown modifier is a typo");
+    }
+
     use super::*;
 
     /// The model-supplied navigation target resolver: relative file paths

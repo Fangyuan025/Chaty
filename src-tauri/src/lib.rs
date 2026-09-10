@@ -402,6 +402,7 @@ pub fn run() {
             agent::browser_eval,
             agent::browser_click,
             agent::browser_type,
+            agent::browser_key,
             agent::browser_console,
             agent::browser_read,
             agent::browser_close,

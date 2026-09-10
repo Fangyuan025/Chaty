@@ -1854,6 +1854,30 @@ pub struct TypeStep {
 }
 
 #[tauri::command]
+pub async fn browser_key(
+    keys: Option<Vec<String>>,
+    key: Option<String>,
+    selector: Option<String>,
+    label: Option<String>,
+) -> Result<String, String> {
+    // `key` and `keys` are the same thing: models write one or the other, and
+    // refusing the wrong shape costs a round trip to learn nothing.
+    let keys: Vec<String> = keys
+        .filter(|k| !k.is_empty())
+        .or_else(|| key.map(|k| vec![k]))
+        .unwrap_or_default();
+    if keys.is_empty() {
+        return Err(trf!(
+            "browser_key 需要 \"key\"(如 \"Enter\")或 \"keys\"",
+            "browser_key needs \"key\" (e.g. \"Enter\") or \"keys\""
+        ));
+    }
+    tokio::task::spawn_blocking(move || crate::browser::press_keys(keys, selector, label))
+        .await
+        .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
+}
+
+#[tauri::command]
 pub async fn browser_type(
     selector: Option<String>,
     label: Option<String>,

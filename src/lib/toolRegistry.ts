@@ -101,6 +101,7 @@ export const NATIVE_TOOL_NAMES = [
   "browser_scroll",
   "browser_click",
   "browser_type",
+  "browser_key",
   "browser_eval",
   "browser_console",
   "browser_read",
@@ -148,6 +149,7 @@ const NATIVE_SPECS: (ToolSpec & { name: AgentToolName })[] = [
   { name: "browser_console", source: "native", suite: "browser", perm: "network", tier: "core", docLine: d("browser_console"), untrusted: true, repeatExempt: true },
   { name: "browser_click", source: "native", suite: "browser", perm: "network", tier: "core", docLine: d("browser_click"), untrusted: true, requiredArgs: ["text|label|selector|sel|steps"], argExample: '{"text":"Submit"}' },
   { name: "browser_type", source: "native", suite: "browser", perm: "network", tier: "core", docLine: d("browser_type"), untrusted: true, requiredArgs: ["text|value|steps"], argExample: '{"label":"Email","text":"user@example.com"}' },
+  { name: "browser_key", source: "native", suite: "browser", perm: "network", tier: "core", docLine: d("browser_key"), untrusted: true, requiredArgs: ["key|keys"], argExample: '{"key":"Enter"}' },
   { name: "browser_eval", source: "native", suite: "browser", perm: "network", tier: "core", docLine: d("browser_eval"), untrusted: true, requiredArgs: ["expression|expr|code"], argExample: '{"expression":"document.title"}' },
 ];
 

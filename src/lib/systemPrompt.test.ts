@@ -9,9 +9,9 @@ const { systemPrompt, agentSetEditAnchors, nowLine } = await import("./agentLoop
 
 const variants = [
   { zh: true, vision: false, label: "zh plain", maxChars: 3600 },
-  { zh: true, vision: true, label: "zh vision", maxChars: 4600 },
+  { zh: true, vision: true, label: "zh vision", maxChars: 4650 },
   { zh: false, vision: false, label: "en plain", maxChars: 6200 },
-  { zh: false, vision: true, label: "en vision", maxChars: 7700 },
+  { zh: false, vision: true, label: "en vision", maxChars: 7800 },
 ] as const;
 // Caps anchored to the post-slimming sizes (2026-07 WS1: 3545 / 4432 / 6031 /
 // 7516 JS chars at think=normal, no project doc; before slimming they were
@@ -20,6 +20,12 @@ const variants = [
 // (~4 chars/token vs ~1 for CJK), so it's the cheaper prompt in tokens.
 // The prompt is re-prefetched on every agent step, so growth here is a
 // per-step tax on slow local prefill — any increase must be deliberate.
+// Deliberate increases, and what bought them:
+//   2026-09-10  vision +50 zh / +100 en — browser_key. The browser suite could
+//   click and it could fill a field, and there was no way to press a key: no
+//   Enter to submit, no Escape to dismiss, no Tab, no arrows. The line is
+//   peer-sized with browser_click's (209 en chars against its 211); the rest
+//   of the cost is simply that there is one more tool than there was.
 
 describe("systemPrompt size gate", () => {
   for (const v of variants) {
