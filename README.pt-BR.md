@@ -281,7 +281,8 @@ xattr -dr com.apple.quarantine /Applications/Chaty.app
 
 e abra o Chaty normalmente. (Ou: abra, dispense o aviso, e escolha **Ajustes do Sistema →
 Privacidade e Segurança → Abrir Mesmo Assim**.) No macOS a pasta gravável de modelos fica
-nos dados do app — use **Abrir pasta de modelos** no menu de modelos.
+nos dados do app — use **Abrir pasta de modelos** no menu de modelos, ou aponte-a
+para outro disco em **Configurações → Modelo → Pasta de modelos → Alterar local**.
 
 ## Compilar
 

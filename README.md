@@ -277,7 +277,8 @@ xattr -dr com.apple.quarantine /Applications/Chaty.app
 
 then open Chaty normally. (Or: open it, dismiss the warning, and choose **System Settings →
 Privacy & Security → Open Anyway**.) On macOS the writable models folder lives in app data —
-use **Open models folder** in the model menu.
+use **Open models folder** in the model menu — or point it at another drive with
+**Settings → Model → Models folder → Change location**.
 
 ## Build
 
