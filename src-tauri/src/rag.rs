@@ -94,19 +94,33 @@ fn embed_model_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// vanishing and nothing at all in the log (issue #13). Sizing is therefore the
 /// chat model's: against what is FREE, under any cap a previous crash left.
 ///
-/// Not gated on the platform even though only one uses the answer — a branch
-/// the development machine never compiles is a branch nothing checks. macOS
-/// therefore compiles it and never calls it, which is the point.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// The same rule on every platform, Apple Silicon included: `fit_layers`
+/// against what is free right now. On a Mac "free" has to satisfy both Metal's
+/// working set and the machine's memory, because the GPU and CPU share one pool
+/// and an MLX chat model lives in a different process from this one.
 fn embedder_gpu_layers(backend: &llama_cpp_2::llama_backend::LlamaBackend, path: &str) -> i32 {
-    if cfg!(target_os = "macos") {
-        return 0;
-    }
     let want = crate::gpu::detect_gpu().and_then(|g| {
-        crate::inference::llama::probe_n_layer(backend, path)
-            .map(|nl| crate::gpu::auto_gpu_layers(std::path::Path::new(path), nl, g.vram_mb))
+        let file = std::fs::metadata(path).map(|m| m.len()).ok()?;
+        let n_layer = crate::inference::llama::probe_n_layer(backend, path)?;
+        Some(crate::gpu::fit_layers(file, n_layer, crate::gpu::embed_free_bytes(g.vram_mb)))
     });
     embedder_layers(want, crate::inference::llama::gpu_layer_cap())
+}
+
+/// The most tokens one chunk may hand the embedder.
+///
+/// bge-m3 is an ENCODER, and llama.cpp cannot split one sequence across
+/// micro-batches for an encoder — so a chunk longer than the context's
+/// micro-batch is not an error it returns. It is `GGML_ASSERT(n_ubatch >=
+/// n_tokens)` and `abort()`: the whole app gone, nothing raised, nothing in the
+/// log. That was issue #13. The micro-batch defaulted to 512 while chunks were
+/// cut at 1020, and 800 characters of Chinese run far past 512 tokens — on the
+/// reported book 283 of its 377 chunks did (median 652, largest 882), so the
+/// first batch killed the app every time, while English, at roughly 200 tokens
+/// a chunk, never came near the line. Hence whichever is smaller: the window
+/// (less room for special tokens) or the micro-batch the context really got.
+fn embed_token_limit(n_ctx: u32, n_ubatch: u32) -> usize {
+    (n_ctx as usize).saturating_sub(4).min(n_ubatch as usize).max(1)
 }
 
 /// The decision itself, separated from the machinery needed to ask the
@@ -120,7 +134,9 @@ fn embedder_layers(want: Option<i32>, cap: Option<i32>) -> i32 {
     cap.map_or(want, |c| want.min(c))
 }
 
-fn embedder_start(model_path: &PathBuf) -> Result<Embedder, String> {
+/// Start the embedding worker. `layers` forces an offload (tests compare CPU
+/// against GPU); `None` lets `embedder_gpu_layers` decide, as the app does.
+fn embedder_start(model_path: &PathBuf, layers: Option<i32>) -> Result<Embedder, String> {
     let path = model_path.to_string_lossy().to_string();
     let (tx, rx) = std::sync::mpsc::channel::<EmbedJob>();
     let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
@@ -135,24 +151,22 @@ fn embedder_start(model_path: &PathBuf) -> Result<Embedder, String> {
                     return;
                 }
             };
-            // bge-m3 is ~730 MB. On macOS, offloading it to Metal pins ~730 MB of
-            // *wired* memory that never returns to the kernel after unload (the
-            // same mmap-on-Metal trap the chat model dodges) — so the embedder is
-            // loaded on the CPU here, via malloc (freeable), keeping it out of
-            // wired memory entirely. Other platforms keep the GPU offload.
-            #[cfg(target_os = "macos")]
-            let params = LlamaModelParams::default()
-                .with_n_gpu_layers(0)
-                .with_use_mmap(false);
-            // Everywhere else the embedder goes on the GPU — but sized the way
-            // the chat model is sized, not by asking for all of it.
-            #[cfg(not(target_os = "macos"))]
-            let layers = embedder_gpu_layers(backend, &path);
-            #[cfg(not(target_os = "macos"))]
+            // On the GPU everywhere, sized by the rule the chat model uses rather
+            // than by asking for all of it — it loads with a chat model already
+            // resident, the one case where "everything" is certainly wrong.
+            let layers = layers.unwrap_or_else(|| embedder_gpu_layers(backend, &path));
             let params = LlamaModelParams::default().with_n_gpu_layers(layers.max(0) as u32);
-            // A death in here is remembered: the same guard the chat model arms,
-            // so the next attempt asks for less instead of repeating this one.
-            #[cfg(not(target_os = "macos"))]
+            // macOS loads through malloc, exactly as the chat model does. What
+            // kept this embedder on the CPU was an mmap'd load on Metal leaving
+            // its pages wired after unload, never returned to the kernel; malloc
+            // is freed synchronously, and residency sets are off app-wide
+            // (GGML_METAL_NO_RESIDENCY). Measured before this moved: see
+            // `rag_embed_gpu_probe`.
+            #[cfg(target_os = "macos")]
+            let params = params.with_use_mmap(false);
+            // A death in here is remembered: the same guard the chat model arms
+            // (Windows, where drivers take the process down), so the next
+            // attempt asks for less instead of repeating this one.
             let _crash_guard = crate::inference::llama::LoadGuard::arm(layers);
             let model = match LlamaModel::load_from_file(backend, &path, &params) {
                 Ok(m) => m,
@@ -164,6 +178,9 @@ fn embedder_start(model_path: &PathBuf) -> Result<Embedder, String> {
             let n_ctx = 1024u32;
             let ctx_params = LlamaContextParams::default()
                 .with_n_ctx(NonZeroU32::new(n_ctx))
+                // A whole chunk in one micro-batch — see `embed_token_limit`.
+                .with_n_batch(n_ctx)
+                .with_n_ubatch(n_ctx)
                 .with_embeddings(true)
                 .with_pooling_type(LlamaPoolingType::Mean)
                 .with_n_threads(crate::gpu::cpu_worker_threads() as i32);
@@ -175,6 +192,9 @@ fn embedder_start(model_path: &PathBuf) -> Result<Embedder, String> {
                 }
             };
             let _ = init_tx.send(Ok(()));
+            // Read back rather than assumed: whatever the backend actually
+            // granted is the number the assertion checks against.
+            let limit = embed_token_limit(n_ctx, ctx.n_ubatch());
 
             while let Ok(job) = rx.recv() {
                 match job {
@@ -189,7 +209,7 @@ fn embedder_start(model_path: &PathBuf) -> Result<Embedder, String> {
                                     break;
                                 }
                             };
-                            let take = tokens.len().min(n_ctx as usize - 4);
+                            let take = tokens.len().min(limit);
                             let mut batch = LlamaBatch::new(take.max(1), 1);
                             let mut add_err = None;
                             for (i, tok) in tokens[..take].iter().enumerate() {
@@ -244,7 +264,7 @@ fn embed(app: &tauri::AppHandle, texts: Vec<String>) -> Result<Vec<Vec<f32>>, St
     }
     let mut guard = EMBEDDER.lock().unwrap();
     if guard.is_none() {
-        *guard = Some(embedder_start(&model_path)?);
+        *guard = Some(embedder_start(&model_path, None)?);
     }
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     guard
@@ -1660,6 +1680,21 @@ pub async fn rag_download_model(
 
 #[cfg(test)]
 mod tests {
+    /// A chunk may never exceed the micro-batch the encoder context was given:
+    /// past it llama.cpp aborts the process instead of returning an error.
+    #[test]
+    fn a_chunk_never_exceeds_the_encoders_micro_batch() {
+        use super::embed_token_limit;
+        assert_eq!(embed_token_limit(1024, 1024), 1020, "window minus special tokens");
+        assert_eq!(
+            embed_token_limit(1024, 512),
+            512,
+            "a smaller micro-batch binds — 512 was the default, and the crash"
+        );
+        assert!(embed_token_limit(1024, 512) < 606, "the reported book's first batch would now fit");
+        assert_eq!(embed_token_limit(0, 512), 1, "never zero tokens");
+    }
+
     /// The embedder shares a card with a chat model that is already on it, so
     /// "offload everything" is the one answer that is certainly wrong — and an
     /// over-ask is not an error to retry, it is a Vulkan driver taking the
@@ -1806,7 +1841,7 @@ mod tests {
     #[ignore]
     fn rag_embedder_semantic_probe() {
         let model = std::env::var("CHATY_TEST_EMBED_GGUF").expect("set CHATY_TEST_EMBED_GGUF");
-        let emb = embedder_start(&PathBuf::from(model)).expect("embedder start");
+        let emb = embedder_start(&PathBuf::from(model), None).expect("embedder start");
         let (rtx, rrx) = std::sync::mpsc::channel();
         emb.tx
             .send(EmbedJob::Embed {
@@ -1829,6 +1864,118 @@ mod tests {
             "semantic order broken: kitten~cat {kitten_cat} vs kitten~carburetor {kitten_carb}"
         );
         drop(emb); // exercises the worker-shutdown path
+    }
+
+    /// How many tokens each chunk of a real document becomes under bge-m3's own
+    /// tokenizer. Characters are a poor proxy: 800 characters of English is
+    /// about 200 tokens, 800 of Chinese several times that, and the embedder's
+    /// limits are in tokens. Vocabulary only — nothing is embedded.
+    ///   CHATY_TEST_EMBED_GGUF=<bge-m3 .gguf> CHATY_TEST_EMBED_PDF=<a pdf> \
+    ///   cargo test --release --lib rag_chunk_token_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn rag_chunk_token_probe() {
+        let model_path = std::env::var("CHATY_TEST_EMBED_GGUF").expect("set CHATY_TEST_EMBED_GGUF");
+        let pdf = std::env::var("CHATY_TEST_EMBED_PDF").expect("set CHATY_TEST_EMBED_PDF");
+        let text = extract_pdf(&pdf).expect("extract");
+        let chunks = chunk_text(&text);
+        let backend = crate::inference::llama_backend_pub().expect("backend");
+        let params = LlamaModelParams::default().with_vocab_only(true);
+        let model = LlamaModel::load_from_file(backend, &model_path, &params).expect("vocab");
+        let mut lens: Vec<usize> = chunks
+            .iter()
+            .map(|c| model.str_to_token(c, AddBos::Always).map(|t| t.len()).unwrap_or(0))
+            .collect();
+        let first_batch_max = lens.iter().take(8).cloned().max().unwrap_or(0);
+        lens.sort_unstable();
+        let pct = |p: f64| lens[((lens.len() - 1) as f64 * p) as usize];
+        println!(
+            "\nPROBE {} chunks: tokens min {} median {} p95 {} max {}",
+            lens.len(), lens[0], pct(0.5), pct(0.95), lens[lens.len() - 1]
+        );
+        println!(
+            "PROBE over 512 (the default micro-batch): {}   over 1020 (our truncation): {}   largest in the first batch of 8: {}",
+            lens.iter().filter(|&&n| n > 512).count(),
+            lens.iter().filter(|&&n| n > 1020).count(),
+            first_batch_max
+        );
+    }
+
+    /// CPU against GPU on a real document — speed, whether the vectors agree,
+    /// and whether the GPU gives its memory back. The embedder was held on the
+    /// CPU on macOS because a Metal load was seen to leave its pages wired after
+    /// unload; moving it is only safe if that no longer happens, so this
+    /// measures it instead of assuming. Run alone, nothing else on the GPU:
+    ///   CHATY_TEST_EMBED_GGUF=<bge-m3 .gguf> CHATY_TEST_EMBED_PDF=<a pdf> \
+    ///   cargo test --release --lib rag_embed_gpu_probe -- --ignored --nocapture --test-threads=1
+    #[test]
+    #[ignore]
+    fn rag_embed_gpu_probe() {
+        // As the app does, before the first Metal initialisation.
+        #[cfg(target_os = "macos")]
+        std::env::set_var("GGML_METAL_NO_RESIDENCY", "1");
+        let model = PathBuf::from(std::env::var("CHATY_TEST_EMBED_GGUF").expect("set CHATY_TEST_EMBED_GGUF"));
+        let pdf = std::env::var("CHATY_TEST_EMBED_PDF").expect("set CHATY_TEST_EMBED_PDF");
+        let text = extract_pdf(&pdf).expect("extract");
+        let chunks = chunk_text(&text);
+        println!("PROBE {} chars -> {} chunks", text.chars().count(), chunks.len());
+
+        let wired_mb = || -> f64 {
+            let out = std::process::Command::new("vm_stat").output().map(|o| o.stdout).unwrap_or_default();
+            let out = String::from_utf8_lossy(&out);
+            let page = out
+                .lines()
+                .next()
+                .and_then(|l| l.split("page size of ").nth(1))
+                .and_then(|r| r.split_whitespace().next())
+                .and_then(|n| n.parse::<f64>().ok())
+                .unwrap_or(16384.0);
+            let pages = out
+                .lines()
+                .find(|l| l.starts_with("Pages wired down"))
+                .and_then(|l| l.split(':').nth(1))
+                .and_then(|n| n.trim().trim_end_matches('.').parse::<f64>().ok())
+                .unwrap_or(0.0);
+            pages * page / 1_048_576.0
+        };
+        let backend = crate::inference::llama_backend_pub().expect("backend");
+        let auto = embedder_gpu_layers(backend, &model.to_string_lossy());
+        println!("PROBE the app would offload {auto} layer(s) on this machine right now");
+
+        let run = |label: &str, layers: i32| -> Vec<Vec<f32>> {
+            let w0 = wired_mb();
+            let t0 = std::time::Instant::now();
+            let emb = embedder_start(&model, Some(layers)).expect("embedder start");
+            let load = t0.elapsed().as_secs_f64();
+            let w1 = wired_mb();
+            let t1 = std::time::Instant::now();
+            let mut out = Vec::with_capacity(chunks.len());
+            for batch in chunks.chunks(8) {
+                let (rtx, rrx) = std::sync::mpsc::channel();
+                emb.tx.send(EmbedJob::Embed { texts: batch.to_vec(), reply: rtx }).unwrap();
+                out.extend(rrx.recv().unwrap().expect("embed batch"));
+            }
+            let secs = t1.elapsed().as_secs_f64();
+            drop(emb); // closes the channel and joins: the model is dropped here
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            let w2 = wired_mb();
+            println!(
+                "PROBE {label:<4} layers={layers:<3} load {load:.1}s  embed {n} chunks {secs:.1}s ({rate:.1}/s)  wired {w0:.0} MB -> loaded {d1:+.0} -> after unload {d2:+.0}",
+                n = out.len(),
+                rate = out.len() as f64 / secs,
+                d1 = w1 - w0,
+                d2 = w2 - w0,
+            );
+            out
+        };
+        let cpu = run("cpu", 0);
+        let gpu = run("gpu", auto.max(1));
+        let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+        let cos: Vec<f32> = cpu.iter().zip(&gpu).map(|(a, b)| dot(a, b)).collect();
+        let min = cos.iter().cloned().fold(1.0f32, f32::min);
+        let mean = cos.iter().sum::<f32>() / cos.len() as f32;
+        println!("PROBE cpu vs gpu vectors: cosine min {min:.5}, mean {mean:.5}");
+        assert!(min > 0.99, "the GPU must embed the same text to the same place (min cosine {min})");
     }
 
     /// A file with no blank line in it is ONE paragraph. The old splitter

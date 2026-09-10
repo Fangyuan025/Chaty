@@ -263,9 +263,6 @@ pub fn auto_gpu_layers(path: &Path, n_layer: u32, vram_mb: u64) -> i32 {
         }
     }
 
-    // Weights are roughly evenly spread across blocks (+1 for embeddings/output).
-    let per_layer = file_bytes as f64 / (n_layer as f64 + 1.0);
-
     // What is actually FREE, not what the card has. Sizing from the total is how
     // a 26B model gets told it fits on a 12 GB card that a desktop, a browser
     // and a game are already sitting on — and a Vulkan driver answers that by
@@ -275,11 +272,101 @@ pub fn auto_gpu_layers(path: &Path, n_layer: u32, vram_mb: u64) -> i32 {
     let free_mb = gpu_usage()
         .filter(|u| u.total_mb > 0 && u.used_mb <= u.total_mb)
         .map_or(vram_mb, |u| u.total_mb.saturating_sub(u.used_mb));
-    let vram = free_mb.min(vram_mb) as f64 * 1024.0 * 1024.0;
-    // Reserve ~20% or at least 1 GiB for the KV cache / compute buffers / OS.
+    fit_layers(file_bytes, n_layer, free_mb.min(vram_mb) * 1024 * 1024)
+}
+
+/// How many of a model's layers fit in `free_bytes` of GPU memory.
+///
+/// The sizing rule on its own, so that everything that puts weights on a GPU
+/// sizes them the same way — the chat model through `auto_gpu_layers`, the
+/// knowledge-base embedder on every platform. Two copies of a rule is how one
+/// of them ends up asking a full card for everything it has (issue #13).
+///
+/// Weights are taken as evenly spread across blocks (+1 for embeddings and the
+/// output head), and ~20% — at least 1 GiB — is held back for the KV cache,
+/// compute buffers and everything else already living there.
+pub fn fit_layers(file_bytes: u64, n_layer: u32, free_bytes: u64) -> i32 {
+    if n_layer == 0 || file_bytes == 0 {
+        return 0;
+    }
+    let per_layer = file_bytes as f64 / (n_layer as f64 + 1.0);
+    let vram = free_bytes as f64;
     let reserve = (vram * 0.20).max(1024.0 * 1024.0 * 1024.0);
     let budget = (vram - reserve).max(0.0);
-
     let fit = (budget / per_layer).floor() as i64;
     fit.clamp(0, n_layer as i64 + 1) as i32
+}
+
+/// What Metal can still hand this process on Apple Silicon: the device's
+/// recommended working set minus what is already allocated on it — a chat
+/// model's weights among it. The unified-memory counterpart of DXGI's budget
+/// minus current usage on Windows.
+///
+/// Only this process's allocations are counted, and an MLX model lives in its
+/// own sidecar process, so on its own this can read far roomier than the
+/// machine is. It is therefore never used alone: see `embed_free_bytes`.
+#[cfg(target_os = "macos")]
+pub fn metal_free_bytes() -> Option<u64> {
+    let d = metal::Device::system_default()?;
+    let total = d.recommended_max_working_set_size();
+    let used = d.current_allocated_size() as u64;
+    Some(total.saturating_sub(used))
+}
+
+/// Free memory a model loaded NOW can use on the GPU.
+///
+/// On a discrete card that is the card's free VRAM. On Apple Silicon the GPU
+/// and CPU share one pool, so two things must both have room: Metal's working
+/// set (what this process may still allocate) and the machine's free memory
+/// (which also sees a model held by the MLX sidecar). The smaller one binds.
+pub fn embed_free_bytes(vram_mb: u64) -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        let metal = metal_free_bytes().unwrap_or(vram_mb * 1024 * 1024);
+        let ram = gpu_usage()
+            .filter(|u| u.total_mb > 0 && u.used_mb <= u.total_mb)
+            .map_or(u64::MAX, |u| (u.total_mb - u.used_mb) * 1024 * 1024);
+        metal.min(ram)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        gpu_usage()
+            .filter(|u| u.total_mb > 0 && u.used_mb <= u.total_mb)
+            .map_or(vram_mb, |u| u.total_mb.saturating_sub(u.used_mb))
+            .min(vram_mb)
+            * 1024
+            * 1024
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// One sizing rule for every GPU load. Pinned on the embedder's own numbers
+    /// (bge-m3 Q8_0: 634 MB, 24 blocks) because that is the load issue #13 was
+    /// about, and on a chat model to show the extraction changed nothing there.
+    #[test]
+    fn fit_layers_sizes_against_what_is_free() {
+        use super::fit_layers;
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let bge = 634_553_760u64;
+
+        assert_eq!(fit_layers(bge, 24, 2 * GIB), 25, "room to spare: every layer");
+        assert_eq!(fit_layers(bge, 24, GIB + GIB / 5), 8, "a sliver over the reserve: part of it");
+        assert_eq!(fit_layers(bge, 24, GIB), 0, "nothing past the 1 GiB held back: the CPU");
+        assert_eq!(fit_layers(bge, 24, 0), 0);
+        assert_eq!(fit_layers(0, 24, 8 * GIB), 0, "no file");
+        assert_eq!(fit_layers(bge, 0, 8 * GIB), 0, "no layers");
+
+        // Never fewer layers for more room.
+        let mut last = 0;
+        for mb in (0..8192).step_by(64) {
+            let n = fit_layers(bge, 24, mb * 1024 * 1024);
+            assert!(n >= last, "more free memory gave fewer layers at {mb} MB");
+            last = n;
+        }
+
+        // A 9B at Q4 (~5.5 GB, 32 blocks) on an 8 GB card with nothing else on
+        // it gets all of itself, as it did before the rule had a name.
+        assert_eq!(fit_layers(5_500_000_000, 32, 8 * GIB), 33);
+    }
 }
