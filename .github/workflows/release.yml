@@ -297,6 +297,41 @@ jobs:
             default. The switch is in Settings → Model, offered only on models
             that actually carry a head — read from the file, not assumed.
 
+            ## A document that fails to import says so
+
+            An import that takes the app down now leaves a trace. Some failures
+            do not unwind — an allocation that fails inside a native library, a
+            driver that aborts — so nothing is raised and, on Windows, the
+            system leaves no crash report either: the window closes and the log
+            is empty. Indexing writes down what it is about to do, and a note
+            that outlives the process is reported at the next start with the
+            file, its size and the phase it stopped in.
+
+            A document that did not finish indexing is no longer listed as
+            though it had: its record went in claiming every piece before one
+            had been stored, so an interrupted import left something that
+            looked ready and answered nothing. And a scanned document is now
+            read from its pictures — the vision model already described the
+            figures inside, but extraction failed first and threw them away.
+            Describing those figures can be switched off, under the citations
+            slider in Settings → Chat; it is the most memory-hungry part of an
+            import, running on top of the model already loaded.
+
+            ## Models can live somewhere other than the system drive
+
+            Settings → Model takes a folder. Weights are the largest thing this
+            app puts on a disk by two orders of magnitude, and both default
+            locations sit on the system drive — which on Windows meant C:, or
+            nowhere. The folder is checked by writing a file to it before it is
+            accepted, so a folder that cannot be written to is refused there
+            rather than breaking every download after it.
+
+            The chosen folder is the folder: it replaces the default locations
+            rather than joining them, so the picker shows what is actually
+            there. Nothing is moved or deleted, restoring the default lists the
+            old locations again, and the models that stop being listed are
+            counted at the moment of the change.
+
             Three things that reached v2.1.6 as a rebuild are in here for
             anyone who installed that version on release day: a chat reply now
             survives the interface reloading under it, the composer stops

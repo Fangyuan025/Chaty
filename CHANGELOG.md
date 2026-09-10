@@ -88,6 +88,52 @@ process. The turn after that one resumes 99% again.
   therefore one answer; forgetting to pass the setting down a loading path is a
   compile error now rather than something to notice later.
 
+### A document that fails to import says so
+
+- **An import that takes the app down now leaves a trace.** Some failures do
+  not unwind — an allocation that fails inside a native library, a driver that
+  aborts — so no error is ever raised and, on Windows, the operating system
+  leaves no crash report either: the window closes and the log is empty.
+  Indexing now writes down what it is about to do before it does it, and a
+  note that outlives the process is reported at the next start with the file,
+  its size, and the phase it stopped in.
+
+- **A document that did not finish indexing is no longer listed as though it
+  had.** Its record went in carrying the full count of pieces before a single
+  one had been stored, so an interrupted import left a document that looked
+  ready, could be ticked, and contributed nothing to an answer. The record is
+  only completed once every piece is in, a failure takes it back out, and one
+  already left behind is cleared when the knowledge base opens.
+
+- **A scanned document is read from its pictures.** Importing a PDF, Word or
+  PowerPoint file has the vision model describe the figures inside it, and for
+  a document with no text layer those descriptions are the only reading of it
+  there is — yet extraction failed first and threw them away, reporting a scan.
+  Text and descriptions are now taken from whichever succeeded, and only a file
+  that yields neither is refused. A document carried by its pictures alone says
+  so at the top, so the model knows what it is reading.
+
+- **Describing those figures can be switched off**, under the citations slider
+  in Settings → Chat. It runs the vision model once per image on top of the
+  model already loaded, which is the least predictable memory cost of an
+  import; on by default, since that is what indexing has always done.
+
+### Models can live somewhere other than the system drive
+
+- **Settings → Model takes a folder.** Weights are the largest thing this app
+  puts on a disk by two orders of magnitude, and both default locations sit on
+  the system drive — which on Windows meant C:, or nowhere. The folder is
+  checked by writing a file to it before it is accepted, because the failure it
+  prevents is silent and distant: a setting that looks saved and then breaks
+  every download after it.
+
+- **The chosen folder is the folder.** It replaces the default locations rather
+  than joining them, so the picker shows what is actually there; nothing is
+  moved or deleted, restoring the default lists the old locations again, and
+  the models that stop being listed are counted and named at the moment of the
+  change. "Open models folder" opens the chosen one whether or not anything is
+  in it yet — which is exactly when it most needs opening.
+
 ### From the v2.1.6 rebuild
 
 These reached v2.1.6 as a rebuild a day after it went out; they are listed here
