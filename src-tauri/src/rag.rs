@@ -953,6 +953,10 @@ pub async fn rag_add_document(
     // `myproject/src/lib/ipc.ts`) so the knowledge base preserves — and the model
     // can see — the project's file structure, not just bare file names.
     root: Option<String>,
+    // Whether a document's embedded images may be sent to the vision model.
+    // Defaults to on when the caller says nothing, which is what every caller
+    // did before there was a switch.
+    caption_images: Option<bool>,
     on_progress: Channel<RagProgress>,
 ) -> Result<(), String> {
     // Images are indexed two ways, both async so they run before the blocking
@@ -1019,7 +1023,15 @@ pub async fn rag_add_document(
     // with the vision model so charts/photos inside the document are findable
     // by what they show — appended to the text before chunking. Best-effort:
     // skipped without a vision model.
-    let embedded_captions: Vec<String> = if matches!(ext.as_str(), "pdf" | "docx" | "xlsx" | "pptx") {
+    // Off, and the document is indexed from its text alone. This step runs the
+    // vision model several times ON TOP of whatever chat model is already
+    // resident, which is the least predictable memory cost in the whole
+    // pipeline and the first thing to try turning off when indexing takes the
+    // app down with it (issue #13).
+    let caption_images = caption_images.unwrap_or(true);
+    let embedded_captions: Vec<String> = if caption_images
+        && matches!(ext.as_str(), "pdf" | "docx" | "xlsx" | "pptx")
+    {
         let p2 = path.clone();
         let imgs = tokio::task::spawn_blocking(move || crate::docimg::extract_embedded_images(&p2, 6))
             .await

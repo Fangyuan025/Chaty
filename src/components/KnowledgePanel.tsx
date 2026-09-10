@@ -38,10 +38,13 @@ export function KnowledgePanel({
   onClose,
   onPodcast,
   onReport,
+  captionImages = true,
 }: {
   onClose: () => void;
   onPodcast?: () => void;
   onReport?: () => void;
+  /** Settings → Chat → describe images inside documents. */
+  captionImages?: boolean;
 }) {
   const { t } = useI18n();
   const confirm = useConfirm();
@@ -99,6 +102,7 @@ export function KnowledgePanel({
             setIndexing({ name, pct: Math.round(p.frac * 100) });
           },
           root,
+          captionImages,
         );
       } catch (e) {
         // Folder import (root set): a file with no extractable text — or that's

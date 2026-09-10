@@ -3647,6 +3647,7 @@ export default function App() {
       )}
       {showKb && (
         <KnowledgePanel
+          captionImages={settings.kbCaptionImages}
           onClose={() => setShowKb(false)}
           onPodcast={() => {
             setShowKb(false);

@@ -475,10 +475,57 @@ fn main_gguf_in_dir(dir: &std::path::Path) -> Option<PathBuf> {
     candidates.pop()
 }
 
-/// Directories scanned for `.gguf` files: a `models/` folder next to the
-/// executable (the install dir) and one under app-data (always writable).
+/// Where a chosen models folder is remembered. A plain path in a text file,
+/// next to the other markers this app keeps — nothing here is worth a schema.
+const MODELS_ROOT_FILE: &str = "models-root.txt";
+
+/// The models folder the user chose, if one is set and still reachable.
+///
+/// Weights are the largest thing this app touches by two orders of magnitude,
+/// and on Windows both default locations sit on the system drive, so "only C:"
+/// is a real corner to be stuck in (issue #12).
+///
+/// An unreachable path — an external disk not plugged in, a share not mounted —
+/// reads as "not set" rather than as an error. The models kept there are
+/// missing from the list for that run, which is true and self-explaining; the
+/// setting is still on disk and starts working again when the disk comes back.
+/// Pure over a base dir so the resolution is testable without an app handle.
+fn models_root_at(base: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(base.join(MODELS_ROOT_FILE)).ok()?;
+    let p = PathBuf::from(raw.trim());
+    (!raw.trim().is_empty() && p.is_dir()).then_some(p)
+}
+
+/// The chosen models folder for this app, when set and reachable.
+pub(crate) fn models_root(app: &tauri::AppHandle) -> Option<PathBuf> {
+    models_root_at(&app.path().app_data_dir().ok()?)
+}
+
+/// Where new models are written — downloaded, imported, or created. The chosen
+/// folder when there is one, otherwise the app-data `models/` that has always
+/// been the answer.
+pub(crate) fn models_write_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if let Some(root) = models_root(app) {
+        return Ok(root);
+    }
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("models"))
+}
+
+/// Directories scanned for `.gguf` files: the folder the user chose (first, so
+/// it wins for anything that takes the first hit), a `models/` folder next to
+/// the executable (the install dir) and one under app-data (always writable).
+///
+/// The defaults stay in the list even when a folder is chosen: someone who
+/// picks a new home should not watch the models they already had disappear.
 fn model_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    if let Some(root) = models_root(app) {
+        dirs.push(root);
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             dirs.push(parent.join("models"));
@@ -490,6 +537,7 @@ fn model_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     if let Ok(res) = app.path().resource_dir() {
         dirs.push(res.join("models"));
     }
+    dirs.dedup();
     dirs
 }
 
@@ -675,15 +723,14 @@ fn migrate_models_dir(dir: &std::path::Path) {
 /// Make sure at least one `models/` folder exists so users have a place to
 /// drop GGUF files. Best-effort.
 pub fn ensure_models_dir(app: &tauri::AppHandle) {
-    // macOS: only the app-data dir. Creating a folder next to the executable
-    // would put it *inside* the .app bundle (Contents/MacOS/models) — invisible
-    // to the user, and it breaks the code-signature seal.
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(data) = app.path().app_data_dir() {
-            let _ = std::fs::create_dir_all(data.join("models"));
-        }
+    // Wherever models are written — the chosen folder, or app-data. This one
+    // matters most: it is the download target.
+    if let Ok(dir) = models_write_dir(app) {
+        let _ = std::fs::create_dir_all(&dir);
     }
+    // macOS: nothing else. Creating a folder next to the executable would put
+    // it *inside* the .app bundle (Contents/MacOS/models) — invisible to the
+    // user, and it breaks the code-signature seal.
     #[cfg(not(target_os = "macos"))]
     for dir in model_dirs(app) {
         if std::fs::create_dir_all(&dir).is_ok() {
@@ -807,11 +854,7 @@ pub fn open_models_dir(app: tauri::AppHandle) -> Result<String, String> {
         .find(|d| dir_has_models(d))
         .map_or_else(
             || -> Result<PathBuf, String> {
-                let d = app
-                    .path()
-                    .app_data_dir()
-                    .map_err(|e| e.to_string())?
-                    .join("models");
+                let d = models_write_dir(&app)?;
                 std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
                 Ok(d)
             },
@@ -820,6 +863,91 @@ pub fn open_models_dir(app: tauri::AppHandle) -> Result<String, String> {
     let path = dir.to_string_lossy().to_string();
     open_default(&path)?;
     Ok(path)
+}
+
+/// What Settings shows for the models folder.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelsRootInfo {
+    /// The folder the user chose, exactly as they chose it — present even when
+    /// it is currently unreachable, so the setting can say so instead of
+    /// silently reverting to the default behind their back.
+    pub custom: Option<String>,
+    /// Where models are actually being read from and written to right now.
+    pub effective: String,
+    /// False when a chosen folder is not there (disk unplugged, share down).
+    pub available: bool,
+}
+
+#[tauri::command]
+pub fn get_models_root(app: tauri::AppHandle) -> Result<ModelsRootInfo, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let custom = std::fs::read_to_string(base.join(MODELS_ROOT_FILE))
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    let available = custom.as_deref().is_none_or(|p| Path::new(p).is_dir());
+    Ok(ModelsRootInfo {
+        effective: models_write_dir(&app)?.to_string_lossy().to_string(),
+        custom,
+        available,
+    })
+}
+
+/// Does `parent` name one of the models roots?
+///
+/// The answer decides whether deleting a model removes THE FILE or THE FOLDER
+/// AROUND IT, so a root that is not in the list is not a cosmetic omission: a
+/// loose `.gguf` sitting directly in an unrecognised root would take every
+/// other model in that folder with it. This is why a chosen models folder
+/// (issue #12) has to be in `model_dirs`, and why that is worth a test.
+fn is_models_root(dirs: &[PathBuf], parent: Option<&Path>) -> bool {
+    let Some(p) = parent else { return true };
+    dirs.iter().any(|d| d.canonicalize().is_ok_and(|dc| dc == *p))
+}
+
+/// Is this folder fit to keep models in? Existing, a directory, and provably
+/// writable.
+///
+/// Writability is settled by writing, not by reading permissions: a read-only
+/// mount, a full disk, a folder someone else owns and a Windows path the
+/// installer never granted all fail for different reasons and mean the same
+/// thing here. Checking now is the point — the alternative is a setting that
+/// looks accepted and then breaks every download that follows it, far from
+/// anything that would explain why.
+fn check_models_root(dir: &Path) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Err(trf!("找不到这个文件夹:{}", "no such folder: {}", dir.display()));
+    }
+    let probe = dir.join(".chaty-write-test");
+    std::fs::write(&probe, b"ok")
+        .map_err(|e| trf!("这个文件夹不可写:{}", "this folder is not writable: {}", e))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+/// Choose where models live, or pass `None` to go back to the default.
+///
+/// Checked before it is accepted, because the failure this prevents is
+/// invisible: a folder that cannot be written to takes every later download
+/// down with it, one at a time, far from here. A directory that exists and
+/// accepts a file is the whole contract.
+#[tauri::command]
+pub fn set_models_root(app: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+    let marker = base.join(MODELS_ROOT_FILE);
+    let Some(raw) = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) else {
+        let _ = std::fs::remove_file(&marker);
+        return Ok(());
+    };
+    let dir = PathBuf::from(&raw);
+    check_models_root(&dir)?;
+    std::fs::write(&marker, &raw).map_err(|e| e.to_string())?;
+    // Loose GGUFs dropped into the new folder get the same one-folder-per-model
+    // tidy-up the default roots receive, so the picker lists them immediately.
+    migrate_models_dir(&dir);
+    Ok(())
 }
 
 /// Reveal the app's data folder (conversation DB, models, KB indexes) in the
@@ -1155,11 +1283,7 @@ pub async fn delete_model_file(
     // sitting directly in a models root is deleted alone (plus its paired
     // mmproj when nothing else would use it).
     let parent = canon.parent().map(PathBuf::from);
-    let parent_is_models_root = parent.as_ref().is_none_or(|p| {
-        model_dirs(&app)
-            .iter()
-            .any(|d| d.canonicalize().is_ok_and(|dc| dc == *p))
-    });
+    let parent_is_models_root = is_models_root(&model_dirs(&app), parent.as_deref());
     if parent_is_models_root {
         let mmproj = crate::inference::llama::find_mmproj(&canon.to_string_lossy());
         std::fs::remove_file(&canon).map_err(|e| format!("删除失败 (delete failed): {e}"))?;
@@ -1600,6 +1724,124 @@ pub async fn synthesize(
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    /// The chosen models folder, and the three ways it can be absent. This is
+    /// the one piece of issue #12 that can be checked without a Windows box,
+    /// so it is checked properly: the setting is only ever honoured when the
+    /// folder is actually there.
+    #[test]
+    fn a_chosen_models_folder_is_honoured_only_while_it_exists() {
+        use super::{models_root_at, MODELS_ROOT_FILE};
+        let base = std::env::temp_dir().join(format!("chaty-mroot-{}", std::process::id()));
+        let models = base.join("elsewhere");
+        std::fs::create_dir_all(&models).unwrap();
+
+        // Nothing set: the default behaviour, untouched.
+        assert_eq!(models_root_at(&base), None, "no marker = no override");
+
+        // Set and present.
+        std::fs::write(base.join(MODELS_ROOT_FILE), models.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(models_root_at(&base), Some(models.clone()));
+
+        // Trailing whitespace/newline is what a hand-edited file looks like.
+        std::fs::write(
+            base.join(MODELS_ROOT_FILE),
+            format!("{}\n", models.to_string_lossy()).as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(models_root_at(&base), Some(models.clone()), "the path is trimmed");
+
+        // The disk goes away: this must read as "not set", never as an error
+        // and never as a path the rest of the app then tries to write into.
+        std::fs::remove_dir_all(&models).unwrap();
+        assert_eq!(models_root_at(&base), None, "an unreachable folder is ignored");
+
+        // A file where a folder should be is not a models folder either.
+        std::fs::write(&models, b"not a directory").unwrap();
+        assert_eq!(models_root_at(&base), None, "a file is not a folder");
+
+        // Blank marker = cleared.
+        std::fs::write(base.join(MODELS_ROOT_FILE), b"   \n").unwrap();
+        assert_eq!(models_root_at(&base), None, "a blank marker means default");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Deleting a model that sits loose in a models root removes THE FILE.
+    /// Deleting one inside a model's own folder removes THAT FOLDER. So a
+    /// chosen models folder that the roots list did not know about would have
+    /// the second rule applied to it — `remove_dir_all` on the user's entire
+    /// models library, from a single delete. This is the guard for that.
+    #[test]
+    fn deleting_a_loose_model_never_takes_the_folder_it_sits_in() {
+        use super::is_models_root;
+        let base = std::env::temp_dir().join(format!("chaty-mdel-{}", std::process::id()));
+        let chosen = base.join("D_ChatyModels");
+        let per_model = chosen.join("Qwen3.5-9B");
+        std::fs::create_dir_all(&per_model).unwrap();
+        let roots = vec![chosen.clone()];
+        // The caller compares against a path that has already been through
+        // `canonicalize` (it comes from the model file's own resolved path),
+        // so the test has to hand over the same shape — on macOS the temp dir
+        // is a symlink, and comparing the two forms is how this silently
+        // stops matching.
+        let chosen = chosen.canonicalize().unwrap();
+        let per_model = per_model.canonicalize().unwrap();
+
+        assert!(
+            is_models_root(&roots, Some(&chosen)),
+            "the chosen folder IS a root — a loose model in it is deleted alone"
+        );
+        assert!(
+            !is_models_root(&roots, Some(&per_model)),
+            "a model's own folder is not a root — deleting it removes the folder"
+        );
+        assert!(
+            !is_models_root(&[], Some(&chosen)),
+            "a root missing from the list is what would wipe the library"
+        );
+        assert!(is_models_root(&roots, None), "no parent at all is treated as a root");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// A folder is only accepted once it has actually taken a file. Getting
+    /// this wrong is expensive and quiet: the setting looks saved, and every
+    /// download after it fails somewhere else entirely.
+    #[test]
+    fn a_models_folder_must_exist_and_take_a_file() {
+        use super::check_models_root;
+        let base = std::env::temp_dir().join(format!("chaty-mcheck-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+
+        assert!(check_models_root(&base).is_ok(), "a normal folder is fine");
+        assert!(
+            !base.join(".chaty-write-test").exists(),
+            "the probe file must not be left behind"
+        );
+
+        let missing = base.join("gone");
+        let err = check_models_root(&missing).unwrap_err();
+        assert!(!err.is_empty(), "a missing folder is refused with a reason");
+
+        let file = base.join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(check_models_root(&file).is_err(), "a file is not a folder");
+
+        // Read-only: the write probe is the only thing that catches this, and
+        // on a unix box we can actually produce one.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ro = base.join("readonly");
+            std::fs::create_dir_all(&ro).unwrap();
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+            // Root ignores the mode bits, so only assert where it means something.
+            if std::fs::write(ro.join(".probe"), b"x").is_err() {
+                assert!(check_models_root(&ro).is_err(), "an unwritable folder is refused");
+            }
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     /// The startup reload the macOS setup issues (and the burst around it)
     /// must not be reported: it lands in the same second the process starts,

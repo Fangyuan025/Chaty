@@ -800,11 +800,13 @@ pub async fn download_mlx_repo(
     on_progress: Channel<DownloadProgress>,
 ) -> Result<String, String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    download_mlx_repo_inner(&root, repo, endpoint, on_progress).await
+    let models = crate::commands::models_write_dir(&app)?;
+    download_mlx_repo_inner(&root, &models, repo, endpoint, on_progress).await
 }
 
 async fn download_mlx_repo_inner(
     root: &std::path::Path,
+    models_dir: &std::path::Path,
     repo: String,
     endpoint: Option<String>,
     on_progress: Channel<DownloadProgress>,
@@ -827,7 +829,7 @@ async fn download_mlx_repo_inner(
         .chars()
         .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
         .collect();
-    let dir = root.join("models").join(&name);
+    let dir = models_dir.join(&name);
     let created = !dir.exists();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
@@ -928,9 +930,13 @@ pub async fn download_model(
     on_progress: Channel<DownloadProgress>,
 ) -> Result<(), String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    // Where the weights land is the user's choice (issue #12); `root` stays
+    // app-data, which is where the xet fallback wants its scratch space.
+    let models = crate::commands::models_write_dir(&app)?;
     let cancel = register_cancel(&filename);
     let result =
-        download_inner(&root, &url, &filename, subdir.as_deref(), &on_progress, &cancel).await;
+        download_inner(&root, &models, &url, &filename, subdir.as_deref(), &on_progress, &cancel)
+            .await;
     clear_cancel(&filename);
     if let Err(ref e) = result {
         let _ = on_progress.send(DownloadProgress::Error { message: e.clone() });
@@ -940,6 +946,7 @@ pub async fn download_model(
 
 async fn download_inner(
     root: &std::path::Path,
+    models_dir: &std::path::Path,
     url: &str,
     filename: &str,
     subdir: Option<&str>,
@@ -951,7 +958,7 @@ async fn download_inner(
             .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
             .collect()
     };
-    let mut dir = root.join("models");
+    let mut dir = models_dir.to_path_buf();
     if let Some(sub) = subdir {
         let sub = sanitize(sub.trim());
         if !sub.is_empty() && sub != "." && sub != ".." {
@@ -1226,7 +1233,7 @@ mod tests {
         let root = fresh_root("ok");
         let (ch, events) = test_channel();
         let cancel = AtomicBool::new(false);
-        download_inner(&root, &format!("http://127.0.0.1:{port}/f.gguf"), "f.gguf", None, &ch, &cancel)
+        download_inner(&root, &root.join("models"), &format!("http://127.0.0.1:{port}/f.gguf"), "f.gguf", None, &ch, &cancel)
             .await
             .unwrap();
         let dest = root.join("models").join("f.gguf");
@@ -1243,7 +1250,7 @@ mod tests {
         let root = fresh_root("403");
         let (ch, _events) = test_channel();
         let cancel = AtomicBool::new(false);
-        let err = download_inner(&root, &format!("http://127.0.0.1:{port}/f.gguf"), "f.gguf", None, &ch, &cancel)
+        let err = download_inner(&root, &root.join("models"), &format!("http://127.0.0.1:{port}/f.gguf"), "f.gguf", None, &ch, &cancel)
             .await
             .unwrap_err();
         assert!(err.contains("403"), "unexpected error: {err}");
@@ -1274,7 +1281,9 @@ mod tests {
         let (ch, events) = test_channel();
         let cancel = AtomicBool::new(false);
         let url = format!("https://huggingface.co/{E2E_REPO}/resolve/main/{E2E_FILE}?download=true");
-        download_inner(&root, &url, E2E_FILE, Some("MiniLM"), &ch, &cancel).await.unwrap();
+        download_inner(&root, &root.join("models"), &url, E2E_FILE, Some("MiniLM"), &ch, &cancel)
+            .await
+            .unwrap();
         assert_gguf(&root.join("models").join("MiniLM").join(E2E_FILE));
         let evs = events.lock().unwrap();
         assert!(evs.iter().any(|e| e.contains("\"progress\"")), "no progress events");
@@ -1323,7 +1332,7 @@ mod tests {
     async fn download_e2e_mlx_repo_mixed_paths() {
         let root = fresh_root("e2e-mlx");
         let (ch, events) = test_channel();
-        let dir = download_mlx_repo_inner(&root, "mlx-community/SmolLM-135M-Instruct-4bit".into(), None, ch)
+        let dir = download_mlx_repo_inner(&root, &root.join("models"), "mlx-community/SmolLM-135M-Instruct-4bit".into(), None, ch)
             .await
             .unwrap();
         let dir = std::path::PathBuf::from(dir);

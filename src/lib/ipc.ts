@@ -226,10 +226,18 @@ export async function ragAddDocument(
   /** When ingesting from a folder, the selected folder path — the document is
    *  then named by its path relative to that folder (preserving structure). */
   root?: string,
+  /** Send a document's embedded images to the vision model. Costs a vision run
+   *  per image on top of the resident chat model; off indexes the text alone. */
+  captionImages?: boolean,
 ): Promise<void> {
   const channel = new Channel<RagProgress>();
   channel.onmessage = onProgress;
-  await invoke("rag_add_document", { path, root: root ?? null, onProgress: channel });
+  await invoke("rag_add_document", {
+    path,
+    root: root ?? null,
+    captionImages: captionImages ?? null,
+    onProgress: channel,
+  });
 }
 
 /** Recursively list ingestable files under a folder (for folder import). */
@@ -451,6 +459,28 @@ export async function ragDownloadModel(
 /** Reveal the writable models folder in Finder/Explorer (creates it if needed). */
 export async function openModelsDir(): Promise<string> {
   return invoke<string>("open_models_dir");
+}
+
+/** Where models are kept, and whether a chosen folder is currently reachable. */
+export interface ModelsRootInfo {
+  /** The folder the user chose, if any — reported even when it is missing, so
+   *  Settings can say "not reachable" instead of quietly showing the default. */
+  custom: string | null;
+  /** Where models are actually read from and written to right now. */
+  effective: string;
+  /** False when a chosen folder is not there (disk unplugged, share down). */
+  available: boolean;
+}
+
+export async function getModelsRoot(): Promise<ModelsRootInfo> {
+  return invoke<ModelsRootInfo>("get_models_root");
+}
+
+/** Choose where models live; `null` restores the default folder. Rejects a
+ *  folder that does not exist or cannot be written to, so the failure surfaces
+ *  here rather than on some later download. */
+export async function setModelsRoot(path: string | null): Promise<void> {
+  await invoke("set_models_root", { path });
 }
 
 /** Reveal the app data folder (DB, models, indexes) for manual backup. */

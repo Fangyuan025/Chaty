@@ -13,12 +13,16 @@ import {
   ragStatus,
   ragClearAll,
   openModelsDir,
+  getModelsRoot,
+  setModelsRoot,
+  type ModelsRootInfo,
   openErrorLog,
   clearErrorLog,
   openExternal,
   synthesize,
   type UpdateInfo,
 } from "../lib/ipc";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { decodeAudio, playAudio, primeAudioPlayback } from "../lib/audio";
 import { CODE_THEMES, type CodeTheme } from "../lib/codeTheme";
 import { useConfirm } from "./ConfirmModal";
@@ -77,6 +81,7 @@ export interface GenSettings {
    *  with a ceiling of 12, so a large library answered out of six chunks no
    *  matter how much of it was relevant. */
   ragTopK: number;
+  kbCaptionImages: boolean;
   /** Code mode: max agent steps per turn before it pauses. */
   codeMaxSteps: number;
   /** Code mode: default bash-command timeout in seconds. */
@@ -154,6 +159,10 @@ export const defaultSettings: GenSettings = {
   speculative: false,
   contextLength: 0,
   ragTopK: 8,
+  // On, which is what indexing has always done. It is the most
+  // memory-hungry step of an import, so it is the one worth being able to
+  // switch off when indexing takes the app down (issue #13).
+  kbCaptionImages: true,
   // 64, was 32: the CalendarApp repro showed 32 starves app-scale one-shots,
   // and 48 still cut the model off ONE error from green (round 16: mid-fix
   // on a duplicate-struct error at the buzzer). Simple tasks end early
@@ -400,6 +409,8 @@ export function SettingsPanel({
    *  clips it. It also has a measurable height, so the placement below reads
    *  the box it is actually placing instead of estimating from text length. */
   const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [modelsRoot, setModelsRootState] = useState<ModelsRootInfo | null>(null);
+  const [rootError, setRootError] = useState("");
   const tipRef = useRef<HTMLDivElement | null>(null);
   const tipAnchor = useRef<DOMRect | null>(null);
 
@@ -492,6 +503,40 @@ export function SettingsPanel({
     if (open && cat === "data") refreshStats();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, cat]);
+
+  const refreshModelsRoot = () => {
+    getModelsRoot()
+      .then(setModelsRootState)
+      .catch((e) => console.error("models root:", e));
+  };
+  useEffect(() => {
+    if (open && cat === "model") refreshModelsRoot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, cat]);
+
+  /** Pick a folder for models. The backend refuses one it cannot write to, and
+   *  that refusal is shown here rather than surfacing on a later download. */
+  async function chooseModelsFolder() {
+    setRootError("");
+    const dir = await openDialog({ directory: true });
+    if (typeof dir !== "string") return;
+    try {
+      await setModelsRoot(dir);
+      refreshModelsRoot();
+    } catch (e) {
+      setRootError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function resetModelsFolder() {
+    setRootError("");
+    try {
+      await setModelsRoot(null);
+      refreshModelsRoot();
+    } catch (e) {
+      setRootError(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   // ---- Voice preview ----
   /** Which sample is playing — the two voices are separate models, so each
@@ -869,6 +914,13 @@ export function SettingsPanel({
                 />
               </label>
               <div className="settings-hint">{t("ragTopKHint")}</div>
+
+              <SetRow label={t("kbCaptionImages")} hint={t("kbCaptionImagesHint")}>
+                <Switch
+                  on={value.kbCaptionImages}
+                  onToggle={() => set("kbCaptionImages", !value.kbCaptionImages)}
+                />
+              </SetRow>
             </>
           )}
 
@@ -1036,10 +1088,29 @@ export function SettingsPanel({
                 <Switch on={value.autoLoadLast} onToggle={() => set("autoLoadLast", !value.autoLoadLast)} />
               </SetRow>
               <SetRow label={t("modelsFolder")} hint={t("modelsFolderHint")}>
-                <button type="button" className="data-btn" onClick={() => void openModelsDir().catch(console.error)}>
-                  {t("openModelsDir")}
-                </button>
+                <div className="lang-switch">
+                  <button type="button" className="data-btn" onClick={() => void openModelsDir().catch(console.error)}>
+                    {t("openModelsDir")}
+                  </button>
+                  <button type="button" className="data-btn" onClick={() => void chooseModelsFolder()}>
+                    {t("changeModelsDir")}
+                  </button>
+                  {modelsRoot?.custom && (
+                    <button type="button" className="data-btn" onClick={() => void resetModelsFolder()}>
+                      {t("resetModelsDir")}
+                    </button>
+                  )}
+                </div>
               </SetRow>
+              {modelsRoot && (
+                <div className="settings-hint">
+                  <code>{modelsRoot.custom ?? modelsRoot.effective}</code>
+                  {modelsRoot.custom && !modelsRoot.available && (
+                    <> — {t("modelsDirMissing")}</>
+                  )}
+                </div>
+              )}
+              {rootError && <div className="settings-hint settings-error">{rootError}</div>}
 
               <label className="field">
                 <span><em className="has-tip" data-tip={t("tipHfEndpoint")}>{t("hfEndpoint")}</em></span>

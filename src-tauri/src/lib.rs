@@ -343,6 +343,8 @@ pub fn run() {
             commands::list_models,
             commands::delete_model_file,
             commands::open_models_dir,
+            commands::get_models_root,
+            commands::set_models_root,
             commands::open_data_dir,
             commands::open_html_report,
             commands::canvas_session_save,

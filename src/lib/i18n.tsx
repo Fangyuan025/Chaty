@@ -826,6 +826,13 @@ export const T = {
   ejectingModel: { zh: "正在卸载旧模型…", en: "Ejecting old model…", pt: "Descarregando o modelo antigo…" },
   noLimit: { zh: "不限制", en: "No limit", pt: "Sem limite" },
   openModelsDir: { zh: "打开模型文件夹", en: "Open models folder", pt: "Abrir pasta de modelos" },
+  changeModelsDir: { zh: "更改位置", en: "Change location", pt: "Alterar local" },
+  resetModelsDir: { zh: "恢复默认", en: "Reset to default", pt: "Restaurar padrão" },
+  modelsDirMissing: {
+    zh: "当前找不到这个文件夹（磁盘未连接？），暂时使用默认位置",
+    en: "not reachable right now (disk not connected?) — using the default folder meanwhile",
+    pt: "inacessível no momento (disco desconectado?) — usando a pasta padrão enquanto isso",
+  },
   // stop reasons (shown in the stats line after generation)
   stopEos: { zh: "自然结束", en: "finished", pt: "concluído" },
   stopLength: { zh: "达到长度上限", en: "length limit", pt: "limite de comprimento" },
@@ -878,6 +885,12 @@ export const T = {
   tipRagTopK: {
     zh: "一次提问最多引用多少条知识库片段。片段越多覆盖越全,但占用的上下文也越多。",
     en: "How many knowledge-base excerpts one question may cite. More covers more of the library and costs more context.", pt: "Quantos excertos da base de conhecimento uma pergunta pode citar. Mais alto cobre maior área da biblioteca, consumindo mais contexto."
+  },
+  kbCaptionImages: { zh: "识别文档内嵌图片", en: "Describe images inside documents", pt: "Descrever imagens em documentos" },
+  kbCaptionImagesHint: {
+    zh: "导入 PDF/Word/PPT 时，把文档里的图表交给视觉模型描述一遍，图表才能被检索到。会在已加载模型之外额外占用显存/内存——导入时闪退可以先关掉这项。",
+    en: "When importing PDF/Word/PowerPoint, have the vision model describe the figures inside so charts are findable too. It runs on top of the model already loaded — turn it off first if importing crashes the app.",
+    pt: "Ao importar PDF/Word/PowerPoint, o modelo de visão descreve as figuras internas para que gráficos também sejam encontrados. Consome memória além do modelo já carregado — desative primeiro se a importação travar o app.",
   },
   ragTopKHint: {
     zh: "文档多、问题跨文件时调高;上下文窗口小的模型建议调低。",
