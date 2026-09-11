@@ -68,6 +68,22 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// The menu-bar glyph: the app icon's own bubble and graph, drawn black on
+/// transparency (icons/tray-template.svg, rendered by
+/// scripts/render-tray-icon.swift). 36 px because tray-icon sets the status
+/// item 18 pt tall — exactly @2x on a Retina bar. Decoded with the `image`
+/// crate the app already carries, rather than widening tauri's features for
+/// one PNG.
+#[cfg(target_os = "macos")]
+fn tray_template_icon() -> Option<tauri::image::Image<'static>> {
+    let png = include_bytes!("../icons/tray-template.png");
+    let img = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .ok()?
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    Some(tauri::image::Image::new_owned(img.into_raw(), w, h))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Panics land in the user-attachable error log from the first instant.
@@ -200,9 +216,26 @@ pub fn run() {
             let show_i = MenuItem::with_id(app, "show", "Show Chaty", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
-            if let Some(icon) = app.default_window_icon().cloned() {
+            // macOS draws menu-bar items as TEMPLATE images — a black glyph on
+            // transparency that the system tints to match the bar, light or
+            // dark, like every other item up there. The app icon is a
+            // full-colour navy square, and in a row of glyphs it was the one
+            // thing that was not one. Windows and Linux trays expect colour and
+            // keep the app icon.
+            #[cfg(target_os = "macos")]
+            let (tray_icon, is_template) = match tray_template_icon() {
+                Some(glyph) => (Some(glyph), true),
+                // Never the colour icon AS a template: macOS would keep only
+                // its alpha, and a rounded square with no holes in it is a
+                // solid blob.
+                None => (app.default_window_icon().cloned(), false),
+            };
+            #[cfg(not(target_os = "macos"))]
+            let (tray_icon, is_template) = (app.default_window_icon().cloned(), false);
+            if let Some(icon) = tray_icon {
                 TrayIconBuilder::with_id("main-tray")
                     .icon(icon)
+                    .icon_as_template(is_template)
                     .tooltip("Chaty")
                     .menu(&menu)
                     .show_menu_on_left_click(false)
@@ -504,4 +537,37 @@ pub fn run() {
                 _ => {}
             }
         });
+}
+
+
+#[cfg(test)]
+mod tray_icon_tests {
+    /// A template image is read for its alpha alone: anything coloured in it
+    /// is thrown away, and anything opaque that should have been a hole fills
+    /// in. So the asset must be exactly a black glyph on transparency, at the
+    /// size tray-icon draws it.
+    #[test]
+    fn the_menu_bar_glyph_is_a_black_template_at_retina_size() {
+        let png = include_bytes!("../icons/tray-template.png");
+        let img = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+            .expect("decodes")
+            .to_rgba8();
+        assert_eq!(img.dimensions(), (36, 36), "18 pt at @2x");
+        let (mut clear, mut ink) = (0, 0);
+        for p in img.pixels() {
+            let [r, g, b, a] = p.0;
+            if a == 0 {
+                clear += 1;
+            } else {
+                ink += 1;
+                assert!(r < 16 && g < 16 && b < 16, "opaque pixels must be black, got {:?}", p.0);
+            }
+        }
+        assert!(clear > ink, "mostly transparency — it is a glyph, not a tile");
+        assert!(ink > 100, "and there is a glyph");
+        // The corners are where the old icon's navy square was.
+        for (x, y) in [(0, 0), (35, 0), (0, 35), (35, 35)] {
+            assert_eq!(img.get_pixel(x, y).0[3], 0, "corner ({x},{y}) must be clear");
+        }
+    }
 }
