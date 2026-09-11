@@ -950,6 +950,11 @@ final class Engine: @unchecked Sendable {
     /// discarded all of it. Replaying what the model actually produced removes
     /// the whole class.
     var turnIds: [String: [Int]] = [:]
+    /// The record keys the current prompt's stored turns answer to, gathered
+    /// while it is replayed; nil when it carried none (a title or summary
+    /// pass). A record lives exactly as long as its turn is still in the
+    /// conversation — see `finish`.
+    var liveTurnKeys: Set<String>? = nil
     /// Bounded: a long session must not grow this without limit.
     var turnOrder: [String] = []
     /// The block the CURRENT prompt ends with, so the turn it produces can be
@@ -1349,6 +1354,7 @@ final class Engine: @unchecked Sendable {
         //
         // Token-level and BEFORE lastMediaEnd is measured: this moves the image
         // placeholders, and everything downstream reads the final list.
+        liveTurnKeys = nil
         if !turnIds.isEmpty,
             let layout = meta.layout(thinking: thinking) ?? meta.anchor(thinking: thinking)
         {
@@ -1370,6 +1376,23 @@ final class Engine: @unchecked Sendable {
                 text: layout.close["assistant"] ?? "", addSpecialTokens: false)
             let stored = messages.filter { $0.role == "assistant" }
             if !markers.isEmpty, !stored.isEmpty, !closeIds.isEmpty {
+                // Every turn this prompt still carries keeps its record, under
+                // every key the lookup below may use, whether or not it hits.
+                var live = Set<String>()
+                for m in stored {
+                    var body = m.content
+                    let block = layout.turnPrefix()
+                    if !block.isEmpty, body.hasPrefix(block) {
+                        body = String(body.dropFirst(block.count))
+                    }
+                    let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let split = (m.reasoningContent ?? "").trimmingCharacters(
+                        in: .whitespacesAndNewlines)
+                    live.insert(split.isEmpty ? body : split + "\u{0}" + trimmed)
+                    live.insert(body)
+                    live.insert(trimmed)
+                }
+                liveTurnKeys = live
                 // Where each turn's body starts, and where the next boundary is.
                 var starts: [Int] = []
                 var i = 0
@@ -2398,7 +2421,25 @@ final class Engine: @unchecked Sendable {
                     if turnIds[key] == nil { turnOrder.append(key) }
                     turnIds[key] = pendingBlock + ids
                 }
-                while turnOrder.count > 128 {
+                // Forget a record once its turn has left the conversation, and
+                // not before. This used to be a flat 128 keys, first in first
+                // out — two or three keys a turn, so some forty turns — and a
+                // coding run goes far past that without ever compacting. Every
+                // new step then evicted a turn the prompt still carried; that
+                // turn fell back to being re-encoded from its text, the ids no
+                // longer matched what the cache held, and the whole conversation
+                // was re-read. On every step, from that step on.
+                if let live = liveTurnKeys {
+                    let keep = live.union(keys)
+                    turnOrder.removeAll { key in
+                        guard !keep.contains(key) else { return false }
+                        turnIds.removeValue(forKey: key)
+                        return true
+                    }
+                }
+                liveTurnKeys = nil
+                // A backstop for a conversation that never ends, not a policy.
+                while turnOrder.count > 8192 {
                     turnIds.removeValue(forKey: turnOrder.removeFirst())
                 }
             }
