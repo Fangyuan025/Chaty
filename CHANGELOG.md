@@ -43,6 +43,14 @@
   sends real key events, optionally focusing a field first, and refuses a key
   it does not know rather than sending something else.
 
+### A menu-bar icon that looks like one
+
+- **On macOS the menu-bar icon is a glyph, not the app icon.** It was the
+  full-colour navy square from the Dock, sitting in a row of monochrome glyphs.
+  It is now drawn the way macOS draws menu-bar items: the app icon's own bubble
+  and graph in black on transparency, tinted by the system to match a light or
+  dark bar. Windows and Linux keep the colour icon their trays expect.
+
 ### From the v2.1.7 rebuild
 
 These reached v2.1.7 as a rebuild after it went out; they are listed here for

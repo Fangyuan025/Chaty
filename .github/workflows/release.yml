@@ -276,6 +276,13 @@ jobs:
             all. `browser_key` sends real ones, optionally focusing a field
             first.
 
+            ## A menu-bar icon that looks like one
+
+            On macOS, Chaty's menu-bar icon is now drawn the way the system
+            draws its own — the app icon's bubble and graph, black on
+            transparency, tinted to match a light or dark bar — instead of the
+            full-colour square from the Dock.
+
             Several things reached v2.1.7 as a rebuild after it went out and are
             in here for anyone who installed it on release day: an import that
             closes the app now leaves a note naming the file and the step it
