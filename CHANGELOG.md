@@ -51,6 +51,53 @@
   and graph in black on transparency, tinted by the system to match a light or
   dark bar. Windows and Linux keep the colour icon their trays expect.
 
+### Long coding sessions stop re-reading themselves
+
+A local model picks a conversation up from where its cache left off, and on
+the Qwen3.5 family a single token out of place means reading the whole
+conversation again. Code mode had several ways of putting one there.
+
+- **The second turn of a session no longer starts from nothing.** The session
+  title was asked for after the first turn, as a prompt of its own, and the
+  engine keeps one cache: the title replaced everything the first turn had
+  built, and the second turn read all of it again. It is now asked for before
+  the first turn, when there is nothing yet to lose. The second turn's first
+  round went from none of its prompt resumed to 97–99%, on both engines.
+
+- **A long run on MLX stops re-reading itself at every step.** The engine
+  replays each turn as the model actually wrote it, because re-encoding a turn
+  from its text does not give back the same tokens. It kept those records for
+  about forty turns; past that, each new step pushed out a turn the
+  conversation still carried, and the whole prompt was read again — step after
+  step, with no compaction anywhere near. A record now lasts as long as its
+  turn: 61 steps of the same run, none of them re-read.
+
+- **Remembering something no longer costs the next turn.** Project memory sits
+  at the front of the prompt, and the agent is asked to remember what it found
+  as it finishes. Memory was re-read for every turn, so each thing remembered
+  changed the front of the next turn's prompt. A session now keeps the memory
+  it started with; what it remembered along the way is already in front of it.
+
+- **Earlier turns are no longer trimmed at the start of every turn.** Past 40%
+  of the window, a session's history was summarised at the start of every
+  turn, because one turn of work was enough to cross the line again. History
+  now goes in as it was and is condensed only when the window is actually full.
+
+- **A prompt too long for the window no longer ends the session.** A 4B model
+  wrote a 16,000-token file in a tool call whose JSON never closed; kept as it
+  was written, it filled the window on its own, the step failed, and every turn
+  after it failed the same way. The engine's own count of the prompt now drives
+  compaction and the step runs again, and a turn too large for anything else is
+  cut down to its beginning and end.
+
+- **The same broken tool call no longer repeats for a whole turn.** A model
+  that sends an unparseable call again gets a pointed hint — an unescaped
+  quote is the usual cause — and a hotter sample, and the turn pauses after
+  four. One 4B model had sent the same call twenty times in a row.
+
+- On llama.cpp, a reply that re-encodes to different tokens than the model
+  generated is kept as generated instead of being read again.
+
 ### From the v2.1.7 rebuild
 
 These reached v2.1.7 as a rebuild after it went out; they are listed here for

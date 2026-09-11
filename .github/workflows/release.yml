@@ -283,6 +283,19 @@ jobs:
             transparency, tinted to match a light or dark bar — instead of the
             full-colour square from the Dock.
 
+            ## Long coding sessions stop re-reading themselves
+
+            A local model picks a conversation up from where its cache left
+            off, and on the Qwen3.5 family one token out of place means reading
+            the whole conversation again. Code mode had several ways of putting
+            one there: the session title wiped the cache between the first and
+            second turn; on MLX, a long run began re-reading everything at every
+            step after about forty; each thing the agent remembered changed the
+            start of the next turn's prompt; and past 40% of the window the
+            history was summarised again at every turn. All of them are gone.
+            A turn too large for the window no longer ends the session, and a
+            model stuck resending one broken tool call is stopped after four.
+
             Several things reached v2.1.7 as a rebuild after it went out and are
             in here for anyone who installed it on release day: an import that
             closes the app now leaves a note naming the file and the step it
