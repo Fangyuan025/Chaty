@@ -105,6 +105,21 @@ if (taskDir) {
     "def add(a, b):\n    return a + b\n\n\nif __name__ == '__main__':\n    print(add(1, 2))\n",
   );
 }
+// MEMORY_SEED=1: the workspace already remembers one fact from an earlier
+// session. The prompt only asks the model to `remember` its findings once an
+// index exists, so an empty one never shows what a real project does.
+if (process.env.MEMORY_SEED === "1") {
+  const dir = path.join(ws, ".chaty", "memory");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, "test-runner.md"),
+    "# 测试怎么跑\n\n本机没有 pytest,直接用 python3 运行测试文件。\n",
+  );
+  writeFileSync(
+    path.join(dir, "MEMORY.md"),
+    "- [测试怎么跑](.chaty/memory/test-runner.md) — 本机没有 pytest,直接用 python3 运行测试文件\n",
+  );
+}
 await bridge.call("agent_set_workspace", { path: ws });
 console.log(`workspace: ${ws}`);
 
@@ -120,6 +135,7 @@ const TASK =
 type Card = { role: string; text: string; steps: unknown[]; prompt?: Msg[] };
 const cards: Card[] = [];
 const TURNS = Number(process.env.TURNS ?? 3);
+let pinnedIndex: string | undefined;
 
 for (let t = 1; t <= TURNS; t++) {
   turn = t;
@@ -138,6 +154,23 @@ for (let t = 1; t <= TURNS; t++) {
     `\n--- turn ${t} (history: ${replay ? "replayed tail" : "summary fallback"}, ` +
       `${(history as unknown[]).length} msgs) ---`,
   );
+  // MEMORY=1 mirrors a workspace with memory on: the app reads the index
+  // before every turn and the system prompt carries it. MEMORY_PIN=1 reads it
+  // once, on the first turn, and keeps that for the whole session.
+  let memoryIndex: string | undefined;
+  if (process.env.MEMORY === "1") {
+    if (process.env.MEMORY_PIN === "1" && pinnedIndex !== undefined) {
+      memoryIndex = pinnedIndex;
+    } else {
+      try {
+        memoryIndex = readFileSync(path.join(ws, ".chaty/memory/MEMORY.md"), "utf8");
+      } catch {
+        memoryIndex = "";
+      }
+      pinnedIndex = memoryIndex;
+    }
+    console.log(`  memory index: ${memoryIndex.split("\n").filter(Boolean).length} lines`);
+  }
   let steps = 0;
   await runAgentTurn(
     input,
@@ -151,6 +184,7 @@ for (let t = 1; t <= TURNS; t++) {
       toolRole: !!info.toolRole,
       reasoningField: !!info.reasoningField,
       visionReady: !!info.visionReady,
+      ...(memoryIndex !== undefined ? { memoryIndex } : {}),
       nCtx: info.nCtx,
       maxSteps: Number(process.env.MAXSTEPS ?? 14),
       temperature: 0.3,
