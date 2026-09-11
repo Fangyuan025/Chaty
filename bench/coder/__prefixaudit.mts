@@ -171,6 +171,27 @@ for (let t = 1; t <= TURNS; t++) {
     }
     console.log(`  memory index: ${memoryIndex.split("\n").filter(Boolean).length} lines`);
   }
+  // TITLE=after|before: the app asks the model for a session title once, with
+  // a prompt of its own. The engine keeps one cache, so where that call lands
+  // decides what it throws away. Sent straight to the engine — it is not a
+  // round of the loop, and the table shows only its effect on the next one.
+  const titleCall = async () => {
+    await bridge.call(
+      "generate",
+      {
+        request: {
+          messages: [
+            { role: "system", content: "请用一个不超过12个汉字的简短短语，概括下面这条消息的主题，作为对话标题。只输出标题本身。" },
+            { role: "user", content: TASK.slice(0, 2000) },
+          ],
+          params: { temperature: 0.2, topP: 0.9, maxTokens: 512, think: false },
+        },
+      },
+      () => {},
+    );
+    console.log(`  [title generated ${process.env.TITLE} turn 1]`);
+  };
+  if (t === 1 && process.env.TITLE === "before") await titleCall();
   let steps = 0;
   await runAgentTurn(
     input,
@@ -223,6 +244,7 @@ for (let t = 1; t <= TURNS; t++) {
       },
     } as never,
   );
+  if (t === 1 && process.env.TITLE === "after") await titleCall();
   console.log(`  steps=${steps}`);
 }
 
