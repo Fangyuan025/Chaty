@@ -1407,10 +1407,10 @@ fn run_turn(
         if std::env::var("CHATY_DUMP_PROMPT").as_deref() == Ok("1") {
             eprintln!("PROMPT[{} chars]>>>{prompt}<<<END", prompt.len());
         }
-        let tokens = model
+        let mut tokens = model
             .str_to_token(&prompt, AddBos::Always)
             .context("tokenization failed")?;
-        let n_prompt = tokens.len();
+        let mut n_prompt = tokens.len();
 
         if n_prompt + 4 >= n_ctx as usize {
             dec.clear_kv_cache();
@@ -1424,9 +1424,62 @@ fn run_turn(
         while prefix < max_match && cached[prefix] == tokens[prefix] {
             prefix += 1;
         }
+        // The cache holds each reply the way the model GENERATED it, token for
+        // token; the new prompt re-encodes that turn from its text, and encoding
+        // is not the inverse of generating — a model can spell an indent run, a
+        // JSON escape or a CJK character in pieces the tokenizer would never
+        // choose. Same text, different ids, and on a hybrid model (whose state
+        // cannot rewind) the first differing id costs the whole conversation.
+        // Where the rest of the cache spells exactly what the new prompt says
+        // at that point, keep the ids already resident and encode only what
+        // follows — the MLX engine's turn replay, done against the cache itself.
+        let dump_reuse = std::env::var("CHATY_DUMP_REUSE").as_deref() == Ok("1");
+        if prefix < cached.len() {
+            if let Some(q) =
+                respelled_len(&cached[prefix..], &tokens[prefix..], |t| piece_bytes(model, t))
+            {
+                let mut spliced = cached.to_vec();
+                spliced.extend_from_slice(&tokens[prefix + q..]);
+                if spliced.len() + 4 < n_ctx as usize {
+                    if dump_reuse {
+                        eprintln!(
+                            "llama-respell at={prefix} kept={} in place of {q} re-encoded",
+                            cached.len() - prefix
+                        );
+                    }
+                    prefix = cached.len();
+                    tokens = spliced;
+                    n_prompt = tokens.len();
+                }
+            }
+        }
         // Always leave at least one token to decode so we have fresh logits to sample.
         if prefix == n_prompt {
             prefix = n_prompt - 1;
+        }
+        // Where the prompt stopped matching the cache, and whether it is the
+        // TEXT that differs or only how it was split into tokens. Off unless
+        // asked for — the pieces are prompt content.
+        if prefix < cached.len() && dump_reuse {
+            let bytes = |ids: &[LlamaToken]| -> Vec<u8> {
+                ids.iter().flat_map(|&t| piece_bytes(model, t)).collect()
+            };
+            let show = |ids: &[LlamaToken]| -> String {
+                ids.iter()
+                    .map(|&t| format!("{:?}", String::from_utf8_lossy(&piece_bytes(model, t))))
+                    .collect::<Vec<_>>()
+                    .join("|")
+            };
+            let rest = bytes(&cached[prefix..]);
+            let same_text = bytes(&tokens[prefix..]).starts_with(&rest);
+            let lo = prefix.saturating_sub(3);
+            eprintln!(
+                "llama-diverge at={prefix} cached={} prompt={n_prompt} same_text={same_text} \
+                 cached=[{}] new=[{}]",
+                cached.len(),
+                show(&cached[lo..(prefix + 6).min(cached.len())]),
+                show(&tokens[lo..(prefix + 6).min(n_prompt)]),
+            );
         }
 
         // Drop everything in the KV at/after `prefix`, then decode only the new
@@ -2926,6 +2979,71 @@ fn piece_bytes(model: &LlamaModel, token: LlamaToken) -> Vec<u8> {
             .token_to_piece_bytes(token, (-i) as usize, true, None)
             .unwrap_or_default(),
         Err(_) => Vec::new(),
+    }
+}
+
+/// How many of `new`'s tokens spell exactly the bytes `held` spells, ending on
+/// a token boundary of both — so `held` can stand in for them. None when the
+/// text differs, when the boundaries never line up at `held`'s end, or when
+/// nothing of `new` would be left over to decode.
+fn respelled_len(
+    held: &[LlamaToken],
+    new: &[LlamaToken],
+    piece: impl Fn(LlamaToken) -> Vec<u8>,
+) -> Option<usize> {
+    let want: Vec<u8> = held.iter().flat_map(|&t| piece(t)).collect();
+    let mut got: Vec<u8> = Vec::with_capacity(want.len());
+    for (i, &t) in new.iter().enumerate() {
+        if got.len() == want.len() {
+            return (!want.is_empty()).then_some(i);
+        }
+        got.extend(piece(t));
+        if got.len() > want.len() || want[..got.len()] != got[..] {
+            return None;
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod respell_tests {
+    use super::*;
+
+    fn pieces(t: LlamaToken) -> Vec<u8> {
+        match t.0 {
+            1 => b"ab".to_vec(),
+            2 => b"a".to_vec(),
+            3 => b"b".to_vec(),
+            4 => b"c".to_vec(),
+            5 => b"bc".to_vec(),
+            6 => b"<|im_end|>".to_vec(),
+            _ => Vec::new(),
+        }
+    }
+    fn ids(v: &[i32]) -> Vec<LlamaToken> {
+        v.iter().map(|&i| LlamaToken::new(i)).collect()
+    }
+
+    #[test]
+    fn the_same_text_split_differently_is_kept_as_the_model_wrote_it() {
+        // The model generated "a"+"b"; re-encoding the stored turn gives "ab".
+        assert_eq!(respelled_len(&ids(&[2, 3]), &ids(&[1, 4, 6]), pieces), Some(1));
+    }
+
+    #[test]
+    fn different_text_is_not_papered_over() {
+        assert_eq!(respelled_len(&ids(&[2, 4]), &ids(&[1, 4]), pieces), None);
+    }
+
+    #[test]
+    fn a_token_straddling_the_end_of_the_cache_cannot_be_split() {
+        // "a"+"bc": the cache's "ab" ends inside the second token.
+        assert_eq!(respelled_len(&ids(&[2, 3]), &ids(&[2, 5, 6]), pieces), None);
+    }
+
+    #[test]
+    fn something_must_be_left_to_decode() {
+        assert_eq!(respelled_len(&ids(&[2, 3]), &ids(&[1]), pieces), None);
     }
 }
 
