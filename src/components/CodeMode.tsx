@@ -65,7 +65,7 @@ import {
 import { isReadOnlyCommand } from "../lib/readOnlyCmd";
 import { syncMcpServers } from "../lib/mcp";
 import { loadSkills } from "../lib/skillFiles";
-import { loadMemoryIndex } from "../lib/memoryFiles";
+import { loadMemoryIndex, sessionMemoryIndex } from "../lib/memoryFiles";
 import { homeDir } from "@tauri-apps/api/path";
 import { fmtBytes } from "../lib/fmt";
 
@@ -671,6 +671,8 @@ export function CodeMode({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef({ msgs, workspace, sid });
   bodyRef.current = { msgs, workspace, sid };
+  // The memory index each session started with — see sessionMemoryIndex.
+  const memoryPinsRef = useRef(new Map<string, string>());
   // The approve callback closes over send()-time state — read bypass through a
   // ref so flipping the toggle MID-RUN takes effect immediately.
   const bypassRef = useRef(bypass);
@@ -1259,7 +1261,9 @@ export function CodeMode({
     // home dir (or a glob that can't reach it) just means no global skills.
     const home = await homeDir().catch(() => undefined);
     const memoryIndex = memoryEnabled
-      ? await loadMemoryIndex({ readFile: (fp) => agentReadFile(fp) }).catch(() => "")
+      ? await sessionMemoryIndex(memoryPinsRef.current, bodyRef.current.sid, () =>
+          loadMemoryIndex({ readFile: (fp) => agentReadFile(fp) }).catch(() => ""),
+        )
       : undefined;
     const skills = await loadSkills(
       agentGlob,

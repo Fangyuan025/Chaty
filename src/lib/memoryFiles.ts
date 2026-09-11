@@ -66,6 +66,29 @@ export async function loadMemoryIndex(fs: Pick<MemoryFs, "readFile">): Promise<s
   }
 }
 
+/** The index a session's prompt carries: read on the session's first turn and
+ *  kept for the rest of it.
+ *
+ *  The index sits in the system prompt — the very front of what the engine
+ *  holds — and the prompt tells the model to `remember` its findings before it
+ *  wraps up, so a working session rewrites the index at the end of nearly every
+ *  turn. Re-read each turn, that meant the next turn's prompt differed from its
+ *  first few hundred tokens on and the whole conversation was re-read, on every
+ *  turn, for as long as the session ran: the same trap the clock in the system
+ *  prompt was. What a session remembered is already in its transcript (the
+ *  `remember` call and its answer); a new session reads the index afresh. */
+export async function sessionMemoryIndex(
+  pins: Map<string, string>,
+  sessionId: string,
+  load: () => Promise<string>,
+): Promise<string> {
+  const pinned = pins.get(sessionId);
+  if (pinned !== undefined) return pinned;
+  const fresh = await load();
+  pins.set(sessionId, fresh);
+  return fresh;
+}
+
 /** Persist one fact: write the file, then upsert its index line. Returns the
  *  model-facing confirmation. Titles are upserted, not duplicated — calling
  *  remember twice with the same title updates the fact in place. */
