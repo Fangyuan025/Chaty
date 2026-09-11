@@ -1349,6 +1349,12 @@ export function CodeMode({
     const turnImages = visionImgs;
     setCodeAttachments([]);
     const modelInput = attachCtx ? `${attachCtx}\n\n${text}` : text;
+    // A fresh session's title, asked for BEFORE its first turn. The engine keeps
+    // one cache, and a title is a prompt of its own: asked after the turn, as it
+    // used to be, it replaced everything the first turn had built, and the
+    // second turn re-read the whole of it — the one turn boundary in a session
+    // that never resumed. Before the first turn there is nothing yet to lose.
+    if (isFirstTurn) await makeSessionTitle(turnSid, text);
     await runAgentTurn(modelInput, history, workspace, agentLang(lang), {
       thinkMode,
       // Consumed once: this turn resumes the escape, the one after it starts clean.
@@ -1494,11 +1500,6 @@ export function CodeMode({
         persist(cur, bodyRef.current.workspace, turnSid);
         return cur;
       });
-      // First completed turn of a fresh session → give it a real title (the
-      // engine is idle again; the helper no-op's if the session goes away).
-      if (isFirstTurn && !signal.cancelled) {
-        void makeSessionTitle(turnSid, text);
-      }
     }
 
     // Messages queued while the agent was working → run them in order.
