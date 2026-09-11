@@ -1798,6 +1798,13 @@ export function stubWrittenBodies(turn: string, lang: "zh" | "en"): string {
   });
 }
 
+/** The prompt size llama.cpp reports when it refuses a prompt too long for the
+ *  window; 0 for any other error. */
+function refusedPromptTokens(e: unknown): number {
+  const m = /提示词 (\d+) tokens 超出上下文窗口/.exec(e instanceof Error ? e.message : String(e));
+  return m ? Number(m[1]) : 0;
+}
+
 export async function compactMessages(
   messages: ChatMessage[],
   nCtx: number,
@@ -1806,9 +1813,12 @@ export async function compactMessages(
   /** Condense a stretch of dropped transcript. Omitted in tests and in any
    *  caller with no model to spare — the bullet digest stands in. */
   summarise?: (transcript: string) => Promise<string>,
+  /** Compact even though the estimate says it fits — the engine has just
+   *  counted the prompt and said otherwise. */
+  force?: boolean,
 ): Promise<boolean> {
   const limit = contextLimit(nCtx, maxGenTokens);
-  if (estimateTokens(messages) <= limit) return false;
+  if (!force && estimateTokens(messages) <= limit) return false;
   // Compaction triggers at the limit but works down to a TARGET well under it.
   // Freeing exactly enough to slip back under the limit meant the next round
   // went straight over again: a 4k-window run spent 120 consecutive rounds
@@ -1945,11 +1955,33 @@ export async function compactMessages(
       changed = true;
     }
   }
+  // Still over, and what is left is a turn the model WROTE that no tier above
+  // may touch: the newest writes (KEEP_WRITES) and the working thread
+  // (KEEP_TAIL) are held back on purpose. Measured: a 4B model emitted a
+  // sixteen-thousand-token write_file whose JSON did not parse; stored
+  // verbatim, as a failed call is, it filled the window by itself, the step
+  // overflowed, and because the transcript is handed on as it stands, so did
+  // every turn after it — the session could not go on. Cut the biggest such
+  // turns to their head and tail: the model keeps its place, the window its room.
+  if (estimateTokens(messages) > target) {
+    const big = messages
+      .map((m, i) => ({ m, i }))
+      .filter(({ m }) => m.role === "assistant" && m.content.length > 4000)
+      .sort((a, b) => b.m.content.length - a.m.content.length);
+    for (const { m, i } of big) {
+      if (estimateTokens(messages) <= target) break;
+      const cut = m.content.length - 2000;
+      const note =
+        currentLang === "zh"
+          ? `\n…(此回合过长,中间 ${cut} 字符已从上下文中省略)…\n`
+          : `\n…(turn too long — ${cut} characters in the middle were left out of the context)…\n`;
+      messages[i] = { ...m, content: m.content.slice(0, 1500) + note + m.content.slice(-500) };
+      changed = true;
+    }
+  }
   return changed;
 }
 
-/** Cross-turn compaction: if the prior conversation alone would eat too much of
- *  the window, keep only the most recent exchanges and note the elision. */
 /** What the model is told to preserve when a stretch of work is condensed.
  *  Written for an agent transcript rather than a chat: the facts a coding run
  *  cannot afford to lose are the concrete ones — which files were changed and
@@ -1995,62 +2027,6 @@ export function digestHistory(dropped: ChatMessage[], lang: "zh" | "en"): string
     out = bullets.join("\n");
   }
   return out.slice(0, 700);
-}
-
-export async function trimHistory(
-  history: ChatMessage[],
-  nCtx: number,
-  summarise?: (transcript: string) => Promise<string>,
-): Promise<{ history: ChatMessage[]; trimmed: boolean }> {
-  // Prior conversation gets at most 40% of the window — deliberately smaller
-  // than what mid-turn compaction allows, because the rest of the window is
-  // about to be spent on this turn's own tool traffic.
-  const budget = Math.floor(nCtx * 0.4);
-  if (estimateTokens(history) <= budget) return { history, trimmed: false };
-  // Trim down to a TARGET under the trigger, not to the trigger itself. Cutting
-  // just enough to slip back under put the next turn straight over again, so a
-  // long session re-trimmed every single turn — and each trim writes a fresh
-  // summary, which lands at the FRONT of the prompt and moves every token after
-  // it, so the engine could match nothing it had already computed. This is the
-  // lesson compactMessages records for mid-turn compaction, on the cross-turn
-  // side: what is freed beyond the trigger is runway, and every turn of runway
-  // is a turn whose prompt the engine still recognises.
-  const target = Math.floor(budget * 0.6);
-  const kept = [...history];
-  const dropped: ChatMessage[] = [];
-  while (kept.length > 2 && estimateTokens(kept) > target) {
-    dropped.push(kept.shift()!);
-  }
-  // Never start the kept slice mid-exchange with an assistant message.
-  while (kept.length && kept[0].role === "assistant") dropped.push(kept.shift()!);
-  let digest = digestHistory(dropped, currentLang);
-  if (summarise && dropped.length) {
-    // A previous trim's note is among the dropped messages: summarise FROM it
-    // rather than re-condensing an already-condensed line as if it were
-    // transcript, so the oldest turns keep thinning instead of being described
-    // second-hand each time.
-    const transcript = fitTranscript(
-      dropped.map((m) => `${m.role}: ${m.content}`),
-      Math.max(1500, Math.floor(budget * 0.6)),
-      currentLang,
-    );
-    try {
-      const written = (await summarise(transcript)).trim();
-      if (written) digest = written;
-    } catch {
-      // The bullet digest still describes what was dropped.
-    }
-  }
-  const base =
-    currentLang === "zh"
-      ? "(提示:更早的对话已被自动压缩省略,以下是最近的部分。"
-      : "(Note: earlier conversation was auto-compacted; what follows is the most recent part.";
-  const label = currentLang === "zh" ? "被省略部分的梗概:" : " Digest of what was dropped:";
-  kept.unshift({
-    role: "user",
-    content: digest ? `${base}${label}\n${digest})` : `${base})`,
-  });
-  return { history: kept, trimmed: true };
 }
 
 /** Run one user turn to completion (possibly many tool steps). `history` is the
@@ -2117,10 +2093,9 @@ export async function runAgentTurn(
   // token; compaction reclaims the space on later steps. Small-context models
   // get a proportionally smaller (safe) budget; big ones read up to ~384 KB.
   const readChars = Math.min(384000, Math.max(8000, Math.floor((nCtx - 5000) * 3)));
-  // One summariser, used both by the start-of-turn history trim and by
-  // mid-turn compaction — condensing a stretch of work is the same job in
-  // both places, and it should not lose different things depending on when
-  // it happens to run.
+  // The summariser compaction hands whatever it drops to — this turn's work
+  // or an earlier turn's; condensing a stretch of work is the same job either
+  // way, and it should not lose different things depending on which it is.
   const summariseSpan = async (transcript: string): Promise<string> => {
     if (opts.signal.cancelled) return "";
     let out = "";
@@ -2141,7 +2116,17 @@ export async function runAgentTurn(
     );
     return out.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
   };
-  const { history: keptHistory, trimmed } = await trimHistory(history, nCtx, summariseSpan);
+  // The prior conversation goes in exactly as the last turn sent it. The
+  // engine still holds that prompt, so this turn is a pure append onto it, and
+  // what has to give once the window fills is decided by compactMessages at
+  // the first step — the same rule every step of a turn already lives by.
+  //
+  // There used to be a separate start-of-turn trim with a budget of 40% of the
+  // window. One working turn's tool traffic exceeds that on its own, so once a
+  // session got long it fired at the start of EVERY turn, each time writing a
+  // fresh summary at the front of the prompt: the whole conversation re-read on
+  // every turn from then on, on both engines. Compaction frees 40% of the
+  // limit when it fires, and fires only when the window is actually full.
   // The user's opening turn carries any attached images (vision models only);
   // otherwise it's plain text as before.
   const userImages = opts.visionReady && opts.images?.length ? opts.images : undefined;
@@ -2159,7 +2144,7 @@ export async function runAgentTurn(
         opts.memoryIndex,
       ),
     },
-    ...keptHistory,
+    ...history,
     {
       role: "user",
       content:
@@ -2177,6 +2162,19 @@ export async function runAgentTurn(
   // Tool-call metadata per result message, so compaction can replace a big
   // result with a digest that still names the file/command it came from.
   const toolMeta = new WeakMap<ChatMessage, { name: string; args: Record<string, unknown> }>();
+  // The replayed history's results get the same, from the calls that produced
+  // them — so an earlier turn's read compacts to "read_file src/x.py" rather
+  // than to a bare "elided", and the model knows what it would be re-reading.
+  let lastCall: { name: string; args: Record<string, unknown> } | undefined;
+  for (const m of messages) {
+    if (m.role === "assistant") {
+      const c = m.content.includes("<tool_call>") ? parseToolCall(m.content) : null;
+      lastCall = c ? { name: c.name, args: c.args } : undefined;
+    } else if (lastCall && m.content.startsWith(`<tool_result name="${lastCall.name}"`)) {
+      toolMeta.set(m, lastCall);
+      lastCall = undefined;
+    }
+  }
   const jitShown = new Set<HintKey>(); // per-turn: hints re-arm next turn
   const pushUser = (
     content: string,
@@ -2337,6 +2335,15 @@ export async function runAgentTurn(
   // completion is never an answer; the agents45 third-party shim already
   // established the fix shape — retry hotter, bounded.
   let emptyStreak = 0;
+  // The same unparseable call, again and again. The repeat breaker only sees
+  // calls that PARSED, so a model stuck re-emitting one broken call (a bash
+  // command with bare double quotes inside its JSON string) spent a whole
+  // turn's steps on it — twenty identical rounds in a measured run, each
+  // answered with the same "not valid" note, at the same temperature.
+  let invalidStreak = 0;
+  let lastInvalidRaw = "";
+  /** Steps re-run after the engine refused a prompt too long for the window. */
+  let overflowRetries = 0;
   let forceNoThinkNext = false;
   let compactNotified = false;
   const noteCompacted = () => {
@@ -2345,7 +2352,6 @@ export async function runAgentTurn(
       cb.onCompacted?.();
     }
   };
-  if (trimmed) noteCompacted();
 
   try {
     for (let step = 0; step < maxSteps; step++) {
@@ -2456,6 +2462,8 @@ export async function runAgentTurn(
       // the left-hand side of the calibration the reply will complete.
       const sentRaw = rawMessageTokens(messages);
       let raw = "";
+      /** The engine's own count of this step's prompt, when it refused it. */
+      let overflowAt = 0;
       let liveTokens = 0;
       let budgetTripped = false;
       let degenerated = false;
@@ -2532,12 +2540,51 @@ export async function runAgentTurn(
             // we predicted it would cost. Every step makes the next estimate
             // less of a guess — and compaction fires on the real number.
             calibrate(sentRaw, ev.stats.promptTokens);
+            // MLX refuses an over-long prompt with a done event, not an error.
+            if (ev.stats.stopReason === "context" && ev.stats.completionTokens === 0) {
+              overflowAt = ev.stats.promptTokens;
+            }
           }
         },
-      );
+      ).catch((e: unknown) => {
+        // llama.cpp refuses it with an error that names the count.
+        const n = refusedPromptTokens(e);
+        if (!n) throw e;
+        calibrate(sentRaw, n);
+        overflowAt = n;
+      });
       // Safety: a cancelled/errored step may end mid-prefill — clear the ring.
       cb.onPrefill?.(null);
       if (opts.signal.cancelled) return;
+      // ── Over the window ── the engine counted the prompt and it does not
+      // fit: the estimate under-read it, or what fills the window is something
+      // compaction's usual tiers leave alone. Believe the engine — compact
+      // against a window shrunk by however far the estimate was off — and run
+      // the step again. Unhandled, this ended the turn, and since the
+      // transcript is handed on as it stands, it ended every turn after it.
+      if (overflowAt > 0) {
+        const est = estimateTokens(messages);
+        const squeezed =
+          overflowRetries++ < 2 &&
+          (await compactMessages(
+            messages,
+            Math.floor(nCtx * Math.min(1, est / overflowAt)),
+            toolMeta,
+            opts.maxGenTokens,
+            summariseSpan,
+            true,
+          ));
+        if (squeezed) {
+          noteCompacted();
+          continue;
+        }
+        cb.onError(
+          lang === "zh"
+            ? `提示词 ${overflowAt} tokens 超出上下文窗口 ${nCtx},压缩后仍放不下。请新建会话,或在设置里调大上下文长度。`
+            : `The prompt (${overflowAt} tokens) does not fit the ${nCtx}-token context window even after compaction. Start a new session, or raise the context length in Settings.`,
+        );
+        return;
+      }
       cb.onTrace?.({ kind: "raw", text: raw });
       // ── Degenerate-output breaker ── the step was cut because the stream had
       // stopped carrying information. What it produced must NOT reach the
@@ -2605,6 +2652,10 @@ export async function runAgentTurn(
       }
 
       const call = parseToolCall(raw);
+      if (call) {
+        invalidStreak = 0;
+        lastInvalidRaw = "";
+      }
       if (!call) {
         const answer = proseAfter(raw).trim() || stripThink(raw).trim();
         // ── No-output recovery ── the round finished with ONLY reasoning: no
@@ -2657,10 +2708,30 @@ export async function runAgentTurn(
           // recovery paths are exactly where a session is already struggling;
           // they are the worst place to also make it slow.
           storeAssistantTurn(messages, raw, opts.reasoningField);
+          const again = raw.trim() === lastInvalidRaw;
+          lastInvalidRaw = raw.trim();
+          invalidStreak = again ? invalidStreak + 1 : 1;
+          if (invalidStreak >= 4) {
+            cb.onFinal(
+              lang === "zh"
+                ? "模型连续多次发出同一个无法解析的工具调用,已暂停以免空转。点「继续」重试,或提示它换一种写法(比如把命令拆开)。"
+                : 'The model kept re-issuing the same tool call that cannot be parsed — paused instead of spinning. Hit "Continue" to retry, or suggest another way to write it (split the command, say).',
+              undefined,
+              "steps",
+            );
+            return;
+          }
+          // The same broken call twice: the plain note did not help, so say
+          // what usually breaks it and sample hotter, as the repeat breaker does.
+          if (again) hotNext = true;
           pushUser(
-            lang === "zh"
-              ? '你上一个工具调用的格式无效。请严格用一行 <tool_call>{"name":"...","arguments":{...}}</tool_call> 重新调用。'
-              : 'Your last tool call was not valid. Re-issue it as exactly one line: <tool_call>{"name":"...","arguments":{...}}</tool_call>.',
+            again
+              ? lang === "zh"
+                ? '你又发出了和上次完全相同的无效调用。最常见的原因:参数字符串里有未转义的双引号(比如 echo "---")——在 JSON 字符串里要写成 \\",或改用单引号;命令太长也可以拆成几次调用。请换一种写法重新调用。'
+                : 'That is the same invalid call as last time. The usual cause is a bare double quote inside an argument string (echo "---", say) — inside a JSON string it must be written \\", or use single quotes; a long command can also be split into several calls. Re-issue it written differently.'
+              : lang === "zh"
+                ? '你上一个工具调用的格式无效。请严格用一行 <tool_call>{"name":"...","arguments":{...}}</tool_call> 重新调用。'
+                : 'Your last tool call was not valid. Re-issue it as exactly one line: <tool_call>{"name":"...","arguments":{...}}</tool_call>.',
           );
           continue;
         }
