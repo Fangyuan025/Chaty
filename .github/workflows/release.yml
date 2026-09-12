@@ -251,59 +251,40 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## A book that closed the app now imports
+            ## A session of its own
 
-            A 348-page book in Chinese closed the app every time it was
-            imported, and left nothing in the log. The note the previous
-            release taught indexing to leave named the moment — the first batch
-            of pieces — and the cause was a size: the embedding model reads each
-            piece in one pass, llama.cpp cannot split it, and the pass held 512
-            tokens while pieces were cut at 1020. English runs near 200 tokens a
-            piece and never came close; Chinese runs near 650, and past the line
-            llama.cpp does not return an error, it ends the process. The pass now
-            holds a whole piece, and the whole book indexes.
+            In Code mode, background tasks now belong to the session that started
+            them. Each session sees only its own — the tasks panel and the agent alike
+            — while another session's dev server keeps running in its own workspace,
+            and what each task ran, how it ended and what it printed stays with the
+            session across restarts until it is cleared. A session also belongs to its
+            workspace: opening one moves to its folder, and the session list can be
+            grouped by workspace.
 
-            On the way there, the embedder also stopped asking a shared graphics
-            card for every layer it has, and on a Mac it now runs on the GPU:
-            377 pieces in 36 s instead of 164, with the same vectors to within a
-            cosine of 0.997 and no memory left behind when it unloads.
+            ## Background tasks you can see into
 
-            ## The agent can press a key
+            The background pill now opens a panel of running and finished tasks —
+            status, running time, the full command and its output, live — where they
+            can be stopped one by one and cleared.
 
-            The browser tools could click and fill a field, and there was no way
-            to press a key — no Enter to submit, no Escape to dismiss, no Tab,
-            no arrows, no shortcuts. Typing into a field sends no keystroke at
-            all. `browser_key` sends real ones, optionally focusing a field
-            first.
+            ## What a turn changed
 
-            ## A menu-bar icon that looks like one
+            A turn that edits files now ends with a card of every file it changed,
+            each with its net +/−, its diff one click away, and an undo for that file
+            or for all of them.
 
-            On macOS, Chaty's menu-bar icon is now drawn the way the system
-            draws its own — the app icon's bubble and graph, black on
-            transparency, tinted to match a light or dark bar — instead of the
-            full-colour square from the Dock.
+            ## A window that opens the right size
 
-            ## Long coding sessions stop re-reading themselves
+            Chaty opens scaled to the screen and centred instead of at a fixed
+            1040×720, and on macOS closing from fullscreen now leaves fullscreen
+            smoothly and goes to the tray every time.
 
-            A local model picks a conversation up from where its cache left
-            off, and on the Qwen3.5 family one token out of place means reading
-            the whole conversation again. Code mode had several ways of putting
-            one there: the session title wiped the cache between the first and
-            second turn; on MLX, a long run began re-reading everything at every
-            step after about forty; each thing the agent remembered changed the
-            start of the next turn's prompt; and past 40% of the window the
-            history was summarised again at every turn. All of them are gone.
-            A turn too large for the window no longer ends the session, and a
-            model stuck resending one broken tool call is stopped after four.
-
-            Several things reached v2.1.7 as a rebuild after it went out and are
-            in here for anyone who installed it on release day: an import that
-            closes the app now leaves a note naming the file and the step it
-            stopped in (it is how the crash above was found), a document that
-            never finished indexing is no longer listed as though it had, a
-            scanned PDF is read from its pictures, describing a document's
-            figures can be switched off, and models can live on a drive other
-            than the system one.
+            Several things reached v2.1.8 as a rebuild after it went out and are in
+            here for anyone who installed it on release day: the macOS menu-bar icon
+            is a glyph that matches the bar, and long coding sessions no longer
+            re-read the whole conversation — after the first turn, after forty steps
+            on MLX, after the agent remembers something, or at every turn past 40% of
+            the window.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

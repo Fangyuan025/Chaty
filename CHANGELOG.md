@@ -1,5 +1,79 @@
 # Changelog
 
+## v2.1.9 — A session of its own (2026-09-11)
+
+### Every session keeps its own background tasks
+
+- **Background tasks belong to the session that started them.** They were
+  global: every session saw every job, one session's agent was told when
+  another's finished, switching workspaces killed them all, and nothing of
+  them survived a restart. The tasks panel and the agent now see only the
+  current session's jobs; another session's keep running, in their own
+  workspace, until that session stops them or is deleted, or the app quits.
+
+- **A session remembers its tasks.** What each one ran, how it ended, how
+  long it ran and what it printed stays with the session and is still there
+  the next time it opens, until it is cleared. A task still running when the
+  app quit reads as stopped, not as finished.
+
+- **A session belongs to its workspace.** Opening one moves to its folder —
+  and says so when the folder is gone, instead of failing in silence and
+  leaving the header showing one workspace while the agent worked in
+  another. Choosing a folder while a session already holds a conversation
+  starts a new session there rather than moving the old one.
+
+- **The session rail can be grouped by workspace**, under Settings → Code.
+
+### Background tasks you can see into
+
+- **The background pill opens a panel.** It used to offer one thing: kill
+  them all. It now lists running tasks, then finished ones, each with its
+  status — running, completed, stopped, or failed with its exit code — and
+  its running time; opened, a task shows its full command and its output,
+  live while it runs. Tasks can be stopped one at a time or together, and
+  finished ones cleared.
+
+### What a turn changed, at the end of it
+
+- **A turn that edits files ends with a card of what it changed.** Each file
+  with its net lines added and removed, its diff one click away, and an undo
+  for that file or for all of them, after a confirmation — back to how it was
+  before the turn, or removed if the turn created it. The card appears after
+  a turn you stopped too, and undo still works after a restart, from the
+  copy the card kept.
+
+### A window that opens the right size
+
+- **The window opens scaled to the screen,** at the proportions other
+  desktop apps open at, centred, and without appearing at one size and
+  jumping to another. It opened at a fixed 1040×720 — half of a 1080p
+  screen.
+
+- **Closing from fullscreen on macOS works every time.** The window leaves
+  fullscreen with the system's own animation, then goes to the tray, and
+  comes back as a normal window. It used to hide the whole app instead,
+  which macOS refuses while the fullscreen menu bar is showing — and the red
+  X is in that menu bar — so it waited, and after a minute gave up with the
+  window still up.
+
+### From the v2.1.8 rebuild
+
+These reached v2.1.8 as a rebuild after it went out; they are listed here for
+anyone who installed v2.1.8 on release day.
+
+- **On macOS the menu-bar icon is a glyph,** drawn the way the system draws
+  its own and tinted to match a light or dark bar, instead of the
+  full-colour app icon.
+
+- **Long coding sessions stop re-reading themselves.** The session title no
+  longer wipes the cache between the first turn and the second; on MLX a
+  long run no longer re-reads everything at every step after about forty;
+  something the agent remembers no longer changes the start of the next
+  turn's prompt; past 40% of the window the history is no longer summarised
+  again at every turn; a turn too large for the window no longer ends the
+  session; and a model stuck resending one broken tool call is stopped after
+  four.
+
 ## v2.1.8 — An import that finishes (2026-09-10)
 
 ### A book that closed the app now imports
