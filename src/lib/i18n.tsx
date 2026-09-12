@@ -890,6 +890,8 @@ export const T = {
     zh: "可以手动下载 {url}，解压到文件夹 {dir}（解压出的文件夹不要改名），然后再试一次。",
     en: "You can download {url} by hand and unpack it into the folder {dir} (keep the unpacked folder's name), then try again.",
   },
+  // Model-facing: names the question after a turn's retrieved passages.
+  questionLabel: { zh: "用户的问题：", en: "The user's question: ", pt: "Pergunta do usuário: " },
   webNoResults: {
     zh: "联网搜索没有找到与问题相关的网页，这次回答没有用到网络资料。",
     en: "Web search found nothing relevant to this question, so the answer doesn't use web sources.",

@@ -102,6 +102,7 @@ import {
   type UpdateInfo,
 } from "./lib/ipc";
 import { fitPop } from "./lib/popFit";
+import { turnMessage } from "./lib/turnPrompt";
 import "./App.css";
 import {
   type Compacted,
@@ -2042,7 +2043,7 @@ export default function App() {
     if (turnParts.length > 0 && last?.role === "user") {
       modelHistory = modelHistory.map((m, i) =>
         i === modelHistory.length - 1
-          ? { ...m, content: `${turnParts.join("\n\n")}\n\n${m.content}` }
+          ? { ...m, content: turnMessage(turnParts, m.content, webContext ? t("questionLabel") : undefined) }
           : m,
       );
     }

@@ -109,8 +109,8 @@ fn extract_pdf(path: &str, cap: usize, out: &mut Vec<String>) {
             break;
         }
         let lopdf::Object::Stream(stream) = obj else { continue };
-        let dict = &stream.dict;
-        let is_image = dict
+        let is_image = stream
+            .dict
             .get(b"Subtype")
             .ok()
             .and_then(|o| o.as_name().ok())
@@ -118,84 +118,117 @@ fn extract_pdf(path: &str, cap: usize, out: &mut Vec<String>) {
         if !is_image {
             continue;
         }
-        let filter = dict
-            .get(b"Filter")
-            .ok()
-            .and_then(|o| match o {
-                lopdf::Object::Name(n) => Some(n.clone()),
-                lopdf::Object::Array(a) => a.first().and_then(|f| f.as_name().ok().map(|n| n.to_vec())),
-                _ => None,
-            })
-            .unwrap_or_default();
-        match filter.as_slice() {
-            b"DCTDecode" => {
-                // The stream content IS a JPEG file.
-                if keep(&stream.content) {
-                    save(&stream.content, "jpg", out);
-                }
+        if let Some((bytes, ext)) = pdf_image_file(&stream.dict, &stream.content) {
+            if keep(&bytes) {
+                save(&bytes, ext, out);
             }
-            b"FlateDecode" => {
-                // lopdf's decompressed_content() rejects perfectly ordinary
-                // image streams (every Chrome/Chromium print-to-PDF lands
-                // here with Error::Type) — inflate the raw bytes ourselves.
-                // Predictor'd streams (PNG row filters) stay skipped:
-                // reversing those is a different job than inflating.
-                let has_predictor = dict
-                    .get(b"DecodeParms")
-                    .ok()
-                    .and_then(|o| o.as_dict().ok())
-                    .and_then(|d| d.get(b"Predictor").ok())
-                    .and_then(|p| p.as_i64().ok())
-                    .is_some_and(|p| p > 1);
-                if has_predictor {
-                    continue;
-                }
-                let mut data = Vec::new();
-                {
-                    use std::io::Read as _;
-                    if flate2::read::ZlibDecoder::new(stream.content.as_slice())
-                        .read_to_end(&mut data)
-                        .is_err()
-                    {
-                        continue;
-                    }
-                }
-                let (Some(w), Some(h)) = (
-                    dict.get(b"Width").ok().and_then(|o| o.as_i64().ok()),
-                    dict.get(b"Height").ok().and_then(|o| o.as_i64().ok()),
-                ) else {
-                    continue;
-                };
-                let bpc = dict.get(b"BitsPerComponent").ok().and_then(|o| o.as_i64().ok()).unwrap_or(8);
-                if bpc != 8 || w <= 0 || h <= 0 {
-                    continue;
-                }
-                let (w, h) = (w as u32, h as u32);
-                let px = (w as usize) * (h as usize);
-                let img = if data.len() >= px * 3 {
-                    image::RgbImage::from_raw(w, h, data[..px * 3].to_vec())
-                        .map(image::DynamicImage::ImageRgb8)
-                } else if data.len() >= px {
-                    image::GrayImage::from_raw(w, h, data[..px].to_vec())
-                        .map(image::DynamicImage::ImageLuma8)
-                } else {
-                    None
-                };
-                let Some(img) = img else { continue };
-                if img.width() < MIN_SIDE || img.height() < MIN_SIDE {
-                    continue;
-                }
-                let mut png: Vec<u8> = Vec::new();
-                if img
-                    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-                    .is_ok()
-                    && png.len() >= MIN_BYTES
-                {
-                    save(&png, "png", out);
-                }
-            }
-            _ => {}
         }
+    }
+}
+
+/// Longest side a scanned page is handed to the vision model at. Scans come
+/// at 150–300 dpi, 2500+ pixels tall; text stays legible well below that, and
+/// a model that tiles images by resolution would spend thousands of tokens of
+/// its context on a single full-size page.
+const PAGE_MAX_SIDE: u32 = 1600;
+
+/// The picture on each page of a PDF, in page order: the largest image each
+/// page draws — on a scan, the page itself. Up to `cap` pages; pages with no
+/// readable image are skipped, and oversized ones are scaled down.
+pub fn pdf_page_images(path: &str, cap: usize) -> Vec<String> {
+    let Ok(doc) = lopdf::Document::load(path) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (_, page_id) in doc.get_pages().into_iter().take(cap) {
+        let Ok(images) = doc.get_page_images(page_id) else { continue };
+        let Some(page) = images.iter().max_by_key(|i| i.width * i.height) else { continue };
+        let Some((bytes, _)) = pdf_image_file(page.origin_dict, page.content) else { continue };
+        let Ok(img) = image::load_from_memory(&bytes) else { continue };
+        if img.width() < MIN_SIDE || img.height() < MIN_SIDE {
+            continue;
+        }
+        let img = if img.width().max(img.height()) > PAGE_MAX_SIDE {
+            img.resize(PAGE_MAX_SIDE, PAGE_MAX_SIDE, image::imageops::FilterType::Triangle)
+        } else {
+            img
+        };
+        let mut jpg = Vec::new();
+        if image::DynamicImage::ImageRgb8(img.to_rgb8())
+            .write_to(&mut std::io::Cursor::new(&mut jpg), image::ImageFormat::Jpeg)
+            .is_ok()
+        {
+            save(&jpg, "jpg", &mut out);
+        }
+    }
+    out
+}
+
+/// One PDF image stream as an image file. JPEG (DCTDecode) content passes
+/// through; Flate-encoded 8-bit RGB/Gray and 1-bit bitmaps (black-and-white
+/// scans) are rebuilt as PNG. Other encodings (JBIG2, CCITT, JPX) → `None`.
+fn pdf_image_file(dict: &lopdf::Dictionary, content: &[u8]) -> Option<(Vec<u8>, &'static str)> {
+    let filter = dict
+        .get(b"Filter")
+        .ok()
+        .and_then(|o| match o {
+            lopdf::Object::Name(n) => Some(n.clone()),
+            lopdf::Object::Array(a) => a.first().and_then(|f| f.as_name().ok().map(|n| n.to_vec())),
+            _ => None,
+        })
+        .unwrap_or_default();
+    match filter.as_slice() {
+        // The stream content IS a JPEG file.
+        b"DCTDecode" => Some((content.to_vec(), "jpg")),
+        b"FlateDecode" => {
+            // lopdf's decompressed_content() rejects perfectly ordinary
+            // image streams (every Chrome/Chromium print-to-PDF lands
+            // here with Error::Type) — inflate the raw bytes ourselves.
+            // Predictor'd streams (PNG row filters) stay skipped:
+            // reversing those is a different job than inflating.
+            let has_predictor = dict
+                .get(b"DecodeParms")
+                .ok()
+                .and_then(|o| o.as_dict().ok())
+                .and_then(|d| d.get(b"Predictor").ok())
+                .and_then(|p| p.as_i64().ok())
+                .is_some_and(|p| p > 1);
+            if has_predictor {
+                return None;
+            }
+            let mut data = Vec::new();
+            flate2::read::ZlibDecoder::new(content).read_to_end(&mut data).ok()?;
+            let w = dict.get(b"Width").ok().and_then(|o| o.as_i64().ok())?;
+            let h = dict.get(b"Height").ok().and_then(|o| o.as_i64().ok())?;
+            let bpc = dict.get(b"BitsPerComponent").ok().and_then(|o| o.as_i64().ok()).unwrap_or(8);
+            if w <= 0 || h <= 0 {
+                return None;
+            }
+            let (w, h) = (w as u32, h as u32);
+            let px = (w as usize) * (h as usize);
+            let img = match bpc {
+                8 if data.len() >= px * 3 => image::RgbImage::from_raw(w, h, data[..px * 3].to_vec())
+                    .map(image::DynamicImage::ImageRgb8),
+                8 if data.len() >= px => image::GrayImage::from_raw(w, h, data[..px].to_vec())
+                    .map(image::DynamicImage::ImageLuma8),
+                // One bit a pixel, rows padded to whole bytes, 0 = black.
+                1 => {
+                    let stride = (w as usize).div_ceil(8);
+                    (data.len() >= stride * h as usize).then(|| {
+                        image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(w, h, |x, y| {
+                            let byte = data[y as usize * stride + x as usize / 8];
+                            image::Luma([if byte >> (7 - x % 8) & 1 == 1 { 255 } else { 0 }])
+                        }))
+                    })
+                }
+                _ => None,
+            }?;
+            if img.width() < MIN_SIDE || img.height() < MIN_SIDE {
+                return None;
+            }
+            let mut png: Vec<u8> = Vec::new();
+            img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
+            Some((png, "png"))
+        }
+        _ => None,
     }
 }
 
@@ -216,6 +249,12 @@ mod tests {
         for i in &imgs {
             let size = std::fs::metadata(i).map(|m| m.len()).unwrap_or(0);
             println!("PROBE   {i} ({size} bytes)");
+        }
+        let pages = pdf_page_images(&path, 500);
+        println!("PROBE {} page image(s)", pages.len());
+        for p in &pages {
+            let dims = image::open(p).map(|i| format!("{}×{}", i.width(), i.height())).unwrap_or_default();
+            println!("PROBE   {p} ({dims})");
         }
     }
 
@@ -326,6 +365,94 @@ mod tests {
         assert_eq!((im.width(), im.height()), (320, 240));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn noisy_jpeg(w: u32, h: u32, seed: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([((x * 11 + seed) % 256) as u8, ((y * 17 + seed) % 256) as u8, ((x * y + seed) % 256) as u8])
+        });
+        let mut jpg = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut jpg), image::ImageFormat::Jpeg)
+            .unwrap();
+        jpg
+    }
+
+    /// A PDF whose pages each draw one JPEG — the shape of a scan.
+    fn scan_pdf(path: &std::path::Path, pages: &[(u32, u32)]) {
+        use lopdf::{Dictionary, Object, Stream};
+        let mut doc = lopdf::Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let mut kids = Vec::new();
+        for (n, &(w, h)) in pages.iter().enumerate() {
+            let mut img = Dictionary::new();
+            img.set("Type", Object::Name(b"XObject".to_vec()));
+            img.set("Subtype", Object::Name(b"Image".to_vec()));
+            img.set("Width", w as i64);
+            img.set("Height", h as i64);
+            img.set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
+            img.set("BitsPerComponent", 8);
+            img.set("Filter", Object::Name(b"DCTDecode".to_vec()));
+            let img_id = doc.add_object(Object::Stream(Stream::new(img, noisy_jpeg(w, h, n as u32 * 40))));
+            let mut xobj = Dictionary::new();
+            xobj.set("Im0", Object::Reference(img_id));
+            let mut res = Dictionary::new();
+            res.set("XObject", Object::Dictionary(xobj));
+            let mut page = Dictionary::new();
+            page.set("Type", Object::Name(b"Page".to_vec()));
+            page.set("Parent", Object::Reference(pages_id));
+            page.set("Resources", Object::Dictionary(res));
+            kids.push(Object::Reference(doc.add_object(Object::Dictionary(page))));
+        }
+        let mut root_pages = Dictionary::new();
+        root_pages.set("Type", Object::Name(b"Pages".to_vec()));
+        root_pages.set("Count", pages.len() as i64);
+        root_pages.set("Kids", kids);
+        doc.objects.insert(pages_id, Object::Dictionary(root_pages));
+        let mut catalog = Dictionary::new();
+        catalog.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog.set("Pages", Object::Reference(pages_id));
+        let catalog_id = doc.add_object(Object::Dictionary(catalog));
+        doc.trailer.set("Root", Object::Reference(catalog_id));
+        doc.save(path).unwrap();
+    }
+
+    // Issue #15: a scanned PDF is read page by page, in page order, and a
+    // full-resolution scan is scaled down to what a vision model can take.
+    #[test]
+    fn scanned_pdf_pages_come_out_in_order_and_scaled() {
+        let dir = std::env::temp_dir().join(format!("chaty-docimg-scan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pdf = dir.join("scan.pdf");
+        scan_pdf(&pdf, &[(400, 300), (300, 400), (2480, 3508)]);
+        let pages = pdf_page_images(&pdf.to_string_lossy(), 500);
+        let dims: Vec<(u32, u32)> = pages
+            .iter()
+            .map(|p| image::open(p).map(|i| (i.width(), i.height())).unwrap())
+            .collect();
+        assert_eq!(dims[..2], [(400, 300), (300, 400)]);
+        assert_eq!(dims[2].1, PAGE_MAX_SIDE, "a 3508-pixel page is scaled to fit");
+        assert_eq!(pdf_page_images(&pdf.to_string_lossy(), 2).len(), 2, "the cap holds");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_bit_scans_decode() {
+        // 72×72 at one bit a pixel: rows of alternating black and white bytes.
+        let (w, h) = (72u32, 72u32);
+        let stride = (w as usize).div_ceil(8);
+        let raw: Vec<u8> = (0..stride * h as usize).map(|i| if i % 2 == 0 { 0x00 } else { 0xff }).collect();
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut z, &raw).unwrap();
+        let mut dict = lopdf::Dictionary::new();
+        dict.set("Width", w as i64);
+        dict.set("Height", h as i64);
+        dict.set("BitsPerComponent", 1);
+        dict.set("Filter", lopdf::Object::Name(b"FlateDecode".to_vec()));
+        let (png, ext) = pdf_image_file(&dict, &z.finish().unwrap()).expect("1-bit page");
+        assert_eq!(ext, "png");
+        let img = image::load_from_memory(&png).unwrap().to_luma8();
+        assert_eq!((img.get_pixel(0, 0)[0], img.get_pixel(8, 0)[0]), (0, 255));
     }
 }
 

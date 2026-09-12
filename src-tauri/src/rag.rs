@@ -526,10 +526,16 @@ fn has_text(t: String) -> Result<String, String> {
     if t.chars().filter(|c| !c.is_whitespace()).count() >= 16 {
         return Ok(t);
     }
-    Err("PDF 里没有可提取的文字,多半是扫描件(整页都是图,没有文本层) \
-         (no extractable text in this PDF — it is almost certainly a scan: \
-         pages of images with no text layer)"
-        .to_string())
+    Err(no_text_layer())
+}
+
+/// What a PDF with no text layer is reported as — also how the knowledge base
+/// recognises one, to read its pages instead.
+fn no_text_layer() -> String {
+    "PDF 里没有可提取的文字,多半是扫描件(整页都是图,没有文本层) \
+     (no extractable text in this PDF — it is almost certainly a scan: \
+     pages of images with no text layer)"
+        .to_string()
 }
 
 fn pdf_unreadable() -> String {
@@ -958,39 +964,50 @@ pub struct RagProgress {
     pub frac: f32,
 }
 
-/// Ask the loaded vision model to describe an image for retrieval. Returns
-/// `None` (not an error) when no vision model is active — the caller falls
-/// back to OCR-only indexing.
+const CAPTION_PROMPT: &str = "Describe this image thoroughly for search and retrieval. Cover: the main subject and scene, any people/objects, colors and layout, and — if it's a chart, diagram, screenshot or document — what it conveys and any labels. Be factual and specific. Do not add commentary.";
+
+/// A scanned page is read, not described: what it says is what questions
+/// will be about.
+const TRANSCRIBE_PROMPT: &str = "This is one page of a scanned document. Transcribe all of the text on it exactly as written, in reading order and in its original language (Chinese stays Chinese) — no translation, no summary, no commentary. If the page has no text, briefly describe what it shows.";
+
+/// Pages of a scan read into the knowledge base, at most.
+const MAX_SCAN_PAGES: usize = 500;
+
+async fn vision_ready(app: &tauri::AppHandle) -> bool {
+    use tauri::Manager;
+    let state = app.state::<crate::state::AppState>();
+    let ready = state.model.read().await.as_ref().map(|m| m.vision_ready).unwrap_or(false);
+    ready
+}
+
+/// Ask the loaded vision model about an image — `prompt` says what for.
+/// Returns `None` (not an error) when no vision model is active; the caller
+/// falls back to OCR-only indexing.
 async fn vision_caption(
     app: &tauri::AppHandle,
     path: &str,
     on_progress: &Channel<RagProgress>,
+    prompt: &str,
+    max_tokens: u32,
+    frac: f32,
 ) -> Option<String> {
     use tauri::Manager;
-    let state = app.state::<crate::state::AppState>();
-    let vision_ready = state
-        .model
-        .read()
-        .await
-        .as_ref()
-        .map(|m| m.vision_ready)
-        .unwrap_or(false);
-    if !vision_ready {
+    if !vision_ready(app).await {
         return None;
     }
+    let state = app.state::<crate::state::AppState>();
     let backend = state.backend().await?;
-    let _ = on_progress.send(RagProgress { phase: "vision", frac: 0.0 });
-    let prompt = "Describe this image thoroughly for search and retrieval. Cover: the main subject and scene, any people/objects, colors and layout, and — if it's a chart, diagram, screenshot or document — what it conveys and any labels. Be factual and specific. Do not add commentary.".to_string();
+    let _ = on_progress.send(RagProgress { phase: "vision", frac });
     let req = crate::inference::GenRequest {
         messages: vec![crate::inference::ChatMessage {
             role: crate::inference::Role::User,
-            content: prompt,
+            content: prompt.to_string(),
             reasoning_content: None,
             images: vec![path.to_string()],
         }],
         params: crate::inference::GenParams {
             temperature: 0.3,
-            max_tokens: 480,
+            max_tokens,
             think: Some(false),
             ..Default::default()
         },
@@ -1006,6 +1023,69 @@ async fn vision_caption(
             None
         }
     }
+}
+
+/// Read a PDF that has no text layer from its page images, one page at a
+/// time, with the loaded vision model. The docs said a scan "gets in, read by
+/// the vision model"; in fact it described at most six of the file's images,
+/// and without a vision model refused it with "almost certainly a scan" and
+/// no way forward (issue #15). OCR is no substitute here: it reads Latin
+/// script only, and would index a Chinese page as noise.
+async fn read_scanned_pdf(
+    app: &tauri::AppHandle,
+    path: &str,
+    on_progress: &Channel<RagProgress>,
+) -> Result<String, String> {
+    if !vision_ready(app).await {
+        return Err("这个 PDF 没有文字层,是扫描件(每一页都是图片)。要导入它,需要先加载一个能看图的模型——\
+                    模型选择器里带视觉(Vision)标记的——Chaty 会用它逐页读出上面的文字。\
+                    (This PDF has no text layer — it is a scan, every page a picture. To import it, load a \
+                    model that can see images — marked Vision in the model picker — and Chaty will read \
+                    each page with it.)"
+            .into());
+    }
+    let p = path.to_string();
+    let pages = tokio::task::spawn_blocking(move || crate::docimg::pdf_page_images(&p, MAX_SCAN_PAGES))
+        .await
+        .unwrap_or_default();
+    if pages.is_empty() {
+        return Err("这个 PDF 没有文字层,而它的页面图片用了暂不支持的编码(如 JBIG2、CCITT),读不出来。\
+                    可以先用别的工具把它转成带文字层的 PDF,或把页面导出成图片再导入。\
+                    (This PDF has no text layer, and its page images use an encoding Chaty cannot read yet, \
+                    such as JBIG2 or CCITT. Convert it to a PDF with a text layer, or export the pages as \
+                    images and import those.)"
+            .into());
+    }
+    let mut texts = Vec::with_capacity(pages.len());
+    for (i, img) in pages.iter().enumerate() {
+        let frac = i as f32 / pages.len() as f32;
+        texts.push(vision_caption(app, img, on_progress, TRANSCRIBE_PROMPT, 1500, frac).await);
+    }
+    scan_document(&texts).ok_or_else(|| {
+        "这个 PDF 没有文字层,视觉模型也没能从页面图片里读出内容。\
+         (This PDF has no text layer, and the vision model could not read anything from its pages.)"
+            .into()
+    })
+}
+
+/// A scan's page readings as one document: each under its page number, pages
+/// that yielded nothing left out. `None` when no page did.
+fn scan_document(pages: &[Option<String>]) -> Option<String> {
+    let read: Vec<String> = pages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| {
+            let t = t.as_deref().map(str::trim).filter(|t| !t.is_empty())?;
+            Some(format!("[第 {n} 页 / page {n}]\n{t}", n = i + 1))
+        })
+        .collect();
+    (!read.is_empty()).then(|| {
+        format!(
+            "[本文档没有文字层,以下内容来自对页面图像的识别 \
+             (no text layer in this document — what follows is read from its page images)]\n\n{}",
+            read.join("\n\n")
+        )
+    })
 }
 
 #[tauri::command]
@@ -1059,7 +1139,7 @@ pub async fn rag_add_document(
     );
     let (ocr_text, vision_text) = if is_image {
         // (1) Vision caption — best-effort; skipped when no vision model is loaded.
-        let vision_text = vision_caption(&app, &path, &on_progress).await;
+        let vision_text = vision_caption(&app, &path, &on_progress, CAPTION_PROMPT, 480, 0.0).await;
         // (2) OCR text.
         let _ = on_progress.send(RagProgress { phase: "extract", frac: 0.0 });
         let dir = app
@@ -1093,7 +1173,24 @@ pub async fn rag_add_document(
     // pipeline and the first thing to try turning off when indexing takes the
     // app down with it (issue #13).
     let caption_images = caption_images.unwrap_or(true);
+
+    // A PDF's text is read first: whether it has any decides what its
+    // pictures are — figures beside the text, or the pages themselves.
+    let pdf_text = if ext == "pdf" {
+        let p = path.clone();
+        Some(tokio::task::spawn_blocking(move || extract_text(&p)).await.map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    let scanned = matches!(&pdf_text, Some(Err(e)) if *e == no_text_layer());
+    let scan_text = if scanned {
+        Some(read_scanned_pdf(&app, &path, &on_progress).await?)
+    } else {
+        None
+    };
+
     let embedded_captions: Vec<String> = if caption_images
+        && !scanned
         && matches!(ext.as_str(), "pdf" | "docx" | "xlsx" | "pptx")
     {
         let p2 = path.clone();
@@ -1102,7 +1199,7 @@ pub async fn rag_add_document(
             .unwrap_or_default();
         let mut caps = Vec::new();
         for (i, img) in imgs.iter().enumerate() {
-            if let Some(c) = vision_caption(&app, img, &on_progress).await {
+            if let Some(c) = vision_caption(&app, img, &on_progress, CAPTION_PROMPT, 480, 0.0).await {
                 caps.push(format!("[文档内嵌图片 {} (embedded image)] {c}", i + 1));
             }
         }
@@ -1154,7 +1251,10 @@ pub async fn rag_add_document(
                 // document. A scan is pages of pictures; having just described
                 // those pictures and then reporting "no extractable text" threw
                 // away the one reading of the file we had.
-                let extracted = extract_text(&path);
+                let extracted = match scan_text {
+                    Some(pages) => Ok(pages),
+                    None => pdf_text.unwrap_or_else(|| extract_text(&path)),
+                };
                 match (extracted, embedded_captions.is_empty()) {
                     (Ok(mut t), false) => {
                         t.push_str("\n\n");
@@ -1806,12 +1906,33 @@ mod tests {
         assert_eq!(crate::errlog::handled_panic(|| 7), 7);
     }
 
+    // Issue #15: a scan becomes a document of its pages' readings, each under
+    // its page number; a page that read as nothing is left out, not numbered
+    // as empty — and a scan nothing could be read from is no document at all.
+    #[test]
+    fn a_scan_is_indexed_page_by_page() {
+        let doc = super::scan_document(&[
+            Some("2007年3月20日 官方站上线".into()),
+            None,
+            Some("  \n".into()),
+            Some("第四页的文字".into()),
+        ])
+        .unwrap();
+        assert!(doc.contains("no text layer"));
+        assert!(doc.contains("[第 1 页 / page 1]\n2007年3月20日 官方站上线"));
+        assert!(doc.contains("[第 4 页 / page 4]\n第四页的文字"));
+        assert!(!doc.contains("page 2") && !doc.contains("page 3"));
+        assert!(super::scan_document(&[None, Some(" ".into())]).is_none());
+    }
+
     /// A PDF whose pages parse but carry no text is a scan, and saying so is
     /// the difference between "empty document" and "I cannot read this".
     #[test]
     fn a_pdf_with_no_text_layer_says_it_is_a_scan() {
         let err = super::has_text("  \n \t ".to_string()).unwrap_err();
         assert!(err.contains("扫描件") && err.contains("scan"));
+        // …and it is how the knowledge base knows to read the pages instead.
+        assert_eq!(err, super::no_text_layer());
         // A page number and a stray mark are not a text layer either.
         assert!(super::has_text("1\n\n2".to_string()).is_err());
         // Anything with real content through, untouched.
