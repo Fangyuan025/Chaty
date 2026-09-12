@@ -202,9 +202,12 @@ fn query_chunks(query: &str) -> Vec<String> {
 }
 
 /// How much of the query's topic a result echoes, 0.0–1.0. A Chinese run
-/// counts by the share of its character pairs found — 星际争霸 echoes one
-/// pair of 星际拓荒, not the whole — weighted by its length; an English word
-/// counts whole or not at all.
+/// counts by the share of its character pairs found, weighted by its length —
+/// but only once most of it (two pairs in three) is there: 星际 is a third of
+/// 星际拓荒 and a third of 星际争霸 too, and sharing it says nothing. Scored
+/// by share alone, StarCraft pages passed a search for "games like Outer
+/// Wilds" on 星际 plus the 游戏 of 类似游戏. An English word counts whole or
+/// not at all.
 fn relevance(chunks: &[String], r: &SearchResult) -> f32 {
     let text = format!("{} {} {}", r.title, r.snippet, r.url).to_lowercase();
     let (mut got, mut total) = (0f32, 0f32);
@@ -213,7 +216,9 @@ fn relevance(chunks: &[String], r: &SearchResult) -> f32 {
         if chars.first().is_some_and(|&c| is_cjk(c)) {
             let pairs: Vec<String> = chars.windows(2).map(|p| p.iter().collect()).collect();
             let hit = pairs.iter().filter(|p| text.contains(p.as_str())).count();
-            got += chars.len() as f32 * hit as f32 / pairs.len() as f32;
+            if hit * 3 >= pairs.len() * 2 {
+                got += chars.len() as f32 * hit as f32 / pairs.len() as f32;
+            }
             total += chars.len() as f32;
         } else {
             total += 2.0;
@@ -907,6 +912,32 @@ mod tests {
         assert_eq!(on_topic("什么是", vec![res("任意", "")]).len(), 1);
     }
 
+    // Issue #14, again on v2.1.9: "games like Outer Wilds" came back with six
+    // StarCraft pages. The rewritten query was right (星际拓荒 类似游戏 推荐,
+    // 16 of 16 times on the reporter's 9B); the pages got through on two
+    // generic pairs — 星际 of 星际拓荒 and 游戏 of 类似游戏 — scoring 0.27.
+    // A name is not a third of its characters.
+    #[test]
+    fn a_shared_fragment_of_a_name_is_not_a_match() {
+        let q = "星际拓荒 类似游戏 推荐";
+        let kept = on_topic(
+            q,
+            vec![
+                res("《星际争霸 II》国服回归", "暴雪游戏国服回归，《星际争霸II》现已开放下载，玩家可以登录战网客户端体验。"),
+                res("【星际争霸】星际争霸 官方中文版下载", "星际争霸是由暴雪娱乐制作发行的一款即时战略游戏，玩家可以在人类、异虫、星灵三个种族之间选择。"),
+                res("星际争霸II | 战网", "星际争霸II是一款即时战略游戏，免费畅玩。"),
+                res("星际争霸（1997年暴雪娱乐制作的即时战略游戏）_百度百科", "《星际争霸》是美国暴雪娱乐公司制作发行的一款即时战略游戏。"),
+                res("星际争霸游戏专区_星际争霸中文版下载及攻略秘籍", "游民星空星际争霸游戏专区提供星际争霸中文版下载、攻略、MOD。"),
+                res("星际拓荒游戏专区_星际拓荒中文版下载及攻略秘籍 _ 游民星空", ""),
+                res("有没有类似于outer wilds(宇宙拓荒)这类内容深邃的开放世界探索游戏？", "推荐几款和星际拓荒类似的解谜探索游戏。"),
+                res("独立游戏推荐：星际拓荒（Outer Wilds）", ""),
+            ],
+        );
+        let titles: Vec<&str> = kept.iter().map(|r| r.title.as_str()).collect();
+        assert!(titles.iter().all(|t| !t.contains("星际争霸")), "StarCraft let through: {titles:?}");
+        assert_eq!(titles.len(), 3, "every Outer Wilds page stays: {titles:?}");
+    }
+
     // Live, issue #14: cargo test --lib search::tests::real_off_topic -- --ignored --nocapture
     #[test]
     #[ignore]
@@ -934,6 +965,38 @@ mod tests {
         }
         let chunks = query_chunks(q);
         assert!(r.iter().all(|x| relevance(&chunks, x) >= MIN_RELEVANCE));
+    }
+
+    /// What the relevance gate keeps of a real engine's answer, per query —
+    /// to check it drops the off-topic without starving ordinary questions:
+    ///   CHATY_SEARCH_PROBE="query one|query two" cargo test --lib search_gate_probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn search_gate_probe() {
+        let Ok(queries) = std::env::var("CHATY_SEARCH_PROBE") else { return };
+        // CHATY_SEARCH_PROVIDER=brave asks one engine only.
+        let only = std::env::var("CHATY_SEARCH_PROVIDER").ok();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let client = build_client().unwrap();
+        for q in queries.split('|') {
+            // The first engine in the chain that answers at all — a
+            // rate-limited one answers 200 with nothing in it.
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let engines = PROVIDERS.iter().filter(|&&p| only.as_deref().is_none_or(|o| o == p));
+            let Some((name, raw)) = engines.into_iter().find_map(|&p| {
+                let r = sanitize(rt.block_on(run_provider(p, &client, q)).ok()?);
+                (!r.is_empty()).then_some((p, r))
+            }) else {
+                println!("«{q}» no engine answered");
+                continue;
+            };
+            let chunks = query_chunks(q);
+            println!("«{q}» {name}: {} raw → {} kept   chunks {chunks:?}", raw.len(), on_topic(q, raw.clone()).len());
+            for r in &raw {
+                let s = relevance(&chunks, r);
+                println!("   {} {s:.2} {}", if s >= MIN_RELEVANCE { "keep" } else { "DROP" }, r.title);
+            }
+        }
     }
 
     // Live end-to-end: cargo test -p chaty search -- --ignored --nocapture
