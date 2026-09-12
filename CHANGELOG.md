@@ -80,8 +80,10 @@
   unreachable the search falls through to Bing, which answers a scraper with
   confident results for some other query — a question about Outer Wilds
   (星际拓荒) came back with StarCraft (星际争霸). A result must now echo the
-  question's own words to reach the model; when none does, the answer says
-  it found nothing relevant instead of citing the rest.
+  question's own words to reach the model — most of a name, not a fragment
+  it happens to share, so 星际 alone no longer lets StarCraft through for
+  星际拓荒; when none does, the answer says it found nothing relevant
+  instead of citing the rest.
 
 - **Every source the model was given is shown, and only those are cited.**
   Results whose page could not be read are passed on with their snippet and
