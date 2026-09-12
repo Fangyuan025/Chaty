@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { KEEP_CHARS, keptRestore, toTurnChange } from "./turnChanges";
+import { KEEP_CHARS, changeTotals, keptRestore, startsFolded, toTurnChange } from "./turnChanges";
+
+describe("the changes card's fold", () => {
+  it("starts open up to five files, folded past that", () => {
+    expect(startsFolded(1)).toBe(false);
+    expect(startsFolded(5)).toBe(false);
+    expect(startsFolded(6)).toBe(true);
+  });
+
+  it("totals every file's lines when folded", () => {
+    const a = { path: "/a", rel: "a", added: 3, removed: 1 };
+    const b = { path: "/b", rel: "b", added: 2, removed: 4 };
+    expect(changeTotals([a, b])).toEqual({ added: 5, removed: 5 });
+    expect(changeTotals([])).toEqual({ added: 0, removed: 0 });
+  });
+});
 
 const change = (over: Partial<Parameters<typeof toTurnChange>[0]>) => ({
   path: "/ws/a.txt",

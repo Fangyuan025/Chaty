@@ -40,7 +40,8 @@
   for that file or for all of them, after a confirmation — back to how it was
   before the turn, or removed if the turn created it. The card appears after
   a turn you stopped too, and undo still works after a restart, from the
-  copy the card kept.
+  copy the card kept. A turn that changed more than five files starts with
+  the card folded to its totals.
 
 ### A window that opens the right size
 

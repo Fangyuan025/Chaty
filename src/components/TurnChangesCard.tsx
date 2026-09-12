@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { diffLines } from "../lib/diff";
-import type { TurnChange } from "../lib/turnChanges";
+import { changeTotals, startsFolded, type TurnChange } from "../lib/turnChanges";
 
 /** Every file a turn changed, under its answer: the net +/− of each, its diff
  *  one click away, and an undo per file (and for all of them). What the turn
@@ -19,13 +19,29 @@ export function TurnChangesCard({
   onUndo: (paths: string[]) => void;
 }) {
   const { t } = useI18n();
+  // Open up to five files; past that, folded to its totals until asked.
+  const [expanded, setExpanded] = useState(() => !startsFolded(changes.length));
   const [open, setOpen] = useState<string | null>(null);
   const pending = changes.filter((c) => !c.undone);
+  const total = changeTotals(changes);
   return (
-    <div className="cm-changes">
+    <div className={`cm-changes ${expanded ? "open" : ""}`}>
       <div className="cm-changes-head">
-        <span>{t("cmChangesTitle", { n: String(changes.length) })}</span>
-        {pending.length > 1 && (
+        <button
+          className="cm-changes-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          <span className="cm-changes-chev">
+            <Icon name="chevron-right" size={13} />
+          </span>
+          <span>{t("cmChangesTitle", { n: String(changes.length) })}</span>
+          <span className="cm-step-diffstat">
+            <em className="plus">+{total.added}</em>
+            <em className="minus">-{total.removed}</em>
+          </span>
+        </button>
+        {expanded && pending.length > 1 && (
           <button
             className="cm-changes-undo"
             disabled={disabled}
@@ -35,7 +51,7 @@ export function TurnChangesCard({
           </button>
         )}
       </div>
-      {changes.map((c) => (
+      {expanded && changes.map((c) => (
         <div key={c.path} className={`cm-change ${c.undone ? "undone" : ""}`}>
           <div className="cm-change-row">
             <button

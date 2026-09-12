@@ -56,6 +56,22 @@ export function toTurnChange(c: CpChange): TurnChange {
   };
 }
 
+/** Past this many files the card starts folded to its totals: a turn that
+ *  touched thirty files would otherwise push its own answer off screen. */
+export const FOLD_OVER = 5;
+
+export function startsFolded(files: number): boolean {
+  return files > FOLD_OVER;
+}
+
+/** Lines added and removed across all of a turn's files. */
+export function changeTotals(changes: TurnChange[]): { added: number; removed: number } {
+  return changes.reduce(
+    (t, c) => ({ added: t.added + c.added, removed: t.removed + c.removed }),
+    { added: 0, removed: 0 },
+  );
+}
+
 /** How a file comes back without the turn's checkpoint: null removes it
  *  (the turn created it), a string is written back; undefined — the card
  *  kept no copy — means it cannot. */

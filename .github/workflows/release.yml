@@ -271,7 +271,7 @@ jobs:
 
             A turn that edits files now ends with a card of every file it changed,
             each with its net +/−, its diff one click away, and an undo for that file
-            or for all of them.
+            or for all of them — folded to its totals when there are more than five.
 
             ## A window that opens the right size
 
