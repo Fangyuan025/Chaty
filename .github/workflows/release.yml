@@ -290,6 +290,14 @@ jobs:
             answer, a citation past them is no longer printed, and hovering a source
             near the edge no longer makes the conversation jitter on Windows.
 
+            ## The knowledge base answers the question asked
+
+            A short question asked of the knowledge base was read as part of the
+            passages found for it, so the model summarised them or answered the
+            previous question instead; it is now set apart. Scanned PDFs are read
+            page by page by the loaded vision model, and without one the message
+            says which model it needs.
+
             Several things reached v2.1.8 as a rebuild after it went out and are in
             here for anyone who installed it on release day: the macOS menu-bar icon
             is a glyph that matches the bar, and long coding sessions no longer

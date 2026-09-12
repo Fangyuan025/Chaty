@@ -94,6 +94,29 @@
   the source out from under the pointer, which closed the preview and
   removed the scrollbar again, over and over. The preview now stays inside.
 
+### The knowledge base answers the question asked, and reads scans
+
+- **A short question is no longer taken for part of the document.** The
+  passages found for a question went into the message ahead of it, with
+  nothing between the two, so a question of a word or two read as the last
+  line of the passages: the model summarised them, or went back and answered
+  the previous question — sometimes contradicting its own earlier answer.
+  The question is now set apart and named. On a real Qwen3.5 model, asking
+  "官方站" after two other questions was answered directly 2 times in 12 —
+  the other ten summarised the passages; now it is answered 12 times in 12.
+  On the 9B model the reporter uses, it answered the previous question 2
+  times in 6 and this one only 3 times; now 6 in 6. Web search answers get
+  the same.
+
+- **A scanned PDF is read page by page.** A PDF with no text layer was said
+  to be read by the vision model; in fact at most six of its images were
+  described, and without a vision model it was refused as "almost certainly
+  a scan", with no way forward. With a vision model loaded, every page is
+  now transcribed, in order and in its own language, scaled to what the
+  model can take, with progress per page; without one, the message says
+  which kind of model it needs. Black-and-white scans stored as one bit a
+  pixel are read too.
+
 ### From the v2.1.8 rebuild
 
 These reached v2.1.8 as a rebuild after it went out; they are listed here for
