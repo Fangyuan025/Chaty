@@ -348,6 +348,11 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return 1;
     case "agent_set_session":
       return null;
+    case "agent_checkpoint_changes":
+      return [];
+    case "agent_checkpoint_revert_file":
+    case "agent_restore_file":
+      return null;
     case "agent_checkpoint_begin":
       return 1;
     case "agent_list_files":

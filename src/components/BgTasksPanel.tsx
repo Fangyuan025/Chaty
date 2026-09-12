@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { useConfirm } from "./ConfirmModal";
@@ -13,14 +13,37 @@ export function BgTasksPanel({
   jobs,
   onClose,
   onChanged,
+  anchorRef,
 }: {
   jobs: AgentBgInfo[];
   onClose: () => void;
   /** Ask the owner to refresh `jobs` now rather than at its next poll. */
   onChanged: () => void;
+  /** The control that opened the panel: it hangs from it. */
+  anchorRef?: RefObject<HTMLElement | null>;
 }) {
   const { t } = useI18n();
   const confirm = useConfirm();
+  // Hung under the control that opened it, and kept off the window's edge —
+  // pinned to the right edge it sat flush against it. Re-placed on resize.
+  const [, setResized] = useState(0);
+  useEffect(() => {
+    const onResize = () => setResized((n) => n + 1);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const EDGE = 32;
+  const anchor = anchorRef?.current?.getBoundingClientRect();
+  const width = Math.min(460, window.innerWidth - 2 * EDGE);
+  const place = anchor
+    ? {
+        top: anchor.bottom + 8,
+        left: Math.max(EDGE, Math.min(anchor.left, window.innerWidth - width - EDGE)),
+        right: "auto",
+        width,
+        maxHeight: Math.max(240, window.innerHeight - anchor.bottom - 8 - EDGE),
+      }
+    : undefined;
   const [open, setOpen] = useState<Set<number>>(() => new Set());
   const [logs, setLogs] = useState<Record<number, string>>({});
   const [showFinished, setShowFinished] = useState(true);
@@ -132,7 +155,13 @@ export function BgTasksPanel({
   return (
     <>
       <div className="popover-backdrop" onClick={onClose} />
-      <div className="bg-panel" role="dialog" aria-label={t("bgTitle")} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="bg-panel"
+        style={place}
+        role="dialog"
+        aria-label={t("bgTitle")}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="bg-panel-head">
           <span className="settings-title">{t("bgTitle")}</span>
           <div className="bg-panel-actions">

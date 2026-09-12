@@ -414,6 +414,30 @@ export async function agentBgClearFinished(): Promise<number> {
 export async function agentCheckpointBegin(): Promise<number> {
   return invoke<number>("agent_checkpoint_begin");
 }
+/** One file a turn changed, net (see `agentCheckpointChanges`). */
+export interface CpChange {
+  /** Absolute path — what undo is keyed by. */
+  path: string;
+  /** Relative to the workspace when inside it. */
+  rel: string;
+  before?: string | null;
+  after?: string | null;
+  created: boolean;
+  deleted: boolean;
+  binary: boolean;
+}
+/** Every file checkpoint `id`'s turn changed, net of edits it took back. */
+export async function agentCheckpointChanges(id: number): Promise<CpChange[]> {
+  return invoke<CpChange[]>("agent_checkpoint_changes", { id });
+}
+/** Undo one file of a turn, byte for byte, from the turn's checkpoint. */
+export async function agentCheckpointRevertFile(id: number, path: string): Promise<void> {
+  await invoke("agent_checkpoint_revert_file", { id, path });
+}
+/** Put a workspace file back from a kept copy (null = remove it). Not journaled. */
+export async function agentRestoreFile(path: string, content: string | null): Promise<void> {
+  await invoke("agent_restore_file", { path, content });
+}
 /** Restore the workspace to the state before checkpoint `id` (reverts newer turns too). */
 export async function agentCheckpointRevertTo(id: number): Promise<string> {
   return invoke<string>("agent_checkpoint_revert_to", { id });

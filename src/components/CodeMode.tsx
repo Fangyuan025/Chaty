@@ -10,6 +10,8 @@ import { diffLines } from "../lib/diff";
 import { useConfirm } from "./ConfirmModal";
 import { BgTasksPanel } from "./BgTasksPanel";
 import { groupSessionsByWorkspace } from "../lib/sessionGroups";
+import { keptRestore, toTurnChange, type TurnChange } from "../lib/turnChanges";
+import { TurnChangesCard } from "./TurnChangesCard";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { copyToClipboard } from "../lib/clipboard";
 import { cleanTitle } from "../lib/voiceText";
@@ -22,6 +24,10 @@ import {
   type AgentDlInfo,
   agentCheckpointBegin,
   agentCheckpointRevertTo,
+  agentCheckpointChanges,
+  agentCheckpointRevertFile,
+  agentRestoreFile,
+  type CpChange,
   agentGetWorkspace,
   agentGlob,
   agentListFiles,
@@ -96,6 +102,10 @@ interface CodeMsg {
   paused?: boolean;
   /** Checkpoint opened before this user message's turn — enables rewind. */
   checkpointId?: number;
+  /** Assistant turns: every file the turn changed (the card under its answer). */
+  changes?: TurnChange[];
+  /** The checkpoint those changes are undone through, while the app holds it. */
+  changesCp?: number;
 }
 
 const THINK_MODES: ThinkMode[] = ["off", "normal", "deep"];
@@ -659,6 +669,7 @@ export function CodeMode({
    *  the tasks panel it opens. */
   const [bgJobs, setBgJobs] = useState<AgentBgInfo[]>([]);
   const [showBg, setShowBg] = useState(false);
+  const bgPillRef = useRef<HTMLButtonElement | null>(null);
   /** Workspace groups folded shut in the session rail (by path; "" = none). */
   const [collapsedWs, setCollapsedWs] = useState<Set<string>>(() => new Set());
   /** Active background downloads (header progress badge). */
@@ -1074,6 +1085,60 @@ export function CodeMode({
 
   /** Rewind to before `m`: restore journaled files and drop later messages.
    *  The message text lands back in the composer for editing & re-sending. */
+  /** Put files a turn changed back the way they were before it: through the
+   *  turn's checkpoint while the app holds it (byte for byte), otherwise from
+   *  the copy the card kept. */
+  async function undoChanges(m: CodeMsg, paths: string[]) {
+    if (running || !m.changes) return;
+    const targets = m.changes.filter((x) => paths.includes(x.path) && !x.undone);
+    if (!targets.length) return;
+    // Irreversible: once a file is put back, what the turn wrote to it is gone.
+    const ok = await confirm({
+      message:
+        targets.length === 1
+          ? t("cmUndoConfirmOne", { file: targets[0].rel })
+          : t("cmUndoConfirmMany", { n: String(targets.length) }),
+      confirmLabel: t("cmChangeUndo"),
+      danger: true,
+    });
+    if (!ok) return;
+    const done = new Set<string>();
+    const failed: string[] = [];
+    for (const c of targets) {
+      try {
+        if (m.changesCp == null) throw new Error("no checkpoint");
+        await agentCheckpointRevertFile(m.changesCp, c.path);
+        done.add(c.path);
+      } catch {
+        const kept = keptRestore(c);
+        if (kept === undefined) {
+          failed.push(c.rel);
+          continue;
+        }
+        try {
+          await agentRestoreFile(c.rel, kept);
+          done.add(c.path);
+        } catch {
+          failed.push(c.rel);
+        }
+      }
+    }
+    if (done.size) {
+      setMsgs((cur) => {
+        const next = cur.map((x) =>
+          x.id === m.id
+            ? { ...x, changes: x.changes?.map((c) => (done.has(c.path) ? { ...c, undone: true } : c)) }
+            : x,
+        );
+        persist(next, bodyRef.current.workspace, bodyRef.current.sid);
+        return next;
+      });
+    }
+    if (failed.length) {
+      void confirm({ message: t("cmUndoFailed", { files: failed.join(", ") }), confirmLabel: t("confirm") });
+    }
+  }
+
   async function rewindTo(m: CodeMsg) {
     if (running || m.checkpointId == null) return;
     const ok = await confirm({
@@ -1522,6 +1587,15 @@ export function CodeMode({
         ),
     });
 
+    // What the turn left changed in the workspace, file by file, for the card
+    // under its answer — read before the next turn can touch anything.
+    if (checkpointId != null) {
+      const changes = await agentCheckpointChanges(checkpointId).catch(() => [] as CpChange[]);
+      if (changes.length) {
+        update((m) => ({ ...m, changes: changes.map(toTurnChange), changesCp: checkpointId }));
+      }
+    }
+
     setRunning(false);
     localStorage.removeItem(RUN_INFLIGHT_KEY);
     setApproval(null);
@@ -1592,8 +1666,8 @@ export function CodeMode({
                     aria-expanded={!folded}
                     onClick={() => toggleWsGroup(key)}
                   >
-                    <Icon name={folded ? "chevron-right" : "chevron-down"} size={11} />
-                    <Icon name="folder" size={12} />
+                    <Icon name={folded ? "chevron-right" : "chevron-down"} size={13} />
+                    <Icon name="folder" size={15} />
                     <span className="cm-ws-group-name">{g.path ? g.name : t("cmNoWorkspace")}</span>
                     <span className="cm-ws-group-count">{g.sessions.length}</span>
                   </button>
@@ -1660,6 +1734,7 @@ export function CodeMode({
               const live = bgJobs.filter((j) => j.running).length;
               return (
                 <button
+                  ref={bgPillRef}
                   className={`cm-bgjobs ${showBg ? "active" : ""}`}
                   title={t("bgOpenHint")}
                   onClick={() => setShowBg((v) => !v)}
@@ -1671,6 +1746,7 @@ export function CodeMode({
             })()}
           {showBg && (
             <BgTasksPanel
+              anchorRef={bgPillRef}
               jobs={bgJobs}
               onClose={() => setShowBg(false)}
               onChanged={() => agentBgAll().then(setBgJobs).catch(() => {})}
@@ -1841,6 +1917,13 @@ export function CodeMode({
                         </button>
                       )}
                     </div>
+                  )}
+                  {m.changes && m.changes.length > 0 && (
+                    <TurnChangesCard
+                      changes={m.changes}
+                      disabled={running}
+                      onUndo={(paths) => void undoChanges(m, paths)}
+                    />
                   )}
                   {m.paused && !running && m === msgs[msgs.length - 1] && (
                     <button

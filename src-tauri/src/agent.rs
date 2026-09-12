@@ -2464,6 +2464,115 @@ fn cp_clear() {
     CHECKPOINTS.lock().unwrap().clear();
 }
 
+/// One file a turn changed, net: what it held before the turn first touched
+/// it, and what it holds now.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CpChange {
+    /// Absolute path — what undo is keyed by.
+    pub path: String,
+    /// As the card shows it: relative to the workspace when inside it.
+    pub rel: String,
+    /// Text before the turn (absent when the turn created it, or not text).
+    pub before: Option<String>,
+    /// Text now (absent when it no longer exists, or not text).
+    pub after: Option<String>,
+    pub created: bool,
+    pub deleted: bool,
+    /// Not text: counted as changed, shown without a diff.
+    pub binary: bool,
+}
+
+fn cp_text(bytes: &[u8]) -> Option<String> {
+    if bytes.contains(&0) {
+        return None;
+    }
+    String::from_utf8(bytes.to_vec()).ok()
+}
+
+/// Every file checkpoint `id`'s turn changed — net of edits it made and then
+/// took back — for the summary card at the end of the turn.
+#[tauri::command]
+pub fn agent_checkpoint_changes(id: u64) -> Vec<CpChange> {
+    let cps = CHECKPOINTS.lock().unwrap();
+    let Some(cp) = cps.iter().find(|c| c.id == id) else {
+        return Vec::new();
+    };
+    let root = workspace().ok();
+    let mut out = Vec::new();
+    for e in &cp.entries {
+        let now = std::fs::read(&e.path).ok();
+        if now == e.original {
+            continue;
+        }
+        let rel = root
+            .as_ref()
+            .and_then(|r| e.path.strip_prefix(r).ok())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| e.path.to_string_lossy().to_string());
+        let before = e.original.as_deref().map(cp_text);
+        let after = now.as_deref().map(cp_text);
+        let binary = matches!(before, Some(None)) || matches!(after, Some(None));
+        out.push(CpChange {
+            path: e.path.to_string_lossy().to_string(),
+            rel,
+            before: before.flatten(),
+            after: after.flatten(),
+            created: e.original.is_none(),
+            deleted: now.is_none(),
+            binary,
+        });
+    }
+    out
+}
+
+/// Put `path` back as it was: `original` written out, or the file removed
+/// when there was none.
+fn cp_put_back(path: &Path, original: Option<&[u8]>) -> Result<(), String> {
+    match original {
+        Some(bytes) => {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(path, bytes).map_err(|e| e.to_string())
+        }
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        },
+    }
+}
+
+/// Undo one file of checkpoint `id`'s turn: back to what it held before the
+/// turn first touched it, byte for byte — or gone, if the turn created it.
+#[tauri::command]
+pub fn agent_checkpoint_revert_file(id: u64, path: String) -> Result<(), String> {
+    let cps = CHECKPOINTS.lock().unwrap();
+    let entry = cps
+        .iter()
+        .find(|c| c.id == id)
+        .and_then(|c| c.entries.iter().find(|e| e.path.to_string_lossy() == path.as_str()))
+        .ok_or_else(|| {
+            tr(
+                "这一轮的改动记录已经不在了(应用重启过,或切换过工作区)",
+                "this turn's record is gone (the app restarted, or the workspace changed)",
+            )
+        })?;
+    cp_put_back(&entry.path, entry.original.as_deref())
+}
+
+/// Undo one file from what the summary card kept of it, for a turn whose
+/// checkpoint the app no longer holds: `content` written back, or the file
+/// removed when it is None (the turn created it). Confined to the workspace,
+/// and not journaled — this is the user taking an edit back, not the agent
+/// making one.
+#[tauri::command]
+pub fn agent_restore_file(path: String, content: Option<String>) -> Result<(), String> {
+    let abs = resolve(&path)?;
+    cp_put_back(&abs, content.as_deref().map(str::as_bytes))
+}
+
 // ---------------------------------------------------------------------------
 // Ranked code search (BM25 over line-window chunks) — a "which file handles X?"
 // tool that beats grep for the model: multi-term, ranked, typo-tolerant-ish.
@@ -4923,6 +5032,54 @@ mod tests {
         assert!(agent_bg_reap().iter().any(|j| j.id == done));
 
         bg_kill_all();
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn a_turns_changes_are_listed_and_undone_one_file_at_a_time() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-changes-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = tmp.canonicalize().unwrap();
+        std::fs::write(tmp.join("edited.txt"), "a\nb\n").unwrap();
+        std::fs::write(tmp.join("same.txt"), "x\n").unwrap();
+        set_ws(&tmp);
+
+        let cp = agent_checkpoint_begin();
+        // What the agent's write tools do: journal the first touch, then write.
+        cp_record(&tmp.join("edited.txt"));
+        std::fs::write(tmp.join("edited.txt"), "a\nB\nc\n").unwrap();
+        cp_record(&tmp.join("new.txt"));
+        std::fs::write(tmp.join("new.txt"), "fresh\n").unwrap();
+        cp_record(&tmp.join("same.txt"));
+        std::fs::write(tmp.join("same.txt"), "y\n").unwrap();
+        std::fs::write(tmp.join("same.txt"), "x\n").unwrap(); // and taken back
+
+        // Net changes only, in the order the turn touched them.
+        let changes = agent_checkpoint_changes(cp);
+        let rels: Vec<&str> = changes.iter().map(|c| c.rel.as_str()).collect();
+        assert_eq!(rels, vec!["edited.txt", "new.txt"]);
+        assert_eq!(changes[0].before.as_deref(), Some("a\nb\n"));
+        assert_eq!(changes[0].after.as_deref(), Some("a\nB\nc\n"));
+        assert!(changes[1].created && changes[1].before.is_none());
+
+        // Undoing one file leaves the other as the turn made it.
+        agent_checkpoint_revert_file(cp, changes[0].path.clone()).unwrap();
+        assert_eq!(std::fs::read_to_string(tmp.join("edited.txt")).unwrap(), "a\nb\n");
+        assert_eq!(std::fs::read_to_string(tmp.join("new.txt")).unwrap(), "fresh\n");
+        // Undoing a file the turn created removes it.
+        agent_checkpoint_revert_file(cp, changes[1].path.clone()).unwrap();
+        assert!(!tmp.join("new.txt").exists());
+
+        // Once the checkpoint is gone, the card's own copy puts a file back —
+        // but never anywhere outside the workspace.
+        cp_clear();
+        assert!(agent_checkpoint_revert_file(cp, changes[0].path.clone()).is_err());
+        std::fs::write(tmp.join("edited.txt"), "later\n").unwrap();
+        agent_restore_file("edited.txt".into(), Some("a\nb\n".into())).unwrap();
+        assert_eq!(std::fs::read_to_string(tmp.join("edited.txt")).unwrap(), "a\nb\n");
+        assert!(agent_restore_file("../escape.txt".into(), Some("x".into())).is_err());
+
         std::fs::remove_dir_all(&tmp).ok();
     }
 
