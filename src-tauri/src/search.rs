@@ -143,6 +143,110 @@ fn sanitize(mut v: Vec<SearchResult>) -> Vec<SearchResult> {
     v
 }
 
+// ---------------------------------------------------------------- relevance
+
+/// Characters that carry the grammar of a Chinese question rather than its
+/// topic — the gaps between the words a result has to echo.
+const CJK_FILLER: &str =
+    "的了吗呢吧啊呀是在有和与或及什么怎样如何为哪谁到底中这那个些一不也都就还很最能会要可以被把给让从对于其之而且";
+
+const EN_STOP: &[&str] = &[
+    "a", "about", "an", "and", "any", "are", "at", "be", "by", "can", "did", "do", "does", "for",
+    "from", "how", "i", "in", "is", "it", "its", "me", "my", "of", "on", "or", "that", "the",
+    "there", "this", "to", "vs", "was", "were", "what", "when", "where", "which", "who", "why",
+    "with", "you", "your",
+];
+
+/// Share of a query's topic a result must echo to be handed to the model.
+const MIN_RELEVANCE: f32 = 0.25;
+
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x2a6df)
+}
+
+/// The topic-bearing pieces of a query: runs of Chinese between filler
+/// characters, and English words that are not stop words. Search operators
+/// (`site:x`, `-term`) are not topic.
+fn query_chunks(query: &str) -> Vec<String> {
+    fn push(buf: &mut String, keep: bool, out: &mut Vec<String>) {
+        if keep && !out.contains(buf) {
+            out.push(buf.clone());
+        }
+        buf.clear();
+    }
+    let mut out = Vec::new();
+    for token in query.to_lowercase().split_whitespace() {
+        if token.contains(':') || token.starts_with('-') {
+            continue;
+        }
+        let (mut cjk, mut word) = (String::new(), String::new());
+        for c in token.chars().chain(std::iter::once(' ')) {
+            let topic_cjk = is_cjk(c) && !CJK_FILLER.contains(c);
+            let latin = !is_cjk(c) && c.is_alphanumeric();
+            if !topic_cjk {
+                let keep = cjk.chars().count() >= 2;
+                push(&mut cjk, keep, &mut out);
+            }
+            if !latin {
+                let keep = word.chars().count() >= 2 && !EN_STOP.contains(&word.as_str());
+                push(&mut word, keep, &mut out);
+            }
+            if topic_cjk {
+                cjk.push(c);
+            } else if latin {
+                word.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// How much of the query's topic a result echoes, 0.0–1.0. A Chinese run
+/// counts by the share of its character pairs found — 星际争霸 echoes one
+/// pair of 星际拓荒, not the whole — weighted by its length; an English word
+/// counts whole or not at all.
+fn relevance(chunks: &[String], r: &SearchResult) -> f32 {
+    let text = format!("{} {} {}", r.title, r.snippet, r.url).to_lowercase();
+    let (mut got, mut total) = (0f32, 0f32);
+    for chunk in chunks {
+        let chars: Vec<char> = chunk.chars().collect();
+        if chars.first().is_some_and(|&c| is_cjk(c)) {
+            let pairs: Vec<String> = chars.windows(2).map(|p| p.iter().collect()).collect();
+            let hit = pairs.iter().filter(|p| text.contains(p.as_str())).count();
+            got += chars.len() as f32 * hit as f32 / pairs.len() as f32;
+            total += chars.len() as f32;
+        } else {
+            total += 2.0;
+            if text.contains(chunk.as_str()) {
+                got += 2.0;
+            }
+        }
+    }
+    if total == 0.0 {
+        1.0
+    } else {
+        got / total
+    }
+}
+
+/// Drop results that are not about the query. Engines answer a scraper with
+/// the confident results of some other search: Bing — what mainland China
+/// reaches when DuckDuckGo is blocked — gave StarCraft pages for a question
+/// about Outer Wilds (星际争霸 for 星际拓荒, issue #14), and from elsewhere
+/// serves car dealers or dictionary entries for a Chinese query outright. Such
+/// a set looks like a successful search, so the chain used to stop at it and
+/// the model cited it. A query with no topic words is not judged.
+fn on_topic(query: &str, results: Vec<SearchResult>) -> Vec<SearchResult> {
+    let chunks = query_chunks(query);
+    if chunks.is_empty() {
+        return results;
+    }
+    results
+        .into_iter()
+        .filter(|r| relevance(&chunks, r) >= MIN_RELEVANCE)
+        .collect()
+}
+
 /// Dispatch by provider name so the chain can be data-driven (cooldown-aware).
 async fn run_provider(
     name: &str,
@@ -195,7 +299,9 @@ async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchR
         }
         match run_provider(name, client, query).await {
             Ok(r) => {
-                let r = sanitize(r);
+                let found = sanitize(r);
+                let answered = !found.is_empty();
+                let r = on_topic(query, found);
                 if !r.is_empty() {
                     let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
                     st.cache.retain(|(k, _, _)| *k != key);
@@ -205,9 +311,13 @@ async fn ddg_search(client: &reqwest::Client, query: &str) -> Result<Vec<SearchR
                     }
                     return Ok(r);
                 }
-                // 200 but nothing usable — brief cooldown, try the next source.
-                let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
-                st.cooldown.insert(name, std::time::Instant::now() + SOFT_COOLDOWN);
+                // Answered, but about something else: the source works, it just
+                // has nothing on this query — try the next one, no cooldown.
+                if !answered {
+                    // 200 but nothing usable — brief cooldown, try the next source.
+                    let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    st.cooldown.insert(name, std::time::Instant::now() + SOFT_COOLDOWN);
+                }
             }
             Err(_) => {
                 // Hard failure (block / timeout) — sit this source out for a while.
@@ -747,6 +857,83 @@ mod tests {
             .find(|(k, _, t)| *k == "q" && now.duration_since(*t) < CACHE_TTL)
             .map(|(_, v, _)| v.clone());
         assert_eq!(hit.as_deref().map(|v| v.len()), Some(1));
+    }
+
+    fn res(title: &str, snippet: &str) -> SearchResult {
+        SearchResult { title: title.into(), url: "https://example.com/p/1".into(), snippet: snippet.into() }
+    }
+
+    #[test]
+    fn query_chunks_keep_only_topic_words() {
+        assert_eq!(
+            query_chunks("星际拓荒中的黑棘星到底有什么恐怖的存在"),
+            vec!["星际拓荒", "黑棘星", "恐怖"]
+        );
+        assert_eq!(query_chunks("site:github.com How does tokio work"), vec!["tokio", "work"]);
+        assert_eq!(query_chunks("Outer Wilds 黑棘星"), vec!["outer", "wilds", "黑棘星"]);
+        assert!(query_chunks("什么是").is_empty());
+    }
+
+    // Issue #14: the reporter's question about Outer Wilds (星际拓荒) was
+    // answered from StarCraft (星际争霸) pages — one shared character pair.
+    #[test]
+    fn off_topic_results_are_dropped() {
+        let q = "星际拓荒中的黑棘星到底有什么恐怖的存在";
+        let kept = on_topic(
+            q,
+            vec![
+                res("《星际争霸 II》国服回归", "暴雪宣布《星际争霸 II》国服将于本月回归，玩家可以继续使用原有账号。"),
+                res("星际争霸_星际争霸下载_星际争霸中文版", "星际争霸是暴雪娱乐制作的即时战略游戏。"),
+                res("黑棘星 - 萌娘百科 万物皆可萌的百科全书", "黑棘星是游戏《星际拓荒》中的一颗星球，内部布满荆棘。"),
+                res("黑棘星种子 - 星际拓荒wiki", ""),
+                res("Toyota Motor Italia - Auto per privati e professionisti", "Scopri la gamma Toyota."),
+            ],
+        );
+        let titles: Vec<&str> = kept.iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(titles, vec!["黑棘星 - 萌娘百科 万物皆可萌的百科全书", "黑棘星种子 - 星际拓荒wiki"]);
+
+        let q = "rust async await tutorial";
+        let kept = on_topic(
+            q,
+            vec![
+                res("Asynchronous Programming in Rust", "The async book explains futures and await."),
+                res("VINDICATE Definition & Meaning - Merriam-Webster", "The meaning of VINDICATE is to free from blame."),
+            ],
+        );
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].title, "Asynchronous Programming in Rust");
+
+        // No topic words → nothing to judge by, nothing dropped.
+        assert_eq!(on_topic("什么是", vec![res("任意", "")]).len(), 1);
+    }
+
+    // Live, issue #14: cargo test --lib search::tests::real_off_topic -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn real_off_topic_engine_answers_are_filtered() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let client = build_client().unwrap();
+        let q = "星际拓荒中的黑棘星到底有什么恐怖的存在";
+        match rt.block_on(bing_search(&client, q)) {
+            Ok(raw) => {
+                let kept = on_topic(q, sanitize(raw.clone()));
+                println!("bing: {} raw, {} on topic", raw.len(), kept.len());
+                for x in raw.iter().take(5) {
+                    println!("  raw  {}", x.title);
+                }
+                for x in &kept {
+                    println!("  kept {}", x.title);
+                }
+            }
+            Err(e) => println!("bing: {e}"),
+        }
+        let r = rt.block_on(ddg_search(&client, q)).unwrap();
+        println!("chain: {} results", r.len());
+        for x in &r {
+            println!("  {} — {}", x.title, x.url);
+        }
+        let chunks = query_chunks(q);
+        assert!(r.iter().all(|x| relevance(&chunks, x) >= MIN_RELEVANCE));
     }
 
     // Live end-to-end: cargo test -p chaty search -- --ignored --nocapture

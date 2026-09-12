@@ -17,6 +17,7 @@ import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import { useI18n } from "../lib/i18n";
 import { copyToClipboard } from "../lib/clipboard";
+import { fitPop } from "../lib/popFit";
 
 const remarkPlugins = [remarkGfm, remarkMath];
 // `throwOnError: false` keeps partial LaTeX from crashing mid-stream;
@@ -53,7 +54,10 @@ const CITE_RE = /【(\d{1,2})】|\[(\d{1,2})\]/g;
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /** Rehype plugin: split text nodes on 【N】 / [N] into `<sup data-cite="N">`.
- *  Skips code/pre and out-of-range numbers (left as plain text). */
+ *  Skips code/pre. A 【N】 past the sources cites nothing — a small model
+ *  counting past what it was given (issue #14: 【4】【5】 under three sources)
+ *  — so it is dropped rather than printed as a marker no chip answers to; an
+ *  out-of-range [N] may be ordinary text and stays as it is. */
 function rehypeCites({ count }: { count: number }) {
   const walk = (node: any) => {
     if (!node || node.type === "comment") return;
@@ -74,14 +78,16 @@ function rehypeCites({ count }: { count: number }) {
       const out: any[] = [];
       while ((m = CITE_RE.exec(value))) {
         const n = parseInt(m[1] ?? m[2], 10);
-        if (!(n >= 1 && n <= count)) continue;
+        const known = n >= 1 && n <= count;
+        if (!known && m[1] === undefined) continue;
         if (m.index > last) out.push({ type: "text", value: value.slice(last, m.index) });
-        out.push({
-          type: "element",
-          tagName: "sup",
-          properties: { dataCite: String(n) },
-          children: [{ type: "text", value: String(n) }],
-        });
+        if (known)
+          out.push({
+            type: "element",
+            tagName: "sup",
+            properties: { dataCite: String(n) },
+            children: [{ type: "text", value: String(n) }],
+          });
         last = m.index + m[0].length;
         replaced = true;
       }
@@ -101,7 +107,7 @@ function CiteMark({ n }: { n: number }) {
   const s = cites[n - 1];
   if (!s) return <sup>{n}</sup>;
   return (
-    <sup className="cite">
+    <sup className="cite" onMouseEnter={(e) => fitPop(e.currentTarget)}>
       <span className="cite-n">{n}</span>
       <span className="cite-pop">
         <span className="cite-pop-title">{s.title}</span>

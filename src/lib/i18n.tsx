@@ -870,6 +870,30 @@ export const T = {
   ejectingModel: { zh: "正在卸载旧模型…", en: "Ejecting old model…", pt: "Descarregando o modelo antigo…" },
   noLimit: { zh: "不限制", en: "No limit", pt: "Sem limite" },
   openModelsDir: { zh: "打开模型文件夹", en: "Open models folder", pt: "Abrir pasta de modelos" },
+  voiceModelsDir: { zh: "语音模型文件夹", en: "Voice models folder" },
+  voiceModelsDirHint: {
+    zh: "离线语音模型存放在这里。自动下载失败时，可以按报错里的说明把文件手动放进来。",
+    en: "Where the offline voice models are kept. If a download fails, you can put the files here by hand, as the error explains.",
+  },
+  voiceModelsDirOpen: { zh: "打开", en: "Open" },
+  voiceDlFailed: { zh: "语音模型下载失败（{reason}）。", en: "Couldn't download the voice model ({reason})." },
+  voiceDlMirror: {
+    zh: "可以到「设置 → 模型 → HuggingFace 端点」换一个源（中国大陆推荐 hf-mirror.com）后再试。",
+    en: "You can switch Settings → Model → HuggingFace endpoint to another source (hf-mirror.com in mainland China) and try again.",
+  },
+  voiceDlManual: {
+    zh: "也可以手动下载：打开 {url}，下载 {files}，放进文件夹 {dir}，然后再试一次。",
+    en: "Or fetch it by hand: from {url} download {files} into the folder {dir}, then try again.",
+  },
+  voiceDlAllFiles: { zh: "页面里的全部文件（dict 子文件夹保持原样）", en: "every file on that page (keep the dict subfolder)" },
+  voiceDlArchive: {
+    zh: "可以手动下载 {url}，解压到文件夹 {dir}（解压出的文件夹不要改名），然后再试一次。",
+    en: "You can download {url} by hand and unpack it into the folder {dir} (keep the unpacked folder's name), then try again.",
+  },
+  webNoResults: {
+    zh: "联网搜索没有找到与问题相关的网页，这次回答没有用到网络资料。",
+    en: "Web search found nothing relevant to this question, so the answer doesn't use web sources.",
+  },
   changeModelsDir: { zh: "更改位置", en: "Change location", pt: "Alterar local" },
   resetModelsDir: { zh: "恢复默认", en: "Reset to default", pt: "Restaurar padrão" },
   modelsDirHidden: {
@@ -994,12 +1018,12 @@ export const T = {
     en: 'Today is {date}. When the question refers to "today/recent/now", use this date.',
   },
   webInstruction: {
-    zh: "下面是联网检索到的资料，已按【1】【2】…编号。请综合它们，用自然连贯的语言直接回答用户的问题；在用到某条资料的句子末尾标注对应角标，如【1】或【1】【3】（不要写“来源”二字，只写数字角标）。若资料不足以回答，请直说。\n\n",
-    en: "Below is information retrieved from the web, numbered 【1】【2】…. Use it to answer the user's question in natural prose, and append the matching citation marker(s) — e.g. 【1】 or 【1】【3】 — at the end of each sentence that draws on a source. If the material is insufficient, say so.\n\n", pt: "Abaixo estão informações extraídas da web, enumeradas como 【1】【2】…. Utilize-as para responder à pergunta do usuário num texto natural e acrescente os marcadores de citação equivalentes — ex: 【1】 ou 【1】【3】 — no final de cada frase que se basear em uma fonte. Se o material for insuficiente, diga explicitamente.\n\n"
+    zh: "下面是联网检索到的 {n} 条资料，按【1】到【{n}】编号。请综合它们，用自然连贯的语言直接回答用户的问题；在用到某条资料的句子末尾标注对应角标，如【1】或【1】【3】（不要写“来源”二字，只写数字角标；编号最大是【{n}】，没有更多资料）。若资料不足以回答，请直说。\n\n",
+    en: "Below are {n} pieces of information retrieved from the web, numbered 【1】 to 【{n}】. Use them to answer the user's question in natural prose, and append the matching citation marker(s) — e.g. 【1】 or 【1】【3】 — at the end of each sentence that draws on a source; there is nothing beyond 【{n}】. If the material is insufficient, say so.\n\n", pt: "Abaixo estão {n} informações extraídas da web, enumeradas de 【1】 a 【{n}】. Utilize-as para responder à pergunta do usuário num texto natural e acrescente os marcadores de citação equivalentes — ex: 【1】 ou 【1】【3】 — no final de cada frase que se basear em uma fonte; não há nada além de 【{n}】. Se o material for insuficiente, diga explicitamente.\n\n"
   },
   ragInstruction: {
-    zh: "下面是从用户本地知识库检索到的文档片段，已按【1】【2】…编号。严格依据这些片段回答：只陈述片段中明确支持的内容，绝不编造、不引入片段之外的事实或数字；若片段不足以回答，必须直接说明“当前文档未提及”。在用到某条片段的句子末尾标注对应角标，如【1】或【1】【3】（只写数字角标）。\n\n",
-    en: "Below are passages retrieved from the user's local knowledge base, numbered 【1】【2】…. Answer STRICTLY from these passages: state only what they explicitly support, never invent facts or numbers beyond them; if they do not contain the answer, you must say the current documents do not mention it. Append the matching citation marker(s) — e.g. 【1】 or 【1】【3】 — at the end of each sentence that draws on a passage.\n\n", pt: "Abaixo estão trechos extraídos da base de conhecimento local do usuário, enumerados como 【1】【2】…. Responda ESTRITAMENTE a partir destes trechos: declare apenas o que eles suportam explicitamente, nunca invente fatos ou números além disso; se não contiverem a resposta, você deve afirmar que os documentos atuais não a mencionam. Acrescente os marcadores de citação equivalentes — ex: 【1】 ou 【1】【3】 — no final de cada frase baseada num trecho.\n\n"
+    zh: "下面是检索到的 {n} 个文档片段，按【1】到【{n}】编号（编号最大是【{n}】）。严格依据这些片段回答：只陈述片段中明确支持的内容，绝不编造、不引入片段之外的事实或数字；若片段不足以回答，必须直接说明“当前文档未提及”。在用到某条片段的句子末尾标注对应角标，如【1】或【1】【3】（只写数字角标）。\n\n",
+    en: "Below are {n} retrieved passages, numbered 【1】 to 【{n}】 (there is nothing beyond 【{n}】). Answer STRICTLY from these passages: state only what they explicitly support, never invent facts or numbers beyond them; if they do not contain the answer, you must say the current documents do not mention it. Append the matching citation marker(s) — e.g. 【1】 or 【1】【3】 — at the end of each sentence that draws on a passage.\n\n", pt: "Abaixo estão trechos extraídos da base de conhecimento local do usuário, enumerados como 【1】【2】…. Responda ESTRITAMENTE a partir destes trechos: declare apenas o que eles suportam explicitamente, nunca invente fatos ou números além disso; se não contiverem a resposta, você deve afirmar que os documentos atuais não a mencionam. Acrescente os marcadores de citação equivalentes — ex: 【1】 ou 【1】【3】 — no final de cada frase baseada num trecho.\n\n"
   },
   attachInstruction: {
     zh: "用户上传了文件《{name}》，其内容如下，回答时请优先依据它：\n\n",
@@ -1027,7 +1051,7 @@ export function lookup(key: TKey, lang: Lang, vars?: Record<string, string | num
   const e: Entry | undefined = T[key];
   let s: string = e?.[lang] ?? e?.en ?? key;
   if (vars) {
-    for (const k of Object.keys(vars)) s = s.replace(`{${k}}`, String(vars[k]));
+    for (const k of Object.keys(vars)) s = s.split(`{${k}}`).join(String(vars[k]));
   }
   return s;
 }

@@ -479,6 +479,7 @@ pub fn run() {
             commands::get_models_root,
             commands::set_models_root,
             commands::open_data_dir,
+            commands::open_voice_models_dir,
             commands::open_html_report,
             commands::canvas_session_save,
             commands::canvas_session_load,

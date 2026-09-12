@@ -19,6 +19,7 @@ import {
   openErrorLog,
   clearErrorLog,
   openExternal,
+  openVoiceModelsDir,
   synthesize,
   type UpdateInfo,
 } from "../lib/ipc";
@@ -1617,6 +1618,15 @@ export function SettingsPanel({
                 )}
               </SetRow>
               {voiceTestError && <div className="settings-hint settings-error">{voiceTestError}</div>}
+              <SetRow label={t("voiceModelsDir")} hint={t("voiceModelsDirHint")}>
+                <button
+                  type="button"
+                  className="data-btn"
+                  onClick={() => void openVoiceModelsDir().catch(() => {})}
+                >
+                  {t("voiceModelsDirOpen")}
+                </button>
+              </SetRow>
               <div className="settings-hint">{t("voiceEngineHint")}</div>
             </>
           )}

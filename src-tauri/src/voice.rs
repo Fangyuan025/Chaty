@@ -2,7 +2,7 @@
 //!
 //! Runs entirely on CPU (`provider = "cpu"`) so it never touches the LLM's GPU
 //! memory. Uses ONNX Runtime, fully isolated from llama.cpp's ggml. Models
-//! auto-download (sherpa-onnx `.tar.bz2` bundles) to the app data dir on first use.
+//! auto-download to the app data dir on first use — see [`VoiceModel`].
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -12,20 +12,94 @@ use sherpa_rs::tts::{CommonTtsConfig, KokoroTts, KokoroTtsConfig, VitsTts, VitsT
 use sherpa_rs::whisper::{WhisperConfig, WhisperRecognizer};
 use sherpa_rs::OnnxConfig;
 
-const WHISPER_EN_URL: &str =
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.en.tar.bz2";
-const WHISPER_EN_DIR: &str = "sherpa-onnx-whisper-base.en";
-// Pin the Hugging Face snapshot: size checks detect truncation, not an
-// upstream file being replaced with different valid bytes.
-const WHISPER_MULTILINGUAL_REVISION: &str = "bb53ee204431c90d314c1cc08d28d23e5b7927cc";
-const WHISPER_MULTILINGUAL_DIR: &str = "sherpa-onnx-whisper-base";
-const KOKORO_URL: &str =
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2";
-const KOKORO_DIR: &str = "kokoro-en-v0_19";
-const CHINESE_TTS_URL: &str =
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-vits-zh-ll.tar.bz2";
-const CHINESE_TTS_DIR: &str = "sherpa-onnx-vits-zh-ll";
+/// A pinned Hugging Face snapshot: its files, each with its exact size. A
+/// pinned revision cannot change, so any other size is a bad copy.
+struct HfSnapshot {
+    repo: &'static str,
+    rev: &'static str,
+    files: &'static [(&'static str, u64)],
+}
+
+/// Where a voice model comes from. The Hugging Face snapshot is tried first,
+/// through the user's HF endpoint, so a mirror such as hf-mirror.com reaches
+/// it where huggingface.co and GitHub do not — issue #14: a user in mainland
+/// China had set the mirror, yet voice downloads still went to huggingface.co
+/// itself (or GitHub) and timed out. The sherpa-onnx GitHub release archive
+/// is the fallback, and Kokoro's only source: no Hugging Face repo carries
+/// that exact build.
+struct VoiceModel {
+    /// Folder under voice-models — also the archive's top-level folder.
+    dir: &'static str,
+    ready: fn(&Path) -> bool,
+    hf: Option<HfSnapshot>,
+    archive: &'static str,
+}
+
+const WHISPER_EN: VoiceModel = VoiceModel {
+    dir: "sherpa-onnx-whisper-base.en",
+    ready: whisper_model_ready,
+    hf: Some(HfSnapshot {
+        repo: "csukuangfj/sherpa-onnx-whisper-base.en",
+        rev: "59eea950fc76df2453efb57e6c0fd334548e8ffe",
+        files: &[
+            ("base.en-encoder.int8.onnx", 29_120_534),
+            ("base.en-decoder.int8.onnx", 130_669_978),
+            ("base.en-tokens.txt", 835_554),
+        ],
+    }),
+    archive: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.en.tar.bz2",
+};
+
+const WHISPER_MULTILINGUAL: VoiceModel = VoiceModel {
+    dir: "sherpa-onnx-whisper-base",
+    ready: whisper_model_ready,
+    hf: Some(HfSnapshot {
+        repo: "csukuangfj/sherpa-onnx-whisper-base",
+        rev: "bb53ee204431c90d314c1cc08d28d23e5b7927cc",
+        files: &[
+            ("base-encoder.int8.onnx", 29_120_534),
+            ("base-decoder.int8.onnx", 130_672_026),
+            ("base-tokens.txt", 816_730),
+        ],
+    }),
+    archive: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2",
+};
+
+const KOKORO: VoiceModel = VoiceModel {
+    dir: "kokoro-en-v0_19",
+    ready: kokoro_model_ready,
+    hf: None,
+    archive: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2",
+};
+
+const CHINESE_TTS: VoiceModel = VoiceModel {
+    dir: "sherpa-onnx-vits-zh-ll",
+    ready: chinese_tts_model_ready,
+    hf: Some(HfSnapshot {
+        repo: "csukuangfj/sherpa-onnx-vits-zh-ll",
+        rev: "7ddf37bcacf05ed56afee360d96835be633a5265",
+        files: &[
+            ("model.onnx", 121_100_803),
+            ("lexicon.txt", 376_868),
+            ("tokens.txt", 331),
+            ("dict/jieba.dict.utf8", 5_071_204),
+            ("dict/hmm_model.utf8", 519_739),
+            ("dict/user.dict.utf8", 49),
+            ("dict/idf.utf8", 5_998_717),
+            ("dict/stop_words.utf8", 8_974),
+            ("dict/pos_dict/char_state_tab.utf8", 327_139),
+            ("dict/pos_dict/prob_emit.utf8", 1_687_686),
+            ("dict/pos_dict/prob_start.utf8", 4_347),
+            ("dict/pos_dict/prob_trans.utf8", 124_159),
+        ],
+    }),
+    archive: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-vits-zh-ll.tar.bz2",
+};
+
 const CHINESE_TTS_SPEAKER_COUNT: i32 = 5;
+
+/// Hugging Face and GitHub want to know who is calling (see http.rs).
+const DOWNLOAD_UA: &str = "Chaty model downloader";
 
 static EN_STT: OnceLock<Mutex<WhisperRecognizer>> = OnceLock::new();
 static MULTILINGUAL_STT: OnceLock<Mutex<WhisperRecognizer>> = OnceLock::new();
@@ -126,112 +200,132 @@ fn chinese_tts_model_ready(dir: &Path) -> bool {
         && dir.join("dict/stop_words.utf8").is_file()
 }
 
-fn download_client(timeout: std::time::Duration) -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(20))
-        .timeout(timeout)
-        .build()
-        .context("create voice-model HTTP client")
+fn host_of(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    rest.split('/').next().unwrap_or(rest)
 }
 
-async fn download_file(url: &str, dest: &Path, min_bytes: u64) -> Result<()> {
-    eprintln!(
-        "voice: downloading {}",
-        dest.file_name().unwrap_or_default().to_string_lossy()
-    );
-    let bytes = download_client(std::time::Duration::from_secs(15 * 60))?
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("下载语音模型文件失败: {url}"))?
-        .error_for_status()
-        .with_context(|| format!("下载语音模型文件失败: {url}"))?
-        .bytes()
-        .await
-        .with_context(|| format!("读取语音模型文件失败: {url}"))?;
-    if bytes.len() < min_bytes as usize {
-        bail!(
-            "下载的语音模型文件不完整: {}（{} 字节）",
-            dest.display(),
-            bytes.len()
-        );
+/// One short line for a source that failed: which host, and what went wrong
+/// in words a person can act on — not the nested request error, which named
+/// only huggingface.co and "operation timed out" (issue #14).
+fn failure_reason(url: &str, e: &anyhow::Error) -> String {
+    let Some(re) = e.chain().find_map(|c| c.downcast_ref::<reqwest::Error>()) else {
+        return format!("{}: {e}", host_of(url));
+    };
+    let host = re.url().and_then(|u| u.host_str()).unwrap_or_else(|| host_of(url));
+    let what = if re.is_timeout() {
+        "timed out".to_string()
+    } else if re.is_connect() {
+        "could not connect".to_string()
+    } else if let Some(s) = re.status() {
+        format!("HTTP {}", s.as_u16())
+    } else {
+        re.to_string()
+    };
+    format!("{host}: {what}")
+}
+
+/// Stream one file into place, checked against its exact size. Written to a
+/// `.part` beside it and renamed, so a file that exists is a whole one; a
+/// stalled connection ends in a minute (http.rs `download_client`) rather
+/// than holding the request for its full size.
+async fn fetch_file(client: &reqwest::Client, url: &str, dest: &Path, size: u64) -> Result<()> {
+    use std::io::Write;
+    if std::fs::metadata(dest).is_ok_and(|m| m.len() == size) {
+        return Ok(());
     }
-    let tmp = dest.with_extension(format!(
-        "{}.part",
-        dest.extension()
-            .and_then(|x| x.to_str())
-            .unwrap_or_default()
-    ));
-    std::fs::write(&tmp, &bytes).context("write voice model file")?;
-    std::fs::rename(&tmp, dest).context("install voice model file")?;
+    eprintln!("voice: downloading {url}");
+    let mut resp = client.get(url).send().await?.error_for_status()?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).context("create voice model directory")?;
+    }
+    let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let part = dest.with_file_name(format!("{name}.part"));
+    let mut file = std::fs::File::create(&part).context("write voice model file")?;
+    let mut got = 0u64;
+    while let Some(chunk) = resp.chunk().await? {
+        got += chunk.len() as u64;
+        if got > size {
+            break;
+        }
+        file.write_all(&chunk).context("write voice model file")?;
+    }
+    drop(file);
+    if got != size {
+        let _ = std::fs::remove_file(&part);
+        bail!("{name} came back as {got} bytes, expected {size}");
+    }
+    std::fs::rename(&part, dest).context("install voice model file")?;
     Ok(())
 }
 
-/// Repair the old partially-extracted Whisper installation one file at a time,
-/// avoiding a second download of files that are already complete.
-async fn repair_whisper_model(dir: &Path) -> Result<bool> {
-    std::fs::create_dir_all(dir).context("create multilingual Whisper directory")?;
-    let mut repaired = false;
-    let root = format!(
-        "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-base/resolve/{WHISPER_MULTILINGUAL_REVISION}"
-    );
-    let encoder = dir.join("base-encoder.int8.onnx");
-    if !file_at_least(&encoder, 20 * 1024 * 1024) {
-        download_file(
-            &format!("{root}/base-encoder.int8.onnx"),
-            &encoder,
-            20 * 1024 * 1024,
-        )
-        .await?;
-        repaired = true;
+/// Fetch every file of a snapshot that is missing or the wrong size. Files
+/// already complete stay, so an interrupted download resumes where it stopped.
+async fn fetch_snapshot(dir: &Path, hf: &HfSnapshot, base: &str) -> Result<()> {
+    let client = crate::http::download_client(DOWNLOAD_UA).map_err(|e| anyhow!(e))?;
+    for &(path, size) in hf.files {
+        let url = format!("{base}/{}/resolve/{}/{path}", hf.repo, hf.rev);
+        let dest = path.split('/').fold(dir.to_path_buf(), |p, s| p.join(s));
+        fetch_file(&client, &url, &dest, size).await?;
     }
-    let decoder = dir.join("base-decoder.int8.onnx");
-    if !file_at_least(&decoder, 100 * 1024 * 1024) {
-        download_file(
-            &format!("{root}/base-decoder.int8.onnx"),
-            &decoder,
-            100 * 1024 * 1024,
-        )
-        .await?;
-        repaired = true;
-    }
-    let tokens = dir.join("base-tokens.txt");
-    if !file_at_least(&tokens, 100 * 1024) {
-        download_file(&format!("{root}/base-tokens.txt"), &tokens, 100 * 1024).await?;
-        repaired = true;
-    }
-    Ok(repaired)
+    Ok(())
 }
 
-async fn ensure_multilingual_whisper_model(models_dir: &Path) -> Result<PathBuf> {
-    let dir = models_dir.join(WHISPER_MULTILINGUAL_DIR);
-    repair_whisper_model(&dir).await?;
-    if !whisper_model_ready(&dir) {
-        bail!("多语言 Whisper 模型下载不完整: {}", dir.display());
+/// A ready model's folder, downloading it first if need be: the Hugging Face
+/// snapshot through `base` (the user's HF endpoint), then the release archive.
+async fn ensure_model(models_dir: &Path, m: &VoiceModel, base: &str) -> Result<PathBuf> {
+    let dir = models_dir.join(m.dir);
+    if (m.ready)(&dir) {
+        return Ok(dir);
     }
-    Ok(dir)
+    let mut reasons = Vec::new();
+    if let Some(hf) = &m.hf {
+        match fetch_snapshot(&dir, hf, base).await {
+            Ok(()) if (m.ready)(&dir) => return Ok(dir),
+            Ok(()) => reasons.push(format!("{}: the files arrived but the model is incomplete", host_of(base))),
+            Err(e) => reasons.push(failure_reason(base, &e)),
+        }
+    }
+    match install_archive(models_dir, m.archive, m.dir, m.ready).await {
+        Ok(dir) => Ok(dir),
+        Err(e) => {
+            reasons.push(failure_reason(m.archive, &e));
+            Err(download_failed(models_dir, m, base, reasons))
+        }
+    }
 }
 
-async fn ensure_extracted(
+/// The error for a model no source could deliver, as a payload the UI words
+/// in the reader's language (lib/voiceError.ts): the folder the model belongs
+/// in, what to fetch by hand and from where, and why each source failed.
+fn download_failed(models_dir: &Path, m: &VoiceModel, base: &str, reasons: Vec<String>) -> anyhow::Error {
+    let payload = serde_json::json!({
+        "dir": models_dir.join(m.dir).to_string_lossy(),
+        "modelsDir": models_dir.to_string_lossy(),
+        "hfUrl": m.hf.as_ref().map(|hf| format!("{base}/{}/tree/{}", hf.repo, hf.rev)),
+        "files": m.hf.as_ref().map(|hf| hf.files.iter().map(|(p, _)| *p).collect::<Vec<_>>()).unwrap_or_default(),
+        "archive": m.archive,
+        "reasons": reasons,
+    });
+    anyhow!("VOICE_MODEL_DOWNLOAD {payload}")
+}
+
+async fn install_archive(
     models_dir: &Path,
     url: &str,
     dir_name: &str,
     ready: fn(&Path) -> bool,
 ) -> Result<PathBuf> {
     let dir = models_dir.join(dir_name);
-    if ready(&dir) {
-        return Ok(dir);
-    }
     std::fs::create_dir_all(models_dir).context("create voice models dir")?;
 
     eprintln!("voice: downloading model from {url}");
-    let bytes = download_client(std::time::Duration::from_secs(30 * 60))?
+    let bytes = crate::http::download_client(DOWNLOAD_UA)
+        .map_err(|e| anyhow!(e))?
         .get(url)
         .send()
-        .await
-        .with_context(|| format!("下载语音模型失败: {url}"))?
-        .error_for_status()
-        .with_context(|| format!("下载语音模型失败: {url}"))?
+        .await?
+        .error_for_status()?
         .bytes()
         .await?;
 
@@ -463,18 +557,10 @@ pub async fn transcribe(
     samples: Vec<f32>,
     sample_rate: u32,
     multilingual: bool,
+    endpoint: &str,
 ) -> Result<String> {
-    let dir = if multilingual {
-        ensure_multilingual_whisper_model(&models_dir).await?
-    } else {
-        ensure_extracted(
-            &models_dir,
-            WHISPER_EN_URL,
-            WHISPER_EN_DIR,
-            whisper_model_ready,
-        )
-        .await?
-    };
+    let model = if multilingual { &WHISPER_MULTILINGUAL } else { &WHISPER_EN };
+    let dir = ensure_model(&models_dir, model, endpoint).await?;
     eprintln!(
         "voice: transcribing {:.2}s of audio",
         samples.len() as f64 / sample_rate.max(1) as f64
@@ -503,19 +589,14 @@ pub async fn synthesize(
     sid: i32,
     sid_zh: i32,
     chinese_enabled: bool,
+    endpoint: &str,
 ) -> Result<(Vec<f32>, u32)> {
     // Deliberately simple heuristic: when Chinese support is enabled, one Han
     // character routes the whole utterance to VITS. This avoids splitting and
     // stitching mixed-language audio, at the cost of English quality in a
     // mostly-English sentence containing one Chinese word.
     if use_chinese_tts(&text, chinese_enabled) {
-        let dir = ensure_extracted(
-            &models_dir,
-            CHINESE_TTS_URL,
-            CHINESE_TTS_DIR,
-            chinese_tts_model_ready,
-        )
-        .await?;
+        let dir = ensure_model(&models_dir, &CHINESE_TTS, endpoint).await?;
         tokio::task::spawn_blocking(move || -> Result<(Vec<f32>, u32)> {
             let engine = chinese_tts_engine(&dir)?;
             let mut tts = engine_lock(engine, "中文 TTS");
@@ -530,7 +611,7 @@ pub async fn synthesize(
         })
         .await?
     } else {
-        let dir = ensure_extracted(&models_dir, KOKORO_URL, KOKORO_DIR, kokoro_model_ready).await?;
+        let dir = ensure_model(&models_dir, &KOKORO, endpoint).await?;
         tokio::task::spawn_blocking(move || -> Result<(Vec<f32>, u32)> {
             let engine = english_tts_engine(&dir)?;
             let mut tts = engine_lock(engine, "TTS");
@@ -611,6 +692,80 @@ mod tests {
         assert!(!use_chinese_tts("Hello, world.", true));
     }
 
+    const OFFICIAL: &str = crate::download::HF_OFFICIAL;
+
+    // Issue #14: a model no source can deliver says where it goes, what to
+    // fetch and why each source failed — a payload the UI puts into words.
+    #[test]
+    fn unreachable_sources_report_folder_files_and_reasons() {
+        const DEAD: VoiceModel = VoiceModel {
+            dir: "dead-model",
+            ready: whisper_model_ready,
+            hf: Some(HfSnapshot {
+                repo: "someone/dead-model",
+                rev: "abc",
+                files: &[("a.onnx", 10), ("sub/b.txt", 5)],
+            }),
+            archive: "http://127.0.0.1:9/dead-model.tar.bz2",
+        };
+        let root = std::env::temp_dir().join(format!("chaty-voice-dead-{}", std::process::id()));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt
+            .block_on(ensure_model(&root, &DEAD, "http://127.0.0.1:9"))
+            .unwrap_err()
+            .to_string();
+        let json = err.strip_prefix("VOICE_MODEL_DOWNLOAD ").expect("marked payload");
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(v["dir"], root.join("dead-model").to_string_lossy().as_ref());
+        assert_eq!(v["modelsDir"], root.to_string_lossy().as_ref());
+        assert_eq!(v["hfUrl"], "http://127.0.0.1:9/someone/dead-model/tree/abc");
+        assert_eq!(v["files"], serde_json::json!(["a.onnx", "sub/b.txt"]));
+        assert_eq!(v["archive"], DEAD.archive);
+        let reasons: Vec<&str> = v["reasons"].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
+        assert_eq!(reasons, vec!["127.0.0.1: could not connect"; 2]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // The models' Hugging Face sources are real and their pinned sizes right.
+    #[test]
+    fn every_hf_snapshot_is_pinned_and_sized() {
+        for m in [&WHISPER_EN, &WHISPER_MULTILINGUAL, &CHINESE_TTS] {
+            let hf = m.hf.as_ref().unwrap();
+            assert_eq!(hf.rev.len(), 40, "{} must pin a commit", hf.repo);
+            assert!(hf.files.iter().all(|&(_, size)| size > 0));
+        }
+        assert!(KOKORO.hf.is_none() && KOKORO.archive.ends_with("kokoro-en-v0_19.tar.bz2"));
+    }
+
+    /// Issue #14 end to end: the Chinese voice pair fetched file by file
+    /// through a mirror into an empty folder, then spoken and heard —
+    ///   cargo test --release --lib voice_models_download_through_mirror -- --ignored --nocapture
+    /// (CHATY_TEST_HF_ENDPOINT overrides https://hf-mirror.com)
+    #[test]
+    #[ignore]
+    fn voice_models_download_through_mirror() {
+        let endpoint = std::env::var("CHATY_TEST_HF_ENDPOINT").unwrap_or_else(|_| "https://hf-mirror.com".into());
+        let dir = std::env::temp_dir().join(format!("chaty-voice-mirror-{}", std::process::id()));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for m in [&CHINESE_TTS, &WHISPER_MULTILINGUAL] {
+            let t = std::time::Instant::now();
+            let target = dir.join(m.dir);
+            rt.block_on(fetch_snapshot(&target, m.hf.as_ref().unwrap(), &endpoint))
+                .unwrap_or_else(|e| panic!("{} through {endpoint}: {e:#}", m.dir));
+            assert!((m.ready)(&target), "{} incomplete", m.dir);
+            println!("{} via {endpoint} in {:.0?}", m.dir, t.elapsed());
+        }
+        let (samples, rate) = rt
+            .block_on(synthesize(dir.clone(), "你好，这是一个中文语音测试。".into(), 1.0, 0, 0, true, &endpoint))
+            .expect("Chinese TTS");
+        let text = rt
+            .block_on(transcribe(dir.clone(), samples, rate, true, &endpoint))
+            .expect("multilingual Whisper");
+        println!("heard: {text}");
+        assert!(text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)), "no Chinese heard: {text}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Full voice loop on the real CPU engines (Kokoro TTS → Whisper STT),
     /// using the app's downloaded voice models:
     ///   CHATY_TEST_VOICE_DIR="$HOME/Library/Application Support/com.chaty.desktop/voice-models" \
@@ -630,6 +785,7 @@ mod tests {
                 0,
                 0,
                 false,
+                OFFICIAL,
             ))
             .expect("kokoro synthesis");
         assert!(rate >= 16000, "sane sample rate: {rate}");
@@ -639,7 +795,7 @@ mod tests {
             samples.len()
         );
         let text = rt
-            .block_on(transcribe(dir, samples, rate, false))
+            .block_on(transcribe(dir, samples, rate, false, OFFICIAL))
             .expect("whisper transcription");
         let low = text.to_lowercase();
         assert!(
@@ -668,12 +824,13 @@ mod tests {
                 // suyingxue, the first of the model's five.
                 0,
                 true,
+                OFFICIAL,
             ))
             .expect("Chinese VITS synthesis");
         assert!(rate >= 8000, "sane sample rate: {rate}");
         assert!(!samples.is_empty(), "Chinese TTS returned no samples");
         let text = rt
-            .block_on(transcribe(dir, samples, rate, true))
+            .block_on(transcribe(dir, samples, rate, true, OFFICIAL))
             .expect("multilingual Whisper transcription");
         let han = text
             .chars()

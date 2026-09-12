@@ -4,6 +4,9 @@
 
 use anyhow::Result;
 
+/// Where the Hugging Face-hosted voice models come from; a mirror works too.
+const HF: &str = "https://huggingface.co";
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let dir = std::env::temp_dir().join("chaty-voice-models");
@@ -12,7 +15,7 @@ async fn main() -> Result<()> {
     let text = "Hello, this is Chaty speaking.";
     eprintln!("synthesizing: {text:?}");
     let (samples, sr) =
-        chaty_lib::voice::synthesize(dir.clone(), text.into(), 1.0, 0, 0, false).await?;
+        chaty_lib::voice::synthesize(dir.clone(), text.into(), 1.0, 0, 0, false, HF).await?;
     eprintln!(
         "TTS -> {} samples @ {} Hz ({:.2}s)",
         samples.len(),
@@ -25,7 +28,7 @@ async fn main() -> Result<()> {
     eprintln!("wrote {} (listen to verify TTS)", wav.display());
 
     eprintln!("transcribing the synthesized audio back...");
-    let recognized = chaty_lib::voice::transcribe(dir, samples, sr, false).await?;
+    let recognized = chaty_lib::voice::transcribe(dir, samples, sr, false, HF).await?;
     println!("\nSTT result: {recognized:?}");
     Ok(())
 }

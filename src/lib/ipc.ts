@@ -2,6 +2,7 @@
 // the IPC contract so the UI never touches `invoke` string names directly.
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { voiceError } from "./voiceError";
 
 export type Role = "system" | "user" | "assistant" | "tool";
 
@@ -1225,7 +1226,13 @@ export async function transcribe(
   sampleRate: number,
   multilingual = false,
 ): Promise<string> {
-  return await invoke<string>("transcribe", { audio, sampleRate, multilingual });
+  // Voice models download through the same HF endpoint as everything else,
+  // so a mirror set for the store reaches them too (issue #14).
+  try {
+    return await invoke<string>("transcribe", { audio, sampleRate, multilingual, endpoint: hfEndpoint });
+  } catch (e) {
+    throw voiceError(e);
+  }
 }
 
 /** Synthesize speech (Kokoro, or Chinese VITS when explicitly enabled). */
@@ -1238,7 +1245,24 @@ export async function synthesize(
    *  decides per utterance which of the two speaks, so both travel. */
   sidZh?: number,
 ): Promise<SynthAudio> {
-  return await invoke<SynthAudio>("synthesize", { text, speed, sid, sidZh, chineseEnabled });
+  try {
+    return await invoke<SynthAudio>("synthesize", {
+      text,
+      speed,
+      sid,
+      sidZh,
+      chineseEnabled,
+      endpoint: hfEndpoint,
+    });
+  } catch (e) {
+    throw voiceError(e);
+  }
+}
+
+/** Reveal the folder the offline voice models live in (created if absent) —
+ *  where a model goes when its download can't get through. */
+export async function openVoiceModelsDir(): Promise<string> {
+  return invoke<string>("open_voice_models_dir");
 }
 
 // ---------- Attachments ----------

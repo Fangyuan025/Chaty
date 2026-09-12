@@ -1719,13 +1719,26 @@ fn voice_models_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .join("voice-models"))
 }
 
-/// Transcribe base64-encoded f32 PCM audio to text (Whisper).
+/// Reveal the voice-models folder — where a model goes by hand when its
+/// download can't get through.
+#[tauri::command]
+pub fn open_voice_models_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = voice_models_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.to_string_lossy().to_string();
+    open_default(&path)?;
+    Ok(path)
+}
+
+/// Transcribe base64-encoded f32 PCM audio to text (Whisper). `endpoint` is
+/// the Settings HF endpoint the voice models download through.
 #[tauri::command]
 pub async fn transcribe(
     app: tauri::AppHandle,
     audio: String,
     sample_rate: u32,
     multilingual: Option<bool>,
+    endpoint: Option<String>,
 ) -> Result<String, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(audio.as_bytes())
@@ -1735,7 +1748,8 @@ pub async fn transcribe(
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     let dir = voice_models_dir(&app)?;
-    crate::voice::transcribe(dir, samples, sample_rate, multilingual.unwrap_or(false))
+    let base = crate::download::hf_base(endpoint.as_deref());
+    crate::voice::transcribe(dir, samples, sample_rate, multilingual.unwrap_or(false), &base)
         .await
         .map_err(|e| format!("{e:#}"))
 }
@@ -1749,8 +1763,10 @@ pub async fn synthesize(
     sid: Option<i32>,
     sid_zh: Option<i32>,
     chinese_enabled: Option<bool>,
+    endpoint: Option<String>,
 ) -> Result<SynthAudio, String> {
     let dir = voice_models_dir(&app)?;
+    let base = crate::download::hf_base(endpoint.as_deref());
     let (samples, sample_rate) = crate::voice::synthesize(
         dir,
         text,
@@ -1758,6 +1774,7 @@ pub async fn synthesize(
         sid.unwrap_or(0),
         sid_zh.unwrap_or(0),
         chinese_enabled.unwrap_or(false),
+        &base,
     )
     .await
     .map_err(|e| format!("{e:#}"))?;

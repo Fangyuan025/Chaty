@@ -958,6 +958,11 @@ body.resizing-x {
 .chat {
   flex: 1;
   overflow-y: auto;
+  /* Nothing in the transcript scrolls sideways (code and tables carry their
+     own scroller). An overflow-y container turns stray horizontal overflow
+     into a scrollbar, and one that comes and goes with a hover preview is a
+     layout feedback loop on Windows (issue #14). */
+  overflow-x: hidden;
   padding: 28px 0 12px;
   scroll-behavior: smooth;
 }
@@ -3673,6 +3678,8 @@ a:focus-visible,
 }
 
 .attach-error {
+  /* A voice-model failure explains itself over a few lines. */
+  white-space: pre-line;
   font-size: 12.5px;
   color: var(--danger);
 }

@@ -101,6 +101,7 @@ import {
   type StreamEvent,
   type UpdateInfo,
 } from "./lib/ipc";
+import { fitPop } from "./lib/popFit";
 import "./App.css";
 import {
   type Compacted,
@@ -531,21 +532,6 @@ export default function App() {
       return true;
     }
   });
-  // Thinking and web search are mutually exclusive: a searching turn is sent
-  // with reasoning suppressed (see wantNoThink), so leaving both switches on
-  // means the Tools menu shows a tick next to Thinking for turns the model does
-  // not think through. Every entry point went through the two setters and each
-  // was expected to remember the other — and the command palette's web toggle
-  // did not, so switching search on from ⌘K silently stopped the reasoning of
-  // every later turn while still claiming it was on. One rule, one place.
-  const setThinkingOn = (on: boolean) => {
-    setThinkEnabled(on);
-    if (on) setWebEnabled(false);
-  };
-  const setWebSearchOn = (on: boolean) => {
-    setWebEnabled(on);
-    if (on) setThinkEnabled(false);
-  };
 
   const [webDesign, setWebDesign] = useState(() => {
     try {
@@ -1921,12 +1907,21 @@ export default function App() {
             budget -= txt.length;
             added++;
           }
-          if (added === 0 && research.results.length) {
-            research.results.slice(0, 6).forEach((r) => {
-              blocks.push(`【${blocks.length + 1}】 ${r.title}\n${r.snippet}`);
-              usedSources.push({ title: r.title, url: r.url, snippet: r.snippet.slice(0, 360) });
-            });
+          // Results whose page could not be read still have their snippet.
+          // Offer those too, up to six sources in all, so each result worth
+          // citing has a number — and a chip under the answer.
+          const seen = new Set(usedSources.map((s) => s.url));
+          for (const r of research.results) {
+            if (added >= 6) break;
+            if (!r.snippet.trim() || seen.has(r.url)) continue;
+            seen.add(r.url);
+            blocks.push(`【${blocks.length + 1}】 ${r.title}\n${r.snippet}`);
+            usedSources.push({ title: r.title, url: r.url, snippet: r.snippet.slice(0, 360) });
+            added++;
           }
+          // Nothing on topic — the backend drops results about something
+          // else. Say so, rather than let the answer look researched.
+          if (added === 0) showNotice("warn", t("webNoResults"));
         }
 
         if (usedSources.length) {
@@ -1937,7 +1932,11 @@ export default function App() {
         if (blocks.length) {
           // KB mode gets the strict-grounding instruction: answer only from the
           // retrieved passages, never invent, admit when they don't cover it.
-          webContext = (ragEnabled ? t("ragInstruction") : t("webInstruction")) + blocks.join("\n\n---\n\n");
+          // The count is stated: a small model otherwise cites past it (issue
+          // #14 cited 【4】【5】 under three sources).
+          const n = { n: blocks.length };
+          webContext =
+            (ragEnabled ? t("ragInstruction", n) : t("webInstruction", n)) + blocks.join("\n\n---\n\n");
         }
       } catch (e) {
         console.error(e);
@@ -1985,8 +1984,9 @@ export default function App() {
     //  • Qwen3 (`thinkSwitch`): append the `/no_think` soft switch to the prompt.
     //  • Qwen3.5+ (reasoning, but no soft switch): tell the backend to pre-fill an
     //    empty <think></think> block via the `think` param below.
-    // Web search forces no-think either way to keep answers concise.
-    const wantNoThink = !thinkEnabled || webEnabled;
+    // Web search no longer switches thinking off: the two used to exclude each
+    // other, and issue #14 asked for a searched answer the model reasons over.
+    const wantNoThink = !thinkEnabled;
     if (modelHistory.length > 0 && model?.thinkSwitch && wantNoThink) {
       const last = modelHistory[modelHistory.length - 1];
       last.content = `${last.content}\n/no_think`;
@@ -2390,6 +2390,9 @@ export default function App() {
       await pb.done;
     } catch (e) {
       console.error(e);
+      // Read-aloud failed silently before — a voice model that could not
+      // download looked like a button that does nothing.
+      showNotice("error", e instanceof Error ? e.message : String(e));
     } finally {
       if (playbackRef.current) playbackRef.current = null;
       setSpeaking(false);
@@ -2458,7 +2461,7 @@ export default function App() {
       id: "web",
       label: webEnabled ? t("cmdkWebOff") : t("cmdkWebOn"),
       keywords: "web search 联网 搜索",
-      run: () => setWebSearchOn(!webEnabled),
+      run: () => setWebEnabled(!webEnabled),
     },
     {
       id: "models-dir",
@@ -3038,6 +3041,7 @@ export default function App() {
                               key={k}
                               className="source-chip"
                               title={s.url || undefined}
+                              onMouseEnter={(e) => fitPop(e.currentTarget)}
                               onClick={() => {
                                 if (s.url) void openExternal(s.url).catch(() => {});
                               }}
@@ -3394,7 +3398,7 @@ export default function App() {
                         <button
                           className={`tool-item ${webEnabled ? "on" : ""}`}
                           onClick={() => {
-                            setWebSearchOn(!webEnabled);
+                            setWebEnabled(!webEnabled);
                           }}
                         >
                           <span className="ti-label">{t("toolWeb")}</span>
@@ -3410,7 +3414,7 @@ export default function App() {
                         <button
                           className={`tool-item tool-parent ${thinkEnabled ? "on" : ""}`}
                           onClick={() => {
-                            setThinkingOn(!thinkEnabled);
+                            setThinkEnabled(!thinkEnabled);
                           }}
                           title={t("effortHint")}
                         >
@@ -3431,7 +3435,7 @@ export default function App() {
                               className={`tool-item ${thinkEnabled && effortRung === lvl ? "on" : ""}`}
                               onClick={() => {
                                 setEffort(lvl);
-                                setThinkingOn(true);
+                                setThinkEnabled(true);
                               }}
                             >
                               <span className="ti-label">{effortLabel(lvl, t)}</span>
@@ -3446,7 +3450,7 @@ export default function App() {
                     <button
                       className={`tool-item ${thinkEnabled && model?.supportsThinking ? "on" : ""}`}
                       onClick={() => {
-                        setThinkingOn(!thinkEnabled);
+                        setThinkEnabled(!thinkEnabled);
                       }}
                       disabled={!model?.supportsThinking}
                       title={model && !model.supportsThinking ? t("thinkUnsupported") : undefined}
