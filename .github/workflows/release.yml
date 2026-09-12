@@ -279,6 +279,17 @@ jobs:
             1040×720, and on macOS closing from fullscreen now leaves fullscreen
             smoothly and goes to the tray every time.
 
+            ## Voice, web search and citations
+
+            Voice models now download through the HF endpoint in Settings, so a
+            mirror such as hf-mirror.com reaches them too, and a download that still
+            fails says which folder the files belong in and where to get them; the
+            folder opens from Settings → Voice. Web search and thinking can be on
+            together. Search results that are about something else are dropped
+            instead of cited, every source the model was given shows under the
+            answer, a citation past them is no longer printed, and hovering a source
+            near the edge no longer makes the conversation jitter on Windows.
+
             Several things reached v2.1.8 as a rebuild after it went out and are in
             here for anyone who installed it on release day: the macOS menu-bar icon
             is a glyph that matches the bar, and long coding sessions no longer

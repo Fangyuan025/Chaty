@@ -57,6 +57,43 @@
   X is in that menu bar — so it waited, and after a minute gave up with the
   window still up.
 
+### Voice, web search and citations
+
+- **Voice models download through the HF endpoint in Settings.** They went
+  to huggingface.co or GitHub directly whatever the setting said, so where
+  those are out of reach a mirror such as hf-mirror.com did not help, and
+  every press of the mic ended in a timeout. Speech recognition and the
+  Chinese voice now come from pinned Hugging Face snapshots through the
+  chosen endpoint, file by file, with the GitHub release archive as the
+  fallback; the English voice, which only GitHub carries, keeps it.
+
+- **A voice model that cannot download says what to do.** The error named a
+  URL and "operation timed out". It now says which source failed and why,
+  points at the endpoint setting, and lists the files to fetch by hand, where
+  from, and the folder they go in — which Settings → Voice now opens. Read
+  aloud reports the failure too, instead of doing nothing.
+
+- **Web search and thinking can be on together.** Turning one on used to
+  switch the other off.
+
+- **Search results about something else are dropped.** Where DuckDuckGo is
+  unreachable the search falls through to Bing, which answers a scraper with
+  confident results for some other query — a question about Outer Wilds
+  (星际拓荒) came back with StarCraft (星际争霸). A result must now echo the
+  question's own words to reach the model; when none does, the answer says
+  it found nothing relevant instead of citing the rest.
+
+- **Every source the model was given is shown, and only those are cited.**
+  Results whose page could not be read are passed on with their snippet and
+  get a chip like the others; the prompt states how many sources there are,
+  and a citation number past them is no longer printed.
+
+- **Hovering a source near the right edge no longer makes the conversation
+  jitter.** Its preview ran past the edge and gave the conversation a
+  horizontal scrollbar; on Windows, where scrollbars take room, that moved
+  the source out from under the pointer, which closed the preview and
+  removed the scrollbar again, over and over. The preview now stays inside.
+
 ### From the v2.1.8 rebuild
 
 These reached v2.1.8 as a rebuild after it went out; they are listed here for
