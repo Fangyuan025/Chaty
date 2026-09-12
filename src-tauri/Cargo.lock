@@ -778,7 +778,6 @@ dependencies = [
  "lopdf",
  "metal",
  "objc2",
- "objc2-app-kit",
  "objc2-av-foundation",
  "objc2-foundation",
  "ocrs",

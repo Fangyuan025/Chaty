@@ -32,19 +32,24 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use state::AppState;
 
 /// Generation counter for pending close-from-fullscreen hides: showing the
-/// window (tray / Dock / shortcut) bumps it, which cancels any hide still
-/// waiting for macOS's permission — otherwise a reopen during the wait would
-/// get yanked back down the moment the OS relented.
+/// window (tray / Dock / shortcut) bumps it, which cancels a close still
+/// waiting for fullscreen to finish exiting — otherwise a reopen during the
+/// exit animation would be hidden again the moment it ended.
 #[cfg(target_os = "macos")]
 static HIDE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The close waiting for fullscreen to finish exiting before it hides the
+/// window, by the HIDE_EPOCH it was issued under; 0 when none is.
+#[cfg(target_os = "macos")]
+static PENDING_HIDE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Bring the main window to the foreground.
 fn show_main_window(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
+        // A new epoch cancels a close still waiting for fullscreen to finish
+        // exiting, so the window being summoned is not hidden under the user.
         HIDE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        // Undo the app-level hide (⌘H-style) the close path uses; unhiding
-        // slides back into the fullscreen Space, window still fullscreen.
+        // And undo an app-level hide (⌘H), should there be one.
         let _ = app.show();
     }
     if let Some(w) = app.get_webview_window("main") {
@@ -59,12 +64,164 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let up = w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false);
         if up {
-            let _ = w.hide();
+            hide_main_window(app);
         } else {
             let _ = w.show();
             let _ = w.unminimize();
             let _ = w.set_focus();
         }
+    }
+}
+
+/// Put the main window away to the tray.
+///
+/// On macOS a fullscreen window lives in a Space of its own. Hiding it there
+/// strands that Space on screen with nothing in it, and hiding the whole app
+/// instead (the ⌘H slide) is refused for as long as the fullscreen menu bar is
+/// showing — which it always is, because that is where the red X is. That made
+/// closing from fullscreen a matter of luck: it waited for the cursor to leave
+/// the menu bar, and after a minute gave up with the window still up. So a
+/// fullscreen window now leaves fullscreen first, with the system's own
+/// animation, and is hidden the moment that animation has finished (see
+/// `watch_fullscreen_exit`) — `orderOut:` sent while the Space is still
+/// animating is dropped. It then comes back from the tray as a normal window.
+fn hide_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    if w.is_fullscreen().unwrap_or(false) {
+        use std::sync::atomic::Ordering;
+        let epoch = HIDE_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+        PENDING_HIDE.store(epoch, Ordering::SeqCst);
+        let _ = w.set_fullscreen(false);
+        // Should the exit never report back, hide anyway rather than leave
+        // the click unanswered.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            if HIDE_EPOCH.load(Ordering::SeqCst) == epoch
+                && PENDING_HIDE
+                    .compare_exchange(epoch, 0, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                let _ = w.hide();
+            }
+        });
+        return;
+    }
+    let _ = w.hide();
+}
+
+/// Finish a close that had to leave fullscreen first: AppKit posts
+/// NSWindowDidExitFullScreenNotification once the exit animation is over, and
+/// that is when the window can be ordered out. Registered once, for the life
+/// of the app; a reopen in the meantime moves HIDE_EPOCH on and the pending
+/// close no longer matches.
+#[cfg(target_os = "macos")]
+fn watch_fullscreen_exit<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
+    use block2::RcBlock;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSNotification, NSNotificationCenter, NSString};
+    use std::ptr::NonNull;
+    use std::sync::atomic::Ordering;
+    let Ok(ns_window) = w.ns_window() else {
+        return;
+    };
+    let win = w.clone();
+    let block = RcBlock::new(move |_: NonNull<NSNotification>| {
+        let pending = PENDING_HIDE.load(Ordering::SeqCst);
+        if pending != 0
+            && pending == HIDE_EPOCH.load(Ordering::SeqCst)
+            && PENDING_HIDE
+                .compare_exchange(pending, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            let _ = win.hide();
+        }
+    });
+    let name = NSString::from_str("NSWindowDidExitFullScreenNotification");
+    // SAFETY: `ns_window` is the NSWindow behind the main window, which lives
+    // as long as the app; the block touches only atomics and a Send handle.
+    let token = unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(&name),
+            Some(&*ns_window.cast::<AnyObject>()),
+            None,
+            &block,
+        )
+    };
+    // The observer is meant to last as long as the app does.
+    std::mem::forget(token);
+}
+
+/// The window's opening size, in points, for a screen whose usable area is
+/// `work_w` × `work_h` points — scaled to the screen rather than a fixed
+/// 1040×720, which is half of a 1080p screen and a sliver of anything bigger.
+/// The proportions are the ones Claude's desktop app opens at: side by side on
+/// a 1920-point screen it measured about 1380×866.
+/// Held above the minimum the layout was built for, and below the point where
+/// a window stops being one and becomes a wall.
+fn default_window_size(work_w: f64, work_h: f64) -> (f64, f64) {
+    let w = (work_w * 0.719).clamp(1040.0, 1680.0).min(work_w);
+    // Height follows from the width at that app's proportion, so a screen with
+    // the Dock along the bottom does not get a letterbox — capped by what the
+    // screen actually has to give.
+    let h = (w / 1.595).min(work_h * 0.95).clamp(720.0, 1050.0).min(work_h);
+    (w.round(), h.round())
+}
+
+/// Size the main window for the screen it opens on, centre it, and show it.
+/// It is created hidden (tauri.conf.json) so it never appears at one size and
+/// then jumps to another — and whatever happens here, it ends up shown.
+fn open_main_window<R: tauri::Runtime>(app: &tauri::App<R>) {
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    let monitor = w
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| w.primary_monitor().ok().flatten());
+    if let Some(m) = monitor {
+        let scale = m.scale_factor();
+        let area = m.work_area();
+        let (lw, lh) = default_window_size(
+            f64::from(area.size.width) / scale,
+            f64::from(area.size.height) / scale,
+        );
+        let _ = w.set_size(tauri::LogicalSize::new(lw, lh));
+        // Centred on the usable area by hand. `center()` measures the window
+        // as it is when it runs, and the resize queued just before it has not
+        // landed yet: it centred the old 1040×720, and the new size then grew
+        // past the right edge of the screen.
+        let left = f64::from(area.position.x);
+        let top = f64::from(area.position.y);
+        let x = left + ((f64::from(area.size.width) - lw * scale) / 2.0).max(0.0);
+        let y = top + ((f64::from(area.size.height) - lh * scale) / 2.0).max(0.0);
+        let _ = w.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    }
+    let _ = w.show();
+}
+
+#[cfg(test)]
+mod window_size_tests {
+    use super::default_window_size;
+
+    #[test]
+    fn the_window_opens_at_most_of_the_screen_within_bounds() {
+        // A 1080p-class Mac, menu bar and a bottom Dock taken: the size
+        // Claude's desktop app opens at on the same screen.
+        assert_eq!(default_window_size(1920.0, 963.0), (1380.0, 866.0));
+        // The same screen with the Dock hidden: the proportion holds.
+        assert_eq!(default_window_size(1920.0, 1055.0), (1380.0, 866.0));
+        // A 1440p display reaches the ceiling.
+        assert_eq!(default_window_size(2560.0, 1415.0), (1680.0, 1050.0));
+        // A small laptop: never under the size the layout was built for.
+        assert_eq!(default_window_size(1280.0, 775.0), (1040.0, 720.0));
+        // A large display: a window, not a wall.
+        assert_eq!(default_window_size(3008.0, 1667.0), (1680.0, 1050.0));
+        // A screen smaller than that minimum: the window still fits on it.
+        assert_eq!(default_window_size(1000.0, 700.0), (1000.0, 700.0));
     }
 }
 
@@ -154,6 +311,13 @@ pub fn run() {
         )
         .manage(AppState::default())
         .setup(|app| {
+            // ---- main window: sized for the screen, then shown ----
+            open_main_window(app);
+            #[cfg(target_os = "macos")]
+            if let Some(w) = app.get_webview_window("main") {
+                watch_fullscreen_exit(&w);
+            }
+
             // ---- conversation database ----
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -274,78 +438,12 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                // macOS: a fullscreen window lives in its own Space, and hiding
-                // just the window there strands that Space on screen with
-                // nothing in it (a black screen until the user swipes away).
-                // Dropping out of fullscreen first only trades that for a
-                // windowed frame flashing on the way out — and `orderOut:` is
-                // dropped while the Space animates, so the window could end up
-                // neither hidden nor fullscreen.
-                //
-                // Hiding the whole app is what macOS itself does for Cmd+H:
-                // it slides out of the fullscreen Space in one motion, and
-                // unhiding slides back in with the window STILL fullscreen.
-                // That is the behavior a close-to-tray should have here.
-                #[cfg(target_os = "macos")]
-                if window.is_fullscreen().unwrap_or(false) {
-                    // The ⌘H slide is the ONE exit the owner accepted — but
-                    // macOS refuses NSApp.hide the whole time the fullscreen
-                    // menu bar is revealed, and clicking the red X requires
-                    // the mouse to be up there revealing it (measured:
-                    // NSApp.isHidden stays false while the cursor rests on
-                    // top, flips the moment it leaves). Exiting fullscreen
-                    // instead trades that for system animations the owner
-                    // rejected twice (windowed flash; ghost-titlebar shrink).
-                    //
-                    // So: be patient. Keep asking to hide — with the honest
-                    // NSApp.isHidden signal, on the main thread — until the
-                    // menu bar retracts (people move the mouse within moments
-                    // of clicking) or a minute passes. Reopening meanwhile
-                    // bumps HIDE_EPOCH, which cancels the pending hide so a
-                    // fresh window can't be yanked back down.
-                    let my_epoch = HIDE_EPOCH
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                        + 1;
-                    let _ = window.app_handle().hide();
-                    let w = window.clone();
-                    std::thread::spawn(move || {
-                        use std::sync::atomic::Ordering;
-                        use std::time::Duration;
-                        for _ in 0..240 {
-                            std::thread::sleep(Duration::from_millis(250));
-                            if HIDE_EPOCH.load(Ordering::SeqCst) != my_epoch {
-                                return; // reopened — stand down
-                            }
-                            let (tx, rx) = std::sync::mpsc::channel::<bool>();
-                            let wh = w.clone();
-                            let epoch = my_epoch;
-                            if w
-                                .run_on_main_thread(move || {
-                                    let hidden = objc2::MainThreadMarker::new()
-                                        .map(|mtm| {
-                                            objc2_app_kit::NSApplication::sharedApplication(mtm)
-                                                .isHidden()
-                                        })
-                                        .unwrap_or(false);
-                                    if !hidden && HIDE_EPOCH.load(Ordering::SeqCst) == epoch {
-                                        let _ = wh.app_handle().hide();
-                                    }
-                                    let _ = tx.send(hidden);
-                                })
-                                .is_err()
-                            {
-                                return;
-                            }
-                            if rx.recv_timeout(Duration::from_secs(1)).unwrap_or(false) {
-                                return; // hide landed with the proper slide
-                            }
-                        }
-                        // A minute with the cursor parked on the menu bar —
-                        // give up quietly; the window stays exactly as it is.
-                    });
-                    return;
+                // Out of fullscreen first when it is in it — see hide_main_window.
+                if window.label() == "main" {
+                    hide_main_window(window.app_handle());
+                } else {
+                    let _ = window.hide();
                 }
-                let _ = window.hide();
             }
         })
         .invoke_handler(tauri::generate_handler![
