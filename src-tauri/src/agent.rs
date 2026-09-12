@@ -205,9 +205,10 @@ pub fn agent_set_workspace(path: String) -> Result<String, String> {
     let shown = canon.to_string_lossy().to_string();
     let changed = WORKSPACE.lock().unwrap().replace(canon.clone()) != Some(canon);
     if changed {
-        // Background jobs, checkpoints, dir grants and the browser belong to
-        // the previous workspace.
-        bg_kill_all();
+        // Checkpoints, dir grants and the browser belong to the previous
+        // workspace. Background jobs do not: each belongs to the session that
+        // started it and keeps running, in its own workspace, until that
+        // session stops it or is deleted, or the app quits.
         cp_clear();
         dl_clear();
         GRANTED_DIRS.lock().unwrap().clear();
@@ -3244,11 +3245,12 @@ fn run_bash(
         let mut reg = BG_JOBS.lock().unwrap();
         let jobs = reg.get_or_insert_with(HashMap::new);
         if jobs.values().filter(|j| j.code.is_none()).count() < BG_MAX_JOBS {
-            let id = BG_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let label = format!("[detached] {command}");
+            let id = bg_new_id(&current_session(), &label);
             jobs.insert(
                 id,
                 BgJob::new(
-                    format!("[detached] {command}"),
+                    label,
                     started,
                     out_buf.clone(),
                     Some(err_buf.clone()),
@@ -3261,12 +3263,7 @@ fn run_bash(
                 while group_alive(pid_for_group) {
                     std::thread::sleep(Duration::from_millis(500));
                 }
-                if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
-                    if let Some(job) = jobs.get_mut(&id) {
-                        job.code = Some(0);
-                        job.ended = Some(Instant::now());
-                    }
-                }
+                bg_mark_ended(id, 0);
             });
             bg_id = Some(id);
         }
@@ -3467,6 +3464,8 @@ struct BgJob {
     /// Cleared from the tasks panel; kept only until the agent loop has been
     /// told the job finished.
     cleared: bool,
+    /// The Code session the job was started for.
+    session: String,
 }
 
 impl BgJob {
@@ -3488,6 +3487,7 @@ impl BgJob {
             ended: None,
             killed: false,
             cleared: false,
+            session: current_session(),
         }
     }
 
@@ -3559,7 +3559,151 @@ fn bg_evict_finished(jobs: &mut HashMap<u64, BgJob>) {
         jobs.remove(id);
     }
 }
-static BG_NEXT_ID: AtomicU64 = AtomicU64::new(1);
+/// Ids for jobs with no history row (no database: headless runs, tests) —
+/// numbered far past anything the history's own ids reach.
+static BG_NEXT_ID: AtomicU64 = AtomicU64::new(1 << 40);
+
+/// Where jobs are written down: each Code session's task history, kept in the
+/// app database so it outlives the app. None in headless runs and tests, where
+/// jobs live in memory only.
+static BG_DB: Mutex<Option<rusqlite::Connection>> = Mutex::new(None);
+/// The Code session the agent is working for; the UI sets it on every switch.
+static SESSION: Mutex<String> = Mutex::new(String::new());
+/// Output kept per job in the history — the newest, like the live buffers.
+const BG_HISTORY_OUTPUT: usize = 64 * 1024;
+/// Jobs kept per session in the history.
+const BG_HISTORY_KEEP: i64 = 100;
+
+const BG_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS code_bg_tasks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id   TEXT NOT NULL,
+    command      TEXT NOT NULL,
+    started_at   INTEGER NOT NULL,
+    elapsed_secs INTEGER,
+    code         INTEGER,
+    killed       INTEGER NOT NULL DEFAULT 0,
+    output       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_code_bg_tasks_session ON code_bg_tasks(session_id, id);
+";
+
+/// Open the task history in the app database (once, at startup).
+pub fn init_bg_history(path: &Path) {
+    let Ok(conn) = rusqlite::Connection::open(path) else {
+        return;
+    };
+    let _ = conn.busy_timeout(Duration::from_secs(2));
+    if conn.execute_batch(BG_SCHEMA).is_ok() {
+        *BG_DB.lock().unwrap() = Some(conn);
+    }
+}
+
+#[cfg(test)]
+fn close_bg_history() {
+    *BG_DB.lock().unwrap() = None;
+}
+
+/// Which Code session the agent is working for now. Jobs started from here on
+/// belong to it, and the tasks panel and the agent loop see only its jobs.
+#[tauri::command]
+pub fn agent_set_session(id: String) {
+    *SESSION.lock().unwrap() = id;
+}
+
+fn current_session() -> String {
+    SESSION.lock().unwrap().clone()
+}
+
+/// A new job's id: its row in the session's task history when there is one,
+/// so an id names the same job across restarts; the counter otherwise.
+fn bg_new_id(session: &str, command: &str) -> u64 {
+    if let Some(conn) = BG_DB.lock().unwrap().as_ref() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        if conn
+            .execute(
+                "INSERT INTO code_bg_tasks (session_id, command, started_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![session, command, now],
+            )
+            .is_ok()
+        {
+            let id = conn.last_insert_rowid();
+            let _ = conn.execute(
+                "DELETE FROM code_bg_tasks WHERE session_id = ?1 AND id NOT IN \
+                 (SELECT id FROM code_bg_tasks WHERE session_id = ?1 ORDER BY id DESC LIMIT ?2)",
+                rusqlite::params![session, BG_HISTORY_KEEP],
+            );
+            return id as u64;
+        }
+    }
+    BG_NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Write what became of a job into its session's history.
+fn bg_persist(id: u64, info: &BgInfo, log: &str) {
+    if let Some(conn) = BG_DB.lock().unwrap().as_ref() {
+        let mut start = log.len().saturating_sub(BG_HISTORY_OUTPUT);
+        while !log.is_char_boundary(start) {
+            start += 1;
+        }
+        let _ = conn.execute(
+            "UPDATE code_bg_tasks SET elapsed_secs = ?2, code = ?3, killed = ?4, output = ?5 WHERE id = ?1",
+            rusqlite::params![id as i64, info.elapsed_secs as i64, info.code, info.killed, &log[start..]],
+        );
+    }
+}
+
+/// A history row as the panel shows it (output left out).
+fn bg_row_info(r: &rusqlite::Row) -> rusqlite::Result<BgInfo> {
+    let code: Option<i32> = r.get(3)?;
+    let killed: bool = r.get(4)?;
+    Ok(BgInfo {
+        id: r.get::<_, i64>(0)? as u64,
+        command: r.get(1)?,
+        running: false,
+        code,
+        // No exit recorded: it was still running when the app went away.
+        killed: killed || code.is_none(),
+        elapsed_secs: r.get::<_, Option<i64>>(2)?.unwrap_or(0).max(0) as u64,
+        tail: String::new(),
+    })
+}
+
+/// A session's task history, newest first.
+fn bg_history_for(session: &str) -> Vec<BgInfo> {
+    let guard = BG_DB.lock().unwrap();
+    let Some(conn) = guard.as_ref() else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, command, elapsed_secs, code, killed FROM code_bg_tasks \
+         WHERE session_id = ?1 ORDER BY id DESC",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map([session], bg_row_info)
+        .map(|rows| rows.flatten().collect::<Vec<BgInfo>>())
+        .unwrap_or_default()
+}
+
+/// One job from the history, with the output it left.
+fn bg_history_log(id: u64) -> Option<BgInfo> {
+    let guard = BG_DB.lock().unwrap();
+    let conn = guard.as_ref()?;
+    conn.query_row(
+        "SELECT id, command, elapsed_secs, code, killed, output FROM code_bg_tasks WHERE id = ?1",
+        [id as i64],
+        |r| {
+            let mut info = bg_row_info(r)?;
+            info.tail = r.get(5)?;
+            Ok(info)
+        },
+    )
+    .ok()
+}
 const BG_MAX_JOBS: usize = 8;
 const BG_TAIL_BYTES: usize = 8 * 1024;
 
@@ -3631,7 +3775,7 @@ pub fn agent_bash_bg(command: String) -> Result<u64, String> {
     bg_stream(child.stdout.take().unwrap(), output.clone());
     bg_stream(child.stderr.take().unwrap(), output.clone());
 
-    let id = BG_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let id = bg_new_id(&current_session(), &command);
     jobs.insert(id, BgJob::new(command, Instant::now(), output, None, pid));
     drop(reg);
 
@@ -3645,13 +3789,28 @@ fn spawn_bg_monitor(id: u64, mut child: std::process::Child) {
     std::thread::spawn(move || {
         let status = child.wait();
         let code = status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
-        if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
-            if let Some(job) = jobs.get_mut(&id) {
-                job.code = Some(code);
-                job.ended = Some(Instant::now());
-            }
-        }
+        bg_mark_ended(id, code);
     });
+}
+
+/// Record that a job ended, then — once its readers have drained the last of
+/// the pipes — write what became of it into its session's history.
+fn bg_mark_ended(id: u64, code: i32) {
+    if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
+        if let Some(job) = jobs.get_mut(&id) {
+            job.code = Some(code);
+            job.ended = Some(Instant::now());
+        }
+    }
+    std::thread::sleep(Duration::from_millis(150));
+    let snapshot = BG_JOBS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|jobs| jobs.get(&id).map(|j| (j.info(id, String::new()), j.log())));
+    if let Some((info, log)) = snapshot {
+        bg_persist(id, &info, &log);
+    }
 }
 
 /// Move a still-running foreground bash child into the background registry
@@ -3670,7 +3829,7 @@ fn convert_running_to_bg(
         return Err(child);
     }
     let pid = child.id();
-    let id = BG_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let id = bg_new_id(&current_session(), command);
     jobs.insert(
         id,
         BgJob::new(command.to_string(), started, out_buf.clone(), Some(err_buf.clone()), pid),
@@ -3728,11 +3887,12 @@ fn kill_tree(pid: u32) {
 /// All currently RUNNING background jobs (for the UI's indicator).
 #[tauri::command]
 pub fn agent_bg_list() -> Vec<BgInfo> {
+    let session = current_session();
     let reg = BG_JOBS.lock().unwrap();
     let Some(jobs) = reg.as_ref() else { return Vec::new() };
     let mut out: Vec<BgInfo> = jobs
         .iter()
-        .filter(|(_, j)| j.code.is_none())
+        .filter(|(_, j)| j.code.is_none() && j.session == session)
         .map(|(id, j)| j.info(*id, String::new())) // the indicator doesn't need output
         .collect();
     out.sort_by_key(|j| j.id);
@@ -3742,10 +3902,12 @@ pub fn agent_bg_list() -> Vec<BgInfo> {
 /// Finished-but-unreported jobs → hand them to the agent loop exactly once.
 #[tauri::command]
 pub fn agent_bg_reap() -> Vec<BgInfo> {
+    let session = current_session();
     let mut out = Vec::new();
     if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
         for (id, job) in jobs.iter_mut() {
-            if job.code.is_some() && !job.reported {
+            // Another session's job waits for that session's next turn.
+            if job.session == session && job.code.is_some() && !job.reported {
                 job.reported = true;
                 out.push(job.info(*id, job.tail()));
             }
@@ -3756,44 +3918,71 @@ pub fn agent_bg_reap() -> Vec<BgInfo> {
     out
 }
 
-/// Every job the tasks panel shows — running first, then finished, newest
-/// first within each — without output: the panel asks for a job's log when
-/// it opens that job.
+/// Every job of the current session the tasks panel shows — running first,
+/// then finished, newest first within each — without output: the panel asks
+/// for a job's log when it opens that job. Finished jobs come from the
+/// session's history, so they are still there after the app restarts.
 #[tauri::command]
 pub fn agent_bg_all() -> Vec<BgInfo> {
+    let session = current_session();
+    let history = bg_history_for(&session);
     let reg = BG_JOBS.lock().unwrap();
-    let Some(jobs) = reg.as_ref() else { return Vec::new() };
-    let mut out: Vec<BgInfo> = jobs
-        .iter()
-        .filter(|(_, j)| !j.cleared)
-        .map(|(id, j)| j.info(*id, String::new()))
-        .collect();
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for row in history {
+        seen.insert(row.id);
+        match reg.as_ref().and_then(|jobs| jobs.get(&row.id)) {
+            // Still in memory: the fresher account (a running job's time, one
+            // that ended a moment ago and is not written down yet).
+            Some(job) if !job.cleared => out.push(job.info(row.id, String::new())),
+            Some(_) => {}
+            None => out.push(row),
+        }
+    }
+    // Jobs with no history row (no database: headless runs, tests).
+    if let Some(jobs) = reg.as_ref() {
+        for (id, job) in jobs {
+            if job.session == session && !job.cleared && !seen.contains(id) {
+                out.push(job.info(*id, String::new()));
+            }
+        }
+    }
     out.sort_by_key(|j| (!j.running, std::cmp::Reverse(j.id)));
     out
 }
 
-/// One job with everything its output buffers still hold, for the tasks panel
+/// One job with everything its output buffers still hold — or, for a job the
+/// app no longer holds, the output its history kept — for the tasks panel
 /// (`agent_bg_output` is the model's view: a short tail).
 #[tauri::command]
 pub fn agent_bg_log(id: u64) -> Result<BgInfo, String> {
-    let reg = BG_JOBS.lock().unwrap();
-    let job = reg
+    let live = BG_JOBS
+        .lock()
+        .unwrap()
         .as_ref()
         .and_then(|j| j.get(&id))
-        .ok_or_else(|| trf!("没有这个后台命令: #{id}", "no such background job: #{id}"))?;
-    Ok(job.info(id, job.log()))
+        .map(|job| job.info(id, job.log()));
+    live.or_else(|| bg_history_log(id))
+        .ok_or_else(|| trf!("没有这个后台命令: #{id}", "no such background job: #{id}"))
 }
 
-/// Clear finished jobs from the tasks panel; returns how many. One the agent
-/// loop has not been told about yet stays in the registry, hidden, until it
-/// has been — the panel is the user's view of the jobs, and tidying it must
-/// not swallow the completion notice the model is waiting for.
+/// Clear the current session's finished jobs from the tasks panel and its
+/// history; returns how many. One the agent loop has not been told about yet
+/// stays in memory, hidden, until it has been — the panel is the user's view
+/// of the jobs, and tidying it must not swallow the completion notice the
+/// model is waiting for.
 #[tauri::command]
 pub fn agent_bg_clear_finished() -> usize {
+    let session = current_session();
+    let mut running = std::collections::HashSet::new();
     let mut n = 0;
     if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
-        jobs.retain(|_, j| {
-            if j.code.is_none() || j.cleared {
+        jobs.retain(|id, j| {
+            if j.session != session || j.cleared {
+                return true;
+            }
+            if j.code.is_none() {
+                running.insert(*id);
                 return true;
             }
             n += 1;
@@ -3805,16 +3994,54 @@ pub fn agent_bg_clear_finished() -> usize {
             }
         });
     }
+    if let Some(conn) = BG_DB.lock().unwrap().as_ref() {
+        let ids: Vec<i64> = match conn.prepare("SELECT id FROM code_bg_tasks WHERE session_id = ?1") {
+            Ok(mut stmt) => stmt
+                .query_map([&session], |r| r.get(0))
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        let mut gone = 0;
+        for id in ids.into_iter().filter(|id| !running.contains(&(*id as u64))) {
+            gone += conn.execute("DELETE FROM code_bg_tasks WHERE id = ?1", [id]).unwrap_or(0);
+        }
+        return gone;
+    }
     n
 }
 
-/// Kill every background job (workspace switch / app teardown).
+/// A Code session is being deleted: its jobs go with it — the running ones
+/// stopped, its task history dropped.
+pub fn bg_forget_session(session: &str) {
+    if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
+        jobs.retain(|_, j| {
+            if j.session != session {
+                return true;
+            }
+            if j.code.is_none() {
+                kill_tree(j.pid);
+            }
+            false
+        });
+    }
+    if let Some(conn) = BG_DB.lock().unwrap().as_ref() {
+        let _ = conn.execute("DELETE FROM code_bg_tasks WHERE session_id = ?1", [session]);
+    }
+}
+
+/// Kill every background job — the app is going away. What became of each is
+/// written to its session's history first, so a dev server that was up when
+/// the app quit reads as stopped the next time its session is opened.
 pub fn bg_kill_all() {
     if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
-        for job in jobs.values() {
+        for (id, job) in jobs.iter_mut() {
             if job.code.is_none() {
                 kill_tree(job.pid);
+                job.killed = true;
+                job.ended = Some(Instant::now());
             }
+            bg_persist(*id, &job.info(*id, String::new()), &job.log());
         }
         jobs.clear();
     }
@@ -4657,6 +4884,8 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("chaty-agent-bgpanel-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         set_ws(&tmp);
+        // A clean registry: the server tests stop their jobs but leave them listed.
+        bg_kill_all();
 
         let done = agent_bash_bg("echo first-line; echo second-line".into()).unwrap();
         let sleeper = agent_bash_bg("sleep 30".into()).unwrap();
@@ -4693,6 +4922,62 @@ mod tests {
         assert!(agent_bg_all().iter().all(|j| j.id != done && j.id != sleeper));
         assert!(agent_bg_reap().iter().any(|j| j.id == done));
 
+        bg_kill_all();
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn background_tasks_belong_to_their_session_and_outlive_the_app() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-bgsess-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        // A clean registry, before the history opens: nothing of other tests in it.
+        bg_kill_all();
+        init_bg_history(&tmp.join("history.db"));
+        let wait_done = |id: u64| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while agent_bg_all().iter().any(|j| j.id == id && j.running) {
+                assert!(Instant::now() < deadline, "bg job never finished");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+
+        agent_set_session("A".into());
+        let a_done = agent_bash_bg("echo from-a".into()).unwrap();
+        let a_server = agent_bash_bg("sleep 30".into()).unwrap();
+        wait_done(a_done);
+
+        // Session B sees none of A's jobs, and its agent loop is not told
+        // about A's.
+        agent_set_session("B".into());
+        assert!(agent_bg_all().is_empty());
+        let b_done = agent_bash_bg("echo from-b".into()).unwrap();
+        wait_done(b_done);
+        let reaped = agent_bg_reap();
+        assert!(reaped.iter().any(|j| j.id == b_done));
+        assert!(reaped.iter().all(|j| j.id != a_done));
+
+        // The app quits: the server is stopped, and every job is written down.
+        bg_kill_all();
+        agent_set_session("A".into());
+        let all = agent_bg_all();
+        let done = all.iter().find(|j| j.id == a_done).expect("finished job kept");
+        assert!(!done.running && done.code == Some(0) && !done.killed);
+        let server = all.iter().find(|j| j.id == a_server).expect("stopped job kept");
+        assert!(!server.running && server.killed);
+        assert!(agent_bg_log(a_done).unwrap().tail.contains("from-a"));
+
+        // Clearing A's finished jobs leaves B's alone; deleting B takes its history.
+        agent_bg_clear_finished();
+        assert!(agent_bg_all().is_empty());
+        agent_set_session("B".into());
+        assert_eq!(agent_bg_all().len(), 1);
+        bg_forget_session("B");
+        assert!(agent_bg_all().is_empty());
+
+        close_bg_history();
+        agent_set_session(String::new());
         bg_kill_all();
         std::fs::remove_dir_all(&tmp).ok();
     }

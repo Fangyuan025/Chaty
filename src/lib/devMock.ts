@@ -346,6 +346,8 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       };
     case "agent_bg_clear_finished":
       return 1;
+    case "agent_set_session":
+      return null;
     case "agent_checkpoint_begin":
       return 1;
     case "agent_list_files":

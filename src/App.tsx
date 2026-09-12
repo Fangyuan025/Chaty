@@ -2840,6 +2840,7 @@ export default function App() {
         skills={settings.codeSkills}
         disabledSkills={settings.codeDisabledSkills}
         memoryEnabled={settings.codeMemory}
+        groupByWorkspace={settings.codeGroupByWorkspace}
         allowedCommands={settings.codeAllowedCommands}
         sendKey={settings.sendKey}
         autoTitle={settings.autoTitle}

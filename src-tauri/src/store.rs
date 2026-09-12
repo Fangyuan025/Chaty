@@ -430,6 +430,8 @@ pub fn code_session_load(db: State<'_, Db>, id: String) -> Result<Option<String>
 
 #[tauri::command]
 pub fn code_session_delete(db: State<'_, Db>, id: String) -> Result<(), String> {
+    // Its background jobs go with it: the running ones stopped, the history dropped.
+    crate::agent::bg_forget_session(&id);
     let conn = lock(&db)?;
     conn.execute("DELETE FROM code_sessions WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;

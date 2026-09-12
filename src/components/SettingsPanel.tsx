@@ -102,6 +102,8 @@ export interface GenSettings {
   /** Code mode: run the agent's browser hidden (headless). */
   codeBrowserHeadless: boolean;
   codeMemory: boolean;
+  /** Code mode: the session rail grouped by workspace. */
+  codeGroupByWorkspace: boolean;
   /** Code mode: user-defined skills (named prompt templates, invoked via /). */
   codeSkills: PromptPreset[];
   /** Code mode: names of built-in skills the user turned off. */
@@ -176,6 +178,7 @@ export const defaultSettings: GenSettings = {
   codeAutoRunReadOnly: true,
   codeBrowserHeadless: false,
   codeMemory: true,
+  codeGroupByWorkspace: false,
   codeSkills: [],
   codeDisabledSkills: [],
   codeAllowedCommands: [],
@@ -1285,6 +1288,12 @@ export function SettingsPanel({
                 <Switch
                   on={value.codeMemory}
                   onToggle={() => set("codeMemory", !value.codeMemory)}
+                />
+              </SetRow>
+              <SetRow label={t("cmGroupByWs")} hint={t("cmGroupByWsHint")}>
+                <Switch
+                  on={value.codeGroupByWorkspace}
+                  onToggle={() => set("codeGroupByWorkspace", !value.codeGroupByWorkspace)}
                 />
               </SetRow>
 

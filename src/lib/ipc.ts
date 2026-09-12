@@ -398,6 +398,11 @@ export async function agentBgAll(): Promise<AgentBgInfo[]> {
 export async function agentBgLog(id: number): Promise<AgentBgInfo> {
   return invoke<AgentBgInfo>("agent_bg_log", { id });
 }
+/** Tell the agent which Code session it is working for: background commands
+ *  started from now on belong to it, and the tasks panel shows only its own. */
+export async function agentSetSession(id: string): Promise<void> {
+  await invoke("agent_set_session", { id });
+}
 /** Clear finished background commands from the tasks panel; returns how many. */
 export async function agentBgClearFinished(): Promise<number> {
   return invoke<number>("agent_bg_clear_finished");

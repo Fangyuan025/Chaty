@@ -323,6 +323,8 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let db = store::init_db(&dir.join("chaty.db"))?;
             app.manage(db);
+            // Code sessions' background task history, in the same database.
+            agent::init_bg_history(&dir.join("chaty.db"));
 
             // ---- browser automation: persistent profile (logins survive) ----
             if let Ok(data) = app.path().app_data_dir() {
@@ -555,6 +557,7 @@ pub fn run() {
             agent::agent_bg_all,
             agent::agent_bg_log,
             agent::agent_bg_clear_finished,
+            agent::agent_set_session,
             agent::agent_checkpoint_begin,
             agent::agent_checkpoint_revert_to,
             store::save_conversation,
@@ -602,6 +605,10 @@ pub fn run() {
                 // which skips ExitRequested and was still reaching ggml's
                 // teardown (ggml_metal_rsets_free → ggml_abort → SIGABRT).
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    // Background jobs run in process groups of their own, so
+                    // they would outlive the app: stop them, and write down
+                    // what became of each in its session's history.
+                    agent::bg_kill_all();
                     // Same fullscreen trap as hide-to-tray: dying inside a
                     // fullscreen Space leaves that Space up with nothing in it.
                     // We can't wait out the animation here (the `_exit` below is

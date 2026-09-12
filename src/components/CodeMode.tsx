@@ -9,6 +9,7 @@ import { effortLabel, intensityOf, thinkTabActive } from "../lib/effort";
 import { diffLines } from "../lib/diff";
 import { useConfirm } from "./ConfirmModal";
 import { BgTasksPanel } from "./BgTasksPanel";
+import { groupSessionsByWorkspace } from "../lib/sessionGroups";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { copyToClipboard } from "../lib/clipboard";
 import { cleanTitle } from "../lib/voiceText";
@@ -16,6 +17,7 @@ import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 import {
   agentBgAll,
+  agentSetSession,
   agentDlList,
   type AgentDlInfo,
   agentCheckpointBegin,
@@ -527,6 +529,7 @@ export function CodeMode({
   skills = [],
   disabledSkills = [],
   memoryEnabled = true,
+  groupByWorkspace = false,
   allowedCommands = [],
   sendKey = "enter",
   autoTitle = true,
@@ -559,6 +562,8 @@ export function CodeMode({
   /** Project memory on (default): load the index + offer `remember`
    *  (Settings → Code). Off ⇒ neither, byte-identical prompt. */
   memoryEnabled?: boolean;
+  /** Group the session rail by workspace (Settings → Code). */
+  groupByWorkspace?: boolean;
   /** Persistent command prefixes that never need approval (Settings → Code). */
   allowedCommands?: string[];
   /** Composer send shortcut (Settings → General). */
@@ -654,6 +659,8 @@ export function CodeMode({
    *  the tasks panel it opens. */
   const [bgJobs, setBgJobs] = useState<AgentBgInfo[]>([]);
   const [showBg, setShowBg] = useState(false);
+  /** Workspace groups folded shut in the session rail (by path; "" = none). */
+  const [collapsedWs, setCollapsedWs] = useState<Set<string>>(() => new Set());
   /** Active background downloads (header progress badge). */
   const [downloads, setDownloads] = useState<AgentDlInfo[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -729,6 +736,16 @@ export function CodeMode({
     const timer = setInterval(tick, running || showBg ? 1000 : 5000);
     return () => clearInterval(timer);
   }, [active, workspace, running, showBg]);
+
+  // Background jobs belong to the session that started them: tell the agent
+  // which session it is working for, and show that session's jobs.
+  useEffect(() => {
+    setBgJobs([]);
+    agentSetSession(sid)
+      .then(() => agentBgAll())
+      .then(setBgJobs)
+      .catch(() => {});
+  }, [sid]);
 
   // Follow-the-stream is an *intent*, not a position: any upward wheel motion
   // releases it immediately (a distance check alone loses to the next stream
@@ -934,10 +951,15 @@ export function CodeMode({
   }
 
   async function pickWorkspace() {
+    if (running) return;
     const dir = await open({ directory: true });
     if (!dir || Array.isArray(dir)) return;
     try {
       const abs = await agentSetWorkspace(dir);
+      // A session belongs to one workspace. One that already holds a
+      // conversation keeps its own, and the new folder gets a session of its
+      // own; an empty one — or one whose folder is gone — just takes it.
+      if (msgs.length > 0 && workspace && abs !== workspace) newSession();
       setWorkspace(abs);
       agentListGrants().then(setDirGrants).catch(() => {});
     } catch (e) {
@@ -991,10 +1013,20 @@ export function CodeMode({
       sessionAllowsRef.current = new Set();
       void agentClearGrants().catch(() => {});
       setDirGrants([]);
+      // A session opens in its own workspace. Setting it used to fail in
+      // silence — a folder since moved or deleted left the header showing
+      // one workspace while the agent kept working in another.
       const meta = sessions.find((s) => s.id === id);
       if (meta?.workspace) {
-        setWorkspace(meta.workspace);
-        agentSetWorkspace(meta.workspace).catch(() => {});
+        try {
+          setWorkspace(await agentSetWorkspace(meta.workspace));
+        } catch {
+          setWorkspace(null);
+          void confirm({
+            message: t("cmSessionWsMissing", { path: meta.workspace }),
+            confirmLabel: t("confirm"),
+          });
+        }
       }
     } catch {
       /* ignore corrupt */
@@ -1514,6 +1546,31 @@ export function CodeMode({
 
   const wsName = workspace ? workspace.split("/").filter(Boolean).pop() : null;
 
+  const sessionRow = (s: (typeof sessions)[number]) => (
+    <div
+      key={s.id}
+      className={`cm-session ${s.id === sid ? "active" : ""}`}
+      onClick={() => void openSession(s.id)}
+    >
+      <span className="cm-session-title">{s.title}</span>
+      <button
+        className="cm-session-del"
+        title={t("deleteConv")}
+        onClick={(e) => { e.stopPropagation(); void deleteSession(s.id); }}
+      >
+        <Icon name="x" size={11} strokeWidth={2.4} />
+      </button>
+    </div>
+  );
+
+  const toggleWsGroup = (key: string) =>
+    setCollapsedWs((cur) => {
+      const next = new Set(cur);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
   return (
     <div className="code-mode" style={active ? undefined : { display: "none" }}>
       <aside className="code-rail" style={{ width: railW }}>
@@ -1523,23 +1580,29 @@ export function CodeMode({
         <div className="cm-sessions">
           {sessions.length === 0 ? (
             <div className="cm-empty-list">{t("cmNoSessions")}</div>
+          ) : groupByWorkspace ? (
+            groupSessionsByWorkspace(sessions).map((g) => {
+              const key = g.path ?? "";
+              const folded = collapsedWs.has(key);
+              return (
+                <div key={key || "(none)"} className="cm-ws-block">
+                  <button
+                    className={`cm-ws-group ${g.path && g.path === workspace ? "current" : ""}`}
+                    title={g.path ?? ""}
+                    aria-expanded={!folded}
+                    onClick={() => toggleWsGroup(key)}
+                  >
+                    <Icon name={folded ? "chevron-right" : "chevron-down"} size={11} />
+                    <Icon name="folder" size={12} />
+                    <span className="cm-ws-group-name">{g.path ? g.name : t("cmNoWorkspace")}</span>
+                    <span className="cm-ws-group-count">{g.sessions.length}</span>
+                  </button>
+                  {!folded && g.sessions.map(sessionRow)}
+                </div>
+              );
+            })
           ) : (
-            sessions.map((s) => (
-              <div
-                key={s.id}
-                className={`cm-session ${s.id === sid ? "active" : ""}`}
-                onClick={() => void openSession(s.id)}
-              >
-                <span className="cm-session-title">{s.title}</span>
-                <button
-                  className="cm-session-del"
-                  title={t("deleteConv")}
-                  onClick={(e) => { e.stopPropagation(); void deleteSession(s.id); }}
-                >
-                  <Icon name="x" size={11} strokeWidth={2.4} />
-                </button>
-              </div>
-            ))
+            sessions.map(sessionRow)
           )}
         </div>
         <div className="side-status" title={model ? model.name : ""}>

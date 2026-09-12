@@ -208,6 +208,18 @@ export const T = {
   bgNoOutput: { zh: "(暂无输出)", en: "(no output yet)", pt: "(ainda sem saída)" },
   bgEmpty: { zh: "没有后台任务", en: "No background tasks", pt: "Nenhuma tarefa em segundo plano" },
   bgClose: { zh: "关闭", en: "Close", pt: "Fechar" },
+  cmGroupByWs: { zh: "会话栏按工作区分组", en: "Group sessions by workspace", pt: "Agrupar sessões por espaço de trabalho" },
+  cmGroupByWsHint: {
+    zh: "左侧会话列表按各会话所在的工作区分组显示,分组可折叠。",
+    en: "Groups the session list on the left by each session's workspace; groups can be folded.",
+    pt: "Agrupa a lista de sessões à esquerda pelo espaço de trabalho de cada sessão; os grupos podem ser recolhidos.",
+  },
+  cmNoWorkspace: { zh: "未绑定工作区", en: "No workspace", pt: "Sem espaço de trabalho" },
+  cmSessionWsMissing: {
+    zh: "这个会话的工作区已经找不到了:{path}。请重新选择工作区。",
+    en: "This session's workspace can no longer be found: {path}. Choose a workspace again.",
+    pt: "O espaço de trabalho desta sessão não foi encontrado: {path}. Escolha um espaço de trabalho novamente.",
+  },
   cmEg1: { zh: "解释这个项目的结构和关键流程", en: "Explain this project's structure and key flows", pt: "Explique a estrutura deste projeto e os fluxos principais" },
   cmEg2: { zh: "运行测试,修复所有失败", en: "Run the tests and fix every failure", pt: "Execute os testes e corrija todas as falhas" },
   cmEg3: { zh: "审查代码,列出潜在 bug 清单", en: "Review the code and list likely bugs", pt: "Revise o código e liste prováveis bugs" },
