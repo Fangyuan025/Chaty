@@ -327,6 +327,25 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "agent_bg_list":
     case "agent_bg_reap":
       return [];
+    // A dev server still up and a test run that finished, so the background
+    // tasks panel has something to show in the browser.
+    case "agent_bg_all":
+      return [
+        { id: 2, command: "npm run dev", running: true, code: null, killed: false, elapsedSecs: 94, tail: "" },
+        { id: 1, command: "npm test -- --run", running: false, code: 0, killed: false, elapsedSecs: 12, tail: "" },
+      ];
+    case "agent_bg_log":
+      return {
+        id: Number(args?.id ?? 0),
+        command: "npm run dev",
+        running: true,
+        code: null,
+        killed: false,
+        elapsedSecs: 94,
+        tail: "  VITE v5.4.2  ready in 312 ms\n\n  ➜  Local:   http://localhost:5173/\n",
+      };
+    case "agent_bg_clear_finished":
+      return 1;
     case "agent_checkpoint_begin":
       return 1;
     case "agent_list_files":

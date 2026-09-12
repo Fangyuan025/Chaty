@@ -8,14 +8,14 @@ const CM_COMPOSER_MAX_H = 200;
 import { effortLabel, intensityOf, thinkTabActive } from "../lib/effort";
 import { diffLines } from "../lib/diff";
 import { useConfirm } from "./ConfirmModal";
+import { BgTasksPanel } from "./BgTasksPanel";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { copyToClipboard } from "../lib/clipboard";
 import { cleanTitle } from "../lib/voiceText";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 import {
-  agentBgKill,
-  agentBgList,
+  agentBgAll,
   agentDlList,
   type AgentDlInfo,
   agentCheckpointBegin,
@@ -650,8 +650,10 @@ export function CodeMode({
   const [queue, setQueue] = useState<string[]>([]);
   const queueRef = useRef(queue);
   queueRef.current = queue;
-  /** Running background jobs (dev servers …) — header indicator. */
+  /** Background jobs (dev servers …), running and finished — header pill and
+   *  the tasks panel it opens. */
   const [bgJobs, setBgJobs] = useState<AgentBgInfo[]>([]);
+  const [showBg, setShowBg] = useState(false);
   /** Active background downloads (header progress badge). */
   const [downloads, setDownloads] = useState<AgentDlInfo[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -718,15 +720,15 @@ export function CodeMode({
   useEffect(() => {
     if (!active || !workspace) return;
     const tick = () => {
-      agentBgList().then(setBgJobs).catch(() => {});
+      agentBgAll().then(setBgJobs).catch(() => {});
       agentDlList()
         .then((all) => setDownloads(all.filter((d) => !d.done)))
         .catch(() => {});
     };
     tick();
-    const timer = setInterval(tick, running ? 1000 : 5000);
+    const timer = setInterval(tick, running || showBg ? 1000 : 5000);
     return () => clearInterval(timer);
-  }, [active, workspace, running]);
+  }, [active, workspace, running, showBg]);
 
   // Follow-the-stream is an *intent*, not a position: any upward wheel motion
   // releases it immediately (a distance check alone loses to the next stream
@@ -1590,23 +1592,26 @@ export function CodeMode({
                 : ` · ${fmtBytes(downloads[0].downloaded)}`}
             </span>
           )}
-          {bgJobs.length > 0 && (
-            <button
-              className="cm-bgjobs"
-              title={bgJobs.map((j) => `#${j.id} · ${j.command}`).join("\n") + "\n" + t("cmBgKillHint")}
-              onClick={async () => {
-                const ok = await confirm({
-                  message: t("cmBgKillConfirm", { n: String(bgJobs.length) }),
-                  confirmLabel: t("cmBgKill"),
-                  danger: true,
-                });
-                if (!ok) return;
-                await Promise.all(bgJobs.map((j) => agentBgKill(j.id).catch(() => {})));
-                agentBgList().then(setBgJobs).catch(() => {});
-              }}
-            >
-              <span className="cm-spin" /> {bgJobs.length} {t("cmBgJobs")}
-            </button>
+          {bgJobs.length > 0 &&
+            (() => {
+              const live = bgJobs.filter((j) => j.running).length;
+              return (
+                <button
+                  className={`cm-bgjobs ${showBg ? "active" : ""}`}
+                  title={t("bgOpenHint")}
+                  onClick={() => setShowBg((v) => !v)}
+                >
+                  {live > 0 ? <span className="cm-spin" /> : <Icon name="check" size={12} strokeWidth={2.4} />}
+                  {live > 0 ? t("cmBgCount", { n: String(live) }) : t("bgTitle")}
+                </button>
+              );
+            })()}
+          {showBg && (
+            <BgTasksPanel
+              jobs={bgJobs}
+              onClose={() => setShowBg(false)}
+              onChanged={() => agentBgAll().then(setBgJobs).catch(() => {})}
+            />
           )}
           {ctxUsed > 0 && (model?.nCtx ?? 0) > 0 && (() => {
             const nCtx = model!.nCtx!;

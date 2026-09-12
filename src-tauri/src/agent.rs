@@ -3247,15 +3247,13 @@ fn run_bash(
             let id = BG_NEXT_ID.fetch_add(1, Ordering::Relaxed);
             jobs.insert(
                 id,
-                BgJob {
-                    command: format!("[detached] {command}"),
+                BgJob::new(
+                    format!("[detached] {command}"),
                     started,
-                    output: out_buf.clone(),
-                    stderr_extra: Some(err_buf.clone()),
-                    code: None,
-                    reported: false,
-                    pid: pid_for_group,
-                },
+                    out_buf.clone(),
+                    Some(err_buf.clone()),
+                    pid_for_group,
+                ),
             );
             drop(reg);
             // Monitor: poll the group until it empties, then mark finished.
@@ -3266,6 +3264,7 @@ fn run_bash(
                 if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
                     if let Some(job) = jobs.get_mut(&id) {
                         job.code = Some(0);
+                        job.ended = Some(Instant::now());
                     }
                 }
             });
@@ -3460,9 +3459,69 @@ struct BgJob {
     reported: bool,
     /// For `bg_kill`: the child's pid (the sandbox wrapper's process group).
     pid: u32,
+    /// When the process ended — so a finished job's running time stops counting
+    /// instead of growing for as long as the app stays open.
+    ended: Option<Instant>,
+    /// Ended because someone stopped it, not because it failed.
+    killed: bool,
+    /// Cleared from the tasks panel; kept only until the agent loop has been
+    /// told the job finished.
+    cleared: bool,
 }
 
 impl BgJob {
+    fn new(
+        command: String,
+        started: Instant,
+        output: Arc<Mutex<Vec<u8>>>,
+        stderr_extra: Option<Arc<Mutex<Vec<u8>>>>,
+        pid: u32,
+    ) -> Self {
+        BgJob {
+            command,
+            started,
+            output,
+            stderr_extra,
+            code: None,
+            reported: false,
+            pid,
+            ended: None,
+            killed: false,
+            cleared: false,
+        }
+    }
+
+    /// What the UI and the agent loop are told about this job.
+    fn info(&self, id: u64, tail: String) -> BgInfo {
+        BgInfo {
+            id,
+            command: self.command.clone(),
+            running: self.code.is_none(),
+            code: self.code,
+            killed: self.killed,
+            elapsed_secs: self
+                .ended
+                .unwrap_or_else(Instant::now)
+                .duration_since(self.started)
+                .as_secs(),
+            tail,
+        }
+    }
+
+    /// Everything the job's buffers still hold — each capped at
+    /// MAX_OUTPUT_BYTES, newest kept — for the tasks panel.
+    fn log(&self) -> String {
+        let mut t = String::from_utf8_lossy(&self.output.lock().unwrap()).into_owned();
+        if let Some(err) = &self.stderr_extra {
+            let e = String::from_utf8_lossy(&err.lock().unwrap()).into_owned();
+            if !e.trim().is_empty() {
+                t.push_str("\n[stderr]\n");
+                t.push_str(&e);
+            }
+        }
+        t
+    }
+
     /// Model-facing tail of the job's output (both channels for converted jobs).
     fn tail(&self) -> String {
         let mut t = bg_tail(&self.output);
@@ -3523,6 +3582,9 @@ pub struct BgInfo {
     pub command: String,
     pub running: bool,
     pub code: Option<i32>,
+    /// Stopped on request rather than ended by itself.
+    pub killed: bool,
+    /// Running time: up to now while it runs, up to its end once it has ended.
     pub elapsed_secs: u64,
     pub tail: String,
 }
@@ -3570,18 +3632,7 @@ pub fn agent_bash_bg(command: String) -> Result<u64, String> {
     bg_stream(child.stderr.take().unwrap(), output.clone());
 
     let id = BG_NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    jobs.insert(
-        id,
-        BgJob {
-            command,
-            started: Instant::now(),
-            output,
-            stderr_extra: None,
-            code: None,
-            reported: false,
-            pid,
-        },
-    );
+    jobs.insert(id, BgJob::new(command, Instant::now(), output, None, pid));
     drop(reg);
 
     spawn_bg_monitor(id, child);
@@ -3597,6 +3648,7 @@ fn spawn_bg_monitor(id: u64, mut child: std::process::Child) {
         if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
             if let Some(job) = jobs.get_mut(&id) {
                 job.code = Some(code);
+                job.ended = Some(Instant::now());
             }
         }
     });
@@ -3621,15 +3673,7 @@ fn convert_running_to_bg(
     let id = BG_NEXT_ID.fetch_add(1, Ordering::Relaxed);
     jobs.insert(
         id,
-        BgJob {
-            command: command.to_string(),
-            started,
-            output: out_buf.clone(),
-            stderr_extra: Some(err_buf.clone()),
-            code: None,
-            reported: false,
-            pid,
-        },
+        BgJob::new(command.to_string(), started, out_buf.clone(), Some(err_buf.clone()), pid),
     );
     drop(reg);
     spawn_bg_monitor(id, child);
@@ -3644,14 +3688,7 @@ pub fn agent_bg_output(id: u64) -> Result<BgInfo, String> {
         .as_ref()
         .and_then(|j| j.get(&id))
         .ok_or_else(|| trf!("没有这个后台命令: #{id}", "no such background job: #{id}"))?;
-    Ok(BgInfo {
-        id,
-        command: job.command.clone(),
-        running: job.code.is_none(),
-        code: job.code,
-        elapsed_secs: job.started.elapsed().as_secs(),
-        tail: job.tail(),
-    })
+    Ok(job.info(id, job.tail()))
 }
 
 /// Kill a background job (SIGKILL to its process group on unix).
@@ -3664,6 +3701,7 @@ pub fn agent_bg_kill(id: u64) -> Result<String, String> {
         .ok_or_else(|| trf!("没有这个后台命令: #{id}", "no such background job: #{id}"))?;
     if job.code.is_none() {
         kill_tree(job.pid);
+        job.killed = true;
         job.reported = true; // killed on request → no completion notice needed
         return Ok(trf!("已终止后台命令 #{id}", "killed background job #{id}"));
     }
@@ -3695,14 +3733,7 @@ pub fn agent_bg_list() -> Vec<BgInfo> {
     let mut out: Vec<BgInfo> = jobs
         .iter()
         .filter(|(_, j)| j.code.is_none())
-        .map(|(id, j)| BgInfo {
-            id: *id,
-            command: j.command.clone(),
-            running: true,
-            code: None,
-            elapsed_secs: j.started.elapsed().as_secs(),
-            tail: String::new(), // the indicator doesn't need output
-        })
+        .map(|(id, j)| j.info(*id, String::new())) // the indicator doesn't need output
         .collect();
     out.sort_by_key(|j| j.id);
     out
@@ -3716,18 +3747,65 @@ pub fn agent_bg_reap() -> Vec<BgInfo> {
         for (id, job) in jobs.iter_mut() {
             if job.code.is_some() && !job.reported {
                 job.reported = true;
-                out.push(BgInfo {
-                    id: *id,
-                    command: job.command.clone(),
-                    running: false,
-                    code: job.code,
-                    elapsed_secs: job.started.elapsed().as_secs(),
-                    tail: job.tail(),
-                });
+                out.push(job.info(*id, job.tail()));
             }
         }
+        // A job cleared from the panel was only waiting for this.
+        jobs.retain(|_, j| !(j.cleared && j.reported));
     }
     out
+}
+
+/// Every job the tasks panel shows — running first, then finished, newest
+/// first within each — without output: the panel asks for a job's log when
+/// it opens that job.
+#[tauri::command]
+pub fn agent_bg_all() -> Vec<BgInfo> {
+    let reg = BG_JOBS.lock().unwrap();
+    let Some(jobs) = reg.as_ref() else { return Vec::new() };
+    let mut out: Vec<BgInfo> = jobs
+        .iter()
+        .filter(|(_, j)| !j.cleared)
+        .map(|(id, j)| j.info(*id, String::new()))
+        .collect();
+    out.sort_by_key(|j| (!j.running, std::cmp::Reverse(j.id)));
+    out
+}
+
+/// One job with everything its output buffers still hold, for the tasks panel
+/// (`agent_bg_output` is the model's view: a short tail).
+#[tauri::command]
+pub fn agent_bg_log(id: u64) -> Result<BgInfo, String> {
+    let reg = BG_JOBS.lock().unwrap();
+    let job = reg
+        .as_ref()
+        .and_then(|j| j.get(&id))
+        .ok_or_else(|| trf!("没有这个后台命令: #{id}", "no such background job: #{id}"))?;
+    Ok(job.info(id, job.log()))
+}
+
+/// Clear finished jobs from the tasks panel; returns how many. One the agent
+/// loop has not been told about yet stays in the registry, hidden, until it
+/// has been — the panel is the user's view of the jobs, and tidying it must
+/// not swallow the completion notice the model is waiting for.
+#[tauri::command]
+pub fn agent_bg_clear_finished() -> usize {
+    let mut n = 0;
+    if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
+        jobs.retain(|_, j| {
+            if j.code.is_none() || j.cleared {
+                return true;
+            }
+            n += 1;
+            if j.reported {
+                false
+            } else {
+                j.cleared = true;
+                true
+            }
+        });
+    }
+    n
 }
 
 /// Kill every background job (workspace switch / app teardown).
@@ -4147,13 +4225,15 @@ mod tests {
     fn finished_background_jobs_stop_accumulating() {
         use std::sync::Arc;
         let job = |code: Option<i32>, reported: bool| BgJob {
-            command: "sleep 0".into(),
-            started: std::time::Instant::now(),
-            output: Arc::new(Mutex::new(Vec::new())),
-            stderr_extra: None,
             code,
             reported,
-            pid: 0,
+            ..BgJob::new(
+                "sleep 0".into(),
+                std::time::Instant::now(),
+                Arc::new(Mutex::new(Vec::new())),
+                None,
+                0,
+            )
         };
         let mut jobs: HashMap<u64, BgJob> = HashMap::new();
         for id in 0..200u64 {
@@ -4566,6 +4646,52 @@ mod tests {
         agent_bg_kill(id2).unwrap();
         std::thread::sleep(Duration::from_millis(200));
         assert!(agent_bg_reap().iter().all(|j| j.id != id2));
+
+        bg_kill_all();
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn the_tasks_panel_lists_logs_stops_and_clears_jobs() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-bgpanel-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+
+        let done = agent_bash_bg("echo first-line; echo second-line".into()).unwrap();
+        let sleeper = agent_bash_bg("sleep 30".into()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while agent_bg_all().iter().any(|j| j.id == done && j.running) {
+            assert!(Instant::now() < deadline, "bg job never finished");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // A finished job stays listed, after the running ones.
+        let all = agent_bg_all();
+        assert_eq!(all.first().map(|j| j.id), Some(sleeper));
+        let finished = all.iter().find(|j| j.id == done).unwrap().clone();
+        assert_eq!(finished.code, Some(0));
+        // Its whole output, not just the model's tail.
+        let log = agent_bg_log(done).unwrap().tail;
+        assert!(log.contains("first-line") && log.contains("second-line"));
+        // Its running time stopped when it did.
+        std::thread::sleep(Duration::from_millis(1100));
+        let later = agent_bg_all().into_iter().find(|j| j.id == done).unwrap();
+        assert_eq!(later.elapsed_secs, finished.elapsed_secs);
+
+        // Stopped on request reads as stopped, not as failed.
+        agent_bg_kill(sleeper).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while agent_bg_all().iter().any(|j| j.id == sleeper && j.running) {
+            assert!(Instant::now() < deadline, "killed job never ended");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(agent_bg_all().iter().find(|j| j.id == sleeper).unwrap().killed);
+
+        // Clearing empties the panel of finished jobs — and the one the agent
+        // loop has not been told about yet is still reported to it.
+        assert_eq!(agent_bg_clear_finished(), 2);
+        assert!(agent_bg_all().iter().all(|j| j.id != done && j.id != sleeper));
+        assert!(agent_bg_reap().iter().any(|j| j.id == done));
 
         bg_kill_all();
         std::fs::remove_dir_all(&tmp).ok();

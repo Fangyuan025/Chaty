@@ -363,6 +363,9 @@ export interface AgentBgInfo {
   command: string;
   running: boolean;
   code?: number | null;
+  /** Stopped on request rather than ended by itself. */
+  killed?: boolean;
+  /** Running time — up to now while it runs, up to its end once it ended. */
   elapsedSecs: number;
   tail: string;
 }
@@ -386,6 +389,18 @@ export async function agentBgReap(): Promise<AgentBgInfo[]> {
 /** All currently running background commands (UI indicator). */
 export async function agentBgList(): Promise<AgentBgInfo[]> {
   return invoke<AgentBgInfo[]>("agent_bg_list");
+}
+/** Every background command the tasks panel shows: running first, then finished. */
+export async function agentBgAll(): Promise<AgentBgInfo[]> {
+  return invoke<AgentBgInfo[]>("agent_bg_all");
+}
+/** One background command with all the output it still holds (in `tail`). */
+export async function agentBgLog(id: number): Promise<AgentBgInfo> {
+  return invoke<AgentBgInfo>("agent_bg_log", { id });
+}
+/** Clear finished background commands from the tasks panel; returns how many. */
+export async function agentBgClearFinished(): Promise<number> {
+  return invoke<number>("agent_bg_clear_finished");
 }
 
 // ---------- Checkpoints (Code mode rewind) ----------

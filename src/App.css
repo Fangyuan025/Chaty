@@ -6082,9 +6082,167 @@ button.tool-parent {
   cursor: pointer;
   transition: border-color 0.12s, color 0.12s;
 }
-.cm-bgjobs:hover {
-  color: var(--danger, var(--danger));
-  border-color: var(--danger, var(--danger));
+.cm-bgjobs:hover,
+.cm-bgjobs.active {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* ---- background tasks panel ---- */
+.bg-panel {
+  position: fixed;
+  top: 92px;
+  right: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  width: min(480px, calc(100vw - 32px));
+  max-height: min(72vh, calc(100vh - 120px));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.bg-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.bg-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.bg-act {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.bg-act:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.bg-act.danger:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.bg-act.icon {
+  display: inline-flex;
+  padding: 4px 6px;
+}
+.bg-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.bg-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 4px 2px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  text-align: left;
+}
+.bg-group.toggle {
+  cursor: pointer;
+}
+.bg-group.toggle:hover {
+  color: var(--text);
+}
+.bg-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.bg-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 10px;
+}
+.bg-item-head {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  color: inherit;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+}
+.bg-item-head > svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+  color: var(--text-dim);
+}
+.bg-item-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.bg-item-title {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bg-item-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.bg-item-meta.failed {
+  color: var(--danger);
+}
+.bg-stop {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  cursor: pointer;
+}
+.bg-stop:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.bg-item-body {
+  border-top: 1px solid var(--border);
+}
+.bg-cmd {
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.bg-log {
+  max-height: 280px;
+  overflow-y: auto;
 }
 
 /* ---- copy button on the final answer ---- */
