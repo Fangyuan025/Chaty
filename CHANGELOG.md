@@ -51,8 +51,9 @@
   twice, the second time ordering a validate_change — and a small fix
   after the walk drew "no browser walkthrough", which was not true.
   Walking the local page now counts as running its code and as exercising
-  its functions; a page behind `python3 -m http.server`, whose banner never
-  reached the agent, counts too. What still stops a delivery: code outside
+  its functions — whether the turn opened it or reloaded the one an earlier
+  turn left open — and a page behind `python3 -m http.server`, whose banner
+  never reached the agent, counts too. What still stops a delivery: code outside
   the page that never ran, a build that failed and was never fixed, pages
   browsed on the web rather than the one being built, and page edits made
   after the walk. On the webapp bench the false stops went from two to
