@@ -39,6 +39,12 @@ SolidCompression=yes
 WizardStyle=modern
 WizardSizePercent=100
 ShowLanguageDialog=no
+; Pick the language afresh on every run. The default (yes) reuses the
+; language a previous install recorded in the registry — and every install
+; before Chinese existed recorded English, so upgrading over one stayed
+; English on a Chinese Windows (issue #16, after the first fix). Nobody ever
+; chose that language: there was no other.
+UsePreviousLanguage=no
 CloseApplications=yes
 
 [Languages]

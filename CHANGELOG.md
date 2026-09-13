@@ -78,7 +78,8 @@
 - **The Windows installer speaks Chinese on a Chinese Windows.** It was
   English whatever the system language; it now follows the Windows display
   language — Simplified Chinese, or English for everything else — with no
-  language prompt.
+  language prompt, and also when installing over an earlier version, whose
+  English it used to keep.
 
 - **Closing from fullscreen on macOS works every time.** The window leaves
   fullscreen with the system's own animation, then goes to the tray, and
