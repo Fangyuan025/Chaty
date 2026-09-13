@@ -71,6 +71,9 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 sherpa-rs = "0.6.8"
 tar = "0.4"
 bzip2 = "0.4"
+# Traditional → Simplified for Whisper's Chinese transcripts (MIT; OpenCC's
+# tables, phrase-aware). zhconv is GPL and could not be used.
+fast2s = "0.3"
 base64 = "0.22"
 libc = "0.2"
 # .docx text extraction (OOXML is a zip of XML parts).

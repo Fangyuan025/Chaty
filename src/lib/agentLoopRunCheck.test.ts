@@ -65,7 +65,7 @@ async function runRounds(
       if (f.includes("green")) return "验证目标: green.py\n\n$ pytest green\n✓ 通过\n";
       return "验证目标: tool.py\n\n没有发现与改动相关的测试(按 test_*.py 约定查找)。";
     }
-    if (cmd === "agent_read_file") {
+    if (cmd === "agent_read_file" || cmd === "agent_read_file_raw") {
       const p = String((args as { path?: string }).path);
       if (files.has(p)) return files.get(p);
       throw new Error("no such file");

@@ -88,6 +88,8 @@ import {
   setTrayLanguage,
   synthesize,
   transcribe,
+  setVoiceDownloadListener,
+  type VoiceDownload,
   webResearch,
   type Attachment,
   type ChatMessage,
@@ -554,6 +556,13 @@ export default function App() {
   const [recorder, setRecorder] = useState<Recorder | null>(null);
   const recorderRef = useRef<Recorder | null>(null);
   const [transcribing, setTranscribing] = useState(false);
+  // A voice model's first download, shown while it runs — it used to sit
+  // behind the mic's spinner and read as hung on a slow line (issue #14).
+  const [voiceDl, setVoiceDl] = useState<VoiceDownload | null>(null);
+  useEffect(() => {
+    setVoiceDownloadListener((d) => setVoiceDl(d.done ? null : d));
+    return () => setVoiceDownloadListener(null);
+  }, []);
   const [speakReplies, setSpeakReplies] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [showLive, setShowLive] = useState(false);
@@ -2317,6 +2326,14 @@ export default function App() {
     }
   }
 
+  /** "37% (58 / 160 MB)", or just the megabytes when the size is unknown. */
+  function voiceDlProgress(d: VoiceDownload): string {
+    const mb = (n: number) => (n / 1048576).toFixed(n < 10 * 1048576 ? 1 : 0);
+    return d.total > 0
+      ? `${Math.min(100, Math.floor((d.downloaded / d.total) * 100))}% (${mb(d.downloaded)} / ${mb(d.total)} MB)`
+      : `${mb(d.downloaded)} MB`;
+  }
+
   /** Stop the recorder, transcribe, then either fill the input or auto-send. */
   async function finishRecording(rec: Recorder | null, autoSend: boolean) {
     if (!rec || recorderRef.current !== rec) return; // already finished
@@ -3614,6 +3631,13 @@ export default function App() {
           title={t("toastDismiss")}
         >
           {notice.text}
+        </div>
+      )}
+      {voiceDl && (
+        <div className="toast voice-dl" role="status">
+          {t(voiceDl.model === "stt" ? "voiceDlStt" : "voiceDlTts", {
+            progress: voiceDlProgress(voiceDl),
+          })}
         </div>
       )}
       {showLive && (

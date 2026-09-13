@@ -426,6 +426,16 @@ export const T = {
   sendTitle: { zh: "发送", en: "Send", pt: "Enviar" },
   micStart: { zh: "语音输入", en: "Voice input", pt: "Entrada de voz" },
   micStop: { zh: "停止录音", en: "Stop recording", pt: "Parar gravação" },
+  voiceDlStt: {
+    zh: "正在下载语音识别模型(仅首次使用需要)… {progress}",
+    en: "Downloading the speech recognition model (first use only)… {progress}",
+    pt: "Baixando o modelo de reconhecimento de fala (só no primeiro uso)… {progress}",
+  },
+  voiceDlTts: {
+    zh: "正在下载语音合成模型(仅首次使用需要)… {progress}",
+    en: "Downloading the speech synthesis model (first use only)… {progress}",
+    pt: "Baixando o modelo de síntese de fala (só no primeiro uso)… {progress}",
+  },
   liveStart: { zh: "实时语音对话", en: "Live voice chat", pt: "Chat de voz ao vivo" },
   liveExit: { zh: "退出实时模式", en: "Exit live mode", pt: "Sair do modo ao vivo" },
   liveListening: { zh: "聆听中…", en: "Listening…", pt: "Ouvindo…" },

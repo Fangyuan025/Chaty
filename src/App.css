@@ -4261,6 +4261,14 @@ button.tool-parent {
   content: "";
   color: var(--danger);
 }
+/* A voice model download: above the composer, where the mic was pressed,
+   and clear of the notices at the top. Not dismissable — it ends itself. */
+.toast.voice-dl {
+  top: auto;
+  bottom: 96px;
+  cursor: default;
+  font-variant-numeric: tabular-nums;
+}
 
 /* Update banner */
 .update-banner {

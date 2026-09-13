@@ -30,6 +30,8 @@ struct HfSnapshot {
 struct VoiceModel {
     /// Folder under voice-models — also the archive's top-level folder.
     dir: &'static str,
+    /// "stt" or "tts": which kind of model a download is, for the UI.
+    what: &'static str,
     ready: fn(&Path) -> bool,
     hf: Option<HfSnapshot>,
     archive: &'static str,
@@ -37,6 +39,7 @@ struct VoiceModel {
 
 const WHISPER_EN: VoiceModel = VoiceModel {
     dir: "sherpa-onnx-whisper-base.en",
+    what: "stt",
     ready: whisper_model_ready,
     hf: Some(HfSnapshot {
         repo: "csukuangfj/sherpa-onnx-whisper-base.en",
@@ -52,6 +55,7 @@ const WHISPER_EN: VoiceModel = VoiceModel {
 
 const WHISPER_MULTILINGUAL: VoiceModel = VoiceModel {
     dir: "sherpa-onnx-whisper-base",
+    what: "stt",
     ready: whisper_model_ready,
     hf: Some(HfSnapshot {
         repo: "csukuangfj/sherpa-onnx-whisper-base",
@@ -67,6 +71,7 @@ const WHISPER_MULTILINGUAL: VoiceModel = VoiceModel {
 
 const KOKORO: VoiceModel = VoiceModel {
     dir: "kokoro-en-v0_19",
+    what: "tts",
     ready: kokoro_model_ready,
     hf: None,
     archive: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2",
@@ -74,6 +79,7 @@ const KOKORO: VoiceModel = VoiceModel {
 
 const CHINESE_TTS: VoiceModel = VoiceModel {
     dir: "sherpa-onnx-vits-zh-ll",
+    what: "tts",
     ready: chinese_tts_model_ready,
     hf: Some(HfSnapshot {
         repo: "csukuangfj/sherpa-onnx-vits-zh-ll",
@@ -100,6 +106,72 @@ const CHINESE_TTS_SPEAKER_COUNT: i32 = 5;
 
 /// Hugging Face and GitHub want to know who is calling (see http.rs).
 const DOWNLOAD_UA: &str = "Chaty model downloader";
+
+/// A voice model download in progress: which kind of model, bytes so far and
+/// the whole (0 when the source did not say). `done` closes it, however it
+/// ended. Issue #14: the first press of the mic fetched ~160 MB behind a
+/// spinner with nothing to say it was moving, which on a slow line read as
+/// hung.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceDownload {
+    pub model: &'static str,
+    pub downloaded: u64,
+    pub total: u64,
+    pub done: bool,
+}
+
+/// Where a download's progress goes — the command hands it to the UI.
+pub type Progress<'a> = &'a (dyn Fn(VoiceDownload) + Send + Sync);
+
+/// One model's download progress, reported at most every quarter second
+/// except where it matters: a new source, a finished file, the end.
+struct Meter<'a> {
+    report: Progress<'a>,
+    model: &'static str,
+    downloaded: u64,
+    total: u64,
+    last: Option<std::time::Instant>,
+}
+
+impl<'a> Meter<'a> {
+    fn new(report: Progress<'a>, model: &'static str) -> Self {
+        Meter { report, model, downloaded: 0, total: 0, last: None }
+    }
+
+    /// A new source: its whole size, and how much of it is already here.
+    fn start(&mut self, total: u64, have: u64) {
+        self.total = total;
+        self.downloaded = have;
+        self.send();
+    }
+
+    fn add(&mut self, n: u64) {
+        self.downloaded += n;
+        if self.last.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(250)) {
+            self.send();
+        }
+    }
+
+    fn send(&mut self) {
+        self.last = Some(std::time::Instant::now());
+        (self.report)(VoiceDownload {
+            model: self.model,
+            downloaded: self.downloaded,
+            total: self.total,
+            done: false,
+        });
+    }
+
+    fn finish(&self) {
+        (self.report)(VoiceDownload {
+            model: self.model,
+            downloaded: self.downloaded,
+            total: self.total,
+            done: true,
+        });
+    }
+}
 
 static EN_STT: OnceLock<Mutex<WhisperRecognizer>> = OnceLock::new();
 static MULTILINGUAL_STT: OnceLock<Mutex<WhisperRecognizer>> = OnceLock::new();
@@ -229,9 +301,15 @@ fn failure_reason(url: &str, e: &anyhow::Error) -> String {
 /// `.part` beside it and renamed, so a file that exists is a whole one; a
 /// stalled connection ends in a minute (http.rs `download_client`) rather
 /// than holding the request for its full size.
-async fn fetch_file(client: &reqwest::Client, url: &str, dest: &Path, size: u64) -> Result<()> {
+async fn fetch_file(
+    client: &reqwest::Client,
+    url: &str,
+    dest: &Path,
+    size: u64,
+    meter: &mut Meter<'_>,
+) -> Result<()> {
     use std::io::Write;
-    if std::fs::metadata(dest).is_ok_and(|m| m.len() == size) {
+    if file_complete(dest, size) {
         return Ok(());
     }
     eprintln!("voice: downloading {url}");
@@ -249,6 +327,7 @@ async fn fetch_file(client: &reqwest::Client, url: &str, dest: &Path, size: u64)
             break;
         }
         file.write_all(&chunk).context("write voice model file")?;
+        meter.add(chunk.len() as u64);
     }
     drop(file);
     if got != size {
@@ -256,37 +335,60 @@ async fn fetch_file(client: &reqwest::Client, url: &str, dest: &Path, size: u64)
         bail!("{name} came back as {got} bytes, expected {size}");
     }
     std::fs::rename(&part, dest).context("install voice model file")?;
+    meter.send();
     Ok(())
 }
 
+fn file_complete(path: &Path, size: u64) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() == size)
+}
+
 /// Fetch every file of a snapshot that is missing or the wrong size. Files
-/// already complete stay, so an interrupted download resumes where it stopped.
-async fn fetch_snapshot(dir: &Path, hf: &HfSnapshot, base: &str) -> Result<()> {
+/// already complete stay, so an interrupted download resumes where it stopped
+/// — and its progress with it.
+async fn fetch_snapshot(dir: &Path, hf: &HfSnapshot, base: &str, meter: &mut Meter<'_>) -> Result<()> {
     let client = crate::http::download_client(DOWNLOAD_UA).map_err(|e| anyhow!(e))?;
+    let dest_of = |path: &str| path.split('/').fold(dir.to_path_buf(), |p, s| p.join(s));
+    let total = hf.files.iter().map(|&(_, size)| size).sum();
+    let have = hf
+        .files
+        .iter()
+        .filter(|&&(path, size)| file_complete(&dest_of(path), size))
+        .map(|&(_, size)| size)
+        .sum();
+    meter.start(total, have);
     for &(path, size) in hf.files {
         let url = format!("{base}/{}/resolve/{}/{path}", hf.repo, hf.rev);
-        let dest = path.split('/').fold(dir.to_path_buf(), |p, s| p.join(s));
-        fetch_file(&client, &url, &dest, size).await?;
+        fetch_file(&client, &url, &dest_of(path), size, meter).await?;
     }
     Ok(())
 }
 
 /// A ready model's folder, downloading it first if need be: the Hugging Face
 /// snapshot through `base` (the user's HF endpoint), then the release archive.
-async fn ensure_model(models_dir: &Path, m: &VoiceModel, base: &str) -> Result<PathBuf> {
+/// A download reports its progress to `report`, and always its end.
+async fn ensure_model(models_dir: &Path, m: &VoiceModel, base: &str, report: Progress<'_>) -> Result<PathBuf> {
     let dir = models_dir.join(m.dir);
     if (m.ready)(&dir) {
         return Ok(dir);
     }
+    let mut meter = Meter::new(report, m.what);
+    let got = download_model(models_dir, m, base, &mut meter).await;
+    meter.finish();
+    got
+}
+
+async fn download_model(models_dir: &Path, m: &VoiceModel, base: &str, meter: &mut Meter<'_>) -> Result<PathBuf> {
+    let dir = models_dir.join(m.dir);
     let mut reasons = Vec::new();
     if let Some(hf) = &m.hf {
-        match fetch_snapshot(&dir, hf, base).await {
+        match fetch_snapshot(&dir, hf, base, meter).await {
             Ok(()) if (m.ready)(&dir) => return Ok(dir),
             Ok(()) => reasons.push(format!("{}: the files arrived but the model is incomplete", host_of(base))),
             Err(e) => reasons.push(failure_reason(base, &e)),
         }
     }
-    match install_archive(models_dir, m.archive, m.dir, m.ready).await {
+    match install_archive(models_dir, m.archive, m.dir, m.ready, meter).await {
         Ok(dir) => Ok(dir),
         Err(e) => {
             reasons.push(failure_reason(m.archive, &e));
@@ -315,19 +417,25 @@ async fn install_archive(
     url: &str,
     dir_name: &str,
     ready: fn(&Path) -> bool,
+    meter: &mut Meter<'_>,
 ) -> Result<PathBuf> {
     let dir = models_dir.join(dir_name);
     std::fs::create_dir_all(models_dir).context("create voice models dir")?;
 
     eprintln!("voice: downloading model from {url}");
-    let bytes = crate::http::download_client(DOWNLOAD_UA)
+    let mut resp = crate::http::download_client(DOWNLOAD_UA)
         .map_err(|e| anyhow!(e))?
         .get(url)
         .send()
         .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+        .error_for_status()?;
+    meter.start(resp.content_length().unwrap_or(0), 0);
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        bytes.extend_from_slice(&chunk);
+        meter.add(chunk.len() as u64);
+    }
+    meter.send();
 
     // Extract away from the live model directory. If the app is interrupted
     // halfway through unpacking a large archive, the next launch must not
@@ -551,6 +659,21 @@ fn clean_transcript(s: &str) -> String {
     }
 }
 
+/// Whisper writes Chinese in Traditional characters about as readily as in
+/// Simplified — its training data is full of Traditional subtitles — so
+/// Mandarin could come back as 這是什麼, word by word mixed with Simplified
+/// (issue #14). Chaty's Chinese is Simplified, so a transcript is written in
+/// it. Japanese is left as it is: kana gives it away, and its kanji are not
+/// Traditional Chinese to be converted.
+fn to_simplified(text: &str) -> String {
+    let kana = text.chars().any(|c| matches!(c as u32, 0x3040..=0x30FF));
+    if kana || !contains_cjk(text) {
+        text.to_string()
+    } else {
+        fast2s::convert(text)
+    }
+}
+
 /// Transcribe mono audio to text (Whisper). Resamples to 16 kHz as needed.
 pub async fn transcribe(
     models_dir: PathBuf,
@@ -558,9 +681,10 @@ pub async fn transcribe(
     sample_rate: u32,
     multilingual: bool,
     endpoint: &str,
+    report: Progress<'_>,
 ) -> Result<String> {
     let model = if multilingual { &WHISPER_MULTILINGUAL } else { &WHISPER_EN };
-    let dir = ensure_model(&models_dir, model, endpoint).await?;
+    let dir = ensure_model(&models_dir, model, endpoint, report).await?;
     eprintln!(
         "voice: transcribing {:.2}s of audio",
         samples.len() as f64 / sample_rate.max(1) as f64
@@ -571,6 +695,7 @@ pub async fn transcribe(
         let mut rec = engine_lock(engine, "STT");
         let raw = rec.transcribe(16000, &audio).text;
         let text = clean_transcript(raw.trim());
+        let text = if multilingual { to_simplified(&text) } else { text };
         eprintln!(
             "voice: transcription finished ({} chars)",
             text.chars().count()
@@ -582,6 +707,7 @@ pub async fn transcribe(
 
 /// Synthesize speech using Chinese VITS for CJK text and English Kokoro
 /// otherwise. Returns (samples, sample_rate).
+#[allow(clippy::too_many_arguments)]
 pub async fn synthesize(
     models_dir: PathBuf,
     text: String,
@@ -590,13 +716,14 @@ pub async fn synthesize(
     sid_zh: i32,
     chinese_enabled: bool,
     endpoint: &str,
+    report: Progress<'_>,
 ) -> Result<(Vec<f32>, u32)> {
     // Deliberately simple heuristic: when Chinese support is enabled, one Han
     // character routes the whole utterance to VITS. This avoids splitting and
     // stitching mixed-language audio, at the cost of English quality in a
     // mostly-English sentence containing one Chinese word.
     if use_chinese_tts(&text, chinese_enabled) {
-        let dir = ensure_model(&models_dir, &CHINESE_TTS, endpoint).await?;
+        let dir = ensure_model(&models_dir, &CHINESE_TTS, endpoint, report).await?;
         tokio::task::spawn_blocking(move || -> Result<(Vec<f32>, u32)> {
             let engine = chinese_tts_engine(&dir)?;
             let mut tts = engine_lock(engine, "中文 TTS");
@@ -611,7 +738,7 @@ pub async fn synthesize(
         })
         .await?
     } else {
-        let dir = ensure_model(&models_dir, &KOKORO, endpoint).await?;
+        let dir = ensure_model(&models_dir, &KOKORO, endpoint, report).await?;
         tokio::task::spawn_blocking(move || -> Result<(Vec<f32>, u32)> {
             let engine = english_tts_engine(&dir)?;
             let mut tts = engine_lock(engine, "TTS");
@@ -700,6 +827,7 @@ mod tests {
     fn unreachable_sources_report_folder_files_and_reasons() {
         const DEAD: VoiceModel = VoiceModel {
             dir: "dead-model",
+            what: "stt",
             ready: whisper_model_ready,
             hf: Some(HfSnapshot {
                 repo: "someone/dead-model",
@@ -710,10 +838,15 @@ mod tests {
         };
         let root = std::env::temp_dir().join(format!("chaty-voice-dead-{}", std::process::id()));
         let rt = tokio::runtime::Runtime::new().unwrap();
+        let events = Mutex::new(Vec::new());
+        let report = |d: VoiceDownload| events.lock().unwrap().push(d);
         let err = rt
-            .block_on(ensure_model(&root, &DEAD, "http://127.0.0.1:9"))
+            .block_on(ensure_model(&root, &DEAD, "http://127.0.0.1:9", &report))
             .unwrap_err()
             .to_string();
+        // A download that failed still ends, so the UI stops showing it.
+        let events = events.into_inner().unwrap();
+        assert!(events.last().is_some_and(|d| d.done), "{events:?}");
         let json = err.strip_prefix("VOICE_MODEL_DOWNLOAD ").expect("marked payload");
         let v: serde_json::Value = serde_json::from_str(json).unwrap();
         assert_eq!(v["dir"], root.join("dead-model").to_string_lossy().as_ref());
@@ -737,6 +870,92 @@ mod tests {
         assert!(KOKORO.hf.is_none() && KOKORO.archive.ends_with("kokoro-en-v0_19.tar.bz2"));
     }
 
+    fn quiet(_: VoiceDownload) {}
+
+    // Issue #14: Mandarin came back partly in Traditional characters.
+    #[test]
+    fn transcripts_are_written_in_simplified_chinese() {
+        assert_eq!(to_simplified("這是什麼問題"), "这是什么问题");
+        assert_eq!(to_simplified("那麼我們準備出發了"), "那么我们准备出发了");
+        // Words, not characters: 著 stays in 著名 and becomes 着 in 看著.
+        assert_eq!(to_simplified("他很著名，我正看著你"), "他很著名，我正看着你");
+        assert_eq!(to_simplified("乾隆的衣服很乾淨"), "乾隆的衣服很干净");
+        assert_eq!(to_simplified("已经是简体了"), "已经是简体了");
+        assert_eq!(to_simplified("Hello, world."), "Hello, world.");
+        // Japanese keeps its own kanji.
+        assert_eq!(to_simplified("これは東京の電車です"), "これは東京の電車です");
+    }
+
+    fn two_files_ready(dir: &Path) -> bool {
+        file_complete(&dir.join("a.bin"), 300_000) && file_complete(&dir.join("b.bin"), 300_000)
+    }
+
+    /// A local server that answers every request with `body`.
+    fn serve(body: Vec<u8>) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { break };
+                let mut req = [0u8; 4096];
+                let _ = s.read(&mut req);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = s.write_all(head.as_bytes());
+                let _ = s.write_all(&body);
+            }
+        });
+        port
+    }
+
+    // Issue #14: a first download ran behind a spinner and read as hung.
+    #[test]
+    fn a_voice_download_reports_its_progress_and_its_end() {
+        const SMALL: VoiceModel = VoiceModel {
+            dir: "small-model",
+            what: "stt",
+            ready: two_files_ready,
+            hf: Some(HfSnapshot {
+                repo: "someone/small-model",
+                rev: "abc",
+                files: &[("a.bin", 300_000), ("b.bin", 300_000)],
+            }),
+            archive: "http://127.0.0.1:9/small-model.tar.bz2",
+        };
+        let port = serve(vec![7u8; 300_000]);
+        let base = format!("http://127.0.0.1:{port}");
+        let root = std::env::temp_dir().join(format!("chaty-voice-progress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let events = Mutex::new(Vec::new());
+        let report = |d: VoiceDownload| events.lock().unwrap().push((d.downloaded, d.total, d.done));
+        rt.block_on(ensure_model(&root, &SMALL, &base, &report)).expect("download");
+        let events = events.into_inner().unwrap();
+        assert_eq!(events.first(), Some(&(0, 600_000, false)), "{events:?}");
+        assert!(events.contains(&(300_000, 600_000, false)), "the first file's end is reported: {events:?}");
+        assert_eq!(events[events.len() - 2], (600_000, 600_000, false), "{events:?}");
+        assert_eq!(events.last(), Some(&(600_000, 600_000, true)), "{events:?}");
+        assert!(events.windows(2).all(|w| w[0].0 <= w[1].0), "never goes backwards: {events:?}");
+
+        // A resumed download starts from what is already there.
+        std::fs::remove_file(root.join("small-model/b.bin")).unwrap();
+        let events = Mutex::new(Vec::new());
+        let report = |d: VoiceDownload| events.lock().unwrap().push((d.downloaded, d.total, d.done));
+        rt.block_on(ensure_model(&root, &SMALL, &base, &report)).expect("resume");
+        assert_eq!(events.into_inner().unwrap().first(), Some(&(300_000, 600_000, false)));
+
+        // A model already in place reports nothing at all.
+        let calls = Mutex::new(0);
+        let count = |_: VoiceDownload| *calls.lock().unwrap() += 1;
+        rt.block_on(ensure_model(&root, &SMALL, &base, &count)).expect("ready");
+        assert_eq!(calls.into_inner().unwrap(), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// Issue #14 end to end: the Chinese voice pair fetched file by file
     /// through a mirror into an empty folder, then spoken and heard —
     ///   cargo test --release --lib voice_models_download_through_mirror -- --ignored --nocapture
@@ -750,16 +969,16 @@ mod tests {
         for m in [&CHINESE_TTS, &WHISPER_MULTILINGUAL] {
             let t = std::time::Instant::now();
             let target = dir.join(m.dir);
-            rt.block_on(fetch_snapshot(&target, m.hf.as_ref().unwrap(), &endpoint))
+            rt.block_on(fetch_snapshot(&target, m.hf.as_ref().unwrap(), &endpoint, &mut Meter::new(&quiet, m.what)))
                 .unwrap_or_else(|e| panic!("{} through {endpoint}: {e:#}", m.dir));
             assert!((m.ready)(&target), "{} incomplete", m.dir);
             println!("{} via {endpoint} in {:.0?}", m.dir, t.elapsed());
         }
         let (samples, rate) = rt
-            .block_on(synthesize(dir.clone(), "你好，这是一个中文语音测试。".into(), 1.0, 0, 0, true, &endpoint))
+            .block_on(synthesize(dir.clone(), "你好，这是一个中文语音测试。".into(), 1.0, 0, 0, true, &endpoint, &quiet))
             .expect("Chinese TTS");
         let text = rt
-            .block_on(transcribe(dir.clone(), samples, rate, true, &endpoint))
+            .block_on(transcribe(dir.clone(), samples, rate, true, &endpoint, &quiet))
             .expect("multilingual Whisper");
         println!("heard: {text}");
         assert!(text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)), "no Chinese heard: {text}");
@@ -786,6 +1005,7 @@ mod tests {
                 0,
                 false,
                 OFFICIAL,
+                &quiet,
             ))
             .expect("kokoro synthesis");
         assert!(rate >= 16000, "sane sample rate: {rate}");
@@ -795,7 +1015,7 @@ mod tests {
             samples.len()
         );
         let text = rt
-            .block_on(transcribe(dir, samples, rate, false, OFFICIAL))
+            .block_on(transcribe(dir, samples, rate, false, OFFICIAL, &quiet))
             .expect("whisper transcription");
         let low = text.to_lowercase();
         assert!(
@@ -825,12 +1045,13 @@ mod tests {
                 0,
                 true,
                 OFFICIAL,
+                &quiet,
             ))
             .expect("Chinese VITS synthesis");
         assert!(rate >= 8000, "sane sample rate: {rate}");
         assert!(!samples.is_empty(), "Chinese TTS returned no samples");
         let text = rt
-            .block_on(transcribe(dir, samples, rate, true, OFFICIAL))
+            .block_on(transcribe(dir, samples, rate, true, OFFICIAL, &quiet))
             .expect("multilingual Whisper transcription");
         let han = text
             .chars()

@@ -227,6 +227,7 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
                 s_arg(&args, "symbol"),
             ))
         }),
+        "agent_read_file_raw" => req_s(&args, "path").and_then(|p| res(ag::agent_read_file_raw(p))),
         "agent_write_file" => match (req_s(&args, "path"), req_s(&args, "content")) {
             (Ok(p), Ok(c)) => res(ag::agent_write_file(p, c)),
             (Err(e), _) | (_, Err(e)) => Err(e),

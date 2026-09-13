@@ -314,6 +314,11 @@ export async function agentReadFile(
   return invoke<string>("agent_read_file", { path, offset, limit, maxChars, symbol });
 }
 
+/** A file's text as it is on disk (no anchors, no page footer) — for diff snapshots. */
+export async function agentReadFileRaw(path: string): Promise<string> {
+  return invoke<string>("agent_read_file_raw", { path });
+}
+
 /** Extract text (+ cached embedded images) from a workspace document —
  *  pdf / docx / xlsx / pptx. Scanned PDFs get automatic OCR. */
 export async function agentReadDoc(path: string): Promise<string> {
@@ -491,6 +496,14 @@ export async function codeSessionLoad(id: string): Promise<string | null> {
 }
 export async function codeSessionDelete(id: string): Promise<void> {
   await invoke("code_session_delete", { id });
+}
+/** The exact text the model was given for a code step, kept apart from the
+ *  session so its card can show it when opened. */
+export async function codeStepTextPut(sessionId: string, stepId: string, text: string): Promise<void> {
+  await invoke("code_step_text_put", { sessionId, stepId, text });
+}
+export async function codeStepTextGet(sessionId: string, stepId: string): Promise<string | null> {
+  return invoke<string | null>("code_step_text_get", { sessionId, stepId });
 }
 
 export async function ragDownloadModel(
@@ -1229,10 +1242,40 @@ export async function transcribe(
   // Voice models download through the same HF endpoint as everything else,
   // so a mirror set for the store reaches them too (issue #14).
   try {
-    return await invoke<string>("transcribe", { audio, sampleRate, multilingual, endpoint: hfEndpoint });
+    return await invoke<string>("transcribe", {
+      audio,
+      sampleRate,
+      multilingual,
+      endpoint: hfEndpoint,
+      onProgress: voiceProgressChannel(),
+    });
   } catch (e) {
     throw voiceError(e);
   }
+}
+
+/** A voice model download in progress — the first use of voice input or of
+ *  read-aloud fetches its model. `done` ends it, however it went. */
+export interface VoiceDownload {
+  model: "stt" | "tts";
+  downloaded: number;
+  /** 0 when the source did not say. */
+  total: number;
+  done: boolean;
+}
+
+let voiceDownloadListener: ((d: VoiceDownload) => void) | null = null;
+
+/** Where voice model download progress goes: the app shows it, so a first
+ *  download no longer sits behind a bare spinner (issue #14). */
+export function setVoiceDownloadListener(fn: ((d: VoiceDownload) => void) | null): void {
+  voiceDownloadListener = fn;
+}
+
+function voiceProgressChannel(): Channel<VoiceDownload> {
+  const channel = new Channel<VoiceDownload>();
+  channel.onmessage = (d) => voiceDownloadListener?.(d);
+  return channel;
 }
 
 /** Synthesize speech (Kokoro, or Chinese VITS when explicitly enabled). */
@@ -1253,6 +1296,7 @@ export async function synthesize(
       sidZh,
       chineseEnabled,
       endpoint: hfEndpoint,
+      onProgress: voiceProgressChannel(),
     });
   } catch (e) {
     throw voiceError(e);

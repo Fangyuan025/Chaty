@@ -12,10 +12,16 @@ async fn main() -> Result<()> {
     let dir = std::env::temp_dir().join("chaty-voice-models");
     eprintln!("models dir: {}", dir.display());
 
+    let progress = |d: chaty_lib::voice::VoiceDownload| {
+        if !d.done {
+            eprintln!("  downloading {} model: {} / {} bytes", d.model, d.downloaded, d.total);
+        }
+    };
+
     let text = "Hello, this is Chaty speaking.";
     eprintln!("synthesizing: {text:?}");
     let (samples, sr) =
-        chaty_lib::voice::synthesize(dir.clone(), text.into(), 1.0, 0, 0, false, HF).await?;
+        chaty_lib::voice::synthesize(dir.clone(), text.into(), 1.0, 0, 0, false, HF, &progress).await?;
     eprintln!(
         "TTS -> {} samples @ {} Hz ({:.2}s)",
         samples.len(),
@@ -28,7 +34,7 @@ async fn main() -> Result<()> {
     eprintln!("wrote {} (listen to verify TTS)", wav.display());
 
     eprintln!("transcribing the synthesized audio back...");
-    let recognized = chaty_lib::voice::transcribe(dir, samples, sr, false, HF).await?;
+    let recognized = chaty_lib::voice::transcribe(dir, samples, sr, false, HF, &progress).await?;
     println!("\nSTT result: {recognized:?}");
     Ok(())
 }

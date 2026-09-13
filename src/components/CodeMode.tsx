@@ -46,6 +46,8 @@ import {
   type Attachment,
   type AgentBgInfo,
   codeSessionDelete,
+  codeStepTextGet,
+  codeStepTextPut,
   codeSessionList,
   codeSessionLoad,
   codeSessionSave,
@@ -259,9 +261,38 @@ function stepMeta(step: ToolStep, linesLabel: string): { text: string; tone: "ad
 
 /** One tool step: a compact header (icon + summary + status) that expands to the
  *  result or a diff. Image steps (screenshot / view_image) preview on click. */
-function StepCard({ step, onPreview }: { step: ToolStep; onPreview?: (path: string) => void }) {
+function StepCard({
+  step,
+  sessionId,
+  onPreview,
+}: {
+  step: ToolStep;
+  sessionId?: string | null;
+  onPreview?: (path: string) => void;
+}) {
   const { t } = useI18n();
   const [open, setOpen] = useState(step.status === "error");
+  // Opened, the card shows exactly what the model was given for this step.
+  // The session keeps only a trimmed copy (`step.result`); the model's is
+  // fetched while the card is open and let go when it closes, so a session
+  // never holds every large read at once.
+  const [modelText, setModelText] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) {
+      setModelText(null);
+      return;
+    }
+    if (!step.fullText || !sessionId) return;
+    let live = true;
+    codeStepTextGet(sessionId, step.id)
+      .then((text) => {
+        if (live && text != null) setModelText(text);
+      })
+      .catch((e) => console.error("step text load failed", e));
+    return () => {
+      live = false;
+    };
+  }, [open, step.fullText, step.id, sessionId]);
   const diff = step.diff;
   const hasImage = !!step.image && step.status === "done";
   const hasBody = !!(step.result || diff);
@@ -323,7 +354,7 @@ function StepCard({ step, onPreview }: { step: ToolStep; onPreview?: (path: stri
               )}
             </pre>
           ) : (
-            <pre className="cm-out">{(step.result ?? "").slice(0, 6000)}</pre>
+            <pre className="cm-out">{modelText ?? step.result ?? ""}</pre>
           )}
         </div>
       )}
@@ -1559,6 +1590,14 @@ export function CodeMode({
         // not the whole transcript.
         persistSoon(turnSid);
       },
+      onStepText: (stepId, text) => {
+        codeStepTextPut(turnSid, stepId, text).catch((e) => console.error("step text save failed", e));
+        update((m) => ({
+          ...m,
+          steps: m.steps.map((s) => (s.id === stepId ? { ...s, fullText: true } : s)),
+        }));
+        persistSoon(turnSid);
+      },
       onFinal: (final, thinking, reason, stuck) => {
         // What the turn was stuck on, so "Continue" resumes the escape instead
         // of restarting it — see AgentOptions.resume.
@@ -1891,7 +1930,7 @@ export function CodeMode({
                   {m.steps.map((s) => (
                     <div key={s.id} className="cm-block">
                       {s.thinking && <ThinkPanel text={s.thinking} label={t("cmThought")} />}
-                      <StepCard step={s} onPreview={setPreviewImg} />
+                      <StepCard step={s} sessionId={sid} onPreview={setPreviewImg} />
                     </div>
                   ))}
                   {m.liveThinking && <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />}

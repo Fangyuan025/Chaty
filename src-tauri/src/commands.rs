@@ -1739,6 +1739,7 @@ pub async fn transcribe(
     sample_rate: u32,
     multilingual: Option<bool>,
     endpoint: Option<String>,
+    on_progress: Channel<crate::voice::VoiceDownload>,
 ) -> Result<String, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(audio.as_bytes())
@@ -1749,13 +1750,17 @@ pub async fn transcribe(
         .collect();
     let dir = voice_models_dir(&app)?;
     let base = crate::download::hf_base(endpoint.as_deref());
-    crate::voice::transcribe(dir, samples, sample_rate, multilingual.unwrap_or(false), &base)
+    let report = move |d: crate::voice::VoiceDownload| {
+        let _ = on_progress.send(d);
+    };
+    crate::voice::transcribe(dir, samples, sample_rate, multilingual.unwrap_or(false), &base, &report)
         .await
         .map_err(|e| format!("{e:#}"))
 }
 
 /// Synthesize speech for `text` (Kokoro). Returns base64 f32 PCM + sample rate.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // the frontend's named arguments
 pub async fn synthesize(
     app: tauri::AppHandle,
     text: String,
@@ -1764,9 +1769,13 @@ pub async fn synthesize(
     sid_zh: Option<i32>,
     chinese_enabled: Option<bool>,
     endpoint: Option<String>,
+    on_progress: Channel<crate::voice::VoiceDownload>,
 ) -> Result<SynthAudio, String> {
     let dir = voice_models_dir(&app)?;
     let base = crate::download::hf_base(endpoint.as_deref());
+    let report = move |d: crate::voice::VoiceDownload| {
+        let _ = on_progress.send(d);
+    };
     let (samples, sample_rate) = crate::voice::synthesize(
         dir,
         text,
@@ -1775,6 +1784,7 @@ pub async fn synthesize(
         sid_zh.unwrap_or(0),
         chinese_enabled.unwrap_or(false),
         &base,
+        &report,
     )
     .await
     .map_err(|e| format!("{e:#}"))?;

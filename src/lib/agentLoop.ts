@@ -41,6 +41,7 @@ import {
   agentListDir,
   agentListFiles,
   agentReadFile,
+  agentReadFileRaw,
   agentReadDoc,
   agentValidateChange,
   agentUnderstandRepo,
@@ -158,6 +159,10 @@ export interface ToolStep {
    *  clickable preview. For a full-page capture this is the WHOLE page, not
    *  the first of the segments the model was fed. */
   image?: string;
+  /** The exact text the model was given for this step is kept by the host,
+   *  apart from the session (see `onStepText`); `result` is the card's
+   *  trimmed copy. Opened, the card shows the model's. */
+  fullText?: boolean;
 }
 
 export class AgentSignal {
@@ -175,6 +180,10 @@ export interface AgentCallbacks {
   onAssistantText: (full: string) => void;
   /** A tool step was created or updated. */
   onStep: (step: ToolStep) => void;
+  /** The exact text the model was given for a step, where it differs from the
+   *  card's copy (`step.result`: trimmed for the renderer, and without the
+   *  notes appended for the model). The host keeps it outside the session. */
+  onStepText?: (stepId: string, text: string) => void;
   /** Live generation stats: total tokens this turn + current tokens/sec. */
   onStats?: (tokens: number, tps: number) => void;
   /** Context window position after a step (prompt + output tokens used). */
@@ -1138,11 +1147,11 @@ const asNum = (v: unknown): number | undefined =>
   typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : undefined;
 
 /** Read a file's FULL content for a diff snapshot — no pagination footer, no
- *  truncation (up to the Rust byte cap). The model-facing read is budgeted for
- *  context; diffs need the whole file so the +N/−M count and the rendered hunks
- *  are correct even for large files. */
+ *  anchors, no cut lines (up to the Rust byte cap). The model-facing read is
+ *  budgeted for context; diffs need the whole file so the +N/−M count and the
+ *  rendered hunks are correct even for large files. */
 function readFull(path: string): Promise<string> {
-  return agentReadFile(path, undefined, undefined, 400_000);
+  return agentReadFileRaw(path);
 }
 
 /** Skills available to the CURRENT turn — set by runAgentTurn so execTool
@@ -1670,6 +1679,13 @@ export function toolResultMsg(name: string, content: string): string {
   return `<tool_result name="${name}">\n${capped}\n</tool_result>`;
 }
 
+/** What is inside a tool_result envelope: the text a step card shows as the
+ *  model's copy (the untrusted-content warning included — the model read it). */
+export function toolResultBody(msg: string): string {
+  const m = /^<tool_result[^>]*>\n([\s\S]*)\n<\/tool_result>$/.exec(msg);
+  return m ? m[1] : msg;
+}
+
 /** Rough transcript size in tokens (mixed code/CJK ≈ 2.5 chars per token,
  *  plus a little chat-template overhead per message). */
 /** Shared with Chat, and calibrated against the engine's own `promptTokens` —
@@ -2185,6 +2201,8 @@ export async function runAgentTurn(
     }
   }
   const jitShown = new Set<HintKey>(); // per-turn: hints re-arm next turn
+  // The step whose result has not been pushed yet — the next tool_result is its.
+  let resultStep: ToolStep | null = null;
   const pushUser = (
     content: string,
     meta?: { name: string; args: Record<string, unknown> },
@@ -2200,6 +2218,21 @@ export async function runAgentTurn(
     messages.push(m);
     if (meta) toolMeta.set(m, meta);
     cb.onTrace?.({ kind: "inject", text: content });
+    // A step card keeps a copy of its result trimmed for the renderer, and
+    // without the notes appended for the model. Where that is not what the
+    // model got, the model's own copy goes to the host, and the card shows it
+    // when opened. (A step never shown as a card — update_plan — is still
+    // "running" here and is left alone.) The step is not re-sent through
+    // onStep: that reports a step taken, and hosts count them.
+    if (isResult && resultStep) {
+      const step = resultStep;
+      resultStep = null;
+      const body = toolResultBody(content);
+      if (step.status !== "running" && body !== step.result) {
+        step.fullText = true;
+        cb.onStepText?.(step.id, body);
+      }
+    }
     return m;
   };
 
@@ -2979,6 +3012,7 @@ export async function runAgentTurn(
       storeAssistantTurn(messages, turn, opts.reasoningField);
 
       const stepObj: ToolStep = { id: uid(), call, status: "running", thinking };
+      resultStep = stepObj;
 
       // ── Loop breaker: identical call to the previous one? ──
       // Exempt tools whose repeated identical call is legitimate progress or a
@@ -3224,6 +3258,7 @@ export async function runAgentTurn(
             stepObj.result = (lang === "zh" ? "已查看图片:" : "Viewed image: ") + rel;
             stepObj.image = abs;
             cb.onStep(stepObj);
+            resultStep = null; // its result is pushed directly, with the pixels
             messages.push({
               role: "user",
               content:

@@ -283,12 +283,10 @@ pub fn agent_read_file(
         return read_symbol_context(&path, sym);
     }
     const MAX_READ_LINES: usize = 12000; // hard per-call line ceiling
-    const MAX_LINE_CHARS: usize = 4000; // pathological single lines (minified JS)
 
     // The caller (frontend) sizes the budget from the model's ACTUAL context
     // window, so a normal source file fits in ONE call; the default only
-    // applies to callers that don't say (tests, older paths). The ceiling
-    // matches MAX_READ_BYTES so a full-file diff snapshot never paginates.
+    // applies to callers that don't say (tests, older paths).
     let budget = max_chars.unwrap_or(24_000).clamp(4_000, 400_000);
 
     let abs = resolve(&path)?;
@@ -296,45 +294,57 @@ pub fn agent_read_file(
     if meta.is_dir() {
         return Err(tr("这是一个目录，请用 list_dir", "that's a directory — use list_dir"));
     }
-    let bytes = std::fs::read(&abs).map_err(|e| e.to_string())?;
-    let slice = &bytes[..bytes.len().min(MAX_READ_BYTES)];
-    let text = String::from_utf8_lossy(slice);
-
-    let all: Vec<&str> = text.lines().collect();
-    let total = all.len();
+    // The WHOLE file, a line at a time: a page can start anywhere in it and
+    // the total is the file's own. It used to be cut at 400 KB before it was
+    // split into lines, so everything past that could not be reached — the
+    // footer's offsets stopped at the cut, and the total it quoted was the
+    // cut's, with nothing to say the file went on.
+    use std::io::BufRead;
+    let file = std::fs::File::open(&abs).map_err(|e| e.to_string())?;
+    let mut reader = std::io::BufReader::new(file);
     let start = offset.unwrap_or(1).max(1) - 1;
-    if start >= total && total > 0 {
-        return Ok(trf!(
-            "(offset 超出范围:文件共 {total} 行)",
-            "(offset beyond EOF: file has {total} lines)"
-        ));
-    }
     let want = limit.unwrap_or(MAX_READ_LINES).clamp(1, MAX_READ_LINES);
 
     let anchors = anchors_on();
     let mut out = String::new();
     let mut end = start; // exclusive
-    for (i, line) in all.iter().enumerate().skip(start).take(want) {
-        let line: &str = if line.len() > MAX_LINE_CHARS {
-            let mut cut = MAX_LINE_CHARS;
-            while !line.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            &line[..cut]
-        } else {
-            line
-        };
-        // Hashline mode: every line carries its edit anchor, so the model can
-        // address edit_lines ops straight from what it just read.
-        let display = if anchors { format!("{}→{}", anchor_of(i + 1, line), line) } else { line.to_string() };
-        if !out.is_empty() && out.len() + display.len() + 1 > budget {
+    let mut filled = false; // the page is done; the rest is only counted
+    let mut total = 0usize;
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf).map_err(|e| e.to_string())? == 0 {
             break;
+        }
+        let i = total;
+        total += 1;
+        if filled || i < start {
+            continue;
+        }
+        if i >= start + want {
+            filled = true;
+            continue;
+        }
+        let mut bytes = &buf[..];
+        if let Some(b) = bytes.strip_suffix(b"\n") {
+            bytes = b.strip_suffix(b"\r").unwrap_or(b);
+        }
+        let display = read_line_display(i + 1, &String::from_utf8_lossy(bytes), anchors);
+        if !out.is_empty() && out.len() + display.len() + 1 > budget {
+            filled = true;
+            continue;
         }
         if !out.is_empty() {
             out.push('\n');
         }
         out.push_str(&display);
         end = i + 1;
+    }
+    if start >= total && total > 0 {
+        return Ok(trf!(
+            "(offset 超出范围:文件共 {total} 行)",
+            "(offset beyond EOF: file has {total} lines)"
+        ));
     }
 
     if end < total {
@@ -346,6 +356,53 @@ pub fn agent_read_file(
         ));
     }
     Ok(out)
+}
+
+/// One line as read_file shows it. A line past MAX_LINE_CHARS (minified JS,
+/// a data blob) is cut and says so — it used to stop mid-token as if that
+/// were the whole line. In hashline mode the anchor is the WHOLE line's: an
+/// edit checks it against the line on disk, so an anchor taken from the cut
+/// could never match.
+fn read_line_display(line1: usize, line: &str, anchors: bool) -> String {
+    const MAX_LINE_CHARS: usize = 4000; // bytes, at a char boundary
+    let shown = if line.len() > MAX_LINE_CHARS {
+        let mut cut = MAX_LINE_CHARS;
+        while !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let head = &line[..cut];
+        let n = line.chars().count();
+        let m = head.chars().count();
+        format!(
+            "{head}{}",
+            trf!(
+                "…[此行共 {n} 字符,只显示了前 {m} 个;其余部分可用 bash 截取]",
+                "…[this line is {n} characters; only the first {m} are shown — use bash to extract the rest]"
+            )
+        )
+    } else {
+        line.to_string()
+    };
+    if anchors {
+        format!("{}→{}", anchor_of(line1, line), shown)
+    } else {
+        shown
+    }
+}
+
+/// A file's text as it is on disk, for the before and after of a diff card:
+/// no anchors, no page footer, no cut lines — up to MAX_READ_BYTES. It went
+/// through read_file, which pages: a file past 12,000 lines had the page
+/// footer written into its snapshot as if it were file content, and in
+/// hashline mode every line carried its anchor.
+#[tauri::command]
+pub fn agent_read_file_raw(path: String) -> Result<String, String> {
+    use std::io::Read;
+    let abs = resolve(&path)?;
+    let file = std::fs::File::open(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_READ_BYTES as u64).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -4886,6 +4943,67 @@ mod tests {
         assert!(!full_snapshot.contains("offset="), "full-read snapshot must not paginate");
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Past 400 KB a file used to just end: its bytes were cut before its
+    /// lines were counted, so the tail could not be paged to and the total
+    /// the footer quoted was the cut's.
+    #[test]
+    fn read_file_reaches_the_whole_of_a_large_file() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-large-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        let body: String = (1..=20_000).map(|i| format!("row {i:05} of a file well past the old cut\n")).collect();
+        assert!(body.len() > MAX_READ_BYTES * 2, "the fixture must be well past the old cut");
+        std::fs::write(tmp.join("large.txt"), &body).unwrap();
+
+        let first = agent_read_file("large.txt".into(), None, None, None, None).unwrap();
+        let footer = first.lines().last().unwrap();
+        assert!(footer.contains("20000"), "the footer counts the whole file: {footer}");
+        let tail = agent_read_file("large.txt".into(), Some(19_990), None, None, None).unwrap();
+        assert!(tail.starts_with("row 19990 "), "{tail}");
+        assert!(tail.contains("row 20000 "), "{tail}");
+        assert!(!tail.contains("offset="), "{tail}");
+        let beyond = agent_read_file("large.txt".into(), Some(20_001), None, None, None).unwrap();
+        assert!(beyond.contains("20000"), "{beyond}");
+
+        // A diff snapshot keeps its cap, and carries no page footer.
+        let raw = agent_read_file_raw("large.txt".into()).unwrap();
+        assert_eq!(raw.len(), MAX_READ_BYTES);
+        assert!(body.starts_with(&raw));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A line past the per-line cut used to stop mid-token with nothing to say
+    /// so; and in hashline mode its anchor was the cut's, which no edit could
+    /// match against the line on disk.
+    #[test]
+    fn read_file_marks_a_cut_line_and_anchors_it_whole() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-agent-longline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let long = format!("{}TAIL", "x".repeat(5000));
+        let text = format!("short\n{long}\nend\n");
+        std::fs::write(dir.join("min.js"), &text).unwrap();
+
+        let out = agent_read_file("min.js".into(), None, None, None, None).unwrap();
+        let cut = out.lines().nth(1).unwrap();
+        assert!(!cut.contains("TAIL"), "the line is cut");
+        assert!(cut.contains("5004") && cut.contains("4000"), "and says so: {}", &cut[4000..]);
+        assert_eq!(out.lines().nth(2), Some("end"));
+
+        agent_set_edit_anchors(true);
+        let anchored = agent_read_file("min.js".into(), None, None, None, None);
+        let raw = agent_read_file_raw("min.js".into());
+        agent_set_edit_anchors(false);
+        let anchored = anchored.unwrap();
+        let cut = anchored.lines().nth(1).unwrap();
+        assert!(cut.starts_with(&format!("{}→", anchor_of(2, &long))), "{}", &cut[..40]);
+        assert_eq!(raw.unwrap(), text, "the snapshot has no anchors and nothing cut");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

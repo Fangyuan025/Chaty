@@ -66,6 +66,12 @@ CREATE TABLE IF NOT EXISTS code_sessions (
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS code_step_texts (
+    session_id  TEXT NOT NULL,
+    step_id     TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    PRIMARY KEY (session_id, step_id)
+);
 ";
 
 pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
@@ -433,9 +439,61 @@ pub fn code_session_delete(db: State<'_, Db>, id: String) -> Result<(), String> 
     // Its background jobs go with it: the running ones stopped, the history dropped.
     crate::agent::bg_forget_session(&id);
     let conn = lock(&db)?;
-    conn.execute("DELETE FROM code_sessions WHERE id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
+    delete_code_session_rows(&conn, &id).map_err(|e| e.to_string())
+}
+
+/// A session's row and the step texts kept for it.
+fn delete_code_session_rows(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM code_sessions WHERE id = ?1", params![id])?;
+    conn.execute("DELETE FROM code_step_texts WHERE session_id = ?1", params![id])?;
     Ok(())
+}
+
+/// The exact text the model was given for one tool step. The step card in
+/// the session keeps a copy trimmed for the renderer; this one is what the
+/// card shows when opened. It lives here, apart from the session, because a
+/// session holding every step's whole result — 384 KB for each large file
+/// read — grew until the webview's renderer was killed.
+#[tauri::command]
+pub fn code_step_text_put(
+    db: State<'_, Db>,
+    session_id: String,
+    step_id: String,
+    text: String,
+) -> Result<(), String> {
+    let conn = lock(&db)?;
+    put_step_text(&conn, &session_id, &step_id, &text).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn code_step_text_get(
+    db: State<'_, Db>,
+    session_id: String,
+    step_id: String,
+) -> Result<Option<String>, String> {
+    let conn = lock(&db)?;
+    get_step_text(&conn, &session_id, &step_id).map_err(|e| e.to_string())
+}
+
+fn put_step_text(conn: &Connection, session_id: &str, step_id: &str, text: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO code_step_texts (session_id, step_id, text) VALUES (?1, ?2, ?3)",
+        params![session_id, step_id, text],
+    )?;
+    Ok(())
+}
+
+fn get_step_text(conn: &Connection, session_id: &str, step_id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT text FROM code_step_texts WHERE session_id = ?1 AND step_id = ?2",
+        params![session_id, step_id],
+        |r| r.get::<_, String>(0),
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other),
+    })
 }
 
 /// Aggregate counters for the Settings → Data statistics panel.
@@ -515,6 +573,22 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::SCHEMA).unwrap();
         conn
+    }
+
+    /// The text a step's model was given is kept per session, and goes when
+    /// the session does.
+    #[test]
+    fn step_texts_are_kept_per_session_and_deleted_with_it() {
+        let conn = db();
+        super::put_step_text(&conn, "s1", "a", "first").unwrap();
+        super::put_step_text(&conn, "s1", "a", "second").unwrap(); // a re-sent step replaces
+        super::put_step_text(&conn, "s2", "a", "other").unwrap();
+        assert_eq!(super::get_step_text(&conn, "s1", "a").unwrap().as_deref(), Some("second"));
+        assert_eq!(super::get_step_text(&conn, "s1", "b").unwrap(), None);
+
+        super::delete_code_session_rows(&conn, "s1").unwrap();
+        assert_eq!(super::get_step_text(&conn, "s1", "a").unwrap(), None);
+        assert_eq!(super::get_step_text(&conn, "s2", "a").unwrap().as_deref(), Some("other"));
     }
 
     fn conv(conn: &Connection, id: &str) {
