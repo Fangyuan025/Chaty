@@ -47,6 +47,17 @@ async function serverAlive(port: number): Promise<boolean> {
   }
 }
 
+/** Stop every background job the scenario left running. Switching the
+ *  workspace used to do this; since v2.1.9 a session's jobs keep running in
+ *  their own workspace, and the headless process never kills them on exit —
+ *  each run left a python http.server per scenario behind. */
+async function killBgJobs(bridge: Bridge): Promise<void> {
+  const jobs = await bridge.call("agent_bg_list", {}).catch(() => []);
+  for (const j of Array.isArray(jobs) ? (jobs as { id: number }[]) : []) {
+    await bridge.call("agent_bg_kill", { id: j.id }).catch(() => {});
+  }
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const flag = (n: string) => {
@@ -98,6 +109,20 @@ async function main() {
     await bridge.call("agent_set_workspace", { path: ws });
 
     const stepLog: { i: number; name: string; head: string }[] = [];
+    // Every wrap-up gate firing: which notes it carried, and whether the
+    // page had been walked after the last edit when it fired — a note that
+    // still demands verification then is the false positive the gate work
+    // is about.
+    const wrapups: { atStep: number; afterWalk: boolean; notes: string[] }[] = [];
+    const NOTE_MARKS: [string, string][] = [
+      ["todo list", "todo"],
+      ["changed after the last browser check", "web"],
+      ["read-only commands don't count", "run"],
+      ["Second reminder", "run2"],
+      ["most recent verification FAILED", "red"],
+      ["entry ticket", "functional"],
+      ["macOS app", "mac"],
+    ];
     let steps = 0;
     let finalText = "";
     let error: string | undefined;
@@ -131,6 +156,16 @@ async function main() {
           {
             onThinking: () => {},
             onAssistantText: () => {},
+            onTrace: (ev: { kind: string; text: string }) => {
+              if (ev.kind !== "inject" || !ev.text.includes("[wrap-up check]")) return;
+              const lastEdit = stepLog.reduce((a, st) => (EDIT_TOOLS.has(st.name) ? st.i : a), -1);
+              const lastBrowser = stepLog.reduce((a, st) => (st.name.startsWith("browser_") ? st.i : a), -1);
+              wrapups.push({
+                atStep: steps,
+                afterWalk: lastEdit >= 0 && lastBrowser > lastEdit,
+                notes: NOTE_MARKS.filter(([m]) => ev.text.includes(m)).map(([, k]) => k),
+              });
+            },
             onPlan: (todos: { content: string; status: string }[]) => {
               lastPlan = todos;
             },
@@ -214,23 +249,27 @@ async function main() {
       planCount: lastPlan.length,
       planDone: lastPlan.filter((t) => t.status === "done").length,
       fileChecks,
+      wrapups,
       finalHead: finalText.slice(0, 160),
       error,
       stepNames: stepLog.map((st) => st.name),
     };
     appendFileSync(outFile, JSON.stringify(row) + "\n");
     // Tear down THIS scenario's bg jobs + browser inside the backend before
-    // the workspace dir vanishes (set_workspace's changed-path branch).
+    // the workspace dir vanishes (jobs explicitly; set_workspace's
+    // changed-path branch still closes the browser).
+    await killBgJobs(bridge);
     const scratchWs = mkdtempSync(path.join(tmpdir(), "chaty-webapp-gap-"));
     await bridge.call("agent_set_workspace", { path: scratchWs });
     console.log(
-      `${ok ? "✓" : "✗"} [${tag}] ${s.id}  ${seconds}s  ${steps} steps  server=${alive ? "up" : "—"}  walkthru=${browserAfterEdit ? "yes" : "no"}${error ? `  — ${String(error).slice(0, 60)}` : ""}`,
+      `${ok ? "✓" : "✗"} [${tag}] ${s.id}  ${seconds}s  ${steps} steps  server=${alive ? "up" : "—"}  walkthru=${browserAfterEdit ? "yes" : "no"}  wrapups=${wrapups.map((w) => `${w.notes.join("+") || "?"}${w.afterWalk ? "@walked" : ""}`).join(",") || "0"}${error ? `  — ${String(error).slice(0, 60)}` : ""}`,
     );
     rmSync(ws, { recursive: true, force: true });
   }
 
   // Point the workspace at scratch so set_workspace teardown kills any
   // leftover dev server / browser from the last scenario.
+  await killBgJobs(bridge);
   const scratch = mkdtempSync(path.join(tmpdir(), "chaty-webapp-end-"));
   await bridge.call("agent_set_workspace", { path: scratch });
   bridge.kill();

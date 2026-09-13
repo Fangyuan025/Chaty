@@ -102,4 +102,25 @@ export const SCENARIOS: WebappScenario[] = [
     expectClicked: true,
     expectBrowserAfterEdit: true,
   },
+  {
+    id: "multi-file-walk",
+    probes: "收尾 gate 误报:两处页面脚本改完、浏览器里点过,仍被要求'运行验证'",
+    instruction:
+      "Start the dev server (script `dev`, serves http://localhost:{PORT}/). Two changes are needed: (1) utils.js has a stub `sum(list)` that always returns 0 — make it return the total of the numbers in the list; (2) in app.js, wire the 'Total' button so clicking it shows sum([3, 4, 5]) in #total. Verify in the real page (click the button in the browser and check #total shows 12), then answer.",
+    port: -1,
+    files: {
+      "package.json": pkg(),
+      "index.html":
+        '<!doctype html><html><head><title>Totals</title></head><body><button id="go">Total</button> <span id="total">-</span><script src="utils.js"></script><script src="app.js"></script></body></html>',
+      "utils.js": "// Returns the total of the numbers in `list`.\nfunction sum(list) {\n  return 0;\n}\n",
+      "app.js": '// Wire the Total button here.\nconst btn = document.getElementById("go");\n',
+    },
+    expectFilesAny: [
+      ["utils.js", ["reduce", "+=", "+ "]],
+      ["app.js|index.html", ["addEventListener", "onclick"]],
+    ],
+    expectFilesAbsent: [["utils.js", "return 0;\n}"]],
+    expectClicked: true,
+    expectBrowserAfterEdit: true,
+  },
 ];

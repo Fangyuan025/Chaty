@@ -1,6 +1,7 @@
 # ChatyWebapp-Bench
 
-Four scenarios reproducing the four audited webapp-flow failure modes:
+Five scenarios: the four audited webapp-flow failure modes, plus the
+wrap-up gate's own false-positive case:
 
 | id | 痛点 | objective grade |
 |---|---|---|
@@ -8,9 +9,13 @@ Four scenarios reproducing the four audited webapp-flow failure modes:
 | `console-fix` | never reads the JS console → fixes the wrong thing | source actually fixed **and** a browser action happened after the last edit |
 | `todo-follow` | update_plan once, then the plan is decoration | all three requested changes present in the files |
 | `ship-verified` | delivers without walking the page | both edits present **and** browser action after the last edit |
+| `multi-file-walk` | two plain .js files changed and walked in the browser, yet the gate still demands a "run" | both files changed **and** a click after the last edit |
 
 Grading never trusts the model's self-report: file contents, an end-of-run
-HTTP probe against the dev server, and step-log facts only.
+HTTP probe against the dev server, and step-log facts only. Each row also
+records the wrap-up gate's firings (`wrapups`: which notes, and whether the
+page had been walked after the last edit when it fired — a verification
+demand at that point is a false positive).
 
 ## Run
 
