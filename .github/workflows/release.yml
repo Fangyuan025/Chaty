@@ -280,7 +280,8 @@ jobs:
             console starts over when the page reloads, so the agent stops reading
             back errors the page no longer throws. An opened step card shows
             exactly what the model was given, all of it, and read_file reaches the
-            end of a file past 400 KB.
+            end of a file past 400 KB. A binary file in a tool's output no longer
+            breaks the session it lands in.
 
             ## Chat, settings and the installer
 

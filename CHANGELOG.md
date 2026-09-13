@@ -118,6 +118,14 @@
   long it is; with edit anchors on, its anchor matches the line on disk, so
   an edit to it no longer fails.
 
+- **A binary file in a tool's output no longer breaks the session.** A
+  `cat` of a binary file returned thousands of NUL bytes, which the engine
+  cannot take: that turn failed with "nul byte found in provided data", and
+  so did every turn after it, the output being part of the history. NUL
+  bytes now reach the model as ␀, with a note that the output was binary —
+  a session already stuck this way works again — and read_file says a file
+  is binary instead of reading it out.
+
 ### Chat: copying, pictures, and a thought that ends
 
 - **Right-click copies the message under the pointer.** The menu's Copy was
