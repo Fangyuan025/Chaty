@@ -68,6 +68,23 @@
   logs a lot, the newest lines are the ones kept — past 200 lines the
   latest error used to be dropped.
 
+### What the agent was given, in full
+
+- **An opened step card shows what the model was given, word for word.**
+  It showed the first 6,000 characters of the tool's output, without the
+  notes the agent adds for the model, so a large file read or a long command
+  output ended in a line saying the model had received the rest. Opened, a
+  card now shows the model's text whole. It is kept with the session, apart
+  from it so a long session stays light, and deleted with it.
+
+- **read_file reaches the end of a large file.** A file was cut at 400 KB
+  before its lines were counted, so nothing after that could be read at any
+  offset, and the line total the agent was told was the cut's — with nothing
+  to say the file went on. The whole file now pages through, with its true
+  total. A line past 4,000 characters is still cut, but now says so and how
+  long it is; with edit anchors on, its anchor matches the line on disk, so
+  an edit to it no longer fails.
+
 ### A window that opens the right size
 
 - **The window opens scaled to the screen,** at the proportions other
@@ -103,6 +120,18 @@
   points at the endpoint setting, and lists the files to fetch by hand, where
   from, and the folder they go in — which Settings → Voice now opens. Read
   aloud reports the failure too, instead of doing nothing.
+
+- **A voice model's first download shows its progress.** It ran behind the
+  mic's spinner with nothing else to see — about 160 MB for speech
+  recognition, many minutes on a slow line — and looked hung. A notice above
+  the composer now gives the percentage and the megabytes until it is done;
+  live voice chat and read aloud show it too.
+
+- **Speech recognition writes Chinese in Simplified characters.** Whisper,
+  trained on a great many Traditional subtitles, mixed Traditional
+  characters into Mandarin — 麽 for 么. Transcripts are now converted,
+  word by word rather than character by character, so 著名 stays as it is
+  while 看著 becomes 看着; Japanese is left alone.
 
 - **Web search and thinking can be on together.** Turning one on used to
   switch the other off.

@@ -274,7 +274,9 @@ jobs:
             or for all of them — folded to its totals when there are more than five.
             A turn that walked through its page in the browser is no longer told
             to run the code before delivering; the check still stops code that
-            never ran, a failed build, and edits made after the walk.
+            never ran, a failed build, and edits made after the walk. An opened
+            step card shows exactly what the model was given, all of it, and
+            read_file reaches the end of a file past 400 KB.
 
             ## A window that opens the right size
 
@@ -287,7 +289,9 @@ jobs:
             Voice models now download through the HF endpoint in Settings, so a
             mirror such as hf-mirror.com reaches them too, and a download that still
             fails says which folder the files belong in and where to get them; the
-            folder opens from Settings → Voice. Web search and thinking can be on
+            folder opens from Settings → Voice. A first download shows its
+            progress, and speech recognition writes Chinese in Simplified
+            characters. Web search and thinking can be on
             together. Search results that are about something else are dropped
             instead of cited, every source the model was given shows under the
             answer, a citation past them is no longer printed, and hovering a source
