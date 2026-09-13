@@ -22,10 +22,17 @@ const BIG_PY = Array.from({ length: 40 }, (_, i) => `print(${i})`).join("\n");
 const call = (name: string, args: Record<string, unknown>) =>
   `<tool_call>${JSON.stringify({ name, arguments: args })}</tool_call>`;
 
-async function runRounds(rounds: string[]): Promise<{ injects: string[]; final: string }> {
+async function runRounds(
+  rounds: string[],
+  // What browser_refresh reports having reloaded — the page the browser
+  // was left on, possibly by an earlier turn.
+  opts: { refreshUrl?: string } = {},
+): Promise<{ injects: string[]; final: string }> {
   const script = [...rounds];
   const files = new Map<string, string>();
   mockIPC(async (cmd, args) => {
+    if (cmd === "browser_refresh")
+      return `Reloaded (cache ignored): ${opts.refreshUrl ?? "http://localhost:5173/"}\nTitle: app\n\n[page]`;
     // A page that is not up: navigating to any ".../down" URL fails.
     const url = (args as { url?: unknown } | undefined)?.url;
     if (typeof url === "string" && url.includes("/down")) throw new Error("net::ERR_CONNECTION_REFUSED");
@@ -400,6 +407,36 @@ describe("run-check through the real loop", () => {
     ]);
     expect(injects.some((i) => i.includes("entry ticket"))).toBe(false);
     expect(injects.some((i) => i.includes(RUN_MARK))).toBe(false);
+  });
+
+  // A follow-up turn: the browser is still on the local page from the last
+  // one, so the model reloads it rather than navigating — the verb the
+  // webFlow hint teaches after an edit.
+  it("a follow-up turn that reloads the local page and walks it → no run-check note", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "src/App.tsx", content: BIG_PY }),
+      call("write_file", { path: "src/main.tsx", content: "render()" }),
+      call("browser_refresh", {}),
+      call("browser_click", { text: "add" }),
+      "All done, reloaded and checked.",
+    ]);
+    expect(injects.some((i) => i.includes(RUN_MARK))).toBe(false);
+    expect(injects.some((i) => i.includes(WEB_MARK))).toBe(false);
+  });
+
+  it("reloading a page out on the web is still no walkthrough", async () => {
+    const { injects } = await runRounds(
+      [
+        call("write_file", { path: "src/App.tsx", content: BIG_PY }),
+        call("write_file", { path: "src/main.tsx", content: "render()" }),
+        call("browser_refresh", {}),
+        "All done.",
+        "Final.",
+        "Final final.",
+      ],
+      { refreshUrl: "https://developer.mozilla.org/en-US/" },
+    );
+    expect(injects.some((i) => i.includes(RUN_MARK))).toBe(true);
   });
 
   it("a fix after the walkthrough asks for another look, but no longer claims nothing was walked", async () => {

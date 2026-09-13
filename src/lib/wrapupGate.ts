@@ -108,6 +108,14 @@ export function isLocalPageUrl(url: string): boolean {
   return host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1";
 }
 
+/** The URL a browser_navigate / browser_refresh result says it loaded — its
+ *  first line, "Loaded: <url>" / "Reloaded (cache ignored): <url>" (or the
+ *  zh wording), after redirects. Null when the result isn't one of those. */
+export function loadedUrlFrom(result: string): string | null {
+  const m = /^(?:Loaded|Reloaded \(cache ignored\)|已打开|已刷新\(忽略缓存\))[:：]\s*(\S+)/.exec(result.trimStart());
+  return m ? m[1] : null;
+}
+
 /** Compact, model-facing echo of the plan. The old update_plan result was a
  *  bare "计划已更新" — the plan went to a UI panel and NEVER re-entered the
  *  model's context, which is exactly how todos became decoration. */

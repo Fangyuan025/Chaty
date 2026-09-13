@@ -73,6 +73,7 @@ import {
   devServerUrlFrom,
   runCheckAboveBar,
   isLocalPageUrl,
+  loadedUrlFrom,
 } from "./wrapupGate";
 import { isReadOnlyCommand, isSymbolicCheck } from "./readOnlyCmd";
 import { diffLines } from "./diff";
@@ -3551,15 +3552,24 @@ export async function runAgentTurn(
         }
         if (call.name.startsWith("browser_")) {
           lastBrowserActionStep = step;
-          if (call.name === "browser_navigate") {
-            const url = asStr(call.args?.url).trim();
-            browserOnLocalPage = isLocalPageUrl(url);
-            // A page that loads from a local http URL proves a server is up,
-            // whether or not its banner reached us: `python3 -m http.server`
-            // prints http://[::]:port/ and block-buffers even that away, so
-            // plain .js behind it never counted as page code (bench:
-            // multi-file-walk fired "no run" after a full walkthrough).
-            if (browserOnLocalPage && !/^file:/i.test(url) && !resultText.startsWith("ERROR")) serverCtx = true;
+          if (call.name === "browser_navigate" || call.name === "browser_refresh") {
+            // Where the page actually is: the result's "Loaded: <url>" line,
+            // after redirects. A reload is how a follow-up turn gets back to
+            // the page an earlier turn left open — unread, the walk after it
+            // never counted and the same false stop came back next turn.
+            // navigate falls back to the URL it was given.
+            const url = (
+              loadedUrlFrom(resultText) ?? (call.name === "browser_navigate" ? asStr(call.args?.url) : "")
+            ).trim();
+            if (url) {
+              browserOnLocalPage = isLocalPageUrl(url);
+              // A page that loads from a local http URL proves a server is
+              // up, whether or not its banner reached us: `python3 -m
+              // http.server` prints http://[::]:port/ and block-buffers even
+              // that away, so plain .js behind it never counted as page code
+              // (bench: multi-file-walk fired "no run" after a walkthrough).
+              if (browserOnLocalPage && !/^file:/i.test(url) && !resultText.startsWith("ERROR")) serverCtx = true;
+            }
           }
           // Walking the local page is how page code gets run (owner report:
           // the gate fired on turns that had clicked through every path).

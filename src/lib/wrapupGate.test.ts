@@ -3,6 +3,7 @@ import {
   devServerUrlFrom,
   isLocalPageUrl,
   isSourceCodeFile,
+  loadedUrlFrom,
   isWebSourceFile,
   planEcho,
   wrapupNudge,
@@ -232,6 +233,21 @@ describe("devServerUrlFrom", () => {
   });
   it("ignores non-local URLs", () => {
     expect(devServerUrlFrom("see https://example.com/docs")).toBeUndefined();
+  });
+});
+
+describe("loadedUrlFrom", () => {
+  it("reads the loaded URL off a navigate or refresh result, in either language", () => {
+    expect(loadedUrlFrom("Loaded: http://localhost:5173/app\nTitle: x\n\nbody")).toBe("http://localhost:5173/app");
+    expect(loadedUrlFrom("Reloaded (cache ignored): http://127.0.0.1:8000/\nTitle: y")).toBe("http://127.0.0.1:8000/");
+    expect(loadedUrlFrom("已打开:https://example.com/\n标题:e")).toBe("https://example.com/");
+    expect(loadedUrlFrom("已刷新(忽略缓存):file:///tmp/a.html\n标题:a")).toBe("file:///tmp/a.html");
+  });
+
+  it("is null for anything else — a click result, an error", () => {
+    expect(loadedUrlFrom("Clicked 'Add'.\n\n[page]")).toBeNull();
+    expect(loadedUrlFrom("ERROR: 导航失败 (navigation failed): net::ERR_CONNECTION_REFUSED")).toBeNull();
+    expect(loadedUrlFrom("")).toBeNull();
   });
 });
 
