@@ -43,6 +43,21 @@
   copy the card kept. A turn that changed more than five files starts with
   the card folded to its totals.
 
+### A page you walked through counts as checked
+
+- **The wrap-up check no longer asks for a run after a walkthrough.** A
+  turn that changed page code and then clicked through the page in the
+  browser was still told the code "changed after the last run" — sometimes
+  twice, the second time ordering a validate_change — and a small fix
+  after the walk drew "no browser walkthrough", which was not true.
+  Walking the local page now counts as running its code and as exercising
+  its functions; a page behind `python3 -m http.server`, whose banner never
+  reached the agent, counts too. What still stops a delivery: code outside
+  the page that never ran, a build that failed and was never fixed, pages
+  browsed on the web rather than the one being built, and page edits made
+  after the walk. On the webapp bench the false stops went from two to
+  none on an 8B model, and its runs took a third fewer steps.
+
 ### A window that opens the right size
 
 - **The window opens scaled to the screen,** at the proportions other

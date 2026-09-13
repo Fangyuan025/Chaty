@@ -272,6 +272,9 @@ jobs:
             A turn that edits files now ends with a card of every file it changed,
             each with its net +/−, its diff one click away, and an undo for that file
             or for all of them — folded to its totals when there are more than five.
+            A turn that walked through its page in the browser is no longer told
+            to run the code before delivering; the check still stops code that
+            never ran, a failed build, and edits made after the walk.
 
             ## A window that opens the right size
 
