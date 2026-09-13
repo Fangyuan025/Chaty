@@ -1,109 +1,6 @@
 # Changelog
 
-## v2.1.9 — A session of its own (2026-09-11)
-
-### Every session keeps its own background tasks
-
-- **Background tasks belong to the session that started them.** They were
-  global: every session saw every job, one session's agent was told when
-  another's finished, switching workspaces killed them all, and nothing of
-  them survived a restart. The tasks panel and the agent now see only the
-  current session's jobs; another session's keep running, in their own
-  workspace, until that session stops them or is deleted, or the app quits.
-
-- **A session remembers its tasks.** What each one ran, how it ended, how
-  long it ran and what it printed stays with the session and is still there
-  the next time it opens, until it is cleared. A task still running when the
-  app quit reads as stopped, not as finished.
-
-- **A session belongs to its workspace.** Opening one moves to its folder —
-  and says so when the folder is gone, instead of failing in silence and
-  leaving the header showing one workspace while the agent worked in
-  another. Choosing a folder while a session already holds a conversation
-  starts a new session there rather than moving the old one.
-
-- **The session rail can be grouped by workspace**, under Settings → Code.
-
-### Background tasks you can see into
-
-- **The background pill opens a panel.** It used to offer one thing: kill
-  them all. It now lists running tasks, then finished ones, each with its
-  status — running, completed, stopped, or failed with its exit code — and
-  its running time; opened, a task shows its full command and its output,
-  live while it runs. Tasks can be stopped one at a time or together, and
-  finished ones cleared.
-
-### What a turn changed, at the end of it
-
-- **A turn that edits files ends with a card of what it changed.** Each file
-  with its net lines added and removed, its diff one click away, and an undo
-  for that file or for all of them, after a confirmation — back to how it was
-  before the turn, or removed if the turn created it. The card appears after
-  a turn you stopped too, and undo still works after a restart, from the
-  copy the card kept. A turn that changed more than five files starts with
-  the card folded to its totals.
-
-### A page you walked through counts as checked
-
-- **The wrap-up check no longer asks for a run after a walkthrough.** A
-  turn that changed page code and then clicked through the page in the
-  browser was still told the code "changed after the last run" — sometimes
-  twice, the second time ordering a validate_change — and a small fix
-  after the walk drew "no browser walkthrough", which was not true.
-  Walking the local page now counts as running its code and as exercising
-  its functions — whether the turn opened it or reloaded the one an earlier
-  turn left open — and a page behind `python3 -m http.server`, whose banner
-  never reached the agent, counts too. What still stops a delivery: code outside
-  the page that never ran, a build that failed and was never fixed, pages
-  browsed on the web rather than the one being built, and page edits made
-  after the walk. On the webapp bench the false stops went from two to
-  none on an 8B model, and its runs took a third fewer steps.
-
-- **The browser's console starts over when the page reloads.** It kept
-  every line from every page the session had shown, so after a fix and a
-  refresh the agent read back errors the page no longer threw — one
-  session refreshed three times and got the same SyntaxError each time.
-  A reload or a move to another page now clears it, as Chrome's own
-  console does; changing routes inside one page doesn't. On a page that
-  logs a lot, the newest lines are the ones kept — past 200 lines the
-  latest error used to be dropped.
-
-### What the agent was given, in full
-
-- **An opened step card shows what the model was given, word for word.**
-  It showed the first 6,000 characters of the tool's output, without the
-  notes the agent adds for the model, so a large file read or a long command
-  output ended in a line saying the model had received the rest. Opened, a
-  card now shows the model's text whole. It is kept with the session, apart
-  from it so a long session stays light, and deleted with it.
-
-- **read_file reaches the end of a large file.** A file was cut at 400 KB
-  before its lines were counted, so nothing after that could be read at any
-  offset, and the line total the agent was told was the cut's — with nothing
-  to say the file went on. The whole file now pages through, with its true
-  total. A line past 4,000 characters is still cut, but now says so and how
-  long it is; with edit anchors on, its anchor matches the line on disk, so
-  an edit to it no longer fails.
-
-### A window that opens the right size
-
-- **The window opens scaled to the screen,** at the proportions other
-  desktop apps open at, centred, and without appearing at one size and
-  jumping to another. It opened at a fixed 1040×720 — half of a 1080p
-  screen.
-
-- **The Windows installer speaks Chinese on a Chinese Windows.** It was
-  English whatever the system language; it now follows the Windows display
-  language — Simplified Chinese, or English for everything else — with no
-  language prompt, and also when installing over an earlier version, whose
-  English it used to keep.
-
-- **Closing from fullscreen on macOS works every time.** The window leaves
-  fullscreen with the system's own animation, then goes to the tray, and
-  comes back as a normal window. It used to hide the whole app instead,
-  which macOS refuses while the fullscreen menu bar is showing — and the red
-  X is in that menu bar — so it waited, and after a minute gave up with the
-  window still up.
+## v2.2.0 — Closer to the question (2026-09-13)
 
 ### Voice, web search and citations
 
@@ -178,6 +75,143 @@
   model can take, with progress per page; without one, the message says
   which kind of model it needs. Black-and-white scans stored as one bit a
   pixel are read too.
+
+### A page you walked through counts as checked
+
+- **The wrap-up check no longer asks for a run after a walkthrough.** A
+  turn that changed page code and then clicked through the page in the
+  browser was still told the code "changed after the last run" — sometimes
+  twice, the second time ordering a validate_change — and a small fix
+  after the walk drew "no browser walkthrough", which was not true.
+  Walking the local page now counts as running its code and as exercising
+  its functions — whether the turn opened it or reloaded the one an earlier
+  turn left open — and a page behind `python3 -m http.server`, whose banner
+  never reached the agent, counts too. What still stops a delivery: code outside
+  the page that never ran, a build that failed and was never fixed, pages
+  browsed on the web rather than the one being built, and page edits made
+  after the walk. On the webapp bench the false stops went from two to
+  none on an 8B model, and its runs took a third fewer steps.
+
+- **The browser's console starts over when the page reloads.** It kept
+  every line from every page the session had shown, so after a fix and a
+  refresh the agent read back errors the page no longer threw — one
+  session refreshed three times and got the same SyntaxError each time.
+  A reload or a move to another page now clears it, as Chrome's own
+  console does; changing routes inside one page doesn't. On a page that
+  logs a lot, the newest lines are the ones kept — past 200 lines the
+  latest error used to be dropped.
+
+### What the agent was given, in full
+
+- **An opened step card shows what the model was given, word for word.**
+  It showed the first 6,000 characters of the tool's output, without the
+  notes the agent adds for the model, so a large file read or a long command
+  output ended in a line saying the model had received the rest. Opened, a
+  card now shows the model's text whole. It is kept with the session, apart
+  from it so a long session stays light, and deleted with it.
+
+- **read_file reaches the end of a large file.** A file was cut at 400 KB
+  before its lines were counted, so nothing after that could be read at any
+  offset, and the line total the agent was told was the cut's — with nothing
+  to say the file went on. The whole file now pages through, with its true
+  total. A line past 4,000 characters is still cut, but now says so and how
+  long it is; with edit anchors on, its anchor matches the line on disk, so
+  an edit to it no longer fails.
+
+### Chat: copying, pictures, and a thought that ends
+
+- **Right-click copies the message under the pointer.** The menu's Copy was
+  greyed out unless some text had been selected first, which read as copy
+  not working at all. With nothing selected it now reads "Copy message" and
+  copies the message clicked, as the message's own copy button does — in
+  Code mode too.
+
+- **A picture in a message opens full size.** Clicking one did nothing; it
+  now opens the preview Code mode's screenshots use, with a save button.
+
+- **A reply stopped mid-thought no longer says it is thinking.** Stopped,
+  or ended by an error, while it was still reasoning, it kept "Thinking"
+  and its dots running for good, and the error was shown inside the
+  reasoning. The reasoning now reads as finished and the error sits below
+  it.
+
+### Settings, the tray and approvals
+
+- **Settings shows the models folder that "Open models folder" opens.**
+  With no folder chosen it showed where downloads go, while the button
+  opened the first folder that already held models — on Windows, often the
+  `models` folder beside the program — so the path and the button
+  disagreed.
+
+- **The tray icon on Windows and Linux fills its slot.** It was the app
+  icon with its transparent margin, drawn a quarter smaller than the icons
+  beside it; it is now cropped to the square.
+
+- **A command awaiting approval is shown once.** The approval dialog
+  printed it twice, the second time where an explanation would go.
+
+- **The Windows installer speaks Chinese on a Chinese Windows.** It was
+  English whatever the system language; it now follows the Windows display
+  language — Simplified Chinese, or English for everything else — with no
+  language prompt, and also when installing over an earlier version, whose
+  English it used to keep.
+
+## v2.1.9 — A session of its own (2026-09-11)
+
+### Every session keeps its own background tasks
+
+- **Background tasks belong to the session that started them.** They were
+  global: every session saw every job, one session's agent was told when
+  another's finished, switching workspaces killed them all, and nothing of
+  them survived a restart. The tasks panel and the agent now see only the
+  current session's jobs; another session's keep running, in their own
+  workspace, until that session stops them or is deleted, or the app quits.
+
+- **A session remembers its tasks.** What each one ran, how it ended, how
+  long it ran and what it printed stays with the session and is still there
+  the next time it opens, until it is cleared. A task still running when the
+  app quit reads as stopped, not as finished.
+
+- **A session belongs to its workspace.** Opening one moves to its folder —
+  and says so when the folder is gone, instead of failing in silence and
+  leaving the header showing one workspace while the agent worked in
+  another. Choosing a folder while a session already holds a conversation
+  starts a new session there rather than moving the old one.
+
+- **The session rail can be grouped by workspace**, under Settings → Code.
+
+### Background tasks you can see into
+
+- **The background pill opens a panel.** It used to offer one thing: kill
+  them all. It now lists running tasks, then finished ones, each with its
+  status — running, completed, stopped, or failed with its exit code — and
+  its running time; opened, a task shows its full command and its output,
+  live while it runs. Tasks can be stopped one at a time or together, and
+  finished ones cleared.
+
+### What a turn changed, at the end of it
+
+- **A turn that edits files ends with a card of what it changed.** Each file
+  with its net lines added and removed, its diff one click away, and an undo
+  for that file or for all of them, after a confirmation — back to how it was
+  before the turn, or removed if the turn created it. The card appears after
+  a turn you stopped too, and undo still works after a restart, from the
+  copy the card kept. A turn that changed more than five files starts with
+  the card folded to its totals.
+
+### A window that opens the right size
+
+- **The window opens scaled to the screen,** at the proportions other
+  desktop apps open at, centred, and without appearing at one size and
+  jumping to another. It opened at a fixed 1040×720 — half of a 1080p
+  screen.
+
+- **Closing from fullscreen on macOS works every time.** The window leaves
+  fullscreen with the system's own animation, then goes to the tray, and
+  comes back as a normal window. It used to hide the whole app instead,
+  which macOS refuses while the fullscreen menu bar is showing — and the red
+  X is in that menu bar — so it waited, and after a minute gave up with the
+  window still up.
 
 ### From the v2.1.8 rebuild
 

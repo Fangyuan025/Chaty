@@ -251,39 +251,6 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## A session of its own
-
-            In Code mode, background tasks now belong to the session that started
-            them. Each session sees only its own — the tasks panel and the agent alike
-            — while another session's dev server keeps running in its own workspace,
-            and what each task ran, how it ended and what it printed stays with the
-            session across restarts until it is cleared. A session also belongs to its
-            workspace: opening one moves to its folder, and the session list can be
-            grouped by workspace.
-
-            ## Background tasks you can see into
-
-            The background pill now opens a panel of running and finished tasks —
-            status, running time, the full command and its output, live — where they
-            can be stopped one by one and cleared.
-
-            ## What a turn changed
-
-            A turn that edits files now ends with a card of every file it changed,
-            each with its net +/−, its diff one click away, and an undo for that file
-            or for all of them — folded to its totals when there are more than five.
-            A turn that walked through its page in the browser is no longer told
-            to run the code before delivering; the check still stops code that
-            never ran, a failed build, and edits made after the walk. An opened
-            step card shows exactly what the model was given, all of it, and
-            read_file reaches the end of a file past 400 KB.
-
-            ## A window that opens the right size
-
-            Chaty opens scaled to the screen and centred instead of at a fixed
-            1040×720, and on macOS closing from fullscreen now leaves fullscreen
-            smoothly and goes to the tray every time.
-
             ## Voice, web search and citations
 
             Voice models now download through the HF endpoint in Settings, so a
@@ -305,12 +272,24 @@ jobs:
             page by page by the loaded vision model, and without one the message
             says which model it needs.
 
-            Several things reached v2.1.8 as a rebuild after it went out and are in
-            here for anyone who installed it on release day: the macOS menu-bar icon
-            is a glyph that matches the bar, and long coding sessions no longer
-            re-read the whole conversation — after the first turn, after forty steps
-            on MLX, after the agent remembers something, or at every turn past 40% of
-            the window.
+            ## Code mode
+
+            A turn that walked through its page in the browser is no longer told
+            to run the code before delivering; the check still stops code that
+            never ran, a failed build, and edits made after the walk. The browser's
+            console starts over when the page reloads, so the agent stops reading
+            back errors the page no longer throws. An opened step card shows
+            exactly what the model was given, all of it, and read_file reaches the
+            end of a file past 400 KB.
+
+            ## Chat, settings and the installer
+
+            Right-click copies the message under the pointer, a picture in a
+            message opens full size, and a reply stopped mid-thought no longer
+            keeps saying it is thinking. Settings shows the models folder its
+            button opens, the Windows tray icon fills its slot, a command awaiting
+            approval is shown once, and the Windows installer speaks Chinese on a
+            Chinese Windows — upgrades included.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
