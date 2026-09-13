@@ -3,53 +3,7 @@ import { Markdown, StreamingContext } from "./Markdown";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { normalizeChannels } from "../lib/voiceText";
-
-/** Split a streamed assistant message into its `<think>` reasoning and answer.
- *  A message can carry SEVERAL think blocks (interleaved reasoning, or a
- *  runaway that re-opened its thought channel): all block contents feed the
- *  reasoning panel, everything outside is answer, and only a trailing
- *  unclosed block counts as "still thinking". */
-function parseThinking(raw: string): {
-  reasoning: string;
-  answer: string;
-  thinking: boolean;
-  hasThink: boolean;
-} {
-  // Channel-style reasoning markers (Gemma 4 / Harmony) → <think> convention.
-  let content = normalizeChannels(raw);
-  const close = "</think>";
-  const chunks: string[] = [];
-  let answer = "";
-  let thinking = false;
-  let hasThink = false;
-  // Orphan close tag: reasoning streamed without an opening <think> (a
-  // pre-open-trained model whose prompt lost the tag). Everything before
-  // the close is reasoning.
-  const oi0 = content.indexOf("<think>");
-  const ci0 = content.indexOf(close);
-  if (ci0 !== -1 && (oi0 === -1 || ci0 < oi0)) {
-    chunks.push(content.slice(0, ci0).trim());
-    content = content.slice(ci0 + close.length);
-    hasThink = true;
-  }
-  const re = /<think>([\s\S]*?)(?:<\/think>|$)/g;
-  let cursor = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(content))) {
-    answer += content.slice(cursor, m.index);
-    chunks.push(m[1].replace(/^\n+/, "").trim());
-    cursor = m.index + m[0].length;
-    hasThink = true;
-    thinking = !m[0].endsWith(close);
-  }
-  answer += content.slice(cursor);
-  return {
-    reasoning: chunks.filter(Boolean).join("\n\n"),
-    answer: answer.replace(/^\s+/, ""),
-    thinking,
-    hasThink,
-  };
-}
+import { parseThinking } from "../lib/reasoning";
 
 const SOURCE_RE = /[【[（(]\s*来源\s*[\d０-９,，、\s]+[】\])）]/g;
 /** Verbose citation forms (【来源1、2】 / (source 3)) → bare 【1】【2】 anchors. */
@@ -108,7 +62,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       <div className="bubble">
         <StreamingContext.Provider value={streaming}>
         {answer && (
-          <div className="answer">
+          <div className="answer" data-copy={answer}>
             <Markdown cites={sources}>{answer}</Markdown>
           </div>
         )}
@@ -125,7 +79,11 @@ export const AssistantMessage = memo(function AssistantMessage({
     );
   }
 
-  const { reasoning, answer, thinking, hasThink } = parseThinking(content);
+  const { reasoning, answer, thinking: open, hasThink } = parseThinking(content);
+  // An unclosed think block is "thinking" only while the reply streams. One
+  // that was stopped, or ended by an error, is finished reasoning — it kept a
+  // "Thinking" label and its dots running forever after (issue #18).
+  const thinking = open && streaming;
   const cleanAnswer = prepareCitations(answer, hasSources);
   // Manual override of the panel; until the user clicks, follow the thinking state
   // (expanded while reasoning, auto-collapsed once the answer starts).
@@ -178,7 +136,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       )}
 
       {cleanAnswer && (
-        <div className="answer">
+        <div className="answer" data-copy={cleanAnswer}>
           <Markdown cites={sources}>{cleanAnswer}</Markdown>
         </div>
       )}

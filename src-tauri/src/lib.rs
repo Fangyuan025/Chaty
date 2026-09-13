@@ -223,6 +223,64 @@ mod window_size_tests {
         // A screen smaller than that minimum: the window still fits on it.
         assert_eq!(default_window_size(1000.0, 700.0), (1000.0, 700.0));
     }
+
+    /// The Windows/Linux tray icon fills its slot: no transparent margin left
+    /// on any side (issue #18 — the app icon's margin made it the smallest
+    /// icon in the tray).
+    #[test]
+    fn the_tray_icon_is_cropped_to_its_square() {
+        let png = include_bytes!("../icons/icon.png");
+        let img = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+            .unwrap()
+            .to_rgba8();
+        let mid = img.height() / 2;
+        assert!(img.get_pixel(0, mid)[3] < 16, "the app icon has a margin to crop");
+        let icon = super::crop_to_content(&img, 32);
+        assert_eq!(icon.dimensions(), (32, 32));
+        for (x, y) in [(0, 16), (31, 16), (16, 0), (16, 31)] {
+            assert!(icon.get_pixel(x, y)[3] > 200, "edge ({x},{y}) is still transparent");
+        }
+    }
+}
+
+/// `img` cropped to the square around its visible pixels, then scaled to
+/// `size`×`size`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn crop_to_content(img: &image::RgbaImage, size: u32) -> image::RgbaImage {
+    use image::imageops::{self, FilterType};
+    let (w, h) = img.dimensions();
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+    for (x, y, p) in img.enumerate_pixels() {
+        if p[3] > 16 {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+    }
+    if x0 > x1 || y0 > y1 {
+        return imageops::resize(img, size, size, FilterType::Lanczos3);
+    }
+    let side = (x1 - x0 + 1).max(y1 - y0 + 1);
+    let square = imageops::crop_imm(img, x0, y0, side.min(w - x0), side.min(h - y0)).to_image();
+    imageops::resize(&square, size, size, FilterType::Lanczos3)
+}
+
+/// The tray icon on Windows and Linux: the app icon cropped to its rounded
+/// square. The app icon keeps a macOS-style transparent margin — an eighth of
+/// its width on every side — and a tray draws the whole canvas into its slot,
+/// so the square came out at three quarters of the size of the icons beside
+/// it (issue #18). 32 px: a 16-px slot at 100% and 200% scaling both divide it
+/// evenly.
+#[cfg(not(target_os = "macos"))]
+fn tray_colour_icon() -> Option<tauri::image::Image<'static>> {
+    let png = include_bytes!("../icons/icon.png");
+    let img = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .ok()?
+        .to_rgba8();
+    let icon = crop_to_content(&img, 32);
+    let (w, h) = icon.dimensions();
+    Some(tauri::image::Image::new_owned(icon.into_raw(), w, h))
 }
 
 /// The menu-bar glyph: the app icon's own bubble and graph, drawn black on
@@ -397,7 +455,8 @@ pub fn run() {
                 None => (app.default_window_icon().cloned(), false),
             };
             #[cfg(not(target_os = "macos"))]
-            let (tray_icon, is_template) = (app.default_window_icon().cloned(), false);
+            let (tray_icon, is_template) =
+                (tray_colour_icon().or_else(|| app.default_window_icon().cloned()), false);
             if let Some(icon) = tray_icon {
                 TrayIconBuilder::with_id("main-tray")
                     .icon(icon)

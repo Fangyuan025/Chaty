@@ -383,6 +383,7 @@ export const T = {
   },
   // html preview
   closePreview: { zh: "关闭预览", en: "Close preview", pt: "Fechar visualização" },
+  imagePreview: { zh: "图片", en: "Image", pt: "Imagem" },
   noConversations: { zh: "暂无历史会话", en: "No conversations yet", pt: "Nenhuma conversa ainda" },
   deleteConv: { zh: "删除会话", en: "Delete conversation", pt: "Excluir conversa" },
   confirm: { zh: "确认", en: "Confirm", pt: "Confirmar" },
@@ -446,6 +447,7 @@ export const T = {
   // context menu
   ctxCut: { zh: "剪切", en: "Cut", pt: "Recortar" },
   ctxCopy: { zh: "复制", en: "Copy", pt: "Copiar" },
+  ctxCopyMessage: { zh: "复制整条消息", en: "Copy message", pt: "Copiar mensagem" },
   ctxPaste: { zh: "粘贴", en: "Paste", pt: "Colar" },
   ctxSelectAll: { zh: "全选", en: "Select all", pt: "Selecionar tudo" },
   // window controls

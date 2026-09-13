@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { ImagePreview } from "./ImagePreview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { agentLang, useI18n } from "../lib/i18n";
 import { watchContentHeight } from "../lib/autoGrow";
@@ -38,8 +38,6 @@ import {
   agentListGrants,
   agentClearGrants,
   imageThumb,
-  imageDataUrl,
-  saveImageAs,
   pickAttachmentFile,
   readAttachment,
   isVisionImagePath,
@@ -456,56 +454,6 @@ function ImgThumb({ path }: { path: string }) {
   return src ? <img src={src} alt="" /> : <span className="cm-attach-ph" />;
 }
 
-/** Full-size image preview modal with a "save to local" action. */
-function ImagePreview({ path, onClose }: { path: string; onClose: () => void }) {
-  const { t } = useI18n();
-  const [src, setSrc] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-  useEffect(() => {
-    let live = true;
-    // Full-resolution (crisp) — not a downscaled thumbnail.
-    imageDataUrl(path)
-      .then((d) => live && setSrc(d))
-      .catch(() => live && setSrc(""));
-    return () => {
-      live = false;
-    };
-  }, [path]);
-  useEffect(() => {
-    const onKey = (e: globalThis.KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-  const save = async () => {
-    try {
-      const name = path.split(/[/\\]/).pop() || "screenshot.png";
-      const dest = await saveImageAs(path, name);
-      if (dest) setSaved(true);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-  return createPortal(
-    <div className="preview-overlay" onMouseDown={onClose}>
-      <div className="cm-preview" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="cm-preview-bar">
-          <span className="cm-preview-title">{t("cmScreenshot")}</span>
-          <button className="cm-preview-btn" onClick={() => void save()}>
-            <Icon name="download" size={13} strokeWidth={2} />
-            {saved ? t("cmSaved") : t("cmSaveImage")}
-          </button>
-          <button className="cm-preview-close" onClick={onClose} title={t("closePreview")}>
-            <Icon name="x" size={14} strokeWidth={2.2} />
-          </button>
-        </div>
-        <div className="cm-preview-stage">
-          {src ? <img src={src} alt="" /> : <span className="cm-spin" />}
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
-}
 
 /** Circular prompt-processing progress: a small ring that fills 0→100% while a
  *  long prompt is prefilling (the silent gap before tokens stream), plus the
@@ -1895,7 +1843,7 @@ export function CodeMode({
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
                     </button>
                   )}
-                  <div className="cm-user">
+                  <div className="cm-user" data-copy={m.text}>
                     {m.images && m.images.length > 0 && (
                       <span className="cm-user-images">
                         {m.images.map((p) => (
@@ -1936,7 +1884,7 @@ export function CodeMode({
                   {m.liveThinking && <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />}
                   {m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />}
                   {m.text && (
-                    <div className="cm-asst-text answer">
+                    <div className="cm-asst-text answer" data-copy={m.text}>
                       <Markdown>{m.text}</Markdown>
                       {!running && (
                         <button
@@ -2218,10 +2166,10 @@ export function CodeMode({
                 ? t("cmApproveBash")
                 : t("cmApproveWrite")}
             </div>
+            {/* For a command this is the whole command ("$ …"). It used to be
+                followed by the command again, which read as an explanation
+                that said nothing (issue #18). */}
             <pre className="cm-approve-cmd">{toolSummary(approval.call)}</pre>
-            {(approval.call.name === "bash" || approval.call.name === "bash_bg") && (
-              <div className="cm-approve-detail">{String(approval.call.args.command ?? "")}</div>
-            )}
             {approval.call.name === "web_download" && (
               <div className="cm-approve-detail">{String(approval.call.args.url ?? "")}</div>
             )}

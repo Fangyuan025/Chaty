@@ -89,10 +89,16 @@ export function ContextMenu() {
           },
         });
       } else {
+        // Nothing selected, but the pointer is on a message: copy that message
+        // — what its own copy button copies. The item used to sit greyed out
+        // unless text was selected first, which read as "copy doesn't work"
+        // (issue #18).
+        const message =
+          (target.closest("[data-copy]") as HTMLElement | null)?.dataset.copy ?? "";
         items.push({
-          label: t("ctxCopy"),
-          disabled: !selection,
-          action: () => void copyToClipboard(selection),
+          label: selection || !message ? t("ctxCopy") : t("ctxCopyMessage"),
+          disabled: !selection && !message,
+          action: () => void copyToClipboard(selection || message),
         });
         items.push({
           label: t("ctxSelectAll"),

@@ -913,8 +913,18 @@ pub fn get_models_root(app: tauri::AppHandle) -> Result<ModelsRootInfo, String> 
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
     let available = custom.as_deref().is_none_or(|p| Path::new(p).is_dir());
+    // The folder "Open models folder" reveals, from the same choice it makes.
+    // Settings showed the download folder here while the button could open
+    // another — the old `models` folder next to the executable, which is where
+    // an upgrader's models are — so the path read as one place and the button
+    // went to another (issue #18).
+    let shown = folder_to_reveal(
+        models_root(&app),
+        model_dirs(&app).into_iter().find(|d| dir_has_models(d)),
+        models_write_dir(&app)?,
+    );
     Ok(ModelsRootInfo {
-        effective: models_write_dir(&app)?.to_string_lossy().to_string(),
+        effective: shown.to_string_lossy().to_string(),
         custom,
         available,
     })

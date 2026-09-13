@@ -6,6 +6,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrent as getDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextMenu } from "./components/ContextMenu";
+import { ImagePreview } from "./components/ImagePreview";
+import { withErrorNote } from "./lib/reasoning";
 import { DownloadModal } from "./components/DownloadModal";
 import { HardwarePanel } from "./components/HardwarePanel";
 import { LiveMode } from "./components/LiveMode";
@@ -172,7 +174,16 @@ function UserCopy({ content, title }: { content: string; title: string }) {
   );
 }
 
-function ImageThumb({ path, size = 168 }: { path: string; size?: number }) {
+function ImageThumb({
+  path,
+  size = 168,
+  onOpen,
+}: {
+  path: string;
+  size?: number;
+  /** Clicking the picture opens it full size (issue #18: it did nothing). */
+  onOpen?: () => void;
+}) {
   const [src, setSrc] = useState<string | null>(thumbCache.get(path) ?? null);
   useEffect(() => {
     let live = true;
@@ -192,7 +203,12 @@ function ImageThumb({ path, size = 168 }: { path: string; size?: number }) {
   }, [path]);
   if (src === "") return null; // moved/deleted — degrade quietly
   return (
-    <span className="img-thumb" style={{ maxWidth: size, maxHeight: size }}>
+    <span
+      className={onOpen ? "img-thumb img-thumb-open" : "img-thumb"}
+      style={{ maxWidth: size, maxHeight: size }}
+      role={onOpen ? "button" : undefined}
+      onClick={onOpen}
+    >
       {src ? <img src={src} alt="" /> : <span className="img-thumb-ph" />}
     </span>
   );
@@ -381,7 +397,7 @@ export default function App() {
           cur.map((m) => (m.id === live!.messageId ? { ...m, content: acc } : m)),
         );
       } else if (ev.type === "done" || ev.type === "error") {
-        if (ev.type === "error") acc += `\n\n**${ev.message}**`;
+        if (ev.type === "error") acc = withErrorNote(acc, ev.message);
         setMessages((cur) =>
           cur.map((m) => (m.id === live!.messageId ? { ...m, content: acc } : m)),
         );
@@ -559,6 +575,7 @@ export default function App() {
   // A voice model's first download, shown while it runs — it used to sit
   // behind the mic's spinner and read as hung on a slow line (issue #14).
   const [voiceDl, setVoiceDl] = useState<VoiceDownload | null>(null);
+  const [previewImg, setPreviewImg] = useState<string | null>(null);
   useEffect(() => {
     setVoiceDownloadListener((d) => setVoiceDl(d.done ? null : d));
     return () => setVoiceDownloadListener(null);
@@ -2159,7 +2176,7 @@ export default function App() {
             lastPromptTokens.current.set(convId, ev.stats.promptTokens);
             calibrate(sentRaw, ev.stats.promptTokens);
           } else if (ev.type === "error") {
-            acc.text += `\n\n**${ev.message}**`;
+            acc.text = withErrorNote(acc.text, ev.message);
             if (rafId != null) {
               cancelAnimationFrame(rafId);
               rafId = null;
@@ -3143,11 +3160,11 @@ export default function App() {
                         </div>
                       </div>
                     ) : (
-                      <div className="bubble">
+                      <div className="bubble" data-copy={m.content}>
                         {m.images && m.images.length > 0 && (
                           <span className="msg-images">
                             {m.images.map((p) => (
-                              <ImageThumb key={p} path={p} />
+                              <ImageThumb key={p} path={p} onOpen={() => setPreviewImg(p)} />
                             ))}
                           </span>
                         )}
@@ -3632,6 +3649,9 @@ export default function App() {
         >
           {notice.text}
         </div>
+      )}
+      {previewImg && (
+        <ImagePreview path={previewImg} title={t("imagePreview")} onClose={() => setPreviewImg(null)} />
       )}
       {voiceDl && (
         <div className="toast voice-dl" role="status">

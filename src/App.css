@@ -4263,6 +4263,9 @@ button.tool-parent {
 }
 /* A voice model download: above the composer, where the mic was pressed,
    and clear of the notices at the top. Not dismissable — it ends itself. */
+.img-thumb-open {
+  cursor: zoom-in;
+}
 .toast.voice-dl {
   top: auto;
   bottom: 96px;
