@@ -13,7 +13,7 @@ g.localStorage ??= {
 g.navigator ??= { userAgent: "chaty-test" };
 
 const { mockIPC, clearMocks } = await import("@tauri-apps/api/mocks");
-const { runAgentTurn, toolResultBody } = await import("./agentLoop");
+const { runAgentTurn, toolResultBody, withoutNul } = await import("./agentLoop");
 type ToolStep = import("./agentLoop").ToolStep;
 
 type Ev = { type: string; [k: string]: unknown };
@@ -36,7 +36,12 @@ async function run(rounds: string[]) {
       return null;
     }
     if (cmd === "agent_read_file") return String(a.path) === "big.txt" ? BIG : "hello\nworld";
-    if (cmd === "agent_bash") return { stdout: "hi", stderr: "", code: 0, timedOut: false, bgId: null };
+    if (cmd === "agent_bash") {
+      // `cat .DS_Store`: a binary file's bytes, NULs and all.
+      const binary = String(a.command).includes("DS_Store");
+      const stdout = binary ? "\u0000\u0000\u0000Bud1\u0000\u0000x" : "hi";
+      return { stdout, stderr: "", code: 0, timedOut: false, bgId: null };
+    }
     if (cmd === "agent_list_dir") return [{ name: "big.txt", isDir: false, size: BIG.length }];
     return null;
   });
@@ -99,6 +104,23 @@ describe("an opened step card shows what the model was given", () => {
     expect(big.result!.length).toBeLessThan(texts.get(big.id)!.length);
     // A step's text is stored only where the card's copy differs.
     for (const [id, text] of texts) expect(text).not.toBe(steps.get(id)!.result);
+  });
+
+  // A `cat .DS_Store` put thousands of NUL bytes into the history; llama.cpp
+  // refuses a NUL, so that turn failed and so did every turn after it.
+  it("binary tool output reaches the model — and the card — without NUL bytes", async () => {
+    const { order, steps, texts, results } = await run([call("bash", { command: "cat .DS_Store" }), "Done."]);
+    expect(results[0]).not.toContain("\u0000");
+    expect(results[0]).toContain("␀Bud1␀x");
+    expect(results[0]).toContain("NUL");
+    const id = order[0];
+    const shown = texts.has(id) ? texts.get(id) : steps.get(id)!.result;
+    expect(shown).toBe(toolResultBody(results[0]));
+  });
+
+  it("leaves text without NUL bytes exactly as it was", () => {
+    const text = "a b  c\n\tde";
+    expect(withoutNul(text)).toBe(text);
   });
 
   it("a step is reported finished once — storing its text is not another step", async () => {

@@ -302,6 +302,16 @@ pub fn agent_read_file(
     use std::io::BufRead;
     let file = std::fs::File::open(&abs).map_err(|e| e.to_string())?;
     let mut reader = std::io::BufReader::new(file);
+    // A NUL in the first 8 KB means binary (git's test). Its "lines" were
+    // returned as mojibake full of NUL bytes, which no model can read — and a
+    // NUL cannot cross into llama.cpp at all.
+    if reader.fill_buf().map_err(|e| e.to_string())?.iter().take(8192).any(|&b| b == 0) {
+        return Ok(trf!(
+            "(这是二进制文件,{} 字节,不能按文本读取。要看它是什么类型用 bash 的 file,要看内容用 xxd。)",
+            "(this is a binary file, {} bytes — it cannot be read as text. Use `file` in bash to see what it is, or `xxd` to see its bytes.)",
+            meta.len()
+        ));
+    }
     let start = offset.unwrap_or(1).max(1) - 1;
     let want = limit.unwrap_or(MAX_READ_LINES).clamp(1, MAX_READ_LINES);
 
@@ -4973,6 +4983,27 @@ mod tests {
         assert_eq!(raw.len(), MAX_READ_BYTES);
         assert!(body.starts_with(&raw));
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A binary file is named as one instead of read out as mojibake full of
+    /// NUL bytes (a `.DS_Store` read that way broke the session it was in).
+    #[test]
+    fn read_file_names_a_binary_file() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-agent-binary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let mut bytes = b"\x00\x00\x00\x01Bud1\x00\x00\x18".to_vec();
+        bytes.extend(std::iter::repeat_n(0u8, 6000));
+        std::fs::write(dir.join(".DS_Store"), &bytes).unwrap();
+        let out = agent_read_file(".DS_Store".into(), None, None, None, None).unwrap();
+        assert!(!out.contains('\0'), "no NUL reaches the model");
+        assert!(out.contains(&bytes.len().to_string()) && out.contains("xxd"), "{out}");
+        // Text is still text.
+        std::fs::write(dir.join("a.txt"), "plain\ntext\n").unwrap();
+        assert_eq!(agent_read_file("a.txt".into(), None, None, None, None).unwrap(), "plain\ntext");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A line past the per-line cut used to stop mid-token with nothing to say

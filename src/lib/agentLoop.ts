@@ -1635,9 +1635,27 @@ function neutralizeControlTokens(s: string): string {
     .replace(/<(\/?)(think|start_of_turn|end_of_turn)>/gi, "<​$1$2>");
 }
 
+/** Tool output with its NUL bytes made visible. `cat .DS_Store` returned
+ *  thousands of them; a NUL cannot cross into llama.cpp, so the turn failed
+ *  with "nul byte found in provided data" — and so did every turn after it,
+ *  the output being in the history. A run becomes one ␀, and the model is told
+ *  what it was looking at. */
+export function withoutNul(content: string): string {
+  if (!content.includes("\u0000")) return content;
+  const n = (content.match(/\u0000/g) ?? []).length;
+  const shown = content.replace(/\u0000+/g, "␀");
+  return (
+    shown +
+    (isZh()
+      ? `\n\n[输出里有二进制内容:${n} 个 NUL 字节,连续的已合并显示为 ␀。查看二进制文件请用 file 或 xxd。]`
+      : `\n\n[the output contains binary data: ${n} NUL bytes, each run shown as one ␀. Use \`file\` or \`xxd\` to look at a binary file.]`)
+  );
+}
+
 /** Exported for the red-team regression: MCP results must ride the same
  *  injection defense as native web tools. */
-export function toolResultMsg(name: string, content: string): string {
+export function toolResultMsg(name: string, rawContent: string): string {
+  const content = withoutNul(rawContent);
   // Per-tool caps live on the ToolSpec (read_file sizes itself in Rust from
   // the model's real context window plus an actionable next-offset footer —
   // never chop that off with a blind cap).

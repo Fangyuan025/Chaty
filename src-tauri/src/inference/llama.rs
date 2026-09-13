@@ -841,6 +841,71 @@ impl LlamaEngine {
     }
 }
 
+
+/// The request with every NUL byte in its messages made visible as ␀.
+///
+/// A NUL cannot cross into llama.cpp: the chat template takes each message as
+/// a C string, and so does tokenization. One in the history — a `cat` of a
+/// binary file, returned as a tool result — failed that turn with "invalid
+/// message content: nul byte found in provided data", and every turn after
+/// it, the output being part of every later prompt. A run of them becomes one
+/// ␀: that `cat` held 5,769, and one symbol each came to more than the whole
+/// context window. The replacement is the same every turn, so a prompt still
+/// reproduces the cache it built.
+fn without_nul(mut req: GenRequest) -> GenRequest {
+    fn clean(s: &mut String) {
+        if !s.contains('\0') {
+            return;
+        }
+        let mut out = String::with_capacity(s.len());
+        let mut in_run = false;
+        for c in s.chars() {
+            if c == '\0' {
+                if !in_run {
+                    out.push('\u{2400}');
+                }
+                in_run = true;
+            } else {
+                out.push(c);
+                in_run = false;
+            }
+        }
+        *s = out;
+    }
+    for m in &mut req.messages {
+        clean(&mut m.content);
+        if let Some(r) = m.reasoning_content.as_mut() {
+            clean(r);
+        }
+    }
+    req
+}
+
+#[cfg(test)]
+mod nul_tests {
+    use super::*;
+
+    /// The owner's session: a `cat .DS_Store` in the history failed every
+    /// later turn at the chat template. No NUL reaches llama.cpp, a run
+    /// shrinks to one symbol, and text without any is left alone.
+    #[test]
+    fn nul_bytes_become_one_symbol_per_run() {
+        let req: GenRequest = serde_json::from_value(serde_json::json!({
+            "messages": [
+                { "role": "user", "content": "plain text" },
+                { "role": "assistant", "content": "a\0\0\0\x01Bud1\0\0x", "reasoning_content": "\0" }
+            ],
+            "params": {}
+        }))
+        .unwrap();
+        let out = without_nul(req);
+        assert_eq!(out.messages[0].content, "plain text");
+        assert_eq!(out.messages[1].content, "a\u{2400}\x01Bud1\u{2400}x");
+        assert_eq!(out.messages[1].reasoning_content.as_deref(), Some("\u{2400}"));
+        assert!(out.messages.iter().all(|m| !m.content.contains('\0')));
+    }
+}
+
 #[async_trait]
 impl InferenceBackend for LlamaEngine {
     fn name(&self) -> &str {
@@ -858,6 +923,7 @@ impl InferenceBackend for LlamaEngine {
     }
 
     async fn generate(&self, req: GenRequest, sink: Channel<StreamEvent>, cancel: Arc<AtomicBool>) -> Result<()> {
+        let req = without_nul(req);
         let tx = self
             .tx
             .lock()
@@ -874,6 +940,7 @@ impl InferenceBackend for LlamaEngine {
     }
 
     async fn generate_collect(&self, req: GenRequest, cancel: Arc<AtomicBool>) -> Result<String> {
+        let req = without_nul(req);
         let tx = self
             .tx
             .lock()
