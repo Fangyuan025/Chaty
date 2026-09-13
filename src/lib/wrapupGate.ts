@@ -28,7 +28,9 @@ export interface WrapupState {
   /** Source-code edits since the last QUALIFYING execution (non-read-only
    *  bash, bash_bg, validate_change): file paths + rough changed-line volume.
    *  `ls`/`cat` after an edit is not verification — only running something is.
-   *  The loop clears this on every qualifying SUCCESSFUL execution. */
+   *  The loop clears this on every qualifying SUCCESSFUL execution, and drops
+   *  the page files a browser walkthrough of the local page covered — running
+   *  a page is loading it; the browser note judges whether that was fresh. */
   codeEditsSinceExec: { files: string[]; lines: number };
   /** The most recent run/build/validation that failed with no green run
    *  after it (command or tool name) — escalates the run-check note into a
@@ -86,6 +88,24 @@ export function isWebSourceFile(path: string, serverCtx: boolean): boolean {
 export function devServerUrlFrom(text: string): string | undefined {
   const m = text.match(/https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:\/[^\s"'）)\]>]*)?/i);
   return m?.[0];
+}
+
+/** Is a browser_navigate target the page being built — a local dev server or
+ *  a local file — rather than somewhere on the web? The same hosts as
+ *  browser.rs `is_local_page_url`, stricter on the rest: about:/data: pages
+ *  and bare relative paths aren't the app, so walking them earns nothing; a
+ *  scheme-less `localhost:5173` is, since navigation adds the http://. */
+export function isLocalPageUrl(url: string): boolean {
+  const u = url.trim().toLowerCase();
+  if (u.startsWith("file://")) return true;
+  let rest = u;
+  if (/^https?:\/\//.test(u)) rest = u.replace(/^https?:\/\//, "");
+  // Any other scheme (about:, data:, mailto:…) is not the app; the colon in
+  // `localhost:5173` is a port, not a scheme.
+  else if (/^[a-z][\w+.-]*:(?!\d)/.test(u)) return false;
+  const hostPort = rest.split(/[/?#]/)[0];
+  const host = hostPort.startsWith("[") ? hostPort.slice(1).split("]")[0] : hostPort.split(":")[0];
+  return host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1";
 }
 
 /** Compact, model-facing echo of the plan. The old update_plan result was a

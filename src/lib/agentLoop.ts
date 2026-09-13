@@ -65,7 +65,15 @@ import {
 } from "./ctxBudget";
 import { normalizeChannels } from "./voiceText";
 import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
-import { wrapupNudge, planEcho, isWebSourceFile, isSourceCodeFile, devServerUrlFrom, runCheckAboveBar } from "./wrapupGate";
+import {
+  wrapupNudge,
+  planEcho,
+  isWebSourceFile,
+  isSourceCodeFile,
+  devServerUrlFrom,
+  runCheckAboveBar,
+  isLocalPageUrl,
+} from "./wrapupGate";
 import { isReadOnlyCommand, isSymbolicCheck } from "./readOnlyCmd";
 import { diffLines } from "./diff";
 import { platform } from "@tauri-apps/plugin-os";
@@ -2276,6 +2284,15 @@ export async function runAgentTurn(
   // audit: three failed xcodebuilds plus a syntax-only parse each cleared the
   // old ledger while the project didn't compile.)
   const codeEditsSinceExec = { files: new Set<string>(), lines: 0 };
+  // Each ledger file's share of `lines`, so one file can leave the ledger on
+  // its own — a walkthrough vouches for the page files, not for a script
+  // beside them, whose volume must not stay inflated by theirs.
+  const codeEditLines = new Map<string, number>();
+  const dropFromLedger = (f: string) => {
+    if (!codeEditsSinceExec.files.delete(f)) return;
+    codeEditsSinceExec.lines = Math.max(0, codeEditsSinceExec.lines - (codeEditLines.get(f) ?? 0));
+    codeEditLines.delete(f);
+  };
   // The most recent run/validation that FAILED and was never followed by a
   // green one — drives the harder "don't deliver on a red build" wrap-up.
   let lastFailedRun: string | null = null;
@@ -2294,9 +2311,15 @@ export async function runAgentTurn(
   // ticket, not the bar — every basic function must be EXECUTED before
   // delivery, on every stack). Counted: green test runs, real invocations
   // of the built thing (CLI runs, curl probes), green validate_change.
-  // Browser walkthroughs are judged at the gate from the existing step
-  // markers. Never reset — receipts accumulate across the turn.
+  // A walkthrough counts too: any successful browser action on the local
+  // page after page code was written (`pageWalked`). A fix made after it is
+  // the browser note's business, not proof that nothing was ever run.
+  // Never reset — receipts accumulate across the turn.
   let functionalReceipts = 0;
+  let pageWalked = false;
+  // Is the browser on the page being built (a local URL or file) rather than
+  // out on the web? Reading docs is not walking the app.
+  let browserOnLocalPage = false;
   const sourceFilesTouched = new Set<string>();
   // Artifact staleness (minesweeper audit): the model edited GameLogic,
   // ran only `swift test` (which freshens DEBUG), then packaged the OLD
@@ -2789,7 +2812,8 @@ export async function runAgentTurn(
           const functionalUnverified =
             (wroteMacAppEntry || htmlEdited || sourceFilesTouched.size >= 3) &&
             functionalReceipts === 0 &&
-            !webWalked;
+            !webWalked &&
+            !pageWalked;
           // Packaged before the final source edits = the delivered .app is
           // not the delivered code (minesweeper audit).
           const macAppStaleBundle =
@@ -3471,7 +3495,9 @@ export async function runAgentTurn(
               unverifiedWriteCount = codeEditsSinceExec.files.size;
               // Rough volume: newlines in the args ≈ changed lines. Edit tools
               // count old+new text — an overestimate is fine, the bar is coarse.
-              codeEditsSinceExec.lines += (JSON.stringify(call.args).match(/\\n/g) ?? []).length + 1;
+              const n = (JSON.stringify(call.args).match(/\\n/g) ?? []).length + 1;
+              codeEditsSinceExec.lines += n;
+              codeEditLines.set(p, (codeEditLines.get(p) ?? 0) + n);
             }
             // Hand-writing a pbxproj is a recurring death (rounds 1/16 and
             // matrix wave 8: malformed, unreadable, wrong refs) — steer to
@@ -3523,7 +3549,27 @@ export async function runAgentTurn(
             }
           }
         }
-        if (call.name.startsWith("browser_")) lastBrowserActionStep = step;
+        if (call.name.startsWith("browser_")) {
+          lastBrowserActionStep = step;
+          if (call.name === "browser_navigate") {
+            browserOnLocalPage = isLocalPageUrl(asStr(call.args?.url));
+          }
+          // Walking the local page is how page code gets run (owner report:
+          // the gate fired on turns that had clicked through every path).
+          // Its page files leave the run-check ledger — the browser note
+          // still judges whether the walk came after the last edit — and it
+          // is a functional receipt. A call that failed threw past this
+          // point; an ERROR result or closing the browser walks nothing.
+          // A red build outranks a walk: a dev server renders a page its
+          // own build rejects (type errors), so with a failed run still
+          // outstanding the files stay, and so does the red-build demand.
+          if (browserOnLocalPage && call.name !== "browser_close" && !resultText.startsWith("ERROR")) {
+            if (!lastFailedRun) {
+              for (const f of [...codeEditsSinceExec.files]) if (isWebSourceFile(f, serverCtx)) dropFromLedger(f);
+            }
+            if (lastWebEditStep >= 0) pageWalked = true;
+          }
+        }
         // A qualifying RUN clears the run-check ledger. Read-only bash (ls,
         // cat, grep…) is observation, not verification, and leaves it intact.
         // Beyond that, only SUCCESS clears: a validate_change that found
@@ -3533,6 +3579,7 @@ export async function runAgentTurn(
         const clearLedger = () => {
           codeEditsSinceExec.files.clear();
           codeEditsSinceExec.lines = 0;
+          codeEditLines.clear();
           lastFailedRun = null;
           // This step is the new "green point": regressions from here on are
           // attributed to files edited after it.
@@ -3653,7 +3700,7 @@ export async function runAgentTurn(
           if (gone.length) {
             for (const f of gone) {
               editedFiles.delete(f);
-              codeEditsSinceExec.files.delete(f);
+              dropFromLedger(f);
             }
             const shown = gone.slice(0, 4).join(", ") + (gone.length > 4 ? ", …" : "");
             resultText +=

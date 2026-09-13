@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   devServerUrlFrom,
+  isLocalPageUrl,
   isSourceCodeFile,
   isWebSourceFile,
   planEcho,
@@ -231,6 +232,36 @@ describe("devServerUrlFrom", () => {
   });
   it("ignores non-local URLs", () => {
     expect(devServerUrlFrom("see https://example.com/docs")).toBeUndefined();
+  });
+});
+
+describe("isLocalPageUrl", () => {
+  it("counts the page being built: dev servers and local files", () => {
+    for (const u of [
+      "http://localhost:5173/",
+      "https://127.0.0.1:8443/app?x=1",
+      "http://0.0.0.0:3000",
+      "http://[::1]:8080/#/list",
+      "http://app.localhost/",
+      "localhost:5173",
+      "127.0.0.1:8000/index.html",
+      "file:///Users/me/site/index.html",
+    ])
+      expect(isLocalPageUrl(u), u).toBe(true);
+  });
+
+  it("does not count the web, blank pages or paths it can't place", () => {
+    for (const u of [
+      "https://developer.mozilla.org/en-US/docs/Web/API/fetch",
+      "http://localhost.evil.com/",
+      "https://example.com/localhost",
+      "about:blank",
+      "data:text/html,<p>hi</p>",
+      "index.html",
+      "docs.rs/tokio",
+      "",
+    ])
+      expect(isLocalPageUrl(u), u).toBe(false);
   });
 });
 

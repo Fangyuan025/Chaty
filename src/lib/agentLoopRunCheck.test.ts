@@ -26,6 +26,9 @@ async function runRounds(rounds: string[]): Promise<{ injects: string[]; final: 
   const script = [...rounds];
   const files = new Map<string, string>();
   mockIPC(async (cmd, args) => {
+    // A page that is not up: navigating to any ".../down" URL fails.
+    const url = (args as { url?: unknown } | undefined)?.url;
+    if (typeof url === "string" && url.includes("/down")) throw new Error("net::ERR_CONNECTION_REFUSED");
     if (cmd === "generate") {
       const ch = (args as { onEvent: Chan }).onEvent;
       ch.onmessage?.({ type: "token", text: script.shift() ?? "Done." });
@@ -100,6 +103,8 @@ async function runRounds(rounds: string[]): Promise<{ injects: string[]; final: 
 }
 
 const RUN_MARK = "read-only commands don't count";
+// The browser note's own wording — tool results echo "browser_navigate" too.
+const WEB_MARK = "changed after the last browser check";
 
 describe("run-check through the real loop", () => {
   beforeEach(() => {});
@@ -349,6 +354,87 @@ describe("run-check through the real loop", () => {
       "All done.",
     ]);
     expect(curled.injects.some((i) => i.includes("entry ticket"))).toBe(false);
+  });
+
+  // ── A walkthrough is verification (owner report: the gate fired on turns
+  // that had walked every path in the browser) ──
+
+  it("page code walked through in the browser after the edit → no run-check note", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "src/App.tsx", content: BIG_PY }),
+      call("write_file", { path: "src/main.tsx", content: "render()" }),
+      call("browser_navigate", { url: "http://localhost:5173/" }),
+      call("browser_click", { text: "add" }),
+      "All done, walked through every path.",
+    ]);
+    expect(injects.some((i) => i.includes(RUN_MARK))).toBe(false);
+    expect(injects.some((i) => i.includes(WEB_MARK))).toBe(false);
+  });
+
+  it("a fix after the walkthrough asks for another look, but no longer claims nothing was walked", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "index.html", content: "<html><body><button>add</button></body></html>" }),
+      call("browser_navigate", { url: "http://127.0.0.1:8000/index.html" }),
+      call("browser_click", { text: "add" }),
+      call("edit_file", { path: "index.html", old_string: "add", new_string: "Add" }),
+      "All done.",
+      "Final.",
+      "Final final.",
+    ]);
+    expect(injects.some((i) => i.includes(WEB_MARK))).toBe(true);
+    expect(injects.some((i) => i.includes("entry ticket"))).toBe(false);
+  });
+
+  it("a walkthrough does not vouch for code outside the page — the script still needs a run", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "src/App.tsx", content: BIG_PY }),
+      call("write_file", { path: "tools/gen.py", content: BIG_PY }),
+      call("browser_navigate", { url: "http://localhost:5173/" }),
+      "All done.",
+      "Final.",
+      "Final final.",
+    ]);
+    const note = injects.find((i) => i.includes(RUN_MARK)) ?? "";
+    expect(note).toContain("tools/gen.py");
+    expect(note).not.toContain("App.tsx");
+  });
+
+  it("a walk does not paper over a red build — the failed run still has to go green", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "src/App.tsx", content: BIG_PY }),
+      call("write_file", { path: "src/main.tsx", content: "render()" }),
+      call("bash", { command: "npm run build # fail" }),
+      call("browser_navigate", { url: "http://localhost:5173/" }),
+      call("browser_click", { text: "add" }),
+      "All done, the page works.",
+      "Final.",
+      "Final final.",
+    ]);
+    expect(injects.some((i) => i.includes("most recent verification FAILED"))).toBe(true);
+  });
+
+  it("a navigation that failed is not a walkthrough", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "src/App.tsx", content: BIG_PY }),
+      call("write_file", { path: "src/main.tsx", content: "render()" }),
+      call("browser_navigate", { url: "http://localhost:5999/down" }),
+      "All done.",
+      "Final.",
+      "Final final.",
+    ]);
+    expect(injects.some((i) => i.includes(RUN_MARK))).toBe(true);
+  });
+
+  it("reading docs on the web is not a walkthrough of the page", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "src/App.tsx", content: BIG_PY }),
+      call("write_file", { path: "src/main.tsx", content: "render()" }),
+      call("browser_navigate", { url: "https://developer.mozilla.org/en-US/docs/Web/API/fetch" }),
+      "All done.",
+      "Final.",
+      "Final final.",
+    ]);
+    expect(injects.some((i) => i.includes(RUN_MARK))).toBe(true);
   });
 
   it("exit 0 with compiler-failure output (pipe-swallowed code) is not a receipt", async () => {
