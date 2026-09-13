@@ -371,6 +371,37 @@ describe("run-check through the real loop", () => {
     expect(injects.some((i) => i.includes(WEB_MARK))).toBe(false);
   });
 
+  // Bench, multi-file-walk: plain .js served by `python3 -m http.server`,
+  // whose banner (http://[::]:port/, often block-buffered away) never told
+  // the loop a server was up — so the .js files weren't page code and the
+  // walk cleared nothing. A page that loads from a local http URL is proof
+  // enough that one is.
+  it("plain .js behind a server that printed no banner: the walk still counts", async () => {
+    const { injects } = await runRounds([
+      call("bash_bg", { command: "python3 -m http.server 8000" }),
+      call("write_file", { path: "utils.js", content: BIG_PY }),
+      call("write_file", { path: "app.js", content: "wire()" }),
+      call("browser_navigate", { url: "http://localhost:8000/" }),
+      call("browser_click", { text: "Total" }),
+      "All done, #total shows 12.",
+    ]);
+    expect(injects.some((i) => i.includes(RUN_MARK))).toBe(false);
+  });
+
+  it("a three-file .js app behind a bannerless server, walked → no 'nothing was executed' either", async () => {
+    const { injects } = await runRounds([
+      call("bash_bg", { command: "python3 -m http.server 8000" }),
+      call("write_file", { path: "a.js", content: BIG_PY }),
+      call("write_file", { path: "b.js", content: BIG_PY }),
+      call("write_file", { path: "c.js", content: BIG_PY }),
+      call("browser_navigate", { url: "http://127.0.0.1:8000/" }),
+      call("browser_click", { text: "go" }),
+      "All done.",
+    ]);
+    expect(injects.some((i) => i.includes("entry ticket"))).toBe(false);
+    expect(injects.some((i) => i.includes(RUN_MARK))).toBe(false);
+  });
+
   it("a fix after the walkthrough asks for another look, but no longer claims nothing was walked", async () => {
     const { injects } = await runRounds([
       call("write_file", { path: "index.html", content: "<html><body><button>add</button></body></html>" }),

@@ -3552,7 +3552,14 @@ export async function runAgentTurn(
         if (call.name.startsWith("browser_")) {
           lastBrowserActionStep = step;
           if (call.name === "browser_navigate") {
-            browserOnLocalPage = isLocalPageUrl(asStr(call.args?.url));
+            const url = asStr(call.args?.url).trim();
+            browserOnLocalPage = isLocalPageUrl(url);
+            // A page that loads from a local http URL proves a server is up,
+            // whether or not its banner reached us: `python3 -m http.server`
+            // prints http://[::]:port/ and block-buffers even that away, so
+            // plain .js behind it never counted as page code (bench:
+            // multi-file-walk fired "no run" after a full walkthrough).
+            if (browserOnLocalPage && !/^file:/i.test(url) && !resultText.startsWith("ERROR")) serverCtx = true;
           }
           // Walking the local page is how page code gets run (owner report:
           // the gate fired on turns that had clicked through every path).
@@ -3567,7 +3574,12 @@ export async function runAgentTurn(
             if (!lastFailedRun) {
               for (const f of [...codeEditsSinceExec.files]) if (isWebSourceFile(f, serverCtx)) dropFromLedger(f);
             }
-            if (lastWebEditStep >= 0) pageWalked = true;
+            // Page code was written this turn — judged with the server
+            // context as it stands now, since edits made before the server
+            // was known about didn't register as page edits at the time.
+            if (lastWebEditStep >= 0 || [...editedFiles].some((f) => isWebSourceFile(f, serverCtx))) {
+              pageWalked = true;
+            }
           }
         }
         // A qualifying RUN clears the run-check ledger. Read-only bash (ls,
