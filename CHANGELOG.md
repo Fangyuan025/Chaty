@@ -75,6 +75,11 @@
   jumping to another. It opened at a fixed 1040×720 — half of a 1080p
   screen.
 
+- **The Windows installer speaks Chinese on a Chinese Windows.** It was
+  English whatever the system language; it now follows the Windows display
+  language — Simplified Chinese, or English for everything else — with no
+  language prompt.
+
 - **Closing from fullscreen on macOS works every time.** The window leaves
   fullscreen with the system's own animation, then goes to the tray, and
   comes back as a normal window. It used to hide the whole app instead,

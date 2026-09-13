@@ -42,7 +42,19 @@ ShowLanguageDialog=no
 CloseApplications=yes
 
 [Languages]
+; Setup speaks the Windows UI language when it has it (LanguageDetectionMethod
+; defaults to uilanguage) and falls back to the first entry, English — no
+; language dialog either way (ShowLanguageDialog=no). Issue #16: a Chinese
+; Windows got an all-English installer.
 Name: "english"; MessagesFile: "compiler:Default.isl"
+; Chinese Simplified is an official Inno Setup translation (6.5+): the
+; compiler's own copy when it ships one, else the copy kept beside this
+; script (Languages\ChineseSimplified.isl, from jrsoftware/issrc).
+#if FileExists(AddBackslash(CompilerPath) + "Languages\ChineseSimplified.isl")
+Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+#else
+Name: "chinesesimplified"; MessagesFile: "Languages\ChineseSimplified.isl"
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
