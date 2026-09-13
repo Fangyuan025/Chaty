@@ -1132,6 +1132,16 @@ impl BrowserSession {
                     if let Some(u) = frame["url"].as_str() {
                         self.current_url = u.to_string();
                     }
+                    // A new document — a reload included — starts a new
+                    // console, as Chrome's does unless "Preserve log" is on.
+                    // Kept, the old page's errors outlived the fix: a coding
+                    // session refreshed three times and read the same
+                    // SyntaxError from browser_console each time, from a page
+                    // that no longer threw it. In-page route changes
+                    // (navigatedWithinDocument) are the same document and
+                    // keep their console.
+                    self.console.clear();
+                    self.surfaced = 0;
                 }
             }
             "Target.attachedToTarget" => {
@@ -1235,9 +1245,15 @@ impl BrowserSession {
         errs
     }
 
+    /// Newest wins. The buffer used to stop at 200 lines and drop everything
+    /// after — so on a chatty page the error from the action just taken never
+    /// reached the model, until a browser_console read happened to trim it.
     fn push_console(&mut self, line: String) {
-        if self.console.len() < 200 {
-            self.console.push(line);
+        self.console.push(line);
+        if self.console.len() > CONSOLE_KEEP {
+            let cut = self.console.len() - CONSOLE_KEEP;
+            self.console.drain(..cut);
+            self.surfaced = self.surfaced.saturating_sub(cut);
         }
     }
 
@@ -3063,6 +3079,106 @@ mod tests {
             again.contains("boot-crash-77"),
             "a second look must not come back empty: {again}"
         );
+        shutdown();
+    }
+
+    // A reload is a new document with a new console. A coding session fixed
+    // a page, refreshed three times and read the same SyntaxError back from
+    // browser_console each time — from a page that no longer threw it.
+    // Real Chrome + python http.server; ignored by default.
+    // Run: cargo test -p chaty console_resets -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn console_resets_on_reload() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("chaty-conreset-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("index.html"),
+            "<title>c</title><body>x</body><script>throw new Error('old'+'-bug-91')</script>",
+        )
+        .unwrap();
+        // Killed on drop, so a failing assert can't leave the server holding
+        // the port — the next run would silently serve the old directory.
+        struct Server(std::process::Child);
+        impl Drop for Server {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let _srv = Server(
+            std::process::Command::new("python3")
+                .args(["-m", "http.server", "29515", "--directory"])
+                .arg(&dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn http.server"),
+        );
+        std::thread::sleep(Duration::from_millis(1200));
+        let nav = navigate("http://127.0.0.1:29515/").expect("navigate");
+        assert!(nav.contains("old-bug-91"), "the broken page's error rides the navigate: {nav}");
+        // The fix lands on disk; the page now logs a line of its own instead.
+        std::fs::write(
+            dir.join("index.html"),
+            "<title>c</title><body>x</body><script>console.log('fixed'+'-ok-92')</script>",
+        )
+        .unwrap();
+        let re = refresh().expect("refresh");
+        let full = console().unwrap_or_default();
+        assert!(!re.contains("old-bug-91"), "{re}");
+        assert!(
+            !full.contains("old-bug-91"),
+            "the reloaded page's console must not carry the old page's error: {full}"
+        );
+        assert!(full.contains("fixed-ok-92"), "the new document's own lines are there: {full}");
+        shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Opening another page is a new document too: browser_navigate must not
+    // hand the next page the last one's errors. Real Chrome; ignored.
+    // Run: cargo test -p chaty console_resets_on_navigate -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn console_resets_on_navigate() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        let broken = "data:text/html,<title>a</title><body>a</body><script>throw new Error('nav'+'-old-94')</script>";
+        let nav = navigate(broken).expect("navigate a");
+        assert!(nav.contains("nav-old-94"), "{nav}");
+        let clean = navigate("data:text/html,<title>b</title><body>b</body>").expect("navigate b");
+        let full = console().unwrap_or_default();
+        assert!(!clean.contains("nav-old-94"), "{clean}");
+        assert!(
+            !full.contains("nav-old-94"),
+            "the new page's console must not carry the previous page's error: {full}"
+        );
+        shutdown();
+    }
+
+    // A chatty page: 450 log lines, then the error. Newest wins — the buffer
+    // used to stop at 200 lines and drop everything after, the error included.
+    // Real Chrome; ignored by default.
+    // Run: cargo test -p chaty console_keeps -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn console_keeps_the_newest_lines() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        let page = "data:text/html,<title>n</title><body>x</body><script>for(let i=0;i<450;i++)console.log('line'+i);console.error('late'+'-err-93')</script>";
+        let nav = navigate(page).expect("navigate");
+        assert!(nav.contains("late-err-93"), "the newest error must ride the result: {nav}");
+        let full = console().unwrap_or_default();
+        assert!(full.contains("late-err-93"), "{full}");
         shutdown();
     }
 

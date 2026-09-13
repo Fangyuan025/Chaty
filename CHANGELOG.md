@@ -59,6 +59,15 @@
   after the walk. On the webapp bench the false stops went from two to
   none on an 8B model, and its runs took a third fewer steps.
 
+- **The browser's console starts over when the page reloads.** It kept
+  every line from every page the session had shown, so after a fix and a
+  refresh the agent read back errors the page no longer threw — one
+  session refreshed three times and got the same SyntaxError each time.
+  A reload or a move to another page now clears it, as Chrome's own
+  console does; changing routes inside one page doesn't. On a page that
+  logs a lot, the newest lines are the ones kept — past 200 lines the
+  latest error used to be dropped.
+
 ### A window that opens the right size
 
 - **The window opens scaled to the screen,** at the proportions other
