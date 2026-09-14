@@ -79,6 +79,9 @@ export interface ModelInfo {
   /** The template reads a turn's thinking from a structured field rather than
    *  splitting it out of the content (Qwen3.8). */
   reasoningField?: boolean;
+  /** The tool-call format the chat template was trained on — read from the
+   *  template at load. null ⇒ the template names none (unknown family). */
+  toolFormat?: "xml" | "json" | "gemma" | "lfm" | null;
   supportsTools: boolean;
   multimodal: boolean;
   /** The vision encoder (mmproj) is loaded — images actually work this session. */
@@ -1206,8 +1209,8 @@ export async function browserKey(
 export async function browserConsole(): Promise<string> {
   return await invoke<string>("browser_console");
 }
-export async function browserRead(): Promise<string> {
-  return await invoke<string>("browser_read");
+export async function browserRead(selector?: string): Promise<string> {
+  return await invoke<string>("browser_read", { selector: selector ?? null });
 }
 export async function browserClose(): Promise<string> {
   return await invoke<string>("browser_close");

@@ -149,7 +149,15 @@ async function main() {
         let pausedAtSteps = false;
         await new Promise<void>((resolve) => {
           runAgentTurn(prompt, history as never, ws, (process.env.CHATY_BENCH_LANG === "zh" ? "zh" : "en"), {
-            thinkMode: "off",
+            // CHATY_BENCH_THINK: run the way the app does with reasoning on
+            // (the edit-stress runs measure what a failed call costs a
+            // thinking model, not just the call).
+            thinkMode: (process.env.CHATY_BENCH_THINK ?? "off") as never,
+            // CHATY_BENCH_TOOLFORMAT: json | xml | gemma | lfm, or auto — the
+            // format the model's own template names, as the app picks it.
+            toolFormat: ((f) => (f === "auto" ? ((info as { toolFormat?: string }).toolFormat ?? "xml") : f))(
+              process.env.CHATY_BENCH_TOOLFORMAT ?? "json",
+            ) as never,
             nCtx,
             maxSteps: 40,
             temperature: 0.2,

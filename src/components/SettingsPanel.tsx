@@ -96,6 +96,11 @@ export interface GenSettings {
   /** Code mode: per-round generation budget in tokens (0 = auto by think
    *  depth; always clamped to the context window). */
   codeMaxTokens: number;
+  /** Code mode: how the model writes tool calls — "auto" = the format its
+   *  chat template was trained on; or one format for every model. */
+  codeToolFormat: "auto" | "xml" | "json" | "gemma" | "lfm";
+  /** Code mode: the format for a model whose template names none. */
+  codeToolFallback: "xml" | "json";
   /** Code mode: file edits (write/edit/multi_edit) run without approval. */
   codeAutoApproveEdits: boolean;
   /** Code mode: obviously read-only bash commands run without approval. */
@@ -175,6 +180,11 @@ export const defaultSettings: GenSettings = {
   codeTemperature: 0.3,
   codeThinkBudget: 0,
   codeMaxTokens: 0,
+  // Each family writes calls the way its template taught it; a template that
+  // names no format gets XML — nothing in it is escaped, so a long edit can't
+  // come out broken the way one line of JSON does.
+  codeToolFormat: "auto",
+  codeToolFallback: "xml",
   codeAutoApproveEdits: false,
   codeAutoRunReadOnly: true,
   codeBrowserHeadless: false,
@@ -235,6 +245,14 @@ export function parseStops(raw: string): string[] {
 }
 
 type CatId = "general" | "chat" | "sampling" | "model" | "code" | "voice" | "data" | "about";
+
+/** Tool-call formats by the family that trained them. */
+const TOOL_FORMAT_LABEL: Record<"xml" | "json" | "gemma" | "lfm", string> = {
+  xml: "XML",
+  json: "JSON",
+  gemma: "Gemma",
+  lfm: "LFM",
+};
 
 const CAT_ICONS: Record<CatId, string> = {
   general: "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18",
@@ -1266,6 +1284,37 @@ export function SettingsPanel({
                 />
               </label>
               <div className="settings-hint">{t("cmMaxTokensHint")}</div>
+
+              <SetRow label={t("cmToolFormat")} hint={t("cmToolFormatHint")}>
+                <div className="lang-switch">
+                  {(["auto", "xml", "json", "gemma", "lfm"] as const).map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      className={value.codeToolFormat === f ? "active" : ""}
+                      onClick={() => set("codeToolFormat", f)}
+                    >
+                      {f === "auto" ? t("cmToolFormatAuto") : TOOL_FORMAT_LABEL[f]}
+                    </button>
+                  ))}
+                </div>
+              </SetRow>
+              {value.codeToolFormat === "auto" && (
+                <SetRow label={t("cmToolFallback")} hint={t("cmToolFallbackHint")}>
+                  <div className="lang-switch">
+                    {(["xml", "json"] as const).map((f) => (
+                      <button
+                        key={f}
+                        type="button"
+                        className={value.codeToolFallback === f ? "active" : ""}
+                        onClick={() => set("codeToolFallback", f)}
+                      >
+                        {TOOL_FORMAT_LABEL[f]}
+                      </button>
+                    ))}
+                  </div>
+                </SetRow>
+              )}
 
               <SetRow label={t("cmAutoEdits")} hint={t("cmAutoEditsHint")}>
                 <Switch

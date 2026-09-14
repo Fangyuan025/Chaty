@@ -189,6 +189,26 @@ pub fn mlx_dir_size_mb(path: &Path) -> u64 {
         / (1024 * 1024)
 }
 
+/// The chat template a model folder ships: `chat_template.jinja`, else the
+/// `chat_template` of `tokenizer_config.json` — a string, or a list of named
+/// templates, taken together since any of them may carry the tool format.
+pub fn mlx_chat_template(dir: &Path) -> Option<String> {
+    if let Ok(t) = std::fs::read_to_string(dir.join("chat_template.jinja")) {
+        return Some(t);
+    }
+    let cfg: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("tokenizer_config.json")).ok()?).ok()?;
+    match cfg.get("chat_template")? {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(list) => Some(
+            list.iter()
+                .filter_map(|t| t.get("template").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => None,
+    }
+}
+
 /// Locate the `chaty-mlx` sidecar binary. Checked in order: explicit env
 /// override (tests), next to the app executable (bundled / `tauri dev`), the
 /// staged build output, and the raw xcodebuild products dir (local dev).
@@ -513,6 +533,12 @@ impl MlxEngine {
                 .unwrap_or_default(),
             tool_role: loaded["toolRole"].as_bool().unwrap_or(false),
             reasoning_field: loaded["reasoningField"].as_bool().unwrap_or(false),
+            // Read from the folder's own template, like the GGUF side reads
+            // its metadata — no round trip through the sidecar needed.
+            tool_format: mlx_chat_template(&dir_path)
+                .as_deref()
+                .and_then(super::native_tool_format)
+                .map(str::to_string),
             supports_tools: loaded["supportsTools"].as_bool().unwrap_or(false),
             multimodal: loaded["multimodal"].as_bool().unwrap_or(false),
             // MLX VLMs carry their vision tower in the same weights — loaded

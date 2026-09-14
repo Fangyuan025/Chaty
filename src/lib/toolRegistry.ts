@@ -21,6 +21,7 @@ import {
   DOC_LINES,
   type Bi,
 } from "./toolDocs";
+import { plainArgs, type CallFormat } from "./callFormat";
 
 /** Where a tool comes from. Natives are compiled in; mcp/skill arrive at
  *  runtime via registerTool (M1/M3). */
@@ -288,7 +289,7 @@ const DEFERRED_INDEX_HEAD: Bi = {
  *  Deferred tools (none shipped yet) collapse into a single index line. */
 export function buildToolsDoc(
   l: "zh" | "en",
-  opts: { vision?: boolean; browserText?: boolean; anchors?: boolean },
+  opts: { vision?: boolean; browserText?: boolean; anchors?: boolean; format?: CallFormat },
 ): string {
   const live = (suite: ToolSpec["suite"]) =>
     specs.filter((s) => s.suite === suite && s.docLine && !s.docHidden && s.tier === "core");
@@ -322,5 +323,7 @@ export function buildToolsDoc(
       })
       .join("\n");
   }
+  // A model taught another format sees argument lists, not JSON objects.
+  if (opts.format && opts.format !== "json") doc = doc.split("\n").map(plainArgs).join("\n");
   return doc;
 }

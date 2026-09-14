@@ -5,6 +5,8 @@
  *  Shown-tracking is per turn: a hint can reappear next turn (cheap), which
  *  also self-heals when compaction elides the earlier copy. */
 
+import { argsExample, callExample } from "./callFormat";
+
 export type HintKey = "browser" | "editFail" | "webFlow" | "afterOrient" | "anchorRead";
 
 const BROWSER_HINT: Record<"zh" | "en", string> = {
@@ -21,9 +23,16 @@ const EDIT_FAIL_HINT: Record<"zh" | "en", string> = {
 // next call tends to copy that empty-arguments shape (observed as a
 // deterministic `search_code {}` spiral in the A/B-1 bench autopsy). One
 // concrete next-step example right after orientation breaks the momentum.
+// Getters: the examples are written in the format this turn teaches, read at
+// the moment the hint is shown (a JSON example here is where Gemma 4, taught
+// its own format, turned to JSON for every call after the first).
 const AFTER_ORIENT_HINT: Record<"zh" | "en", string> = {
-  zh: `[下一步] 接下来的工具调用都要带具体 arguments,例如 search_code {"query":"哪里处理登录鉴权"} 或 read_file {"path":"src/app.ts"}——不要发出空 arguments 的调用。`,
-  en: `[Next] Every following tool call needs concrete arguments, e.g. search_code {"query":"where login auth is handled"} or read_file {"path":"src/app.ts"} — never issue a call with empty arguments.`,
+  get zh() {
+    return `[下一步] 接下来的工具调用都要带具体参数,例如 ${callExample("search_code", '{"query":"哪里处理登录鉴权"}')} 或 ${callExample("read_file", '{"path":"src/app.ts"}')}——不要发出没有参数的调用。`;
+  },
+  get en() {
+    return `[Next] Every following tool call needs concrete arguments, e.g. ${callExample("search_code", '{"query":"where login auth is handled"}')} or ${callExample("read_file", '{"path":"src/app.ts"}')} — never issue a call with no arguments.`;
+  },
 };
 
 // Anchor mode: the first anchored read is where the model decides HOW it will
@@ -31,8 +40,12 @@ const AFTER_ORIENT_HINT: Record<"zh" | "en", string> = {
 // then quit without ever touching an editor — the docs alone don't bridge
 // "these prefixes" to "this is how you edit". Say it at the moment of reading.
 const ANCHOR_READ_HINT: Record<"zh" | "en", string> = {
-  zh: `[编辑提示] 行首的 "行号:哈希→" 是编辑锚点。要修改这个文件,直接调用 edit_lines,把锚点原样抄进去,例如:{"path":"<该文件>","edits":[{"op":"replace","anchor":"22:abc","content":"新的这一行"}]}——不要用 bash/sed 改文件。`,
-  en: `[Edit hint] The "LINE:HASH→" prefixes are edit anchors. To change this file, call edit_lines and copy an anchor verbatim, e.g. {"path":"<this file>","edits":[{"op":"replace","anchor":"22:abc","content":"the new line"}]} — do not edit files via bash/sed.`,
+  get zh() {
+    return `[编辑提示] 行首的 "行号:哈希→" 是编辑锚点。要修改这个文件,直接调用 edit_lines,把锚点原样抄进去,例如:${callExample("edit_lines", '{"path":"<该文件>","edits":[{"op":"replace","anchor":"22:abc","content":"新的这一行"}]}')}——不要用 bash/sed 改文件。`;
+  },
+  get en() {
+    return `[Edit hint] The "LINE:HASH→" prefixes are edit anchors. To change this file, call edit_lines and copy an anchor verbatim, e.g. ${callExample("edit_lines", '{"path":"<this file>","edits":[{"op":"replace","anchor":"22:abc","content":"the new line"}]}')} — do not edit files via bash/sed.`;
+  },
 };
 
 const ANCHOR_LINE_RE = /^\d+:[a-z]{2,4}→/m;
@@ -55,17 +68,17 @@ export function missingArgLadder(
   const zh = lang === "zh";
   if (attempt <= 1) {
     return zh
-      ? `ERROR: 缺少 "${arg}" 参数——请带上它重发 ${name},例如 arguments: ${example}`
-      : `ERROR: missing "${arg}" — re-issue ${name} WITH it, e.g. arguments: ${example}`;
+      ? `ERROR: 缺少 "${arg}" 参数——请带上它重发 ${name},例如:\n${argsExample(example)}`
+      : `ERROR: missing "${arg}" — re-issue ${name} WITH it, e.g.:\n${argsExample(example)}`;
   }
   if (attempt === 2) {
     return zh
-      ? `ERROR: 你已连续两次发出没有 "${arg}" 的 ${name}。先停下这个工具。如果还不知道 ${arg} 该填什么,就换一个具体动作推进:list_dir {"path":"."} 看目录结构,或 read_file 打开一个具体文件,或 grep {"pattern":"关键词"}。想再用 ${name},必须带上 ${arg},例如 ${example}。`
-      : `ERROR: that is the second ${name} in a row without "${arg}". Stop using this tool for a moment. If you don't know what ${arg} should be, make a DIFFERENT concrete move instead: list_dir {"path":"."} to see the layout, read_file on a specific file, or grep {"pattern":"a keyword"}. To use ${name} again, you MUST include ${arg}, e.g. ${example}.`;
+      ? `ERROR: 你已连续两次发出没有 "${arg}" 的 ${name}。先停下这个工具。如果还不知道 ${arg} 该填什么,就换一个具体动作推进:${callExample("list_dir", '{"path":"."}')} 看目录结构,或 read_file 打开一个具体文件,或 ${callExample("grep", '{"pattern":"关键词"}')}。想再用 ${name},必须带上 ${arg},例如:\n${argsExample(example)}`
+      : `ERROR: that is the second ${name} in a row without "${arg}". Stop using this tool for a moment. If you don't know what ${arg} should be, make a DIFFERENT concrete move instead: ${callExample("list_dir", '{"path":"."}')} to see the layout, read_file on a specific file, or ${callExample("grep", '{"pattern":"a keyword"}')}. To use ${name} again, you MUST include ${arg}, e.g.:\n${argsExample(example)}`;
   }
   return zh
-    ? `${name} 已暂时停用(连续 ${attempt} 次空参数)。先用 list_dir / read_file 等带具体参数的工具实际推进几步;之后再用 ${name} 时必须带上 ${arg},例如 ${example}。`
-    : `${name} is temporarily disabled (${attempt} empty-argument calls in a row). Make real progress with other tools first (list_dir / read_file with concrete arguments); when you come back to ${name}, you MUST include ${arg}, e.g. ${example}.`;
+    ? `${name} 已暂时停用(连续 ${attempt} 次空参数)。先用 list_dir / read_file 等带具体参数的工具实际推进几步;之后再用 ${name} 时必须带上 ${arg},例如 ${callExample(name, example)}。`
+    : `${name} is temporarily disabled (${attempt} empty-argument calls in a row). Make real progress with other tools first (list_dir / read_file with concrete arguments); when you come back to ${name}, you MUST include ${arg}, e.g. ${callExample(name, example)}.`;
 }
 
 // A local dev server just came up (bash/bash_bg/bg_output printed a local

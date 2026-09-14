@@ -120,6 +120,7 @@ fn load_engine(path: &str, n_ctx: Option<u32>, speculative: bool) -> Result<Mode
             effort_levels: Vec::new(),
             tool_role: false,
             reasoning_field: false,
+            tool_format: None,
             supports_tools: true,
             multimodal: false,
             vision_ready: false,
@@ -341,7 +342,7 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
             Ok(u) => res(ag::browser_navigate(u).await),
             Err(e) => Err(e),
         },
-        "browser_read" => res(ag::browser_read().await),
+        "browser_read" => res(ag::browser_read(s_arg(&args, "selector")).await),
         "browser_screenshot" => res(ag::browser_screenshot().await),
         "browser_snapshot" => res(ag::browser_snapshot().await),
         "browser_scroll" => res(

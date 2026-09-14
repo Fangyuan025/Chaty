@@ -1276,6 +1276,14 @@ pub fn agent_edit_file(
     new_string: String,
     replace_all: Option<bool>,
 ) -> Result<String, String> {
+    // Empty is not "identical": it is an old_string that never arrived, and
+    // calling it identical sent a model off the tool for good.
+    if old_string.is_empty() {
+        return Err(tr(
+            "old_string 为空:要替换的原文没有传进来(多处修改请用 edits 数组)",
+            "old_string is empty — the text to replace never arrived (for several changes pass an edits array)",
+        ));
+    }
     if old_string == new_string {
         return Err(tr("old_string 与 new_string 相同", "old_string and new_string are identical — no-op edit"));
     }
@@ -1285,6 +1293,34 @@ pub fn agent_edit_file(
     let was_clean = syntax_check(&abs).map(|r| r.is_ok());
     let count = text.matches(&old_string).count();
     if count == 0 {
+        // Not verbatim — but a retyped old_string usually differs only in
+        // indentation or trailing spaces. One unique such place is taken.
+        if let Some(updated) = loose_replace(&text, &old_string, &new_string) {
+            std::fs::write(&abs, updated.text.as_bytes()).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
+            let root = workspace()?;
+            let span = new_string.matches('\n').count() + 1;
+            return Ok(trf!(
+                "已编辑 {}(old_string 和文件在缩进/行尾空白上不一致,已按唯一匹配的那几行替换,并套用了文件的缩进)。修改后该处内容:\n{}{}",
+                "edited {} (old_string differed from the file in indentation or trailing spaces; the one place its lines match was replaced, in the file's indentation). The region now reads:\n{}{}",
+                rel_display(&root, &abs),
+                numbered_context(&updated.text, updated.start_line, span),
+                syntax_note(&abs, was_clean)
+            ));
+        }
+        // JSON escapes (\n, \") written into a value that is taken as
+        // written — a model just off a JSON-valued argument does it.
+        if let Some(updated) = unescaped_replace(&text, &old_string, &new_string) {
+            std::fs::write(&abs, updated.text.as_bytes()).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
+            let root = workspace()?;
+            let span = updated.text[..].lines().count().min(updated.start_line + 20) - updated.start_line;
+            return Ok(trf!(
+                "已编辑 {}(old_string 里的 \\n、\\\" 是写出来的转义符,文件里对应的是真实的换行/引号;已按还原后的内容唯一匹配并替换)。修改后该处内容:\n{}{}",
+                "edited {} (old_string spelled out escapes such as \\n or \\\" where the file has a real newline or quote; the one place the unescaped text matches was replaced). The region now reads:\n{}{}",
+                rel_display(&root, &abs),
+                numbered_context(&updated.text, updated.start_line, span.max(1)),
+                syntax_note(&abs, was_clean)
+            ));
+        }
         return Err(not_found_error(&text, &old_string));
     }
     let all = replace_all.unwrap_or(false);
@@ -1626,6 +1662,112 @@ fn closest_snippet(text: &str, needle: &str) -> Option<String> {
     Some(numbered_context(text, best_line, 1))
 }
 
+/// The file after a loose replacement, and the line it starts at.
+struct Loose {
+    text: String,
+    start_line: usize,
+}
+
+/// `old_string` → `new_string` where old_string matches the file line for
+/// line once each line's leading and trailing whitespace is set aside — how a
+/// model's retyped old_string usually differs from the file (two spaces for
+/// four, a tab, a trailing space, a CRLF). Only a UNIQUE such place is taken;
+/// new_string is re-indented from old_string's indentation to the file's.
+/// None when nothing matches, or more than one place does.
+fn loose_replace(text: &str, old_string: &str, new_string: &str) -> Option<Loose> {
+    let needle: Vec<&str> = old_string.trim_matches('\n').split('\n').collect();
+    if needle.iter().all(|l| l.trim().is_empty()) {
+        return None;
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let n = needle.len();
+    if lines.len() < n {
+        return None;
+    }
+    let mut found = None;
+    for i in 0..=lines.len() - n {
+        if (0..n).all(|k| lines[i + k].trim() == needle[k].trim()) {
+            if found.is_some() {
+                return None; // ambiguous — the model has to say which
+            }
+            found = Some(i);
+        }
+    }
+    let i = found?;
+    let indent = |l: &str| l[..l.len() - l.trim_start().len()].to_string();
+    let (from, to) = (indent(needle[0]), indent(lines[i]));
+    let new_body = new_string.trim_matches('\n');
+    let replacement: String = if from == to {
+        new_body.to_string()
+    } else {
+        new_body
+            .split('\n')
+            .map(|l| match l.strip_prefix(from.as_str()) {
+                Some(rest) => format!("{to}{rest}"),
+                None => l.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // Keep a CRLF file CRLF.
+    let crlf = lines[i].ends_with('\r');
+    let replacement = if crlf {
+        replacement.split('\n').map(|l| l.trim_end_matches('\r')).collect::<Vec<_>>().join("\r\n") + "\r"
+    } else {
+        replacement
+    };
+    let start: usize = lines[..i].iter().map(|l| l.len() + 1).sum();
+    let last = i + n - 1;
+    let end: usize = lines[..last].iter().map(|l| l.len() + 1).sum::<usize>() + lines[last].len();
+    let mut out = String::with_capacity(text.len() + replacement.len());
+    out.push_str(&text[..start]);
+    out.push_str(&replacement);
+    out.push_str(&text[end..]);
+    Some(Loose { text: out, start_line: i })
+}
+
+/// `s` with its JSON escapes undone (`\n`, `\t`, `\"`, `\\`) — None when it
+/// holds none to undo.
+fn unescape_json_like(s: &str) -> Option<String> {
+    if !(s.contains("\\n") || s.contains("\\\"") || s.contains("\\t")) {
+        return None;
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.peek().copied() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            _ => {
+                out.push(c);
+                continue;
+            }
+        }
+        it.next();
+    }
+    Some(out)
+}
+
+/// The last resort for an old_string that matches nowhere: undo JSON escapes
+/// in it (and in new_string) and match again — verbatim and unique, then
+/// loosely. Code that really contains `\n` never gets here: it matched as
+/// written.
+fn unescaped_replace(text: &str, old_string: &str, new_string: &str) -> Option<Loose> {
+    let old = unescape_json_like(old_string)?;
+    let new = unescape_json_like(new_string).unwrap_or_else(|| new_string.to_string());
+    if text.matches(&old).count() == 1 {
+        let pos = text.find(&old)?;
+        return Some(Loose { text: text.replacen(&old, &new, 1), start_line: text[..pos].matches('\n').count() });
+    }
+    loose_replace(text, &old, &new)
+}
+
 fn not_found_error(text: &str, old_string: &str) -> String {
     let hint = closest_snippet(text, old_string)
         .map(|s| {
@@ -1670,6 +1812,17 @@ pub fn agent_multi_edit(path: String, edits: Vec<EditOp>) -> Result<String, Stri
             return Err(trf!("第 {n}/{total} 条 old_string 与 new_string 相同;未应用任何修改", "edit {n}/{total} is a no-op — nothing changed"));
         }
         let count = cur.matches(&e.old_string).count();
+        // replace_all with no verbatim match still takes one unique loose match:
+        // an E4B's retyped block, indented six where the file has four, failed
+        // only because it also asked for replace_all.
+        if count == 0 {
+            if let Some(updated) = loose_replace(&cur, &e.old_string, &e.new_string)
+                .or_else(|| unescaped_replace(&cur, &e.old_string, &e.new_string))
+            {
+                cur = updated.text;
+                continue;
+            }
+        }
         if count == 0 {
             return Err(trf!(
                 "第 {n}/{total} 条编辑失败,整个 multi_edit 原子回退、文件未改动:\n{}",
@@ -1970,10 +2123,11 @@ pub async fn browser_console() -> Result<String, String> {
         .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
 
-/// Digest of the current page's interactive elements (links/buttons/inputs).
+/// Digest of the current page's interactive elements (links/buttons/inputs),
+/// or, given a selector, the elements it matches.
 #[tauri::command]
-pub async fn browser_read() -> Result<String, String> {
-    tokio::task::spawn_blocking(crate::browser::read_page)
+pub async fn browser_read(selector: Option<String>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || crate::browser::read_page(selector))
         .await
         .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
@@ -4983,6 +5137,84 @@ mod tests {
         assert_eq!(raw.len(), MAX_READ_BYTES);
         assert!(body.starts_with(&raw));
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// An old_string retyped with other indentation or trailing spaces still
+    /// lands, in the file's indentation — once, and only where it is unique.
+    #[test]
+    fn a_retyped_old_string_is_matched_loosely_but_only_uniquely() {
+        let text = "def a():\n    x = 1\n    if x:\n        return 2  \n\ndef b():\n    return 3\n";
+        // Two spaces where the file has four, and no trailing spaces.
+        let r = loose_replace(text, "  if x:\n      return 2", "  if x:\n      return 20").unwrap();
+        assert_eq!(r.text, "def a():\n    x = 1\n    if x:\n        return 20\n\ndef b():\n    return 3\n");
+        assert_eq!(r.start_line, 2);
+        // Ambiguous: two places match once whitespace is ignored.
+        let twice = "a\n  b\nc\n    b\n";
+        assert!(loose_replace(twice, "b", "B").is_none());
+        // Nothing like it.
+        assert!(loose_replace(text, "return 99", "x").is_none());
+        // A CRLF file stays CRLF.
+        let crlf = "one\r\n  two\r\nthree\r\n";
+        assert_eq!(loose_replace(crlf, "two", "2").unwrap().text, "one\r\n  2\r\nthree\r\n");
+    }
+
+    /// A model writing text-as-written arguments right after a JSON-valued
+    /// one kept the JSON escapes: `\"\"\"Price…\"\"\"\n    base = 2.5`.
+    #[test]
+    fn an_old_string_with_json_escapes_still_lands() {
+        let text = "def price_for_kiwis(qty):\n    \"\"\"Price for kiwis.\"\"\"\n    base = 2.5\n    return base * qty\n";
+        let old = r#"def price_for_kiwis(qty):\n    \"\"\"Price for kiwis.\"\"\"\n    base = 2.5"#;
+        let new = r#"def price_for_kiwis(qty, discount=0):\n    \"\"\"Price for kiwis.\"\"\"\n    base = 2.5"#;
+        let r = unescaped_replace(text, old, new).unwrap();
+        assert_eq!(r.text, "def price_for_kiwis(qty, discount=0):\n    \"\"\"Price for kiwis.\"\"\"\n    base = 2.5\n    return base * qty\n");
+        // Nothing to undo: not this tier's business.
+        assert!(unescape_json_like("plain text").is_none());
+        // A literal backslash-n that is really in the code never reaches here —
+        // it matches verbatim first — and an escape it cannot read is kept.
+        assert_eq!(unescape_json_like(r#"a\nb\qc"#).unwrap(), "a\nb\\qc");
+    }
+
+    #[test]
+    fn edit_file_and_multi_edit_take_a_loose_match() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-agent-loose-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        std::fs::write(dir.join("m.py"), "def f(q):\n    if q >= 10:\n        return 1\n    return 0\n").unwrap();
+        let out = agent_edit_file("m.py".into(), "if q >= 10:\n    return 1".into(), "if q >= 12:\n    return 1".into(), None).unwrap();
+        assert!(out.contains("indentation") || out.contains("缩进"), "{out}");
+        assert_eq!(std::fs::read_to_string(dir.join("m.py")).unwrap(), "def f(q):\n    if q >= 12:\n        return 1\n    return 0\n");
+        let edits = vec![EditOp { old_string: "return 0".into(), new_string: "return -1".into(), replace_all: false }];
+        agent_multi_edit("m.py".into(), edits).unwrap();
+        assert!(std::fs::read_to_string(dir.join("m.py")).unwrap().ends_with("    return -1\n"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An empty old_string is reported as missing, not as identical to an
+    /// empty new_string — told that, a model gave up on the tool. And
+    /// replace_all does not stop a unique loose match.
+    #[test]
+    fn an_empty_old_string_is_missing_and_replace_all_still_matches_loosely() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-agent-empty-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        std::fs::write(dir.join("p.js"), "function bump(s) {\n    const n = 1;\n    return n;\n}\n").unwrap();
+        let err = agent_edit_file("p.js".into(), String::new(), String::new(), None).unwrap_err();
+        assert!(err.contains("old_string") && !err.contains("相同") && !err.contains("identical"), "{err}");
+        let edits = vec![EditOp {
+            old_string: "      const n = 1;\n      return n;".into(),
+            new_string: "      const n = 2;\n      return n + 1;".into(),
+            replace_all: true,
+        }];
+        agent_multi_edit("p.js".into(), edits).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("p.js")).unwrap(),
+            "function bump(s) {\n    const n = 2;\n    return n + 1;\n}\n"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A binary file is named as one instead of read out as mojibake full of

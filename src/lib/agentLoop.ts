@@ -67,6 +67,21 @@ import {
 import { normalizeChannels } from "./voiceText";
 import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
 import {
+  argsExample,
+  CALL_CLOSERS,
+  callExample,
+  callFormat,
+  callRule,
+  callStart,
+  callTag,
+  closeOpenCalls,
+  formatOf,
+  oneCall,
+  renderCall,
+  setCallFormat,
+  type CallFormat,
+} from "./callFormat";
+import {
   wrapupNudge,
   planEcho,
   isWebSourceFile,
@@ -228,6 +243,11 @@ export interface AgentCallbacks {
 export interface AgentOptions {
   /** Reasoning depth: off = no thinking, normal = default, deep = thorough. */
   thinkMode: ThinkMode;
+  /** How the model is asked to write tool calls — the format its chat
+   *  template was trained on (ModelInfo.toolFormat), or the user's fallback
+   *  for a family whose template names none. Every format is always accepted;
+   *  this decides what the prompt and every correction teach. */
+  toolFormat?: CallFormat;
   /** Native reasoning-effort rung to request (Qwen3.8: low|medium|xhigh).
    *  Undefined for models without the ladder. */
   effort?: string;
@@ -364,7 +384,7 @@ function proseAfter(raw: string): string {
   t = t.replace(/<think>[\s\S]*?<\/think>/g, "");
   const open = t.indexOf("<think>");
   if (open !== -1) t = t.slice(0, open); // still thinking → prose so far only
-  const tc = t.indexOf("<tool_call>");
+  const tc = callStart(t);
   return (tc === -1 ? t : t.slice(0, tc)).trim();
 }
 
@@ -508,6 +528,7 @@ export function systemPrompt(
   browserText?: boolean,
   skills?: SkillFile[],
   memoryIndex?: string,
+  toolFormat: CallFormat = "json",
 ): string {
   const l = zh ? "zh" : "en";
   // In anchor mode, every prompt mention of the exact-string editor follows
@@ -524,6 +545,7 @@ export function systemPrompt(
     vision: visionReady,
     browserText,
     anchors: anchorsMode,
+    format: toolFormat,
   });
   const skillsDoc = skillIndex(skills ?? [], zh ? "zh" : "en");
   const memoryDoc = memoryIndexDoc(memoryIndex ?? "", zh ? "zh" : "en");
@@ -557,7 +579,7 @@ export function systemPrompt(
 ${toolsDoc}
 
 调用规则(务必严格遵守):
-- 每次只调用一个工具。要调用时,只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要在同一条消息里写其它内容。
+${callRule(true, toolFormat)}
 - 系统会把结果以 <tool_result>...</tool_result> 返回给你,你再继续。
 - 没有"当前目录"的概念:每条 bash 都是从工作区根目录启动的全新 shell,单独的 cd 不会保留到下一条命令。访问子目录请直接用相对路径,或在同一条命令内组合(cd src && npm test)。${shellNote}
 - 修改代码前,先用 outline 看文件结构、read_file / grep / list_dir 了解现状;改完可用 bash 跑测试/构建验证。
@@ -577,7 +599,7 @@ You can call these tools (all paths are relative to the workspace. To access fil
 ${toolsDoc}
 
 Rules (follow strictly):
-- Call ONE tool at a time. To call it, output a single line <tool_call>{"name":"tool","arguments":{...}}</tool_call> and STOP immediately — nothing else in that message.
+${callRule(false, toolFormat)}
 - You'll get the result as <tool_result>...</tool_result>, then continue.
 - There is NO persistent working directory: every bash command starts a fresh shell at the workspace root, so a lone cd does NOT carry over. Use relative paths directly or combine in one command (cd src && npm test).${shellNote}
 - Before editing, understand the code with read_file / grep / list_dir; after editing, you can run tests/builds with bash.
@@ -627,10 +649,9 @@ export function storeAssistantTurn(
   // model that is not a four-token trim: its recurrent layers cannot be
   // rewound, so the whole conversation is re-read. Measured on a 35B run: one
   // round in thirty-two matched 5006 of 5010 cached tokens and threw all 5006
-  // away. Put the closer back, which is also what the model actually wrote.
-  const opened = turn.split("<tool_call>").length - 1;
-  const closed = turn.split("</tool_call>").length - 1;
-  if (opened > closed) turn += "</tool_call>";
+  // away. Put the closer back, which is also what the model actually wrote —
+  // in the format it opened the call in.
+  turn = closeOpenCalls(turn);
   // Where the template reads thinking from its own field, the content must
   // hold the answer alone — leaving it inline reaches such a template as an
   // empty thought followed by this turn's markup.
@@ -956,9 +977,362 @@ export function parseNativeToolCall(text: string): ToolCall | null {
   return { name: name as AgentToolName, args };
 }
 
+/** Parameters that are text to be taken as written — a file's contents, the
+ *  text an edit replaces, a command. Nothing in them is ever read as JSON or
+ *  as a boolean, whatever it happens to look like. */
+const RAW_TEXT_PARAMS = new Set([
+  "path", "content", "old_string", "new_string", "command", "query", "pattern",
+  "text", "url", "question", "code", "message", "site",
+]);
+
+/** Qwen3.5/3.6/3.8's own tool-call format — the one their chat templates
+ *  teach:
+ *
+ *      <tool_call>
+ *      <function=edit_file>
+ *      <parameter=path>
+ *      src/app.ts
+ *      </parameter>
+ *      <parameter=old_string>
+ *      the text, any number of lines, nothing escaped
+ *      </parameter>
+ *      </function>
+ *      </tool_call>
+ *
+ *  Chaty asked for one line of JSON, and a long edit is exactly where a model
+ *  trained on this falls back to it: every newline and quote in the code must
+ *  be escaped in JSON, and here none are. Such a call was rejected as invalid
+ *  and the whole edit written out again. Values are the text between the
+ *  tags (the template puts one newline on each side); an object or array
+ *  value is JSON, as the template writes those with tojson.
+ *  Exported for tests. */
+export function parseXmlToolCall(text: string): ToolCall | null {
+  // Names are sometimes quoted — `<parameter="path">`, `<parameter=path">` —
+  // and a 4B told "path is missing" for one it had written spent a dozen
+  // rounds on it.
+  const fn = /<function=["']?([^>\s"']+)["']?\s*>/.exec(text);
+  if (!fn) return null;
+  const after = text.slice(fn.index + fn[0].length);
+  const end = after.indexOf("</function>");
+  const body = end === -1 ? after : after.slice(0, end);
+  const args: Record<string, unknown> = {};
+  const re = /<parameter=["']?([^>\s"']+)["']?\s*>\n?([\s\S]*?)\n?<\/parameter>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body))) {
+    const key = m[1].trim();
+    args[key] = RAW_TEXT_PARAMS.has(key) ? m[2] : xmlParamValue(m[2]);
+  }
+  return { name: fn[1].trim() as AgentToolName, args };
+}
+
+/** What to tell a model whose tool call could not be parsed: what broke and
+ *  where, and — from the second failure in a row — a smaller way to make the
+ *  change. The note used to say only "not valid", and the model wrote the
+ *  same long call again, breaking it again. Exported for tests. */
+export function describeInvalidCall(raw: string, streak: number, lang: "zh" | "en"): string {
+  const zh = lang === "zh";
+  const tag = raw.indexOf("<tool_call>");
+  let body = tag === -1 ? raw : raw.slice(tag + "<tool_call>".length);
+  const closeAt = body.indexOf("</tool_call>");
+  const closed = closeAt !== -1;
+  if (closed) body = body.slice(0, closeAt);
+  body = body.trim();
+  let what: string;
+  if (raw.includes("<|tool_call>")) {
+    what = zh
+      ? '它用了 <|tool_call>call:工具名{…}<tool_call|> 写法,但格式不对或没写完整:参数写成 参数名:值,之间用逗号;文字值放在两个 <|"|> 之间;最后以 }<tool_call|> 结束。'
+      : 'it uses the <|tool_call>call:tool_name{…}<tool_call|> form but is malformed or unfinished: arguments are name:value separated by commas, a text value sits between two <|"|>, and the call ends with }<tool_call|>.';
+  } else if (raw.includes("<|tool_call_start|>")) {
+    what = zh
+      ? '它用了 <|tool_call_start|>[工具名(…)]<|tool_call_end|> 写法,但格式不对或没写完整:参数写成 参数名="值",之间用逗号,最后以 )]<|tool_call_end|> 结束。'
+      : 'it uses the <|tool_call_start|>[tool_name(…)]<|tool_call_end|> form but is malformed or unfinished: arguments are name="value" separated by commas, and the call ends with )]<|tool_call_end|>.';
+  } else if (/<function=/.test(body)) {
+    what = zh
+      ? "它用了 <function=…> 写法但没写完整:每个 <parameter=名字> 都要有对应的 </parameter>,最后要有 </function>。"
+      : "it uses the <function=…> form but is not complete: every <parameter=name> needs its </parameter>, and the call needs </function>.";
+  } else {
+    const s = body.indexOf("{");
+    let inStr = false;
+    let esc = false;
+    for (const ch of s === -1 ? "" : body.slice(s)) {
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === "\\") esc = true;
+        else if (ch === '"') inStr = false;
+      } else if (ch === '"') inStr = true;
+    }
+    if (s === -1) {
+      // What is missing, in the format this turn teaches — "no JSON object"
+      // told a model taught XML to write JSON. A made-up call that only says
+      // it is done (<tool_call><task_complete>) wants the final answer instead.
+      const shape = oneCall(zh);
+      what = zh
+        ? `这不是一个完整的工具调用(应当是${shape})。如果任务已经完成,直接给出最终答复,不要再调用工具。`
+        : `that is not a complete tool call (it should be ${shape}). If the task is done, give the final answer directly — no tool call.`;
+    } else if (inStr) {
+      what = zh
+        ? `它在一个字符串参数中间就结束了${closed ? "" : "(也没有 </tool_call>)"}——多半是参数里有双引号没写成 \\",或者这次输出太长被截断了。`
+        : `it ends in the middle of a string argument${closed ? "" : " (and has no </tool_call>)"} — usually a double quote in the argument that was not written \\", or output that ran too long and was cut off.`;
+    } else {
+      const json = body.slice(s, body.lastIndexOf("}") + 1 || undefined);
+      let near = "";
+      try {
+        JSON.parse(json);
+      } catch (e) {
+        const m = /position (\d+)/.exec(String((e as Error).message));
+        if (m) {
+          const p = Number(m[1]);
+          near = json.slice(Math.max(0, p - 30), p + 30).replace(/\n/g, "\\n");
+        }
+      }
+      what = zh
+        ? `JSON 解析失败${near ? `,出错处附近:…${near}…` : ""}。常见原因:字符串里的双引号没写成 \\"、换行没写成 \\n、结尾少了 }。`
+        : `the JSON does not parse${near ? `; near the error: …${near}…` : ""}. Usual causes: a double quote not written \\", a newline not written \\n, a missing }.`;
+    }
+  }
+  const retry = zh ? `请用${oneCall(true)}重新调用。` : `Re-issue it as ${oneCall(false)}.`;
+  const smaller =
+    streak < 2
+      ? ""
+      : zh
+        ? `\n已经连续 ${streak} 次无法解析了,别再把同一段大内容原样重写:改动大就拆成几次 edit_file,每次 old_string 只写要改的那几行(保证唯一);多处修改分开调用;小文件整体重写可以用 write_file。`
+        : `\nThat is ${streak} unparseable calls in a row — do not write the same large call out again. Split a big change into several edit_file calls whose old_string holds only the lines being changed (and is unique); make separate calls for separate places; a small file can be rewritten whole with write_file.`;
+  return (zh ? "你上一个工具调用无法解析:" : "Your last tool call could not be parsed: ") + what + " " + retry + smaller;
+}
+
+function xmlParamValue(v: string): unknown {
+  const t = v.trim();
+  if (t === "true") return true;
+  if (t === "false") return false;
+  if ((t.startsWith("[") && t.endsWith("]")) || (t.startsWith("{") && t.endsWith("}"))) {
+    try {
+      const j = JSON.parse(t) as unknown;
+      if (typeof j === "object" && j !== null) return j;
+    } catch {
+      /* text that only looks like JSON */
+    }
+  }
+  return v;
+}
+
+/** Gemma 4's own call — the one its chat template teaches:
+ *
+ *      <|tool_call>call:edit_file{new_string:<|"|>…<|"|>,path:<|"|>a.py<|"|>}<tool_call|>
+ *
+ *  Text between two <|"|> is taken as written (nothing is escaped in this
+ *  format); numbers, booleans, arrays and objects as the template writes
+ *  them; keys bare, or between <|"|> inside nested objects.
+ *
+ *  What Gemma actually writes strays from that, and each stray was a rejected
+ *  call in a real run (E4B, 7 of 63 rounds): objects inside an array written
+ *  as JSON — quoted keys, "…" strings with \n escapes; a whole file written
+ *  after `content:` with no <|"|> around it; and, in the thought, the
+ *  correction's example or its own last call quoted before the real one.
+ *  Exported for tests. */
+export function parseGemmaToolCall(text: string): ToolCall | null {
+  const OPEN = "<|tool_call>";
+  const starts: number[] = [];
+  for (let at = text.indexOf(OPEN); at !== -1; at = text.indexOf(OPEN, at + 1)) starts.push(at);
+  // A call quoted in the thought is not the call: those after the thought
+  // closes are tried first.
+  const thoughtEnd = text.lastIndexOf("<channel|>");
+  const order = [...starts.filter((s) => s > thoughtEnd), ...starts.filter((s) => s < thoughtEnd)];
+  for (const s of order) {
+    const call = gemmaCallAt(text, s);
+    if (call) return call;
+  }
+  return null;
+}
+
+function gemmaCallAt(text: string, start: number): ToolCall | null {
+  const OPEN = "<|tool_call>";
+  const Q = '<|"|>';
+  const head = /^call:([A-Za-z0-9_.-]+)\s*\{/.exec(text.slice(start + OPEN.length));
+  if (!head) return null;
+  const src = text;
+  let i = start + OPEN.length + head[0].length;
+  let depth = 1;
+  const ws = () => {
+    while (i < src.length && /\s/.test(src[i])) i++;
+  };
+  const quoted = (): string => {
+    const end = src.indexOf(Q, i + Q.length);
+    if (end === -1) throw new Error("unterminated text");
+    const v = src.slice(i + Q.length, end);
+    i = end + Q.length;
+    return v;
+  };
+  // A JSON string, when that is what sits here: closed, and followed by the
+  // end of the value. Undefined otherwise (`"""Doc…` opens a file, not a string).
+  const jsonString = (): string | undefined => {
+    let j = i + 1;
+    while (j < src.length && src[j] !== '"') j += src[j] === "\\" ? 2 : 1;
+    if (j >= src.length) return undefined;
+    let after = j + 1;
+    while (after < src.length && /\s/.test(src[after])) after++;
+    if (!",}]".includes(src[after] ?? "") || after >= src.length) return undefined;
+    const lit = src.slice(i, j + 1);
+    let v: string;
+    try {
+      v = JSON.parse(lit) as string;
+    } catch {
+      v = lit
+        .slice(1, -1)
+        .replace(/\\n/g, "\n")
+        .replace(/\\t/g, "\t")
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, "\\");
+    }
+    i = j + 1;
+    return v;
+  };
+  // Text in single quotes, as Gemma also writes it. The closing quote is the
+  // first one the value can end at, since the text may hold quotes of its own.
+  const pyString = (): string | undefined => {
+    for (let j = i + 1; j < src.length; j++) {
+      if (src[j] === "\\") {
+        j++;
+        continue;
+      }
+      if (src[j] !== "'") continue;
+      let k = j + 1;
+      while (k < src.length && /\s/.test(src[k])) k++;
+      const next = src[k];
+      const ends =
+        next === "}" ||
+        next === "]" ||
+        (next === "," && /^\s*(?:[A-Za-z_]\w*\s*:|["']\w+["']\s*:|<\|"\|>|[{[])/.test(src.slice(k + 1, k + 80)));
+      if (!ends) continue;
+      const body = src.slice(i + 1, j);
+      i = j + 1;
+      return body.includes("\n")
+        ? body.replace(/\\'/g, "'")
+        : body
+            .replace(/\\n/g, "\n")
+            .replace(/\\t/g, "\t")
+            .replace(/\\'/g, "'")
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, "\\");
+    }
+    return undefined;
+  };
+  // Text written with no delimiter at all — a whole file after `content:` —
+  // runs to the brace that closes the call. Only for the call's own argument,
+  // and only when nothing quoted follows it, so it cannot swallow another one.
+  const rest = (): string => {
+    if (depth !== 1) throw new Error("bare text");
+    const close = src.indexOf("<tool_call|>", i);
+    const end = src.lastIndexOf("}", close === -1 ? src.length : close);
+    if (end <= i || src.slice(i, end).includes(Q)) throw new Error("bare text");
+    const v = src.slice(i, end);
+    i = end;
+    return v;
+  };
+  const value = (): unknown => {
+    ws();
+    if (src.startsWith(Q, i)) return quoted();
+    if (src[i] === "{") {
+      i++;
+      return object();
+    }
+    if (src[i] === "[") {
+      i++;
+      depth++;
+      const arr: unknown[] = [];
+      ws();
+      if (src[i] === "]") {
+        i++;
+        depth--;
+        return arr;
+      }
+      for (;;) {
+        arr.push(value());
+        ws();
+        if (src[i] === ",") i++;
+        else if (src[i] === "]") {
+          i++;
+          depth--;
+          return arr;
+        } else throw new Error("bad array");
+      }
+    }
+    if (src[i] === "'") return pyString() ?? rest();
+    if (src[i] === '"') return jsonString() ?? rest();
+    let j = i;
+    while (j < src.length && !",}]".includes(src[j])) j++;
+    const bare = src.slice(i, j).trim();
+    if (bare.includes("\n")) return rest();
+    i = j;
+    if (bare === "true") return true;
+    if (bare === "false") return false;
+    if (bare === "null") return null;
+    const n = Number(bare);
+    return bare !== "" && !Number.isNaN(n) ? n : bare;
+  };
+  const object = (): Record<string, unknown> => {
+    const o: Record<string, unknown> = {};
+    depth++;
+    ws();
+    if (src[i] === "}") {
+      i++;
+      depth--;
+      return o;
+    }
+    for (;;) {
+      ws();
+      let key: string;
+      if (src.startsWith(Q, i)) key = quoted();
+      else if (src[i] === '"' || src[i] === "'") {
+        const end = src.indexOf(src[i], i + 1);
+        if (end === -1) throw new Error("no key");
+        key = src.slice(i + 1, end);
+        i = end + 1;
+      } else {
+        const colon = src.indexOf(":", i);
+        if (colon === -1) throw new Error("no key");
+        key = src.slice(i, colon).trim();
+        i = colon;
+      }
+      ws();
+      if (src[i] !== ":") throw new Error("no colon");
+      i++;
+      o[key] = value();
+      ws();
+      if (src[i] === ",") i++;
+      else if (src[i] === "}") {
+        i++;
+        depth--;
+        return o;
+      } else throw new Error("bad object");
+    }
+  };
+  try {
+    depth = 0;
+    return { name: head[1] as AgentToolName, args: object() };
+  } catch {
+    return null;
+  }
+}
+
 /** Exported for the write-stall regression tests: the parser must survive the
  *  tool-call shapes real local models actually emit. */
 export function parseToolCall(text: string): ToolCall | null {
+  // Gemma 4's own format.
+  if (text.includes("<|tool_call>")) {
+    const gemma = parseGemmaToolCall(text);
+    if (gemma) return gemma;
+  }
+  // The model's own XML format, when the call is written in it: `<function=`
+  // with no JSON object opening the call body.
+  const xmlAt = text.search(/<function=[^>\s]+>/);
+  if (xmlAt !== -1) {
+    const tagAt = text.indexOf("<tool_call>");
+    const jsonFirst = tagAt !== -1 && text.slice(tagAt + "<tool_call>".length).trimStart().startsWith("{");
+    if (!jsonFirst) {
+      const xml = parseXmlToolCall(text);
+      if (xml) return xml;
+    }
+  }
   const open = text.indexOf("<tool_call>");
   if (open === -1) return parseNativeToolCall(text);
   let body = text.slice(open + "<tool_call>".length);
@@ -1057,7 +1431,7 @@ export function parseToolCall(text: string): ToolCall | null {
 
 /** Text to show as the assistant's prose (drop the tool-call markup + think). */
 function proseOnly(text: string): string {
-  const open = text.indexOf("<tool_call>");
+  const open = callStart(text);
   const visible = open === -1 ? text : text.slice(0, open);
   return stripThink(visible).trim();
 }
@@ -1066,7 +1440,7 @@ function proseOnly(text: string): string {
  *  call and no real answer yet. Small models fall into this and keep thinking
  *  forever; gated behind a token budget so normal reasoning isn't cut short. */
 function isThinkOnly(raw: string): boolean {
-  if (raw.includes("<tool_call>")) return false;
+  if (callStart(raw) !== -1) return false;
   return proseAfter(raw).trim() === "";
 }
 
@@ -1101,8 +1475,8 @@ export const argEdits = (a: Record<string, unknown>): EditOp[] => {
 // (the A/B-1 regression signature: search_code {} → repeat → pause → off-task).
 const missingArg = (arg: string, example: string) =>
   isZh()
-    ? `ERROR: 缺少 "${arg}" 参数——请带上它重发同一个工具调用,例如 arguments: ${example}`
-    : `ERROR: missing "${arg}" — re-issue the SAME tool call with it, e.g. arguments: ${example}`;
+    ? `ERROR: 缺少 "${arg}" 参数——请带上它重发同一个工具调用,例如:\n${argsExample(example)}`
+    : `ERROR: missing "${arg}" — re-issue the SAME tool call with it, e.g.:\n${argsExample(example)}`;
 const MISSING_PATH = () => missingArg("path", '{"path":"src/app.ts"}');
 
 // Required-args validation and the correction examples now live on each
@@ -1307,6 +1681,12 @@ async function execTool(
       const path = argPath(a);
       if (!path) return { result: MISSING_PATH() };
       const edits = argEdits(a);
+      // No edits and no old_string: an argument the model named in a way the
+      // parser missed arrives as nothing, and the engine then called the empty
+      // strings "identical" — which the model believed, and gave up on the tool.
+      if (edits.length === 0 && !argOld(a)) {
+        return { result: missingArg("old_string", '{"path":"src/app.ts","old_string":"…","new_string":"…"}') };
+      }
       let before = "";
       try {
         before = await readFull(path);
@@ -1369,8 +1749,8 @@ async function execTool(
         // killing it. Tell the model exactly how to continue.
         parts.push(
           isZh()
-            ? `[已自动转入后台 #${r.bgId}] 检测到 dev server,命令仍在运行(上面是到目前为止的输出)。server 已可用——直接继续下一步,例如 browser_navigate 打开它输出的地址;之后用 bg_output {"id":${r.bgId}} 看最新日志,bg_kill 结束它。`
-            : `[auto-moved to background #${r.bgId}] dev-server detected; the command is still running (output so far above). The server is available — continue with your next step, e.g. browser_navigate to the URL it printed; later use bg_output {"id":${r.bgId}} for fresh logs and bg_kill to stop it.`,
+            ? `[已自动转入后台 #${r.bgId}] 检测到 dev server,命令仍在运行(上面是到目前为止的输出)。server 已可用——直接继续下一步,例如 browser_navigate 打开它输出的地址;之后用 ${callExample("bg_output", JSON.stringify({ id: r.bgId }))} 看最新日志,bg_kill 结束它。`
+            : `[auto-moved to background #${r.bgId}] dev-server detected; the command is still running (output so far above). The server is available — continue with your next step, e.g. browser_navigate to the URL it printed; later use ${callExample("bg_output", JSON.stringify({ id: r.bgId }))} for fresh logs and bg_kill to stop it.`,
         );
         return { result: parts.join("\n") };
       }
@@ -1467,7 +1847,7 @@ async function execTool(
       return { result: await browserScroll(to || undefined, by) };
     }
     case "browser_read":
-      return { result: await browserRead() };
+      return { result: await browserRead(asStr(a.selector).trim() || undefined) };
     case "browser_close":
       return { result: await browserClose() };
     case "browser_eval": {
@@ -1616,7 +1996,9 @@ async function execTool(
       // model sees an ERROR-prefixed result. Malformed calls from small models
       // (e.g. {"name":"tool"}) used to look like successful steps.
       throw new Error(
-        `未知工具 (unknown tool): ${call.name}。可用工具见系统提示;请检查 tool_call 的 "name" 字段 (check the tool_call's "name" field against the tool list).`,
+        callFormat() === "json"
+          ? `未知工具 (unknown tool): ${call.name}。可用工具见系统提示;请检查 tool_call 的 "name" 字段 (check the tool_call's "name" field against the tool list).`
+          : `未知工具 (unknown tool): ${call.name}。可用工具见系统提示;请检查工具名 (check the tool name against the tool list).`,
       );
     }
   }
@@ -1806,15 +2188,25 @@ export function compactionStub(
  * of twenty thousand.
  */
 export function stubWrittenBodies(turn: string, lang: "zh" | "en"): string {
-  return turn.replace(/<tool_call>\s*([^]*?)\s*<\/tool_call>/g, (whole, body: string) => {
+  return turn.replace(CALL_BLOCK, (whole, body: string | undefined) => {
+    // Re-written in the format it was written in: a native call turned into
+    // JSON here would be a JSON call in the model's own history.
+    const fmt = formatOf(whole);
     let call: { name?: string; arguments?: Record<string, unknown> };
-    try {
-      call = JSON.parse(body);
-    } catch {
-      return whole; // not ours to rewrite
+    if (fmt === "json") {
+      try {
+        call = JSON.parse(body ?? "");
+      } catch {
+        return whole; // not ours to rewrite
+      }
+    } else {
+      const parsed = parseToolCall(whole);
+      if (!parsed) return whole;
+      call = { name: parsed.name, arguments: parsed.args };
     }
     const args = call.arguments;
-    if (!call.name || !args || typeof args !== "object") return whole;
+    const name = call.name;
+    if (!name || !args || typeof args !== "object") return whole;
     let touched = false;
     const slim: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(args)) {
@@ -1837,8 +2229,38 @@ export function stubWrittenBodies(turn: string, lang: "zh" | "en"): string {
       }
     }
     if (!touched) return whole;
-    return `<tool_call>${JSON.stringify({ name: call.name, arguments: slim })}</tool_call>`;
+    return renderCall(name, slim, fmt);
   });
+}
+
+/** One complete call in any format, as stored in history. */
+const CALL_BLOCK =
+  /<tool_call>\s*([^]*?)\s*<\/tool_call>|<\|tool_call>[^]*?<tool_call\|>|<\|tool_call_start\|>[^]*?<\|tool_call_end\|>/g;
+
+const WRITE_TOOLS = /^(write_file|edit_file|multi_edit)$/;
+
+/** Whether an assistant turn holds a file write, in any format. */
+function holdsWrite(content: string): boolean {
+  if (/<tool_call>\s*\{[^]*?"name"\s*:\s*"(write_file|edit_file|multi_edit)"/.test(content)) return true;
+  return callStart(content) !== -1 && formatOf(content) !== "json" && WRITE_TOOLS.test(parseToolCall(content)?.name ?? "");
+}
+
+/** Four or more closing tags in a row at the end of the output. */
+const TRAILING_CLOSERS = /(?:<\/[A-Za-z_][\w-]*>\s*){4,}(?:<\/?[\w-]*)?$/;
+
+/**
+ * An XML call that has closed every value it opened and still writes closing
+ * tags — `</parameter>`, `</path>`, anything — is done; what follows runs to
+ * the token cap. While a value is open its own closing tags are content (a
+ * page ends in `</div></body></html>`), so an open value is never cut.
+ * Exported for tests.
+ */
+export function xmlRunsOn(raw: string): boolean {
+  const fn = raw.lastIndexOf("<function=");
+  if (fn === -1) return false;
+  const body = raw.slice(fn);
+  if (body.split("<parameter=").length > body.split("</parameter>").length) return false;
+  return TRAILING_CLOSERS.test(body.slice(-600));
 }
 
 /** The prompt size llama.cpp reports when it refuses a prompt too long for the
@@ -1918,9 +2340,7 @@ export async function compactMessages(
     const writes = messages
       .map((m, i) => ({ m, i }))
       .filter(
-        ({ m }) =>
-          m.role === "assistant" &&
-          /<tool_call>\s*\{[^]*?"name"\s*:\s*"(write_file|edit_file|multi_edit)"/.test(m.content),
+        ({ m }) => m.role === "assistant" && holdsWrite(m.content),
       );
     for (let k = 0; k < writes.length - KEEP_WRITES; k++) {
       const { m, i } = writes[k];
@@ -2085,6 +2505,7 @@ export async function runAgentTurn(
   // Tool output renders in the session language (fire-and-forget: an old
   // headless binary without the command just keeps its bilingual strings).
   currentLang = lang;
+  setCallFormat(opts.toolFormat ?? "json");
   void agentSetLang(lang).catch(() => {});
   // Skills: bodies are served by use_skill, and the tool itself only exists
   // when the user HAS skills (no skills ⇒ byte-identical prompt).
@@ -2185,6 +2606,7 @@ export async function runAgentTurn(
         opts.browserTextMode,
         opts.skills,
         opts.memoryIndex,
+        opts.toolFormat ?? "json",
       ),
     },
     ...history,
@@ -2211,7 +2633,7 @@ export async function runAgentTurn(
   let lastCall: { name: string; args: Record<string, unknown> } | undefined;
   for (const m of messages) {
     if (m.role === "assistant") {
-      const c = m.content.includes("<tool_call>") ? parseToolCall(m.content) : null;
+      const c = callStart(m.content) !== -1 ? parseToolCall(m.content) : null;
       lastCall = c ? { name: c.name, args: c.args } : undefined;
     } else if (lastCall && m.content.startsWith(`<tool_result name="${lastCall.name}"`)) {
       toolMeta.set(m, lastCall);
@@ -2542,6 +2964,7 @@ export async function runAgentTurn(
       let liveTokens = 0;
       let budgetTripped = false;
       let degenerated = false;
+      let closersCut = false;
       let prefillShown = false;
       const t0 = performance.now();
       // After an intercepted repeat, sample hotter once to escape the pattern.
@@ -2559,7 +2982,7 @@ export async function runAgentTurn(
             topP: 0.9,
             maxTokens,
             repeatPenalty: 1.05,
-            stop: ["</tool_call>"],
+            stop: [...CALL_CLOSERS],
             think: stepThink,
             effort: opts.effort,
           },
@@ -2604,6 +3027,14 @@ export async function runAgentTurn(
                 degenerated = true;
                 void cancelGeneration().catch(() => {});
               }
+            }
+            // An XML call that goes on after its last argument — the same
+            // closing tag again and again — is complete, and the rest runs to
+            // the token cap: a 4B spent over two hours on it. Cut it and run
+            // the call.
+            if (!closersCut && liveTokens % 8 === 0 && xmlRunsOn(raw)) {
+              closersCut = true;
+              void cancelGeneration().catch(() => {});
             }
           } else if (ev.type === "done") {
             baseTokens += ev.stats.completionTokens;
@@ -2763,8 +3194,8 @@ export async function runAgentTurn(
             role: "user",
             content:
               (lang === "zh"
-                ? "停止思考。你已经反复推理却没有产出任何结果。现在立刻二选一:要么输出一行 <tool_call>{\"name\":\"...\",\"arguments\":{...}}</tool_call> 执行一个具体动作,要么直接给出简短的最终答案。不要再写任何思考过程。"
-                : "Stop thinking. You have been reasoning in circles without producing anything. Right now, do ONE of two things: output a single line <tool_call>{\"name\":\"...\",\"arguments\":{...}}</tool_call> to take a concrete action, or give a short final answer directly. Do not write any more reasoning.") +
+                ? `停止思考。你已经反复推理却没有产出任何结果。现在立刻二选一:要么输出${oneCall(true)}执行一个具体动作,要么直接给出简短的最终答案。不要再写任何思考过程。`
+                : `Stop thinking. You have been reasoning in circles without producing anything. Right now, do ONE of two things: output ${oneCall(false)} to take a concrete action, or give a short final answer directly. Do not write any more reasoning.`) +
               stopSuffix,
           });
           cb.onThinking("");
@@ -2774,7 +3205,10 @@ export async function runAgentTurn(
         // A `<tool_call>` was attempted but couldn't be parsed → don't leak the
         // raw markup into the answer; nudge the model to re-emit valid JSON.
         // (Bounded by maxSteps.) Otherwise it's a genuine final answer.
-        if (raw.includes("<tool_call>") && step < maxSteps - 1) {
+        // Any of the formats a model may write a call in — Gemma's
+        // `<|tool_call>` holds no `<tool_call>`, so looking for that alone
+        // passed a broken Gemma call off as a final answer.
+        if (/<tool_call>|<\|tool_call>|<\|tool_call_start\|>|<function=/.test(raw) && step < maxSteps - 1) {
           // Verbatim, like the tool-call path. Recording `proseOnly(raw)` here
           // stripped the very markup the nudge below is about — the model was
           // asked to fix a call it could no longer see — and it also made the
@@ -2785,29 +3219,23 @@ export async function runAgentTurn(
           storeAssistantTurn(messages, raw, opts.reasoningField);
           const again = raw.trim() === lastInvalidRaw;
           lastInvalidRaw = raw.trim();
-          invalidStreak = again ? invalidStreak + 1 : 1;
+          // Every invalid call in a row counts, not only identical ones: a
+          // model rewriting a long edit comes out broken a different way each
+          // time, so an identity check never tripped and it kept paying for
+          // the whole call again, round after round.
+          invalidStreak++;
           if (invalidStreak >= 4) {
             cb.onFinal(
               lang === "zh"
-                ? "模型连续多次发出同一个无法解析的工具调用,已暂停以免空转。点「继续」重试,或提示它换一种写法(比如把命令拆开)。"
-                : 'The model kept re-issuing the same tool call that cannot be parsed — paused instead of spinning. Hit "Continue" to retry, or suggest another way to write it (split the command, say).',
+                ? "模型连续多次发出无法解析的工具调用,已暂停以免空转。点「继续」重试,或提示它换一种写法(比如把大改动拆成几次小的 edit_file)。"
+                : 'The model kept issuing tool calls that cannot be parsed — paused instead of spinning. Hit "Continue" to retry, or suggest another way to write it (split a big change into several small edit_file calls, say).',
               undefined,
               "steps",
             );
             return;
           }
-          // The same broken call twice: the plain note did not help, so say
-          // what usually breaks it and sample hotter, as the repeat breaker does.
-          if (again) hotNext = true;
-          pushUser(
-            again
-              ? lang === "zh"
-                ? '你又发出了和上次完全相同的无效调用。最常见的原因:参数字符串里有未转义的双引号(比如 echo "---")——在 JSON 字符串里要写成 \\",或改用单引号;命令太长也可以拆成几次调用。请换一种写法重新调用。'
-                : 'That is the same invalid call as last time. The usual cause is a bare double quote inside an argument string (echo "---", say) — inside a JSON string it must be written \\", or use single quotes; a long command can also be split into several calls. Re-issue it written differently.'
-              : lang === "zh"
-                ? '你上一个工具调用的格式无效。请严格用一行 <tool_call>{"name":"...","arguments":{...}}</tool_call> 重新调用。'
-                : 'Your last tool call was not valid. Re-issue it as exactly one line: <tool_call>{"name":"...","arguments":{...}}</tool_call>.',
-          );
+          if (again || invalidStreak >= 2) hotNext = true;
+          pushUser(describeInvalidCall(raw, invalidStreak, lang));
           continue;
         }
         // ── Plan-prose final breaker ── an "answer" that opens with
@@ -2830,8 +3258,8 @@ export async function runAgentTurn(
           messages.push({ role: "assistant", content: answer.slice(0, 300) });
           pushUser(
             lang === "zh"
-              ? "你刚输出的是计划/内心过程,不是给用户的答复。二选一并立即执行:① 直接发一行 <tool_call> 执行你计划的第一步;② 如果任务确实已完成,重新给出最终总结(说明做了什么、如何验证的),不要出现「让我/我需要/用户选择」这类过程性句子。"
-              : 'What you just wrote is planning/inner monologue, not an answer to the user. Do ONE of these right now: ① issue a single <tool_call> line executing the first step of that plan; ② if the task is genuinely complete, rewrite it as a final summary (what was done, how it was verified) with no process narration like "let me / I need to".',
+              ? "你刚输出的是计划/内心过程,不是给用户的答复。二选一并立即执行:① 直接发" + callTag(true) + " 执行你计划的第一步;② 如果任务确实已完成,重新给出最终总结(说明做了什么、如何验证的),不要出现「让我/我需要/用户选择」这类过程性句子。"
+              : 'What you just wrote is planning/inner monologue, not an answer to the user. Do ONE of these right now: ① issue ' + callTag(false) + ' executing the first step of that plan; ② if the task is genuinely complete, rewrite it as a final summary (what was done, how it was verified) with no process narration like "let me / I need to".',
           );
           cb.onThinking("");
           cb.onAssistantText("");
@@ -3012,7 +3440,11 @@ export async function runAgentTurn(
       // re-reads the system prompt with it. It also cost the model the thread
       // of its own work between steps. Compaction reclaims the oldest reasoning
       // if the window gets tight.
-      const withClose = raw.includes("</tool_call>") ? raw : `${raw}</tool_call>`;
+      const withClose = /<\|tool_call>|<\|tool_call_start\|>/.test(raw)
+        ? closeOpenCalls(raw)
+        : raw.includes("</tool_call>")
+          ? raw
+          : `${raw}</tool_call>`;
       // Verbatim, in whatever markup this model reasons in — normalizing it to
       // `<think>` would feed channel-style reasoners (Gemma 4) tags they never
       // saw in training, and only an exact copy of what was generated lets the
@@ -3024,9 +3456,9 @@ export async function runAgentTurn(
       // A thought left unclosed can swallow the tool call along with the
       // reasoning — the call must stay in history so the model sees what it
       // already did.
-      if (!turn.includes("<tool_call>"))
-        turn =
-          `${turn}\n<tool_call>${JSON.stringify({ name: call.name, arguments: call.args })}</tool_call>`.trim();
+      // In this turn's format: a native call followed by a JSON copy is what
+      // turned Gemma 4 to JSON after its first call.
+      if (callStart(turn) === -1) turn = `${turn}\n${renderCall(call.name, call.args)}`.trim();
       storeAssistantTurn(messages, turn, opts.reasoningField);
 
       const stepObj: ToolStep = { id: uid(), call, status: "running", thinking };
@@ -3224,8 +3656,8 @@ export async function runAgentTurn(
                   ? "调用被拦截:这个后台任务已经处理过了(上一次调用已终止它或它早已结束),不需要再杀。如果任务都收尾了,直接给出最终答复。"
                   : "Intercepted: that background job was already handled (the previous call killed it, or it had already finished) — no need to kill it again. If everything is wrapped up, give your final answer now."
               : lang === "zh"
-              ? "调用被拦截:这和上一步完全相同,结果不会变化。请换一种做法——传入具体的子目录/文件路径(如 list_dir {\"path\":\"src\"}、read_file \"src/app.ts\")、换个工具,或用 update_plan 重新梳理。提醒:没有持久的工作目录,cd 不会保留。"
-              : 'Intercepted: this call is identical to the previous one — the result cannot change. Do something different: pass a concrete subdirectory/file path (list_dir {"path":"src"}, read_file "src/app.ts"), use another tool, or re-plan with update_plan. Reminder: there is no persistent cwd.';
+              ? `调用被拦截:这和上一步完全相同,结果不会变化。请换一种做法——传入具体的子目录/文件路径(如 ${callExample("list_dir", '{"path":"src"}')}、${callExample("read_file", '{"path":"src/app.ts"}')})、换个工具,或用 update_plan 重新梳理。提醒:没有持久的工作目录,cd 不会保留。`
+              : `Intercepted: this call is identical to the previous one — the result cannot change. Do something different: pass a concrete subdirectory/file path (${callExample("list_dir", '{"path":"src"}')}, ${callExample("read_file", '{"path":"src/app.ts"}')}), use another tool, or re-plan with update_plan. Reminder: there is no persistent cwd.`;
         stepObj.status = "error";
         stepObj.result = note;
         cb.onStep(stepObj);
@@ -3560,8 +3992,8 @@ export async function runAgentTurn(
               pbxprojHintShown = true;
               resultText +=
                 lang === "zh"
-                  ? "\n\n[脚手架提醒] 你在手写 project.pbxproj——手搓的 Xcode 工程文件几乎必定格式损坏(xcodebuild 无法读取/文件引用错误)。从零开发 macOS 应用请改用 SwiftPM:先 `rm -rf` 刚写的 .xcodeproj 残骸,再用 Package.swift + Sources/ 布局,swift build 即可构建,打包配方见 use_skill {\"name\":\"mac-app\"}。仅当项目本来就带 Xcode 工程时才该编辑此文件。"
-                  : '\n\n[scaffold] You are hand-writing project.pbxproj — hand-made Xcode project files are almost always malformed (unreadable by xcodebuild, broken file refs). For a from-scratch macOS app use SwiftPM instead: `rm -rf` the .xcodeproj husk you just wrote, then Package.swift + Sources/, built with swift build; packaging recipe via use_skill {"name":"mac-app"}. Only edit this file when the project already ships an Xcode project.';
+                  ? "\n\n[脚手架提醒] 你在手写 project.pbxproj——手搓的 Xcode 工程文件几乎必定格式损坏(xcodebuild 无法读取/文件引用错误)。从零开发 macOS 应用请改用 SwiftPM:先 `rm -rf` 刚写的 .xcodeproj 残骸,再用 Package.swift + Sources/ 布局,swift build 即可构建,打包配方见 " + callExample("use_skill", '{"name":"mac-app"}') + "。仅当项目本来就带 Xcode 工程时才该编辑此文件。"
+                  : '\n\n[scaffold] You are hand-writing project.pbxproj — hand-made Xcode project files are almost always malformed (unreadable by xcodebuild, broken file refs). For a from-scratch macOS app use SwiftPM instead: `rm -rf` the .xcodeproj husk you just wrote, then Package.swift + Sources/, built with swift build; packaging recipe via ' + callExample("use_skill", '{"name":"mac-app"}') + '. Only edit this file when the project already ships an Xcode project.';
             }
             // A macOS-app delivery in progress? (SwiftUI @main entry, or an
             // electron manifest.) Arms the packaged-.app delivery check.
@@ -3598,8 +4030,8 @@ export async function runAgentTurn(
               // left to follow it.
               resultText +=
                 lang === "zh"
-                  ? '\n\n[技能提示] 检测到 macOS 应用开发任务。交付标准是能启动的 .app,不只是能编译的源码。现在调用 use_skill {"name":"mac-app"} 获取增量开发、打包 .app 和启动验证的完整配方。'
-                  : '\n\n[skill hint] macOS app task detected. The deliverable bar is a launchable .app, not just sources that compile. Call use_skill {"name":"mac-app"} now for the full recipe: incremental development, .app packaging, and launch verification.';
+                  ? '\n\n[技能提示] 检测到 macOS 应用开发任务。交付标准是能启动的 .app,不只是能编译的源码。现在调用 ' + callExample("use_skill", '{"name":"mac-app"}') + ' 获取增量开发、打包 .app 和启动验证的完整配方。'
+                  : '\n\n[skill hint] macOS app task detected. The deliverable bar is a launchable .app, not just sources that compile. Call ' + callExample("use_skill", '{"name":"mac-app"}') + ' now for the full recipe: incremental development, .app packaging, and launch verification.';
             }
           }
         }

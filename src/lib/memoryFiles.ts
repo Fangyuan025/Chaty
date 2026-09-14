@@ -12,6 +12,8 @@
 // workspace has memory enabled — a session without it keeps a byte-identical
 // prompt, enforced by the golden test, same trick as skills).
 
+import { callExample, callFormat } from "./callFormat";
+
 export const MEMORY_DIR = ".chaty/memory";
 export const MEMORY_INDEX = `${MEMORY_DIR}/MEMORY.md`;
 /** Index budget in chars — the prompt tax must stay flat no matter how much
@@ -92,6 +94,11 @@ export async function sessionMemoryIndex(
 /** Persist one fact: write the file, then upsert its index line. Returns the
  *  model-facing confirmation. Titles are upserted, not duplicated — calling
  *  remember twice with the same title updates the fact in place. */
+/** The example in the missing-argument error, in the turn's call format. */
+function rememberExample(json: string): string {
+  return callFormat() === "json" ? json : callExample("remember", json);
+}
+
 export async function rememberFact(
   fs: MemoryFs,
   title: string,
@@ -102,8 +109,8 @@ export async function rememberFact(
   const body = fact.trim();
   if (!t || !body) {
     return lang === "zh"
-      ? 'ERROR: 需要 "title" 和 "fact" 两个参数,例如 {"title":"构建规矩","fact":"发版前必须跑 scripts/gate.sh"}'
-      : 'ERROR: both "title" and "fact" are required, e.g. {"title":"build rule","fact":"run scripts/gate.sh before any release"}';
+      ? `ERROR: 需要 "title" 和 "fact" 两个参数,例如 ${rememberExample('{"title":"构建规矩","fact":"发版前必须跑 scripts/gate.sh"}')}`
+      : `ERROR: both "title" and "fact" are required, e.g. ${rememberExample('{"title":"build rule","fact":"run scripts/gate.sh before any release"}')}`;
   }
   const file = `${slugify(t)}.md`;
   const hook = body.replace(/\s+/g, " ").slice(0, 90);

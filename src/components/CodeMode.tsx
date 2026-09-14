@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ImagePreview } from "./ImagePreview";
+import { resolveToolFormat, type CallFormat } from "../lib/callFormat";
 import { open } from "@tauri-apps/plugin-dialog";
 import { agentLang, useI18n } from "../lib/i18n";
 import { watchContentHeight } from "../lib/autoGrow";
@@ -513,6 +514,8 @@ export function CodeMode({
   temperature,
   thinkBudget = 0,
   maxGenTokens = 0,
+  toolFormat = "auto",
+  toolFallback = "xml",
   autoApproveEdits = false,
   autoRunReadOnly = true,
   skills = [],
@@ -539,6 +542,11 @@ export function CodeMode({
   thinkBudget?: number;
   /** Per-round generation budget in tokens, 0 = auto (Settings → Code). */
   maxGenTokens?: number;
+  /** How the model writes tool calls: "auto" = its template's own format
+   *  (Settings → Code). */
+  toolFormat?: "auto" | CallFormat;
+  /** The format for a model whose template names none (Settings → Code). */
+  toolFallback?: "xml" | "json";
   /** Auto-approve file edits — write/edit/multi_edit run without asking
    *  (Settings → Code; checkpoints still allow rollback). */
   autoApproveEdits?: boolean;
@@ -1461,6 +1469,9 @@ export function CodeMode({
       ragTopK,
       toolRole: model.toolRole ?? false,
       reasoningField: model.reasoningField ?? false,
+      // The format this model was trained to write calls in (its template
+      // says which); a family whose template names none gets the fallback.
+      toolFormat: resolveToolFormat(toolFormat, model.toolFormat, toolFallback),
       // No vision encoder → still expose the browser suite, minus the two
       // screenshot tools: browser_read's digest is the model's eyes.
       // (ChatyWeb-Bench: 22/23 web tasks on a text-only 35B-A3B in this mode.)

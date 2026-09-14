@@ -713,6 +713,9 @@ impl LlamaEngine {
         .to_lowercase();
         let template = model.meta_val_str("tokenizer.chat_template").ok();
         let template_lc = template.as_deref().unwrap_or("").to_lowercase();
+        // How this model was trained to write a tool call — the agent teaches
+        // it that format rather than one line of JSON for everyone.
+        let tool_format = template.as_deref().and_then(super::native_tool_format).map(str::to_string);
 
         let supports_tools = template_lc.contains("tool");
         // Qwen3.5/3.6 (arch "qwen35*"/"qwen36*") use the <think> paradigm with
@@ -820,6 +823,7 @@ impl LlamaEngine {
             effort_levels,
             tool_role,
             reasoning_field,
+            tool_format,
             supports_tools,
             multimodal,
             vision_ready,
@@ -1433,6 +1437,31 @@ fn run_turn(
 
     if media_turn {
         let mtmd = mtmd.expect("media_turn implies mtmd");
+        // Entering the media regime with the token cache warm. The first
+        // picture in a conversation — a chat that talked first, a code turn's
+        // first screenshot — used to throw the whole KV away, and a hybrid
+        // model (Qwen3.5) cannot keep part of it: every turn so far was re-read
+        // along with the image, every time. What the token cache holds is text
+        // the new prompt may well begin with; when it does, that is a complete
+        // media ledger with no image in it yet, and the media prefill below
+        // evaluates only the tail. The text regime adds a BOS the media tail
+        // never will, so it counts as a position but not as prompt text.
+        if media_cache.is_none() && !cached.is_empty() {
+            let skip = usize::from(cached[0] == model.token_bos());
+            let held: Vec<u8> = cached[skip..].iter().flat_map(|&t| piece_bytes(model, t)).collect();
+            if let Ok(held) = String::from_utf8(held) {
+                if !held.is_empty() && prompt.len() > held.len() && prompt.starts_with(held.as_str()) {
+                    *media_cache = Some(MediaCache {
+                        prompt: held,
+                        image_keys: Vec::new(),
+                        n_past: cached.len() as i32,
+                        body: String::new(),
+                        n_past_body: 0,
+                        complete: true,
+                    });
+                }
+            }
+        }
         // The token-prefix cache can't describe media chunks; it is empty
         // while a conversation is in the media regime (and vice versa).
         cached.clear();
@@ -4883,6 +4912,96 @@ mod vision_e2e {
         }
     }
 
+    /// The first picture in a conversation that has been talking. Moving from
+    /// the token cache to the media cache threw the KV away, and a hybrid model
+    /// (Qwen3.5) cannot keep part of one: the turn the picture arrived re-read
+    /// every earlier turn along with it (owner report, 0% reused). That turn
+    /// must pick up where the text left off.
+    #[test]
+    #[ignore]
+    fn the_first_image_after_text_keeps_the_text_prefix() {
+        let model_path = match std::env::var("CHATY_TEST_VLM") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("SKIP: set CHATY_TEST_VLM=/path/to/vlm.gguf (mmproj beside it)");
+                return;
+            }
+        };
+        let mmproj = find_mmproj(&model_path).expect("no mmproj found next to the test VLM");
+        let backend = llama_backend().unwrap();
+        let mparams = LlamaModelParams::default().with_n_gpu_layers(999);
+        let model = LlamaModel::load_from_file(backend, &model_path, &mparams).expect("load model");
+        let n_ctx = 4096u32;
+        let nt = crate::gpu::cpu_worker_threads() as i32;
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_threads(nt)
+            .with_n_threads_batch(nt);
+        let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
+        let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
+        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params)
+            .expect("mtmd init");
+        let img_path = std::env::temp_dir().join(format!("chaty-vision-after-text-{}.png", std::process::id()));
+        image::RgbImage::from_pixel(224, 224, image::Rgb([214, 30, 30]))
+            .save(&img_path)
+            .expect("write test image");
+
+        struct Stats {
+            buf: RefCell<String>,
+            reused: std::cell::Cell<u32>,
+            prompt: std::cell::Cell<u32>,
+        }
+        impl EventSink for Stats {
+            fn emit(&self, ev: StreamEvent) -> Result<()> {
+                match ev {
+                    StreamEvent::Token { text } => self.buf.borrow_mut().push_str(&text),
+                    StreamEvent::Done { stats } => {
+                        self.reused.set(stats.reused);
+                        self.prompt.set(stats.prompt_tokens);
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }
+        }
+        let mut cached: Vec<LlamaToken> = Vec::new();
+        let mut media_cache: Option<MediaCache> = None;
+        let mut ask = |messages: Vec<ChatMessage>| -> (String, u32, u32) {
+            let req = GenRequest {
+                messages,
+                params: GenParams { temperature: 0.1, max_tokens: 48, think: Some(false), ..Default::default() },
+            };
+            let sink = Stats { buf: RefCell::new(String::new()), reused: Default::default(), prompt: Default::default() };
+            let cancel = AtomicBool::new(false);
+            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel)
+                .expect("run_turn");
+            (sink.buf.into_inner(), sink.reused.get(), sink.prompt.get())
+        };
+
+        let q1 = ChatMessage {
+            images: Vec::new(),
+            role: Role::User,
+            content: "Name the three primary colours of light, in one short sentence.".into(),
+            reasoning_content: None,
+        };
+        let (a1, _, _) = ask(vec![q1.clone()]);
+        let messages = vec![
+            q1,
+            ChatMessage { images: Vec::new(), role: Role::Assistant, content: a1, reasoning_content: None },
+            ChatMessage {
+                images: vec![img_path.to_string_lossy().to_string()],
+                role: Role::User,
+                content: "What is the dominant color of this image? Answer with one English word.".into(),
+                reasoning_content: None,
+            },
+        ];
+        let (a2, reused, prompt) = ask(messages);
+        eprintln!("image turn after text: reused={reused} of {prompt} — {a2}");
+        std::fs::remove_file(&img_path).ok();
+        assert!(a2.to_lowercase().contains("red"), "the model must still see the image: {a2}");
+        assert!(reused > 0, "the text before the image must be kept, not re-read (reused={reused} of {prompt})");
+    }
+
     #[test]
     #[ignore]
     fn vision_sees_image_and_reuses_media_cache() {
@@ -5275,7 +5394,7 @@ mod browser_task_probe {
             let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
             let (result, image): (String, Option<String>) = match name.as_str() {
                 "browser_navigate" => (crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
-                "browser_read" => (crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_read" => (crate::browser::read_page(None).unwrap_or_else(|e| format!("ERROR: {e}")), None),
                 "browser_click" => (crate::browser::click(g("selector"), g("text")).unwrap_or_else(|e| format!("ERROR: {e}")), None),
                 "browser_type" => (crate::browser::type_text(g("selector"), g("label"), g("text").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
                 "browser_screenshot" => {
@@ -5448,7 +5567,7 @@ mod browser_tasks_e2e {
             let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
             let (result, image): (String, Option<String>) = match tname.as_str() {
                 "browser_navigate" => (crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
-                "browser_read" => (crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_read" => (crate::browser::read_page(None).unwrap_or_else(|e| format!("ERROR: {e}")), None),
                 "browser_console" => (crate::browser::console().unwrap_or_else(|e| format!("ERROR: {e}")), None),
                 "browser_click" => (crate::browser::click(g("selector"), g("text")).unwrap_or_else(|e| format!("ERROR: {e}")), None),
                 "browser_type" => (crate::browser::type_text(g("selector"), g("label"), g("text").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
@@ -6185,7 +6304,7 @@ pw.addEventListener("input",render);render();
             steps.push(name.clone());
             let result = match name.as_str() {
                 "browser_navigate" => crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")),
-                "browser_read" => crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")),
+                "browser_read" => crate::browser::read_page(None).unwrap_or_else(|e| format!("ERROR: {e}")),
                 "browser_type" => crate::browser::type_text(g("selector"), g("label"), g("text").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")),
                 other => format!("未知工具 {other}"),
             };
@@ -6345,7 +6464,7 @@ document.getElementById("submit").addEventListener("click",function(){
             let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
             let result = match name.as_str() {
                 "browser_navigate" => crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")),
-                "browser_read" => crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")),
+                "browser_read" => crate::browser::read_page(None).unwrap_or_else(|e| format!("ERROR: {e}")),
                 "browser_scroll" => crate::browser::scroll_page(g("to"), args.get("by").and_then(|v| v.as_f64())).unwrap_or_else(|e| format!("ERROR: {e}")),
                 "browser_type" => {
                     type_calls += 1;
@@ -6529,7 +6648,7 @@ mod visual_verify_e2e {
             let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
             let (result, image): (String, Option<String>) = match name.as_str() {
                 "browser_navigate" => (crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
-                "browser_read" => (crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_read" => (crate::browser::read_page(None).unwrap_or_else(|e| format!("ERROR: {e}")), None),
                 "browser_snapshot" | "browser_screenshot" => {
                     let png = if name == "browser_snapshot" { crate::browser::snapshot() } else { crate::browser::screenshot() };
                     match png {
@@ -6687,7 +6806,7 @@ document.getElementById("check").addEventListener("click",function(){
             let g = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
             let (result, image): (String, Option<String>) = match name.as_str() {
                 "browser_navigate" => (crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
-                "browser_read" => (crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_read" => (crate::browser::read_page(None).unwrap_or_else(|e| format!("ERROR: {e}")), None),
                 "browser_click" => {
                     if let Some(arr) = args.get("steps").and_then(|v| v.as_array()) {
                         let s: Vec<(Option<String>,Option<String>)> = arr.iter().map(|x| (x.get("selector").and_then(|v|v.as_str()).map(String::from), x.get("text").and_then(|v|v.as_str()).map(String::from))).collect();
@@ -6828,7 +6947,7 @@ mod real_scenarios_e2e {
             let type_steps = || args.get("steps").and_then(|v| v.as_array()).map(|arr| arr.iter().map(|x| (x.get("selector").and_then(|v|v.as_str()).map(String::from), x.get("label").and_then(|v|v.as_str()).map(String::from), x.get("text").and_then(|v|v.as_str()).unwrap_or_default().to_string())).collect::<Vec<_>>());
             let (result, image): (String, Option<String>) = match tname.as_str() {
                 "browser_navigate" => (crate::browser::navigate(&g("url").unwrap_or_default()).unwrap_or_else(|e| format!("ERROR: {e}")), None),
-                "browser_read" => (crate::browser::read_page().unwrap_or_else(|e| format!("ERROR: {e}")), None),
+                "browser_read" => (crate::browser::read_page(None).unwrap_or_else(|e| format!("ERROR: {e}")), None),
                 "browser_console" => (crate::browser::console().unwrap_or_else(|e| format!("ERROR: {e}")), None),
                 "browser_scroll" => (crate::browser::scroll_page(g("to"), args.get("by").and_then(|v|v.as_f64())).unwrap_or_else(|e| format!("ERROR: {e}")), None),
                 "browser_click" => (if let Some(s)=click_steps(){crate::browser::click_seq(s)}else{crate::browser::click(g("selector"),g("text"))}.unwrap_or_else(|e| format!("ERROR: {e}")), None),

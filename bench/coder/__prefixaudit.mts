@@ -200,6 +200,10 @@ for (let t = 1; t <= TURNS; t++) {
     "zh",
     {
       thinkMode: "normal",
+      // TOOLFORMAT: auto (the model's own template, as the app picks it) | xml | json | gemma | lfm
+      toolFormat: ((f: string) => (f === "auto" ? ((info as { toolFormat?: string }).toolFormat ?? "xml") : f))(
+        process.env.TOOLFORMAT ?? "auto",
+      ) as never,
       supportsThinking: !!info.supportsThinking,
       thinkSwitch: !!info.thinkSwitch,
       toolRole: !!info.toolRole,

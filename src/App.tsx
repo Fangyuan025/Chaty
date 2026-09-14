@@ -2873,6 +2873,8 @@ export default function App() {
         temperature={settings.codeTemperature}
         thinkBudget={settings.codeThinkBudget}
         maxGenTokens={settings.codeMaxTokens}
+        toolFormat={settings.codeToolFormat}
+        toolFallback={settings.codeToolFallback}
         autoApproveEdits={settings.codeAutoApproveEdits}
         autoRunReadOnly={settings.codeAutoRunReadOnly}
         skills={settings.codeSkills}

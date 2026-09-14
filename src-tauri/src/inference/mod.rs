@@ -193,6 +193,12 @@ pub struct ModelInfo {
     /// `reasoning_content` field rather than splitting it out of the content.
     #[serde(default)]
     pub reasoning_field: bool,
+    /// The tool-call format the chat template teaches its model, read from the
+    /// template at load (see `native_tool_format`): "xml", "json", "gemma" or
+    /// "lfm". None ⇒ the template names none; the agent uses the fallback the
+    /// user picked.
+    #[serde(default)]
+    pub tool_format: Option<String>,
     /// Best-effort: the chat template supports tool / function calling.
     pub supports_tools: bool,
     /// Best-effort: the model appears to be multimodal (vision).
@@ -222,6 +228,67 @@ pub struct ModelInfo {
     /// Non-fatal load warning code for the UI (e.g. "gpu-oom" when the GPU
     /// offload had to be reduced to fit memory). `None` on a clean load.
     pub warning: Option<String>,
+}
+
+/// Which tool-call format a chat template teaches its model. The template is
+/// how the model was trained to write a call; a guess from its name is not.
+/// Most specific first — a Qwen3.5 template mentions `<tool_call>` too.
+///  - "gemma": Gemma 4, `<|tool_call>call:name{key:<|"|>text<|"|>}<tool_call|>`
+///  - "lfm":   LFM2, `<|tool_call_start|>[name(key='v')]<|tool_call_end|>`
+///  - "xml":   Qwen3.5/3.6/3.8, `<tool_call>\n<function=name>\n<parameter=key>\n…`
+///  - "json":  Hermes, `<tool_call>{"name": …, "arguments": {…}}</tool_call>`
+///    (Qwen2.5/Qwen3, QwQ)
+pub fn native_tool_format(template: &str) -> Option<&'static str> {
+    if template.contains("<|tool_call>") {
+        Some("gemma")
+    } else if template.contains("<|tool_call_start|>") {
+        Some("lfm")
+    } else if template.contains("<function=") && template.contains("<parameter=") {
+        Some("xml")
+    } else if template.contains("<tool_call>") {
+        Some("json")
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tool_format_tests {
+    use super::native_tool_format;
+
+    /// Fragments of the real templates each family ships.
+    #[test]
+    fn each_family_template_names_its_own_format() {
+        let qwen35 = "{{- '\\n<tool_call>\\n<function=' + tool_call.name + '>\\n' }}{{- '<parameter=' + args_name + '>\\n' }}";
+        let qwen3 = "{{- '<tool_call>\\n{\"name\": \"' }}{{- tool_call.name }}{{- '\", \"arguments\": ' }}{{- tool_call.arguments | tojson }}";
+        let gemma4 = "{{- '<|tool_call>call:' + function['name'] + '{' -}}";
+        let lfm = "<|tool_call_start|>[{{ tool_call.name }}(...)]<|tool_call_end|>";
+        assert_eq!(native_tool_format(qwen35), Some("xml"));
+        assert_eq!(native_tool_format(qwen3), Some("json"));
+        assert_eq!(native_tool_format(gemma4), Some("gemma"));
+        assert_eq!(native_tool_format(lfm), Some("lfm"));
+        assert_eq!(native_tool_format("{% for m in messages %}{{ m.content }}{% endfor %}"), None);
+    }
+
+    /// An MLX folder's template: chat_template.jinja, or the tokenizer config's
+    /// chat_template — a string, or a list of named ones (read together).
+    #[test]
+    fn an_mlx_folder_template_is_found_in_either_place() {
+        use super::mlx::mlx_chat_template;
+        let dir = std::env::temp_dir().join(format!("chaty-mlx-template-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(mlx_chat_template(&dir), None);
+        std::fs::write(
+            dir.join("tokenizer_config.json"),
+            r#"{"chat_template":[{"name":"default","template":"plain"},{"name":"tool_use","template":"<tool_call>{{ x | tojson }}</tool_call>"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(mlx_chat_template(&dir).as_deref().and_then(native_tool_format), Some("json"));
+        std::fs::write(dir.join("chat_template.jinja"), "<|tool_call>call:{{ name }}").unwrap();
+        assert_eq!(mlx_chat_template(&dir).as_deref().and_then(native_tool_format), Some("gemma"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[async_trait]

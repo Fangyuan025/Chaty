@@ -11,6 +11,8 @@ interface TodoLike {
   status: string; // "pending" | "in_progress" | "done"
 }
 
+import { callExample, renderCall } from "./callFormat";
+
 export interface WrapupState {
   /** The turn's current plan (empty when the model never made one). */
   plan: TodoLike[];
@@ -130,7 +132,7 @@ export function planEcho(todos: TodoLike[], lang: "zh" | "en"): string {
   const first = todos.find((t) => t.status !== "done");
   const kick =
     done === 0 && first
-      ? `<tool_call>{"name":"bash","arguments":{"command":"mkdir -p <项目目录>"}}</tool_call>`
+      ? renderCall("bash", { command: "mkdir -p <项目目录>" })
       : "";
   if (lang === "zh") {
     let s = `计划已更新(已记录,无需重发):${done}/${todos.length} 完成`;
@@ -235,8 +237,8 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
   if (st.functionalUnverified) {
     notes.push(
       zh
-        ? `- 编译通过/能启动只是及格线:这次交付还没有任何一条基本功能被真正执行过——没有跑测试,没有用真实输入实跑程序,也没有浏览器走查。逐条执行核心功能并留证:核心逻辑测试(swift test / pytest / cargo test / npm test)、CLI 真实输入实跑、curl 探每个接口、或浏览器点一遍每个功能;方法参考 use_skill {"name":"debug-playbook"}。全部跑通再交付,答复里写明每条功能各自的验证方式。`
-        : `- Compiling and launching is the entry ticket, not the bar: not one basic function of this delivery has actually been EXECUTED — no test run, no real-input invocation, no browser walkthrough. Exercise each core function and keep the proof: core-logic tests (swift test / pytest / cargo test / npm test), real CLI runs, curl on every endpoint, or a browser click-through of every feature; see use_skill {"name":"debug-playbook"}. Deliver only when they all pass, and name each function's proof in your answer.`,
+        ? `- 编译通过/能启动只是及格线:这次交付还没有任何一条基本功能被真正执行过——没有跑测试,没有用真实输入实跑程序,也没有浏览器走查。逐条执行核心功能并留证:核心逻辑测试(swift test / pytest / cargo test / npm test)、CLI 真实输入实跑、curl 探每个接口、或浏览器点一遍每个功能;方法参考 ${callExample("use_skill", '{"name":"debug-playbook"}')}。全部跑通再交付,答复里写明每条功能各自的验证方式。`
+        : `- Compiling and launching is the entry ticket, not the bar: not one basic function of this delivery has actually been EXECUTED — no test run, no real-input invocation, no browser walkthrough. Exercise each core function and keep the proof: core-logic tests (swift test / pytest / cargo test / npm test), real CLI runs, curl on every endpoint, or a browser click-through of every feature; see ${callExample("use_skill", '{"name":"debug-playbook"}')}. Deliver only when they all pass, and name each function's proof in your answer.`,
     );
   }
   if (st.macAppStaleBundle) {
@@ -252,8 +254,8 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
   if (st.macAppMissingBundle) {
     notes.push(
       zh
-        ? `- 这是 macOS 应用任务:交付物是打包好的 .app 且启动验证过,但工作区里没有任何 .app(找不到 */Contents/MacOS)。构建 → 组装 .app → 启动确认存活(打印 LAUNCH OK)→ 再交付。完整配方:use_skill {"name":"mac-app"}。`
-        : `- This is a macOS app task: the deliverable is a packaged .app you have launch-verified, but the workspace has no .app bundle (no */Contents/MacOS). Build → assemble the .app → launch it and confirm it stays alive (LAUNCH OK) → then deliver. Full recipe: use_skill {"name":"mac-app"}.`,
+        ? `- 这是 macOS 应用任务:交付物是打包好的 .app 且启动验证过,但工作区里没有任何 .app(找不到 */Contents/MacOS)。构建 → 组装 .app → 启动确认存活(打印 LAUNCH OK)→ 再交付。完整配方:${callExample("use_skill", '{"name":"mac-app"}')}。`
+        : `- This is a macOS app task: the deliverable is a packaged .app you have launch-verified, but the workspace has no .app bundle (no */Contents/MacOS). Build → assemble the .app → launch it and confirm it stays alive (LAUNCH OK) → then deliver. Full recipe: ${callExample("use_skill", '{"name":"mac-app"}')}.`,
     );
   }
 

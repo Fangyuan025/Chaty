@@ -8,6 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { registerTool, unregisterTool, type ToolSpec } from "./toolRegistry";
+import { callFormat } from "./callFormat";
 
 export interface McpTransportCfg {
   transport: "stdio" | "http";
@@ -93,10 +94,17 @@ export function leanDocLine(toolName: string, info: McpToolInfo): { zh: string; 
  *  Returned as the correction when the model calls an indexed-but-unloaded
  *  tool wrong — the same missing-arg recovery pattern natives already use. */
 export function fullDoc(toolName: string, info: McpToolInfo): string {
-  return (
-    `${toolName}: ${info.description.trim() || "(no description)"}\n` +
-    `args schema: ${JSON.stringify(info.input_schema)}`
-  );
+  const head = `${toolName}: ${info.description.trim() || "(no description)"}\n`;
+  if (callFormat() === "json") return head + `args schema: ${JSON.stringify(info.input_schema)}`;
+  // A JSON schema is a JSON object in a turn that teaches another format:
+  // list the arguments instead.
+  const s = info.input_schema as JsonSchemaish;
+  const required = new Set(s.required ?? []);
+  const lines = Object.entries(s.properties ?? {}).map(([key, p]) => {
+    const t = Array.isArray(p.type) ? p.type.join("|") : (p.type ?? "any");
+    return `- ${key}${required.has(key) ? "" : "?"}: ${t}${p.description ? ` — ${p.description}` : ""}`;
+  });
+  return head + `args:\n${lines.join("\n") || "(none)"}`;
 }
 
 // ── Registration & dispatch ──────────────────────────────────────────────────

@@ -103,8 +103,8 @@ export const DOC_LINES: Record<string, Bi> = {
     en: "- browser_navigate: open a URL (or local file / dev server). Returns title + page text + interactive elements. args: { \"url\": string }",
   },
   browser_read: {
-    zh: "- browser_read: 读当前页全部可见文字+元素清单(含输入框当前值)。要\"内容/文字/状态\"时用它。args: {}",
-    en: "- browser_read: all visible text of the current page + element list (incl. current input values). Use for content/text/state. args: {}",
+    zh: "- browser_read: 读当前页全部可见文字+元素清单(含输入框当前值);给 selector 则只读匹配的元素。args: { \"selector\"? }",
+    en: "- browser_read: all visible text of the current page + element list (incl. current input values); a selector reads only its matches. args: { \"selector\"? }",
   },
   browser_screenshot: {
     zh: "- browser_screenshot: 整页截图(长页自动分段,较重)。首次全局查看用它;之后复查用 browser_snapshot。args: {}",

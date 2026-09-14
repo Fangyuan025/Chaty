@@ -63,10 +63,13 @@ describe("the same broken tool call, over and over", () => {
     expect(temps[2]).toBeGreaterThanOrEqual(0.7);
   });
 
-  it("a different broken call does not count toward the pause", async () => {
-    // Two distinct broken calls alternating never repeat back to back.
+  it("a call broken a different way each time counts too", async () => {
+    // The owner's report: a long edit rewritten after every rejection, broken
+    // differently each time, so an identity check never tripped and whole
+    // rounds went on the same call. Four invalid calls in a row pause the turn.
     const other = BROKEN.replace("largest", "total");
-    const { temps } = await run((n) => (n <= 8 ? (n % 2 ? BROKEN : other) : "Done."));
-    expect(temps.length).toBe(9);
+    const { temps, final } = await run((n) => (n <= 8 ? (n % 2 ? BROKEN : other) : "Done."));
+    expect(temps.length).toBe(4);
+    expect(final?.reason).toBe("steps");
   });
 });

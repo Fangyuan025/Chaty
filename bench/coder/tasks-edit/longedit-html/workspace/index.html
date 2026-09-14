@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Market notebook</title>
+<style>
+:root {
+  --ink: #1f2a33;
+  --paper: #f7f3ea;
+  --accent: #b5412c;
+  --muted: #7a8288;
+}
+
+body {
+  margin: 0;
+  font-family: Georgia, serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.panel-1 {
+  padding: 9px 13px;
+  border-left: 2px solid var(--muted);
+  margin: 5px 0;
+}
+
+.panel-1 h2 {
+  font-size: 1.05rem;
+  color: var(--accent);
+}
+
+.panel-2 {
+  padding: 10px 14px;
+  border-left: 3px solid var(--muted);
+  margin: 6px 0;
+}
+
+.panel-2 h2 {
+  font-size: 1.10rem;
+  color: var(--accent);
+}
+
+.panel-3 {
+  padding: 11px 15px;
+  border-left: 1px solid var(--muted);
+  margin: 7px 0;
+}
+
+.panel-3 h2 {
+  font-size: 1.15rem;
+  color: var(--accent);
+}
+
+.panel-4 {
+  padding: 12px 16px;
+  border-left: 2px solid var(--muted);
+  margin: 8px 0;
+}
+
+.panel-4 h2 {
+  font-size: 1.20rem;
+  color: var(--accent);
+}
+
+.panel-5 {
+  padding: 13px 17px;
+  border-left: 3px solid var(--muted);
+  margin: 9px 0;
+}
+
+.panel-5 h2 {
+  font-size: 1.25rem;
+  color: var(--accent);
+}
+
+.panel-6 {
+  padding: 14px 18px;
+  border-left: 1px solid var(--muted);
+  margin: 10px 0;
+}
+
+.panel-6 h2 {
+  font-size: 1.30rem;
+  color: var(--accent);
+}
+
+.panel-7 {
+  padding: 15px 19px;
+  border-left: 2px solid var(--muted);
+  margin: 11px 0;
+}
+
+.panel-7 h2 {
+  font-size: 1.35rem;
+  color: var(--accent);
+}
+
+.panel-8 {
+  padding: 16px 20px;
+  border-left: 3px solid var(--muted);
+  margin: 12px 0;
+}
+
+.panel-8 h2 {
+  font-size: 1.40rem;
+  color: var(--accent);
+}
+
+.panel-9 {
+  padding: 17px 21px;
+  border-left: 1px solid var(--muted);
+  margin: 13px 0;
+}
+
+.panel-9 h2 {
+  font-size: 1.45rem;
+  color: var(--accent);
+}
+
+.panel-10 {
+  padding: 18px 22px;
+  border-left: 2px solid var(--muted);
+  margin: 14px 0;
+}
+
+.panel-10 h2 {
+  font-size: 1.50rem;
+  color: var(--accent);
+}
+
+.panel-11 {
+  padding: 19px 23px;
+  border-left: 3px solid var(--muted);
+  margin: 15px 0;
+}
+
+.panel-11 h2 {
+  font-size: 1.55rem;
+  color: var(--accent);
+}
+
+.panel-12 {
+  padding: 20px 24px;
+  border-left: 1px solid var(--muted);
+  margin: 16px 0;
+}
+
+.panel-12 h2 {
+  font-size: 1.60rem;
+  color: var(--accent);
+}
+
+.card-note {
+  font-size: 0.85rem;
+  color: var(--muted);
+  border-top: 1px dashed var(--muted);
+}
+
+</style>
+</head>
+<body>
+  <header><h1>Market notebook</h1><p>Visits: <span id="visits">0</span></p></header>
+
+  <section class="panel-1" id="s1">
+    <h2>Chapter 1</h2>
+    <p>Notes for chapter 1. The stand opens at 7 and closes at 18.</p>
+  </section>
+
+  <section class="panel-2" id="s2">
+    <h2>Chapter 2</h2>
+    <p>Notes for chapter 2. The stand opens at 8 and closes at 19.</p>
+    <p class="card-note">Remember chapter 2 on market day.</p>
+  </section>
+
+  <section class="panel-3" id="s3">
+    <h2>Chapter 3</h2>
+    <p>Notes for chapter 3. The stand opens at 9 and closes at 17.</p>
+  </section>
+
+  <section class="panel-4" id="s4">
+    <h2>Chapter 4</h2>
+    <p>Notes for chapter 4. The stand opens at 6 and closes at 18.</p>
+  </section>
+
+  <section class="panel-5" id="s5">
+    <h2>Chapter 5</h2>
+    <p>Notes for chapter 5. The stand opens at 7 and closes at 19.</p>
+    <p class="card-note">Remember chapter 5 on market day.</p>
+  </section>
+
+  <section class="panel-6" id="s6">
+    <h2>Chapter 6</h2>
+    <p>Notes for chapter 6. The stand opens at 8 and closes at 17.</p>
+  </section>
+
+  <section class="panel-7" id="s7">
+    <h2>Chapter 7</h2>
+    <p>Notes for chapter 7. The stand opens at 9 and closes at 18.</p>
+  </section>
+
+  <section class="panel-8" id="s8">
+    <h2>Chapter 8</h2>
+    <p>Notes for chapter 8. The stand opens at 6 and closes at 19.</p>
+    <p class="card-note">Remember chapter 8 on market day.</p>
+  </section>
+
+  <section class="panel-9" id="s9">
+    <h2>Chapter 9</h2>
+    <p>Notes for chapter 9. The stand opens at 7 and closes at 17.</p>
+  </section>
+
+  <section class="panel-10" id="s10">
+    <h2>Chapter 10</h2>
+    <p>Notes for chapter 10. The stand opens at 8 and closes at 18.</p>
+  </section>
+
+  <section class="panel-11" id="s11">
+    <h2>Chapter 11</h2>
+    <p>Notes for chapter 11. The stand opens at 9 and closes at 19.</p>
+    <p class="card-note">Remember chapter 11 on market day.</p>
+  </section>
+
+  <section class="panel-12" id="s12">
+    <h2>Chapter 12</h2>
+    <p>Notes for chapter 12. The stand opens at 6 and closes at 17.</p>
+  </section>
+
+<script>
+  // Visit counter: how many times this page was opened.
+  function bumpVisits(store) {
+    const n = Number(store.getItem("visits") || 0);
+    store.setItem("visits", String(n));
+    return n;
+  }
+
+  function renderVisits() {
+    const n = bumpVisits(window.localStorage);
+    document.getElementById("visits").textContent = n;
+  }
+  window.addEventListener("load", renderVisits);
+</script>
+</body>
+</html>

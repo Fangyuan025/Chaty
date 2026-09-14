@@ -41,7 +41,7 @@ enum BrowserCmd {
     Key { keys: Vec<String>, selector: Option<String>, label: Option<String>, reply: Sender<Result<String, String>> },
     Console { reply: Sender<Result<String, String>> },
     Refresh { reply: Sender<Result<String, String>> },
-    Read { reply: Sender<Result<String, String>> },
+    Read { selector: Option<String>, reply: Sender<Result<String, String>> },
     Close(Sender<()>),
 }
 
@@ -834,8 +834,11 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
             BrowserCmd::Console { reply } => {
                 let _ = reply.send(run(&mut session, headless, |s| Ok(s.drain_console())));
             }
-            BrowserCmd::Read { reply } => {
-                let r = run(&mut session, headless, |s| s.rich_digest(12000));
+            BrowserCmd::Read { selector, reply } => {
+                let r = match selector.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    Some(sel) => run(&mut session, headless, |s| s.read_selector(sel)),
+                    None => run(&mut session, headless, |s| s.rich_digest(12000)),
+                };
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Close(done) => {
@@ -1488,6 +1491,71 @@ impl BrowserSession {
     /// selectors.
     fn digest(&mut self) -> Result<String, String> {
         self.eval(&digest_js())
+    }
+
+    /// The elements a CSS selector matches — how many, and each one's own text
+    /// and markup — for checking one element instead of reading the page.
+    /// browser_read used to drop the selector and return the whole page, so a
+    /// model checking `.card-note` got the same page text round after round
+    /// and never learned whether the element was there.
+    fn read_selector(&mut self, sel: &str) -> Result<String, String> {
+        const SHOWN: usize = 20;
+        let js = format!(
+            r#"(function(){{
+                var list;
+                try{{ list=document.querySelectorAll({sel}); }}
+                catch(e){{ return JSON.stringify({{bad:String((e&&e.message)||e)}}); }}
+                var items=[];
+                for(var i=0;i<list.length&&i<{shown};i++){{
+                    var el=list[i], r=el.getBoundingClientRect(), cs=getComputedStyle(el);
+                    var text=(el.innerText||el.textContent||'').trim();
+                    var html=el.outerHTML||'';
+                    items.push({{
+                        visible:r.width>0&&r.height>0&&cs.visibility!=='hidden'&&cs.display!=='none',
+                        text:text.length>600?text.slice(0,600)+'…':text,
+                        html:html.length>500?html.slice(0,500)+'…':html
+                    }});
+                }}
+                return JSON.stringify({{n:list.length,items:items}});
+            }})()"#,
+            sel = json!(sel),
+            shown = SHOWN,
+        );
+        let raw = self.eval(&js)?;
+        let v: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| trf!("读取选择器结果失败: {e}", "could not read the selector result: {e}"))?;
+        if let Some(bad) = v.get("bad").and_then(|b| b.as_str()) {
+            return Err(trf!("`{}` 不是有效的 CSS 选择器: {}", "`{}` is not a valid CSS selector: {}", sel, bad));
+        }
+        let n = v.get("n").and_then(|n| n.as_u64()).unwrap_or(0) as usize;
+        if n == 0 {
+            return Ok(trf!(
+                "选择器 `{}` 在当前页面没有匹配到任何元素。不带 selector 调用 browser_read 可读整页文字和元素清单。",
+                "The selector `{}` matches no element on the current page. Call browser_read without a selector for the whole page's text and element list.",
+                sel
+            ));
+        }
+        let items = v.get("items").and_then(|i| i.as_array()).cloned().unwrap_or_default();
+        let more = if n > items.len() {
+            trf!("(下面是前 {} 个)", " (the first {} below)", items.len())
+        } else {
+            String::new()
+        };
+        let mut out = trf!("选择器 `{}` 匹配到 {} 个元素{}:", "The selector `{}` matches {} element(s){}:", sel, n, more);
+        for (k, it) in items.iter().enumerate() {
+            let field = |key: &str| it.get(key).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let visible = it.get("visible").and_then(|x| x.as_bool()).unwrap_or(false);
+            let text = field("text");
+            out.push_str(&trf!(
+                "\n\n#{} {}\n文字: {}\nHTML: {}",
+                "\n\n#{} {}\ntext: {}\nHTML: {}",
+                k + 1,
+                if visible { trf!("(可见)", "(visible)") } else { trf!("(不可见)", "(hidden)") },
+                if text.is_empty() { trf!("(空)", "(empty)") } else { text },
+                field("html")
+            ));
+        }
+        Ok(out)
     }
 
     /// The text substitute for a screenshot: the page's VISIBLE TEXT plus the
@@ -2188,8 +2256,8 @@ impl BrowserSession {
                 ))
             }
             "IS_SELECT" => Err(trf!(
-                "这是下拉框,点击不会展开选项。改用 browser_type 选择:{{\"selector\":\"{}\",\"text\":\"<选项的可见文字>\"}}",
-                "That's a <select> — clicking won't open it. Choose with browser_type instead: {{\"selector\":\"{}\",\"text\":\"<the option's visible label>\"}}",
+                "这是下拉框,点击不会展开选项。改用 browser_type 选择:selector 填 \"{}\",text 填选项的可见文字。",
+                "That's a <select> — clicking won't open it. Choose with browser_type instead: selector \"{}\", text = the option's visible label.",
                 label
             )),
             _ => {
@@ -2516,8 +2584,8 @@ pub fn console() -> Result<String, String> {
     dispatch(|reply| BrowserCmd::Console { reply })
 }
 
-pub fn read_page() -> Result<String, String> {
-    dispatch(|reply| BrowserCmd::Read { reply })
+pub fn read_page(selector: Option<String>) -> Result<String, String> {
+    dispatch(|reply| BrowserCmd::Read { selector, reply })
 }
 
 /// One-shot, always-HEADLESS render of a URL → (PNG bytes, console text). Uses
@@ -2957,6 +3025,38 @@ mod tests {
     // show the new content. Proves ignoreCache reaches CDP and the reload is
     // a true hard refresh, not a cache read.
     // Run: cargo test -p chaty refresh_hard -- --ignored --nocapture
+    // A selector reads the elements it matches. The 35B checking `.card-note`
+    // got the whole page back every round: the selector was dropped.
+    #[test]
+    #[ignore]
+    fn read_with_a_selector_reads_only_those_elements() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("chaty-readsel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let page = dir.join("index.html");
+        std::fs::write(
+            &page,
+            "<title>s</title><body><h1>Fruit stand</h1><p class=\"card-note\">Ripe today</p>\
+             <p class=\"card-note\" style=\"display:none\">Sold out</p><p>Other paragraph</p></body>",
+        )
+        .unwrap();
+        navigate(&file_url(&page)).expect("navigate");
+        let two = read_page(Some(".card-note".into())).expect("read");
+        assert!(two.contains(" 2 "), "{two}");
+        assert!(two.contains("Ripe today") && two.contains("class=\"card-note\""), "{two}");
+        assert!(!two.contains("Other paragraph"), "only the matches, not the page: {two}");
+        let none = read_page(Some("p.margin-note".into())).expect("read none");
+        assert!(none.contains("p.margin-note") && !none.contains("Ripe today"), "{none}");
+        assert!(read_page(Some("p[".into())).is_err(), "a broken selector must say so");
+        let whole = read_page(None).expect("whole page");
+        assert!(whole.contains("Other paragraph"), "{whole}");
+        shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     #[ignore]
     fn refresh_hard_reloads_over_http() {
@@ -3369,7 +3469,7 @@ mod tests {
         let url = "data:text/html,<title>after-close</title><body><button>HELLO</button></body>";
         for round in 1..=3 {
             navigate(url).expect("navigate");
-            let page = read_page().unwrap_or_default();
+            let page = read_page(None).unwrap_or_default();
             assert!(
                 page.contains("HELLO"),
                 "round {round}: the page read back blank after a close — {page}"
@@ -3480,7 +3580,7 @@ mod tests {
         // needed). Also verifies input VALUES show up in the digest.
         eval("var d=document.createElement('p');d.textContent='RULE: your password must include a month';document.body.appendChild(d);").expect("inject");
         eval("var i=document.createElement('input');i.id='pw';i.placeholder='password';document.body.appendChild(i);i.value='hunter2';").expect("inject input");
-        let dig = read_page().expect("digest");
+        let dig = read_page(None).expect("digest");
         assert!(dig.contains("Go"), "digest should list the button: {dig}");
         assert!(dig.contains("must include a month"), "rich read must surface dynamically-injected TEXT (the vision substitute): {dig}");
         assert!(dig.contains("hunter2"), "rich read must show the current input VALUE: {dig}");

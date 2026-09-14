@@ -151,6 +151,19 @@ export const T = {
     zh: "每个 agent 步骤的生成 token 上限。0 = 不限制(由上下文窗口自然封顶);滑杆上限即当前模型的上下文窗口。调低可以防长跑,调高给长思考和大文件写入留空间。",
     en: "Generation cap per agent step. 0 = no cap of its own (the context window still bounds it); the slider tops out at the loaded model's context window. Lower it to bound runaways, raise it for long reasoning and big file writes.", pt: "Limite de geração por passo do agente. 0 = sem limite próprio (a janela de contexto ainda restringe); o controle vai até a janela de contexto do modelo carregado. Diminua para restringir fugas, aumente para raciocínios longos e escritas de arquivos grandes.",
   },
+  cmToolFormat: { zh: "工具调用格式", en: "Tool-call format", pt: "Formato das chamadas de ferramenta" },
+  cmToolFormatHint: {
+    zh: "模型写工具调用的格式。自动 = 用模型聊天模板里训练的那一种;手动选择则所有模型都用这一种。",
+    en: "How the model writes tool calls. Auto = the format its chat template was trained on; a manual pick makes every model use that one.",
+    pt: "Como o modelo escreve chamadas de ferramenta. Automático = o formato em que o template de chat dele foi treinado; uma escolha manual faz todos os modelos usarem esse.",
+  },
+  cmToolFormatAuto: { zh: "自动", en: "Auto", pt: "Automático" },
+  cmToolFallback: { zh: "未知家族用", en: "Unknown families use", pt: "Famílias desconhecidas usam" },
+  cmToolFallbackHint: {
+    zh: "模型的聊天模板里没有写工具调用格式时用这一种。XML 的参数原样书写、不用转义,长代码不容易写坏。",
+    en: "Used when a model's chat template names no tool-call format. XML takes every argument as written, nothing escaped, so long code is hard to break.",
+    pt: "Usado quando o template de chat do modelo não define formato de chamada. O XML recebe cada argumento como escrito, sem escapes, então código longo dificilmente quebra.",
+  },
   cmAutoEdits: { zh: "自动批准文件编辑", en: "Auto-approve file edits", pt: "Auto-aprovar edições de arquivos" },
   cmAutoEditsHint: {
     zh: "写入/编辑文件不再逐次询问(命令仍需批准)。每轮开始有检查点,可随时回滚。",
