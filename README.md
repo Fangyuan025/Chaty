@@ -108,7 +108,8 @@ itself — every step shown live, every change behind an approval + diff.
 - Browser automation is verified end-to-end against real sites, and can run in your real Chrome — watch it work, logins and all.
 - Built for local models: an **Off / Normal / Deep** reasoning switch, a **prompt-processing progress ring**, a context-usage ring with automatic compaction, whole-file reads sized to your context window, ranked `search_code` + knowledge-base `search_docs`, and loop-breaking for repetitive small models.
 - Persistent sessions, project memory (**AGENTS.md**), custom **/skills**, and slash commands.
-- Tune it under **Settings → Code**: step limit, command timeout, step temperature, an auto-approve-edits toggle, a headless-browser toggle, and a command allowlist.
+- Tune it under **Settings → Code**: step limit, command timeout, step temperature, tool-call format, an auto-approve-edits toggle, a headless-browser toggle, and a command allowlist.
+- **Each model's own tool-call format** — Qwen3.5 / 3.6 / 3.8 were trained to write tool calls as XML, Qwen3 and QwQ as JSON, Gemma 4 and LFM in forms of their own. Chaty reads the format from the model's chat template and speaks it, so long edits stop coming back as broken JSON; a family whose template names none gets XML, and Settings → Code can pick one by hand.
 - File access never leaves the folder you pick; out-of-workspace access asks per folder; a `sudo` command asks first with a secure password prompt; downloads land in the workspace and are covered by checkpoints too.
 
 </details>

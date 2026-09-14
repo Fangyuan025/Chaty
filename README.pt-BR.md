@@ -111,7 +111,8 @@ própria — cada passo exibido ao vivo, cada mudança atrás de uma aprovação
 - A automação de navegador é verificada de ponta a ponta contra sites reais, e pode rodar no seu Chrome de verdade — assista-o trabalhar, logins e tudo.
 - Feito para modelos locais: chave de raciocínio **Off / Normal / Deep**, um **anel de progresso do processamento do prompt**, um anel de uso de contexto com compactação automática, leituras de arquivo inteiro dimensionadas à sua janela de contexto, `search_code` ranqueado + `search_docs` da base de conhecimento, e quebra de loops para modelos pequenos repetitivos.
 - Sessões persistentes, memória de projeto (**AGENTS.md**), **/skills** personalizadas e comandos de barra.
-- Ajuste em **Configurações → Código**: limite de passos, timeout de comandos, temperatura por passo, aprovação automática de edições, navegador headless e lista de comandos permitidos.
+- Ajuste em **Configurações → Código**: limite de passos, timeout de comandos, temperatura por passo, formato das chamadas de ferramenta, aprovação automática de edições, navegador headless e lista de comandos permitidos.
+- **O formato de chamada de cada modelo** — Qwen3.5 / 3.6 / 3.8 foram treinados para escrever chamadas de ferramenta em XML, Qwen3 e QwQ em JSON, Gemma 4 e LFM num formato próprio. O Chaty lê o formato do template de chat do modelo e fala nele, então edições longas deixam de voltar como JSON quebrado; uma família cujo template não indica formato recebe XML, e dá para escolher um à mão em Configurações → Código.
 - O acesso a arquivos nunca sai da pasta que você escolheu; acesso fora do workspace pede permissão por pasta; um comando `sudo` pergunta antes com um prompt de senha seguro; downloads caem no workspace e também são cobertos pelos checkpoints.
 
 </details>
