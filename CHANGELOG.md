@@ -1,5 +1,72 @@
 # Changelog
 
+## v2.2.1 — In the model's own words (2026-09-14)
+
+### Code mode: tool calls in the model's own format
+
+- **Tool calls are written the way the loaded model was trained to write
+  them.** Chaty asked every model for one line of JSON. Qwen 3.5, 3.6 and 3.8
+  were trained on an XML form, and Gemma 4 and LFM2 each on their own, so a
+  long edit came back as broken JSON — a quote or a newline left unescaped —
+  and was rejected, rewritten and broken again, round after round. Chaty now
+  reads the format from the model's chat template and teaches that one: in
+  the system prompt, the tool list, every hint and every correction. A family
+  whose template names no format gets XML; Settings → Code picks a format by
+  hand or changes that fallback. On a 243-line page edit, Qwen3.5-4B went from
+  giving up with 79% of its output wasted on rejected calls to finishing with
+  none wasted.
+
+- **Gemma 4 keeps its own format for the whole turn.** Each of its calls was
+  kept in the history with a JSON copy after it, so from its second call on it
+  wrote JSON. The call is now kept as the model wrote it, and the notes Chaty
+  adds — plan echoes, skill hints, the memory tool's and MCP tools' argument
+  help — are written in the same format.
+
+- **Gemma 4's calls are read as it actually writes them.** It puts text in
+  single quotes, writes the objects inside an array as JSON, sometimes puts a
+  whole file after `content:` with no delimiter, and in its thought quotes the
+  example it was shown before making the real call. Each of these was rejected
+  as a broken call — eleven times in one run of the 26B, seven in one of the
+  E4B — and all of them are now read.
+
+- **An argument name in quotes is still read.** `<parameter="path">` was
+  taken for a different argument, so a model that had written the path was
+  told, round after round, that it was missing.
+
+- **A call that keeps writing after it is done is cut and run.** A small
+  model could follow a finished call with the same closing tag thousands of
+  times, to the end of its output budget, every round. The stream is now cut
+  there and the call runs.
+
+- **A broken tool call is explained, and four in a row pause the turn.** The
+  correction said only that the call was invalid; it now says where it broke:
+  a string that ends mid-argument, the place the JSON stops parsing, an
+  unfinished XML block, or a made-up call such as `<task_complete>`. Only an
+  identical repeat counted toward the stop, so a call broken a different way
+  each time never tripped it.
+
+- **edit_file finds text retyped with different indentation.** When an
+  old_string matches nowhere, a single match that differs only in the
+  whitespace around each line is taken and re-indented to the file — with
+  replace_all set too — and so is one written with escapes such as `\n` in
+  place of the real newline. An old_string that never arrived is reported as
+  missing; it was called "identical to new_string", and a model that believed
+  it stopped using the tool.
+
+- **browser_read reads the element a selector names.** It ignored the
+  selector and returned the whole page, so an agent checking one element read
+  the same page round after round. It now returns how many elements match,
+  with each one's text and HTML, and says so when none do.
+
+### Models
+
+- **The first picture in a conversation no longer re-reads the whole of it
+  on GGUF.** Moving from text to images threw the engine's cache away, and a
+  Qwen3.5 model cannot keep part of one, so the turn a picture first arrived —
+  a chat that had been talking, a code turn's first screenshot — read every
+  earlier turn again before looking at the image. It now continues from where
+  the text left off.
+
 ## v2.2.0 — Closer to the question (2026-09-13)
 
 ### Voice, web search and citations
