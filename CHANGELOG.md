@@ -1,5 +1,97 @@
 # Changelog
 
+## v2.2.2 — While it runs (2026-09-17)
+
+### Code mode: commands that ask for input
+
+- **A command that stops to ask is answered instead of failing.** A command
+  got nothing on its input, so `[y/N]`, `Password:`, `rm -i`, `input()` or
+  `read -p` either failed at once or sat until the timeout. Its input is now a
+  terminal, and a command that stops on a question — or switches its terminal
+  to reading keys — moves to the background the way a dev server does. The
+  model is told what it asked and answers with the new `bg_input` tool: a line
+  of text, or keys such as down, enter and ctrl-c. A command that reads input
+  nobody asked for still gets the end of it after a quiet spell, and test
+  runners keep an empty input so they do not turn into watchers. Questions
+  written in Chinese (`？`, `：`, `（是/否）`) are recognised too.
+
+- **REPLs, editors and project scaffolders run in a terminal of their own.**
+  `python3`, `node`, `sqlite3`, `psql`, `vim`, `npm create`, `npx create-*` and
+  the like start in a pseudo-terminal (ConPTY on Windows), and the model reads
+  back what the terminal shows. A menu drawn with arrow keys is reported as
+  waiting for keys, so the model moves through it rather than typing an
+  option's name. Background jobs started with `bash_bg` take input too.
+
+- **Models find their way to typing.** Without `bg_input` in the tool list, a
+  model that already knew a command wanted answers had no way to give them:
+  Qwen3.6 35B ran out its 12 minutes on `npm init` and on a Python REPL, and
+  edited a menu program's code to get round it. With it, the same runs took
+  56s, 20s and 21s, all by typing. When a program fails for want of a terminal,
+  or answers piped into it go wrong, the result says to run it as written; a
+  tool call written as a shell command is sent back as a tool call.
+
+- **Commands run in bash.** The tool is called bash but ran `/bin/sh`, where
+  `echo -e "Ada\n36" | python3 ask.py` answered "-e Ada" and the model reported
+  success. Commands now run in bash wherever it is installed, with `echo`
+  still expanding escapes as before; a `BASH_ENV` from the user's environment
+  no longer runs first.
+
+### Code mode: edits as they happen
+
+- **Writes and edits are drawn while the model writes them.** The step card
+  appeared only once the call had run. It now appears as the call starts —
+  "writing"/"editing", then "wrote"/"edited" — and follows the file the way
+  Canvas follows a patch: the block the model is copying out to replace is
+  found and lit, the replacement is written into it in place with the old
+  lines not yet reached dimmed, and the view moves on to the next block, in
+  the order the model wrote them. A call that is stopped, or never runs,
+  takes its card with it. Settings → Code can keep these cards folded.
+
+- **write_file writes what it is given.** A rewrite of an existing file was
+  sometimes refused and sent back to edit_file; measured, that mostly derailed
+  the model into failed edits of a file it had already written.
+
+### Code mode: sessions and background jobs
+
+- **A new session starts clean.** A pause from the last session ("the same
+  call three times in a row") was carried into the next one, whose model then
+  reasoned about the other session's steps. A turn that was stopped could
+  still finish winding down after the next one started, clear that run's
+  approval dialog and leave it waiting on an answer that could not come.
+
+- **Servers left running when Chaty was killed are stopped.** Quitting by
+  signal, a crash or an update skipped the cleanup, and a stopped server kept
+  its port: a new session starting it again was told the address was in use.
+  Chaty now stops its jobs on termination and at startup, and a port that is
+  taken names the process holding it.
+
+- **LFM2's tool calls no longer show in the reply.** The markers were removed
+  and the call itself was left in the text.
+
+- **Skill files can be imported.** Settings → Code → Skills imports a
+  third-party `.md` skill (a `SKILL.md` included); one without a name or
+  description gets them from its file name and first line.
+
+- **An approval dialog is not denied by a click outside it,** and a tall one
+  fits the window with its command scrolling.
+
+### Chat
+
+- **Long chats with web search or the knowledge base resume from the cache.**
+  The date line and search results added to a question were not kept with it,
+  and the chat title and the search-query rewrite ran on the conversation's
+  own cache, so every turn read the whole conversation again. On Qwen3.6 35B
+  (MLX) and Qwen3.5 4B (GGUF) with search on, reuse went from 0% to 96–99% a
+  turn. Side generations use a small cache of their own; on GGUF that holds
+  about 0.6 GB for a dense 8B model.
+
+- **Stop works while a search is still running.**
+
+- **Opening a conversation shows its end without scrolling through it.**
+
+- **One-click setup keeps its downloads when its dialog is closed,** and a
+  click outside no longer closes it.
+
 ## v2.2.1 — In the model's own words (2026-09-14)
 
 ### Code mode: tool calls in the model's own format

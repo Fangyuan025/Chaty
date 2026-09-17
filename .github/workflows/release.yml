@@ -251,28 +251,36 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## Tool calls in the model's own format
+            ## Commands that ask for input
 
-            Chaty asked every model for its tool calls as one line of JSON, which
-            is not how most local models were trained: Qwen 3.5, 3.6 and 3.8 write
-            an XML form, and Gemma 4 and LFM2 their own. Long edits came back as
-            broken JSON and were rejected and rewritten, round after round. Chaty
-            now reads the format from the loaded model's chat template and uses it
-            everywhere the model looks — the prompt, the tool list, every hint and
-            correction, and the calls kept in its history. A model whose template
-            names none gets XML, and Settings → Code can choose one by hand.
+            A command that stops to ask — a `[y/N]`, a password prompt, `rm -i`, a
+            Python `input()` — used to fail at once in code mode. It now moves to
+            the background the way a dev server does, and the model answers it
+            with the new `bg_input` tool, typing a line or pressing keys. REPLs,
+            editors and project scaffolders run in a terminal of their own
+            (ConPTY on Windows), and arrow-key menus are driven with arrow keys.
+            Commands also run in bash now, as the tool's name always said.
 
-            ## Fewer wasted rounds in code mode
+            ## Edits you can watch
 
-            A broken call is told where it broke, and four in a row pause the
-            turn. A long edit retyped with different indentation still lands, and
-            browser_read with a selector reads just the elements it matches.
+            A write or edit shows its card while the model is still writing it:
+            the block being replaced is found and lit, rewritten in place, and the
+            view moves on to the next, the way Canvas applies a patch. A call that
+            is stopped takes its card with it.
 
-            ## Pictures on GGUF
+            ## Long chats with search stay fast
 
-            The first picture in a conversation that had been talking — or a code
-            turn's first screenshot — no longer makes a Qwen3.5 GGUF model read the
-            whole conversation again before it looks at the image.
+            With web search or the knowledge base on, every chat turn read the
+            whole conversation again. Search results now stay with the question
+            they answered and side generations keep their own cache: 0% of the
+            conversation reused per turn became 96–99%.
+
+            ## Also
+
+            A new code session no longer inherits the last one's pause, servers
+            left running when Chaty was killed are stopped, skill files can be
+            imported in Settings, and a click outside an approval dialog no longer
+            denies it.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
