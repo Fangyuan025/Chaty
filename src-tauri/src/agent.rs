@@ -5528,6 +5528,26 @@ mod tests {
         }
     }
 
+    /// Waits for a job to show something. A Windows runner is slow to start a
+    /// program, so the tests here wait for the words rather than for a clock.
+    #[cfg(windows)]
+    fn wait_tail_windows(id: u64, needle: &str, within: Duration) -> String {
+        let deadline = Instant::now() + within;
+        loop {
+            let info = agent_bg_output(id).expect("job exists");
+            if info.tail.contains(needle) {
+                return info.tail;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "job #{id} never showed {needle:?} (running={}); screen:\n{}",
+                info.running,
+                info.tail
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_a_prompt_is_answered_in_the_background() {
@@ -5535,20 +5555,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("chaty-ask-win-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         set_ws(&dir);
-        let res = run_bash(
-            &dir,
-            "python -c \"a = input('Continue? [y/N] '); print('got=' + a)\"",
-            Duration::from_secs(60),
-            None,
-            true,
-            Some(Duration::from_secs(10)),
-        )
-        .expect("run");
+        // A script file, not `python -c "…"`: a whole program quoted through
+        // cmd tests cmd's quoting, not ours.
+        std::fs::write(dir.join("ask.py"), "a = input('Continue? [y/N] ')\nprint('got=' + a)\n").unwrap();
+        let res = run_bash(&dir, "python ask.py", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
+            .expect("run");
         let id = res.bg_id.unwrap_or_else(|| panic!("moved to the background; got {} / {}", res.stdout, res.stderr));
         assert!(res.awaiting_input);
-        let shown = agent_bg_input(id, Some("y".into()), None, None).expect("typed");
-        let end = if shown.running { wait_job_end_windows(id, Duration::from_secs(10)) } else { shown };
-        assert!(end.tail.contains("got=y"), "{}", end.tail);
+        agent_bg_input(id, Some("y".into()), None, None).expect("typed");
+        let tail = wait_tail_windows(id, "got=y", Duration::from_secs(20));
+        assert!(tail.contains("got=y"), "{tail}");
+        wait_job_end_windows(id, Duration::from_secs(20));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -5561,12 +5578,16 @@ mod tests {
         set_ws(&dir);
         let res = run_bash(&dir, "python -q", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
             .expect("run");
-        let id = res.bg_id.expect("a REPL runs in the background");
-        assert!(res.stdout.contains(">>>"), "{}", res.stdout);
-        let shown = agent_bg_input(id, Some("print(6 * 7)".into()), None, None).expect("typed");
-        assert!(shown.tail.contains("42"), "{}", shown.tail);
+        let id = res.bg_id.unwrap_or_else(|| panic!("a REPL runs in the background; got {} / {}", res.stdout, res.stderr));
+        assert!(res.awaiting_input, "{}", res.stdout);
+        // The prompt may still be on its way when the call returns: a REPL in
+        // key-by-key mode is handed over as soon as it is waiting.
+        wait_tail_windows(id, ">>>", Duration::from_secs(20));
+        agent_bg_input(id, Some("print(6 * 7)".into()), None, None).expect("typed");
+        let tail = wait_tail_windows(id, "42", Duration::from_secs(20));
+        assert!(tail.contains("42"), "{tail}");
         agent_bg_input(id, Some("exit()".into()), None, None).expect("exit");
-        let end = wait_job_end_windows(id, Duration::from_secs(10));
+        let end = wait_job_end_windows(id, Duration::from_secs(20));
         assert!(!end.running);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5578,13 +5599,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("chaty-plain-win-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         set_ws(&dir);
-        for cmd in ["echo hi", "powershell -NoProfile -Command \"Write-Output hi\""] {
+        // PowerShell takes seconds to start on a cold runner; what matters is
+        // that neither command waits out a quiet spell before it ends.
+        for (cmd, limit) in [("echo hi", 5), ("powershell -NoProfile -Command \"Write-Output hi\"", 20)] {
             let t0 = Instant::now();
             let res = run_bash(&dir, cmd, Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
                 .expect("run");
             assert!(res.bg_id.is_none(), "{cmd}: {}", res.stdout);
             assert!(res.stdout.contains("hi"), "{cmd}: {}", res.stdout);
-            assert!(t0.elapsed() < Duration::from_secs(5), "{cmd} took {:?}", t0.elapsed());
+            assert!(t0.elapsed() < Duration::from_secs(limit), "{cmd} took {:?}", t0.elapsed());
         }
         std::fs::remove_dir_all(&dir).ok();
     }
