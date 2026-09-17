@@ -124,6 +124,10 @@ import { fmtGbFromMb } from "./lib/fmt";
 interface UiMessage extends ChatMessage {
   id: string;
   sources?: SearchResult[];
+  /** What the model was given for this user turn — today's date and the
+   *  search results before the question. Kept (in memory) so every later
+   *  prompt repeats the turn exactly as the cache holds it. */
+  modelContent?: string;
 }
 
 /** Module-level thumbnail cache: path → data URL (survives re-renders). */
@@ -259,6 +263,13 @@ function cleanQuery(raw: string): string {
   const firstLine = t.split("\n").map((s) => s.trim()).find(Boolean) ?? "";
   return firstLine.replace(/^["'「『《]+|["'」』》]+$/g, "").trim().slice(0, 80);
 }
+
+/** Thrown by a search step when the stop button is pressed mid-search. */
+const SEARCH_STOPPED = Symbol("search stopped");
+/** How much of a message a side generation (title, search-query rewrite)
+ *  reads: enough to name the topic, and within the small context those
+ *  generations run in — a pasted document no longer fails its title. */
+const SIDE_INPUT_CHARS = 1200;
 
 const URL_RE = /https?:\/\/[^\s)）】"'<>，。、]+/g;
 
@@ -591,6 +602,8 @@ export default function App() {
   const prevMsgCount = useRef(0);
   const prevConvId = useRef<string | null>(null);
   const followRef = useRef(true);
+  /** The running chat turn's stop state — see handleStop. */
+  const turnStopRef = useRef<{ stopped: boolean; wake: () => void } | null>(null);
   const showJumpRef = useRef(false);
   const [showJump, setShowJump] = useState(false);
   const asideRef = useRef<HTMLElement>(null);
@@ -867,8 +880,8 @@ export default function App() {
     // conversations) → jump to the bottom and re-arm following. While a reply
     // streams (same message count, content just growing) only stick to the
     // bottom while the user hasn't scrolled away.
-    const structural =
-      messages.length !== prevMsgCount.current || conversationId !== prevConvId.current;
+    const switched = conversationId !== prevConvId.current;
+    const structural = messages.length !== prevMsgCount.current || switched;
     prevMsgCount.current = messages.length;
     prevConvId.current = conversationId;
     if (structural) {
@@ -878,7 +891,10 @@ export default function App() {
       showJumpRef.current = false;
       setShowJump(false);
     }
-    if (followRef.current) el.scrollTo({ top: el.scrollHeight });
+    // Another conversation opens at its end. The transcript scrolls smoothly
+    // (CSS), which turned opening a long one into a ride from its first message
+    // to its last every time (issue #18).
+    if (followRef.current) el.scrollTo({ top: el.scrollHeight, behavior: switched ? "instant" : undefined });
   }, [messages, conversationId]);
 
   useEffect(() => {
@@ -1054,28 +1070,15 @@ export default function App() {
                   ? "请用一个不超过12个汉字的简短短语，概括下面这条消息的主题，作为对话标题。只输出标题本身，不要引号、标点、解释或思考过程。"
                   : "Summarize the topic of the following message as a short chat title (max ~5 words). Output only the title — no quotes, punctuation, explanation, or reasoning.",
             },
-            { role: "user", content: `${firstMsg}${model?.thinkSwitch ? "\n/no_think" : ""}` },
+            { role: "user", content: `${firstMsg.slice(0, SIDE_INPUT_CHARS)}${model?.thinkSwitch ? "\n/no_think" : ""}` },
           ],
           // Generous budget: thinking-specialised models (Qwen3.6) reason even
           // with an empty <think/> pre-fill — give them room to finish and
           // still emit the title after the block closes.
-          params: { temperature: 0.2, topP: 0.9, maxTokens: 512, think: noThinkFlag() },
+          params: { temperature: 0.2, topP: 0.9, maxTokens: 512, think: noThinkFlag(), scratch: true },
         },
         (ev) => {
-          if (ev.type === "token") {
-            acc += ev.text;
-            // Live-scan feed, throttled: the panel re-diffs on every update.
-            const st = canvasStreamRef.current;
-            st.acc = acc;
-            if (st.timer === null) {
-              st.timer = window.setTimeout(() => {
-                st.timer = null;
-                // A stale timer from a finished generation must never
-                // resurrect the stream (the ref object is replaced per run).
-                if (canvasStreamRef.current === st) setCanvasStream(st.acc);
-              }, 150);
-            }
-          }
+          if (ev.type === "token") acc += ev.text;
         },
       );
       const title = cleanTitle(acc);
@@ -1331,26 +1334,13 @@ export default function App() {
             },
             {
               role: "user",
-              content: `${recent}\n\n最新问题：${latest}${model?.thinkSwitch ? "\n/no_think" : ""}`,
+              content: `${recent}\n\n最新问题：${latest.slice(0, SIDE_INPUT_CHARS)}${model?.thinkSwitch ? "\n/no_think" : ""}`,
             },
           ],
-          params: { temperature: 0.2, topP: 0.9, maxTokens: 512, think: noThinkFlag() },
+          params: { temperature: 0.2, topP: 0.9, maxTokens: 512, think: noThinkFlag(), scratch: true },
         },
         (ev) => {
-          if (ev.type === "token") {
-            acc += ev.text;
-            // Live-scan feed, throttled: the panel re-diffs on every update.
-            const st = canvasStreamRef.current;
-            st.acc = acc;
-            if (st.timer === null) {
-              st.timer = window.setTimeout(() => {
-                st.timer = null;
-                // A stale timer from a finished generation must never
-                // resurrect the stream (the ref object is replaced per run).
-                if (canvasStreamRef.current === st) setCanvasStream(st.acc);
-              }, 150);
-            }
-          }
+          if (ev.type === "token") acc += ev.text;
         },
       );
       return cleanQuery(acc) || latest;
@@ -1867,6 +1857,20 @@ export default function App() {
     setStreamingId(asstId);
     setStats(null);
 
+    let wake = () => {};
+    const stopSignal = new Promise<void>((resolve) => (wake = resolve));
+    const turnStop = { stopped: false, wake };
+    turnStopRef.current = turnStop;
+    // Each step of the search races the stop button, so a stop lands at once
+    // instead of after the page or the search it was waiting on.
+    const untilStop = <T,>(p: Promise<T>): Promise<T> =>
+      Promise.race([
+        p,
+        stopSignal.then(() => {
+          throw SEARCH_STOPPED;
+        }),
+      ]);
+
     let webContext = "";
     const urls = (text.match(URL_RE) ?? []).slice(0, 3);
     if (webEnabled || ragEnabled || urls.length > 0) {
@@ -1879,10 +1883,11 @@ export default function App() {
         // D — fetch any URLs the user pasted (highest priority).
         for (const url of urls) {
           try {
-            const page = await fetchUrl(url);
+            const page = await untilStop(fetchUrl(url));
             blocks.push(`【${blocks.length + 1}】 ${page.title}\n${page.text.slice(0, 5000)}`);
             usedSources.push({ title: page.title, url: page.url, snippet: page.text.slice(0, 360) });
           } catch (e) {
+            if (e === SEARCH_STOPPED) throw e;
             console.error(e);
           }
         }
@@ -1890,8 +1895,8 @@ export default function App() {
         // B2 — local knowledge base (hybrid retrieval over indexed documents).
         if (ragEnabled) {
           try {
-            const query = prior.length > 0 ? await rewriteQuery(prior, text) : text;
-            const hits = await ragSearch(query, settings.ragTopK);
+            const query = prior.length > 0 ? await untilStop(rewriteQuery(prior, text)) : text;
+            const hits = await untilStop(ragSearch(query, settings.ragTopK));
             // Group retrieved chunks by their source file so the user sees one
             // citation per document, not one per chunk. First-seen order keeps
             // the best-scoring file first; chunks within a file go in document
@@ -1913,6 +1918,7 @@ export default function App() {
               });
             }
           } catch (e) {
+            if (e === SEARCH_STOPPED) throw e;
             const msg = e instanceof Error ? e.message : String(e);
             if (msg.includes("RAG_MODEL_MISSING")) showNotice("warn", t("kbNeedSetup"));
             else console.error(e);
@@ -1921,8 +1927,8 @@ export default function App() {
 
         // C — web search using a context-aware, rewritten query.
         if (webEnabled) {
-          const query = prior.length > 0 ? await rewriteQuery(prior, text) : text;
-          const research = await webResearch(query);
+          const query = prior.length > 0 ? await untilStop(rewriteQuery(prior, text)) : text;
+          const research = await untilStop(webResearch(query));
           let budget = 5400;
           let added = 0;
           for (const p of research.pages) {
@@ -1966,10 +1972,19 @@ export default function App() {
             (ragEnabled ? t("ragInstruction", n) : t("webInstruction", n)) + blocks.join("\n\n---\n\n");
         }
       } catch (e) {
-        console.error(e);
+        if (e !== SEARCH_STOPPED) console.error(e);
       } finally {
         setSearching("");
       }
+    }
+
+    // Stopped during the search: nothing is generated, and the empty reply
+    // bubble goes with it.
+    if (turnStop.stopped) {
+      setMessages((cur) => cur.filter((m) => m.id !== asstId));
+      setBusy(false);
+      setStreamingId(null);
+      return;
     }
 
     // An assistant turn travels the way the model wrote it. Stripping the
@@ -1982,10 +1997,18 @@ export default function App() {
     // turn still being answered. Where a template reads thinking from its own
     // field instead, the split has to happen — leaving it inline reaches such a
     // template as an empty thought followed by the turn's own markup.
-    const historyForModel = history.map(({ role, content, images }) => {
+    // A past user turn goes back as the model was given it: with its date line
+    // and search results, which were added only as it was sent. Sent without
+    // them, the prompt stopped matching the cache at that turn — on Qwen3.5 a
+    // re-read of the whole conversation on every turn after a search. The
+    // current turn gets its parts afresh below.
+    const lastUserAt = history.map((m) => m.role).lastIndexOf("user");
+    const historyForModel = history.map(({ role, content, images, modelContent }, i) => {
       const pixels =
         role === "user" && images?.length && model?.visionReady ? { images } : {};
-      if (role !== "assistant") return { role, content, ...pixels };
+      if (role !== "assistant") {
+        return { role, content: role === "user" && modelContent && i !== lastUserAt ? modelContent : content, ...pixels };
+      }
       const reasoning = model?.reasoningField ? turnReasoning(content).trim() : "";
       return reasoning
         ? { role, content: turnAnswer(content).trim(), reasoning_content: reasoning }
@@ -2072,6 +2095,13 @@ export default function App() {
           ? { ...m, content: turnMessage(turnParts, m.content, webContext ? t("questionLabel") : undefined) }
           : m,
       );
+    }
+    // Whatever was added to the question on its way out — its context parts,
+    // Qwen3's `/no_think` — stays with it for the prompts after this one.
+    const given = modelHistory[modelHistory.length - 1];
+    const asked = history[lastUserAt];
+    if (asked && given?.role === "user" && given.content !== asked.content) {
+      setMessages((cur) => cur.map((m) => (m.id === asked.id ? { ...m, modelContent: given.content } : m)));
     }
     const sent: ChatMessage[] = [
       ...(sysParts.length ? [{ role: "system" as const, content: sysParts.join("\n\n") }] : []),
@@ -2336,6 +2366,12 @@ export default function App() {
   }
 
   async function handleStop() {
+    // A stop pressed while the turn is still searching ends the search too —
+    // only the generation after it used to listen (issue #18).
+    if (turnStopRef.current) {
+      turnStopRef.current.stopped = true;
+      turnStopRef.current.wake();
+    }
     try {
       await cancelGeneration();
     } catch (e) {
@@ -2881,6 +2917,7 @@ export default function App() {
         disabledSkills={settings.codeDisabledSkills}
         memoryEnabled={settings.codeMemory}
         groupByWorkspace={settings.codeGroupByWorkspace}
+        liveCardsOpen={settings.codeLiveCardsOpen}
         allowedCommands={settings.codeAllowedCommands}
         sendKey={settings.sendKey}
         autoTitle={settings.autoTitle}

@@ -7,7 +7,7 @@
 
 import { argsExample, callExample } from "./callFormat";
 
-export type HintKey = "browser" | "editFail" | "webFlow" | "afterOrient" | "anchorRead";
+export type HintKey = "browser" | "editFail" | "webFlow" | "afterOrient" | "anchorRead" | "tty";
 
 const BROWSER_HINT: Record<"zh" | "en", string> = {
   zh: `[浏览器提示] 内容/状态用 browser_read(交互返回已带最新页面文字,通常直接看返回即可);外观/布局/图片/颜色必须 snapshot 或 screenshot 用视觉亲眼看,读文字看不出;但**截图只证明外观**——验收按钮/表单/跳转等交互功能,必须 browser_click/browser_type 实际操作一遍,再看返回文字或 browser_read 确认结果,截完图就收工不算测试。每次交互后先核实结果再继续,绝不凭猜测连续操作。已想好顺序的多次点击或多字段填表,一次用 steps 传完,不要拆成多次调用;点「提交/检查」等不可逆按钮前,先 snapshot 视觉确认所选内容无误。点导航/提交类按钮后,看返回的最新文字判断成败——成功就继续,绝不重复点同一按钮;翻页要点一次、读一次确认。CSS 选择器只支持标准语法(没有 :contains):按文字定位用 text 参数。浏览器是持久配置,之前登录过的站点仍在登录态。文字摘要对不上预期或页面似乎没反应时,不要反复 read 或硬猜,立即截图亲眼确认。任务做完 browser_close。`,
@@ -49,6 +49,34 @@ const ANCHOR_READ_HINT: Record<"zh" | "en", string> = {
 };
 
 const ANCHOR_LINE_RE = /^\d+:[a-z]{2,4}→/m;
+
+// A program that needs a terminal, fed through a pipe or with no input at all.
+// Qwen3.6 35B, handed an arrow-key menu, piped escape codes into it, tried
+// `script`, then EDITED the program to take out its terminal handling — it
+// never ran the command as written, which is the one thing that works: a
+// command that stops to ask moves to the background and is typed into. Said
+// where the failure shows, not in a system prompt with no room left.
+const TTY_ERROR_RE =
+  /Inappropriate ioctl for device|not a tty|not a terminal|is not a TTY|input device is not a TTY|Raw mode is not supported|ERR_TTY_INIT_FAILED|EOFError|EOF when reading a line|Error reading input|open \/dev\/tty|\/dev\/tty: (?:Device not configured|No such device)/i;
+
+/** Answers piped into a command that then failed with its questions still in
+ *  its output — `printf 'demo-app\n\n' | npm init` read its answers wrong and
+ *  quit, and a 35B spent twelve minutes recounting newlines. */
+function pipedIntoQuestions(command: string, resultText: string): boolean {
+  if (!/(?:^|[^|])\|(?!\|)/.test(command)) return false;
+  const exit = /\[exit (-?\d+)/.exec(resultText);
+  if (!exit || exit[1] === "0") return false;
+  return /\w[\w ]*: \([^)\n]*\)|\[y\/n\]|\(y\/n\)|\(yes\/no\)|\? \(|^\? /im.test(resultText);
+}
+
+const TTY_HINT: Record<"zh" | "en", string> = {
+  get zh() {
+    return `[交互提示] 这个程序要在终端里交互。不要用管道喂输入,也不要改它的代码绕过:直接用 bash 运行原命令——它停下来等输入时会自动转入后台并给出编号,再用 ${callExample("bg_input", '{"id":1,"text":"y"}')} 回答,方向键、回车这类用 keys,例如 ${callExample("bg_input", '{"id":1,"keys":["down","enter"]}')}。`;
+  },
+  get en() {
+    return `[Interactive hint] This program needs a terminal to talk to. Do not pipe answers into it or change its code to get around that: run the command as written with bash — when it stops to ask, it moves to the background and you are given its id; answer with ${callExample("bg_input", '{"id":1,"text":"y"}')}, and use keys for arrows and Enter, e.g. ${callExample("bg_input", '{"id":1,"keys":["down","enter"]}')}.`;
+  },
+};
 
 /** Escalating correction for a tool call with a missing required argument —
  *  the quick15 sympy-12419 autopsy: repeating ONE identical correction let a
@@ -97,6 +125,8 @@ export function jitHintFor(
   resultText: string,
   lang: "zh" | "en",
   shown: Set<HintKey>,
+  /** The command, for bash: whether answers were piped into it. */
+  command = "",
 ): string {
   if (name.startsWith("browser_") && !shown.has("browser")) {
     shown.add("browser");
@@ -117,6 +147,10 @@ export function jitHintFor(
   if (name === "read_file" && !shown.has("anchorRead") && ANCHOR_LINE_RE.test(resultText.slice(0, 400))) {
     shown.add("anchorRead");
     return ANCHOR_READ_HINT[lang];
+  }
+  if (name === "bash" && !shown.has("tty") && (TTY_ERROR_RE.test(resultText) || pipedIntoQuestions(command, resultText))) {
+    shown.add("tty");
+    return TTY_HINT[lang];
   }
   if (
     (name === "edit_file" || name === "multi_edit") &&

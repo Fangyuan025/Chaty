@@ -7,7 +7,7 @@
 //! the frontend before these commands are ever invoked.
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -3208,6 +3208,18 @@ pub struct BashResult {
     /// model just started — cost the whole timeout AND the server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bg_id: Option<u64>,
+    /// With `bg_id`: the command stopped to ask for input (or is a program
+    /// that only works typed into) and kept running in the background, where
+    /// bg_input answers it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub awaiting_input: bool,
+    /// The line it stopped on, when one reads as a question.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// It waits for keys, not a line: its terminal is in key-by-key mode (a
+    /// menu, an editor), where typed words are keystrokes too.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub key_mode: bool,
 }
 
 /// macOS seatbelt profile: allow everything by default, then deny all writes and
@@ -3326,6 +3338,12 @@ fn shared_stream(
     mut r: impl Read + Send + 'static,
     buf: Arc<Mutex<Vec<u8>>>,
     truncated: Arc<AtomicBool>,
+    // Where a command's streams are also merged in arrival order — the screen
+    // a command waiting for input is read from.
+    tee: Option<Arc<Mutex<Vec<u8>>>>,
+    // Bytes read so far, across the command's streams: a buffer at its cap
+    // stops growing, so its length cannot say whether output is still coming.
+    seen: Option<Arc<AtomicU64>>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut chunk = [0u8; 4096];
@@ -3333,15 +3351,33 @@ fn shared_stream(
             if n == 0 {
                 break;
             }
-            let mut b = buf.lock().unwrap();
-            b.extend_from_slice(&chunk[..n]);
-            if b.len() > MAX_OUTPUT_BYTES {
-                let cut = b.len() - MAX_OUTPUT_BYTES;
-                b.drain(..cut);
-                truncated.store(true, Ordering::Relaxed);
+            {
+                let mut b = buf.lock().unwrap();
+                b.extend_from_slice(&chunk[..n]);
+                if b.len() > MAX_OUTPUT_BYTES {
+                    let cut = b.len() - MAX_OUTPUT_BYTES;
+                    b.drain(..cut);
+                    truncated.store(true, Ordering::Relaxed);
+                }
+            }
+            if let Some(tee) = &tee {
+                append_capped(tee, &chunk[..n]);
+            }
+            if let Some(seen) = &seen {
+                seen.fetch_add(n as u64, Ordering::Relaxed);
             }
         }
     })
+}
+
+/// Append to a live buffer, keeping its newest MAX_OUTPUT_BYTES.
+fn append_capped(buf: &Arc<Mutex<Vec<u8>>>, bytes: &[u8]) {
+    let mut b = buf.lock().unwrap();
+    b.extend_from_slice(bytes);
+    if b.len() > MAX_OUTPUT_BYTES {
+        let cut = b.len() - MAX_OUTPUT_BYTES;
+        b.drain(..cut);
+    }
 }
 
 /// Decode captured console bytes for the model. Valid UTF-8 passes through;
@@ -3473,11 +3509,40 @@ fn run_bash(
     // (validate_change, sudo runs).
     bg_convert: Option<Duration>,
 ) -> Result<BashResult, String> {
+    // A program that is a conversation or a screen — a REPL, an editor, a
+    // scaffolder's questionnaire — starts in a terminal of its own.
+    if bg_convert.is_some() && stdin.is_none() && crate::terminal::interactive_command(command) {
+        return run_in_terminal(root, command, timeout);
+    }
     let mut cmd = build_command(root, command, sandboxed);
-    cmd.current_dir(root)
-        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    // Any other command that asks something gets to wait for the answer: its
+    // stdin is a terminal (unix) or an open pipe (Windows) instead of nothing,
+    // and one that stops on a question moves to the background below. Not for
+    // test runners, which become watchers that never exit when stdin is a
+    // terminal, nor PowerShell, which waits for its stdin to close.
+    let asks = bg_convert.is_some()
+        && stdin.is_none()
+        && !crate::terminal::test_command(command)
+        && !(cfg!(windows) && runs_powershell(command));
+    #[cfg(unix)]
+    let mut tty: Option<std::fs::File> = None;
+    #[cfg(unix)]
+    let input_stdio = if stdin.is_some() {
+        Stdio::piped()
+    } else if asks {
+        match crate::terminal::stdin_tty() {
+            Ok((master, slave)) => {
+                tty = Some(master);
+                Stdio::from(slave)
+            }
+            Err(_) => Stdio::null(),
+        }
+    } else {
+        Stdio::null()
+    };
+    #[cfg(not(unix))]
+    let input_stdio = if stdin.is_some() || asks { Stdio::piped() } else { Stdio::null() };
+    cmd.current_dir(root).stdin(input_stdio).stdout(Stdio::piped()).stderr(Stdio::piped());
     // Own process group, same as background jobs: killing the shell alone
     // leaves its children running. A model that runs `python -c` with an
     // accidental infinite loop would otherwise leave a core spinning FOREVER
@@ -3491,19 +3556,59 @@ fn run_bash(
     }
 
     let mut child = cmd.spawn().map_err(|e| trf!("启动命令失败: {e}", "spawn failed: {e}"))?;
+    // The command holds its end of the terminal now; ours would keep it open.
+    drop(cmd);
+    #[cfg(not(unix))]
+    let mut input: Option<JobInput> = None;
     if let Some(pw) = stdin {
         if let Some(mut sink) = child.stdin.take() {
-            use std::io::Write as _;
             let _ = sink.write_all(pw.as_bytes());
             // drop `sink` → EOF, so `sudo -S` stops waiting for more input.
+        }
+    } else if asks {
+        #[cfg(not(unix))]
+        {
+            input = child.stdin.take().map(JobInput::Pipe);
         }
     }
     let out_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let err_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let out_trunc = Arc::new(AtomicBool::new(false));
     let err_trunc = Arc::new(AtomicBool::new(false));
-    let out_h = shared_stream(child.stdout.take().unwrap(), out_buf.clone(), out_trunc.clone());
-    let err_h = shared_stream(child.stderr.take().unwrap(), err_buf.clone(), err_trunc.clone());
+    let timeline: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::new(AtomicU64::new(0));
+    let out_h = shared_stream(
+        child.stdout.take().unwrap(),
+        out_buf.clone(),
+        out_trunc.clone(),
+        Some(timeline.clone()),
+        Some(seen.clone()),
+    );
+    let err_h = shared_stream(
+        child.stderr.take().unwrap(),
+        err_buf.clone(),
+        err_trunc.clone(),
+        Some(timeline.clone()),
+        Some(seen.clone()),
+    );
+    // What the terminal itself shows — the echo of a typed answer — joins the
+    // command's merged output.
+    #[cfg(unix)]
+    let mut input: Option<JobInput> = tty.take().map(|master| {
+        if let Ok(r) = master.try_clone() {
+            let _ = shared_stream(
+                r,
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(AtomicBool::new(false)),
+                Some(timeline.clone()),
+                Some(seen.clone()),
+            );
+        }
+        JobInput::Tty(master)
+    });
+    let mut last_seen = 0u64;
+    let mut quiet_since = Instant::now();
+    let mut eof_sent = false;
 
     let started = Instant::now();
     let pid_for_group = child.id();
@@ -3528,7 +3633,8 @@ fn run_bash(
                             // node listeners) never print anything we match.
                             || (tick.is_multiple_of(75) && listening_socket(child.id())))
                     {
-                        match convert_running_to_bg(child, command, started, &out_buf, &err_buf) {
+                        let screen = input.is_some().then(|| (timeline.clone(), true));
+                        match convert_running_to_bg(child, command, started, &out_buf, &err_buf, input.take(), screen, seen.clone()) {
                             Ok(id) => {
                                 return Ok(BashResult {
                                     stdout: shared_cap_decode(&out_buf, &out_trunc),
@@ -3536,14 +3642,83 @@ fn run_bash(
                                     code: 0,
                                     timed_out: false,
                                     bg_id: Some(id),
+                                    awaiting_input: false,
+                                    prompt: None,
+                                    key_mode: false,
                                 });
                             }
-                            Err(back) => {
+                            Err((back, kept)) => {
                                 // Registry full — child handed back; fall back
                                 // to plain timeout semantics for this run.
                                 child = back;
+                                input = kept;
                                 convert = None;
                             }
+                        }
+                    }
+                }
+                // ── A command that stopped to ask ── it has printed nothing for
+                // a moment and its last line reads as a question, or it has put
+                // its terminal into key-by-key mode (a menu, a line editor).
+                // Like a dev server it goes on in the background, where the
+                // model answers it with bg_input.
+                if input.is_some() && tick.is_multiple_of(6) {
+                    let now_seen = seen.load(Ordering::Relaxed);
+                    if now_seen != last_seen {
+                        last_seen = now_seen;
+                        quiet_since = Instant::now();
+                    }
+                    let quiet = quiet_since.elapsed();
+                    if convert.is_some()
+                        && started.elapsed() >= Duration::from_millis(1000)
+                        && quiet >= Duration::from_millis(1500)
+                    {
+                        let tail = crate::terminal::plain_log(&buffer_tail(&timeline, 4096));
+                        let raw = input.as_ref().is_some_and(JobInput::raw);
+                        // A line that only ends in ':' or '?' may be a label the
+                        // command prints before it works: believed after longer.
+                        let asked = crate::terminal::prompt(&tail)
+                            .filter(|p| p.strong || quiet >= Duration::from_secs(3))
+                            .map(|p| p.line);
+                        if (asked.is_some() || raw) && !server_signature(&tail) {
+                            // A menu's last line is an option, not a question.
+                            let prompt = asked;
+                            let screen = Some((timeline.clone(), true));
+                            match convert_running_to_bg(child, command, started, &out_buf, &err_buf, input.take(), screen, seen.clone()) {
+                                Ok(id) => {
+                                    return Ok(BashResult {
+                                        stdout: shared_cap_decode(&out_buf, &out_trunc),
+                                        stderr: shared_cap_decode(&err_buf, &err_trunc),
+                                        code: 0,
+                                        timed_out: false,
+                                        bg_id: Some(id),
+                                        awaiting_input: true,
+                                        prompt,
+                                        key_mode: raw,
+                                    });
+                                }
+                                Err((back, kept)) => {
+                                    child = back;
+                                    input = kept;
+                                    convert = None;
+                                }
+                            }
+                        }
+                    }
+                    // Nothing asked and nothing printed for a while: a command
+                    // still reading its input gets the end of it, as it always
+                    // did when stdin was empty.
+                    if !eof_sent && quiet >= Duration::from_secs(6) && !input.as_ref().is_some_and(JobInput::raw) {
+                        eof_sent = true;
+                        match input.take() {
+                            #[cfg(unix)]
+                            Some(JobInput::Tty(mut master)) => {
+                                let _ = master.write_all(&[4]);
+                                input = Some(JobInput::Tty(master));
+                            }
+                            // Closing the pipe is its end.
+                            Some(JobInput::Pipe(pipe)) => drop(pipe),
+                            other => input = other,
                         }
                     }
                 }
@@ -3560,6 +3735,7 @@ fn run_bash(
             Err(e) => return Err(trf!("等待命令失败: {e}", "wait failed: {e}")),
         }
     };
+    drop(input);
     // Orphan adoption: the shell exited, but `cmd &` children it detached
     // live on in the process group — with OUR pipe fds, so the shared buffers
     // keep streaming. Untracked they become port-squatting zombies that
@@ -3576,7 +3752,7 @@ fn run_bash(
         let jobs = reg.get_or_insert_with(HashMap::new);
         if jobs.values().filter(|j| j.code.is_none()).count() < BG_MAX_JOBS {
             let label = format!("[detached] {command}");
-            let id = bg_new_id(&current_session(), &label);
+            let id = bg_new_id(&current_session(), &label, pid_for_group);
             jobs.insert(
                 id,
                 BgJob::new(
@@ -3609,6 +3785,9 @@ fn run_bash(
         code,
         timed_out,
         bg_id,
+        awaiting_input: false,
+        prompt: None,
+        key_mode: false,
     })
 }
 
@@ -3641,20 +3820,48 @@ pub(crate) fn defuse_nested_sandbox(command: &str) -> String {
         .into_owned()
 }
 
+/// The shell a command runs in, and the arguments before the command itself.
+///
+/// The tool is called `bash`, and models write bash: `echo -e`, `[[ ]]`,
+/// arrays, `{1..3}`, `source`. It used to be `/bin/sh` — bash in POSIX mode on
+/// macOS, dash on most Linux — where `echo -e "Ada\n36" | python3 ask.py`
+/// answered "-e Ada" and a 35B reported success. Bash wherever it is installed;
+/// `xpg_echo` keeps what `echo "a\nb"` printed under /bin/sh (two lines),
+/// which commands already written for it rely on — outside POSIX mode `echo`
+/// still takes -e and -n.
+#[cfg(unix)]
+fn shell() -> (&'static str, &'static [&'static str]) {
+    if Path::new("/bin/bash").exists() {
+        ("/bin/bash", &["-O", "xpg_echo", "-c"])
+    } else {
+        ("/bin/sh", &["-c"])
+    }
+}
+
+/// A non-interactive bash reads the file `BASH_ENV` names before the command
+/// (and sh reads `ENV` in some modes): whatever the user's own environment
+/// set there would run ahead of every agent command.
+#[cfg(unix)]
+fn clear_startup_files(cmd: &mut Command) {
+    cmd.env_remove("BASH_ENV").env_remove("ENV");
+}
+
 #[cfg(target_os = "macos")]
 fn build_command(root: &Path, command: &str, sandboxed: bool) -> Command {
+    let (sh, flags) = shell();
     let mut cmd = if sandboxed {
         let command = defuse_nested_sandbox(command);
         let mut c = Command::new("/usr/bin/sandbox-exec");
-        c.arg("-p").arg(seatbelt_profile(root)).arg("/bin/sh").arg("-c").arg(&command);
+        c.arg("-p").arg(seatbelt_profile(root)).arg(sh).args(flags).arg(&command);
         c
     } else {
         // Un-sandboxed (approved sudo): a privileged action can't run in the
         // write-jail. Confinement is the explicit user approval.
-        let mut c = Command::new("/bin/sh");
-        c.arg("-c").arg(command);
+        let mut c = Command::new(sh);
+        c.args(flags).arg(command);
         c
     };
+    clear_startup_files(&mut cmd);
     cmd.env("PATH", augmented_path());
     redirect_tool_caches(&mut cmd);
     cmd
@@ -3663,8 +3870,10 @@ fn build_command(root: &Path, command: &str, sandboxed: bool) -> Command {
 #[cfg(all(unix, not(target_os = "macos")))]
 fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
     // No seatbelt off macOS — confinement is the working directory + approval.
-    let mut cmd = Command::new("/bin/sh");
-    cmd.arg("-c").arg(command);
+    let (sh, flags) = shell();
+    let mut cmd = Command::new(sh);
+    cmd.args(flags).arg(command);
+    clear_startup_files(&mut cmd);
     cmd.env("PATH", augmented_path());
     redirect_tool_caches(&mut cmd);
     cmd
@@ -3750,6 +3959,7 @@ pub async fn agent_bash(
     };
     let piped_password = stdin.is_some();
     let convert = if piped_password { None } else { Some(Duration::from_secs(10)) };
+    let port_command = command.clone();
     let mut res = tokio::task::spawn_blocking(move || {
         run_bash(&root, &command, timeout, stdin, sandboxed, convert)
     })
@@ -3763,6 +3973,11 @@ pub async fn agent_bash(
             "\n[Chaty] 密码已通过安全通道送达,但被 sudo 拒绝——上面的 \"no password was provided\" 只是 sudo 重试时读到输入结束的提示。请检查密码是否正确后重试。",
             "\n[Chaty] The password WAS delivered over the secure channel but sudo rejected it — the \"no password was provided\" line above is just sudo hitting end-of-input on retry. Check the password and try again.",
         ));
+    }
+    if res.code != 0 {
+        if let Some(note) = port_conflict_note(&format!("{}\n{}", res.stdout, res.stderr), &port_command) {
+            res.stderr.push_str(&note);
+        }
     }
     Ok(res)
 }
@@ -3796,6 +4011,67 @@ struct BgJob {
     cleared: bool,
     /// The Code session the job was started for.
     session: String,
+    /// Where typed input goes (bg_input), for a job that takes it.
+    input: Option<JobInput>,
+    /// A job whose output is read as a terminal screen: the buffer, and
+    /// whether its lines end in a bare `\n` (streams that came through pipes).
+    screen: Option<(Arc<Mutex<Vec<u8>>>, bool)>,
+    /// Bytes the job has written so far (see shared_stream).
+    seen: Arc<AtomicU64>,
+}
+
+/// A running job's keyboard.
+enum JobInput {
+    /// A terminal of its own.
+    Pty {
+        writer: Box<dyn Write + Send>,
+        master: Box<dyn portable_pty::MasterPty + Send>,
+    },
+    /// A foreground command's stdin terminal (unix): the master side.
+    #[cfg(unix)]
+    Tty(std::fs::File),
+    /// A foreground command's stdin pipe (Windows).
+    #[cfg_attr(unix, allow(dead_code))]
+    Pipe(std::process::ChildStdin),
+}
+
+impl JobInput {
+    /// Whether keys go to a terminal (Enter is `\r`, ^C is a byte) rather
+    /// than down a pipe.
+    fn terminal(&self) -> bool {
+        !matches!(self, JobInput::Pipe(_))
+    }
+
+    fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        match self {
+            JobInput::Pty { writer, .. } => {
+                writer.write_all(bytes)?;
+                writer.flush()
+            }
+            #[cfg(unix)]
+            JobInput::Tty(f) => f.write_all(bytes),
+            JobInput::Pipe(p) => {
+                p.write_all(bytes)?;
+                p.flush()
+            }
+        }
+    }
+
+    /// Whether the program has put its terminal out of line mode (unix).
+    fn raw(&self) -> bool {
+        #[cfg(unix)]
+        {
+            match self {
+                JobInput::Pty { master, .. } => master.as_raw_fd().is_some_and(crate::terminal::fd_raw),
+                JobInput::Tty(f) => crate::terminal::tty_raw(f),
+                JobInput::Pipe(_) => false,
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
 }
 
 impl BgJob {
@@ -3818,6 +4094,9 @@ impl BgJob {
             killed: false,
             cleared: false,
             session: current_session(),
+            input: None,
+            screen: None,
+            seen: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -3835,12 +4114,18 @@ impl BgJob {
                 .duration_since(self.started)
                 .as_secs(),
             tail,
+            interactive: self.code.is_none() && self.input.is_some(),
+            key_mode: self.code.is_none() && self.input.as_ref().is_some_and(JobInput::raw),
         }
     }
 
     /// Everything the job's buffers still hold — each capped at
     /// MAX_OUTPUT_BYTES, newest kept — for the tasks panel.
     fn log(&self) -> String {
+        // Its own terminal's output carries the terminal's escapes and redraws.
+        if matches!(self.input, Some(JobInput::Pty { .. })) || (self.input.is_none() && self.screen.as_ref().is_some_and(|s| !s.1)) {
+            return crate::terminal::plain_log(&self.output.lock().unwrap());
+        }
         let mut t = String::from_utf8_lossy(&self.output.lock().unwrap()).into_owned();
         if let Some(err) = &self.stderr_extra {
             let e = String::from_utf8_lossy(&err.lock().unwrap()).into_owned();
@@ -3853,7 +4138,11 @@ impl BgJob {
     }
 
     /// Model-facing tail of the job's output (both channels for converted jobs).
+    /// A job that reads a keyboard is shown as the screen a person would see.
     fn tail(&self) -> String {
+        if let Some((buf, lf_only)) = &self.screen {
+            return crate::terminal::render_screen(&buf.lock().unwrap(), *lf_only);
+        }
         let mut t = bg_tail(&self.output);
         if let Some(err) = &self.stderr_extra {
             let e = bg_tail(err);
@@ -3925,8 +4214,182 @@ pub fn init_bg_history(path: &Path) {
     };
     let _ = conn.busy_timeout(Duration::from_secs(2));
     if conn.execute_batch(BG_SCHEMA).is_ok() {
+        // The process group each job runs in (added after the table shipped;
+        // an existing column makes this a no-op error).
+        let _ = conn.execute("ALTER TABLE code_bg_tasks ADD COLUMN pid INTEGER", []);
+        #[cfg(unix)]
+        reap_leftover_jobs(&conn);
         *BG_DB.lock().unwrap() = Some(conn);
     }
+}
+
+/// Jobs a previous run of the app started and never saw end. The app went away
+/// without its exit handler — killed, crashed, replaced by an update — so their
+/// servers kept running and kept their ports: a server stopped long ago still
+/// held its port when a new session started one on it (owner report). Each is
+/// killed only if its process group is still there running the command it was
+/// started with; a pid the system has since given to something else is left
+/// alone. Either way the row is closed, so the panel stops calling it running.
+#[cfg(unix)]
+fn reap_leftover_jobs(conn: &rusqlite::Connection) {
+    let rows: Vec<(i64, String, i64)> = match conn
+        .prepare("SELECT id, command, pid FROM code_bg_tasks WHERE code IS NULL AND killed = 0 AND pid IS NOT NULL")
+    {
+        Ok(mut st) => st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map(|it| it.filter_map(|x| x.ok()).collect())
+            .unwrap_or_default(),
+        Err(_) => return,
+    };
+    if rows.is_empty() {
+        return;
+    }
+    let table = process_table();
+    for (id, command, pid) in rows {
+        let key = command_key(&command);
+        let alive = !key.is_empty() && table.iter().any(|(_, pgid, cmd)| *pgid == pid as i32 && cmd.contains(&key));
+        if alive {
+            kill_tree(pid as u32);
+        }
+        let _ = conn.execute("UPDATE code_bg_tasks SET killed = 1 WHERE id = ?1", [id]);
+    }
+}
+
+/// The part of a job's command a process listing still shows: the first two
+/// words, quotes and the `[detached]` label left off.
+fn command_key(command: &str) -> String {
+    let c = command.trim_start_matches("[detached]").trim();
+    c.split(['>', '&', '|', ';'])
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .take(2)
+        .map(|w| w.trim_matches(|q| q == '"' || q == '\''))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Every process as (pid, process group, command line).
+#[cfg(unix)]
+fn process_table() -> Vec<(i32, i32, String)> {
+    let Ok(out) = std::process::Command::new("ps").args(["-A", "-o", "pid=,pgid=,command="]).output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut parts = l.split_whitespace();
+            let pid = parts.next()?.parse().ok()?;
+            let pgid = parts.next()?.parse().ok()?;
+            Some((pid, pgid, parts.collect::<Vec<_>>().join(" ")))
+        })
+        .collect()
+}
+
+/// Kill the background jobs when the app is told to terminate. A SIGTERM — a
+/// quit from a script, a relaunch, an installer replacing the app — skipped the
+/// exit events that stop them, so every server the agent had started outlived
+/// the app. The handler only writes a byte (all a signal handler may safely
+/// do); a thread waiting on the other end does the work, then leaves the same
+/// way the exit handler does (`_exit`, clear of ggml's teardown).
+#[cfg(unix)]
+pub fn install_termination_cleanup() {
+    use std::sync::atomic::AtomicI32;
+    static WRITE_FD: AtomicI32 = AtomicI32::new(-1);
+    extern "C" fn on_signal(_: libc::c_int) {
+        let fd = WRITE_FD.load(Ordering::Relaxed);
+        if fd >= 0 {
+            unsafe {
+                libc::write(fd, [1u8].as_ptr() as *const libc::c_void, 1);
+            }
+        }
+    }
+    if WRITE_FD.load(Ordering::Relaxed) >= 0 {
+        return;
+    }
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return;
+    }
+    WRITE_FD.store(fds[1], Ordering::Relaxed);
+    let read_fd = fds[0];
+    std::thread::spawn(move || {
+        let mut b = [0u8; 1];
+        if unsafe { libc::read(read_fd, b.as_mut_ptr() as *mut libc::c_void, 1) } == 1 {
+            bg_kill_all();
+            unsafe { libc::_exit(0) };
+        }
+    });
+    for sig in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+        unsafe {
+            libc::signal(sig, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        }
+    }
+}
+
+/// A command that failed because its port is taken says who has it — a job of
+/// this app (restart it with bg_kill) or some other process (likely a server
+/// left over from before). Without it a model retried the same port, or read
+/// "address already in use" as a bug in its own code.
+fn port_conflict_note(text: &str, command: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    if !(lower.contains("address already in use") || lower.contains("eaddrinuse")) {
+        return None;
+    }
+    #[cfg(unix)]
+    for port in port_candidates(text, command) {
+        let Some((pid, name)) = port_holder(port) else { continue };
+        let group = unsafe { libc::getpgid(pid) };
+        let job = BG_JOBS.lock().unwrap().as_ref().and_then(|jobs| {
+            jobs.iter()
+                .find(|(_, j)| j.code.is_none() && j.pid as i32 == group)
+                .map(|(id, j)| (*id, j.command.clone()))
+        });
+        return Some(match job {
+            Some((id, cmd)) => trf!(
+                "\n\n[端口 {port} 已被占用] 占着它的是后台任务 #{id}({cmd})。如果那就是你要的服务器,它还在运行,直接用即可;要重启就先 bg_kill {id} 再启动。",
+                "\n\n[port {port} is taken] Background job #{id} ({cmd}) holds it. If that is the server you want, it is still running — use it; to restart it, bg_kill {id} first."
+            ),
+            None => trf!(
+                "\n\n[端口 {port} 已被占用] 占着它的是进程 {pid}({name}),不是这里的后台任务,可能是之前遗留的服务器。确认没用后可以 `kill {pid}` 再重试,或者换一个端口。",
+                "\n\n[port {port} is taken] Process {pid} ({name}) holds it — not one of this app's background jobs, likely a server left over from before. If it is not needed, `kill {pid}` and retry, or use another port."
+            ),
+        });
+    }
+    let _ = command;
+    None
+}
+
+/// Ports a failed command may have wanted: those on the error lines
+/// (`listen EADDRINUSE :::3000`), then numbers in the command itself (Python's
+/// error names no port: `python3 -m http.server 8000`).
+fn port_candidates(text: &str, command: &str) -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::new();
+    let on_line = regex::Regex::new(r":(\d{2,5})\b").unwrap();
+    for line in text.lines() {
+        let l = line.to_lowercase();
+        if l.contains("in use") || l.contains("eaddrinuse") {
+            out.extend(on_line.captures_iter(line).filter_map(|c| c[1].parse::<u16>().ok()));
+        }
+    }
+    let in_command = regex::Regex::new(r"(?:^|[\s=:])(\d{4,5})\b").unwrap();
+    out.extend(in_command.captures_iter(command).filter_map(|c| c[1].parse::<u16>().ok()));
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|p| *p > 0 && seen.insert(*p));
+    out
+}
+
+/// The process listening on a TCP port, by lsof: (pid, command name).
+#[cfg(unix)]
+fn port_holder(port: u16) -> Option<(i32, String)> {
+    let out = std::process::Command::new("lsof")
+        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"])
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    let pid = s.lines().find_map(|l| l.strip_prefix('p')).and_then(|p| p.parse().ok())?;
+    let name = s.lines().find_map(|l| l.strip_prefix('c')).unwrap_or("").to_string();
+    Some((pid, name))
 }
 
 #[cfg(test)]
@@ -3947,7 +4410,7 @@ fn current_session() -> String {
 
 /// A new job's id: its row in the session's task history when there is one,
 /// so an id names the same job across restarts; the counter otherwise.
-fn bg_new_id(session: &str, command: &str) -> u64 {
+fn bg_new_id(session: &str, command: &str, pid: u32) -> u64 {
     if let Some(conn) = BG_DB.lock().unwrap().as_ref() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3955,8 +4418,8 @@ fn bg_new_id(session: &str, command: &str) -> u64 {
             .unwrap_or(0);
         if conn
             .execute(
-                "INSERT INTO code_bg_tasks (session_id, command, started_at) VALUES (?1, ?2, ?3)",
-                rusqlite::params![session, command, now],
+                "INSERT INTO code_bg_tasks (session_id, command, started_at, pid) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![session, command, now, pid as i64],
             )
             .is_ok()
         {
@@ -3999,6 +4462,8 @@ fn bg_row_info(r: &rusqlite::Row) -> rusqlite::Result<BgInfo> {
         killed: killed || code.is_none(),
         elapsed_secs: r.get::<_, Option<i64>>(2)?.unwrap_or(0).max(0) as u64,
         tail: String::new(),
+        interactive: false,
+        key_mode: false,
     })
 }
 
@@ -4043,10 +4508,10 @@ fn bg_tail(buf: &Arc<Mutex<Vec<u8>>>) -> String {
     String::from_utf8_lossy(&b[start..]).into_owned()
 }
 
-fn bg_stream(r: impl Read + Send + 'static, buf: Arc<Mutex<Vec<u8>>>) {
+fn bg_stream(r: impl Read + Send + 'static, buf: Arc<Mutex<Vec<u8>>>, seen: Arc<AtomicU64>) {
     // Same streaming/cap mechanics as foreground bash; bg jobs don't need the
     // truncation flag (their tail view never claims completeness).
-    let _ = shared_stream(r, buf, Arc::new(AtomicBool::new(false)));
+    let _ = shared_stream(r, buf, Arc::new(AtomicBool::new(false)), None, Some(seen));
 }
 
 #[derive(Serialize, Clone)]
@@ -4061,13 +4526,17 @@ pub struct BgInfo {
     /// Running time: up to now while it runs, up to its end once it has ended.
     pub elapsed_secs: u64,
     pub tail: String,
+    /// Running and able to take typed input (bg_input).
+    pub interactive: bool,
+    /// …and waiting for keys rather than a line (a menu, an editor).
+    pub key_mode: bool,
 }
 
 /// Start a background command (same sandbox/PATH as `agent_bash`). Returns an
 /// id immediately; the frontend loop polls `agent_bg_reap` and tells the model
 /// when it finishes.
 #[tauri::command]
-pub fn agent_bash_bg(command: String) -> Result<u64, String> {
+pub fn agent_bash_bg(command: String, interactive: Option<bool>) -> Result<u64, String> {
     // Background jobs always run sandboxed with no stdin — an approved sudo
     // password could never reach them, so sudo would always fail with a
     // misleading "no password was provided". Refuse up front.
@@ -4078,6 +4547,10 @@ pub fn agent_bash_bg(command: String) -> Result<u64, String> {
         ));
     }
     let root = workspace()?;
+    // A command to be typed into gets a terminal of its own.
+    if interactive.unwrap_or(false) || crate::terminal::interactive_command(&command) {
+        return start_pty_job(&root, &command);
+    }
     let mut reg = BG_JOBS.lock().unwrap();
     let jobs = reg.get_or_insert_with(HashMap::new);
     bg_evict_finished(jobs);
@@ -4092,7 +4565,23 @@ pub fn agent_bash_bg(command: String) -> Result<u64, String> {
     // Background jobs (dev servers, builds) always run sandboxed — sudo isn't
     // meaningful for a long-running process and would need an interactive tty.
     let mut cmd = build_command(&root, &command, true);
-    cmd.current_dir(&root).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Every job gets a keyboard (bg_input), as a foreground command does — but
+    // not a test runner, which would turn into a watcher that never ends, nor
+    // PowerShell, which waits for its input to close.
+    let keyboard = !crate::terminal::test_command(&command) && !(cfg!(windows) && runs_powershell(&command));
+    #[cfg(unix)]
+    let mut tty: Option<std::fs::File> = None;
+    #[cfg(unix)]
+    let input_stdio = match keyboard.then(crate::terminal::stdin_tty) {
+        Some(Ok((master, slave))) => {
+            tty = Some(master);
+            Stdio::from(slave)
+        }
+        _ => Stdio::null(),
+    };
+    #[cfg(not(unix))]
+    let input_stdio = if keyboard { Stdio::piped() } else { Stdio::null() };
+    cmd.current_dir(&root).stdin(input_stdio).stdout(Stdio::piped()).stderr(Stdio::piped());
     // Own process group so bg_kill can take down the whole tree (npm → node …).
     #[cfg(unix)]
     {
@@ -4100,13 +4589,28 @@ pub fn agent_bash_bg(command: String) -> Result<u64, String> {
         cmd.process_group(0);
     }
     let mut child = cmd.spawn().map_err(|e| trf!("启动命令失败: {e}", "spawn failed: {e}"))?;
+    drop(cmd);
     let pid = child.id();
     let output: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-    bg_stream(child.stdout.take().unwrap(), output.clone());
-    bg_stream(child.stderr.take().unwrap(), output.clone());
+    let seen = Arc::new(AtomicU64::new(0));
+    bg_stream(child.stdout.take().unwrap(), output.clone(), seen.clone());
+    bg_stream(child.stderr.take().unwrap(), output.clone(), seen.clone());
+    #[cfg(unix)]
+    let input = tty.map(|master| {
+        // The echo of what is typed, in the job's output with the rest.
+        if let Ok(r) = master.try_clone() {
+            bg_stream(r, output.clone(), seen.clone());
+        }
+        JobInput::Tty(master)
+    });
+    #[cfg(not(unix))]
+    let input = child.stdin.take().map(JobInput::Pipe);
 
-    let id = bg_new_id(&current_session(), &command);
-    jobs.insert(id, BgJob::new(command, Instant::now(), output, None, pid));
+    let id = bg_new_id(&current_session(), &command, pid);
+    let mut job = BgJob::new(command, Instant::now(), output, None, pid);
+    job.seen = seen;
+    job.input = input;
+    jobs.insert(id, job);
     drop(reg);
 
     spawn_bg_monitor(id, child);
@@ -4126,12 +4630,14 @@ fn spawn_bg_monitor(id: u64, mut child: std::process::Child) {
 /// Record that a job ended, then — once its readers have drained the last of
 /// the pipes — write what became of it into its session's history.
 fn bg_mark_ended(id: u64, code: i32) {
-    if let Some(jobs) = BG_JOBS.lock().unwrap().as_mut() {
-        if let Some(job) = jobs.get_mut(&id) {
-            job.code = Some(code);
-            job.ended = Some(Instant::now());
-        }
-    }
+    let input = BG_JOBS.lock().unwrap().as_mut().and_then(|jobs| {
+        let job = jobs.get_mut(&id)?;
+        job.code = Some(code);
+        job.ended = Some(Instant::now());
+        // A job that has ended takes no more input; its terminal can go.
+        job.input.take()
+    });
+    drop(input);
     std::thread::sleep(Duration::from_millis(150));
     let snapshot = BG_JOBS
         .lock()
@@ -4146,27 +4652,194 @@ fn bg_mark_ended(id: u64, code: i32) {
 /// Move a still-running foreground bash child into the background registry
 /// (dev-server signature seen). Hands the child back when the registry is
 /// full so the caller can keep waiting with plain timeout semantics.
+#[allow(clippy::too_many_arguments)]
 fn convert_running_to_bg(
     child: std::process::Child,
     command: &str,
     started: Instant,
     out_buf: &Arc<Mutex<Vec<u8>>>,
     err_buf: &Arc<Mutex<Vec<u8>>>,
-) -> Result<u64, std::process::Child> {
+    // The command's keyboard, when it has one, goes with it.
+    input: Option<JobInput>,
+    screen: Option<(Arc<Mutex<Vec<u8>>>, bool)>,
+    seen: Arc<AtomicU64>,
+) -> Result<u64, (std::process::Child, Option<JobInput>)> {
     let mut reg = BG_JOBS.lock().unwrap();
     let jobs = reg.get_or_insert_with(HashMap::new);
     if jobs.values().filter(|j| j.code.is_none()).count() >= BG_MAX_JOBS {
-        return Err(child);
+        return Err((child, input));
     }
     let pid = child.id();
-    let id = bg_new_id(&current_session(), command);
-    jobs.insert(
-        id,
-        BgJob::new(command.to_string(), started, out_buf.clone(), Some(err_buf.clone()), pid),
-    );
+    let id = bg_new_id(&current_session(), command, pid);
+    let mut job = BgJob::new(command.to_string(), started, out_buf.clone(), Some(err_buf.clone()), pid);
+    job.input = input;
+    job.screen = screen;
+    job.seen = seen;
+    jobs.insert(id, job);
     drop(reg);
     spawn_bg_monitor(id, child);
     Ok(id)
+}
+
+/// The newest `max` bytes of a live buffer.
+fn buffer_tail(buf: &Arc<Mutex<Vec<u8>>>, max: usize) -> Vec<u8> {
+    let b = buf.lock().unwrap();
+    b[b.len().saturating_sub(max)..].to_vec()
+}
+
+/// Whether a command runs PowerShell, which reads its stdin to the end before
+/// it exits when stdin is anything but empty.
+fn runs_powershell(command: &str) -> bool {
+    let c = command.to_ascii_lowercase();
+    c.contains("powershell") || c.contains("pwsh")
+}
+
+/// Start `command` in a terminal of its own as a background job (sandboxed,
+/// like every job). The terminal's output is the job's output; what it shows
+/// is read as a screen.
+fn start_pty_job(root: &Path, command: &str) -> Result<u64, String> {
+    let std_cmd = build_command(root, command, true);
+    let program = std_cmd.get_program().to_os_string();
+    let args: Vec<std::ffi::OsString> = std_cmd.get_args().map(|a| a.to_os_string()).collect();
+    let mut envs: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)> = std_cmd
+        .get_envs()
+        .map(|(k, v)| (k.to_os_string(), v.map(|v| v.to_os_string())))
+        .collect();
+    // A pager is a screen of its own that waits for a key: output that has
+    // reached the end of itself is printed and done.
+    envs.push(("PAGER".into(), Some("cat".into())));
+    envs.push(("GIT_PAGER".into(), Some("cat".into())));
+    // REPL history lives in $HOME, where the sandbox denies writes — and says
+    // so on the screen the model reads, every time.
+    envs.push((
+        "PYTHON_HISTORY".into(),
+        Some(std::env::temp_dir().join("chaty-python-history").into_os_string()),
+    ));
+    envs.push(("NODE_REPL_HISTORY".into(), Some("".into())));
+    {
+        let mut reg = BG_JOBS.lock().unwrap();
+        let jobs = reg.get_or_insert_with(HashMap::new);
+        bg_evict_finished(jobs);
+        let running = jobs.values().filter(|j| j.code.is_none()).count();
+        if running >= BG_MAX_JOBS {
+            return Err(trf!(
+                "后台命令过多（{running} 个在跑），请先用 bg_kill 结束一些",
+                "too many background jobs ({running} running) — bg_kill some first"
+            ));
+        }
+    }
+    let p = crate::terminal::spawn_pty(&program, &args, &envs, root)?;
+    let output: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::new(AtomicU64::new(0));
+    bg_stream(p.reader, output.clone(), seen.clone());
+    let mut reg = BG_JOBS.lock().unwrap();
+    let jobs = reg.get_or_insert_with(HashMap::new);
+    let id = bg_new_id(&current_session(), command, p.pid);
+    let mut job = BgJob::new(command.to_string(), Instant::now(), output.clone(), None, p.pid);
+    job.input = Some(JobInput::Pty { writer: p.writer, master: p.master });
+    job.screen = Some((output, false));
+    job.seen = seen;
+    jobs.insert(id, job);
+    drop(reg);
+    let mut child = p.child;
+    std::thread::spawn(move || {
+        let code = child.wait().map(|st| st.exit_code() as i32).unwrap_or(-1);
+        // Let the reader take the last of the output, then close the terminal:
+        // on Windows the reader only sees the end once the pseudo console is gone.
+        std::thread::sleep(Duration::from_millis(150));
+        let input = BG_JOBS
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|jobs| jobs.get_mut(&id))
+            .and_then(|j| j.input.take());
+        drop(input);
+        bg_mark_ended(id, code);
+    });
+    Ok(id)
+}
+
+/// A program that only works typed into, run from a foreground `bash`: it
+/// starts in a terminal of its own, as a background job from the first
+/// moment. What comes back is its end, if it needed nothing after all, or the
+/// screen it is waiting on.
+fn run_in_terminal(root: &Path, command: &str, timeout: Duration) -> Result<BashResult, String> {
+    let id = start_pty_job(root, command)?;
+    let (output, seen) = {
+        let reg = BG_JOBS.lock().unwrap();
+        let job = reg.as_ref().and_then(|j| j.get(&id)).ok_or("job vanished")?;
+        (job.output.clone(), job.seen.clone())
+    };
+    let started = Instant::now();
+    let mut last_seen = 0u64;
+    let mut quiet_since = Instant::now();
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let (ended, raw) = {
+            let reg = BG_JOBS.lock().unwrap();
+            match reg.as_ref().and_then(|j| j.get(&id)) {
+                Some(job) => (job.code, job.input.as_ref().is_some_and(JobInput::raw)),
+                None => (Some(-1), false),
+            }
+        };
+        if let Some(code) = ended {
+            // Done without asking anything: an ordinary result, and no "job
+            // finished" notice to follow it.
+            if let Some(job) = BG_JOBS.lock().unwrap().as_mut().and_then(|j| j.get_mut(&id)) {
+                job.reported = true;
+            }
+            return Ok(BashResult {
+                stdout: crate::terminal::plain_log(&output.lock().unwrap()),
+                stderr: String::new(),
+                code,
+                timed_out: false,
+                bg_id: None,
+                awaiting_input: false,
+                prompt: None,
+                key_mode: false,
+            });
+        }
+        let now_seen = seen.load(Ordering::Relaxed);
+        if now_seen != last_seen {
+            last_seen = now_seen;
+            quiet_since = Instant::now();
+        }
+        let screen = || crate::terminal::render_screen(&output.lock().unwrap(), false);
+        // A screen that keeps redrawing (top, watch) is never quiet; one in
+        // key-by-key mode is waiting on the keyboard either way.
+        let settled = quiet_since.elapsed() >= Duration::from_millis(1000)
+            || (raw && started.elapsed() >= Duration::from_millis(2500));
+        if started.elapsed() >= Duration::from_millis(800) && settled {
+            let shown = screen();
+            let asked = crate::terminal::prompt_line(&shown);
+            if asked.is_some() || raw {
+                return Ok(BashResult {
+                    stdout: shown,
+                    stderr: String::new(),
+                    code: 0,
+                    timed_out: false,
+                    bg_id: Some(id),
+                    awaiting_input: true,
+                    // A REPL's `>>>` is a line prompt even in key-by-key mode.
+                    key_mode: raw && asked.as_ref().is_none_or(|p| !p.ends_with('>')),
+                    prompt: asked,
+                });
+            }
+        }
+        if started.elapsed() >= timeout {
+            // Still busy at the time limit: left running in the background.
+            return Ok(BashResult {
+                stdout: screen(),
+                stderr: String::new(),
+                code: 0,
+                timed_out: false,
+                bg_id: Some(id),
+                awaiting_input: true,
+                prompt: None,
+                key_mode: raw,
+            });
+        }
+    }
 }
 
 /// Snapshot of one background job (running or finished).
@@ -4177,7 +4850,141 @@ pub fn agent_bg_output(id: u64) -> Result<BgInfo, String> {
         .as_ref()
         .and_then(|j| j.get(&id))
         .ok_or_else(|| trf!("没有这个后台命令: #{id}", "no such background job: #{id}"))?;
-    Ok(job.info(id, job.tail()))
+    let mut info = job.info(id, job.tail());
+    let command = job.command.clone();
+    drop(reg);
+    if let Some(note) = port_conflict_note(&info.tail, &command) {
+        info.tail.push_str(&note);
+    }
+    Ok(info)
+}
+
+/// Type into a running background job: `text` as written, then the named
+/// `keys`; Enter after the text unless `enter` says otherwise (and not by
+/// default when keys are given). Waits for the job to answer, then returns
+/// what it shows.
+#[tauri::command]
+pub fn agent_bg_input(
+    id: u64,
+    text: Option<String>,
+    keys: Option<Vec<String>>,
+    enter: Option<bool>,
+) -> Result<BgInfo, String> {
+    let keys = keys.unwrap_or_default();
+    let (seen, pid, interrupt) = {
+        let mut reg = BG_JOBS.lock().unwrap();
+        let job = reg
+            .as_mut()
+            .and_then(|j| j.get_mut(&id))
+            .ok_or_else(|| trf!("没有这个后台命令: #{id}", "no such background job: #{id}"))?;
+        if let Some(code) = job.code {
+            // What it ended on says why: a command that got no answer quits.
+            let tail = job.tail();
+            return Err(trf!(
+                "后台命令 #{id} 已经结束(exit {code}),不能再输入。它最后的输出:\n{tail}\n要交互就直接用 bash 运行原命令,它停下来等输入时会给出新的编号。",
+                "background job #{id} has already ended (exit {code}) and takes no more input. Its last output:\n{tail}\nTo interact with it, run the command with bash; when it stops to ask you are given a new id."
+            ));
+        }
+        let pid = job.pid;
+        let Some(input) = job.input.as_mut() else {
+            return Err(trf!(
+                "后台命令 #{id} 不接受输入(测试命令等没有键盘)。要交互就直接用 bash 运行命令。",
+                "background job #{id} does not take input (test runners and the like get no keyboard). To interact, run the command with bash."
+            ));
+        };
+        let terminal = input.terminal();
+        let own_terminal = matches!(input, JobInput::Pty { .. });
+        let mut bytes: Vec<u8> = Vec::new();
+        if let Some(t) = &text {
+            // A line break inside the text is Enter, as the job reads it.
+            let enter_bytes = crate::terminal::key_bytes("enter", terminal).unwrap_or_default();
+            let lines: Vec<&str> = t.split('\n').collect();
+            for (i, line) in lines.iter().enumerate() {
+                bytes.extend_from_slice(line.strip_suffix('\r').unwrap_or(line).as_bytes());
+                if i + 1 < lines.len() {
+                    bytes.extend_from_slice(&enter_bytes);
+                }
+            }
+        }
+        let mut interrupt = false;
+        for k in &keys {
+            let Some(b) = crate::terminal::key_bytes(k, terminal) else {
+                return Err(trf!(
+                    "不认识的按键「{k}」。可用的按键:{}",
+                    "unknown key \"{k}\". Known keys: {}",
+                    crate::terminal::KEY_NAMES
+                ));
+            };
+            // ^C becomes an interrupt only on a program's own terminal; a
+            // stdin that is not one is signalled instead.
+            if b == [3] && !own_terminal {
+                interrupt = true;
+                continue;
+            }
+            bytes.extend(b);
+        }
+        if enter.unwrap_or(keys.is_empty() && text.is_some()) {
+            bytes.extend(crate::terminal::key_bytes("enter", terminal).unwrap_or_default());
+        }
+        if bytes.is_empty() && !interrupt {
+            return Err(tr("没有要输入的内容:给出 text 或 keys", "nothing to type — give text or keys"));
+        }
+        #[cfg(not(unix))]
+        if interrupt {
+            return Err(trf!(
+                "无法向后台命令 #{id} 发送 ctrl-c;要结束它请用 bg_kill",
+                "ctrl-c cannot be sent to background job #{id}; use bg_kill to stop it"
+            ));
+        }
+        if !bytes.is_empty() {
+            input.send(&bytes).map_err(|e| trf!("输入失败: {e}", "input failed: {e}"))?;
+        }
+        (job.seen.clone(), pid, interrupt)
+    };
+    #[cfg(unix)]
+    if interrupt {
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGINT);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (pid, interrupt);
+    // Wait for the answer: output that has settled for a moment, or nothing
+    // for a while (a password is not echoed; a slow step takes its time).
+    let t0 = Instant::now();
+    let mut last = seen.load(Ordering::Relaxed);
+    let mut changed_at: Option<Instant> = None;
+    loop {
+        std::thread::sleep(Duration::from_millis(50));
+        let now = seen.load(Ordering::Relaxed);
+        if now != last {
+            last = now;
+            changed_at = Some(Instant::now());
+        }
+        let ended = BG_JOBS
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|j| j.get(&id))
+            .is_none_or(|j| j.code.is_some());
+        let settled = match changed_at {
+            Some(at) => at.elapsed() >= Duration::from_millis(500),
+            None => t0.elapsed() >= Duration::from_millis(1500),
+        };
+        if settled || ended || t0.elapsed() >= Duration::from_secs(5) {
+            break;
+        }
+    }
+    let info = agent_bg_output(id)?;
+    // The answer ended it, and the model is reading that now: a "job finished"
+    // notice on the next step would only repeat it (and a 4B then went to
+    // bg_kill the job it had just watched end).
+    if !info.running {
+        if let Some(job) = BG_JOBS.lock().unwrap().as_mut().and_then(|j| j.get_mut(&id)) {
+            job.reported = true;
+        }
+    }
+    Ok(info)
 }
 
 /// Kill a background job (SIGKILL to its process group on unix).
@@ -4491,6 +5298,323 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         let info = agent_bg_output(id).expect("job still listed");
         assert!(!info.running, "killed job must not be running");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Waits for a background job to end; its last tail.
+    #[cfg(unix)]
+    fn wait_job_end(id: u64, within: Duration) -> BgInfo {
+        let deadline = Instant::now() + within;
+        loop {
+            let info = agent_bg_output(id).expect("job exists");
+            if !info.running {
+                return info;
+            }
+            assert!(Instant::now() < deadline, "job #{id} never ended; screen:\n{}", info.tail);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// A command that stops on a question goes on in the background, and what
+    /// is typed with bg_input reaches it — `read` prompts only when its input
+    /// is a terminal, which it now is.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_asks_is_answered_in_the_background() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-ask-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let t0 = Instant::now();
+        let res = run_bash(
+            &dir,
+            "printf 'Delete build/? [y/N] '; read answer; echo got=$answer",
+            Duration::from_secs(60),
+            None,
+            true,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("run");
+        assert!(t0.elapsed() < Duration::from_secs(8), "a question is noticed long before the timeout");
+        let id = res.bg_id.expect("moved to the background");
+        assert!(res.awaiting_input);
+        assert_eq!(res.prompt.as_deref(), Some("Delete build/? [y/N]"));
+        assert!(agent_bg_output(id).unwrap().interactive);
+        agent_bg_input(id, Some("y".into()), None, None).expect("typed");
+        let end = wait_job_end(id, Duration::from_secs(5));
+        assert_eq!(end.code, Some(0));
+        assert!(end.tail.contains("got=y"), "{}", end.tail);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_python_prompt_waits_for_its_answer() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-pyask-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let res = run_bash(
+            &dir,
+            "python3 -c \"n = input('Your name: '); print('hello', n)\"",
+            Duration::from_secs(60),
+            None,
+            true,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("run");
+        let id = res.bg_id.expect("moved to the background");
+        assert_eq!(res.prompt.as_deref(), Some("Your name:"));
+        let shown = agent_bg_input(id, Some("Ada".into()), None, None).expect("typed");
+        let end = if shown.running { wait_job_end(id, Duration::from_secs(5)) } else { shown };
+        assert!(end.tail.contains("hello Ada"), "{}", end.tail);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Reading input nobody asked for still ends: after a quiet spell the
+    /// command gets end-of-input, as it did when stdin was empty.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_reading_unasked_input_still_ends() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-eof-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let t0 = Instant::now();
+        let res = run_bash(&dir, "cat; echo after-cat", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
+            .expect("run");
+        assert!(res.bg_id.is_none(), "nothing was asked: {res:?}", res = res.stdout);
+        assert!(res.stdout.contains("after-cat"));
+        assert!(t0.elapsed() < Duration::from_secs(12));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A program reading keys one at a time asks nothing in words; the
+    /// terminal it put into key mode says it is waiting.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_waiting_for_keys_is_recognised() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-keys-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let script = "import sys, tty, termios\nold = termios.tcgetattr(0)\ntty.setraw(0)\nc = sys.stdin.read(3)\ntermios.tcsetattr(0, termios.TCSADRAIN, old)\nprint('key', repr(c))\n";
+        std::fs::write(dir.join("keys.py"), script).unwrap();
+        let res = run_bash(&dir, "python3 keys.py", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
+            .expect("run");
+        let id = res.bg_id.expect("moved to the background");
+        assert!(res.awaiting_input);
+        assert!(res.key_mode, "a program reading keys is flagged, so the model is told to send keys");
+        assert!(res.prompt.is_none(), "no line of it is a question");
+        assert!(agent_bg_output(id).unwrap().key_mode);
+        let shown = agent_bg_input(id, None, Some(vec!["down".into()]), None).expect("typed");
+        let end = if shown.running { wait_job_end(id, Duration::from_secs(5)) } else { shown };
+        assert!(end.tail.contains("key '\\x1b[B'"), "{}", end.tail);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A REPL starts in a terminal of its own, is typed into, and ends on ^D.
+    #[cfg(unix)]
+    #[test]
+    fn a_repl_is_a_conversation() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-repl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let res = run_bash(&dir, "python3 -q", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
+            .expect("run");
+        let id = res.bg_id.expect("a REPL runs in the background");
+        assert!(res.awaiting_input);
+        assert!(res.stdout.contains(">>>"), "{}", res.stdout);
+        let shown = agent_bg_input(id, Some("print(6 * 7)".into()), None, None).expect("typed");
+        assert!(shown.tail.contains("42"), "{}", shown.tail);
+        agent_bg_input(id, None, Some(vec!["ctrl-d".into()]), None).expect("^D");
+        let end = wait_job_end(id, Duration::from_secs(5));
+        assert!(!end.running);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A plain background job has a keyboard too: `bash_bg npm init` waits for
+    /// answers instead of ending on empty input.
+    #[cfg(unix)]
+    #[test]
+    fn a_background_job_can_be_answered() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-bgask-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let id = agent_bash_bg("printf 'Name: '; read n; echo hi-$n".into(), None).expect("start");
+        std::thread::sleep(Duration::from_millis(500));
+        let info = agent_bg_output(id).unwrap();
+        assert!(info.running && info.interactive, "{info:?}", info = info.tail);
+        let shown = agent_bg_input(id, Some("Ada".into()), None, None).expect("typed");
+        let end = if shown.running { wait_job_end(id, Duration::from_secs(5)) } else { shown };
+        assert!(end.tail.contains("hi-Ada"), "{}", end.tail);
+        // Typing at a job that has ended says how it ended.
+        let err = agent_bg_input(id, Some("again".into()), None, None).err().expect("an ended job takes no input");
+        assert!(err.contains("hi-Ada"), "{err}");
+        // A test runner gets no keyboard.
+        let t = agent_bash_bg("npm test --if-present; true".into(), None).expect("start");
+        assert!(!agent_bg_output(t).unwrap().interactive);
+        agent_bg_kill(t).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// bash_bg with interactive: keys, and ^C as the interrupt it is.
+    #[cfg(unix)]
+    #[test]
+    fn an_interactive_job_takes_an_interrupt() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-int-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let id = agent_bash_bg(
+            "trap 'echo caught; exit 3' INT; echo ready; while true; do sleep 1; done".into(),
+            Some(true),
+        )
+        .expect("start");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !agent_bg_output(id).unwrap().tail.contains("ready") {
+            assert!(Instant::now() < deadline, "never started");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        agent_bg_input(id, None, Some(vec!["ctrl-c".into()]), None).expect("^C");
+        let end = wait_job_end(id, Duration::from_secs(5));
+        assert!(end.tail.contains("caught"), "{}", end.tail);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Commands that ask nothing are what they were: prompt results, no job.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_asks_nothing_is_unchanged() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-plain-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let t0 = Instant::now();
+        let res = run_bash(&dir, "echo hi; ls /no-such-dir", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
+            .expect("run");
+        assert!(t0.elapsed() < Duration::from_secs(3));
+        assert!(res.bg_id.is_none());
+        assert_eq!(res.stdout, "hi\n");
+        assert_ne!(res.code, 0);
+        // A label printed before the work it names is not a question.
+        let res = run_bash(&dir, "printf 'Building: '; sleep 2; echo built", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
+            .expect("run");
+        assert!(res.bg_id.is_none(), "a label was taken for a question");
+        assert!(res.stdout.contains("built"));
+        // Asking for a password with no one to type it fails as before, rather
+        // than hanging: the terminal is not a controlling terminal.
+        let res = run_bash(&dir, "exec </dev/tty", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
+            .expect("run");
+        assert!(res.bg_id.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Windows: a prompt read from the open stdin pipe is answered in the
+    /// background; a Python REPL runs in a pseudo console; commands that ask
+    /// nothing — PowerShell among them — end as fast as they always did.
+    #[cfg(windows)]
+    fn wait_job_end_windows(id: u64, within: Duration) -> BgInfo {
+        let deadline = Instant::now() + within;
+        loop {
+            let info = agent_bg_output(id).expect("job exists");
+            if !info.running {
+                return info;
+            }
+            assert!(Instant::now() < deadline, "job #{id} never ended; screen:\n{}", info.tail);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_a_prompt_is_answered_in_the_background() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-ask-win-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let res = run_bash(
+            &dir,
+            "python -c \"a = input('Continue? [y/N] '); print('got=' + a)\"",
+            Duration::from_secs(60),
+            None,
+            true,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("run");
+        let id = res.bg_id.unwrap_or_else(|| panic!("moved to the background; got {} / {}", res.stdout, res.stderr));
+        assert!(res.awaiting_input);
+        let shown = agent_bg_input(id, Some("y".into()), None, None).expect("typed");
+        let end = if shown.running { wait_job_end_windows(id, Duration::from_secs(10)) } else { shown };
+        assert!(end.tail.contains("got=y"), "{}", end.tail);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_a_repl_runs_in_a_pseudo_console() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-repl-win-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let res = run_bash(&dir, "python -q", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
+            .expect("run");
+        let id = res.bg_id.expect("a REPL runs in the background");
+        assert!(res.stdout.contains(">>>"), "{}", res.stdout);
+        let shown = agent_bg_input(id, Some("print(6 * 7)".into()), None, None).expect("typed");
+        assert!(shown.tail.contains("42"), "{}", shown.tail);
+        agent_bg_input(id, Some("exit()".into()), None, None).expect("exit");
+        let end = wait_job_end_windows(id, Duration::from_secs(10));
+        assert!(!end.running);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_commands_that_ask_nothing_are_unchanged() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-plain-win-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        for cmd in ["echo hi", "powershell -NoProfile -Command \"Write-Output hi\""] {
+            let t0 = Instant::now();
+            let res = run_bash(&dir, cmd, Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
+                .expect("run");
+            assert!(res.bg_id.is_none(), "{cmd}: {}", res.stdout);
+            assert!(res.stdout.contains("hi"), "{cmd}: {}", res.stdout);
+            assert!(t0.elapsed() < Duration::from_secs(5), "{cmd} took {:?}", t0.elapsed());
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The tool is called bash and runs bash: what a model writes for bash
+    /// means what it says, and `echo` still expands escapes as /bin/sh did.
+    /// A BASH_ENV from the user's environment runs nothing first.
+    #[cfg(unix)]
+    #[test]
+    fn commands_run_in_bash() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-bash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let run = |c: &str| run_bash(&dir, c, Duration::from_secs(30), None, true, Some(Duration::from_secs(10))).expect("run");
+        let r = run("echo -e 'a\\nb'");
+        assert_eq!(r.stdout, "a\nb\n", "echo -e prints two lines");
+        assert_eq!(run("echo 'c\\nd'").stdout, "c\nd\n", "echo still expands escapes as /bin/sh did");
+        assert_eq!(run("echo -n x").stdout, "x");
+        assert_eq!(run("arr=(p q); echo ${arr[1]}; [[ 1 == 1 ]] && echo {1..3}").stdout, "q\n1 2 3\n");
+        // A startup file named in the environment is not read.
+        let rc = dir.join("startup.sh");
+        std::fs::write(&rc, "echo from-startup-file\n").unwrap();
+        std::env::set_var("BASH_ENV", &rc);
+        let r = run("echo plain");
+        std::env::remove_var("BASH_ENV");
+        assert_eq!(r.stdout, "plain\n");
+        // Unsandboxed (an approved sudo) runs the same shell.
+        let r = run_bash(&dir, "echo -e 'x\\ny'", Duration::from_secs(30), None, false, None).expect("run");
+        assert_eq!(r.stdout, "x\ny\n");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -5326,6 +6450,69 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    /// A job the last run of the app never saw end is killed at startup when its
+    /// process group still runs its command; a group running something else is
+    /// left alone. Both rows close either way.
+    #[cfg(unix)]
+    #[test]
+    fn a_job_left_running_by_the_last_run_is_reaped_at_startup() {
+        use std::os::unix::process::CommandExt;
+        let mut leftover = std::process::Command::new("/bin/sh").args(["-c", "sleep 300"]).process_group(0).spawn().unwrap();
+        let mut other = std::process::Command::new("/bin/sh").args(["-c", "sleep 301"]).process_group(0).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let db = std::env::temp_dir().join(format!("chaty-reap-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(BG_SCHEMA).unwrap();
+        let _ = conn.execute("ALTER TABLE code_bg_tasks ADD COLUMN pid INTEGER", []);
+        let add = |cmd: &str, pid: u32| {
+            conn.execute(
+                "INSERT INTO code_bg_tasks (session_id, command, started_at, pid) VALUES ('s', ?1, 0, ?2)",
+                rusqlite::params![cmd, pid as i64],
+            )
+            .unwrap();
+        };
+        add("sleep 300", leftover.id());
+        add("python3 -m http.server 8000", other.id());
+        reap_leftover_jobs(&conn);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(leftover.try_wait().unwrap().is_some(), "the leftover job's group is killed");
+        assert!(other.try_wait().unwrap().is_none(), "a group running something else is left alone");
+        let closed: i64 = conn.query_row("SELECT COUNT(*) FROM code_bg_tasks WHERE killed = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(closed, 2);
+        let _ = other.kill();
+        let _ = other.wait();
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// "address already in use" comes back naming who holds the port.
+    #[cfg(unix)]
+    #[test]
+    fn a_taken_port_names_its_holder() {
+        if std::process::Command::new("lsof").arg("-v").output().is_err() {
+            eprintln!("SKIP: no lsof");
+            return;
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let text = format!("Error: listen EADDRINUSE: address already in use :::{port}");
+        let note = port_conflict_note(&text, "node server.js").expect("a note for a taken port");
+        assert!(note.contains(&port.to_string()) && note.contains(&std::process::id().to_string()), "{note}");
+        assert!(port_conflict_note("Server running on :3000", "node server.js").is_none());
+        drop(listener);
+    }
+
+    #[test]
+    fn a_job_command_and_the_ports_it_wanted_are_read_back() {
+        assert_eq!(command_key("[detached] python3 -m http.server 18762 > /dev/null 2>&1 &"), "python3 -m");
+        assert_eq!(command_key("npm run dev"), "npm run");
+        assert_eq!(port_candidates("OSError: [Errno 48] Address already in use", "python3 -m http.server 8000"), vec![8000]);
+        assert_eq!(
+            port_candidates("Error: listen EADDRINUSE: address already in use :::3000", "npm run dev"),
+            vec![3000]
+        );
+    }
+
     #[test]
     fn bg_job_roundtrip() {
         let _g = serial();
@@ -5338,7 +6525,7 @@ mod tests {
         #[cfg(unix)]
         assert!(augmented_path().contains("/usr/bin"));
 
-        let id = agent_bash_bg("echo started; sleep 0.2; echo done-marker".into()).unwrap();
+        let id = agent_bash_bg("echo started; sleep 0.2; echo done-marker".into(), None).unwrap();
         // Running immediately after spawn.
         let info = agent_bg_output(id).unwrap();
         assert!(info.running || info.code == Some(0));
@@ -5359,7 +6546,7 @@ mod tests {
         assert!(agent_bg_reap().iter().all(|j| j.id != id));
 
         // Kill path: a long sleeper dies on request and never gets reported.
-        let id2 = agent_bash_bg("sleep 30".into()).unwrap();
+        let id2 = agent_bash_bg("sleep 30".into(), None).unwrap();
         agent_bg_kill(id2).unwrap();
         std::thread::sleep(Duration::from_millis(200));
         assert!(agent_bg_reap().iter().all(|j| j.id != id2));
@@ -5377,8 +6564,8 @@ mod tests {
         // A clean registry: the server tests stop their jobs but leave them listed.
         bg_kill_all();
 
-        let done = agent_bash_bg("echo first-line; echo second-line".into()).unwrap();
-        let sleeper = agent_bash_bg("sleep 30".into()).unwrap();
+        let done = agent_bash_bg("echo first-line; echo second-line".into(), None).unwrap();
+        let sleeper = agent_bash_bg("sleep 30".into(), None).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while agent_bg_all().iter().any(|j| j.id == done && j.running) {
             assert!(Instant::now() < deadline, "bg job never finished");
@@ -5482,15 +6669,15 @@ mod tests {
         };
 
         agent_set_session("A".into());
-        let a_done = agent_bash_bg("echo from-a".into()).unwrap();
-        let a_server = agent_bash_bg("sleep 30".into()).unwrap();
+        let a_done = agent_bash_bg("echo from-a".into(), None).unwrap();
+        let a_server = agent_bash_bg("sleep 30".into(), None).unwrap();
         wait_done(a_done);
 
         // Session B sees none of A's jobs, and its agent loop is not told
         // about A's.
         agent_set_session("B".into());
         assert!(agent_bg_all().is_empty());
-        let b_done = agent_bash_bg("echo from-b".into()).unwrap();
+        let b_done = agent_bash_bg("echo from-b".into(), None).unwrap();
         wait_done(b_done);
         let reaped = agent_bg_reap();
         assert!(reaped.iter().any(|j| j.id == b_done));

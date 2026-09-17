@@ -624,7 +624,9 @@ describe("run-check through the real loop", () => {
     expect(final).toContain("Truly done");
   });
 
-  it("near-identical full rewrite is accepted with a tip; a real partial regen still bounces", async () => {
+  it("a rewrite of an existing file is written as given — no bounce to edit_file, no tip", async () => {
+    // The bounce sent partial rewrites back to edit_file; measured, it mostly
+    // derailed the model into failed edits of a file it had already written.
     const tweaked = BIG_PY.replace("print(0)", "print(999)");
     const partial = BIG_PY.split("\n").map((l, i) => (i % 6 === 0 ? l + " # x" : l)).join("\n");
     const { injects } = await runRounds([
@@ -634,10 +636,8 @@ describe("run-check through the real loop", () => {
       call("bash", { command: "python3 tool.py" }),
       "Done.",
     ]);
-    const tip = injects.find((i) => i.includes("prefer edit_file next time"));
-    expect(tip).toBeTruthy();
-    const bounce = injects.find((i) => i.includes("not written"));
-    expect(bounce).toBeTruthy();
+    expect(injects.some((i) => i.includes("not written"))).toBe(false);
+    expect(injects.some((i) => i.includes("prefer edit_file next time"))).toBe(false);
   });
 
   it("five consecutive pure-observation steps → act-now breaker", async () => {

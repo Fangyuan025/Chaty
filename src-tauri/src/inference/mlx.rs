@@ -767,6 +767,7 @@ fn run_generation(
                 "seed": p.seed,
                 "think": p.think,
                 "effort": p.effort,
+                "scratch": p.scratch,
             },
         }),
     )?;

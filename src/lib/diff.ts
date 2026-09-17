@@ -68,7 +68,12 @@ const LCS_CELL_LIMIT = 4_000_000;
  * small edit), and returns exact add/removed counts plus render-ready rows
  * (with a few lines of surrounding context).
  */
-export function diffLines(before: string, after: string, renderCap = MAX_RENDER_ROWS): DiffResult {
+export function diffLines(
+  before: string,
+  after: string,
+  renderCap = MAX_RENDER_ROWS,
+  cellLimit = LCS_CELL_LIMIT,
+): DiffResult {
   const a = before.length ? before.split("\n") : [];
   const b = after.length ? after.split("\n") : [];
 
@@ -85,7 +90,7 @@ export function diffLines(before: string, after: string, renderCap = MAX_RENDER_
   const midA = a.slice(s, ea);
   const midB = b.slice(s, eb);
   let mid: DiffRow[];
-  if (midA.length * midB.length > LCS_CELL_LIMIT) {
+  if (midA.length * midB.length > cellLimit) {
     mid = [
       ...midA.map((text): DiffRow => ({ kind: "del", text })),
       ...midB.map((text): DiffRow => ({ kind: "add", text })),

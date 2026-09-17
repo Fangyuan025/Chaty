@@ -1207,35 +1207,91 @@ fn worker(
     // Multimodal analogue of `cached` (see `MediaCache`).
     let mut media_cache: Option<MediaCache> = None;
 
+    // Side generations (GenParams::scratch) get a context of their own, made
+    // on first use, so the conversation's cache survives them. Text only, and
+    // small: its KV is memory held for the rest of the load (a dense 8B at
+    // 4096 positions is about 0.6 GB), and what runs there — a title, a search
+    // query — reads a capped slice of the conversation and writes a line.
+    let scratch_n_ctx = n_ctx.min(4096);
+    let mut scratch_dec: Option<Decoder> = None;
+    let mut scratch_cached: Vec<LlamaToken> = Vec::new();
+    let mut scratch_media: Option<MediaCache> = None;
+
     while let Ok(job) = rx.recv() {
         match job {
             Job::Generate { req, sink, cancel, done } => {
-                let result = run_turn(
-                    &model,
-                    &mut dec,
-                    &mut cached,
-                    mtmd.as_ref(),
-                    &mut media_cache,
-                    n_ctx,
-                    &req,
-                    &sink,
-                    &cancel,
-                );
+                if req.params.scratch && scratch_dec.is_none() {
+                    match scratch_decoder(&model, backend, n_threads, scratch_n_ctx) {
+                        Ok(d) => scratch_dec = Some(d),
+                        Err(e) => {
+                            let _ = done.send(Err(e));
+                            continue;
+                        }
+                    }
+                }
+                let result = if req.params.scratch {
+                    run_turn(
+                        &model,
+                        scratch_dec.as_mut().unwrap(),
+                        &mut scratch_cached,
+                        None,
+                        &mut scratch_media,
+                        scratch_n_ctx,
+                        &req,
+                        &sink,
+                        &cancel,
+                    )
+                } else {
+                    run_turn(
+                        &model,
+                        &mut dec,
+                        &mut cached,
+                        mtmd.as_ref(),
+                        &mut media_cache,
+                        n_ctx,
+                        &req,
+                        &sink,
+                        &cancel,
+                    )
+                };
                 let _ = done.send(result);
             }
             Job::Collect { req, cancel, done } => {
                 let sink = StringSink { buf: std::cell::RefCell::new(String::new()) };
-                let result = run_turn(
-                    &model,
-                    &mut dec,
-                    &mut cached,
-                    mtmd.as_ref(),
-                    &mut media_cache,
-                    n_ctx,
-                    &req,
-                    &sink,
-                    &cancel,
-                )
+                if req.params.scratch && scratch_dec.is_none() {
+                    match scratch_decoder(&model, backend, n_threads, scratch_n_ctx) {
+                        Ok(d) => scratch_dec = Some(d),
+                        Err(e) => {
+                            let _ = done.send(Err(e));
+                            continue;
+                        }
+                    }
+                }
+                let result = if req.params.scratch {
+                    run_turn(
+                        &model,
+                        scratch_dec.as_mut().unwrap(),
+                        &mut scratch_cached,
+                        None,
+                        &mut scratch_media,
+                        scratch_n_ctx,
+                        &req,
+                        &sink,
+                        &cancel,
+                    )
+                } else {
+                    run_turn(
+                        &model,
+                        &mut dec,
+                        &mut cached,
+                        mtmd.as_ref(),
+                        &mut media_cache,
+                        n_ctx,
+                        &req,
+                        &sink,
+                        &cancel,
+                    )
+                }
                 .map(|()| sink.buf.into_inner());
                 let _ = done.send(result);
             }
@@ -1377,6 +1433,19 @@ fn speculate(
         None => {}
     }
     Ok(Some((ids, drafts.len())))
+}
+
+/// A side generation's context (GenParams::scratch): its own KV, so the
+/// conversation's cache is still there when the conversation goes on.
+fn scratch_decoder<'m>(model: &'m LlamaModel, backend: &LlamaBackend, n_threads: i32, n_ctx: u32) -> Result<Decoder<'m>> {
+    let params = LlamaContextParams::default()
+        .with_n_ctx(NonZeroU32::new(n_ctx))
+        .with_n_threads(n_threads)
+        .with_n_threads_batch(n_threads);
+    let ctx = model
+        .new_context(backend, params)
+        .map_err(|e| anyhow::anyhow!("side-generation context: {e:#}"))?;
+    Ok(Decoder::Plain(ctx))
 }
 
 fn run_turn(

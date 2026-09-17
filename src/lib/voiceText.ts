@@ -61,6 +61,14 @@ function trimPartialTag(s: string): string {
  * `<think>…</think>` block, text between spans stays answer text, and an
  * unterminated span is left open for the streaming UI.
  */
+/** A person never reads LFM2's tool calls. Dropping only the markers (as
+ *  normalizeChannels does) left `[read_file(path='…')]` on screen as if it were
+ *  the reply; the whole span goes, an unfinished one included. Display only —
+ *  the recorded turn keeps every token of it. */
+export function withoutToolCallSpans(s: string): string {
+  return s.replace(/<[|｜]tool_call_start[|｜]>[\s\S]*?(?:<[|｜]tool_call_end[|｜]>|$)/gi, "");
+}
+
 export function normalizeChannels(s: string): string {
   // LFM2 writes its tool calls as `<|tool_call_start|>[fn(arg='v')]<|tool_call_end|>`
   // whatever format the system prompt asks for. The engine now streams those

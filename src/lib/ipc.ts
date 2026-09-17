@@ -29,6 +29,9 @@ export interface GenParams {
   /** Reasoning control for switch-less models (Qwen3.5+): false force-disables
    *  thinking, true/undefined leaves the model default. */
   think?: boolean | null;
+  /** A side generation (a title, a search-query rewrite) that must leave the
+   *  conversation's cache as it was — see GenParams::scratch in the engine. */
+  scratch?: boolean;
   /** Native reasoning-effort rung for models whose chat template takes a
    *  `reasoning_effort` kwarg (Qwen3.8: "low" | "medium" | "xhigh"). Ignored
    *  by every other model. */
@@ -267,6 +270,13 @@ export interface AgentBashResult {
   /** Set when a still-running dev server was auto-moved to the background:
    *  the background job's id (see agent.rs run_bash). */
   bgId?: number;
+  /** With bgId: the command stopped to ask for input (or only works typed
+   *  into) and waits in the background for bg_input. */
+  awaitingInput?: boolean;
+  /** The line it stopped on, when that reads as a question. */
+  prompt?: string;
+  /** It waits for keys (a menu, an editor), not a line of text. */
+  keyMode?: boolean;
 }
 
 export async function agentSetWorkspace(path: string): Promise<string> {
@@ -377,11 +387,28 @@ export interface AgentBgInfo {
   /** Running time — up to now while it runs, up to its end once it ended. */
   elapsedSecs: number;
   tail: string;
+  /** Running and able to take typed input (agentBgInput). For such a job the
+   *  tail is the terminal screen. */
+  interactive?: boolean;
+  /** …and waits for keys (a menu, an editor) rather than a line. */
+  keyMode?: boolean;
 }
 
-/** Start a background command; returns its id immediately. */
-export async function agentBashBg(command: string): Promise<number> {
-  return invoke<number>("agent_bash_bg", { command });
+/** Start a background command; returns its id immediately. `interactive`
+ *  runs it in a terminal of its own, to be typed into. */
+export async function agentBashBg(command: string, interactive?: boolean): Promise<number> {
+  return invoke<number>("agent_bash_bg", { command, interactive });
+}
+/** Type into a running background command: `text` as written, then named
+ *  `keys`; Enter after the text unless `enter` says otherwise. Resolves once
+ *  the job has answered, with what it now shows. */
+export async function agentBgInput(
+  id: number,
+  text?: string,
+  keys?: string[],
+  enter?: boolean,
+): Promise<AgentBgInfo> {
+  return invoke<AgentBgInfo>("agent_bg_input", { id, text, keys, enter });
 }
 /** Current status + output tail of one background command. */
 export async function agentBgOutput(id: number): Promise<AgentBgInfo> {
@@ -1406,4 +1433,24 @@ export async function clearErrorLog(): Promise<void> {
 
 export async function openErrorLog(): Promise<void> {
   await invoke("open_error_log");
+}
+
+/** A global skill in ~/.chaty/skills/ — imported in Settings, or dropped there. */
+export interface UserSkill {
+  name: string;
+  description: string;
+  path: string;
+}
+
+export async function skillsListUser(): Promise<UserSkill[]> {
+  return await invoke<UserSkill[]>("skills_list_user");
+}
+
+/** Copy a markdown file into ~/.chaty/skills/, giving it a usable name. */
+export async function skillsImport(path: string): Promise<UserSkill> {
+  return await invoke<UserSkill>("skills_import", { path });
+}
+
+export async function skillsDeleteUser(path: string): Promise<void> {
+  await invoke("skills_delete_user", { path });
 }

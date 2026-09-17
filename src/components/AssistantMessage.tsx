@@ -2,7 +2,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { Markdown, StreamingContext } from "./Markdown";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
-import { normalizeChannels } from "../lib/voiceText";
+import { normalizeChannels, withoutToolCallSpans } from "../lib/voiceText";
 import { parseThinking } from "../lib/reasoning";
 
 const SOURCE_RE = /[【[（(]\s*来源\s*[\d０-９,，、\s]+[】\])）]/g;
@@ -52,7 +52,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   // and any stray tags so a buggy/empty panel can never appear.
   if (hideThinking) {
     const answer = prepareCitations(
-      normalizeChannels(content)
+      normalizeChannels(withoutToolCallSpans(content))
         .replace(/<think>[\s\S]*?<\/think>/g, "")
         .replace(/<think>[\s\S]*$/, "")
         .replace(/<\/?think>/g, ""),
@@ -79,7 +79,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     );
   }
 
-  const { reasoning, answer, thinking: open, hasThink } = parseThinking(content);
+  const { reasoning, answer, thinking: open, hasThink } = parseThinking(withoutToolCallSpans(content));
   // An unclosed think block is "thinking" only while the reply streams. One
   // that was stopped, or ended by an error, is finished reasoning — it kept a
   // "Thinking" label and its dots running forever after (issue #18).

@@ -32,6 +32,7 @@ import { BUILTIN_SKILLS } from "../lib/skills";
 import { loadMcpServers, saveMcpServers, syncMcpServers, type McpServerCfg } from "../lib/mcp";
 import catalog from "../lib/mcpStore.catalog.json";
 import { disabledSkills, officialSkills, setDisabledSkills } from "../lib/skillFiles";
+import { skillsDeleteUser, skillsImport, skillsListUser, type UserSkill } from "../lib/ipc";
 import { fmtBytes } from "../lib/fmt";
 import logoUrl from "../assets/logo.png";
 
@@ -110,6 +111,9 @@ export interface GenSettings {
   codeMemory: boolean;
   /** Code mode: the session rail grouped by workspace. */
   codeGroupByWorkspace: boolean;
+  /** Code mode: a write/edit card is open while its call is being written
+   *  (the diff grows in view); off, it stays folded to its header. */
+  codeLiveCardsOpen: boolean;
   /** Code mode: user-defined skills (named prompt templates, invoked via /). */
   codeSkills: PromptPreset[];
   /** Code mode: names of built-in skills the user turned off. */
@@ -190,6 +194,7 @@ export const defaultSettings: GenSettings = {
   codeBrowserHeadless: false,
   codeMemory: true,
   codeGroupByWorkspace: false,
+  codeLiveCardsOpen: true,
   codeSkills: [],
   codeDisabledSkills: [],
   codeAllowedCommands: [],
@@ -635,6 +640,35 @@ export function SettingsPanel({
   const [mcpToken, setMcpToken] = useState("");
   /** Store entry pending placeholder/token input before it can be added. */
   const [skillOff, setSkillOff] = useState<string[]>(disabledSkills);
+  // Skill files the user imported (or dropped into ~/.chaty/skills/ by hand).
+  const [userSkills, setUserSkills] = useState<UserSkill[]>([]);
+  const [skillImportNote, setSkillImportNote] = useState("");
+  // Read afresh whenever the Code page is shown: the panel stays mounted, and
+  // a file put in the folder by hand used to appear only after a restart.
+  useEffect(() => {
+    if (open && cat === "code") void skillsListUser().then(setUserSkills).catch(() => {});
+  }, [open, cat]);
+  async function importSkillFiles() {
+    const picked = await openDialog({ multiple: true, filters: [{ name: "Markdown", extensions: ["md", "markdown"] }] });
+    const paths = picked == null ? [] : Array.isArray(picked) ? picked : [picked];
+    if (paths.length === 0) return;
+    // The new rows are the confirmation; only a file that failed says anything.
+    const failures: string[] = [];
+    for (const p of paths) {
+      try {
+        await skillsImport(p);
+      } catch (e) {
+        failures.push(`${p.split(/[\\/]/).pop()}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    setUserSkills(await skillsListUser().catch(() => []));
+    setSkillImportNote(failures.join("\n"));
+  }
+  async function removeUserSkill(s: UserSkill) {
+    setSkillImportNote("");
+    await skillsDeleteUser(s.path).catch((e) => setSkillImportNote(e instanceof Error ? e.message : String(e)));
+    setUserSkills(await skillsListUser().catch(() => []));
+  }
   const toggleSkill = (name: string) => {
     const next = skillOff.includes(name) ? skillOff.filter((n) => n !== name) : [...skillOff, name];
     setSkillOff(next);
@@ -1340,6 +1374,12 @@ export function SettingsPanel({
                   onToggle={() => set("codeMemory", !value.codeMemory)}
                 />
               </SetRow>
+              <SetRow label={t("cmLiveCardsOpen")} hint={t("cmLiveCardsOpenHint")}>
+                <Switch
+                  on={value.codeLiveCardsOpen}
+                  onToggle={() => set("codeLiveCardsOpen", !value.codeLiveCardsOpen)}
+                />
+              </SetRow>
               <SetRow label={t("cmGroupByWs")} hint={t("cmGroupByWsHint")}>
                 <Switch
                   on={value.codeGroupByWorkspace}
@@ -1575,6 +1615,46 @@ export function SettingsPanel({
               <div className="field">
                 <span>{t("cmSkillFiles")}</span>
                 <div className="skill-rows">
+                  {userSkills.map((sk) => {
+                    const on = !skillOff.includes(sk.name);
+                    return (
+                      // Laid out as the built-in rows are — the whole row
+                      // toggles, its switch in the same column — with a
+                      // remove button just before the switch. A div, since a
+                      // button cannot hold the remove button.
+                      <div
+                        key={sk.path}
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={on}
+                        className={`skill-row ${on ? "on" : ""}`}
+                        onClick={() => toggleSkill(sk.name)}
+                        onKeyDown={(e) => {
+                          if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+                          e.preventDefault();
+                          toggleSkill(sk.name);
+                        }}
+                      >
+                        <span className="skill-row-name">{sk.name}</span>
+                        <span className="skill-row-desc">{sk.description}</span>
+                        <button
+                          type="button"
+                          className="skill-row-del"
+                          title={t("cmSkillRemove")}
+                          aria-label={t("cmSkillRemove")}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void removeUserSkill(sk);
+                          }}
+                        >
+                          <Icon name="x" size={11} strokeWidth={2.2} />
+                        </button>
+                        <span className="skill-row-toggle" aria-hidden="true">
+                          <span className="skill-row-knob" />
+                        </span>
+                      </div>
+                    );
+                  })}
                   {officialSkills().map((sk) => {
                     const on = !skillOff.includes(sk.name);
                     return (
@@ -1594,6 +1674,12 @@ export function SettingsPanel({
                   })}
                 </div>
               </div>
+              <div className="preset-add">
+                <button type="button" onClick={() => void importSkillFiles()}>
+                  {t("cmSkillImport")}
+                </button>
+              </div>
+              {skillImportNote && <div className="settings-hint skill-import-note">{skillImportNote}</div>}
               <div className="settings-hint">{t("cmSkillFilesHint")}</div>
             </>
           )}

@@ -8,6 +8,7 @@ import { watchContentHeight } from "../lib/autoGrow";
 const CM_COMPOSER_MAX_H = 200;
 import { effortLabel, intensityOf, thinkTabActive } from "../lib/effort";
 import { diffLines } from "../lib/diff";
+import { liveScan, type LiveScan } from "../lib/liveCall";
 import { useConfirm } from "./ConfirmModal";
 import { BgTasksPanel } from "./BgTasksPanel";
 import { groupSessionsByWorkspace } from "../lib/sessionGroups";
@@ -142,6 +143,7 @@ const TOOL_ICON: Record<string, string> = {
   bash_bg: "M4 5l6 7-6 7M13 5h7M13 12h7M13 19h7",
   bg_output: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 7v5l3 3",
   bg_kill: "M12 3a9 9 0 100 18 9 9 0 000-18zM9 9l6 6M15 9l-6 6",
+  bg_input: "M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10",
   web_search: "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c2.5 2.5 3.8 5.6 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.6-3.8-9S9.5 5.5 12 3z",
   web_fetch: "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c2.5 2.5 3.8 5.6 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.6-3.8-9S9.5 5.5 12 3z",
   web_download: "M12 3v12M6 9l6 6 6-6M4 21h16",
@@ -198,6 +200,11 @@ function toolSummary(call: ToolCall): string {
       return `bg $ ${a.command ?? ""}`;
     case "bg_output":
       return `bg output #${a.id ?? "?"}`;
+    case "bg_input": {
+      const keys = Array.isArray(call.args.keys) ? (call.args.keys as unknown[]).map(String) : [];
+      const typed = a.text ? ` ${a.text}` : "";
+      return `input #${a.id ?? "?"}${typed}${keys.length ? ` [${keys.join(" ")}]` : ""}`;
+    }
     case "bg_kill":
       return `bg kill #${a.id ?? "?"}`;
     case "web_search":
@@ -235,6 +242,105 @@ function toolSummary(call: ToolCall): string {
   }
 }
 
+/** File tools name what is happening to the file: writing → wrote,
+ *  editing → edited. */
+const FILE_VERBS: Record<string, [string, string]> = {
+  write_file: ["writing", "wrote"],
+  edit_file: ["editing", "edited"],
+  multi_edit: ["editing", "edited"],
+};
+
+/** A step card's (and the run bar's) summary: `toolSummary`, with a file
+ *  tool's verb for where the step is. */
+function stepSummary(step: ToolStep): string {
+  const verbs = FILE_VERBS[step.call.name];
+  const word = verbs && (step.status === "running" ? verbs[0] : step.status === "done" ? verbs[1] : null);
+  if (!word) return toolSummary(step.call);
+  // The path is the first argument most formats write, but not all (Gemma
+  // orders them by name): until it arrives there is nothing to name.
+  if (!argPath(step.call.args)) return `${word} …`;
+  return toolSummary(step.call).replace(/^\S+/, word);
+}
+
+/** A saved session keeps no card for a call that had not been accepted to
+ *  run, and no half-written arguments on the rest. */
+function forDisk(msgs: CodeMsg[]): CodeMsg[] {
+  if (!msgs.some((m) => m.steps?.some((st) => st.live))) return msgs;
+  return msgs.map((m) =>
+    m.steps?.some((st) => st.live)
+      ? { ...m, steps: m.steps.filter((st) => !st.live?.pending).map((st) => (st.live ? { ...st, live: undefined } : st)) }
+      : m,
+  );
+}
+
+/** A live card's rows are one fixed height, so only those around the line
+ *  the model is at are drawn — a file can be thousands of lines long. */
+const LIVE_ROW_H = 19;
+const LIVE_OVERSCAN = 60;
+
+/** A write or edit as it is being written, drawn the way Canvas draws a patch
+ *  being applied: the whole file, the changes made so far in place, and a
+ *  head on the line the model is at — the block it is copying out to
+ *  replace, then the replacement as it arrives, then the next block. The
+ *  view follows the head until the user scrolls. */
+function LiveScanView({ scan }: { scan: LiveScan }) {
+  const { t } = useI18n();
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [follow, setFollow] = useState(true);
+  const [win, setWin] = useState(0);
+  const head = scan.head ?? scan.rows.length - 1;
+  useEffect(() => {
+    if (follow) setWin(Math.max(0, head - LIVE_OVERSCAN));
+  }, [head, follow]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!follow || !el || scan.head === null) return;
+    const target = Math.max(0, scan.head * LIVE_ROW_H + 8 - el.clientHeight / 2);
+    if (Math.abs(el.scrollTop - target) > 2) el.scrollTo({ top: target, behavior: "smooth" });
+  }, [scan, follow, win]);
+  const onScroll = () => {
+    // Off-follow, the drawn window tracks what the user is looking at.
+    if (follow || !ref.current) return;
+    const first = Math.floor(ref.current.scrollTop / LIVE_ROW_H);
+    setWin((w) => {
+      const next = Math.max(0, first - LIVE_OVERSCAN);
+      return Math.abs(next - w) > LIVE_OVERSCAN / 2 ? next : w;
+    });
+  };
+  const end = Math.min(scan.rows.length, win + LIVE_OVERSCAN * 2);
+  return (
+    <div
+      className="cm-step-body cm-live-scan"
+      ref={ref}
+      onWheel={() => setFollow(false)}
+      onTouchMove={() => setFollow(false)}
+      onScroll={onScroll}
+    >
+      <div className="cm-diff">
+        {win > 0 && <div style={{ height: win * LIVE_ROW_H }} aria-hidden="true" />}
+        {scan.rows.slice(win, end).map((r, k) => {
+          const i = win + k;
+          return (
+            <div
+              key={i}
+              className={`cm-dl ${r.kind === "pending" ? "ctx cvp-pending" : r.kind}${r.found ? " cm-dl-found" : ""}${i === scan.head ? " cvp-scanhead" : ""}`}
+            >
+              <span className="cm-dl-mark">{r.kind === "add" ? "+" : r.kind === "del" ? "-" : " "}</span>
+              {r.text}
+            </div>
+          );
+        })}
+        {scan.rows.length > end && <div style={{ height: (scan.rows.length - end) * LIVE_ROW_H }} aria-hidden="true" />}
+      </div>
+      {!follow && (
+        <button className="cvp-follow" onClick={() => setFollow(true)}>
+          {t("canvasFollow")}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** "Always allow" grant key for a call: a two-token command prefix for shells
  *  (`npm test`, `cargo build`), the tool name for file edits. */
 function allowKeyFor(call: ToolCall): string {
@@ -264,13 +370,32 @@ function StepCard({
   step,
   sessionId,
   onPreview,
+  liveOpen = true,
 }: {
   step: ToolStep;
   sessionId?: string | null;
   onPreview?: (path: string) => void;
+  /** A live card opens while its call is written (Settings → Code). */
+  liveOpen?: boolean;
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(step.status === "error");
+  const live = step.live;
+  const [open, setOpen] = useState(step.status === "error" || (!!live && liveOpen));
+  // A live card opens while its call is written — when the setting says so —
+  // and folds away once the call has run, unless the user has opened or
+  // closed it by hand.
+  const touched = useRef(false);
+  const wasLive = useRef(!!live);
+  useEffect(() => {
+    if (touched.current) return;
+    if (live) {
+      wasLive.current = true;
+      if (liveOpen) setOpen(true);
+    } else if (wasLive.current && step.status !== "running") {
+      wasLive.current = false;
+      setOpen(step.status === "error");
+    }
+  }, [live, liveOpen, step.status]);
   // Opened, the card shows exactly what the model was given for this step.
   // The session keeps only a trimmed copy (`step.result`); the model's is
   // fetched while the card is open and let go when it closes, so a session
@@ -293,8 +418,9 @@ function StepCard({
     };
   }, [open, step.fullText, step.id, sessionId]);
   const diff = step.diff;
+  const liveS = useMemo(() => (live ? liveScan(live) : null), [live]);
   const hasImage = !!step.image && step.status === "done";
-  const hasBody = !!(step.result || diff);
+  const hasBody = !!(step.result || diff || (liveS && liveS.rows.length > 0));
   const meta = stepMeta(step, t("cmLines"));
   // A command that ran but exited non-zero: "done" (the result went back to
   // the model) but visually a failure — a green check here read as "ls
@@ -310,7 +436,10 @@ function StepCard({
   // Clicking an image step opens the preview directly; otherwise toggle the body.
   const onHead = () => {
     if (hasImage && step.image) onPreview?.(step.image);
-    else if (hasBody) setOpen((o) => !o);
+    else if (hasBody) {
+      touched.current = true;
+      setOpen((o) => !o);
+    }
   };
   return (
     <div className={`cm-step ${step.status}${cmdFailed ? " cmd-failed" : ""}`}>
@@ -318,12 +447,20 @@ function StepCard({
         <svg className="cm-step-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
           <path d={TOOL_ICON[step.call.name] ?? "M4 6h16M4 12h16M4 18h16"} />
         </svg>
-        <span className="cm-step-sum">{toolSummary(step.call)}</span>
-        {d && step.status === "done" && (
+        <span className="cm-step-sum">{stepSummary(step)}</span>
+        {liveS ? (
           <span className="cm-step-diffstat">
-            <em className="plus">+{added}</em>
-            <em className="minus">-{removed}</em>
+            <em className="plus">+{liveS.added}</em>
+            <em className="minus">-{liveS.removed}</em>
           </span>
+        ) : (
+          d &&
+          step.status === "done" && (
+            <span className="cm-step-diffstat">
+              <em className="plus">+{added}</em>
+              <em className="minus">-{removed}</em>
+            </span>
+          )
         )}
         {hasImage && <span className="cm-step-meta muted">{t("cmClickPreview")}</span>}
         {meta && <span className={`cm-step-meta ${meta.tone}`}>{meta.text}</span>}
@@ -336,7 +473,8 @@ function StepCard({
           {step.status === "denied" ? <Icon name="ban" size={12} strokeWidth={2} /> : null}
         </span>
       </button>
-      {open && hasBody && (
+      {open && hasBody && liveS && <LiveScanView scan={liveS} />}
+      {open && hasBody && !liveS && (
         <div className="cm-step-body">
           {d ? (
             <pre className="cm-diff">
@@ -522,6 +660,7 @@ export function CodeMode({
   disabledSkills = [],
   memoryEnabled = true,
   groupByWorkspace = false,
+  liveCardsOpen = true,
   allowedCommands = [],
   sendKey = "enter",
   autoTitle = true,
@@ -561,6 +700,8 @@ export function CodeMode({
   memoryEnabled?: boolean;
   /** Group the session rail by workspace (Settings → Code). */
   groupByWorkspace?: boolean;
+  /** Settings → Code: a write/edit card is open while its call is written. */
+  liveCardsOpen?: boolean;
   /** Persistent command prefixes that never need approval (Settings → Code). */
   allowedCommands?: string[];
   /** Composer send shortcut (Settings → General). */
@@ -827,7 +968,7 @@ export function CodeMode({
     const fallback =
       (firstUser?.text ?? "New session").replace(/\s+/g, " ").trim().slice(0, 48) || "New session";
     const title = titlesRef.current.get(id) ?? fallback;
-    codeSessionSave(id, title, ws, JSON.stringify(next))
+    codeSessionSave(id, title, ws, JSON.stringify(forDisk(next)))
       .then(refreshSessions)
       .catch((e) => {
         // A silently-swallowed save failure is invisible data loss — the
@@ -846,11 +987,17 @@ export function CodeMode({
 
   /** Debounced mid-run persist: trailing 2s, drops when the session moved. */
   const persistTimerRef = useRef<number | null>(null);
+  // The session the pending save is for: the latest to ask. A stopped turn's
+  // step scheduled a save for its own session, and the new session's steps
+  // inside those two seconds found the timer taken and were never saved.
+  const persistIdRef = useRef("");
   const persistSoon = useCallback(
     (id: string) => {
+      persistIdRef.current = id;
       if (persistTimerRef.current !== null) return;
       persistTimerRef.current = window.setTimeout(() => {
         persistTimerRef.current = null;
+        const id = persistIdRef.current;
         if (bodyRef.current.sid !== id) return;
         setMsgs((cur) => {
           persist(cur, bodyRef.current.workspace, id);
@@ -879,13 +1026,17 @@ export function CodeMode({
                   ? "请用一个不超过12个汉字的简短短语，概括下面这条消息的主题，作为对话标题。只输出标题本身，不要引号、标点、解释或思考过程。"
                   : "Summarize the topic of the following message as a short chat title (max ~5 words). Output only the title — no quotes, punctuation, explanation, or reasoning.",
             },
-            { role: "user", content: `${firstMsg}${model.thinkSwitch ? "\n/no_think" : ""}` },
+            // Enough to name the topic, within the title's small context.
+            { role: "user", content: `${firstMsg.slice(0, 1200)}${model.thinkSwitch ? "\n/no_think" : ""}` },
           ],
           params: {
             temperature: 0.2,
             topP: 0.9,
             maxTokens: 512,
             think: model.supportsThinking && !model.thinkSwitch ? false : undefined,
+            // The title's own cache: the system prompt every session shares
+            // stays warm for the session's first turn.
+            scratch: true,
           },
         },
         (ev) => {
@@ -989,6 +1140,11 @@ export function CodeMode({
 
   function newSession() {
     if (running) return;
+    // A pause belongs to the session it happened in. Carried over, the next
+    // session's first turn opened with "the previous attempt was paused after
+    // N identical calls…" and hotter sampling — the model then reasoned about
+    // another session's steps (owner report: context bleeding across sessions).
+    stuckRef.current = null;
     setSid(uid());
     setMsgs([]);
     setInput("");
@@ -1003,7 +1159,8 @@ export function CodeMode({
     const raw = await codeSessionLoad(id).catch(() => null);
     if (raw == null) return;
     try {
-      const parsed = JSON.parse(raw) as CodeMsg[];
+      const parsed = forDisk(JSON.parse(raw) as CodeMsg[]);
+      stuckRef.current = null;
       setSid(id);
       setMsgs(parsed);
       setCtxUsed(0);
@@ -1429,6 +1586,11 @@ export function CodeMode({
 
     const signal = new AgentSignal();
     signalRef.current = signal;
+    // A stopped turn still winds down after the controls are handed back, and
+    // by then the user may be running another turn — in this session or a new
+    // one. Whatever this turn reports past that point is about itself, not
+    // the run on screen.
+    const owns = () => signalRef.current === signal;
     const update = (fn: (a: CodeMsg) => CodeMsg) =>
       setMsgs((cur) => cur.map((m) => (m.id === asst.id ? fn(m) : m)));
 
@@ -1523,10 +1685,10 @@ export function CodeMode({
           }
         : {}),
       onThinking: (t) => update((m) => ({ ...m, liveThinking: t })),
-      onStats: (tokens, tps) => setStats({ tokens, tps }),
-      onContext: (used) => setCtxUsed(used),
-      onPrefill: setPrefill,
-      onDirGrants: setDirGrants,
+      onStats: (tokens, tps) => owns() && setStats({ tokens, tps }),
+      onContext: (used) => owns() && setCtxUsed(used),
+      onPrefill: (frac) => owns() && setPrefill(frac),
+      onDirGrants: (grants) => owns() && setDirGrants(grants),
       onPlan: (todos) => update((m) => ({ ...m, plan: todos })),
       onCompacted: () => update((m) => ({ ...m, compacted: true })),
       onAskUser: (question, options) =>
@@ -1535,6 +1697,16 @@ export function CodeMode({
           setAsk({ question, options, resolve });
         }),
       onAssistantText: (full) => update((m) => ({ ...m, text: full })),
+      onLiveStep: (step) =>
+        update((m) => {
+          const steps = [...m.steps];
+          const i = steps.findIndex((s) => s.id === step.id);
+          if (i >= 0) steps[i] = step;
+          else steps.push(step);
+          // The reasoning behind the call now rides on its card.
+          return { ...m, steps, liveThinking: "" };
+        }),
+      onLiveStepGone: (id) => update((m) => ({ ...m, steps: m.steps.filter((s) => s.id !== id) })),
       onStep: (step) => {
         update((m) => {
           const steps = [...m.steps];
@@ -1560,7 +1732,7 @@ export function CodeMode({
       onFinal: (final, thinking, reason, stuck) => {
         // What the turn was stuck on, so "Continue" resumes the escape instead
         // of restarting it — see AgentOptions.resume.
-        stuckRef.current = reason === "steps" ? (stuck ?? null) : null;
+        if (owns()) stuckRef.current = reason === "steps" ? (stuck ?? null) : null;
         update((m) => ({
           ...m,
           text: final,
@@ -1573,15 +1745,19 @@ export function CodeMode({
       // Keep the tail on the newest assistant turn only — it is the only one
       // ever replayed, and every earlier copy would be dead weight in the
       // session file, which stores the whole transcript verbatim.
+      // Only in this turn's own transcript: after a switch, clearing "every
+      // other" tail wiped the one the open session needed to resume from.
       onTranscript: (tail) =>
         setMsgs((cur) =>
-          cur.map((m) =>
-            m.id === asst.id
-              ? { ...m, prompt: tail }
-              : m.prompt
-                ? { ...m, prompt: undefined }
-                : m,
-          ),
+          !cur.some((m) => m.id === asst.id)
+            ? cur
+            : cur.map((m) =>
+                m.id === asst.id
+                  ? { ...m, prompt: tail }
+                  : m.prompt
+                    ? { ...m, prompt: undefined }
+                    : m,
+              ),
         ),
     });
 
@@ -1594,10 +1770,19 @@ export function CodeMode({
       }
     }
 
-    setRunning(false);
-    localStorage.removeItem(RUN_INFLIGHT_KEY);
-    setApproval(null);
-    setPrefill(null);
+    // Stop hands the controls back at once, but a stopped turn can take a while
+    // to wind down (a command it was running still has to end). By then the
+    // user may have sent the next turn — or opened a new session — and this
+    // cleanup used to reset THAT run: marked it not running, cleared its
+    // approval dialog (leaving the run waiting on an answer that could never
+    // come) and its in-flight marker. Only the run that still owns the
+    // controls resets them.
+    if (owns()) {
+      setRunning(false);
+      localStorage.removeItem(RUN_INFLIGHT_KEY);
+      setApproval(null);
+      setPrefill(null);
+    }
     // Persist only while this turn's session is still the active one — after
     // a mid-run delete, writing here would resurrect the file the user just
     // removed (and clobber the fresh empty session).
@@ -1889,7 +2074,7 @@ export function CodeMode({
                   {m.steps.map((s) => (
                     <div key={s.id} className="cm-block">
                       {s.thinking && <ThinkPanel text={s.thinking} label={t("cmThought")} />}
-                      <StepCard step={s} sessionId={sid} onPreview={setPreviewImg} />
+                      <StepCard step={s} sessionId={sid} onPreview={setPreviewImg} liveOpen={liveCardsOpen} />
                     </div>
                   ))}
                   {m.liveThinking && <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />}
@@ -1949,7 +2134,7 @@ export function CodeMode({
             prefill != null
               ? t("cmPrefill")
               : curStep && curStep.status === "running"
-                ? toolSummary(curStep.call)
+                ? stepSummary(curStep)
                 : t("cmRunning");
           return (
             <div className="cm-runbar">
@@ -2132,7 +2317,7 @@ export function CodeMode({
         const deny = () => { sudoAsk.resolve({ ok: false }); setSudoAsk(null); setSudoPw(""); };
         const allow = () => { sudoAsk.resolve({ ok: true, password: sudoPw || undefined }); setSudoAsk(null); setSudoPw(""); };
         return (
-          <div className="cm-approve-backdrop" onMouseDown={deny}>
+          <div className="cm-approve-backdrop">
             <div className="cm-approve cm-approve-danger" onMouseDown={(e) => e.stopPropagation()}>
               <div className="cm-approve-title">{t("cmSudoTitle")}</div>
               <pre className="cm-approve-cmd cm-approve-cmd-danger">{sudoAsk.cmd}</pre>
@@ -2157,7 +2342,7 @@ export function CodeMode({
         );
       })()}
       {dirAsk && (
-        <div className="cm-approve-backdrop" onMouseDown={() => { dirAsk.resolve(false); setDirAsk(null); }}>
+        <div className="cm-approve-backdrop">
           <div className="cm-approve" onMouseDown={(e) => e.stopPropagation()}>
             <div className="cm-approve-title">{t("cmDirAskTitle")}</div>
             <pre className="cm-approve-cmd">{dirAsk.dir}</pre>
@@ -2170,10 +2355,10 @@ export function CodeMode({
         </div>
       )}
       {approval && (
-        <div className="cm-approve-backdrop" onMouseDown={() => { approval.resolve(false); setApproval(null); }}>
+        <div className="cm-approve-backdrop">
           <div className="cm-approve" onMouseDown={(e) => e.stopPropagation()}>
             <div className="cm-approve-title">
-              {approval.call.name === "bash" || approval.call.name === "bash_bg"
+              {approval.call.name === "bash" || approval.call.name === "bash_bg" || approval.call.name === "bg_input"
                 ? t("cmApproveBash")
                 : t("cmApproveWrite")}
             </div>

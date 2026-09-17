@@ -75,6 +75,12 @@ pub struct GenParams {
     /// `reasoning_effort` kwarg (Qwen3.8: `low` | `medium` | `xhigh`). `None`
     /// leaves the model's own default; ignored by models without the ladder.
     pub effort: Option<String>,
+    /// A side generation — a chat title, a search-query rewrite — that must
+    /// leave the conversation's cache alone. Run on the conversation's own
+    /// cache it replaced everything the conversation had built, so the turn
+    /// after it re-read the whole of it: 0% reused on every turn of a chat with
+    /// web search on (measured on Qwen3.6 35B).
+    pub scratch: bool,
 }
 
 impl Default for GenParams {
@@ -90,6 +96,7 @@ impl Default for GenParams {
             stop: Vec::new(),
             think: None,
             effort: None,
+            scratch: false,
         }
     }
 }

@@ -9,6 +9,7 @@ import {
   agentBash,
   browserRefresh,
   agentBashBg,
+  agentBgInput,
   agentBgKill,
   agentBgOutput,
   agentBgReap,
@@ -64,7 +65,7 @@ import {
   messageTokens,
   rawMessageTokens,
 } from "./ctxBudget";
-import { normalizeChannels } from "./voiceText";
+import { normalizeChannels, withoutToolCallSpans } from "./voiceText";
 import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
 import {
   argsExample,
@@ -93,6 +94,7 @@ import {
 } from "./wrapupGate";
 import { isReadOnlyCommand, isSymbolicCheck } from "./readOnlyCmd";
 import { diffLines } from "./diff";
+import { liveFileCall, type LiveView } from "./liveCall";
 import { platform } from "@tauri-apps/plugin-os";
 
 // The bash tool runs through cmd.exe on Windows — the prompt must say so, or
@@ -121,6 +123,7 @@ import {
   buildToolsDoc,
   capKeepsTail,
   MUTATING_TOOLS,
+  NATIVE_TOOL_NAMES,
   REPEAT_EXEMPT,
   REQUIRED_ARGS,
   isUntrusted,
@@ -178,6 +181,9 @@ export interface ToolStep {
    *  apart from the session (see `onStepText`); `result` is the card's
    *  trimmed copy. Opened, the card shows the model's. */
   fullText?: boolean;
+  /** A write or edit whose arguments are on screen before it has run: what the
+   *  model has written of them so far (see onLiveStep). Gone once it has run. */
+  live?: LiveView;
 }
 
 export class AgentSignal {
@@ -195,6 +201,14 @@ export interface AgentCallbacks {
   onAssistantText: (full: string) => void;
   /** A tool step was created or updated. */
   onStep: (step: ToolStep) => void;
+  /** A file write or edit the model is still writing: the card it will be,
+   *  updated several times a second as its arguments arrive (`step.live`).
+   *  When the call runs, onStep carries on with the same id; a call that never
+   *  runs — unparseable, stopped, turned into something else — is withdrawn
+   *  through onLiveStepGone. Optional: without it the card appears when the
+   *  call runs, as it always did. Kept apart from onStep, which counts steps. */
+  onLiveStep?: (step: ToolStep) => void;
+  onLiveStepGone?: (id: string) => void;
   /** The exact text the model was given for a step, where it differs from the
    *  card's copy (`step.result`: trimmed for the renderer, and without the
    *  notes appended for the model). The host keeps it outside the session. */
@@ -377,7 +391,7 @@ export function thinkPart(raw: string): string {
 
 /** Prose outside every think block and before any tool call. */
 function proseAfter(raw: string): string {
-  let t = normalizeChannels(raw);
+  let t = normalizeChannels(withoutToolCallSpans(raw));
   const o = t.indexOf("<think>");
   const c0 = t.indexOf("</think>");
   if (c0 !== -1 && (o === -1 || c0 < o)) t = t.slice(c0 + "</think>".length); // orphan close
@@ -1643,35 +1657,11 @@ async function execTool(
         /* new file */
       }
       const after = argContent(a);
-      // Guardrail: a small change to an existing sizable file should be an
-      // edit, not a full rewrite. write_file overwrites everything, so when the
-      // model regenerates a big file just to tweak a few lines it risks dropping
-      // content it didn't retype. Intercept the clear cases and steer to edit.
-      let tinyRewriteNote = "";
-      if (before) {
-        const oldLines = before.split("\n").length;
-        const { added, removed } = diffLines(before, after);
-        const changed = added + removed;
-        // A near-identical full rewrite (≤3 changed lines of a full-length
-        // file) is harmless — accept it with a steering note instead of
-        // bouncing. The round-20 autopsy watched a bounce here derail the
-        // model for the rest of the turn. Truncated regens still intercept:
-        // dropping lines counts as `removed`, which blows past 3.
-        if (oldLines >= 40 && changed > 3 && changed < oldLines * 0.5) {
-          return {
-            result:
-              `未写入 (not written)。这是对已有文件的局部改动(约 ${changed} 行,文件共 ${oldLines} 行)——请改用 edit_file(改一处给 old_string/new_string,改多处给 edits 数组)精确替换。` +
-              `不要用 write_file 整体重写来做小改动:它会覆盖全文,容易丢失你没重写的内容。` +
-              ` (This is a partial change to an existing file — use edit_file instead of a full write_file rewrite, which can drop content you didn't retype.)`,
-          };
-        }
-        if (oldLines >= 40 && changed > 0 && changed <= 3) {
-          tinyRewriteNote =
-            "\n(提示:这次只改了几行——下次这类小改动请用 edit_file,不必整篇重写。/ tip: for a few-line change, prefer edit_file next time.)";
-        }
-      }
+      // Written as given. A bounce that sent a partial rewrite back to
+      // edit_file cost more than it saved: measured, it mostly derailed the
+      // model into a round of failed edits for a file it had already written.
       const result = await agentWriteFile(path, after);
-      return { result: result + tinyRewriteNote, diff: { path, before, after } };
+      return { result, diff: { path, before, after } };
     }
     // One edit tool: a single replacement (old_string/new_string) OR several
     // at once (edits array) — both applied atomically. `multi_edit` is kept as
@@ -1739,10 +1729,41 @@ async function execTool(
             : "Note: there is no persistent working directory — a lone cd does not carry over. Use relative paths directly, or combine in one command: cd dir && your command.",
         };
       }
+      // A tool call written as a shell command — `bg_input(id=3, text="y")` —
+      // is a syntax error to the shell and a mystery to a small model.
+      const asTool = /^\s*([a-z_]+)\s*[({]/.exec(cmd);
+      if (asTool && NATIVE_TOOL_NAMES.includes(asTool[1] as AgentToolName) && asTool[1] !== "bash") {
+        return {
+          result: isZh()
+            ? `ERROR: ${asTool[1]} 是工具,不是 shell 命令,在 bash 里运行不了。请直接按工具调用发出,例如 ${callExample(asTool[1], ARG_EXAMPLE[asTool[1]] ?? "{}")}。`
+            : `ERROR: ${asTool[1]} is a tool, not a shell command — bash cannot run it. Issue it as a tool call, e.g. ${callExample(asTool[1], ARG_EXAMPLE[asTool[1]] ?? "{}")}.`,
+        };
+      }
       const r = await agentBash(cmd, asNum(a.timeout_secs) ?? bashTimeout, sudoPassword);
       const parts: string[] = [];
       if (r.stdout) parts.push(r.stdout);
       if (r.stderr) parts.push(`[stderr]\n${r.stderr}`);
+      if (r.bgId != null && r.awaitingInput) {
+        // It stopped to ask (or only works typed into): the backend kept it
+        // running in the background with its keyboard. Say how to answer —
+        // re-running it would only ask again.
+        const id = r.bgId;
+        const asked = r.prompt ? (isZh() ? `:「${r.prompt}」` : `: "${r.prompt}"`) : "";
+        const typeLine = callExample("bg_input", JSON.stringify({ id, text: "y" }));
+        const pressKeys = callExample("bg_input", JSON.stringify({ id, keys: ["down", "enter"] }));
+        parts.push(
+          // A menu takes keys: a word typed at it is only keystrokes (an 8B
+          // "chose Blue" by typing it, and the Enter picked the first entry).
+          r.keyMode
+            ? isZh()
+              ? `[等待按键 · 已转入后台 #${id}] 程序在等按键(菜单、编辑器这类按键界面),仍在运行,上面是它的屏幕。用 keys 发方向键和回车,例如 ${pressKeys};在这里输入文字不会被当作选项。不要重新运行这条命令。之后用 bg_output 看屏幕,bg_kill 结束它。`
+              : `[waiting for keys · moved to background #${id}] the program is waiting for keys (a menu, an editor) and still running; its screen is above. Send arrow keys and Enter with keys, e.g. ${pressKeys} — typing a word here does not pick an option. Do not run the command again. bg_output shows its screen later, bg_kill stops it.`
+            : isZh()
+              ? `[等待输入 · 已转入后台 #${id}] 命令停下来在等输入${asked},仍在运行(上面是它目前的输出)。用 ${typeLine} 回答(会自动回车);方向键、Tab、ctrl-c 这类用 keys,例如 ${pressKeys}。不要重新运行这条命令。之后用 bg_output 看它的屏幕,bg_kill 结束它。`
+              : `[waiting for input · moved to background #${id}] the command stopped to ask for input${asked} and is still running (its output so far is above). Answer with ${typeLine} (Enter is added); for arrow keys, Tab or ctrl-c use keys, e.g. ${pressKeys}. Do not run the command again. bg_output shows its screen later, bg_kill stops it.`,
+        );
+        return { result: parts.join("\n") };
+      }
       if (r.bgId != null) {
         // The backend saw a dev-server banner and MOVED the still-running
         // command to the background instead of blocking to the timeout and
@@ -1758,7 +1779,20 @@ async function execTool(
       return { result: parts.join("\n") };
     }
     case "bash_bg": {
-      const id = await agentBashBg(asStr(a.command));
+      const id = await agentBashBg(asStr(a.command), a.interactive === true ? true : undefined);
+      const started = await agentBgOutput(id).catch(() => null);
+      if (started?.interactive) {
+        // A program to be typed into: what it shows first is what to answer.
+        await new Promise((r) => setTimeout(r, 1200));
+        const info = (await agentBgOutput(id).catch(() => null)) ?? started;
+        const typeInto = callExample("bg_input", JSON.stringify({ id, text: "…" }));
+        const keysInto = callExample("bg_input", JSON.stringify({ id, keys: ["down", "enter"] }));
+        return {
+          result: isZh()
+            ? `交互式后台命令已启动 #${id}。用 ${typeInto} 输入一行(会自动回车),方向键、Tab、ctrl-c 这类用 keys,例如 ${keysInto};bg_output 看屏幕,bg_kill 结束。当前屏幕:\n${info.tail || "(无输出)"}`
+            : `interactive background job started: #${id}. Type a line with ${typeInto} (Enter is added); for arrow keys, Tab or ctrl-c use keys, e.g. ${keysInto}; bg_output shows its screen, bg_kill stops it. Its screen now:\n${info.tail || "(no output yet)"}`,
+        };
+      }
       return {
         result: `后台命令已启动 (background job started): #${id}。结束时会自动通知你;可用 bg_output 查看进度。`,
       };
@@ -1766,9 +1800,26 @@ async function execTool(
     case "bg_output": {
       const info = await agentBgOutput(Number(a.id));
       const head = info.running
-        ? `#${info.id} 运行中 (running, ${info.elapsedSecs}s): ${info.command}`
+        ? `#${info.id} 运行中 (running, ${info.elapsedSecs}s${info.interactive ? (isZh() ? ",可用 bg_input 输入" : ", takes bg_input") : ""}): ${info.command}`
         : `#${info.id} 已结束 (finished, exit ${info.code}): ${info.command}`;
-      return { result: `${head}\n--- 最近输出 (recent output) ---\n${info.tail || "(无输出 / no output yet)"}` };
+      const label = info.keyMode
+        ? isZh() ? "屏幕 · 在等按键,用 bg_input 的 keys" : "screen · waiting for keys, send them with bg_input keys"
+        : info.interactive ? "屏幕 (screen)" : "最近输出 (recent output)";
+      return { result: `${head}\n--- ${label} ---\n${info.tail || "(无输出 / no output yet)"}` };
+    }
+    case "bg_input": {
+      const keys = Array.isArray(a.keys)
+        ? (a.keys as unknown[]).map(asStr).filter(Boolean)
+        : typeof a.keys === "string" && a.keys
+          ? [a.keys]
+          : undefined;
+      const text = a.text == null ? undefined : asStr(a.text);
+      const enter = typeof a.enter === "boolean" ? a.enter : undefined;
+      const info = await agentBgInput(Number(a.id), text, keys, enter);
+      const head = info.running
+        ? `#${info.id} ${isZh() ? "运行中" : "running"}${info.keyMode ? (isZh() ? " · 在等按键" : " · waiting for keys") : ""}: ${info.command}`
+        : `#${info.id} ${isZh() ? `已结束 (exit ${info.code})` : `finished (exit ${info.code})`}: ${info.command}`;
+      return { result: `${head}\n--- ${isZh() ? "屏幕" : "screen"} ---\n${info.tail || (isZh() ? "(无输出)" : "(no output yet)")}` };
     }
     case "understand_repo":
       return { result: await agentUnderstandRepo() };
@@ -2120,6 +2171,8 @@ export function digestForCall(
     case "bash":
     case "bash_bg":
       return str("command").slice(0, 80);
+    case "bg_input":
+      return `#${String(a.id ?? "?")} ${str("text") || (Array.isArray(a.keys) ? (a.keys as unknown[]).join(" ") : "")}`.slice(0, 80);
     case "grep":
       return str("pattern").slice(0, 80);
     case "search_code":
@@ -2494,6 +2547,16 @@ export function digestHistory(dropped: ChatMessage[], lang: "zh" | "en"): string
 
 /** Run one user turn to completion (possibly many tool steps). `history` is the
  *  prior conversation as plain chat messages. */
+/** How often a live file card is redrawn while its call streams. */
+const LIVE_CARD_MS = 100;
+
+/** Whether a live card and the call that finished are the same card: an edit
+ *  may be written as edit_file and parsed as its multi_edit alias. */
+function sameFileTool(shown: string, ran: string): boolean {
+  const kind = (n: string) => (n === "multi_edit" ? "edit_file" : n);
+  return kind(shown) === kind(ran);
+}
+
 export async function runAgentTurn(
   userInput: string,
   history: ChatMessage[],
@@ -2842,6 +2905,76 @@ export async function runAgentTurn(
   /** Steps re-run after the engine refused a prompt too long for the window. */
   let overflowRetries = 0;
   let forceNoThinkNext = false;
+  // ── Live file cards ── a write or edit shows its card, and its diff, while
+  // the model is still writing the call; the step that runs it takes the same
+  // card over, and one that never runs is withdrawn.
+  type Live = {
+    id: string;
+    view: LiveView;
+    thinking: string;
+    before?: string;
+    readPath?: string;
+    read?: Promise<void>;
+    /** The step that runs the call has taken the card over. */
+    claimed: boolean;
+    /** …and reached an end: done, failed or denied. */
+    settled: boolean;
+  };
+  let live: Live | null = null;
+  let liveShownAt = 0;
+  const hostOnStep = cb.onStep;
+  cb = {
+    ...cb,
+    onStep: (st) => {
+      if (live && st.id === live.id) {
+        live.claimed = true;
+        if (st.status !== "running") live.settled = true;
+      }
+      // What a finished card needs is its diff and result; the arguments as
+      // written, and the file they were written against, go no further.
+      hostOnStep(st.live && st.status !== "running" ? { ...st, live: undefined } : st);
+    },
+  };
+  const emitLive = (cur: Live) => {
+    if (cur.claimed || live !== cur) return;
+    cb.onLiveStep?.({
+      id: cur.id,
+      call: { name: cur.view.name, args: cur.view.path ? { path: cur.view.path } : {} },
+      status: "running",
+      thinking: cur.thinking || undefined,
+      live: { ...cur.view, before: cur.before, pending: true },
+    });
+  };
+  const showLive = (raw: string) => {
+    if (!cb.onLiveStep) return;
+    const view = liveFileCall(raw);
+    if (!view) return;
+    if (!live) live = { id: uid(), view, thinking: thinkPart(raw), claimed: false, settled: false };
+    const cur = live;
+    cur.view = view;
+    // The file as it stands, read once its path has arrived: a rewrite is
+    // shown against it, and an edit among the lines around it.
+    if (view.path && cur.readPath !== view.path) {
+      const path = view.path;
+      cur.readPath = path;
+      cur.before = undefined;
+      cur.read = readFull(path)
+        .catch(() => "")
+        .then((text) => {
+          if (cur.readPath !== path) return;
+          cur.before = text;
+          emitLive(cur);
+        });
+    }
+    emitLive(cur);
+  };
+  // A card whose step never reached an end goes: a call that did not run, or
+  // a turn stopped while it was being written, approved or run. What a stopped
+  // write did to the file is still in the turn's changes card.
+  const withdrawLive = () => {
+    if (live && !live.settled) cb.onLiveStepGone?.(live.id);
+    live = null;
+  };
   let compactNotified = false;
   const noteCompacted = () => {
     if (!compactNotified) {
@@ -2853,6 +2986,8 @@ export async function runAgentTurn(
   try {
     for (let step = 0; step < maxSteps; step++) {
       if (opts.signal.cancelled) return;
+      // A card from the last round whose call never ran.
+      withdrawLive();
 
       // ── Wind-down warning ── two steps before the ceiling, stop OPENING
       // work. Both CalendarApp repro buzzer-beaters (rounds 4 & 7) broke a
@@ -3008,8 +3143,14 @@ export async function runAgentTurn(
             const secs = (performance.now() - t0) / 1000;
             if (secs >= 0.35) lastTps = liveTokens / secs;
             cb.onStats?.(baseTokens + liveTokens, lastTps);
-            cb.onThinking(thinkPart(raw));
+            // Once a live card is up, the reasoning that led to it rides on
+            // the card, above it, as it does on every finished step.
+            if (!live) cb.onThinking(thinkPart(raw));
             cb.onAssistantText(proseAfter(raw));
+            if (cb.onLiveStep && performance.now() - liveShownAt >= LIVE_CARD_MS) {
+              liveShownAt = performance.now();
+              showLive(raw);
+            }
             // ── Think gate (mid-stream) ── stop a runaway before it fills the
             // whole budget: too much uninterrupted reasoning with no output, or
             // degenerate looping. Checked periodically to stay cheap.
@@ -3092,6 +3233,13 @@ export async function runAgentTurn(
         return;
       }
       cb.onTrace?.({ kind: "raw", text: raw });
+      // The call as it finished, and the file it is shown against, before
+      // anything can take the card over.
+      if (cb.onLiveStep && !opts.signal.cancelled) {
+        showLive(raw);
+        const pendingRead = (live as Live | null)?.read;
+        if (pendingRead) await pendingRead;
+      }
       // ── Degenerate-output breaker ── the step was cut because the stream had
       // stopped carrying information. What it produced must NOT reach the
       // transcript: the whole content of the failure is a character repeated,
@@ -3463,6 +3611,12 @@ export async function runAgentTurn(
 
       const stepObj: ToolStep = { id: uid(), call, status: "running", thinking };
       resultStep = stepObj;
+      // The live card of this very call becomes its step card.
+      const shown = live as Live | null;
+      if (shown && !shown.claimed && sameFileTool(shown.view.name, call.name)) {
+        stepObj.id = shown.id;
+        stepObj.live = { ...shown.view, before: shown.before };
+      }
 
       // ── Loop breaker: identical call to the previous one? ──
       // Exempt tools whose repeated identical call is legitimate progress or a
@@ -3947,6 +4101,7 @@ export async function runAgentTurn(
           cb.onDirGrants?.(await agentListGrants());
           out = await execTool(call, opts.bashTimeout, readChars, opts.ragTopK, sudoPassword);
         }
+        stepObj.live = undefined;
         // A tool must return a string; guard anyway so a stray undefined
         // (e.g. a backend read that resolved null) can't crash the whole turn
         // at the .startsWith/.slice below.
@@ -4165,6 +4320,7 @@ export async function runAgentTurn(
         }
       } catch (e) {
         resultText = `ERROR: ${e instanceof Error ? e.message : String(e)}`;
+        stepObj.live = undefined;
         stepObj.status = "error";
         stepObj.result = resultText;
       }
@@ -4293,7 +4449,7 @@ export async function runAgentTurn(
       {
         // JIT hints: situational guidance rides in only when its situation
         // first occurs this turn (kept out of the every-step system prompt).
-        const hint = jitHintFor(call.name, resultText, lang, jitShown);
+        const hint = jitHintFor(call.name, resultText, lang, jitShown, asStr(call.args?.command));
         if (hint) resultText += "\n\n" + hint;
       }
       pushUser(toolResultMsg(call.name, resultText), { name: call.name, args: call.args });
@@ -4308,6 +4464,7 @@ export async function runAgentTurn(
   } catch (e) {
     if (!opts.signal.cancelled) cb.onError(e instanceof Error ? e.message : String(e));
   } finally {
+    withdrawLive();
     // However the turn ended — answered, out of steps, cancelled, or thrown —
     // hand back what was actually sent. A turn that stopped halfway still did
     // real work, and the next one should continue from it rather than rediscover

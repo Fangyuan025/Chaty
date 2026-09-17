@@ -301,7 +301,13 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
             ),
             Err(e) => Err(e),
         },
-        "agent_bash_bg" => req_s(&args, "command").and_then(|c| res(ag::agent_bash_bg(c))),
+        "agent_bash_bg" => req_s(&args, "command").and_then(|c| res(ag::agent_bash_bg(c, b_arg(&args, "interactive")))),
+        "agent_bg_input" => u_arg(&args, "id").ok_or_else(|| "missing arg: id".to_string()).and_then(|i| {
+            let keys = arg(&args, "keys")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect());
+            res(ag::agent_bg_input(i, s_arg(&args, "text"), keys, b_arg(&args, "enter")))
+        }),
         "agent_bg_output" => u_arg(&args, "id")
             .ok_or_else(|| "missing arg: id".to_string())
             .and_then(|i| res(ag::agent_bg_output(i))),
@@ -399,6 +405,8 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
 }
 
 fn main() {
+    #[cfg(unix)]
+    ag::install_termination_cleanup();
     // Reap headless Chromes left by SIGKILLed bench runs before this one
     // launches its own (a live sibling's browser is skipped by pid check).
     chaty_lib::browser::sweep_orphan_browsers();

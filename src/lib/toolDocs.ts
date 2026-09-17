@@ -58,6 +58,10 @@ export const DOC_LINES: Record<string, Bi> = {
     zh: "- bash_bg: 后台启动长时间运行的命令(dev server、慢构建),立即返回 id,结束时系统自动通知你;不支持 sudo(要特权用前台 bash)。args: { \"command\": string }",
     en: "- bash_bg: start a long-running command in the background (dev server, slow build); returns an id, you're notified when it ends; sudo unsupported (use foreground bash). args: { \"command\": string }",
   },
+  bg_input: {
+    zh: "- bg_input: 向运行中的后台命令输入并返回它的屏幕:text 输入一行(自动回车),keys 发按键(down、enter、ctrl-c 等)。bash 里停下来等输入的命令和 REPL 会自动转入后台,用它来回答。args: { \"id\": number, \"text\"?: string, \"keys\"?: string[] }",
+    en: "- bg_input: type into a running background job and get its screen back: text types a line (Enter added), keys sends keys (down, enter, ctrl-c…). A bash command that stops to ask, or a REPL, moves to the background — answer it with this. args: { \"id\": number, \"text\"?: string, \"keys\"?: string[] }",
+  },
   bg_output: {
     zh: "- bg_output: 查看后台命令的状态与最近输出。args: { \"id\": number }",
     en: "- bg_output: status + recent output of a background job. args: { \"id\": number }",

@@ -5995,6 +5995,51 @@ button.tool-parent {
 .skill-row:not(.on) .skill-row-desc {
   color: var(--text-faint);
 }
+/* A write/edit as it is being written (Code mode): the whole file in rows of
+   one fixed height (the view draws only those near the head and scrolls by
+   row arithmetic), the scan head and dimmed pending lines as in Canvas. */
+.cm-live-scan {
+  position: relative;
+}
+.cm-live-scan .cm-diff {
+  padding: 6px 12px;
+  white-space: pre;
+}
+.cm-live-scan .cm-dl {
+  height: 19px;
+  line-height: 19px;
+  overflow: hidden;
+}
+/* The block the model is copying out to replace. */
+.cm-dl-found {
+  background: rgba(76, 159, 254, 0.1);
+}
+
+/* Remove button on an imported skill's row, just before its switch. */
+.skill-row-del {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin: -2px -4px -2px -4px;
+  padding: 0;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.skill-row-del:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+/* Only a failed import writes here — one line per file. */
+.skill-import-note {
+  white-space: pre-line;
+  color: var(--danger);
+}
 /* Toggle visuals live in the shared switch family above. */
 
 /* ---- continue button (after a step-limit pause) ---- */
@@ -6575,6 +6620,10 @@ button.tool-parent {
 }
 .cm-approve {
   width: min(560px, 92vw);
+  /* A long command or a whole file in the preview used to push the card past
+     the window with its buttons out of reach (issue #18). */
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
   padding: 20px;
   background: var(--panel);
   border: 1px solid var(--border-strong);
@@ -6588,6 +6637,8 @@ button.tool-parent {
   margin-bottom: 12px;
 }
 .cm-approve-cmd {
+  max-height: 38vh;
+  overflow: auto;
   margin: 0 0 4px;
   padding: 10px 12px;
   font-family: var(--font-mono);

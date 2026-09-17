@@ -20,6 +20,8 @@ pub mod search;
 pub mod skillsync;
 mod state;
 mod store;
+mod user_skills;
+mod terminal;
 pub mod update;
 pub mod voice;
 pub mod webx;
@@ -318,6 +320,8 @@ pub fn run() {
     // Official-skill support files follow their public upstream quietly (24h
     // throttle, offline ⇒ bundled files) — never on the startup path.
     std::thread::spawn(crate::skillsync::tick);
+    #[cfg(unix)]
+    agent::install_termination_cleanup();
     // GPU crash guard (issue #5): if the previous model load took the whole
     // process down (broken Vulkan driver aborts mid-load), block GPU offload
     // for this run BEFORE any llama/ggml init touches the driver.
@@ -605,6 +609,9 @@ pub fn run() {
             commands::image_data_url,
             agent::agent_list_dir,
             agent::agent_glob,
+            user_skills::skills_list_user,
+            user_skills::skills_import,
+            user_skills::skills_delete_user,
             agent::agent_grep,
             agent::agent_search_files,
             agent::agent_list_files,
@@ -613,6 +620,7 @@ pub fn run() {
             agent::agent_bash_bg,
             agent::agent_bg_output,
             agent::agent_bg_kill,
+            agent::agent_bg_input,
             agent::agent_bg_reap,
             agent::agent_bg_list,
             agent::agent_bg_all,

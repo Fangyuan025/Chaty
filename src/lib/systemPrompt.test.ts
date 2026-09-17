@@ -8,10 +8,10 @@ mockIPC(() => Promise.resolve(null));
 const { systemPrompt, agentSetEditAnchors, nowLine } = await import("./agentLoop");
 
 const variants = [
-  { zh: true, vision: false, label: "zh plain", maxChars: 3600 },
-  { zh: true, vision: true, label: "zh vision", maxChars: 4650 },
-  { zh: false, vision: false, label: "en plain", maxChars: 6200 },
-  { zh: false, vision: true, label: "en vision", maxChars: 7800 },
+  { zh: true, vision: false, label: "zh plain", maxChars: 3700 },
+  { zh: true, vision: true, label: "zh vision", maxChars: 4850 },
+  { zh: false, vision: false, label: "en plain", maxChars: 6250 },
+  { zh: false, vision: true, label: "en vision", maxChars: 8120 },
 ] as const;
 // Caps anchored to the post-slimming sizes (2026-07 WS1: 3545 / 4432 / 6031 /
 // 7516 JS chars at think=normal, no project doc; before slimming they were
@@ -26,6 +26,12 @@ const variants = [
 //   Enter to submit, no Escape to dismiss, no Tab, no arrows. The line is
 //   peer-sized with browser_click's (209 en chars against its 211); the rest
 //   of the cost is simply that there is one more tool than there was.
+//   2026-09-17  all four +~172 zh / +~296 en — bg_input. A command that stops
+//   to ask is moved to the background to be typed into; without the line, a
+//   model that already knew a command wanted answers had no way to give them.
+//   Qwen3.6 35B ran out its 12 minutes on `npm init` and on a Python REPL and
+//   edited a menu program's code to get round it; Gemma-4 26B ran out on the
+//   REPL. With it the same runs took 56s / 20s / 21s and 15s, all by typing.
 
 describe("systemPrompt size gate", () => {
   for (const v of variants) {

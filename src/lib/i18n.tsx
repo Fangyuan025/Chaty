@@ -241,6 +241,16 @@ export const T = {
     pt: "Estes {n} arquivos voltarão a como estavam antes deste turno (ou serão removidos, se o turno os criou). As alterações deste turno neles não poderão ser recuperadas. Desfazer?",
   },
   cmUndoFailed: { zh: "这些文件没能撤销:{files}", en: "Couldn't undo: {files}", pt: "Não foi possível desfazer: {files}" },
+  cmLiveCardsOpen: {
+    zh: "写入/编辑过程展开显示",
+    en: "Show writes and edits as they happen",
+    pt: "Mostrar gravações e edições enquanto acontecem",
+  },
+  cmLiveCardsOpenHint: {
+    zh: "模型写入或编辑文件时,卡片展开并实时显示改动;关闭后卡片保持折叠,只显示标题和增删行数,点击可展开。",
+    en: "While the model writes or edits a file, its card is open and the diff grows in view. Off, the card stays folded to its title and line counts; click to open it.",
+    pt: "Enquanto o modelo grava ou edita um arquivo, o cartão fica aberto e o diff cresce à vista. Desligado, o cartão fica recolhido no título e nas contagens de linhas; clique para abrir.",
+  },
   cmGroupByWs: { zh: "会话栏按工作区分组", en: "Group sessions by workspace", pt: "Agrupar sessões por espaço de trabalho" },
   cmGroupByWsHint: {
     zh: "左侧会话列表按各会话所在的工作区分组显示,分组可折叠。",
@@ -285,9 +295,11 @@ export const T = {
   cmMcpAddBtn: { zh: "添加", en: "Add", pt: "Adicionar" },
   cmMcpAdded: { zh: "已添加", en: "added", pt: "adicionado" },
   cmSkillFiles: { zh: "技能文件", en: "Skill files", pt: "Arquivos de skill" },
+  cmSkillImport: { zh: "导入技能文件…", en: "Import skill file…", pt: "Importar arquivo de skill…" },
+  cmSkillRemove: { zh: "删除这个技能文件", en: "Remove this skill file", pt: "Remover este arquivo de skill" },
   cmSkillFilesHint: {
-    zh: "技能 = 一份写着步骤的 Markdown。系统提示只带「名字+何时用」一行,模型需要时才调 use_skill 载入正文——所以技能再多也不占上下文。放在 ~/.chaty/skills/ (全局)或 项目/.chaty/skills/ (项目,同名覆盖全局)。下面是随应用附带的官方技能,可单独关闭。",
-    en: "A skill is a markdown file of steps. The prompt carries only one line per skill (name + when); the body loads via use_skill only when needed — so skills cost almost no context. Put them in ~/.chaty/skills/ (global) or <project>/.chaty/skills/ (project, shadows global). Below are the ones bundled with Chaty; each can be turned off.", pt: "Uma skill é um arquivo markdown com passos. O prompt recebe apenas uma linha por skill (nome + uso); o corpo é carregado usando use_skill somente se houver necessidade — logo, skills quase não consomem contexto. Adicione-as em ~/.chaty/skills/ (global) ou <projeto>/.chaty/skills/ (projeto, substitui a global). Abaixo estão as incluídas com o Chaty; cada uma pode ser desativada.",
+    zh: "技能 = 一份写着步骤的 Markdown。系统提示只带「名字+何时用」一行,模型需要时才调 use_skill 载入正文——所以技能再多也不占上下文。放在 ~/.chaty/skills/ (全局)或 项目/.chaty/skills/ (项目,同名覆盖全局)。点「导入技能文件…」可以选一份 .md(比如别的工具的 SKILL.md)复制进 ~/.chaty/skills/,没写名字的会按文件名补上。列表里是导入的技能和随应用附带的官方技能,每个都可以单独关闭。",
+    en: "A skill is a markdown file of steps. The prompt carries only one line per skill (name + when); the body loads via use_skill only when needed — so skills cost almost no context. Put them in ~/.chaty/skills/ (global) or <project>/.chaty/skills/ (project, shadows global). \"Import skill file…\" copies a .md (another tool's SKILL.md, say) into ~/.chaty/skills/, naming it from the file when it has no name. The list holds your imported skills and the ones bundled with Chaty; each can be turned off.", pt: "Uma skill é um arquivo markdown com passos. O prompt recebe apenas uma linha por skill (nome + uso); o corpo é carregado usando use_skill somente se houver necessidade — logo, skills quase não consomem contexto. Adicione-as em ~/.chaty/skills/ (global) ou <projeto>/.chaty/skills/ (projeto, substitui a global). \"Importar arquivo de skill…\" copia um .md (o SKILL.md de outra ferramenta, por exemplo) para ~/.chaty/skills/, usando o nome do arquivo quando ele não tem nome. A lista mostra as skills importadas e as incluídas com o Chaty; cada uma pode ser desativada.",
   },
   cmCompacted: { zh: "上下文已自动压缩", en: "Context auto-compacted", pt: "Contexto auto-comprimido" },
   cmdkGoCode: { zh: "切换到 Code 模式", en: "Switch to Code mode", pt: "Mudar para o modo Code" },

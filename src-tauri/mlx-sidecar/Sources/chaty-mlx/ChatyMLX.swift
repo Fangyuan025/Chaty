@@ -61,6 +61,9 @@ struct WireParams: Decodable {
     /// Native reasoning-effort rung for templates taking a `reasoning_effort`
     /// kwarg (Qwen3.8: low | medium | xhigh). Passed straight through.
     var effort: String?
+    /// A side generation (a title, a search-query rewrite): run it on a cache
+    /// of its own and leave the conversation's cache as it was.
+    var scratch: Bool?
 }
 
 struct WireCmd: Decodable {
@@ -1175,6 +1178,26 @@ final class Engine: @unchecked Sendable {
     }
 
     func generate(messages: [WireMessage], params: WireParams) async {
+        // A side generation — a chat title, a search-query rewrite — runs on a
+        // cache of its own, and the conversation's cache and ledger come back
+        // untouched. Run on the conversation's cache it replaced everything
+        // the conversation had built: with web search on, every turn of a
+        // chat re-read the whole of it (0% reused, Qwen3.6 35B).
+        if params.scratch == true {
+            let saved = (kvCache, kvTokens, kvEvaluated, kvImageKeys, kvState, pendingBlock, liveTurnKeys)
+            kvCache = nil
+            kvTokens = []
+            kvEvaluated = 0
+            kvImageKeys = []
+            kvState = nil
+            pendingBlock = []
+            liveTurnKeys = nil
+            var side = params
+            side.scratch = nil
+            await generate(messages: messages, params: side)
+            (kvCache, kvTokens, kvEvaluated, kvImageKeys, kvState, pendingBlock, liveTurnKeys) = saved
+            return
+        }
         guard let container else {
             out.error("尚未加载模型 (no model loaded)")
             return

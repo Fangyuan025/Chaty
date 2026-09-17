@@ -32,6 +32,9 @@ describe("derived sets match the pre-M0 literals", () => {
         "bash_bg",
         "web_download",
         "validate_change",
+        // Typing into a running command answers its questions — approved like
+        // the command itself (09-17).
+        "bg_input",
       ]),
     );
   });
@@ -46,6 +49,8 @@ describe("derived sets match the pre-M0 literals", () => {
         "browser_read",
         "browser_console",
         "bg_output",
+        // "down" twice is two steps through a menu, not a loop (09-17).
+        "bg_input",
       ]),
     );
   });
@@ -92,6 +97,7 @@ describe("derived sets match the pre-M0 literals", () => {
       outline: ["path"],
       glob: ["pattern"],
       bg_output: ["id"],
+      bg_input: ["id"],
       bg_kill: ["id"],
       browser_click: ["text|label|selector|sel|steps"],
       browser_type: ["text|value|steps"],

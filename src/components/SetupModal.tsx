@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
@@ -169,6 +169,19 @@ type CardState =
   | { kind: "done"; path: string }
   | { kind: "error"; message: string };
 
+// The cards' state lives outside the dialog. A download started here keeps
+// running in the backend when the dialog closes; kept inside the component its
+// progress went with the dialog, so reopening showed a fresh Download button —
+// the download looked stopped, and a second click fetched it again (issue #18).
+let cardStore: Record<string, CardState> = {};
+const cardListeners = new Set<(s: Record<string, CardState>) => void>();
+function setCardEverywhere(key: string, s: CardState) {
+  cardStore = { ...cardStore, [key]: s };
+  for (const listener of cardListeners) listener(cardStore);
+}
+// Per-card download samples for the time-remaining estimate (keyed by label).
+const etaStores: { current: Record<string, EtaSample[]> } = { current: {} };
+
 export function SetupModal({
   onClose,
   onLoad,
@@ -183,9 +196,14 @@ export function SetupModal({
   const { t, lang } = useI18n();
   const [budgetGb, setBudgetGb] = useState<number | null>(null);
   const [hwLine, setHwLine] = useState("");
-  const [states, setStates] = useState<Record<string, CardState>>({});
-  // Per-card download samples for the time-remaining estimate (keyed by label).
-  const etaStores = useRef<Record<string, EtaSample[]>>({});
+  const [states, setStates] = useState<Record<string, CardState>>(cardStore);
+  useEffect(() => {
+    cardListeners.add(setStates);
+    setStates(cardStore);
+    return () => {
+      cardListeners.delete(setStates);
+    };
+  }, []);
 
   useEffect(() => {
     getHardwareInfo()
@@ -203,8 +221,7 @@ export function SetupModal({
       .catch(() => setBudgetGb(8));
   }, [t]);
 
-  const setCard = (key: string, s: CardState) =>
-    setStates((prev) => ({ ...prev, [key]: s }));
+  const setCard = setCardEverywhere;
 
   async function download(p: Pick) {
     setCard(p.label, { kind: "resolving" });
@@ -290,7 +307,9 @@ export function SetupModal({
   const picks = budgetGb === null ? [] : recommend(budgetGb);
 
   return createPortal(
-    <div className="preview-overlay" onMouseDown={onClose}>
+    // Only the close button closes it: a click beside the cards dismissed the
+    // dialog mid-download (issue #18).
+    <div className="preview-overlay">
       <div className="setup-modal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="setup-head">
           <div>

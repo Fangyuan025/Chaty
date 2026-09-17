@@ -25,6 +25,7 @@ const { CALL_CLOSERS, callExample, callTag, formatOf, plainArgs, renderCall, set
 const { systemPrompt, describeInvalidCall, parseToolCall, runAgentTurn, stubWrittenBodies, xmlRunsOn } = await import("./agentLoop");
 const { jitHintFor, missingArgLadder } = await import("./jitHints");
 const { planEcho } = await import("./wrapupGate");
+const { withoutToolCallSpans } = await import("./voiceText");
 const { rememberFact } = await import("./memoryFiles");
 const { fullDoc } = await import("./mcp");
 
@@ -355,6 +356,48 @@ describe("an XML call written loosely", () => {
     const said = reqs[1].messages.map((m) => m.content).join("\n");
     expect(said).toContain('"old_string"');
     expect(said).not.toContain("相同");
+  });
+});
+
+describe("LFM's tool calls on screen", () => {
+  // Owner report: an LFM model's calls showed up whole in the reply — the
+  // display dropped their markers and left `[read_file(path='…')]` behind.
+  it("are dropped whole, an unfinished one too", () => {
+    expect(withoutToolCallSpans("先读文件。<|tool_call_start|>[read_file(path='a.py')]<|tool_call_end|>")).toBe("先读文件。");
+    expect(withoutToolCallSpans("<|tool_call_start|>[edit_file(path='a.py', old_string='x")).toBe("");
+    expect(withoutToolCallSpans("a plain answer")).toBe("a plain answer");
+  });
+
+  it("never reach a turn's live prose", async () => {
+    const shown: string[] = [];
+    let n = 0;
+    mockIPC(async (cmd, args) => {
+      if (cmd !== "generate") return null;
+      const a = args as { onEvent: Chan };
+      n++;
+      const chunks =
+        n === 1
+          ? ["先列个计划。", "<|tool_call_start|>", "[update_plan(todos=", '[{"content":"写页面","status":"in_progress"}])]']
+          : ["计划已列好。"];
+      for (const text of chunks) a.onEvent.onmessage?.({ type: "token", text });
+      a.onEvent.onmessage?.({ type: "done", stats: { completionTokens: 1, tokensPerSecond: 1, promptTokens: 1 } });
+      return null;
+    });
+    await runAgentTurn(
+      "列个计划", [], "/tmp/ws", "zh",
+      {
+        thinkMode: "normal", maxSteps: 4, temperature: 0.3, toolFormat: "lfm",
+        signal: { cancelled: false },
+        approve: async () => true, approveDir: async () => false, approveSudo: async () => ({ ok: false }),
+      } as never,
+      {
+        onThinking: () => {}, onAssistantText: (t: string) => shown.push(t), onStep: () => {}, onPlan: () => {}, onFinal: () => {},
+        onError: (m: string) => { throw new Error(m); },
+      } as never,
+    );
+    clearMocks();
+    expect(shown.length).toBeGreaterThan(0);
+    expect(shown.some((t) => t.includes("update_plan(") || t.includes("[update_plan"))).toBe(false);
   });
 });
 

@@ -30,6 +30,23 @@ describe("jitHintFor", () => {
     }
   });
 
+  test("a program that needs a terminal teaches running it as written, once", () => {
+    const shown = new Set<HintKey>();
+    const failed = "Traceback (most recent call last):\n  File \"menu.py\", line 13\ntermios.error: (25, 'Inappropriate ioctl for device')\n[exit 1]";
+    const h = jitHintFor("bash", failed, "zh", shown);
+    expect(h).toContain("[交互提示]");
+    expect(h).toContain("bg_input");
+    expect(jitHintFor("bash", "EOFError: EOF when reading a line", "zh", shown)).toBe("");
+    expect(jitHintFor("bash", "the input device is not a TTY", "en", new Set())).toContain("[Interactive hint]");
+    expect(jitHintFor("bash", "hello\n[exit 0]", "en", new Set())).toBe("");
+    // Answers piped in, and the questions still in the output of a failed run.
+    const npm = "Press ^C at any time to quit.\npackage name: (demo) version: (1.0.0) \n[exit 1]";
+    expect(jitHintFor("bash", npm, "zh", new Set(), "printf 'demo-app\\n\\n' | npm init")).toContain("[交互提示]");
+    expect(jitHintFor("bash", npm, "zh", new Set(), "npm init")).toBe("");
+    expect(jitHintFor("bash", "package name: (demo)\n[exit 0]", "zh", new Set(), "printf 'x' | npm init")).toBe("");
+    expect(jitHintFor("bash", "grep: nothing\n[exit 1]", "zh", new Set(), "cat a || cat b")).toBe("");
+  });
+
   test("non-matching tools yield nothing", () => {
     expect(jitHintFor("bash", "[exit 1]", "zh", new Set())).toBe("");
     expect(jitHintFor("read_file", "…", "en", new Set())).toBe("");
