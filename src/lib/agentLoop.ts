@@ -50,6 +50,7 @@ import {
   agentWriteFile,
   skillLiveSupport,
   cancelGeneration,
+  codeSessionSearch,
   fetchPageEx,
   siteSearch,
   agentWebDownload,
@@ -66,7 +67,7 @@ import {
   rawMessageTokens,
 } from "./ctxBudget";
 import { normalizeChannels, withoutToolCallSpans } from "./voiceText";
-import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
+import { asksAboutThePast, jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
 import {
   argsExample,
   CALL_CLOSERS,
@@ -129,6 +130,7 @@ import {
   isUntrusted,
   needsApproval,
   resultCap,
+  setHistoryToolEnabled,
   setMemoryToolEnabled,
   setSkillToolEnabled,
   toolSpec,
@@ -292,6 +294,10 @@ export interface AgentOptions {
   /** Project memory (M4): the capped index rides in the prompt; `remember`
    *  persists facts. Absent/"" ⇒ prompt byte-identical to pre-M4. */
   memoryIndex?: string;
+  /** The session this turn belongs to. Its transcript outlives the context
+   *  window, so `search_history` can read back what compaction dropped —
+   *  and the sessions the user referenced with @. Absent ⇒ no history tool. */
+  sessionId?: string;
   /** Project guide (AGENTS.md / PROJECT.md / CLAUDE.md) injected into the
    *  system prompt — the /init loop's other half. */
   projectDoc?: { name: string; text: string };
@@ -1460,6 +1466,13 @@ function isThinkOnly(raw: string): boolean {
 
 const asStr = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
 
+/** When something was said, as a person writes it: local date and time. */
+const stamp = (ms: number): string => {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
 // Models sometimes name arguments differently (path/file_path/filename…) —
 // normalize the common aliases instead of failing with a confusing OS error.
 export const argPath = (a: Record<string, unknown>): string =>
@@ -1541,6 +1554,10 @@ const asNum = (v: unknown): number | undefined =>
 function readFull(path: string): Promise<string> {
   return agentReadFileRaw(path);
 }
+
+/** The session this turn belongs to — what `search_history` searches when the
+ *  model names no other. Empty when the caller keeps no sessions. */
+let turnSessionId = "";
 
 /** Skills available to the CURRENT turn — set by runAgentTurn so execTool
  *  (which has no access to opts) can serve use_skill bodies. */
@@ -1959,6 +1976,65 @@ async function execTool(
     default: {
       // Runtime tools (skills, MCP servers) route through the registry —
       // they're not in the native name union, so they land here by design.
+      // History (search_history) exists only when this turn belongs to a
+      // session, so like the others above it lands here rather than in the
+      // native switch.
+      if ((call.name as string) === "search_history") {
+        const q = asStr(a.query).trim();
+        const want = asStr(a.session ?? a.session_id ?? a.sessionId).trim();
+        const everywhere = /^(all|全部|所有)$/i.test(want);
+        const here = !everywhere && (!want || want === "this" || want === "current" || want === turnSessionId);
+        if (!q && !want) return { result: missingArg("query", '{"query":"tooltip delay"}') };
+        try {
+          let hits = await codeSessionSearch(q, everywhere ? undefined : here ? turnSessionId : want, 8);
+          let note = "";
+          // Asked about this session and it has nothing: the words are more
+          // likely in another session than nowhere, so say what is there.
+          if (hits.length === 0 && here && q) {
+            hits = await codeSessionSearch(q, undefined, 8);
+            note = isZh()
+              ? "(本会话里没有,以下来自其他会话)\n\n"
+              : "(nothing in this session; from the other sessions)\n\n";
+          }
+          // Asked about ONE session and the words barely caught: say what
+          // that session was about as well, rather than handing back a line
+          // that answers nothing (a 2.6B searched it by its title and got
+          // exactly one, then went hunting the filesystem).
+          if (!everywhere && !here && want && hits.length < 3) {
+            const about = await codeSessionSearch("", want, 4);
+            for (const h of about) {
+              if (!hits.some((k) => k.sessionId === h.sessionId && k.turn === h.turn)) hits.push(h);
+            }
+          }
+          // Not a word of it matched: a query written in another language than
+          // the transcript finds nothing, and "nothing" sends a model to the
+          // web for an answer that is in its own record. Show what the session
+          // it asked about was, and say the words missed.
+          if (hits.length === 0) {
+            const about = await codeSessionSearch("", everywhere ? undefined : here ? turnSessionId : want, 4);
+            if (about.length === 0) {
+              return { result: isZh() ? "(历史会话里没有相关内容)" : "(nothing relevant in past sessions)" };
+            }
+            hits = about;
+            note = isZh()
+              ? "(没有匹配到这些词;这是那个会话的开头和最近一段——换用当时对话里的说法再搜一次)\n\n"
+              : "(no match for those words; here is how that session opened and where it got to — search again in the words it used)\n\n";
+          }
+          const body = hits
+            .map((h) => {
+              const mine = h.sessionId === turnSessionId;
+              const where = isZh()
+                ? `${mine ? "本会话" : `会话「${h.title}」`} · ${stamp(h.updatedAt)} · 第 ${h.turn} 条 · ${h.role}`
+                : `${mine ? "this session" : `session "${h.title}"`} · ${stamp(h.updatedAt)} · message ${h.turn} · ${h.role}`;
+              return `── ${where} ──\n${h.text}`;
+            })
+            .join("\n\n");
+          return { result: note + body };
+        } catch (e) {
+          const why = e instanceof Error ? e.message : String(e);
+          return { result: isZh() ? `会话历史不可用: ${why}` : `session history unavailable: ${why}` };
+        }
+      }
       if ((call.name as string) === "remember") {
         // Writes confined to the memory dir by construction (rememberFact
         // builds every path from MEMORY_DIR + slug) — that confinement is why
@@ -2444,12 +2520,20 @@ export async function compactMessages(
           // still describes what was dropped.
         }
       }
+      // What was dropped is still on disk: a summary is a summary, and the
+      // model should know it can go back for the words themselves.
+      const stillThere = !turnSessionId
+        ? ""
+        : currentLang === "zh"
+          ? "\n(原文仍在本会话的记录里:用 search_history 按关键词检索。)"
+          : "\n(The originals are still in this session's record: search_history finds them by keyword.)";
       messages.splice(start, 0, {
         role: "user",
         content:
-          currentLang === "zh"
+          (currentLang === "zh"
             ? `[上下文已压缩] 更早的 ${dropped.length} 条消息已被总结如下,请当作已发生的事实继续:\n${note}`
-            : `[context compacted] ${dropped.length} earlier messages, summarised. Treat this as established fact and continue:\n${note}`,
+            : `[context compacted] ${dropped.length} earlier messages, summarised. Treat this as established fact and continue:\n${note}`) +
+          stillThere,
       });
       changed = true;
     }
@@ -2575,6 +2659,8 @@ export async function runAgentTurn(
   turnSkills = opts.skills ?? [];
   setSkillToolEnabled(turnSkills.length > 0, turnSkills.map((sk) => sk.name));
   setMemoryToolEnabled(Boolean(opts.memoryIndex !== undefined));
+  turnSessionId = opts.sessionId ?? "";
+  setHistoryToolEnabled(Boolean(turnSessionId));
   // 0 means the user turned the step limit off in Settings. The loop still
   // needs a number to count against, and every "we are nearly out of steps"
   // nudge below is written in terms of it, so an unbounded run gets a ceiling
@@ -4449,7 +4535,15 @@ export async function runAgentTurn(
       {
         // JIT hints: situational guidance rides in only when its situation
         // first occurs this turn (kept out of the every-step system prompt).
-        const hint = jitHintFor(call.name, resultText, lang, jitShown, asStr(call.args?.command));
+        const hint = jitHintFor(
+          call.name,
+          resultText,
+          lang,
+          jitShown,
+          asStr(call.args?.command),
+          // Only worth saying when there IS a record to search.
+          Boolean(turnSessionId) && asksAboutThePast(userInput),
+        );
         if (hint) resultText += "\n\n" + hint;
       }
       pushUser(toolResultMsg(call.name, resultText), { name: call.name, args: call.args });

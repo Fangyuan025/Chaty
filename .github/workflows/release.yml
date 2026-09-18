@@ -268,6 +268,15 @@ jobs:
             view moves on to the next, the way Canvas applies a patch. A call that
             is stopped takes its card with it.
 
+            ## The agent remembers your sessions
+
+            A session's record outlives what the model can hold in front of it,
+            so asked what was decided earlier, the agent used to go looking in
+            the code. It can now search its own record — this session past what
+            compaction dropped, or every session — and typing `@` in the
+            composer offers your other sessions alongside the workspace's
+            files, so you can point it at one and ask about it.
+
             ## Long chats with search stay fast
 
             With web search or the knowledge base on, every chat turn read the
@@ -277,10 +286,10 @@ jobs:
 
             ## Also
 
-            A new code session no longer inherits the last one's pause, servers
-            left running when Chaty was killed are stopped, skill files can be
-            imported in Settings, and a click outside an approval dialog no longer
-            denies it.
+            A code session opens at its end with a button back down to it, a new
+            session no longer inherits the last one's pause, servers left running
+            when Chaty was killed are stopped, skill files can be imported in
+            Settings, and a click outside an approval dialog no longer denies it.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

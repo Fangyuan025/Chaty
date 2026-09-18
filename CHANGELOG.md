@@ -51,6 +51,29 @@
   sometimes refused and sent back to edit_file; measured, that mostly derailed
   the model into failed edits of a file it had already written.
 
+### Code mode: sessions the agent can read
+
+- **The agent can search its own record.** A session's transcript outlives
+  what the context window can hold, and until now everything compaction
+  dropped was gone as far as the model was concerned: asked what had been
+  decided earlier, Qwen3-8B searched the workspace's code five times and then
+  the web, for an answer two messages up its own transcript. The new
+  `search_history` tool reads that record — this session beyond what is still
+  in front of it, one session in particular, or all of them — and a compaction
+  now says the originals are still searchable. The words are scored rather
+  than all required, since a model searches with a sentence, and Chinese is
+  matched without needing spaces.
+
+- **A session can be pointed at another one.** Typing `@` in the composer now
+  offers your other sessions as well as the workspace's files. Picking one
+  attaches it to the message: how it opened and where it got to ride with the
+  question, and the agent can search the rest of it.
+
+- **A session opens at its end, and getting back there is one click.**
+  Switching sessions kept the previous scroll position, and scrolling up left
+  no way back down — Code mode now behaves like a chat, with the same
+  back-to-bottom button.
+
 ### Code mode: sessions and background jobs
 
 - **A new session starts clean.** A pause from the last session ("the same

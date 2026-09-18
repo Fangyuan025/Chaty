@@ -7,7 +7,7 @@
 
 import { argsExample, callExample } from "./callFormat";
 
-export type HintKey = "browser" | "editFail" | "webFlow" | "afterOrient" | "anchorRead" | "tty";
+export type HintKey = "browser" | "editFail" | "webFlow" | "afterOrient" | "anchorRead" | "tty" | "history";
 
 const BROWSER_HINT: Record<"zh" | "en", string> = {
   zh: `[浏览器提示] 内容/状态用 browser_read(交互返回已带最新页面文字,通常直接看返回即可);外观/布局/图片/颜色必须 snapshot 或 screenshot 用视觉亲眼看,读文字看不出;但**截图只证明外观**——验收按钮/表单/跳转等交互功能,必须 browser_click/browser_type 实际操作一遍,再看返回文字或 browser_read 确认结果,截完图就收工不算测试。每次交互后先核实结果再继续,绝不凭猜测连续操作。已想好顺序的多次点击或多字段填表,一次用 steps 传完,不要拆成多次调用;点「提交/检查」等不可逆按钮前,先 snapshot 视觉确认所选内容无误。点导航/提交类按钮后,看返回的最新文字判断成败——成功就继续,绝不重复点同一按钮;翻页要点一次、读一次确认。CSS 选择器只支持标准语法(没有 :contains):按文字定位用 text 参数。浏览器是持久配置,之前登录过的站点仍在登录态。文字摘要对不上预期或页面似乎没反应时,不要反复 read 或硬猜,立即截图亲眼确认。任务做完 browser_close。`,
@@ -119,6 +119,32 @@ const WEB_FLOW_HINT: Record<"zh" | "en", string> = {
 
 const LOCAL_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?/i;
 
+// The user asked what was said or decided before, and the model went looking
+// for it in the workspace. Qwen3-8B answered "what did we settle the tooltip
+// delay on" by running search_code five times and then searching the web in
+// English for an answer that was two messages up its own transcript.
+const HISTORY_HINT: Record<"zh" | "en", string> = {
+  get zh() {
+    return `[记录提示] 问的是之前说过/定过的事——那在你的会话记录里,不在代码里,也不在网上。用 ${callExample("search_history", '{"query":"当时对话里的原话用词"}')} 查;本会话没有就加 session:"all" 查其他会话。`;
+  },
+  get en() {
+    return `[Record hint] The question is about what was said or decided earlier — that lives in your conversation record, not in the code and not on the web. Use ${callExample("search_history", '{"query":"the words that conversation used"}')}; if this session has nothing, add session:"all".`;
+  },
+};
+
+/** Does the turn ask about something said or decided earlier? Deliberately
+ *  narrow: "把 loading 放在渲染之前" and "run the tests before committing" are
+ *  ordinary requests, so 之前/先前 only count when something was SAID around
+ *  them, and a bare English "before" never counts. */
+export function asksAboutThePast(text: string): boolean {
+  if (/上次|上回|刚才|当初|说过|讲过|定过|聊过|谈过|商量过|讨论过|提过/.test(text)) return true;
+  if (/(?:之前|先前|早先|当时)[^。,,;;\n]{0,8}(?:说|讲|定|聊|提|谈|决定|商量|讨论|确定|约定|写)/.test(text)) return true;
+  return /\b(?:earlier|previously|last time|we (?:said|decided|agreed|settled)|you said|i said)\b/i.test(text);
+}
+
+/** Tools that look for an answer anywhere but the conversation record. */
+const ELSEWHERE = new Set(["search_code", "search_files", "grep", "glob", "web_search", "search_docs"]);
+
 /** Returns a hint to append to this tool result, or "" — and marks it shown. */
 export function jitHintFor(
   name: string,
@@ -127,7 +153,14 @@ export function jitHintFor(
   shown: Set<HintKey>,
   /** The command, for bash: whether answers were piped into it. */
   command = "",
+  /** This turn asks about what was said earlier, and a session record exists
+   *  to answer it from. */
+  pastAsked = false,
 ): string {
+  if (pastAsked && ELSEWHERE.has(name) && !shown.has("history")) {
+    shown.add("history");
+    return HISTORY_HINT[lang];
+  }
   if (name.startsWith("browser_") && !shown.has("browser")) {
     shown.add("browser");
     return BROWSER_HINT[lang];

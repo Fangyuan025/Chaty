@@ -645,6 +645,7 @@ pub fn run() {
             store::code_session_list,
             store::code_session_load,
             store::code_session_delete,
+            store::code_session_search,
             store::code_step_text_put,
             store::code_step_text_get,
             store::search_conversations,

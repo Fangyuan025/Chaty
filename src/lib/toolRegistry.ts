@@ -25,7 +25,7 @@ import { plainArgs, type CallFormat } from "./callFormat";
 
 /** Where a tool comes from. Natives are compiled in; mcp/skill arrive at
  *  runtime via registerTool (M1/M3). */
-export type ToolSource = "native" | "mcp" | "skill" | "memory";
+export type ToolSource = "native" | "mcp" | "skill" | "memory" | "session";
 
 /** Coarse permission class, the vocabulary of the M1 permission UI.
  *  Orthogonal to `mutating` (the approval gate): web_download is network AND
@@ -250,6 +250,27 @@ export function setMemoryToolEnabled(on: boolean): void {
     },
     requiredArgs: ["title", "fact"],
     argExample: '{"title":"build rule","fact":"run scripts/gate.sh before any release"}',
+  });
+}
+
+/** Session history: the agent's own past, searchable. Exists when the caller
+ *  says which session this turn belongs to (the app always does; a headless
+ *  run without sessions keeps the pre-history prompt byte for byte). Reading
+ *  the user's own transcripts needs no approval. */
+export function setHistoryToolEnabled(on: boolean): void {
+  unregisterTool("search_history");
+  if (!on) return;
+  registerTool({
+    name: "search_history",
+    source: "session",
+    suite: "core",
+    perm: "read",
+    tier: "core",
+    docLine: {
+      zh: `- search_history: 检索你自己的会话记录(不是代码):本会话里已被压缩掉、现在看不到的早期内容,或用户 @ 引用的其他会话。被问「之前/上次说过、定过什么」先用它,别用 search_code 去代码里翻;query 用当时对话里的原话用词。session 省略=本会话,"all"=所有会话,也可以是会话 id。args: { "query": string, "session"?: string }`,
+      en: `- search_history: search your own conversation record (not the code): what this session said before compaction dropped it, or another session the user referenced. Asked what was said or decided earlier, reach for this first — not search_code — and query it in the words that conversation used. session omitted = this one, "all" = every session, or a session id. args: { "query": string, "session"?: string }`,
+    },
+    argExample: '{"query":"tooltip delay"}',
   });
 }
 

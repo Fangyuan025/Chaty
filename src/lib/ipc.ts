@@ -527,6 +527,29 @@ export async function codeSessionLoad(id: string): Promise<string | null> {
 export async function codeSessionDelete(id: string): Promise<void> {
   await invoke("code_session_delete", { id });
 }
+
+/** One place in a past session's transcript where the words were found. */
+export interface SessionHit {
+  sessionId: string;
+  title: string;
+  updatedAt: number;
+  /** 1-based position of the message inside that session. */
+  turn: number;
+  /** "user", "assistant", or the tool the step called. */
+  role: string;
+  text: string;
+}
+
+/** Search past coding sessions — this one beyond what the context still
+ *  holds, one the user pointed at (`sessionId`), or all of them. An empty
+ *  query with a session asks what that session was about. */
+export async function codeSessionSearch(
+  query: string,
+  sessionId?: string,
+  limit?: number,
+): Promise<SessionHit[]> {
+  return invoke<SessionHit[]>("code_session_search", { query, sessionId, limit });
+}
 /** The exact text the model was given for a code step, kept apart from the
  *  session so its card can show it when opened. */
 export async function codeStepTextPut(sessionId: string, stepId: string, text: string): Promise<void> {

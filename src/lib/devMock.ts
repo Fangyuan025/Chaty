@@ -284,6 +284,39 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       SAVED_CODE_BODIES.set(id, String(args?.data ?? "[]"));
       return null;
     }
+    case "code_session_search": {
+      // The real search runs in SQLite; the preview searches the fixtures the
+      // same way, so the tool card and the @-reference are drivable here.
+      // Scored, like the real one: a model writes a sentence, so words are
+      // weighed rather than all required.
+      const q = String(args?.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+      const want = String(args?.sessionId ?? "");
+      const all = [...SAVED_CODE_SESSIONS, ...CODE_SESSIONS].filter((s) => !want || s.id === want);
+      const hits: unknown[] = [];
+      for (const meta of all) {
+        const body = SAVED_CODE_BODIES.get(meta.id);
+        const msgs = body ? JSON.parse(body) : CODE_SESSION_MSGS;
+        (msgs as { role: string; text?: string; steps?: { call?: { name?: string }; result?: string }[] }[]).forEach(
+          (m, i) => {
+            const pieces: [string, string][] = [[m.role, m.text ?? ""]];
+            for (const st of m.steps ?? []) pieces.push([st.call?.name ?? "tool", st.result ?? ""]);
+            for (const [role, text] of pieces) {
+              const low = text.toLowerCase();
+              if (!text || (q.length > 0 && !q.some((w) => low.includes(w)))) continue;
+              hits.push({
+                sessionId: meta.id,
+                title: meta.title,
+                updatedAt: ("updatedAt" in meta ? meta.updatedAt : now) as number,
+                turn: i + 1,
+                role,
+                text: text.slice(0, 400),
+              });
+            }
+          },
+        );
+      }
+      return hits.slice(0, Number(args?.limit ?? 8));
+    }
     case "code_session_delete": {
       const id = String(args?.id ?? "");
       const i = SAVED_CODE_SESSIONS.findIndex((s) => s.id === id);

@@ -5394,6 +5394,15 @@ button.tool-parent {
 }
 
 /* ---- scroll / messages ---- */
+/* Holds the transcript and the pill that jumps back to the newest output —
+   the chat's .chat-wrap, so the pill sits just above the composer. */
+.code-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .code-scroll {
   flex: 1;
   min-height: 0;

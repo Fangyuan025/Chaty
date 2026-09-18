@@ -529,6 +529,13 @@ export const T = {
   cmSaved: { zh: "已保存", en: "Saved", pt: "Salvo" },
   cmScreenshot: { zh: "网页截图", en: "Screenshot", pt: "Captura de tela" },
   attachContextLabel: { zh: "附件", en: "Attachment", pt: "Anexo" },
+  cmRefSession: { zh: "引用会话", en: "Referenced session", pt: "Sessão referenciada" },
+  cmRefRemove: { zh: "取消引用", en: "Remove the reference", pt: "Remover a referência" },
+  cmRefHint: {
+    zh: "要看这个会话更多内容,用 search_history,session 写这个 id。",
+    en: "For more of it, call search_history with session set to that id.",
+    pt: "Para ver mais, chame search_history com session igual a esse id.",
+  },
   visionBadge: { zh: "视觉", en: "Vision", pt: "Visão" },
   visionBadgeTip: { zh: "支持视觉——加载后可直接理解图片", en: "Vision-capable — understands images once loaded", pt: "Capaz de visão — entende imagens uma vez carregadas" },
   mlxBadgeTip: { zh: "MLX 文件夹模型，由 Apple Silicon 专用引擎运行", en: "MLX folder model — runs on the Apple-Silicon-native engine", pt: "Modelo em pasta MLX — roda no motor nativo Apple-Silicon" },

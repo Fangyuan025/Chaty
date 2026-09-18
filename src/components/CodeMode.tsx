@@ -49,6 +49,7 @@ import {
   codeStepTextGet,
   codeStepTextPut,
   codeSessionList,
+  codeSessionSearch,
   codeSessionLoad,
   codeSessionSave,
   type ChatMessage,
@@ -139,6 +140,7 @@ const TOOL_ICON: Record<string, string> = {
   search_files: "M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-4-4M8 8h6M8 11h4",
   search_code: "M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-4-4M8.5 9.5L7 11l1.5 1.5M13.5 9.5L15 11l-1.5 1.5",
   search_docs: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M11 11a3 3 0 102.2 5.1L16 19",
+  search_history: "M3 12a9 9 0 109-9 9 9 0 00-6.4 2.7L3 8M3 4v4h4M12 7v5l3.5 2",
   bash: "M4 5l6 7-6 7M13 19h7",
   bash_bg: "M4 5l6 7-6 7M13 5h7M13 12h7M13 19h7",
   bg_output: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 7v5l3 3",
@@ -163,6 +165,11 @@ const TOOL_ICON: Record<string, string> = {
 
 function toolSummary(call: ToolCall): string {
   const a = call.args as Record<string, string>;
+  // Tools that exist only at runtime (history, skills, MCP) aren't in the
+  // native name union, so they are named before the switch.
+  if ((call.name as string) === "search_history") {
+    return `history? ${a.query ?? a.session ?? ""}`;
+  }
   switch (call.name) {
     case "read_file":
       return `read ${argPath(call.args) || "?"}`;
@@ -728,6 +735,8 @@ export function CodeMode({
   // (PDF/Word/Excel/text/code, extracted to text), and images (vision models
   // see the pixels; text-only models get OCR text).
   const [codeAttachments, setCodeAttachments] = useState<Attachment[]>([]);
+  /** Other sessions the user referenced with @ for the next turn. */
+  const [refSessions, setRefSessions] = useState<{ id: string; title: string }[]>([]);
   const [attachErr, setAttachErr] = useState("");
   // Full-size image preview (screenshot / view_image steps).
   const [previewImg, setPreviewImg] = useState<string | null>(null);
@@ -817,6 +826,9 @@ export function CodeMode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const prevSidRef = useRef<string | null>(null);
+  const showJumpRef = useRef(false);
+  const [showJump, setShowJump] = useState(false);
   const bodyRef = useRef({ msgs, workspace, sid });
   bodyRef.current = { msgs, workspace, sid };
   // The memory index each session started with — see sessionMemoryIndex.
@@ -905,6 +917,11 @@ export function CodeMode({
       const d = dist();
       if (d < 4) followRef.current = true;
       else if (d > 240) followRef.current = false;
+      const jump = d > 320;
+      if (jump !== showJumpRef.current) {
+        showJumpRef.current = jump;
+        setShowJump(jump);
+      }
     };
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("scroll", onScroll, { passive: true });
@@ -916,8 +933,18 @@ export function CodeMode({
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (el && followRef.current) el.scrollTo({ top: el.scrollHeight });
-  }, [msgs]);
+    if (!el) return;
+    // A session opens at its end, like a chat does: switching re-arms the
+    // follow and drops the pill, which no scroll event would do on its own.
+    const switched = sid !== prevSidRef.current;
+    prevSidRef.current = sid;
+    if (switched) {
+      followRef.current = true;
+      showJumpRef.current = false;
+      setShowJump(false);
+    }
+    if (followRef.current) el.scrollTo({ top: el.scrollHeight });
+  }, [msgs, sid]);
 
   // Keyboard shortcuts: approval Enter/Esc, ask-user number keys, Esc to stop.
   useEffect(() => {
@@ -1148,6 +1175,7 @@ export function CodeMode({
     setSid(uid());
     setMsgs([]);
     setInput("");
+    setRefSessions([]);
     setCtxUsed(0);
     sessionAllowsRef.current = new Set();
     void agentClearGrants().catch(() => {});
@@ -1162,6 +1190,9 @@ export function CodeMode({
       const parsed = forDisk(JSON.parse(raw) as CodeMsg[]);
       stuckRef.current = null;
       setSid(id);
+      // The draft survives a switch, but a reference to the session now open
+      // would only quote it back to itself.
+      setRefSessions((cur) => cur.filter((r) => r.id !== id));
       setMsgs(parsed);
       setCtxUsed(0);
       setStats(null);
@@ -1218,6 +1249,7 @@ export function CodeMode({
       setSid(uid());
       setMsgs([]);
       setInput("");
+      setRefSessions([]);
       setCtxUsed(0);
       setStats(null);
       sessionAllowsRef.current = new Set();
@@ -1342,10 +1374,32 @@ export function CodeMode({
     return () => clearTimeout(timer);
   }, [atQuery]);
 
-  const atMenu = atQuery != null && !atHidden ? atFiles : [];
+  /** @ offers the other sessions as well as the workspace's files: a session
+   *  the user points at is context for this turn, and the agent can search
+   *  the rest of it with search_history. */
+  type AtEntry = { kind: "file"; path: string } | { kind: "session"; id: string; title: string };
+  const atMenu: AtEntry[] = (() => {
+    if (atQuery == null || atHidden) return [];
+    const q = atQuery.toLowerCase();
+    const mine = sessions
+      .filter((s) => s.id !== sid && !refSessions.some((r) => r.id === s.id))
+      .filter((s) => (q ? s.title.toLowerCase().includes(q) : true))
+      .slice(0, q ? 4 : 2)
+      .map((s): AtEntry => ({ kind: "session", id: s.id, title: s.title }));
+    return [...mine, ...atFiles.map((path): AtEntry => ({ kind: "file", path }))];
+  })();
 
-  function pickAtFile(path: string) {
-    setInput((cur) => cur.replace(/(^|\s)@[^\s@]*$/, `$1${path} `));
+  function pickAt(entry: AtEntry) {
+    if (entry.kind === "file") {
+      setInput((cur) => cur.replace(/(^|\s)@[^\s@]*$/, `$1${entry.path} `));
+    } else {
+      // The reference is a chip, not text: the message keeps the words the
+      // user typed, and the session rides with it.
+      setInput((cur) => cur.replace(/(^|\s)@[^\s@]*$/, "$1"));
+      setRefSessions((cur) =>
+        cur.some((r) => r.id === entry.id) ? cur : [...cur, { id: entry.id, title: entry.title }],
+      );
+    }
     setAtFiles([]);
   }
 
@@ -1522,6 +1576,18 @@ export function CodeMode({
     const attachCtx = docAtts
       .map((a) => `【${t("attachContextLabel")} ${a.name}】\n${a.text.slice(0, 9000)}`)
       .join("\n\n");
+    // Sessions the user pointed at with @: how each opened and where it got
+    // to rides with the message, and its id lets the agent read the rest with
+    // search_history rather than carrying a whole transcript it may not need.
+    const refCtx = (
+      await Promise.all(
+        refSessions.map(async (r) => {
+          const hits = await codeSessionSearch("", r.id, 4).catch(() => []);
+          const body = hits.map((h) => `${h.role}: ${h.text}`).join("\n");
+          return `【${t("cmRefSession")}「${r.title}」 id=${r.id}】\n${body}\n(${t("cmRefHint")})`;
+        }),
+      )
+    ).join("\n\n");
     const userMsg: CodeMsg = {
       id: uid(),
       role: "user",
@@ -1529,9 +1595,13 @@ export function CodeMode({
       steps: [],
       checkpointId,
       images: visionImgs.length ? visionImgs : undefined,
-      attachments: codeAttachments.length
-        ? codeAttachments.map((a) => ({ name: a.name, kind: a.kind, path: a.path }))
-        : undefined,
+      attachments:
+        codeAttachments.length || refSessions.length
+          ? [
+              ...refSessions.map((r) => ({ name: r.title, kind: "session" })),
+              ...codeAttachments.map((a) => ({ name: a.name, kind: a.kind, path: a.path })),
+            ]
+          : undefined,
     };
     const asst: CodeMsg = { id: uid(), role: "assistant", text: "", steps: [] };
     // The previous turn hands back exactly what it sent, so this one continues
@@ -1596,7 +1666,8 @@ export function CodeMode({
 
     const turnImages = visionImgs;
     setCodeAttachments([]);
-    const modelInput = attachCtx ? `${attachCtx}\n\n${text}` : text;
+    setRefSessions([]);
+    const modelInput = [refCtx, attachCtx, text].filter(Boolean).join("\n\n");
     // A fresh session's title, asked for BEFORE its first turn. The engine keeps
     // one cache, and a title is a prompt of its own: asked after the turn, as it
     // used to be, it replaced everything the first turn had built, and the
@@ -1619,6 +1690,9 @@ export function CodeMode({
       projectDoc,
       skills,
       memoryIndex,
+      // The session's transcript outlives its context window: search_history
+      // reads back what compaction dropped, and the sessions the user @-ed.
+      sessionId: turnSid,
       visionReady: model.visionReady,
       // Both engines keep an already-encoded image whose identity still
       // prefixes the new prompt, so dropping a stale screenshot only costs.
@@ -2002,6 +2076,7 @@ export function CodeMode({
           </button>
         </div>
 
+        <div className="code-wrap">
         <div className="code-scroll" ref={scrollRef}>
           {msgs.length === 0 ? (
             <div className="cm-welcome">
@@ -2052,8 +2127,12 @@ export function CodeMode({
                     {m.attachments && m.attachments.some((a) => a.kind !== "vision") && (
                       <span className="cm-user-docs">
                         {m.attachments.filter((a) => a.kind !== "vision").map((a, i) => (
-                          <span key={a.name + i} className="cm-attach-doc">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6" /></svg>
+                          <span key={a.name + i} className="cm-attach-doc" title={a.kind === "session" ? t("cmRefSession") : a.name}>
+                            {a.kind === "session" ? (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 109-9 9 9 0 00-6.4 2.7L3 8M3 4v4h4M12 7v5l3.5 2" /></svg>
+                            ) : (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6" /></svg>
+                            )}
                             <span className="cm-attach-doc-name">{a.name}</span>
                           </span>
                         ))}
@@ -2126,6 +2205,21 @@ export function CodeMode({
             </div>
           )}
         </div>
+        {showJump && msgs.length > 0 && (
+          <button
+            className="jump-bottom"
+            title={t("jumpLatest")}
+            onClick={() => {
+              followRef.current = true;
+              scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
+        </div>
 
         {running && (() => {
           const cur = msgs[msgs.length - 1];
@@ -2164,8 +2258,21 @@ export function CodeMode({
               ))}
             </div>
           )}
-          {(codeAttachments.length > 0 || attachErr) && (
+          {(codeAttachments.length > 0 || refSessions.length > 0 || attachErr) && (
             <div className="cm-attach-row">
+              {refSessions.map((r) => (
+                <span key={r.id} className="cm-attach-doc" title={`${t("cmRefSession")}: ${r.title}`}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 109-9 9 9 0 00-6.4 2.7L3 8M3 4v4h4M12 7v5l3.5 2" /></svg>
+                  <span className="cm-attach-doc-name">{r.title}</span>
+                  <button
+                    className="cm-attach-del inline"
+                    title={t("cmRefRemove")}
+                    onClick={() => setRefSessions((cur) => cur.filter((x) => x.id !== r.id))}
+                  >
+                    <Icon name="x" size={10} strokeWidth={2.2} />
+                  </button>
+                </span>
+              ))}
               {codeAttachments.map((a, i) =>
                 a.kind === "vision" && a.path ? (
                   <span key={a.path} className="cm-attach-img">
@@ -2213,15 +2320,20 @@ export function CodeMode({
             )}
             {slashMenu.length === 0 && atMenu.length > 0 && (
               <div className="cm-slash">
-                {atMenu.map((f, i) => (
+                {atMenu.map((e, i) => (
                   <button
-                    key={f}
+                    key={e.kind === "file" ? e.path : e.id}
                     className={`cm-slash-item ${i === atSel ? "sel" : ""}`}
                     onMouseEnter={() => setAtSel(i)}
-                    onClick={() => pickAtFile(f)}
+                    onClick={() => pickAt(e)}
                   >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6" /></svg>
-                    <span className="cm-slash-desc">{f}</span>
+                    {e.kind === "file" ? (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6" /></svg>
+                    ) : (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 109-9 9 9 0 00-6.4 2.7L3 8M3 4v4h4M12 7v5l3.5 2" /></svg>
+                    )}
+                    <span className="cm-slash-desc">{e.kind === "file" ? e.path : e.title}</span>
+                    {e.kind === "session" && <span className="cm-slash-cmd">{t("cmRefSession")}</span>}
                   </button>
                 ))}
               </div>
@@ -2255,7 +2367,7 @@ export function CodeMode({
                   if (e.key === "ArrowUp") { e.preventDefault(); setAtSel((s) => (s - 1 + atMenu.length) % atMenu.length); return; }
                   if (e.key === "Enter" || e.key === "Tab") {
                     e.preventDefault();
-                    pickAtFile(atMenu[Math.min(atSel, atMenu.length - 1)]);
+                    pickAt(atMenu[Math.min(atSel, atMenu.length - 1)]);
                     return;
                   }
                   if (e.key === "Escape") { setAtHidden(true); return; }

@@ -6,12 +6,16 @@ import { describe, expect, test } from "vitest";
 const { mockIPC } = await import("@tauri-apps/api/mocks");
 mockIPC(() => Promise.resolve(null));
 const { systemPrompt, agentSetEditAnchors, nowLine } = await import("./agentLoop");
+const { setHistoryToolEnabled } = await import("./toolRegistry");
+// The app always runs a turn inside a session, so search_history is part of
+// every prompt it sends: measure what ships, not a prompt nobody gets.
+setHistoryToolEnabled(true);
 
 const variants = [
-  { zh: true, vision: false, label: "zh plain", maxChars: 3700 },
-  { zh: true, vision: true, label: "zh vision", maxChars: 4850 },
-  { zh: false, vision: false, label: "en plain", maxChars: 6250 },
-  { zh: false, vision: true, label: "en vision", maxChars: 8120 },
+  { zh: true, vision: false, label: "zh plain", maxChars: 3920 },
+  { zh: true, vision: true, label: "zh vision", maxChars: 5080 },
+  { zh: false, vision: false, label: "en plain", maxChars: 6680 },
+  { zh: false, vision: true, label: "en vision", maxChars: 8550 },
 ] as const;
 // Caps anchored to the post-slimming sizes (2026-07 WS1: 3545 / 4432 / 6031 /
 // 7516 JS chars at think=normal, no project doc; before slimming they were
@@ -32,6 +36,16 @@ const variants = [
 //   Qwen3.6 35B ran out its 12 minutes on `npm init` and on a Python REPL and
 //   edited a menu program's code to get round it; Gemma-4 26B ran out on the
 //   REPL. With it the same runs took 56s / 20s / 21s and 15s, all by typing.
+//   2026-09-17  all four +211 zh / +408 en — search_history. A session's
+//   transcript outlives its context window; without the line the model could
+//   not reach what compaction had dropped, nor read the session a user
+//   pointed at with @ (it only ever sees that session's outline otherwise).
+//   The line spends ~60 zh / ~155 en of that saying it searches the
+//   CONVERSATION and not the code, in the words that conversation used:
+//   with the shorter wording Qwen3-8B answered "what did we decide earlier"
+//   by running search_code over the workspace five times and timing out on
+//   the step limit, then by searching the web in English for a Chinese
+//   transcript's answer.
 
 describe("systemPrompt size gate", () => {
   for (const v of variants) {

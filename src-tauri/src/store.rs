@@ -434,6 +434,263 @@ pub fn code_session_load(db: State<'_, Db>, id: String) -> Result<Option<String>
     })
 }
 
+/// One place in a session's transcript where the words were found. The agent
+/// reads its own past this way: what it wrote before a compaction dropped it,
+/// and what was said in another session the user pointed at.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHit {
+    pub session_id: String,
+    pub title: String,
+    pub updated_at: i64,
+    /// 1-based position of the message inside the session.
+    pub turn: usize,
+    /// "user", "assistant", or the tool the step called.
+    pub role: String,
+    pub text: String,
+}
+
+/// What to look for. A model does not write search-box queries: it writes a
+/// sentence ("tooltip 悬停延迟 delay 毫秒"), so every word being present is
+/// the wrong test — the words are scored instead. Chinese is written without
+/// spaces, so a CJK word also contributes its two-character windows, which is
+/// how it can match text it does not equal.
+fn search_terms(query: &str) -> Vec<Vec<char>> {
+    let mut out: Vec<Vec<char>> = Vec::new();
+    let mut push = |w: Vec<char>| {
+        if w.len() >= 2 && !out.contains(&w) && out.len() < 32 {
+            out.push(w);
+        }
+    };
+    for word in query.split_whitespace() {
+        let w: Vec<char> = word
+            .chars()
+            .filter(|c| !",.?!:;，。？！：；、“”'\"".contains(*c))
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+        if w.is_empty() {
+            continue;
+        }
+        let cjk = w.iter().any(|c| ('\u{3400}'..='\u{9fff}').contains(c));
+        if cjk && w.len() > 2 {
+            for win in w.windows(2) {
+                push(win.to_vec());
+            }
+        }
+        push(w);
+    }
+    out
+}
+
+fn find_from(hay: &[char], needle: &[char], from: usize) -> Option<usize> {
+    if needle.is_empty() || needle.len() > hay.len() {
+        return None;
+    }
+    (from..=hay.len() - needle.len()).find(|&i| hay[i..i + needle.len()] == *needle)
+}
+
+/// How well a piece of transcript answers the query, and where its best word
+/// was found. Longer words count for more, so a whole phrase outranks the
+/// fragments it is made of. None ⇒ not a hit at all.
+fn score(text: &[char], terms: &[Vec<char>]) -> Option<(usize, usize)> {
+    let mut total = 0;
+    let mut best_len = 0;
+    let mut at = 0;
+    for t in terms {
+        if let Some(i) = find_from(text, t, 0) {
+            total += t.len();
+            if t.len() > best_len {
+                best_len = t.len();
+                at = i;
+            }
+        }
+    }
+    (total > 0).then_some((total, at))
+}
+
+/// A readable window around the words that were found.
+fn excerpt(chars: &[char], at: usize, want: usize) -> String {
+    let lead = want / 4;
+    let start = at.saturating_sub(lead);
+    let end = (start + want).min(chars.len());
+    let body: String = chars[start..end].iter().collect();
+    let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!(
+        "{}{}{}",
+        if start > 0 { "…" } else { "" },
+        body,
+        if end < chars.len() { "…" } else { "" }
+    )
+}
+
+/// The text of a piece, folded for matching. to_lowercase can widen a char
+/// (ß → ss); when it does, match the text as written so positions stay true.
+fn folded(text: &str) -> (Vec<char>, Vec<char>) {
+    let chars: Vec<char> = text.chars().collect();
+    let lowered: Vec<char> = chars.iter().flat_map(|c| c.to_lowercase()).collect();
+    let hay = if lowered.len() == chars.len() { lowered } else { chars.clone() };
+    (chars, hay)
+}
+
+/// What a step shows a searcher: the call and what came back.
+fn step_text(step: &serde_json::Value) -> (String, String) {
+    let call = &step["call"];
+    let name = call["name"].as_str().unwrap_or("tool").to_string();
+    let args = match call["args"].as_object() {
+        Some(map) => map
+            .iter()
+            .map(|(k, v)| match v.as_str() {
+                Some(s) => format!("{k}={s}"),
+                None => format!("{k}={v}"),
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        None => String::new(),
+    };
+    let result = step["result"].as_str().unwrap_or("");
+    (name, format!("{args}\n{result}"))
+}
+
+/// Everything in one session's transcript worth searching, in the order it
+/// was said: the turn it belongs to, who said it, and the words.
+fn session_pieces(data: &str) -> Vec<(usize, String, String)> {
+    let parsed: serde_json::Value = match serde_json::from_str(data) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let msgs = match parsed.as_array() {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (i, m) in msgs.iter().enumerate() {
+        let turn = i + 1;
+        let role = m["role"].as_str().unwrap_or("assistant").to_string();
+        if let Some(text) = m["text"].as_str().filter(|t| !t.trim().is_empty()) {
+            out.push((turn, role.clone(), text.to_string()));
+        }
+        if let Some(steps) = m["steps"].as_array() {
+            for step in steps {
+                let (name, body) = step_text(step);
+                if !body.trim().is_empty() {
+                    out.push((turn, name, body));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What one session has to say about the query, best first. The score rides
+/// along so the whole result can be ordered by it.
+fn session_hits(
+    id: &str,
+    title: &str,
+    updated_at: i64,
+    data: &str,
+    terms: &[Vec<char>],
+    cap: usize,
+) -> Vec<(usize, SessionHit)> {
+    let pieces = session_pieces(data);
+    let hit = |turn: usize, role: &str, text: String| SessionHit {
+        session_id: id.to_string(),
+        title: title.to_string(),
+        updated_at,
+        turn,
+        role: role.to_string(),
+        text,
+    };
+    // No words: an overview of the session — how it opened and where it got to.
+    if terms.is_empty() {
+        let brief = |t: &str| {
+            let s = t.split_whitespace().collect::<Vec<_>>().join(" ");
+            let cut: String = s.chars().take(400).collect();
+            if s.chars().count() > 400 { format!("{cut}…") } else { cut }
+        };
+        let first = pieces.iter().find(|(_, role, _)| role == "user");
+        let last = pieces.iter().rev().find(|(_, role, _)| role == "assistant");
+        return first
+            .into_iter()
+            .chain(last)
+            .map(|(turn, role, text)| (0, hit(*turn, role, brief(text))))
+            .collect();
+    }
+    let mut out: Vec<(usize, SessionHit)> = Vec::new();
+    for (turn, role, text) in pieces {
+        let (chars, hay) = folded(&text);
+        if let Some((points, at)) = score(&hay, terms) {
+            out.push((points, hit(turn, &role, excerpt(&chars, at, 400))));
+        }
+    }
+    // Best answers first; between equals, the earlier one (a decision is
+    // usually made before it is repeated).
+    out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.turn.cmp(&b.1.turn)));
+    out.truncate(cap);
+    out
+}
+
+/// Search past Code sessions: this one before a compaction dropped it, one the
+/// user pointed at, or all of them. An empty query with a session asks what
+/// that session was about.
+#[tauri::command]
+pub fn code_session_search(
+    db: State<'_, Db>,
+    query: String,
+    session_id: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<SessionHit>, String> {
+    let terms = search_terms(&query);
+    let limit = limit.unwrap_or(8).clamp(1, 30) as usize;
+    let conn = lock(&db)?;
+    let mut rows: Vec<(String, String, i64, String)> = Vec::new();
+    if let Some(id) = session_id.as_deref() {
+        let row = conn
+            .query_row(
+                "SELECT id, title, updated_at, data FROM code_sessions WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.to_string()),
+            })?;
+        rows.extend(row);
+    } else {
+        // Every session is read: a query is scored, not matched word for word,
+        // so no single word can be required of the blob up front.
+        let mut stmt = conn
+            .prepare("SELECT id, title, updated_at, data FROM code_sessions ORDER BY updated_at DESC")
+            .map_err(|e| e.to_string())?;
+        rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .and_then(|it| it.collect())
+            .map_err(|e| e.to_string())?;
+    }
+    // One session may not fill the answer on its own when several were asked.
+    let per_session = if session_id.is_some() { limit } else { 3.min(limit) };
+    let mut scored: Vec<(usize, i64, SessionHit)> = Vec::new();
+    for (id, title, updated_at, data) in rows {
+        // A session none of the words appear in at all is skipped before its
+        // JSON is parsed — the cost of searching everything is then reading
+        // the blobs, not decoding them.
+        if !terms.is_empty() {
+            let low = data.to_lowercase();
+            if !terms.iter().any(|t| low.contains(&t.iter().collect::<String>())) {
+                continue;
+            }
+        }
+        for (points, hit) in session_hits(&id, &title, updated_at, &data, &terms, per_session) {
+            scored.push((points, updated_at, hit));
+        }
+    }
+    // The best answers first, and among equals the most recent session.
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.turn.cmp(&b.2.turn)));
+    let mut out: Vec<SessionHit> = scored.into_iter().map(|(_, _, h)| h).collect();
+    out.truncate(limit);
+    Ok(out)
+}
+
 #[tauri::command]
 pub fn code_session_delete(db: State<'_, Db>, id: String) -> Result<(), String> {
     // Its background jobs go with it: the running ones stopped, the history dropped.
@@ -540,6 +797,105 @@ pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats,
 #[cfg(test)]
 mod tests {
     use rusqlite::{params, Connection};
+    use super::{search_terms, session_hits};
+
+    /// A session as the frontend stores one: messages, and the tool steps
+    /// under them.
+    fn transcript() -> String {
+        serde_json::json!([
+            { "role": "user", "text": "登录页面的密码框要支持粘贴" },
+            {
+                "role": "assistant",
+                "text": "改好了,粘贴事件不再被拦截。",
+                "steps": [
+                    {
+                        "call": { "name": "edit_file", "args": { "path": "src/Login.tsx" } },
+                        "result": "edited src/Login.tsx (+3 −1)"
+                    },
+                    {
+                        "call": { "name": "bash", "args": { "command": "npm test" } },
+                        "result": "12 passed"
+                    }
+                ]
+            },
+            { "role": "user", "text": "顺便把 tooltip 的悬停延迟定成 300 毫秒" },
+            { "role": "user", "text": "动画时长保持 150 毫秒不变" }
+        ])
+        .to_string()
+    }
+
+    fn hits(query: &str, cap: usize) -> Vec<(usize, super::SessionHit)> {
+        session_hits("s1", "登录页", 10, &transcript(), &search_terms(query), cap)
+    }
+
+    #[test]
+    fn a_session_is_searched_by_its_words() {
+        let found = hits("粘贴", 8);
+        assert_eq!(found.len(), 2, "{found:#?}");
+        assert_eq!(found[0].1.turn, 1);
+        assert_eq!(found[0].1.role, "user");
+        assert!(found[0].1.text.contains("密码框要支持粘贴"), "{}", found[0].1.text);
+        assert_eq!(found[1].1.role, "assistant");
+    }
+
+    /// The failure a real model found: it searches with a sentence, not with
+    /// the words the transcript happens to use. Every word being present is
+    /// the wrong test — the best-matching lines come back, and the one that
+    /// matches most comes first.
+    #[test]
+    fn a_sentence_finds_the_line_it_is_about() {
+        let found = hits("tooltip 悬停延迟 delay 毫秒 ms", 8);
+        assert!(!found.is_empty(), "a natural query found nothing");
+        assert!(found[0].1.text.contains("300 毫秒"), "{}", found[0].1.text);
+        // The line the query is about outranks one that merely shares a word.
+        assert!(found.len() >= 2, "{found:#?}");
+        assert!(found[0].0 > found[1].0, "{found:#?}");
+        assert!(found[1].1.text.contains("150 毫秒"), "{}", found[1].1.text);
+    }
+
+    /// A tool step is part of the transcript: what the command was and what it
+    /// printed.
+    #[test]
+    fn a_step_is_part_of_the_transcript() {
+        let found = hits("npm test", 8);
+        assert_eq!(found[0].1.role, "bash", "{found:#?}");
+        assert!(found[0].1.text.contains("12 passed"), "{}", found[0].1.text);
+        assert!(hits("cargo clippy", 8).is_empty());
+    }
+
+    /// Case folds, the excerpt is a window around the words rather than the
+    /// whole file, and a cap is a cap.
+    #[test]
+    fn an_excerpt_is_a_window_around_the_words() {
+        let long = format!("{}needle{}", "a ".repeat(400), " b".repeat(400));
+        let data = serde_json::json!([{ "role": "user", "text": long }]).to_string();
+        let found = session_hits("s1", "t", 10, &data, &search_terms("NEEDLE"), 8);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].1.text.contains("needle"), "{}", found[0].1.text);
+        assert!(found[0].1.text.starts_with('…') && found[0].1.text.ends_with('…'));
+        assert!(found[0].1.text.chars().count() < 500, "{}", found[0].1.text.chars().count());
+        assert_eq!(hits("粘贴", 1).len(), 1);
+    }
+
+    /// No words asks what a session was about: how it opened and where it got to.
+    #[test]
+    fn an_empty_query_asks_what_a_session_was_about() {
+        let found = hits("  ", 8);
+        assert_eq!(found.len(), 2, "{found:#?}");
+        assert_eq!(found[0].1.role, "user");
+        assert!(found[0].1.text.contains("密码框"));
+        assert_eq!(found[1].1.role, "assistant");
+        assert!(found[1].1.text.contains("粘贴事件"));
+    }
+
+    /// A session saved by an older version — or half-written — is skipped, not
+    /// a failed search.
+    #[test]
+    fn a_session_that_cannot_be_read_is_skipped() {
+        for data in ["", "{}", "[{\"role\":\"user\"}]", "not json at all"] {
+            assert!(session_hits("s1", "t", 10, data, &search_terms("anything"), 8).is_empty());
+        }
+    }
 
     /// One panic while a query held the lock used to end persistence for the
     /// session: every later command failed on the poisoning rather than on

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
+import { asksAboutThePast, jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
 
 describe("jitHintFor", () => {
   test("first browser_* result gets the hint once per turn", () => {
@@ -9,6 +9,40 @@ describe("jitHintFor", () => {
     expect(jitHintFor("browser_click", "…", "zh", shown)).toBe("");
     // next turn: fresh set → re-arms
     expect(jitHintFor("browser_read", "…", "en", new Set())).toContain("[Browser hint]");
+  });
+
+  test("looking anywhere but the record, for a question about the record", () => {
+    const shown = new Set<HintKey>();
+    // Not that kind of question: no hint, however much it searches.
+    expect(jitHintFor("search_code", "…", "zh", shown, "", false)).toBe("");
+    const h = jitHintFor("search_code", "…", "zh", shown, "", true);
+    expect(h).toContain("[记录提示]");
+    expect(h).toContain("search_history");
+    // Once per turn, and not for tools that aren't looking elsewhere.
+    expect(jitHintFor("search_files", "…", "zh", shown, "", true)).toBe("");
+    expect(jitHintFor("read_file", "…", "zh", new Set(), "", true)).toBe("");
+    expect(jitHintFor("web_search", "…", "en", new Set(), "", true)).toContain("[Record hint]");
+  });
+
+  test("what counts as asking about the past", () => {
+    for (const s of [
+      "上次我们定的延迟是多少",
+      "之前说过的方案",
+      "这个会话早先定过 tooltip 的悬停延迟",
+      "earlier we decided on 300ms",
+      "what did you say last time",
+    ]) {
+      expect(asksAboutThePast(s)).toBe(true);
+    }
+    // Ordinary coding requests must not trip it — "before" is a common word.
+    for (const s of [
+      "把 loading 放在渲染之前",
+      "提交之前先跑一遍测试",
+      "run the tests before committing",
+      "重构网络层",
+    ]) {
+      expect(asksAboutThePast(s)).toBe(false);
+    }
   });
 
   test("edit failure triggers the recovery hint, success does not", () => {
