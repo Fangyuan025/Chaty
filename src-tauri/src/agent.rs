@@ -4031,9 +4031,10 @@ struct BgJob {
 
 /// A running job's keyboard.
 enum JobInput {
-    /// A terminal of its own.
+    /// A terminal of its own. The writer is shared with the thread reading the
+    /// terminal, which answers its questions (see pty_stream).
     Pty {
-        writer: Box<dyn Write + Send>,
+        writer: Arc<Mutex<Box<dyn Write + Send>>>,
         master: Box<dyn portable_pty::MasterPty + Send>,
     },
     /// A foreground command's stdin terminal (unix): the master side.
@@ -4054,8 +4055,9 @@ impl JobInput {
     fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         match self {
             JobInput::Pty { writer, .. } => {
-                writer.write_all(bytes)?;
-                writer.flush()
+                let mut w = writer.lock().unwrap();
+                w.write_all(bytes)?;
+                w.flush()
             }
             #[cfg(unix)]
             JobInput::Tty(f) => f.write_all(bytes),
@@ -4525,6 +4527,44 @@ fn bg_tail(buf: &Arc<Mutex<Vec<u8>>>) -> String {
     String::from_utf8_lossy(&b[start..]).into_owned()
 }
 
+/// Reads a terminal, and answers it. A terminal is expected to say where its
+/// cursor is when asked (`ESC[6n`) — Windows' pseudo console asks as it starts
+/// and waits for the answer before the program it hosts writes anything at
+/// all, so a reader that only reads leaves every Windows terminal job silent
+/// and unending.
+fn pty_stream(
+    mut r: impl Read + Send + 'static,
+    buf: Arc<Mutex<Vec<u8>>>,
+    seen: Arc<AtomicU64>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+) {
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = r.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            let asked = crate::terminal::asks_for_cursor(&chunk[..n]);
+            let screen = {
+                let mut b = buf.lock().unwrap();
+                b.extend_from_slice(&chunk[..n]);
+                if b.len() > MAX_OUTPUT_BYTES {
+                    let cut = b.len() - MAX_OUTPUT_BYTES;
+                    b.drain(..cut);
+                }
+                asked.then(|| b.clone())
+            };
+            seen.fetch_add(n as u64, Ordering::Relaxed);
+            if let Some(screen) = screen {
+                let reply = crate::terminal::cursor_reply(&screen);
+                let mut w = writer.lock().unwrap();
+                let _ = w.write_all(&reply);
+                let _ = w.flush();
+            }
+        }
+    });
+}
+
 fn bg_stream(r: impl Read + Send + 'static, buf: Arc<Mutex<Vec<u8>>>, seen: Arc<AtomicU64>) {
     // Same streaming/cap mechanics as foreground bash; bg jobs don't need the
     // truncation flag (their tail view never claims completeness).
@@ -4748,12 +4788,13 @@ fn start_pty_job(root: &Path, command: &str) -> Result<u64, String> {
     let p = crate::terminal::spawn_pty(&program, &args, &envs, root)?;
     let output: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::new(AtomicU64::new(0));
-    bg_stream(p.reader, output.clone(), seen.clone());
+    let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(p.writer));
+    pty_stream(p.reader, output.clone(), seen.clone(), writer.clone());
     let mut reg = BG_JOBS.lock().unwrap();
     let jobs = reg.get_or_insert_with(HashMap::new);
     let id = bg_new_id(&current_session(), command, p.pid);
     let mut job = BgJob::new(command.to_string(), Instant::now(), output.clone(), None, p.pid);
-    job.input = Some(JobInput::Pty { writer: p.writer, master: p.master });
+    job.input = Some(JobInput::Pty { writer, master: p.master });
     job.screen = Some((output, false));
     job.seen = seen;
     jobs.insert(id, job);
@@ -5526,6 +5567,50 @@ mod tests {
         let res = run_bash(&dir, "exec </dev/tty", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
             .expect("run");
         assert!(res.bg_id.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A terminal answers the question every terminal is asked: a program that
+    /// sends `ESC[6n` and waits for the reply gets one, and goes on. Windows'
+    /// pseudo console asks it before the program it hosts runs at all — an
+    /// unanswered question there left every terminal job silent forever — and
+    /// the answering is the same code on both.
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_answers_where_its_cursor_is() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-cpr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        // Raw mode: nothing is echoed, so what comes back is the program's own
+        // report of what it read.
+        std::fs::write(
+            dir.join("ask.py"),
+            "import sys, tty, termios\n\
+             fd = sys.stdin.fileno()\n\
+             old = termios.tcgetattr(fd)\n\
+             tty.setraw(fd)\n\
+             sys.stdout.write('\\x1b[6n')\n\
+             sys.stdout.flush()\n\
+             buf = ''\n\
+             while not buf.endswith('R'):\n\
+             \x20   buf += sys.stdin.read(1)\n\
+             termios.tcsetattr(fd, termios.TCSADRAIN, old)\n\
+             print('answer=' + buf.replace('\\x1b', 'ESC'))\n",
+        )
+        .unwrap();
+        let id = start_pty_job(&dir, "python3 -u ask.py").expect("a terminal");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let info = agent_bg_output(id).expect("job exists");
+            if info.tail.contains("answer=") {
+                assert!(info.tail.contains("ESC[1;1R"), "{}", info.tail);
+                break;
+            }
+            assert!(Instant::now() < deadline, "no answer; screen:\n{}", info.tail);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        agent_bg_kill(id).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -141,6 +141,27 @@ pub fn render_screen(bytes: &[u8], lf_only: bool) -> String {
     lines.join("\n")
 }
 
+/// A terminal is asked where its cursor is (`ESC[6n`, DSR-CPR) and is expected
+/// to answer `ESC[row;colR`. Windows' pseudo console asks the moment it starts
+/// and WAITS for the answer: unanswered, the program it is hosting never
+/// writes a byte and never exits — which is exactly what every Windows
+/// terminal job did until this existed. Programs ask mid-run too (editors
+/// sizing themselves), on every platform.
+pub const CURSOR_QUERY: &[u8] = b"\x1b[6n";
+
+pub fn asks_for_cursor(chunk: &[u8]) -> bool {
+    chunk.windows(CURSOR_QUERY.len()).any(|w| w == CURSOR_QUERY)
+}
+
+/// Where the cursor is on the screen those bytes have drawn, as the answer to
+/// send back (1-based, as the sequence counts).
+pub fn cursor_reply(bytes: &[u8]) -> Vec<u8> {
+    let mut parser = vt100::Parser::new(ROWS, COLS, 0);
+    parser.process(bytes);
+    let (row, col) = parser.screen().cursor_position();
+    format!("\x1b[{};{}R", row as u32 + 1, col as u32 + 1).into_bytes()
+}
+
 /// `\n` → `\r\n`, leaving existing `\r\n` alone.
 pub fn crlf(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len() + bytes.len() / 16);
@@ -470,6 +491,19 @@ pub fn test_command(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The question a terminal must answer, and the shape of the answer.
+    #[test]
+    fn a_terminal_says_where_its_cursor_is() {
+        assert!(asks_for_cursor(b"\x1b[6n"));
+        assert!(asks_for_cursor(b"hello\x1b[6nworld"));
+        assert!(!asks_for_cursor(b"hello"));
+        assert!(!asks_for_cursor(b"\x1b[6"));
+        // Nothing drawn yet: the top left corner, counted from one.
+        assert_eq!(cursor_reply(b""), b"\x1b[1;1R".to_vec());
+        // Two lines written, three characters into the third.
+        assert_eq!(cursor_reply(b"one\r\ntwo\r\nabc"), b"\x1b[3;4R".to_vec());
+    }
 
     /// A Windows shell with nothing to run is a conversation; one that was
     /// given a command to run is not (`powershell -Command …` is how half the
