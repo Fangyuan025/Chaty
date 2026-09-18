@@ -5569,24 +5569,32 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The pseudo console carries a conversation: a shell with nothing to run
+    /// is started in one, what it prints is read back as a screen, and what is
+    /// typed into it reaches it. `cmd` rather than a Python REPL — every
+    /// Windows has one, and it greets you, so an empty screen here means the
+    /// console is not being read rather than that a program stayed quiet
+    /// (which is exactly what `python -q` did on the runner).
     #[cfg(windows)]
     #[test]
-    fn windows_a_repl_runs_in_a_pseudo_console() {
+    fn windows_a_shell_runs_in_a_pseudo_console() {
         let _g = serial();
         let dir = std::env::temp_dir().join(format!("chaty-repl-win-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         set_ws(&dir);
-        let res = run_bash(&dir, "python -q", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
+        let res = run_bash(&dir, "cmd", Duration::from_secs(60), None, true, Some(Duration::from_secs(10)))
             .expect("run");
-        let id = res.bg_id.unwrap_or_else(|| panic!("a REPL runs in the background; got {} / {}", res.stdout, res.stderr));
+        let id = res
+            .bg_id
+            .unwrap_or_else(|| panic!("a shell runs in the background; got {} / {}", res.stdout, res.stderr));
         assert!(res.awaiting_input, "{}", res.stdout);
-        // The prompt may still be on its way when the call returns: a REPL in
-        // key-by-key mode is handed over as soon as it is waiting.
-        wait_tail_windows(id, ">>>", Duration::from_secs(20));
-        agent_bg_input(id, Some("print(6 * 7)".into()), None, None).expect("typed");
+        wait_tail_windows(id, ">", Duration::from_secs(20));
+        // Arithmetic, not an echo: a console echoes what is typed into it, so
+        // "echo hi" would show "hi" whether or not the shell ever ran it.
+        agent_bg_input(id, Some("set /a 6*7".into()), None, None).expect("typed");
         let tail = wait_tail_windows(id, "42", Duration::from_secs(20));
         assert!(tail.contains("42"), "{tail}");
-        agent_bg_input(id, Some("exit()".into()), None, None).expect("exit");
+        agent_bg_input(id, Some("exit".into()), None, None).expect("exit");
         let end = wait_job_end_windows(id, Duration::from_secs(20));
         assert!(!end.running);
         std::fs::remove_dir_all(&dir).ok();

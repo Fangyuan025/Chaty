@@ -424,6 +424,12 @@ pub fn interactive_command(command: &str) -> bool {
                 _ => rest.is_empty() || rest.iter().all(|a| matches!(*a, "-q" | "-u" | "-B")),
             }
         }
+        // A Windows shell with nothing to run is a shell to talk to. With a
+        // command to run (-Command, /C, -File) it is an ordinary command.
+        "cmd" | "powershell" | "pwsh" => !rest.iter().any(|a| {
+            let a = a.to_ascii_lowercase();
+            matches!(a.as_str(), "/c" | "/k" | "-c" | "-command" | "-f" | "-file" | "-encodedcommand")
+        }),
         "sqlite3" => operands <= 1,
         "psql" => !has("-c") && !has("-f") && !has("--command") && !has("--file"),
         "mysql" | "mariadb" => !has("-e") && !has("--execute"),
@@ -464,6 +470,24 @@ pub fn test_command(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Windows shell with nothing to run is a conversation; one that was
+    /// given a command to run is not (`powershell -Command …` is how half the
+    /// Windows commands a model writes look).
+    #[test]
+    fn a_windows_shell_with_nothing_to_run_is_a_conversation() {
+        for c in ["cmd", "cmd.exe", "powershell", "pwsh", "powershell -NoProfile", "powershell -NoLogo"] {
+            assert!(interactive_command(c), "{c}");
+        }
+        for c in [
+            "cmd /C echo hi",
+            "powershell -NoProfile -Command \"Write-Output hi\"",
+            "pwsh -File build.ps1",
+            "echo hi | cmd",
+        ] {
+            assert!(!interactive_command(c), "{c}");
+        }
+    }
 
     #[test]
     fn a_question_put_to_a_person_is_a_prompt() {
