@@ -4141,7 +4141,15 @@ impl BgJob {
     /// A job that reads a keyboard is shown as the screen a person would see.
     fn tail(&self) -> String {
         if let Some((buf, lf_only)) = &self.screen {
-            return crate::terminal::render_screen(&buf.lock().unwrap(), *lf_only);
+            let bytes = buf.lock().unwrap();
+            let screen = crate::terminal::render_screen(&bytes, *lf_only);
+            // A terminal whose screen renders to nothing while it HAS written
+            // something: show what it wrote. The model reading an empty screen
+            // of a job that is plainly talking is the worst of both.
+            if screen.trim().is_empty() && !bytes.is_empty() {
+                return crate::terminal::plain_log(&bytes);
+            }
+            return screen;
         }
         let mut t = bg_tail(&self.output);
         if let Some(err) = &self.stderr_extra {
@@ -5540,8 +5548,9 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "job #{id} never showed {needle:?} (running={}); screen:\n{}",
+                "job #{id} never showed {needle:?} (running={}, raw bytes={}); screen:\n{}",
                 info.running,
+                raw_len(id),
                 info.tail
             );
             std::thread::sleep(Duration::from_millis(100));
@@ -5566,6 +5575,39 @@ mod tests {
         let tail = wait_tail_windows(id, "got=y", Duration::from_secs(20));
         assert!(tail.contains("got=y"), "{tail}");
         wait_job_end_windows(id, Duration::from_secs(20));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Bytes read from a terminal, however they render: the raw length says
+    /// whether the console is being read at all.
+    #[cfg(windows)]
+    fn raw_len(id: u64) -> usize {
+        BG_JOBS
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|j| j.get(&id))
+            .map(|j| j.output.lock().unwrap().len())
+            .unwrap_or(0)
+    }
+
+    /// The plumbing, before anything interactive: a command that prints and
+    /// exits, run in a terminal of its own, reaches us.
+    #[cfg(windows)]
+    #[test]
+    fn windows_a_terminal_is_read() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-pty-win-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let id = start_pty_job(&dir, "echo from-the-console").expect("a terminal");
+        let end = wait_job_end_windows(id, Duration::from_secs(30));
+        assert!(
+            end.tail.contains("from-the-console"),
+            "nothing came back from the console (raw bytes: {}); tail:\n{}",
+            raw_len(id),
+            end.tail
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
