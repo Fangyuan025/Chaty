@@ -5677,45 +5677,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Before our own layer: a pseudo console, a command that prints and
-    /// exits, and the bytes read straight back from the console. If this fails
-    /// the console itself is not carrying output on this machine; if it passes
-    /// while the job tests fail, what we add around it is at fault.
-    #[cfg(windows)]
-    #[test]
-    fn windows_a_pseudo_console_carries_output() {
-        use std::io::Read;
-        let shell = windows_shell();
-        let args = [std::ffi::OsString::from("/C"), std::ffi::OsString::from("echo probe-output")];
-        let p = crate::terminal::spawn_pty(&shell, &args, &[], &std::env::temp_dir()).expect("a console");
-        let got = Arc::new(Mutex::new(Vec::new()));
-        let sink = got.clone();
-        let mut reader = p.reader;
-        std::thread::spawn(move || {
-            let mut chunk = [0u8; 4096];
-            while let Ok(n) = reader.read(&mut chunk) {
-                if n == 0 {
-                    break;
-                }
-                sink.lock().unwrap().extend_from_slice(&chunk[..n]);
-            }
-        });
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let seen = String::from_utf8_lossy(&got.lock().unwrap()).to_string();
-            if seen.contains("probe-output") {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "a pseudo console gave back {} bytes and no output: {:?}",
-                got.lock().unwrap().len(),
-                seen
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-
     /// Bytes read from a terminal, however they render: the raw length says
     /// whether the console is being read at all.
     #[cfg(windows)]
@@ -5730,7 +5691,9 @@ mod tests {
     }
 
     /// The plumbing, before anything interactive: a command that prints and
-    /// exits, run in a terminal of its own, reaches us.
+    /// exits, run in a terminal of its own, reaches us. This is the test that
+    /// caught the pseudo console waiting on its cursor question — for as long
+    /// as that went unanswered, `echo` never printed and never ended.
     #[cfg(windows)]
     #[test]
     fn windows_a_terminal_is_read() {
