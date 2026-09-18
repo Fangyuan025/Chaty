@@ -3899,9 +3899,18 @@ fn redirect_tool_caches(cmd: &mut Command) {
     }
 }
 
+/// The Windows shell, by its full path. CreateProcessW — which is how a
+/// command started in a terminal of its own is spawned — does not append
+/// `.exe` to a program it is handed, so a bare "cmd" is not a thing it can
+/// start; `%ComSpec%` is the path Windows itself uses.
+#[cfg(windows)]
+fn windows_shell() -> std::ffi::OsString {
+    std::env::var_os("ComSpec").unwrap_or_else(|| "C:\\Windows\\System32\\cmd.exe".into())
+}
+
 #[cfg(windows)]
 fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
-    let mut cmd = Command::new("cmd");
+    let mut cmd = Command::new(windows_shell());
     cmd.arg("/C").arg(command);
     hide_console(&mut cmd); // every agent step would flash a console otherwise
     // Same cache redirect the unix variants apply — Windows was the one
@@ -5531,7 +5540,12 @@ mod tests {
             if !info.running {
                 return info;
             }
-            assert!(Instant::now() < deadline, "job #{id} never ended; screen:\n{}", info.tail);
+            assert!(
+                Instant::now() < deadline,
+                "job #{id} never ended (read: {}); screen:\n{}",
+                raw_len(id),
+                info.tail
+            );
             std::thread::sleep(Duration::from_millis(100));
         }
     }
@@ -5576,6 +5590,45 @@ mod tests {
         assert!(tail.contains("got=y"), "{tail}");
         wait_job_end_windows(id, Duration::from_secs(20));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Before our own layer: a pseudo console, a command that prints and
+    /// exits, and the bytes read straight back from the console. If this fails
+    /// the console itself is not carrying output on this machine; if it passes
+    /// while the job tests fail, what we add around it is at fault.
+    #[cfg(windows)]
+    #[test]
+    fn windows_a_pseudo_console_carries_output() {
+        use std::io::Read;
+        let shell = windows_shell();
+        let args = [std::ffi::OsString::from("/C"), std::ffi::OsString::from("echo probe-output")];
+        let p = crate::terminal::spawn_pty(&shell, &args, &[], &std::env::temp_dir()).expect("a console");
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let sink = got.clone();
+        let mut reader = p.reader;
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            while let Ok(n) = reader.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                sink.lock().unwrap().extend_from_slice(&chunk[..n]);
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let seen = String::from_utf8_lossy(&got.lock().unwrap()).to_string();
+            if seen.contains("probe-output") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a pseudo console gave back {} bytes and no output: {:?}",
+                got.lock().unwrap().len(),
+                seen
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// Bytes read from a terminal, however they render: the raw length says
