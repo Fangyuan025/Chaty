@@ -3820,6 +3820,137 @@ pub(crate) fn defuse_nested_sandbox(command: &str) -> String {
         .into_owned()
 }
 
+/// The shell the user picked in Settings (by id), or None for this platform's
+/// default. Windows ships cmd, where a model writing bash gets nothing it
+/// meant (issue #19); Git Bash and PowerShell are usually there to pick.
+static SHELL_CHOICE: Mutex<Option<String>> = Mutex::new(None);
+
+/// A shell Chaty can run commands in.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellInfo {
+    /// Stable key stored in settings ("cmd", "powershell", "git-bash", "bash"…).
+    pub id: String,
+    /// What it calls itself, for the menu.
+    pub name: String,
+    /// Where it was found.
+    pub path: String,
+    /// The one used when nothing is chosen.
+    pub default: bool,
+}
+
+/// The shells present on this machine, the default first. A choice that is no
+/// longer installed falls back to the default, so a settings file that moves
+/// between machines cannot leave commands unrunnable.
+#[tauri::command]
+pub fn agent_shells() -> Vec<ShellInfo> {
+    fn add(out: &mut Vec<ShellInfo>, id: &str, name: &str, path: PathBuf, default: bool) {
+        if path.exists() && !out.iter().any(|s| s.id == id) {
+            out.push(ShellInfo {
+                id: id.to_string(),
+                name: name.to_string(),
+                path: path.to_string_lossy().into_owned(),
+                default,
+            });
+        }
+    }
+    let mut out: Vec<ShellInfo> = Vec::new();
+    #[cfg(windows)]
+    {
+        add(&mut out, "cmd", "命令提示符 (cmd)", PathBuf::from(windows_shell()), true);
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        add(
+            &mut out,
+            "powershell",
+            "Windows PowerShell",
+            PathBuf::from(&sysroot).join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+            false,
+        );
+        for p in which_all("pwsh.exe") {
+            add(&mut out, "pwsh", "PowerShell 7", p, false);
+        }
+        // Git for Windows: the bash models actually write for.
+        for base in [
+            std::env::var_os("ProgramFiles").map(PathBuf::from),
+            std::env::var_os("ProgramFiles(x86)").map(PathBuf::from),
+            std::env::var_os("LocalAppData").map(|d| PathBuf::from(d).join("Programs")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            add(&mut out, "git-bash", "Git Bash", base.join("Git/bin/bash.exe"), false);
+        }
+        for p in which_all("bash.exe") {
+            add(&mut out, "git-bash", "Git Bash", p, false);
+        }
+    }
+    #[cfg(unix)]
+    {
+        for p in ["/bin/bash", "/usr/bin/bash", "/opt/homebrew/bin/bash", "/usr/local/bin/bash"] {
+            add(&mut out, "bash", "bash", PathBuf::from(p), true);
+        }
+        for p in ["/bin/zsh", "/usr/bin/zsh"] {
+            add(&mut out, "zsh", "zsh", PathBuf::from(p), false);
+        }
+        for p in ["/usr/bin/fish", "/opt/homebrew/bin/fish", "/usr/local/bin/fish"] {
+            add(&mut out, "fish", "fish", PathBuf::from(p), false);
+        }
+        for p in ["/bin/sh", "/usr/bin/sh"] {
+            let only = out.is_empty();
+            add(&mut out, "sh", "sh", PathBuf::from(p), only);
+        }
+    }
+    out
+}
+
+/// Every `name` on PATH (Windows: the first few are plenty).
+#[cfg(windows)]
+fn which_all(name: &str) -> Vec<PathBuf> {
+    std::env::var_os("PATH")
+        .map(|p| {
+            std::env::split_paths(&p)
+                .map(|dir| dir.join(name))
+                .filter(|c| c.exists())
+                .take(3)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pick the shell commands run in. `None` (or an id that is not installed)
+/// means this platform's default.
+#[tauri::command]
+pub fn agent_set_shell(id: Option<String>) -> Vec<ShellInfo> {
+    let shells = agent_shells();
+    let keep = id.filter(|want| shells.iter().any(|s| &s.id == want));
+    *SHELL_CHOICE.lock().unwrap() = keep;
+    shells
+}
+
+/// The chosen shell, if it is still installed.
+fn chosen_shell() -> Option<ShellInfo> {
+    let want = SHELL_CHOICE.lock().unwrap().clone()?;
+    agent_shells().into_iter().find(|s| s.id == want)
+}
+
+/// How a shell is told to run one command.
+fn shell_flags(id: &str) -> Vec<String> {
+    match id {
+        "cmd" => vec!["/C".into()],
+        "powershell" | "pwsh" => vec!["-NoLogo".into(), "-NoProfile".into(), "-Command".into()],
+        // `xpg_echo` keeps `echo "a\nb"` printing two lines, as /bin/sh did.
+        "bash" | "git-bash" => vec!["-O".into(), "xpg_echo".into(), "-c".into()],
+        _ => vec!["-c".into()],
+    }
+}
+
+/// Whether the shell commands run in reads its stdin to the end before it
+/// exits — PowerShell does, so a command run through it must keep the old
+/// empty stdin rather than being given a terminal to talk to.
+fn shell_swallows_stdin() -> bool {
+    chosen_shell().is_some_and(|s| s.id == "powershell" || s.id == "pwsh")
+}
+
 /// The shell a command runs in, and the arguments before the command itself.
 ///
 /// The tool is called `bash`, and models write bash: `echo -e`, `[[ ]]`,
@@ -3830,11 +3961,14 @@ pub(crate) fn defuse_nested_sandbox(command: &str) -> String {
 /// which commands already written for it rely on — outside POSIX mode `echo`
 /// still takes -e and -n.
 #[cfg(unix)]
-fn shell() -> (&'static str, &'static [&'static str]) {
+fn shell() -> (String, Vec<String>) {
+    if let Some(picked) = chosen_shell() {
+        return (picked.path.clone(), shell_flags(&picked.id));
+    }
     if Path::new("/bin/bash").exists() {
-        ("/bin/bash", &["-O", "xpg_echo", "-c"])
+        ("/bin/bash".into(), shell_flags("bash"))
     } else {
-        ("/bin/sh", &["-c"])
+        ("/bin/sh".into(), shell_flags("sh"))
     }
 }
 
@@ -3910,8 +4044,14 @@ fn windows_shell() -> std::ffi::OsString {
 
 #[cfg(windows)]
 fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
-    let mut cmd = Command::new(windows_shell());
-    cmd.arg("/C").arg(command);
+    // The user's shell if they picked one (issue #19: cmd is what Windows
+    // ships, bash is what models write), cmd otherwise.
+    let (program, flags) = match chosen_shell() {
+        Some(picked) => (std::ffi::OsString::from(picked.path.clone()), shell_flags(&picked.id)),
+        None => (windows_shell(), shell_flags("cmd")),
+    };
+    let mut cmd = Command::new(program);
+    cmd.args(&flags).arg(command);
     hide_console(&mut cmd); // every agent step would flash a console otherwise
     // Same cache redirect the unix variants apply — Windows was the one
     // platform that forgot, caught the first time this test actually RAN on
@@ -4747,6 +4887,9 @@ fn buffer_tail(buf: &Arc<Mutex<Vec<u8>>>, max: usize) -> Vec<u8> {
 /// Whether a command runs PowerShell, which reads its stdin to the end before
 /// it exits when stdin is anything but empty.
 fn runs_powershell(command: &str) -> bool {
+    if shell_swallows_stdin() {
+        return true; // every command goes through PowerShell
+    }
     let c = command.to_ascii_lowercase();
     c.contains("powershell") || c.contains("pwsh")
 }
@@ -5761,6 +5904,83 @@ mod tests {
             assert!(t0.elapsed() < Duration::from_secs(limit), "{cmd} took {:?}", t0.elapsed());
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A machine's shells are found, the default is the one commands ran in
+    /// before any of this existed, and picking one changes what runs them.
+    /// (issue #19: Windows ships cmd, and models write bash.)
+    #[test]
+    fn the_shell_is_the_users_to_choose() {
+        let _g = serial();
+        let shells = agent_shells();
+        assert!(!shells.is_empty(), "no shell found at all");
+        let default = shells.iter().find(|s| s.default).expect("one default");
+        #[cfg(unix)]
+        assert!(default.id == "bash" || default.id == "sh", "{default:?}");
+        #[cfg(windows)]
+        assert_eq!(default.id, "cmd", "{default:?}");
+        assert!(shells.iter().all(|s| Path::new(&s.path).exists()), "{shells:?}");
+
+        // Nothing chosen: the platform default, as before.
+        agent_set_shell(None);
+        assert!(chosen_shell().is_none());
+        // A shell that is not installed is not a choice — a settings file from
+        // another machine cannot leave commands unrunnable.
+        agent_set_shell(Some("no-such-shell".into()));
+        assert!(chosen_shell().is_none());
+        // One that is: commands run in it from then on.
+        let other = shells.iter().find(|s| !s.default).cloned();
+        if let Some(other) = other {
+            agent_set_shell(Some(other.id.clone()));
+            assert_eq!(chosen_shell().map(|s| s.id), Some(other.id.clone()));
+            #[cfg(unix)]
+            {
+                let (program, flags) = shell();
+                assert_eq!(program, other.path);
+                assert_eq!(flags.last().map(String::as_str), Some("-c"));
+            }
+        }
+        agent_set_shell(None);
+    }
+
+    /// The choice is not bookkeeping: the command really runs in that shell.
+    /// zsh sets $ZSH_VERSION and bash does not, so the shell says its own name.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_chosen_shell_is_the_one_that_runs_the_command() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-shellpick-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        let run = |cmd: &str| {
+            run_bash(&dir, cmd, Duration::from_secs(20), None, true, None)
+                .expect("run")
+                .stdout
+                .trim()
+                .to_string()
+        };
+        agent_set_shell(None);
+        assert_eq!(run("echo ${ZSH_VERSION:-not-zsh}"), "not-zsh", "the default is not zsh");
+        if agent_shells().iter().any(|s| s.id == "zsh") {
+            agent_set_shell(Some("zsh".into()));
+            assert_ne!(run("echo ${ZSH_VERSION:-not-zsh}"), "not-zsh", "zsh was chosen and did not run it");
+        }
+        agent_set_shell(None);
+        assert_eq!(run("echo ${ZSH_VERSION:-not-zsh}"), "not-zsh", "the default came back");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Each shell is told to run a command the way that shell expects.
+    #[test]
+    fn a_shell_is_told_to_run_a_command_its_own_way() {
+        assert_eq!(shell_flags("cmd"), vec!["/C"]);
+        assert_eq!(shell_flags("powershell"), vec!["-NoLogo", "-NoProfile", "-Command"]);
+        assert_eq!(shell_flags("pwsh"), vec!["-NoLogo", "-NoProfile", "-Command"]);
+        // xpg_echo is what keeps `echo "a\nb"` two lines, as /bin/sh printed it.
+        assert_eq!(shell_flags("git-bash"), vec!["-O", "xpg_echo", "-c"]);
+        assert_eq!(shell_flags("bash"), vec!["-O", "xpg_echo", "-c"]);
+        assert_eq!(shell_flags("zsh"), vec!["-c"]);
+        assert_eq!(shell_flags("fish"), vec!["-c"]);
     }
 
     /// The tool is called bash and runs bash: what a model writes for bash

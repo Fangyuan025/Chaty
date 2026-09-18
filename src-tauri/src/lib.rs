@@ -574,6 +574,8 @@ pub fn run() {
             rag::rag_clear_all,
             agent::agent_set_workspace,
             agent::agent_set_lang,
+            agent::agent_shells,
+            agent::agent_set_shell,
             agent::agent_set_edit_anchors,
             agent::agent_edit_lines,
             agent::agent_get_workspace,

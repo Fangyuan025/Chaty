@@ -1466,6 +1466,14 @@ function isThinkOnly(raw: string): boolean {
 
 const asStr = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
 
+/** The several paths of a multi_read, however the model names them: an array
+ *  under any of the usual keys, or a single path written as a string. */
+const argPaths = (a: Record<string, unknown>): string[] => {
+  const raw = a.paths ?? a.files ?? a.path ?? a.file_paths ?? a.filenames;
+  const list = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/\s*,\s*/) : [];
+  return list.map((p) => asStr(p).trim()).filter(Boolean);
+};
+
 /** When something was said, as a person writes it: local date and time. */
 const stamp = (ms: number): string => {
   const d = new Date(ms);
@@ -1573,7 +1581,7 @@ async function execTool(
   /** Present when a `sudo` command was approved and the user entered a
    *  password — piped to `sudo -S` on stdin by the backend. */
   sudoPassword?: string,
-): Promise<{ result: string; diff?: ToolStep["diff"] }> {
+): Promise<{ result: string; diff?: ToolStep["diff"]; failed?: boolean }> {
   const a = call.args;
   switch (call.name) {
     case "read_file": {
@@ -1593,6 +1601,39 @@ async function execTool(
           a.symbol ? asStr(a.symbol) : undefined,
         ),
       };
+    }
+    case "multi_read": {
+      const paths = argPaths(a);
+      if (paths.length === 0) {
+        return { result: missingArg("paths", '{"paths":["src/app.ts","src/db.ts"]}') };
+      }
+      // The budget one read would have had, shared out — ten files must not
+      // cost ten times the window. A floor keeps every file worth reading.
+      const each = Math.max(4000, Math.floor((readChars ?? 24000) / paths.length));
+      const parts: string[] = [];
+      const failures: string[] = [];
+      for (const path of paths) {
+        try {
+          const body = /\.(pdf|docx|xlsx|pptx)$/i.test(path)
+            ? await agentReadDoc(path)
+            : await agentReadFile(path, undefined, undefined, each);
+          parts.push(`===== ${path} =====\n${body}`);
+        } catch (e) {
+          const why = e instanceof Error ? e.message : String(e);
+          failures.push(`${path}: ${why}`);
+          parts.push(`===== ${path} =====\nERROR: ${why}`);
+        }
+      }
+      // Whatever could be read is handed over whole; the files that could not
+      // be are named, and the call counts as failed so the failure is not
+      // read past.
+      const note = failures.length
+        ? (isZh()
+            ? `\n\n读取失败 ${failures.length}/${paths.length} 个文件:\n`
+            : `\n\nERROR: ${failures.length} of ${paths.length} files could not be read:\n`) +
+          failures.map((f) => `- ${f}`).join("\n")
+        : "";
+      return { result: parts.join("\n\n") + note, failed: failures.length > 0 };
     }
     case "list_dir": {
       const base = a.path ? asStr(a.path) : undefined;
@@ -4192,7 +4233,9 @@ export async function runAgentTurn(
         // (e.g. a backend read that resolved null) can't crash the whole turn
         // at the .startsWith/.slice below.
         resultText = out.result ?? "";
-        stepObj.status = "done";
+        // A call that did part of its job (multi_read with a file it could not
+        // read) hands back what it has AND says it failed.
+        stepObj.status = out.failed ? "error" : "done";
         // What the STEP CARD keeps, which is not what the model was given.
         // `resultText` above is the model's copy and stays whole; this one is
         // only ever rendered at 6000 characters, and holding the rest of a

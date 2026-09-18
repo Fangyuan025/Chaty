@@ -83,6 +83,9 @@ describe("derived sets match the pre-M0 literals", () => {
       browser_navigate: ["url"],
       web_download: ["url", "path"],
       read_file: ["path"],
+      // Several files in one call (2026-09-18); the aliases a model may write
+      // for the list are folded in by the tool itself.
+      multi_read: ["paths|files|path|file_paths|filenames"],
       write_file: ["path"],
       edit_file: ["path"],
       edit_lines: ["path"],

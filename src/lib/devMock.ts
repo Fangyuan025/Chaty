@@ -135,6 +135,13 @@ const CODE_SESSION_MSGS = [
         result: "file names (1):\n  src/parser.ts\n\nfile contents:\nsrc/parser.ts:41: export function tokenize(src: string) {",
       },
       {
+        id: "s3b",
+        call: { name: "multi_read", args: { paths: ["src/parser.ts", "src/lexer.ts", "src/token.ts"] } },
+        status: "done",
+        result:
+          "===== src/parser.ts =====\nexport function tokenize(src: string) {\n\n===== src/lexer.ts =====\nERROR: no such file: src/lexer.ts\n\n===== src/token.ts =====\nexport interface Token { kind: string }",
+      },
+      {
         id: "s4",
         call: { name: "outline", args: { path: "src/parser.ts" } },
         status: "done",
@@ -156,6 +163,26 @@ const CODE_SESSION_MSGS = [
         call: { name: "bash", args: { command: "npm test" } },
         status: "done",
         result: "Tests: 96 passed, 96 total\nTime: 4.1s\n[exit 0]",
+      },
+    ],
+  },
+];
+
+/** A second, much shorter session: two sessions that render identically make
+ *  switching between them untestable in the preview (the DOM does not even
+ *  change). */
+const CODE_SESSION_README = [
+  { id: "u1", role: "user", text: "Add a README to the project", steps: [] },
+  {
+    id: "a1",
+    role: "assistant",
+    text: "Written: what the project is, how to install it, and how to run the tests.",
+    steps: [
+      {
+        id: "s1",
+        call: { name: "write_file", args: { path: "README.md" } },
+        status: "done",
+        result: "Wrote README.md (24 lines)",
       },
     ],
   },
@@ -269,9 +296,10 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "code_session_list":
       return [...SAVED_CODE_SESSIONS, ...CODE_SESSIONS];
     case "code_session_load": {
-      const hit = SAVED_CODE_SESSIONS.find((s) => s.id === String(args?.id ?? ""));
+      const id = String(args?.id ?? "");
+      const hit = SAVED_CODE_SESSIONS.find((s) => s.id === id);
       if (hit) return SAVED_CODE_BODIES.get(hit.id) ?? "[]";
-      return JSON.stringify(CODE_SESSION_MSGS);
+      return JSON.stringify(id === "cs2" ? CODE_SESSION_README : CODE_SESSION_MSGS);
     }
     case "code_session_save": {
       // Real save/delete semantics so delete-while-running is drivable in
@@ -284,6 +312,14 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       SAVED_CODE_BODIES.set(id, String(args?.data ?? "[]"));
       return null;
     }
+    // What a Mac reports, so the shell picker is drivable in the preview.
+    case "agent_shells":
+    case "agent_set_shell":
+      return [
+        { id: "bash", name: "bash", path: "/bin/bash", default: true },
+        { id: "zsh", name: "zsh", path: "/bin/zsh", default: false },
+        { id: "sh", name: "sh", path: "/bin/sh", default: false },
+      ];
     case "code_session_search": {
       // The real search runs in SQLite; the preview searches the fixtures the
       // same way, so the tool card and the @-reference are drivable here.
@@ -295,7 +331,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       const hits: unknown[] = [];
       for (const meta of all) {
         const body = SAVED_CODE_BODIES.get(meta.id);
-        const msgs = body ? JSON.parse(body) : CODE_SESSION_MSGS;
+        const msgs = body ? JSON.parse(body) : meta.id === "cs2" ? CODE_SESSION_README : CODE_SESSION_MSGS;
         (msgs as { role: string; text?: string; steps?: { call?: { name?: string }; result?: string }[] }[]).forEach(
           (m, i) => {
             const pieces: [string, string][] = [[m.role, m.text ?? ""]];

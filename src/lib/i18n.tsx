@@ -151,6 +151,13 @@ export const T = {
     zh: "每个 agent 步骤的生成 token 上限。0 = 不限制(由上下文窗口自然封顶);滑杆上限即当前模型的上下文窗口。调低可以防长跑,调高给长思考和大文件写入留空间。",
     en: "Generation cap per agent step. 0 = no cap of its own (the context window still bounds it); the slider tops out at the loaded model's context window. Lower it to bound runaways, raise it for long reasoning and big file writes.", pt: "Limite de geração por passo do agente. 0 = sem limite próprio (a janela de contexto ainda restringe); o controle vai até a janela de contexto do modelo carregado. Diminua para restringir fugas, aumente para raciocínios longos e escritas de arquivos grandes.",
   },
+  cmShell: { zh: "命令使用的终端", en: "Shell for commands", pt: "Shell para comandos" },
+  cmShellHint: {
+    zh: "智能体执行 bash 工具时使用的终端。Windows 默认是 cmd,而模型通常写 Linux/bash 命令——装了 Git Bash 或 PowerShell 就能在这里换。",
+    en: "The shell the agent's bash tool runs commands in. Windows defaults to cmd while models write Linux/bash commands — pick Git Bash or PowerShell here if you have them.",
+    pt: "O shell em que a ferramenta bash do agente executa comandos. No Windows o padrão é o cmd, mas os modelos escrevem comandos Linux/bash — escolha Git Bash ou PowerShell aqui, se os tiver.",
+  },
+  cmShellDefault: { zh: "默认", en: "Default", pt: "Padrão" },
   cmToolFormat: { zh: "工具调用格式", en: "Tool-call format", pt: "Formato das chamadas de ferramenta" },
   cmToolFormatHint: {
     zh: "模型写工具调用的格式。自动 = 用模型聊天模板里训练的那一种;手动选择则所有模型都用这一种。",

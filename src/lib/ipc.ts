@@ -286,6 +286,25 @@ export async function agentSetWorkspace(path: string): Promise<string> {
 export async function agentSetLang(lang: "zh" | "en"): Promise<void> {
   return invoke<void>("agent_set_lang", { lang });
 }
+/** A shell commands can run in, as found on this machine. */
+export interface ShellInfo {
+  id: string;
+  name: string;
+  path: string;
+  default: boolean;
+}
+
+/** The shells installed here, the platform default first. */
+export async function agentShells(): Promise<ShellInfo[]> {
+  return invoke<ShellInfo[]>("agent_shells");
+}
+
+/** Run commands in this shell (null = the platform default). Returns the list
+ *  it chose from, so a choice that is no longer installed is visible. */
+export async function agentSetShell(id: string | null): Promise<ShellInfo[]> {
+  return invoke<ShellInfo[]>("agent_set_shell", { id });
+}
+
 export async function agentSetEditAnchorsIpc(on: boolean): Promise<void> {
   return invoke<void>("agent_set_edit_anchors", { on });
 }

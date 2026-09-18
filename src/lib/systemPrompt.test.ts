@@ -12,10 +12,10 @@ const { setHistoryToolEnabled } = await import("./toolRegistry");
 setHistoryToolEnabled(true);
 
 const variants = [
-  { zh: true, vision: false, label: "zh plain", maxChars: 3920 },
-  { zh: true, vision: true, label: "zh vision", maxChars: 5080 },
-  { zh: false, vision: false, label: "en plain", maxChars: 6680 },
-  { zh: false, vision: true, label: "en vision", maxChars: 8550 },
+  { zh: true, vision: false, label: "zh plain", maxChars: 4000 },
+  { zh: true, vision: true, label: "zh vision", maxChars: 5160 },
+  { zh: false, vision: false, label: "en plain", maxChars: 6880 },
+  { zh: false, vision: true, label: "en vision", maxChars: 8750 },
 ] as const;
 // Caps anchored to the post-slimming sizes (2026-07 WS1: 3545 / 4432 / 6031 /
 // 7516 JS chars at think=normal, no project doc; before slimming they were
@@ -46,6 +46,11 @@ const variants = [
 //   by running search_code over the workspace five times and timing out on
 //   the step limit, then by searching the web in English for a Chinese
 //   transcript's answer.
+
+//   2026-09-18  all four +100 zh / +208 en — multi_read. Reading five files
+//   cost five rounds, each re-sending the whole prompt and the whole
+//   transcript; one call reads them together, and a file it cannot read is
+//   named without losing the ones it could.
 
 describe("systemPrompt size gate", () => {
   for (const v of variants) {

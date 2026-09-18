@@ -14,6 +14,10 @@ export const DOC_LINES: Record<string, Bi> = {
     zh: "- read_file: 读取文件(pdf/docx/xlsx/pptx 也能读:自动提取文本,扫描件 OCR)。只关心某个函数/类时传 symbol,返回该定义完整代码块+调用处清单。args: { \"path\": string, \"offset\"?: number(起始行,从1开始), \"limit\"?: number, \"symbol\"?: string }",
     en: "- read_file: read a file (pdf/docx/xlsx/pptx too — text auto-extracted, scans OCR'd). Pass symbol to get one function/class definition plus its call sites. args: { \"path\": string, \"offset\"?: number(1-based), \"limit\"?: number, \"symbol\"?: string }",
   },
+  multi_read: {
+    zh: "- multi_read: 一次读多个文件(要看几个文件就一次调用,别连发几次 read_file)。读不到的文件会单独报错,其余内容照常返回。args: { \"paths\": string[] }",
+    en: "- multi_read: read several files in one call — reach for it instead of firing read_file again and again. A file that cannot be read is reported on its own; the rest still come back. args: { \"paths\": string[] }",
+  },
   write_file: {
     zh: "- write_file: 新建文件,或整体重写(覆盖全部内容);修改已有文件优先用 edit_file。args: { \"path\": string, \"content\": string }",
     en: "- write_file: create a file, or rewrite one wholesale (replaces ALL content); to modify an existing file prefer edit_file. args: { \"path\": string, \"content\": string }",

@@ -4,6 +4,9 @@ import { LANGS, useI18n } from "../lib/i18n";
 import { useExitTransition } from "../lib/useExit";
 import { Icon } from "./Icon";
 import {
+  agentSetShell,
+  agentShells,
+  type ShellInfo,
   openDataDir,
   clearAllConversations,
   checkUpdate,
@@ -102,6 +105,8 @@ export interface GenSettings {
   codeToolFormat: "auto" | "xml" | "json" | "gemma" | "lfm";
   /** Code mode: the format for a model whose template names none. */
   codeToolFallback: "xml" | "json";
+  /** Shell id commands run in ("" = this platform's default; issue #19). */
+  codeShell: string;
   /** Code mode: file edits (write/edit/multi_edit) run without approval. */
   codeAutoApproveEdits: boolean;
   /** Code mode: obviously read-only bash commands run without approval. */
@@ -189,6 +194,7 @@ export const defaultSettings: GenSettings = {
   // come out broken the way one line of JSON does.
   codeToolFormat: "auto",
   codeToolFallback: "xml",
+  codeShell: "",
   codeAutoApproveEdits: false,
   codeAutoRunReadOnly: true,
   codeBrowserHeadless: false,
@@ -643,10 +649,19 @@ export function SettingsPanel({
   // Skill files the user imported (or dropped into ~/.chaty/skills/ by hand).
   const [userSkills, setUserSkills] = useState<UserSkill[]>([]);
   const [skillImportNote, setSkillImportNote] = useState("");
+  // The shells this machine has (issue #19). Read when the Code page opens —
+  // one installed since the app started should be there without a restart.
+  const [shells, setShells] = useState<ShellInfo[]>([]);
   // Read afresh whenever the Code page is shown: the panel stays mounted, and
   // a file put in the folder by hand used to appear only after a restart.
   useEffect(() => {
-    if (open && cat === "code") void skillsListUser().then(setUserSkills).catch(() => {});
+    if (open && cat === "code") {
+      // `?? []` on both: an older backend (or the browser preview) answers a
+      // command it does not have with null, and a null list here took the
+      // whole settings page down with it.
+      void skillsListUser().then((l) => setUserSkills(l ?? [])).catch(() => {});
+      void agentShells().then((l) => setShells(l ?? [])).catch(() => {});
+    }
   }, [open, cat]);
   async function importSkillFiles() {
     const picked = await openDialog({ multiple: true, filters: [{ name: "Markdown", extensions: ["md", "markdown"] }] });
@@ -1318,6 +1333,28 @@ export function SettingsPanel({
                 />
               </label>
               <div className="settings-hint">{t("cmMaxTokensHint")}</div>
+
+              {shells.length > 1 && (
+                <SetRow label={t("cmShell")} hint={t("cmShellHint")}>
+                  <Select
+                    className="field-select"
+                    value={shells.some((sh) => sh.id === value.codeShell) ? value.codeShell : ""}
+                    ariaLabel={t("cmShell")}
+                    onChange={(v) => {
+                      const id = String(v);
+                      set("codeShell", id);
+                      void agentSetShell(id || null).catch(() => {});
+                    }}
+                    options={[
+                      {
+                        value: "",
+                        label: `${t("cmShellDefault")} · ${shells.find((sh) => sh.default)?.name ?? ""}`,
+                      },
+                      ...shells.map((sh) => ({ value: sh.id, label: sh.name })),
+                    ]}
+                  />
+                </SetRow>
+              )}
 
               <SetRow label={t("cmToolFormat")} hint={t("cmToolFormatHint")}>
                 <div className="lang-switch">

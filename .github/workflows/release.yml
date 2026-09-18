@@ -268,6 +268,15 @@ jobs:
             view moves on to the next, the way Canvas applies a patch. A call that
             is stopped takes its card with it.
 
+            ## Files by the handful, in the shell you use
+
+            Reading five files used to be five round trips; `multi_read` takes a
+            list and brings them back together, naming any it could not read
+            without losing the ones it could. And on Windows, where the shell is
+            `cmd` but models write bash, Settings → Code now lists the shells you
+            actually have — Git Bash, PowerShell — and runs commands in the one
+            you pick.
+
             ## The agent remembers your sessions
 
             A session's record outlives what the model can hold in front of it,

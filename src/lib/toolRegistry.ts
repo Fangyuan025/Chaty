@@ -76,6 +76,7 @@ const d = (name: string): Bi => DOC_LINES[name];
  *  against NATIVE_SPECS is asserted in toolRegistry.test.ts. */
 export const NATIVE_TOOL_NAMES = [
   "read_file",
+  "multi_read",
   "write_file",
   "edit_file",
   "edit_lines",
@@ -118,6 +119,7 @@ export type AgentToolName = (typeof NATIVE_TOOL_NAMES)[number];
 /** Native tools, in system-prompt doc order (core suite, then browser). */
 const NATIVE_SPECS: (ToolSpec & { name: AgentToolName })[] = [
   { name: "read_file", source: "native", suite: "core", perm: "read", tier: "core", docLine: d("read_file"), requiredArgs: ["path"], argExample: '{"path":"src/app.ts"}', resultCap: 400000 },
+  { name: "multi_read", source: "native", suite: "core", perm: "read", tier: "core", docLine: d("multi_read"), requiredArgs: ["paths|files|path|file_paths|filenames"], argExample: '{"paths":["src/app.ts","src/db.ts"]}', resultCap: 400000 },
   { name: "write_file", source: "native", suite: "core", perm: "write", tier: "core", docLine: d("write_file"), mutating: true, requiredArgs: ["path"], argExample: '{"path":"notes.md","content":"…"}' },
   { name: "edit_file", source: "native", suite: "core", perm: "write", tier: "core", docLine: d("edit_file"), mutating: true, requiredArgs: ["path"], argExample: '{"path":"src/app.ts","old_string":"…","new_string":"…"}' },
   { name: "edit_lines", source: "native", suite: "core", perm: "write", tier: "core", docLine: d("edit_lines"), docHidden: true, mutating: true, requiredArgs: ["path"], argExample: '{"path":"src/app.ts","edits":[{"op":"replace","anchor":"22:abc","content":"…"}]}' },

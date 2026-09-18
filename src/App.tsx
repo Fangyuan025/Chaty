@@ -46,6 +46,7 @@ import { answerOnly, cleanTitle, cutSentences, forSpeech, stripThink } from "./l
 import { thinkPart as turnReasoning, stripThink as turnAnswer } from "./lib/agentLoop";
 import { copyToClipboard } from "./lib/clipboard";
 import {
+  agentSetShell,
   cancelGeneration,
   attachGeneration,
   checkUpdate,
@@ -959,6 +960,13 @@ export default function App() {
   useEffect(() => {
     void browserSetHeadless(settings.codeBrowserHeadless).catch(console.error);
   }, [settings.codeBrowserHeadless]);
+
+  // Settings → Code: the shell commands run in (issue #19). Applied on every
+  // start too — the choice lives in settings, the backend starts on its
+  // platform default and would otherwise keep it until the menu was touched.
+  useEffect(() => {
+    void agentSetShell(settings.codeShell || null).catch(console.error);
+  }, [settings.codeShell]);
 
   // Tag the document root with the host OS once, so CSS can adapt the title bar
   // (e.g. macOS leaves room for the native traffic lights). CSS keys off [data-os].

@@ -130,6 +130,7 @@ const uid = () => Math.random().toString(36).slice(2);
 
 const TOOL_ICON: Record<string, string> = {
   read_file: "M9 2h6l4 4v14a0 0 0 0 1 0 0H5V2z",
+  multi_read: "M7 3h5l3 3v10H7zM4 7v12h9M15 6h-3V3",
   write_file: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M12 12v6M9 15h6",
   edit_file: "M17 3a2.85 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5z",
   multi_edit: "M17 3a2.85 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5zM14 8l2 2",
@@ -173,6 +174,17 @@ function toolSummary(call: ToolCall): string {
   switch (call.name) {
     case "read_file":
       return `read ${argPath(call.args) || "?"}`;
+    case "multi_read": {
+      // Named as the model wrote it — the tool takes the list under any of
+      // these, so the card must read them all too.
+      const raw = call.args.paths ?? call.args.files ?? call.args.path;
+      const paths = (Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? raw.split(/\s*,\s*/) : [])
+        .map((p) => p.trim())
+        .filter(Boolean);
+      // Counted, the way multi_edit counts its edits: several files have no
+      // one name to show.
+      return paths.length > 1 ? `read ×${paths.length}` : `read ${paths[0] ?? "?"}`;
+    }
     case "write_file":
       return `write ${argPath(call.args) || "?"}`;
     case "edit_file":
@@ -827,6 +839,7 @@ export function CodeMode({
   }, []);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const prevSidRef = useRef<string | null>(null);
+  const threadRef = useRef<HTMLDivElement | null>(null);
   const showJumpRef = useRef(false);
   const [showJump, setShowJump] = useState(false);
   const bodyRef = useRef({ msgs, workspace, sid });
@@ -931,11 +944,15 @@ export function CodeMode({
     };
   }, []);
 
-  useEffect(() => {
+  // BEFORE the browser paints: a session that opens at its end must never be
+  // drawn anywhere else first. Done after the paint (useEffect), switching
+  // sessions showed one frame at the top and then jumped — which is what it
+  // looked like.
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // A session opens at its end, like a chat does: switching re-arms the
-    // follow and drops the pill, which no scroll event would do on its own.
+    // Switching re-arms the follow and drops the pill, which no scroll event
+    // would do on its own.
     const switched = sid !== prevSidRef.current;
     prevSidRef.current = sid;
     if (switched) {
@@ -943,8 +960,24 @@ export function CodeMode({
       showJumpRef.current = false;
       setShowJump(false);
     }
-    if (followRef.current) el.scrollTo({ top: el.scrollHeight });
+    if (followRef.current) el.scrollTop = el.scrollHeight;
   }, [msgs, sid]);
+
+  // Whatever arrives late — a picture, a diff card, a code block that only
+  // knows its height once it is laid out — keeps the view at the end while
+  // the follow is armed. Without it, opening a session pinned the bottom of
+  // the content as it was at that instant and everything that grew afterwards
+  // pushed the end back out of sight.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const content = threadRef.current;
+    if (!el || !content) return;
+    const obs = new ResizeObserver(() => {
+      if (followRef.current) el.scrollTop = el.scrollHeight;
+    });
+    obs.observe(content);
+    return () => obs.disconnect();
+  }, [msgs.length > 0]);
 
   // Keyboard shortcuts: approval Enter/Esc, ask-user number keys, Esc to stop.
   useEffect(() => {
@@ -2101,7 +2134,7 @@ export function CodeMode({
               )}
             </div>
           ) : (
-            <div className="cm-thread">
+            <div className="cm-thread" ref={threadRef}>
             {msgs.map((m) =>
               m.role === "user" ? (
                 <div key={m.id} className="cm-user-row">

@@ -51,6 +51,22 @@
   sometimes refused and sent back to edit_file; measured, that mostly derailed
   the model into failed edits of a file it had already written.
 
+### Code mode: reading files, and the shell commands run in
+
+- **Several files are read in one call.** Reading five files cost five rounds,
+  each re-sending the whole prompt and the whole transcript to ask for one
+  more. `multi_read` takes a list and returns them together; a file it cannot
+  read is named on its own and the rest still come back, with the call marked
+  failed so the model does not read past it. The card counts them (`read ×5`)
+  and, opened, shows exactly what the model was given.
+
+- **The shell commands run in can be chosen.** Windows ships `cmd`, and models
+  write Linux and bash commands into it (issue #19). Settings → Code now lists
+  the shells actually installed — Git Bash, PowerShell 7, Windows PowerShell,
+  or bash/zsh/fish on macOS and Linux — and runs commands in the one you pick.
+  The default is unchanged, and a shell that is no longer installed falls back
+  to it rather than leaving commands unrunnable.
+
 ### Code mode: sessions the agent can read
 
 - **The agent can search its own record.** A session's transcript outlives
