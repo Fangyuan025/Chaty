@@ -305,7 +305,8 @@ jobs:
             A code session opens at its end with a button back down to it, a new
             session no longer inherits the last one's pause, servers left running
             when Chaty was killed are stopped, skill files can be imported in
-            Settings, and a click outside an approval dialog no longer denies it.
+            Settings several at a time, and a click outside an approval dialog no
+            longer denies it.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
