@@ -664,7 +664,13 @@ export function SettingsPanel({
     }
   }, [open, cat]);
   async function importSkillFiles() {
-    const picked = await openDialog({ multiple: true, filters: [{ name: "Markdown", extensions: ["md", "markdown"] }] });
+    // Several at once — and the dialog's own title says so, since a file
+    // picker gives no hint that ctrl-click works (issue #18).
+    const picked = await openDialog({
+      multiple: true,
+      title: t("cmSkillImportTitle"),
+      filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
+    });
     const paths = picked == null ? [] : Array.isArray(picked) ? picked : [picked];
     if (paths.length === 0) return;
     // The new rows are the confirmation; only a file that failed says anything.

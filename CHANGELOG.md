@@ -120,7 +120,9 @@
 - **A session opens at its end, and getting back there is one click.**
   Switching sessions kept the previous scroll position, and scrolling up left
   no way back down — Code mode now behaves like a chat, with the same
-  back-to-bottom button.
+  back-to-bottom button, which appears only while the end is really out of
+  sight: a transcript shrinks without anyone scrolling when a thinking panel
+  folds away, and the button used to be left behind over short conversations.
 
 ### Code mode: sessions and background jobs
 
@@ -139,9 +141,11 @@
 - **LFM2's tool calls no longer show in the reply.** The markers were removed
   and the call itself was left in the text.
 
-- **Skill files can be imported.** Settings → Code → Skills imports a
-  third-party `.md` skill (a `SKILL.md` included); one without a name or
-  description gets them from its file name and first line.
+- **Skill files can be imported, several at a time.** Settings → Code →
+  Skills imports third-party `.md` skills (a `SKILL.md` included); hold Ctrl
+  (⌘ on macOS) in the file dialog to pick more than one, as the dialog now
+  says. A skill without a name or description gets them from its file name and
+  first line.
 
 - **An approval dialog is not denied by a click outside it,** and a tall one
   fits the window with its command scrolling.
@@ -162,6 +166,11 @@
 
 - **One-click setup keeps its downloads when its dialog is closed,** and a
   click outside no longer closes it.
+
+- **One green dot, not two.** The dot beside the wordmark in the title bar
+  said the same as the one beside the version in the sidebar, which names the
+  loaded model; the title bar's is gone. (macOS, which hides the wordmark for
+  the traffic lights, never drew it.)
 
 ## v2.2.1 — In the model's own words (2026-09-14)
 

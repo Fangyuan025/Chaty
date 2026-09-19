@@ -37,14 +37,14 @@ const bin =
 const model = process.env.CHATY_BENCH_MODEL as string;
 const nCtx = Number(process.env.CHATY_BENCH_NCTX ?? 32768);
 
-let bridge = new Bridge(bin);
+let bridge = new Bridge(bin, process.env.DUMP_REUSE === "1" ? { CHATY_MLX_DUMP_REUSE: "1" } : undefined);
 const info = (await bridge.call("load_model", { path: model, nCtx })) as Record<string, unknown>;
 /** Throw the engine away and load the model afresh — what quitting and
  *  reopening the app does. Everything the engine had cached is gone; the
  *  question is whether the turn AFTER that gets its cache back. */
 async function restartEngine(ws: string) {
   bridge.kill();
-  bridge = new Bridge(bin);
+  bridge = new Bridge(bin, process.env.DUMP_REUSE === "1" ? { CHATY_MLX_DUMP_REUSE: "1" } : undefined);
   await bridge.call("load_model", { path: model, nCtx });
   await bridge.call("agent_set_workspace", { path: ws });
   console.log("  *** engine restarted (cache thrown away) ***");
@@ -193,6 +193,11 @@ for (let t = 1; t <= TURNS; t++) {
   };
   if (t === 1 && process.env.TITLE === "before") await titleCall();
   let steps = 0;
+  // STOP_AFTER=N: cancel the turn after N steps, the way the user hitting
+  // stop does, and let the next turn continue from it. A stopped turn leaves
+  // the engine holding tokens the next prompt does not have.
+  const stopAfter = Number(process.env.STOP_AFTER ?? 0);
+  const signal = new loop.AgentSignal();
   await runAgentTurn(
     input,
     history,
@@ -210,10 +215,12 @@ for (let t = 1; t <= TURNS; t++) {
       reasoningField: !!info.reasoningField,
       visionReady: !!info.visionReady,
       ...(memoryIndex !== undefined ? { memoryIndex } : {}),
+      // The app always runs inside a session (search_history in the prompt).
+      ...(process.env.SESSION === "0" ? {} : { sessionId: "audit-session" }),
       nCtx: info.nCtx,
       maxSteps: Number(process.env.MAXSTEPS ?? 14),
       temperature: 0.3,
-      signal: new loop.AgentSignal(),
+      signal,
       autoApproveEdits: true,
       autoRunReadOnly: true,
       approve: async () => true,
@@ -234,6 +241,10 @@ for (let t = 1; t <= TURNS; t++) {
         if (s.status !== "running") {
           steps++;
           console.log(`    step ${steps}: ${s.call?.name ?? "?"} [${s.status}]`);
+          if (stopAfter && t === 1 && steps === stopAfter) {
+            console.log("    *** stopped by the user ***");
+            signal.cancel();
+          }
         }
       },
       onFinal: (final: string) => {
@@ -295,11 +306,17 @@ for (let i = 0; i < calls.length; i++) {
     void added;
   }
   const pct = c.promptTokens ? Math.round((100 * (c.reused ?? 0)) / c.promptTokens) : 0;
+  // What the cache SHOULD have held: everything the last prompt had (its
+  // generation is cached too, so reuse below that number is a real break —
+  // the percentage alone drops whenever a big tool result lands and says
+  // nothing about the cache).
+  const prevPrompt = i > 0 ? (calls[i - 1].promptTokens ?? 0) : 0;
+  const broke = i > 0 && (c.reused ?? 0) + 8 < prevPrompt ? `  BREAK (had ${prevPrompt})` : "";
   console.log(
     `t${c.turn} #${String(i).padStart(2)} msgs=${String(c.msgs.length).padStart(3)}` +
       ` prompt=${String(c.promptTokens ?? "?").padStart(6)}` +
       ` reused=${String(c.reused ?? "?").padStart(6)} (${String(pct).padStart(3)}%)` +
-      ` think=${String(c.think)} ${note}${stored}`,
+      ` think=${String(c.think)} ${note}${stored}${broke}`,
   );
   if (process.env.SHOW_REPLIES === "1") {
     const r = c.reply ?? "";

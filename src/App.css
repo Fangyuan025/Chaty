@@ -361,8 +361,8 @@ body {
 }
 
 /* macOS: leave room on the left for the native traffic-light buttons
-   (titleBarStyle: Overlay draws them over our title bar), and drop the brand
-   dot + wordmark — redundant chrome next to the traffic lights. */
+   (titleBarStyle: Overlay draws them over our title bar), and drop the
+   wordmark — redundant chrome next to the traffic lights. */
 :root[data-os="macos"] .titlebar {
   padding-left: 84px;
 }
@@ -376,13 +376,6 @@ body {
   gap: 8px;
   font-weight: 600;
   font-size: 14.5px;
-}
-
-.brand-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
 }
 
 .model-wrap {

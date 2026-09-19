@@ -2635,10 +2635,7 @@ export default function App() {
         </div>
       )}
       <header className="titlebar" data-tauri-drag-region>
-        <div className="brand">
-          <span className="brand-dot" />
-          Chaty
-        </div>
+        <div className="brand">Chaty</div>
 
         <div className="mode-switch" role="tablist" aria-label="Mode">
           <button
