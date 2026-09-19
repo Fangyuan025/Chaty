@@ -18,6 +18,10 @@ import { clampRung, effortLabel } from "./lib/effort";
 import { watchContentHeight } from "./lib/autoGrow";
 /** Ceiling for the chat composer, matching `.input-row textarea` max-height. */
 const COMPOSER_MAX_H = 200;
+/** Browser noise that is not a fault and must not bury the log: a
+ *  ResizeObserver whose callback resizes something (every auto-growing box
+ *  does) makes WebKit raise this, and it arrived hundreds of times a session. */
+const BENIGN_ERROR = /ResizeObserver loop (completed with undelivered notifications|limit exceeded)/i;
 import {
   decodeAudio,
   encodeAudio,
@@ -379,8 +383,14 @@ export default function App() {
   // Uncaught front-end errors land in the user-attachable error log
   // (Settings → 打开错误日志) so issue reports can carry real evidence.
   useEffect(() => {
-    const onErr = (e: ErrorEvent) =>
+    const onErr = (e: ErrorEvent) => {
+      // Not an error: WebKit raises this when a ResizeObserver callback
+      // changes layout again, which every auto-growing box does on purpose.
+      // Nothing is lost — the browser simply delivers the rest next frame —
+      // and logging it buried the real entries under hundreds of copies.
+      if (BENIGN_ERROR.test(e.message)) return;
       void logAppError("uncaught", `${e.message}\n${e.filename}:${e.lineno}:${e.colno}\n${(e.error as Error)?.stack ?? ""}`).catch(() => {});
+    };
     const onRej = (e: PromiseRejectionEvent) =>
       void logAppError("unhandledrejection", String((e.reason as Error)?.stack ?? e.reason)).catch(() => {});
     window.addEventListener("error", onErr);

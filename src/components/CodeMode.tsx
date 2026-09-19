@@ -142,6 +142,7 @@ const TOOL_ICON: Record<string, string> = {
   search_code: "M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-4-4M8.5 9.5L7 11l1.5 1.5M13.5 9.5L15 11l-1.5 1.5",
   search_docs: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M11 11a3 3 0 102.2 5.1L16 19",
   search_history: "M3 12a9 9 0 109-9 9 9 0 00-6.4 2.7L3 8M3 4v4h4M12 7v5l3.5 2",
+  read_history: "M3 12a9 9 0 109-9 9 9 0 00-6.4 2.7L3 8M3 4v4h4M9 12h7M9 15h5",
   bash: "M4 5l6 7-6 7M13 19h7",
   bash_bg: "M4 5l6 7-6 7M13 5h7M13 12h7M13 19h7",
   bg_output: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 7v5l3 3",
@@ -170,6 +171,10 @@ function toolSummary(call: ToolCall): string {
   // native name union, so they are named before the switch.
   if ((call.name as string) === "search_history") {
     return `history? ${a.query ?? a.session ?? ""}`;
+  }
+  if ((call.name as string) === "read_history") {
+    if (a.step) return `history step ${a.step}`;
+    return a.turn ? `history #${a.turn}` : "history (whole session)";
   }
   switch (call.name) {
     case "read_file":
@@ -1373,6 +1378,16 @@ export function CodeMode({
 
   function stop() {
     signalRef.current?.cancel();
+    // Whatever it was thinking when the user stopped it: kept, but no longer
+    // "thinking". Left live, the panel kept its spinner turning over a turn
+    // that had already been told to stop.
+    setMsgs((cur) =>
+      cur.map((m) =>
+        m.liveThinking
+          ? { ...m, thinking: m.thinking ? `${m.thinking}\n\n${m.liveThinking}` : m.liveThinking, liveThinking: "" }
+          : m,
+      ),
+    );
     approval?.resolve(false);
     setApproval(null);
     sudoAsk?.resolve({ ok: false });

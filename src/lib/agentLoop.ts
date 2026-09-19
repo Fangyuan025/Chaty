@@ -50,7 +50,10 @@ import {
   agentWriteFile,
   skillLiveSupport,
   cancelGeneration,
+  codeSessionList,
+  codeSessionRead,
   codeSessionSearch,
+  codeStepTextGet,
   fetchPageEx,
   siteSearch,
   agentWebDownload,
@@ -575,15 +578,21 @@ export function systemPrompt(
       ? `\n\n项目说明(来自工作区的 ${projectDoc.name},请遵循其中的约定):\n${projectDoc.text}`
       : `\n\nProject guide (from ${projectDoc.name} in the workspace — follow its conventions):\n${projectDoc.text}`
     : "";
+  // Reasoning, in whatever the model's own template calls reasoning. Naming
+  // `<think>…</think>` here — as this line did — is Qwen's convention handed
+  // to every family: Gemma 4, whose reasoning is a thought channel, answered
+  // by opening that channel and closing it again empty, at every level. So
+  // the line asks for the thinking and says nothing about the markup, the way
+  // tool calls are asked for in each model's own format.
   const think =
     mode === "deep"
       ? zh
-        ? "\n- 在每次行动前,先在 <think>…</think> 中充分思考:分析现状、权衡多种方案、考虑边界情况,再决定调用哪个工具。"
-        : "\n- Before each action, reason thoroughly inside <think>…</think>: analyze the state, weigh options and edge cases, then decide which tool to call."
+        ? "\n- 每次行动前先充分思考:分析现状、权衡多种方案、考虑边界情况,再决定调用哪个工具。"
+        : "\n- Before each action, reason it through: analyze the state, weigh options and edge cases, then decide which tool to call."
       : mode === "normal" || mode === "low"
         ? zh
-          ? "\n- 行动前可在 <think>…</think> 中简要思考下一步,再调用工具。"
-          : "\n- You may think briefly inside <think>…</think> before each tool call."
+          ? "\n- 行动前先想清楚下一步,再调用工具。"
+          : "\n- Think the next step through before each tool call."
         : "";
   // Windows executes the bash tool via cmd.exe — without saying so the model
   // writes POSIX commands (ls / cat / rm / $VAR) that all fail there.
@@ -685,6 +694,30 @@ export function storeAssistantTurn(
         }
       : { role: "assistant", content: turn },
   );
+}
+
+/** A step's prompt has to be the last one with something added — that is what
+ *  the engine resumes from, and on a cache that cannot be rewound (the
+ *  Qwen3.5/3.6 family) anything else throws the whole conversation away. It is
+ *  also invisible: the run just gets slower. So every step checks, and the
+ *  first message that is not what it was is written to the error log, named.
+ */
+export type SentShape = { role: string; len: number; head: string };
+
+export function shapeOf(messages: ChatMessage[]): SentShape[] {
+  return messages.map((m) => ({ role: m.role, len: m.content.length, head: m.content.slice(0, 60) }));
+}
+
+/** Where this prompt stopped being an append of the last one — null when it
+ *  is one. */
+export function firstDivergence(prev: SentShape[], now: SentShape[]): { at: number; was: SentShape; is?: SentShape } | null {
+  for (let i = 0; i < prev.length; i++) {
+    const a = prev[i];
+    const b = now[i];
+    if (!b) return { at: i, was: a };
+    if (a.role !== b.role || a.len !== b.len || a.head !== b.head) return { at: i, was: a, is: b };
+  }
+  return null;
 }
 
 export function replayableTail<T extends { role: string; prompt?: ChatMessage[] }>(
@@ -1449,13 +1482,6 @@ export function parseToolCall(text: string): ToolCall | null {
   return null;
 }
 
-/** Text to show as the assistant's prose (drop the tool-call markup + think). */
-function proseOnly(text: string): string {
-  const open = callStart(text);
-  const visible = open === -1 ? text : text.slice(0, open);
-  return stripThink(visible).trim();
-}
-
 /** Runaway-reasoning check: so far the output is *only* reasoning — no tool
  *  call and no real answer yet. Small models fall into this and keep thinking
  *  forever; gated behind a token budget so normal reasoning isn't cut short. */
@@ -1473,6 +1499,50 @@ const argPaths = (a: Record<string, unknown>): string[] => {
   const list = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/\s*,\s*/) : [];
   return list.map((p) => asStr(p).trim()).filter(Boolean);
 };
+
+/** What the summariser is given. Its cache is a small one (the llama.cpp side
+ *  builds a 4096-token context for side generations), so a span longer than
+ *  that comes in as its head and its tail — where a stretch of work says what
+ *  it set out to do and what came of it — rather than failing to be
+ *  summarised at all. */
+export function forSummary(transcript: string, limit = 9000): string {
+  if (transcript.length <= limit) return transcript;
+  const half = Math.floor(limit / 2);
+  const gap = currentLang === "zh" ? "\n\n…(中间略)…\n\n" : "\n\n…(middle elided)…\n\n";
+  return transcript.slice(0, half) + gap + transcript.slice(-half);
+}
+
+/** The session a model named. It writes what it has in front of it — an id
+ *  from a search hit, but just as often the TITLE it saw ("网络层超时"), and a
+ *  tool that answers "no such session" to a title leaves it guessing (one
+ *  real run then spun until the watchdog). Ids first, then titles, and when
+ *  nothing matches the answer names what there is. */
+async function resolveSession(
+  want: string,
+  self: string,
+): Promise<{ id: string } | { error: string }> {
+  if (!want) return { id: self };
+  const sessions = await codeSessionList().catch(() => []);
+  // No listing to check against (an older backend, a failed call) — take the
+  // name as given rather than refuse a session that may well be there.
+  if (sessions.length === 0) return { id: want };
+  const byId = sessions.find((s) => s.id === want);
+  if (byId) return { id: byId.id };
+  const w = want.trim().toLowerCase();
+  const byTitle =
+    sessions.find((s) => s.title.toLowerCase() === w) ??
+    sessions.find((s) => s.title.toLowerCase().includes(w) && w.length >= 2);
+  if (byTitle) return { id: byTitle.id };
+  const list = sessions
+    .slice(0, 8)
+    .map((s) => `  - ${s.title} (session=${s.id})`)
+    .join("\n");
+  return {
+    error: isZh()
+      ? `没有叫 "${want}" 的会话。可用的会话:\n${list || "  (没有已保存的会话)"}`
+      : `no session called "${want}". The ones there are:\n${list || "  (no saved sessions)"}`,
+  };
+}
 
 /** When something was said, as a person writes it: local date and time. */
 const stamp = (ms: number): string => {
@@ -2027,15 +2097,32 @@ async function execTool(
         const here = !everywhere && (!want || want === "this" || want === "current" || want === turnSessionId);
         if (!q && !want) return { result: missingArg("query", '{"query":"tooltip delay"}') };
         try {
-          let hits = await codeSessionSearch(q, everywhere ? undefined : here ? turnSessionId : want, 8);
+          let scope: string | undefined;
+          if (!everywhere) {
+            const picked = await resolveSession(here ? "" : want, turnSessionId);
+            if ("error" in picked) return { result: picked.error };
+            scope = picked.id;
+          }
+          let hits = await codeSessionSearch(q, scope, 8);
           let note = "";
-          // Asked about this session and it has nothing: the words are more
-          // likely in another session than nowhere, so say what is there.
-          if (hits.length === 0 && here && q) {
-            hits = await codeSessionSearch(q, undefined, 8);
-            note = isZh()
-              ? "(本会话里没有,以下来自其他会话)\n\n"
-              : "(nothing in this session; from the other sessions)\n\n";
+          // No session named: look through ALL of them as well as this one.
+          // "Which session did we talk about the database schema in, and what
+          // was said?" is a question about the whole record — answered by
+          // this session alone it comes back empty, and the model has no way
+          // to know it should have asked again with every session.
+          if (here && q) {
+            const elsewhere = await codeSessionSearch(q, undefined, 12);
+            const mine = hits.length;
+            for (const h of elsewhere) {
+              if (!hits.some((k) => k.sessionId === h.sessionId && k.turn === h.turn && k.role === h.role)) {
+                hits.push(h);
+              }
+            }
+            if (mine === 0 && hits.length > 0) {
+              note = isZh()
+                ? "(本会话里没有,以下来自其他会话)\n\n"
+                : "(nothing in this session; from the other sessions)\n\n";
+            }
           }
           // Asked about ONE session and the words barely caught: say what
           // that session was about as well, rather than handing back a line
@@ -2052,7 +2139,7 @@ async function execTool(
           // web for an answer that is in its own record. Show what the session
           // it asked about was, and say the words missed.
           if (hits.length === 0) {
-            const about = await codeSessionSearch("", everywhere ? undefined : here ? turnSessionId : want, 4);
+            const about = await codeSessionSearch("", scope, 4);
             if (about.length === 0) {
               return { result: isZh() ? "(历史会话里没有相关内容)" : "(nothing relevant in past sessions)" };
             }
@@ -2061,20 +2148,103 @@ async function execTool(
               ? "(没有匹配到这些词;这是那个会话的开头和最近一段——换用当时对话里的说法再搜一次)\n\n"
               : "(no match for those words; here is how that session opened and where it got to — search again in the words it used)\n\n";
           }
-          const body = hits
-            .map((h) => {
-              const mine = h.sessionId === turnSessionId;
-              const where = isZh()
-                ? `${mine ? "本会话" : `会话「${h.title}」`} · ${stamp(h.updatedAt)} · 第 ${h.turn} 条 · ${h.role}`
-                : `${mine ? "this session" : `session "${h.title}"`} · ${stamp(h.updatedAt)} · message ${h.turn} · ${h.role}`;
-              return `── ${where} ──\n${h.text}`;
+          // Grouped by the session it was said in, because "where was this
+          // discussed" is half of what is being asked. Each group says which
+          // session, when, and how much of it matched; each line inside says
+          // where in that session and, for a tool step, how it went.
+          const bySession = new Map<string, typeof hits>();
+          for (const h of hits) {
+            const list = bySession.get(h.sessionId);
+            if (list) list.push(h);
+            else bySession.set(h.sessionId, [h]);
+          }
+          const body = [...bySession.values()]
+            .map((group) => {
+              const h0 = group[0];
+              const mine = h0.sessionId === turnSessionId;
+              const head = isZh()
+                ? `── ${mine ? "本会话" : `会话「${h0.title}」`} · ${stamp(h0.updatedAt)} · ${group.length} 处${mine ? "" : ` · session=${h0.sessionId}`} ──`
+                : `── ${mine ? "this session" : `session "${h0.title}"`} · ${stamp(h0.updatedAt)} · ${group.length} hit(s)${mine ? "" : ` · session=${h0.sessionId}`} ──`;
+              const lines = group
+                .map((h) => {
+                  const mark = h.status ? (h.status === "done" ? " ✓" : h.status === "denied" ? " ⊘" : " ✗") : "";
+                  const drill = h.stepId ? ` · step=${h.stepId}` : "";
+                  const where = isZh()
+                    ? `第 ${h.turn} 条 · ${h.role}${mark}${drill}`
+                    : `message ${h.turn} · ${h.role}${mark}${drill}`;
+                  return `· ${where}\n  ${h.text}`;
+                })
+                .join("\n");
+              return `${head}\n${lines}`;
             })
             .join("\n\n");
-          return { result: note + body };
+          // Every line above is an EXCERPT. Asked how something was discussed
+          // — not merely where — the answer is in the session, and a search
+          // that stops at its own excerpts answers half the question.
+          const elsewhere = [...bySession.keys()].some((id) => id !== turnSessionId);
+          const more = isZh()
+            ? `\n\n(以上都是节选。要知道当时具体是怎么聊的,用 read_history 读那个会话${elsewhere ? "(带上它的 session=…)" : ""};只看某一条传 turn;某一步的完整结果传它的 step。)`
+            : `\n\n(Those are excerpts. To know how it was actually discussed, read that session with read_history${elsewhere ? " (pass its session=…)" : ""}; one message with turn, one step's whole result with step.)`;
+          return { result: note + body + more };
         } catch (e) {
           const why = e instanceof Error ? e.message : String(e);
           return { result: isZh() ? `会话历史不可用: ${why}` : `session history unavailable: ${why}` };
         }
+      }
+      // Reading the record back: a whole session, one turn of it, or the
+      // whole result of one tool step. Same tool for all three — the step id
+      // it hands out is what comes back to it.
+      if ((call.name as string) === "read_history") {
+        const want = asStr(a.session ?? a.session_id ?? a.sessionId).trim();
+        const everywhere = /^(all|全部|所有|this|current)$/i.test(want);
+        const picked = await resolveSession(everywhere ? "" : want, turnSessionId);
+        if ("error" in picked) return { result: picked.error };
+        const sid = picked.id;
+        if (!sid) return { result: isZh() ? "(没有可读的会话)" : "(no session to read)" };
+        const step = asStr(a.step ?? a.step_id ?? a.stepId).trim();
+        if (step) {
+          const whole = await codeStepTextGet(sid, step).catch(() => null);
+          if (whole == null) {
+            return {
+              result: isZh()
+                ? `没有这一步的记录:step=${step}。先用 read_history 看那一轮列出的 step。`
+                : `no record for step=${step}. Use read_history on the turn to see the steps it lists.`,
+            };
+          }
+          return { result: whole };
+        }
+        const turn = asNum(a.turn ?? a.turn_number ?? a.index);
+        const read = await codeSessionRead(sid, turn, turn ? 8000 : 1200).catch(() => null);
+        if (!read) {
+          return { result: isZh() ? `没有这个会话: ${sid}` : `no such session: ${sid}` };
+        }
+        if (read.turns.length === 0) {
+          return {
+            result: isZh()
+              ? `会话「${read.title}」共 ${read.totalTurns} 条,没有第 ${turn} 条。`
+              : `session "${read.title}" has ${read.totalTurns} messages; there is no #${turn}.`,
+          };
+        }
+        const head = isZh()
+          ? `会话「${read.title}」· ${stamp(read.updatedAt)} · 共 ${read.totalTurns} 条${turn ? ` · 第 ${turn} 条` : ""}`
+          : `session "${read.title}" · ${stamp(read.updatedAt)} · ${read.totalTurns} messages${turn ? ` · #${turn}` : ""}`;
+        const body = read.turns
+          .map((t) => {
+            const who = t.role === "user" ? (isZh() ? "用户" : "user") : isZh() ? "助手" : "assistant";
+            const steps = t.steps
+              .map((st) => {
+                const ok = st.status === "done" ? "✓" : st.status === "denied" ? "⊘" : "✗";
+                const size = isZh() ? `${st.resultChars} 字` : `${st.resultChars} chars`;
+                return `    ${ok} ${st.name} ${st.args}`.trimEnd() + ` — ${size}, step=${st.stepId}`;
+              })
+              .join("\n");
+            return `── ${isZh() ? "第" : "#"} ${t.turn} ${isZh() ? "条" : ""} · ${who} ──\n${t.text}${steps ? `\n${steps}` : ""}`;
+          })
+          .join("\n\n");
+        const how = isZh()
+          ? "\n\n(某一步的完整结果:read_history 传它的 step;只看某一条:传 turn。)"
+          : "\n\n(One step's whole result: read_history with its step. One message: with its turn.)";
+        return { result: `${head}\n\n${body}${how}` };
       }
       if ((call.name as string) === "remember") {
         // Writes confined to the memory dir by construction (rememberFact
@@ -2757,12 +2927,19 @@ export async function runAgentTurn(
       {
         messages: [
           { role: "system", content: compactionSummaryPrompt(currentLang) },
-          { role: "user", content: transcript },
+          { role: "user", content: forSummary(transcript) },
         ],
         // Low temperature and no thinking: this is a transcription job, not a
         // creative one, and a think block would eat the budget the summary
         // itself needs.
-        params: { temperature: 0.2, topP: 0.9, maxTokens: 500, think: false },
+        //
+        // On a cache of its own (`scratch`). Run on the conversation's, this
+        // one call replaced everything the session had built: the step right
+        // after a compaction re-read the whole prompt from nothing — measured
+        // at 0% reuse on every compaction of a Qwen3.6 35B code session, three
+        // times in three turns. Chat mode's side generations were moved off
+        // the shared cache in 2.2.2; this one was missed.
+        params: { temperature: 0.2, topP: 0.9, maxTokens: 500, think: false, scratch: true },
       },
       (ev) => {
         if (ev.type === "token") out += ev.text;
@@ -2831,6 +3008,8 @@ export async function runAgentTurn(
     }
   }
   const jitShown = new Set<HintKey>(); // per-turn: hints re-arm next turn
+  /** What the last step sent, to check the next one is an append of it. */
+  let sentShape: SentShape[] | null = null;
   // The step whose result has not been pushed yet — the next tool_result is its.
   let resultStep: ToolStep | null = null;
   const pushUser = (
@@ -3236,6 +3415,27 @@ export async function runAgentTurn(
       // Recovery step after the think gate: reasoning off so the model MUST act.
       const stepThink = forceNoThinkNext ? false : think;
       forceNoThinkNext = false;
+      // Is this prompt still an append of the last one? When it is not, the
+      // engine re-reads the whole conversation and nothing says so — the run
+      // simply gets slower. Name the message that changed, once per step, in
+      // the error log (the reasons are all ours: a turn recorded in a
+      // different shape than it was generated, a rewritten result, a
+      // compaction).
+      {
+        const now = shapeOf(messages);
+        const off = sentShape ? firstDivergence(sentShape, now) : null;
+        if (off) {
+          const was = `${off.was.role}[${off.was.len}] ${JSON.stringify(off.was.head)}`;
+          const is = off.is ? `${off.is.role}[${off.is.len}] ${JSON.stringify(off.is.head)}` : "(gone)";
+          // The console, not the error log: a prompt that stops being an
+          // append costs speed, not correctness, and the log is for faults
+          // the user should send us.
+          console.warn(
+            `[prompt not an append] step ${step + 1}: message #${off.at} of ${sentShape?.length} changed\n  was: ${was}\n  now: ${is}`,
+          );
+        }
+        sentShape = now;
+      }
       await generate(
         {
           messages,
@@ -3269,6 +3469,10 @@ export async function runAgentTurn(
             // the measurement has warmed up.
             const secs = (performance.now() - t0) / 1000;
             if (secs >= 0.35) lastTps = liveTokens / secs;
+            // Tokens already in flight keep arriving for a moment after the
+            // user stops a turn. Reporting them put the thinking panel back up
+            // — spinner and all — over a turn that had been told to stop.
+            if (opts.signal.cancelled) return;
             cb.onStats?.(baseTokens + liveTokens, lastTps);
             // Once a live card is up, the reasoning that led to it rides on
             // the card, above it, as it does on every finished step.
@@ -3421,8 +3625,12 @@ export async function runAgentTurn(
       // is told to act on it — coherence preserved, unlike the runaway gate
       // which discards a pathological loop on purpose.
       if (budgetTripped) {
-        const kept = thinking.length > 2400 ? `…${thinking.slice(-2400)}` : thinking;
-        storeAssistantTurn(messages, `<think>\n${kept}\n</think>`, opts.reasoningField);
+        // As generated (with the thought closed, which is an append the cache
+        // keeps): a turn recorded in any other shape — the capped copy this
+        // used to store — stops matching the tokens the engine holds, and on
+        // a cache that cannot be rewound that costs the whole conversation.
+        const ending = raw.includes("</think>") ? raw : `${raw}\n</think>`;
+        storeAssistantTurn(messages, ending, opts.reasoningField);
         pushUser(
           lang === "zh"
             ? "思考预算已用完。以上思考已保留——现在基于它直接执行下一步(发工具调用或给出答案),不要再展开思考。"
@@ -3463,7 +3671,15 @@ export async function runAgentTurn(
           // runaway reasoning back into context — just a short marker.
           forceNoThinkNext = true;
           hotNext = true;
-          messages.push({ role: "assistant", content: proseOnly(raw).slice(0, 300) });
+          // As generated. Keeping only a 300-character marker was meant to
+          // spare the context the runaway — but it also made the transcript
+          // stop matching the engine's cache, so the recovery step and every
+          // step after it re-read the whole conversation. The loop is
+          // reclaimed by compaction instead, which is where bulk belongs.
+          {
+            const ending = raw.includes("<think>") && !raw.includes("</think>") ? `${raw}\n</think>` : raw;
+            storeAssistantTurn(messages, ending, opts.reasoningField);
+          }
           const stopSuffix = opts.thinkSwitch ? "\n/no_think" : "";
           messages.push({
             role: "user",
@@ -3530,7 +3746,13 @@ export async function runAgentTurn(
           planProseIntercepts++;
           hotNext = true;
           forceNoThinkNext = true;
-          messages.push({ role: "assistant", content: answer.slice(0, 300) });
+          // Stored as generated, like every other turn. Recorded as a 300-
+          // character stub — which is what this did — the transcript stops
+          // matching the tokens the engine holds, and on a cache that cannot
+          // be rewound (the Qwen3.5/3.6 family) that is not a trim but the
+          // loss of the whole conversation: every step after it re-read
+          // everything, with nothing on screen to say why.
+          storeAssistantTurn(messages, raw, opts.reasoningField);
           pushUser(
             lang === "zh"
               ? "你刚输出的是计划/内心过程,不是给用户的答复。二选一并立即执行:① 直接发" + callTag(true) + " 执行你计划的第一步;② 如果任务确实已完成,重新给出最终总结(说明做了什么、如何验证的),不要出现「让我/我需要/用户选择」这类过程性句子。"

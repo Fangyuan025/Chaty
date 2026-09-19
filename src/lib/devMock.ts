@@ -353,6 +353,42 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       }
       return hits.slice(0, Number(args?.limit ?? 8));
     }
+    case "code_session_read": {
+      const want = String(args?.sessionId ?? "");
+      const meta = [...SAVED_CODE_SESSIONS, ...CODE_SESSIONS].find((s) => s.id === want);
+      const body = SAVED_CODE_BODIES.get(want);
+      const msgs = (body ? JSON.parse(body) : want === "cs2" ? CODE_SESSION_README : CODE_SESSION_MSGS) as {
+        role: string;
+        text?: string;
+        steps?: { id?: string; status?: string; call?: { name?: string; args?: Record<string, unknown> }; result?: string }[];
+      }[];
+      const turn = args?.turn ? Number(args.turn) : undefined;
+      return {
+        sessionId: want,
+        title: meta?.title ?? "session",
+        updatedAt: now,
+        totalTurns: msgs.length,
+        turns: msgs
+          .map((m, i) => ({ m, i }))
+          .filter(({ i }) => turn === undefined || i + 1 === turn)
+          .map(({ m, i }) => ({
+            turn: i + 1,
+            role: m.role,
+            text: m.text ?? "",
+            steps: (m.steps ?? []).map((st) => ({
+              stepId: st.id ?? "",
+              name: st.call?.name ?? "tool",
+              args: Object.entries(st.call?.args ?? {})
+                .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+                .join(" "),
+              status: st.status ?? "done",
+              resultChars: (st.result ?? "").length,
+            })),
+          })),
+      };
+    }
+    case "code_step_text_get":
+      return "(preview: the model's own copy of that step's result)";
     case "code_session_delete": {
       const id = String(args?.id ?? "");
       const i = SAVED_CODE_SESSIONS.findIndex((s) => s.id === id);
@@ -453,7 +489,13 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       const sysMsg = msgs.find((m) => m.role === "system")?.content ?? "";
       const dateEcho = (sysMsg.match(/当前日期时间:([^\n]+)/) || sysMsg.match(/Current date & time: ([^\n]+)/) || [])[1];
       const fast = wantsOutside || wantsSudo || wantsDate;
-      let reply = "收到。这是浏览器预览的模拟输出 — the mock stream after a simulated prompt-processing phase.";
+      // Thinking first, so the preview exercises the think panel (and stopping
+      // a turn mid-thought, which is where its spinner used to stay turning).
+      let reply =
+        "<think>\n先看看要做什么:这是预览里的模拟推理,足够长到可以在中途按停止。\n" +
+        Array.from({ length: 24 }, (_, i) => `第 ${i + 1} 步:读一点、想一点、再决定下一步该做什么。`).join("\n") +
+        "\n</think>\n\n" +
+        "收到。这是浏览器预览的模拟输出 — the mock stream after a simulated prompt-processing phase.";
       if (isTitleReq) {
         reply = /dataset manifest/i.test(last) ? "Summarize dataset manifest" : "读取数据集清单";
       } else if (wantsDate && dateEcho) {

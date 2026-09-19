@@ -12,10 +12,10 @@ const { setHistoryToolEnabled } = await import("./toolRegistry");
 setHistoryToolEnabled(true);
 
 const variants = [
-  { zh: true, vision: false, label: "zh plain", maxChars: 4000 },
-  { zh: true, vision: true, label: "zh vision", maxChars: 5160 },
-  { zh: false, vision: false, label: "en plain", maxChars: 6880 },
-  { zh: false, vision: true, label: "en vision", maxChars: 8750 },
+  { zh: true, vision: false, label: "zh plain", maxChars: 4180 },
+  { zh: true, vision: true, label: "zh vision", maxChars: 5340 },
+  { zh: false, vision: false, label: "en plain", maxChars: 7240 },
+  { zh: false, vision: true, label: "en vision", maxChars: 9100 },
 ] as const;
 // Caps anchored to the post-slimming sizes (2026-07 WS1: 3545 / 4432 / 6031 /
 // 7516 JS chars at think=normal, no project doc; before slimming they were
@@ -51,6 +51,19 @@ const variants = [
 //   cost five rounds, each re-sending the whole prompt and the whole
 //   transcript; one call reads them together, and a file it cannot read is
 //   named without losing the ones it could.
+
+//   2026-09-18  en +20 — the call rule and the reasoning line no longer name
+//   `<think>` (Qwen's markup handed to every family) and say instead that
+//   reasoning does not count as the "nothing else in that message" the rule
+//   forbids. Gemma 4, whose reasoning is a thought channel, was opening that
+//   channel and closing it again empty in code mode at every level.
+
+//   2026-09-19  all four +176 zh / +280 en — read_history. search_history
+//   finds WHERE something was said; reading it back — a whole turn with every
+//   tool call it made, then one of those calls' whole result — was what the
+//   model had no way to ask for. Owner's design: the search names the step,
+//   the read lists the calls with ✓/✗, and the step id goes back to the same
+//   tool for the result itself.
 
 describe("systemPrompt size gate", () => {
   for (const v of variants) {

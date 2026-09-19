@@ -19,9 +19,34 @@ type Chan = { onmessage?: (ev: Ev) => void };
 const call = (args: Record<string, unknown>) =>
   `<tool_call>${JSON.stringify({ name: "search_history", arguments: args })}</tool_call>`;
 
-const hit = (sessionId: string, title: string, turn: number, role: string, text: string) => ({
+const read = (args: Record<string, unknown>) =>
+  `<tool_call>${JSON.stringify({ name: "read_history", arguments: args })}</tool_call>`;
+
+const hit = (
+  sessionId: string,
+  title: string,
+  turn: number,
+  role: string,
+  text: string,
+  step?: { stepId: string; status: string },
+) => ({
   sessionId, title, updatedAt: Date.UTC(2026, 8, 16, 9, 30), turn, role, text,
+  stepId: step?.stepId ?? null, status: step?.status ?? null,
 });
+
+/** A session as code_session_read returns one. */
+const READ = {
+  sessionId: "sess-old",
+  title: "Tooltip work",
+  updatedAt: Date.UTC(2026, 8, 16, 9, 30),
+  totalTurns: 4,
+  turns: [
+    { turn: 3, role: "assistant", text: "改好了。", steps: [
+      { stepId: "s7", name: "edit_file", args: "path=src/Tip.tsx", status: "done", resultChars: 120 },
+      { stepId: "s8", name: "bash", args: "command=npm test", status: "error", resultChars: 4300 },
+    ] },
+  ],
+};
 
 /** Runs one turn; returns what the store was asked and what came back. */
 async function run(rounds: string[], sessionId: string | undefined, hits: (q: Record<string, unknown>) => unknown[]) {
@@ -41,6 +66,20 @@ async function run(rounds: string[], sessionId: string | undefined, hits: (q: Re
     if (cmd === "code_session_search") {
       asked.push(a);
       return hits(a);
+    }
+    if (cmd === "code_session_list") {
+      return [
+        { id: "sess-now", title: "本会话", workspace: null, updatedAt: 0 },
+        { id: "sess-old", title: "Tooltip work", workspace: null, updatedAt: 0 },
+      ];
+    }
+    if (cmd === "code_session_read") {
+      asked.push(a);
+      return READ;
+    }
+    if (cmd === "code_step_text_get") {
+      asked.push(a);
+      return a.stepId === "s8" ? "FAIL tests/tip.test.ts:12 expected 300 got 0" : null;
     }
     return null;
   });
@@ -79,7 +118,10 @@ describe("a session can read its own past", () => {
       () => [hit("sess-now", "Tooltip work", 4, "user", "make the tooltip delay 300ms")],
     );
     expect(prompt).toContain("search_history");
-    expect(asked).toEqual([{ query: "tooltip delay", sessionId: "sess-now", limit: 8 }]);
+    // This session first, then every session — "where was this discussed" is
+    // half of what gets asked, and one scope cannot answer it.
+    expect(asked[0]).toEqual({ query: "tooltip delay", sessionId: "sess-now", limit: 8 });
+    expect(asked[1]).toEqual({ query: "tooltip delay", sessionId: undefined, limit: 12 });
     expect(results[0]).toContain("this session");
     expect(results[0]).toContain("message 4");
     expect(results[0]).toContain("make the tooltip delay 300ms");
@@ -126,6 +168,60 @@ describe("a session can read its own past", () => {
     const { asked, results } = await run([call({}), "ok"], "sess-now", () => []);
     expect(asked).toEqual([]);
     expect(results[0]).toContain("query");
+  });
+
+  it("hands back the step a hit came from, and whether it worked", async () => {
+    const { results } = await run(
+      [call({ query: "npm test" }), "Found it."],
+      "sess-now",
+      () => [hit("sess-old", "Tooltip work", 3, "bash", "bash command=npm test [失败 error failed]", { stepId: "s8", status: "error" })],
+    );
+    expect(results[0]).toContain("✗");
+    expect(results[0]).toContain("step=s8");
+    // …and it says how to read that step, and the turn it sat in.
+    expect(results[0]).toContain("read_history");
+  });
+
+  it("reads a turn back with every tool call of it, marked", async () => {
+    const { asked, results } = await run([read({ session: "sess-old", turn: 3 }), "ok"], "sess-now", () => []);
+    expect(asked[0]).toMatchObject({ sessionId: "sess-old", turn: 3 });
+    expect(results[0]).toContain("Tooltip work");
+    expect(results[0]).toContain("✓ edit_file path=src/Tip.tsx");
+    expect(results[0]).toContain("✗ bash command=npm test");
+    expect(results[0]).toContain("step=s8");
+    // The results themselves are NOT in it — that is the next call.
+    expect(results[0]).not.toContain("FAIL tests/tip.test.ts");
+  });
+
+  it("reads one step's whole result when the step comes back", async () => {
+    const { asked, results } = await run([read({ session: "sess-old", step: "s8" }), "ok"], "sess-now", () => []);
+    expect(asked[0]).toMatchObject({ sessionId: "sess-old", stepId: "s8" });
+    expect(results[0]).toBe("FAIL tests/tip.test.ts:12 expected 300 got 0");
+  });
+
+  it("reads its OWN session when none is named", async () => {
+    const { asked } = await run([read({ turn: 2 }), "ok"], "sess-now", () => []);
+    expect(asked[0]).toMatchObject({ sessionId: "sess-now", turn: 2 });
+  });
+
+  it("says so when a step has no record kept", async () => {
+    const { results } = await run([read({ step: "gone" }), "ok"], "sess-now", () => []);
+    expect(results[0]).toContain("gone");
+    expect(results[0]).toContain("read_history");
+  });
+
+  /// A model writes what it has in front of it — often the title from a
+  /// search hit rather than the id.
+  it("takes a session by its title as well as its id", async () => {
+    const { asked } = await run([read({ session: "Tooltip work", turn: 3 }), "ok"], "sess-now", () => []);
+    expect(asked[0]).toMatchObject({ sessionId: "sess-old", turn: 3 });
+  });
+
+  it("names the sessions there are when the one asked for is not one", async () => {
+    const { asked, results } = await run([read({ session: "没这个会话" }), "ok"], "sess-now", () => []);
+    expect(asked).toEqual([]); // nothing read
+    expect(results[0]).toContain("Tooltip work");
+    expect(results[0]).toContain("session=sess-old");
   });
 
   it("is not there at all for a caller that keeps no sessions", async () => {

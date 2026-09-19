@@ -51,15 +51,23 @@ export function watchContentHeight(
   // height it happened to have when the drops began. Its own height changes
   // tell this function nothing; only a change of available width does.
   let seenWidth = box.getBoundingClientRect().width;
+  // Resizing from INSIDE the callback is what makes WebKit report
+  // "ResizeObserver loop completed with undelivered notifications" — harmless
+  // in itself (it delivers the rest next frame) but it reached the error log
+  // hundreds of times a session. Fitting on the next frame is the same fit,
+  // outside the observation pass, and the message stops.
+  let frame = 0;
   const ro = new ResizeObserver(() => {
     const width = box.getBoundingClientRect().width;
     if (width === seenWidth) return;
     seenWidth = width;
-    fit();
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(fit);
   });
   ro.observe(box);
   window.addEventListener("resize", fit);
   return () => {
+    cancelAnimationFrame(frame);
     ro.disconnect();
     window.removeEventListener("resize", fit);
   };

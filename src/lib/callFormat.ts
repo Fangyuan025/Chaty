@@ -38,20 +38,20 @@ export function callRule(zh: boolean, f: CallFormat): string {
   switch (f) {
     case "xml":
       return zh
-        ? "- 每次只调用一个工具。要调用时按下面的格式输出,然后立即停止,不要在同一条消息里写其它内容:\n<tool_call>\n<function=工具名>\n<parameter=参数名>\n参数值(可以多行,原样书写,不需要任何转义)\n</parameter>\n</function>\n</tool_call>\n  必填参数一个都不能少,每个参数一对 <parameter=…></parameter>;数组或对象类型的参数(比如 multi_edit 的 edits)写成 JSON。"
-        : "- Call ONE tool at a time. To call it, write it in this form and STOP immediately — nothing else in that message:\n<tool_call>\n<function=tool_name>\n<parameter=argument_name>\nthe value (any number of lines, written as is, nothing escaped)\n</parameter>\n</function>\n</tool_call>\n  Every required argument must be there, each in its own <parameter=…></parameter>; an array or object argument (multi_edit's edits, say) is written as JSON.";
+        ? "- 每次只调用一个工具。想清楚要做什么之后,按下面的格式输出这一个调用就立即停止——同一条消息里不要再写说明文字,也不要写第二个调用(思考不算):\n<tool_call>\n<function=工具名>\n<parameter=参数名>\n参数值(可以多行,原样书写,不需要任何转义)\n</parameter>\n</function>\n</tool_call>\n  必填参数一个都不能少,每个参数一对 <parameter=…></parameter>;数组或对象类型的参数(比如 multi_edit 的 edits)写成 JSON。"
+        : "- Call ONE tool at a time. Think it through, then write the one call in this form and STOP immediately — no prose and no second call in that message (your reasoning does not count):\n<tool_call>\n<function=tool_name>\n<parameter=argument_name>\nthe value (any number of lines, written as is, nothing escaped)\n</parameter>\n</function>\n</tool_call>\n  Every required argument must be there, each in its own <parameter=…></parameter>; an array or object argument (multi_edit's edits, say) is written as JSON.";
     case "gemma":
       return zh
-        ? '- 每次只调用一个工具。要调用时按下面的格式输出,然后立即停止,不要在同一条消息里写其它内容:\n<|tool_call>call:工具名{参数名:<|"|>文字值<|"|>,数字参数:5,开关参数:true}<tool_call|>\n  文字值放在两个 <|"|> 之间,原样书写(可以多行,不需要任何转义);必填参数一个都不能少;数组写成 [..],对象写成 {..}。'
-        : '- Call ONE tool at a time. To call it, write it in this form and STOP immediately — nothing else in that message:\n<|tool_call>call:tool_name{argument_name:<|"|>text value<|"|>,number_argument:5,flag_argument:true}<tool_call|>\n  A text value goes between two <|"|>, written as is (any number of lines, nothing escaped); every required argument must be there; arrays are [..] and objects {..}.';
+        ? '- 每次只调用一个工具。想清楚要做什么之后,按下面的格式输出这一个调用就立即停止——同一条消息里不要再写说明文字,也不要写第二个调用(思考不算):\n<|tool_call>call:工具名{参数名:<|"|>文字值<|"|>,数字参数:5,开关参数:true}<tool_call|>\n  文字值放在两个 <|"|> 之间,原样书写(可以多行,不需要任何转义);必填参数一个都不能少;数组写成 [..],对象写成 {..}。'
+        : '- Call ONE tool at a time. Think it through, then write the one call in this form and STOP immediately — no prose and no second call in that message (your reasoning does not count):\n<|tool_call>call:tool_name{argument_name:<|"|>text value<|"|>,number_argument:5,flag_argument:true}<tool_call|>\n  A text value goes between two <|"|>, written as is (any number of lines, nothing escaped); every required argument must be there; arrays are [..] and objects {..}.';
     case "lfm":
       return zh
-        ? '- 每次只调用一个工具。要调用时按下面的格式输出,然后立即停止,不要在同一条消息里写其它内容:\n<|tool_call_start|>[工具名(参数名="文字值", 数字参数=5)]<|tool_call_end|>\n  必填参数一个都不能少;文字值里的双引号写成 \\",换行写成 \\n。'
-        : '- Call ONE tool at a time. To call it, write it in this form and STOP immediately — nothing else in that message:\n<|tool_call_start|>[tool_name(argument_name="text value", number_argument=5)]<|tool_call_end|>\n  Every required argument must be there; inside a text value write a double quote as \\" and a newline as \\n.';
+        ? '- 每次只调用一个工具。想清楚要做什么之后,按下面的格式输出这一个调用就立即停止——同一条消息里不要再写说明文字,也不要写第二个调用(思考不算):\n<|tool_call_start|>[工具名(参数名="文字值", 数字参数=5)]<|tool_call_end|>\n  必填参数一个都不能少;文字值里的双引号写成 \\",换行写成 \\n。'
+        : '- Call ONE tool at a time. Think it through, then write the one call in this form and STOP immediately — no prose and no second call in that message (your reasoning does not count):\n<|tool_call_start|>[tool_name(argument_name="text value", number_argument=5)]<|tool_call_end|>\n  Every required argument must be there; inside a text value write a double quote as \\" and a newline as \\n.';
     default:
       return zh
-        ? '- 每次只调用一个工具。要调用时,只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 然后立即停止,不要在同一条消息里写其它内容。'
-        : '- Call ONE tool at a time. To call it, output a single line <tool_call>{"name":"tool","arguments":{...}}</tool_call> and STOP immediately — nothing else in that message.';
+        ? '- 每次只调用一个工具。想清楚要做什么之后,只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 就立即停止——同一条消息里不要再写说明文字,也不要写第二个调用(思考不算)。'
+        : '- Call ONE tool at a time. Think it through, then output a single line <tool_call>{"name":"tool","arguments":{...}}</tool_call> and STOP immediately — no prose and no second call in that message (your reasoning does not count).';
   }
 }
 

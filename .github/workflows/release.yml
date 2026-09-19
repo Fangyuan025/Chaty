@@ -281,10 +281,17 @@ jobs:
 
             A session's record outlives what the model can hold in front of it,
             so asked what was decided earlier, the agent used to go looking in
-            the code. It can now search its own record — this session past what
-            compaction dropped, or every session — and typing `@` in the
-            composer offers your other sessions alongside the workspace's
-            files, so you can point it at one and ask about it.
+            the code. It searches its own record now — this session and every
+            other one, tool calls included, each marked done or failed — and
+            reads back what it finds: a whole session, one turn with every call
+            that turn made, or one of those calls in full. "Which session did we
+            talk about the database schema in, and what was said?" is one
+            question with one answer. Typing `@` in the composer also offers
+            your other sessions alongside the workspace's files, to point it at
+            one directly.
+
+            Gemma 4 on MLX reasons again in code mode and in long chats, where
+            it had taken to opening its thinking and closing it again empty.
 
             ## Long chats with search stay fast
 

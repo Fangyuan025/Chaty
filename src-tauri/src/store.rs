@@ -448,6 +448,46 @@ pub struct SessionHit {
     /// "user", "assistant", or the tool the step called.
     pub role: String,
     pub text: String,
+    /// When the hit is inside a tool step: the step's id, so its whole result
+    /// can be read back, and whether that step succeeded.
+    pub step_id: Option<String>,
+    pub status: Option<String>,
+}
+
+/// One tool step of a past turn, as `read_history` lists it: what was called,
+/// whether it worked, and the handle for reading its whole result.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStep {
+    pub step_id: String,
+    pub name: String,
+    pub args: String,
+    /// "done" | "error" | "denied" — as the card recorded it.
+    pub status: String,
+    /// Size of the result kept for it, so the reader knows what it is asking
+    /// for before it asks.
+    pub result_chars: usize,
+}
+
+/// One turn of a past session, with its tool steps listed but not spelled out.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryTurn {
+    pub turn: usize,
+    pub role: String,
+    pub text: String,
+    pub steps: Vec<HistoryStep>,
+}
+
+/// A session read back: the turns asked for, and how many there are in all.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryRead {
+    pub session_id: String,
+    pub title: String,
+    pub updated_at: i64,
+    pub total_turns: usize,
+    pub turns: Vec<HistoryTurn>,
 }
 
 /// What to look for. A model does not write search-box queries: it writes a
@@ -462,10 +502,15 @@ fn search_terms(query: &str) -> Vec<Vec<char>> {
             out.push(w);
         }
     };
+    // Punctuation comes off the ENDS of a word, never out of its middle: a
+    // filter that dropped every dot turned `Login.tsx` into `logintsx`, which
+    // is in no transcript anywhere — and file names are what a search of a
+    // coding session is mostly made of.
+    let edge = |c: char| ",.?!:;，。？！：；、“”'\"()[]<>".contains(c);
     for word in query.split_whitespace() {
         let w: Vec<char> = word
+            .trim_matches(edge)
             .chars()
-            .filter(|c| !",.?!:;，。？！：；、“”'\"".contains(*c))
             .flat_map(|c| c.to_lowercase())
             .collect();
         if w.is_empty() {
@@ -533,10 +578,8 @@ fn folded(text: &str) -> (Vec<char>, Vec<char>) {
 }
 
 /// What a step shows a searcher: the call and what came back.
-fn step_text(step: &serde_json::Value) -> (String, String) {
-    let call = &step["call"];
-    let name = call["name"].as_str().unwrap_or("tool").to_string();
-    let args = match call["args"].as_object() {
+fn step_args(step: &serde_json::Value) -> String {
+    match step["call"]["args"].as_object() {
         Some(map) => map
             .iter()
             .map(|(k, v)| match v.as_str() {
@@ -546,14 +589,33 @@ fn step_text(step: &serde_json::Value) -> (String, String) {
             .collect::<Vec<_>>()
             .join(" "),
         None => String::new(),
-    };
+    }
+}
+
+/// What a step shows a searcher: the call, whether it worked, and what came
+/// back. The step's own id rides along so a hit can be read in full later.
+fn step_text(step: &serde_json::Value) -> (String, String, Option<String>, Option<String>) {
+    let name = step["call"]["name"].as_str().unwrap_or("tool").to_string();
+    let args = step_args(step);
     let result = step["result"].as_str().unwrap_or("");
-    (name, format!("{args}\n{result}"))
+    let status = step["status"].as_str().unwrap_or("done").to_string();
+    let id = step["id"].as_str().map(str::to_string);
+    // The CALL is part of the record, not just its output: the tool's name
+    // leads the searchable text (so "edit_file Login" finds the edit), and a
+    // step that failed says so in both languages (so "bash 失败" finds it).
+    let flag = match status.as_str() {
+        "error" => " [失败 error failed]",
+        "denied" => " [已拒绝 denied]",
+        _ => "",
+    };
+    (name.clone(), format!("{name} {args}{flag}\n{result}"), id, Some(status))
 }
 
 /// Everything in one session's transcript worth searching, in the order it
 /// was said: the turn it belongs to, who said it, and the words.
-fn session_pieces(data: &str) -> Vec<(usize, String, String)> {
+type Piece = (usize, String, String, Option<String>, Option<String>);
+
+fn session_pieces(data: &str) -> Vec<Piece> {
     let parsed: serde_json::Value = match serde_json::from_str(data) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -567,13 +629,13 @@ fn session_pieces(data: &str) -> Vec<(usize, String, String)> {
         let turn = i + 1;
         let role = m["role"].as_str().unwrap_or("assistant").to_string();
         if let Some(text) = m["text"].as_str().filter(|t| !t.trim().is_empty()) {
-            out.push((turn, role.clone(), text.to_string()));
+            out.push((turn, role.clone(), text.to_string(), None, None));
         }
         if let Some(steps) = m["steps"].as_array() {
             for step in steps {
-                let (name, body) = step_text(step);
+                let (name, body, id, status) = step_text(step);
                 if !body.trim().is_empty() {
-                    out.push((turn, name, body));
+                    out.push((turn, name, body, id, status));
                 }
             }
         }
@@ -592,13 +654,15 @@ fn session_hits(
     cap: usize,
 ) -> Vec<(usize, SessionHit)> {
     let pieces = session_pieces(data);
-    let hit = |turn: usize, role: &str, text: String| SessionHit {
+    let hit = |turn: usize, role: &str, text: String, step: Option<String>, status: Option<String>| SessionHit {
         session_id: id.to_string(),
         title: title.to_string(),
         updated_at,
         turn,
         role: role.to_string(),
         text,
+        step_id: step,
+        status,
     };
     // No words: an overview of the session — how it opened and where it got to.
     if terms.is_empty() {
@@ -607,19 +671,21 @@ fn session_hits(
             let cut: String = s.chars().take(400).collect();
             if s.chars().count() > 400 { format!("{cut}…") } else { cut }
         };
-        let first = pieces.iter().find(|(_, role, _)| role == "user");
-        let last = pieces.iter().rev().find(|(_, role, _)| role == "assistant");
+        let first = pieces.iter().find(|(_, role, _, _, _)| role == "user");
+        let last = pieces.iter().rev().find(|(_, role, _, _, _)| role == "assistant");
         return first
             .into_iter()
             .chain(last)
-            .map(|(turn, role, text)| (0, hit(*turn, role, brief(text))))
+            .map(|(turn, role, text, step, status)| {
+                (0, hit(*turn, role, brief(text), step.clone(), status.clone()))
+            })
             .collect();
     }
     let mut out: Vec<(usize, SessionHit)> = Vec::new();
-    for (turn, role, text) in pieces {
+    for (turn, role, text, step, status) in pieces {
         let (chars, hay) = folded(&text);
         if let Some((points, at)) = score(&hay, terms) {
-            out.push((points, hit(turn, &role, excerpt(&chars, at, 400))));
+            out.push((points, hit(turn, &role, excerpt(&chars, at, 400), step, status)));
         }
     }
     // Best answers first; between equals, the earlier one (a decision is
@@ -627,6 +693,93 @@ fn session_hits(
     out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.turn.cmp(&b.1.turn)));
     out.truncate(cap);
     out
+}
+
+/// One session read back turn by turn: what was said, and what each turn's
+/// tool steps were — the call, whether it worked, and the handle for its whole
+/// result. The results themselves are NOT here on purpose: a session's steps
+/// hold megabytes between them, and a reader that wants one of them asks for
+/// that one (see `code_step_text_get`).
+fn session_turns(data: &str, want: Option<usize>, text_cap: usize) -> (usize, Vec<HistoryTurn>) {
+    let parsed: serde_json::Value = match serde_json::from_str(data) {
+        Ok(v) => v,
+        Err(_) => return (0, Vec::new()),
+    };
+    let msgs = match parsed.as_array() {
+        Some(a) => a,
+        None => return (0, Vec::new()),
+    };
+    let mut turns = Vec::new();
+    for (i, m) in msgs.iter().enumerate() {
+        let turn = i + 1;
+        if want.is_some_and(|w| w != turn) {
+            continue;
+        }
+        // One turn asked for is read whole; a whole session is read as far as
+        // each message's cap, since the point of that read is the shape of the
+        // conversation rather than every word of it.
+        let cap = if want.is_some() { text_cap.max(4000) } else { text_cap };
+        let raw = m["text"].as_str().unwrap_or("");
+        let text = if raw.chars().count() > cap {
+            let cut: String = raw.chars().take(cap).collect();
+            format!("{cut}…")
+        } else {
+            raw.to_string()
+        };
+        let steps = m["steps"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .map(|step| HistoryStep {
+                        step_id: step["id"].as_str().unwrap_or("").to_string(),
+                        name: step["call"]["name"].as_str().unwrap_or("tool").to_string(),
+                        args: step_args(step),
+                        status: step["status"].as_str().unwrap_or("done").to_string(),
+                        result_chars: step["result"].as_str().map(|r| r.chars().count()).unwrap_or(0),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        turns.push(HistoryTurn {
+            turn,
+            role: m["role"].as_str().unwrap_or("assistant").to_string(),
+            text,
+            steps,
+        });
+    }
+    (msgs.len(), turns)
+}
+
+/// Read a past Code session: the whole thing, or one turn of it.
+#[tauri::command]
+pub fn code_session_read(
+    db: State<'_, Db>,
+    session_id: String,
+    turn: Option<usize>,
+    text_cap: Option<usize>,
+) -> Result<Option<HistoryRead>, String> {
+    let conn = lock(&db)?;
+    let row = conn
+        .query_row(
+            "SELECT id, title, updated_at, data FROM code_sessions WHERE id = ?1",
+            params![session_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other.to_string()),
+        })?;
+    let Some((id, title, updated_at, data)) = row else { return Ok(None) };
+    let (total, turns) = session_turns(&data, turn, text_cap.unwrap_or(1200));
+    Ok(Some(HistoryRead { session_id: id, title, updated_at, total_turns: total, turns }))
 }
 
 /// Search past Code sessions: this one before a compaction dropped it, one the
@@ -809,10 +962,14 @@ mod tests {
                 "text": "改好了,粘贴事件不再被拦截。",
                 "steps": [
                     {
+                        "id": "s1",
+                        "status": "done",
                         "call": { "name": "edit_file", "args": { "path": "src/Login.tsx" } },
                         "result": "edited src/Login.tsx (+3 −1)"
                     },
                     {
+                        "id": "s2",
+                        "status": "error",
                         "call": { "name": "bash", "args": { "command": "npm test" } },
                         "result": "12 passed"
                     }
@@ -886,6 +1043,72 @@ mod tests {
         assert!(found[0].1.text.contains("密码框"));
         assert_eq!(found[1].1.role, "assistant");
         assert!(found[1].1.text.contains("粘贴事件"));
+    }
+
+    /// A hit inside a tool step says which step it was and whether that step
+    /// worked, so the reader can go and read the whole of it.
+    #[test]
+    fn a_hit_in_a_step_carries_the_step() {
+        let found = hits("npm test", 8);
+        assert_eq!(found[0].1.role, "bash");
+        assert_eq!(found[0].1.step_id.as_deref(), Some("s2"));
+        assert_eq!(found[0].1.status.as_deref(), Some("error"));
+        // A hit in what someone SAID has no step to read.
+        let said = hits("粘贴", 8);
+        assert!(said.iter().all(|(_, h)| h.step_id.is_none()));
+    }
+
+    /// The call itself is searchable, not only what it printed: by tool name,
+    /// by its arguments, and by whether it failed.
+    #[test]
+    fn a_tool_call_is_part_of_the_record() {
+        let byName = hits("edit_file", 8);
+        assert_eq!(byName[0].1.role, "edit_file", "{byName:#?}");
+        assert_eq!(byName[0].1.step_id.as_deref(), Some("s1"));
+        let byArgs = hits("Login.tsx", 8);
+        assert!(byArgs.iter().any(|(_, h)| h.role == "edit_file"), "{byArgs:#?}");
+        // The failed step is findable as a failure, in either language.
+        for q in ["失败", "failed"] {
+            let failures = hits(q, 8);
+            assert!(
+                failures.iter().any(|(_, h)| h.status.as_deref() == Some("error")),
+                "{q}: {failures:#?}"
+            );
+        }
+    }
+
+    /// A session read back: every turn, every step named with its outcome —
+    /// and not one step's result, which is what keeps this readable.
+    #[test]
+    fn a_session_reads_back_turn_by_turn() {
+        let (total, turns) = super::session_turns(&transcript(), None, 1200);
+        assert_eq!(total, 4);
+        assert_eq!(turns.len(), 4);
+        assert_eq!(turns[1].role, "assistant");
+        assert_eq!(turns[1].steps.len(), 2);
+        assert_eq!(turns[1].steps[0].name, "edit_file");
+        assert_eq!(turns[1].steps[0].args, "path=src/Login.tsx");
+        assert_eq!(turns[1].steps[0].status, "done");
+        assert_eq!(turns[1].steps[1].status, "error");
+        assert!(turns[1].steps[1].result_chars > 0);
+        // One turn, read on its own.
+        let (total, one) = super::session_turns(&transcript(), Some(3), 1200);
+        assert_eq!(total, 4);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].turn, 3);
+        assert!(one[0].text.contains("tooltip"));
+    }
+
+    /// A long message is cut for a whole-session read and kept for a single
+    /// turn — the first answers "what happened", the second "what exactly".
+    #[test]
+    fn a_whole_session_is_read_shorter_than_one_turn() {
+        let long = "x".repeat(6000);
+        let data = serde_json::json!([{ "role": "user", "text": long }]).to_string();
+        let (_, all) = super::session_turns(&data, None, 1200);
+        assert_eq!(all[0].text.chars().count(), 1201); // 1200 + the ellipsis
+        let (_, one) = super::session_turns(&data, Some(1), 1200);
+        assert_eq!(one[0].text.chars().count(), 4001);
     }
 
     /// A session saved by an older version — or half-written — is skipped, not

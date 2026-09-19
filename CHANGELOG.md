@@ -51,6 +51,29 @@
   sometimes refused and sent back to edit_file; measured, that mostly derailed
   the model into failed edits of a file it had already written.
 
+### Code mode: thinking, and the cache under it
+
+- **Gemma 4 on MLX reasons again.** It opened its reasoning channel and closed
+  it again having said nothing — in code mode every turn, in a chat once the
+  conversation had grown (measured: 2 of 8 turns reasoned, none after the
+  second). While a thought is still empty the marker that would close it is
+  off the table now, so the model has to say something before it may stop;
+  a model that reasons never meets it, and the rule is gated to that family.
+  Chat and code both: 12 of 12 turns reasoned, with cache reuse untouched.
+
+- **A stopped turn stops thinking.** Tokens already on their way kept arriving
+  after the stop and put the thinking panel back up, spinner and all. What it
+  had thought is kept, collapsed, and nothing new is reported.
+
+- **A turn is recorded as the model wrote it.** Three recovery paths stored a
+  trimmed copy of the model's own turn — a plan-prose intercept, a runaway
+  reasoning gate, a think budget — and on the Qwen3.5/3.6 family, whose cache
+  cannot be rewound, a transcript that no longer matches the tokens the engine
+  holds is not a trim but the loss of the whole conversation: measured at 0%
+  reuse against 99% for the same turn stored whole, with nothing on screen to
+  say why. The compaction summariser also ran on the conversation's own cache
+  and now has its own, as chat's side generations do.
+
 ### Code mode: reading files, and the shell commands run in
 
 - **Several files are read in one call.** Reading five files cost five rounds,
@@ -79,6 +102,15 @@
   now says the originals are still searchable. The words are scored rather
   than all required, since a model searches with a sentence, and Chinese is
   matched without needing spaces.
+
+- **The record reads back, not just searches.** A search says where something
+  was said; `read_history` reads it — a whole session, or one turn of it, with
+  every tool call that turn made listed and marked done or failed, and any one
+  of those calls opened in full when the model asks for it by the handle the
+  listing gave it. Tool calls are part of what a search looks through now, so
+  "which session did we talk about the database schema in, and what was said"
+  is one question with one answer: the search covers this session and all the
+  others and groups what it finds by session.
 
 - **A session can be pointed at another one.** Typing `@` in the composer now
   offers your other sessions as well as the workspace's files. Picking one

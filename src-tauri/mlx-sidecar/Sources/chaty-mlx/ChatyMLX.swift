@@ -1872,11 +1872,39 @@ final class Engine: @unchecked Sendable {
             // restart at zero, which full-attention M-RoPE models (Qwen3-VL)
             // answer with an instant EOS. Rolling our own loop keeps every
             // token at its true position.
+            // ONE model family's bug, and nobody else's prompt is touched.
+            //
+            // Gemma 4 on MLX opens its reasoning channel and closes it again
+            // having said nothing — in code mode every single turn (the system
+            // turn is long there), in a chat once the conversation has grown.
+            // Measured: with a short system turn it reasons; with the same
+            // text padded to ~2k characters it stops, at every level the user
+            // can pick. Its own template names that close in its own markup
+            // (the block written when thinking is OFF), so while the thought
+            // is still empty that token is off the table and the model has to
+            // say something before it may close. A model that reasons never
+            // meets the ban. Gated to this family on purpose: any other
+            // model's turn comes out exactly as it did before.
+            let emptyClose: Int? = {
+                guard thinking, (meta.arch ?? "").lowercased().contains("gemma"),
+                    ProcessInfo.processInfo.environment["CHATY_MLX_NO_THINK_GUARD"] != "1"
+                else { return nil }
+                let block = meta.layout(thinking: false)?.turnPrefix() ?? meta.turnPrefix
+                // A channel close (`<channel|>`), not a `</think>` tag: this is
+                // the shape the skipping happens in, and the narrower the test
+                // the fewer models it can surprise.
+                guard block.contains("channel|>"),
+                    let cut = block.range(of: "<", options: .backwards),
+                    cut.lowerBound > block.startIndex
+                else { return nil }
+                let closer = String(block[cut.lowerBound...])
+                return context.tokenizer.encode(text: closer, addSpecialTokens: false).first
+            }()
             self.decode(
                 context: context, cache: warm, tokens: tokens, total: total,
                 state: state, gp: gp,
                 recorded: tokens, imageKeys: imageKeys,
-                reused: start)
+                reused: start, emptyThoughtClose: emptyClose)
         }
     }
 
@@ -1951,7 +1979,10 @@ final class Engine: @unchecked Sendable {
     private func decode(
         context: ModelContext, cache: [KVCache], tokens: [Int], total: Int,
         state initialState: LMOutput.State?, gp: GenerateParameters,
-        recorded: [Int], imageKeys: [String], reused: Int
+        recorded: [Int], imageKeys: [String], reused: Int,
+        /// The token that would close a reasoning block that has said nothing
+        /// yet — banned for the first few steps (see the call site).
+        emptyThoughtClose: Int? = nil
     ) {
         var state = initialState
         // The rope state saved for the next turn's resume: ropeDeltas is
@@ -1979,9 +2010,23 @@ final class Engine: @unchecked Sendable {
         }
         let unknownId = context.tokenizer.unknownTokenId
 
+        // How long a thought has to be before it may close: enough that
+        // something was actually said, short enough that a model with nothing
+        // to think about is not held up. Only ever applied while the thought
+        // is still empty.
+        let minThought = 16
+        var banRow: MLXArray?
         func sample(_ logits: MLXArray) -> Int {
             var l = logits[0..., -1, 0...]
             if let processor { l = processor.process(logits: l) }
+            if let close = emptyThoughtClose, done < minThought {
+                if banRow == nil {
+                    var row = [Float](repeating: 0, count: l.dim(-1))
+                    if close < row.count { row[close] = -Float.greatestFiniteMagnitude }
+                    banRow = MLXArray(row).reshaped([1, row.count])
+                }
+                if let row = banRow { l = l + row }
+            }
             let y = sampler.sample(logits: l)
             processor?.didSample(token: y)
             return y.item(Int.self)

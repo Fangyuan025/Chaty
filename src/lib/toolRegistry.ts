@@ -261,7 +261,21 @@ export function setMemoryToolEnabled(on: boolean): void {
  *  the user's own transcripts needs no approval. */
 export function setHistoryToolEnabled(on: boolean): void {
   unregisterTool("search_history");
+  unregisterTool("read_history");
   if (!on) return;
+  registerTool({
+    name: "read_history",
+    source: "session",
+    suite: "core",
+    perm: "read",
+    tier: "core",
+    docLine: {
+      zh: `- read_history: 读回某个会话的完整记录(不传 turn=整段,传 turn=只读那一轮),每一轮都列出当时的工具调用与成功/失败;想看某次调用的完整结果,把它的 step 传回来。session 省略=本会话。args: { "session"?: string, "turn"?: number, "step"?: string }`,
+      en: `- read_history: read a session back — whole (no turn) or one turn (turn=N) — with every tool call of that turn and whether it succeeded; to see one call's whole result, pass its step back. session omitted = this one. args: { "session"?: string, "turn"?: number, "step"?: string }`,
+    },
+    argExample: '{"turn":3}',
+    resultCap: 400000,
+  });
   registerTool({
     name: "search_history",
     source: "session",
@@ -269,8 +283,8 @@ export function setHistoryToolEnabled(on: boolean): void {
     perm: "read",
     tier: "core",
     docLine: {
-      zh: `- search_history: 检索你自己的会话记录(不是代码):本会话里已被压缩掉、现在看不到的早期内容,或用户 @ 引用的其他会话。被问「之前/上次说过、定过什么」先用它,别用 search_code 去代码里翻;query 用当时对话里的原话用词。session 省略=本会话,"all"=所有会话,也可以是会话 id。args: { "query": string, "session"?: string }`,
-      en: `- search_history: search your own conversation record (not the code): what this session said before compaction dropped it, or another session the user referenced. Asked what was said or decided earlier, reach for this first — not search_code — and query it in the words that conversation used. session omitted = this one, "all" = every session, or a session id. args: { "query": string, "session"?: string }`,
+      zh: `- search_history: 检索你自己的会话记录(不是代码),连同当时的每次工具调用(标成功/失败)。被问「之前/上次说过什么」「这事是在哪个会话聊的」先用它,别用 search_code 去代码里翻;query 用当时对话里的原话用词。不传 session 就连本会话带其他会话一起找,结果按会话分组;也可以传某个会话的 id 或标题。args: { "query": string, "session"?: string }`,
+      en: `- search_history: search your own conversation record (not the code), tool calls included, each marked done or failed. Asked what was said earlier — or WHICH session something was discussed in — reach for this first, not search_code, and query it in the words that conversation used. With no session it searches this one and all the others, grouped by session; or name a session by id or title. args: { "query": string, "session"?: string }`,
     },
     argExample: '{"query":"tooltip delay"}',
   });

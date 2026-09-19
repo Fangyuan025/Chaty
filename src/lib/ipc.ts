@@ -557,6 +557,45 @@ export interface SessionHit {
   /** "user", "assistant", or the tool the step called. */
   role: string;
   text: string;
+  /** Set when the hit is inside a tool step: its id (read the whole result
+   *  with codeStepTextGet) and whether that step succeeded. */
+  stepId?: string | null;
+  status?: string | null;
+}
+
+/** One tool step of a past turn, named but not spelled out. */
+export interface HistoryStep {
+  stepId: string;
+  name: string;
+  args: string;
+  status: string;
+  resultChars: number;
+}
+
+export interface HistoryTurn {
+  turn: number;
+  role: string;
+  text: string;
+  steps: HistoryStep[];
+}
+
+export interface HistoryRead {
+  sessionId: string;
+  title: string;
+  updatedAt: number;
+  totalTurns: number;
+  turns: HistoryTurn[];
+}
+
+/** Read a past session back — the whole thing, or one turn of it. Tool steps
+ *  come back named, with their outcome; their results are read one at a time
+ *  with codeStepTextGet. */
+export async function codeSessionRead(
+  sessionId: string,
+  turn?: number,
+  textCap?: number,
+): Promise<HistoryRead | null> {
+  return invoke<HistoryRead | null>("code_session_read", { sessionId, turn, textCap });
 }
 
 /** Search past coding sessions — this one beyond what the context still
