@@ -921,6 +921,20 @@ export function CodeMode({
   // frame re-pinning the bottom before the user escapes the threshold), and
   // parking back at the bottom re-arms it.
   const followRef = useRef(true);
+  /** How far the end is from view, and whether that is far enough to offer the
+   *  way back. Recomputed from the CONTENT as well as from scrolling: a
+   *  transcript shrinks — a thinking panel folds itself away, a live card is
+   *  withdrawn — without any scroll event, and the button was left over a
+   *  conversation whose end was already on screen. */
+  const syncJump = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const jump = el.scrollHeight - el.scrollTop - el.clientHeight > 320;
+    if (jump !== showJumpRef.current) {
+      showJumpRef.current = jump;
+      setShowJump(jump);
+    }
+  }, []);
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -935,11 +949,7 @@ export function CodeMode({
       const d = dist();
       if (d < 4) followRef.current = true;
       else if (d > 240) followRef.current = false;
-      const jump = d > 320;
-      if (jump !== showJumpRef.current) {
-        showJumpRef.current = jump;
-        setShowJump(jump);
-      }
+      syncJump();
     };
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("scroll", onScroll, { passive: true });
@@ -947,7 +957,7 @@ export function CodeMode({
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("scroll", onScroll);
     };
-  }, []);
+  }, [syncJump]);
 
   // BEFORE the browser paints: a session that opens at its end must never be
   // drawn anywhere else first. Done after the paint (useEffect), switching
@@ -966,7 +976,8 @@ export function CodeMode({
       setShowJump(false);
     }
     if (followRef.current) el.scrollTop = el.scrollHeight;
-  }, [msgs, sid]);
+    syncJump();
+  }, [msgs, sid, syncJump]);
 
   // Whatever arrives late — a picture, a diff card, a code block that only
   // knows its height once it is laid out — keeps the view at the end while
@@ -979,10 +990,11 @@ export function CodeMode({
     if (!el || !content) return;
     const obs = new ResizeObserver(() => {
       if (followRef.current) el.scrollTop = el.scrollHeight;
+      syncJump();
     });
     obs.observe(content);
     return () => obs.disconnect();
-  }, [msgs.length > 0]);
+  }, [msgs.length > 0, syncJump]);
 
   // Keyboard shortcuts: approval Enter/Esc, ask-user number keys, Esc to stop.
   useEffect(() => {
