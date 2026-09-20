@@ -482,8 +482,13 @@ impl MlxEngine {
                     Some("loaded") => break ev["info"].clone(),
                     Some("error") => {
                         let msg = ev["message"].as_str().unwrap_or("unknown").to_string();
+                        let dead = child.id();
                         let _ = child.kill();
                         let _ = child.wait();
+                        // Reaped here, so the number must go with it: left in
+                        // the table, a pid the system later hands to someone
+                        // else would be killed on the way out.
+                        SIDECAR_PIDS.lock().unwrap().retain(|p| *p != dead);
                         bail!("{msg}");
                     }
                     _ => {
@@ -589,7 +594,24 @@ static SIDECAR_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 pub fn kill_sidecars_now() {
     let pids: Vec<u32> = std::mem::take(&mut *SIDECAR_PIDS.lock().unwrap());
+    if pids.is_empty() {
+        return;
+    }
+    // A pid only means something while the process behind it is still the one
+    // that was recorded. A sidecar that died on its own (or was reaped on a
+    // path that failed to deregister it) leaves a number the system is free
+    // to hand to anybody, so the name is checked before the signal.
+    let mut sys = sysinfo::System::new();
+    let want: Vec<sysinfo::Pid> = pids.iter().map(|p| sysinfo::Pid::from_u32(*p)).collect();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&want), true);
     for pid in pids {
+        let ours = sys
+            .process(sysinfo::Pid::from_u32(pid))
+            .map(|p| p.name().to_string_lossy().contains("chaty-mlx"))
+            .unwrap_or(false);
+        if !ours {
+            continue;
+        }
         #[cfg(unix)]
         unsafe {
             libc::kill(pid as i32, libc::SIGKILL);

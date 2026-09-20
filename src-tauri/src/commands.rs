@@ -1619,6 +1619,11 @@ pub async fn generate(
         None => (on_event.clone(), None, None),
     };
 
+    // Failures below go back the same way the tokens did. Sent on the
+    // caller's own channel instead, an error reached a page that may not be
+    // there any more, while the page that took the turn over waited on a
+    // reply that had already failed.
+    let ending = sink.clone();
     let outcome = backend.generate(request, sink, cancel).await;
 
     // The turn is over, however it ended. Write the reply down and let go of
@@ -1647,7 +1652,7 @@ pub async fn generate(
     outcome
         .map_err(|e| {
             let msg = format!("{e:#}");
-            let _ = on_event.send(StreamEvent::Error {
+            let _ = ending.send(StreamEvent::Error {
                 message: msg.clone(),
             });
             msg
@@ -2077,6 +2082,44 @@ mod tests {
     /// been thrown away. Now generation carries on with nobody listening, and
     /// the page that comes up next is handed what it missed and receives the
     /// rest live.
+    /// A turn that FAILS has to reach the page that took it over, the same as
+    /// its tokens did. Sent on the original caller's channel, the error went
+    /// to a page that was gone and the new one waited forever.
+    #[test]
+    fn a_turn_that_fails_tells_the_page_that_took_it_over() {
+        use super::{AppState, Channel, SaveTarget, StreamEvent};
+        use std::sync::{Arc, Mutex};
+        let state = AppState::default();
+
+        let dead: Channel<StreamEvent> = Channel::new(|_| Err(tauri::Error::WebviewNotFound));
+        let (sink, _text, _id) = super::live_sink(
+            &state,
+            SaveTarget {
+                conversation_id: "c1".into(),
+                message_id: "m1".into(),
+            },
+            dead,
+        );
+        sink.send(StreamEvent::Token { text: "half ".into() }).unwrap();
+
+        let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let ear = heard.clone();
+        let fresh: Channel<StreamEvent> = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(raw) = body {
+                if let Ok(StreamEvent::Error { message }) = serde_json::from_str::<StreamEvent>(&raw) {
+                    ear.lock().unwrap().push(message);
+                }
+            }
+            Ok(())
+        });
+        super::attach_to_live(&state, fresh).expect("a turn was in flight");
+
+        // What `generate` does when the engine returns an error: report it the
+        // way the tokens went, not down the channel the call came in on.
+        sink.send(StreamEvent::Error { message: "engine gave up".into() }).unwrap();
+        assert_eq!(&*heard.lock().unwrap(), &["engine gave up".to_string()]);
+    }
+
     #[test]
     fn a_turn_survives_its_page_and_is_handed_to_the_next_one() {
         use super::{AppState, Channel, SaveTarget, StreamEvent};

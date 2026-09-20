@@ -32,7 +32,13 @@ async fn download(url: &str, to: &Path) -> Result<()> {
         .error_for_status()?
         .bytes()
         .await?;
-    std::fs::write(to, &bytes).context("write model file")?;
+    // Write beside the target and move it into place. Written straight to the
+    // final name, a write cut short — a full disk, a quit — left a file that
+    // exists, which is the only thing `ensure_models` asks: the download was
+    // never retried and every load failed from then on.
+    let tmp = to.with_extension("part");
+    std::fs::write(&tmp, &bytes).context("write model file")?;
+    std::fs::rename(&tmp, to).context("commit model file")?;
     Ok(())
 }
 
@@ -42,10 +48,16 @@ pub async fn ocr_image(models_dir: PathBuf, image_path: String) -> Result<String
 
     // Model loading + inference is CPU-bound and synchronous.
     tokio::task::spawn_blocking(move || -> Result<String> {
-        let detection_model =
-            Model::load_file(&det).map_err(|e| anyhow::anyhow!("加载检测模型失败: {e}"))?;
-        let recognition_model =
-            Model::load_file(&rec).map_err(|e| anyhow::anyhow!("加载识别模型失败: {e}"))?;
+        // A model file that will not load is a cache to drop, not a permanent
+        // state: the next run downloads it again rather than failing forever.
+        let detection_model = Model::load_file(&det).map_err(|e| {
+            let _ = std::fs::remove_file(&det);
+            anyhow::anyhow!("加载检测模型失败(已清除缓存,下次会重新下载): {e}")
+        })?;
+        let recognition_model = Model::load_file(&rec).map_err(|e| {
+            let _ = std::fs::remove_file(&rec);
+            anyhow::anyhow!("加载识别模型失败(已清除缓存,下次会重新下载): {e}")
+        })?;
 
         let engine = OcrEngine::new(OcrEngineParams {
             detection_model: Some(detection_model),

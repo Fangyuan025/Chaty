@@ -74,6 +74,11 @@ struct Server {
     name: String,
     conn: Conn,
     next_id: u64,
+    /// Which connection under this name this is. A call checks its server out
+    /// of the map for the duration; a reconnect in that window puts a NEW one
+    /// in, and the returning call — which only asked whether the NAME was
+    /// alive — put itself back over it.
+    generation: u64,
 }
 
 static SERVERS: Mutex<Option<HashMap<String, Server>>> = Mutex::new(None);
@@ -87,6 +92,27 @@ static NAME_PIDS: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 /// Lets a concurrent second call get an honest "busy — retry" instead of the
 /// misleading "not connected" (which sends models off to reconnect).
 static IN_FLIGHT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The current connection's generation per name, bumped on every connect.
+static NAME_GEN: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+
+/// The generation this connect owns, and what a returning call compares to.
+fn bump_generation(name: &str) -> u64 {
+    let mut g = NAME_GEN.lock().unwrap();
+    let map = g.get_or_insert_with(HashMap::new);
+    let next = map.get(name).copied().unwrap_or(0) + 1;
+    map.insert(name.to_string(), next);
+    next
+}
+
+fn current_generation(name: &str) -> u64 {
+    NAME_GEN
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .get(name)
+        .copied()
+        .unwrap_or(0)
+}
 
 /// Kill every stdio MCP server. Called from the app's exit path, which skips
 /// destructors (`libc::_exit`) — without this, quitting orphans the servers.
@@ -346,7 +372,7 @@ async fn connect_inner(name: &str, transport: McpTransport) -> Result<Vec<McpToo
             .get_or_insert_with(HashMap::new)
             .insert(name.to_string(), c.child.id());
     }
-    let server = Server { name: name.to_string(), conn, next_id: 1 };
+    let server = Server { name: name.to_string(), conn, next_id: 1, generation: bump_generation(name) };
     let (server, init) = request(
         server,
         "initialize",
@@ -384,13 +410,53 @@ async fn connect_inner(name: &str, transport: McpTransport) -> Result<Vec<McpToo
     Ok(tools)
 }
 
+/// Hand a finished call's server back to the map — if it is still the
+/// connection that name stands for. A reconnect while the call was out has
+/// its own generation, and a late return used to replace the live connection
+/// with the one it had been holding: every call afterwards failed on a server
+/// that had just reconnected successfully. HTTP connections have no child to
+/// look at, which is why identity cannot be a liveness check.
+fn return_server(s: Server) {
+    let name = s.name.clone();
+    let mine = current_generation(&name) == s.generation;
+    let alive = mine
+        && match &s.conn {
+            Conn::Stdio(_) => NAME_PIDS
+                .lock()
+                .unwrap()
+                .get_or_insert_with(HashMap::new)
+                .contains_key(&name),
+            Conn::Http { .. } => true,
+        };
+    if alive {
+        SERVERS.lock().unwrap().get_or_insert_with(HashMap::new).insert(name, s);
+    } else {
+        kill_server(s); // reap the Child handle; the process is already dead
+    }
+}
+
 fn kill_server(server: Server) {
-    NAME_PIDS.lock().unwrap().get_or_insert_with(HashMap::new).remove(&server.name);
+    let name = server.name.clone();
     if let Server { conn: Conn::Stdio(mut c), .. } = server {
         let pid = c.child.id();
+        // Only give up the name if it still points at THIS child: a late call
+        // reaping the connection it was holding must not delete the entry a
+        // reconnect has just made, or the fresh connection looks dead.
+        forget_pid_if(&name, pid);
         let _ = c.child.kill();
         let _ = c.child.wait();
         untrack_pid(pid);
+    } else {
+        NAME_PIDS.lock().unwrap().get_or_insert_with(HashMap::new).remove(&name);
+    }
+}
+
+/// Drop `name → pid` only when that is what the map holds.
+fn forget_pid_if(name: &str, pid: u32) {
+    let mut g = NAME_PIDS.lock().unwrap();
+    let map = g.get_or_insert_with(HashMap::new);
+    if map.get(name) == Some(&pid) {
+        map.remove(name);
     }
 }
 
@@ -486,23 +552,7 @@ pub async fn mcp_call(server: String, tool: String, args: Value) -> Result<Strin
         CALL_TIMEOUT,
     )
     .await;
-    let still_alive = match &s.conn {
-        Conn::Stdio(_) => NAME_PIDS
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::new)
-            .contains_key(&server),
-        Conn::Http { .. } => true,
-    };
-    if still_alive {
-        SERVERS
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::new)
-            .insert(server.clone(), s);
-    } else {
-        kill_server(s); // reap the Child handle; the process is already dead
-    }
+    return_server(s);
     IN_FLIGHT.lock().unwrap().retain(|n| n != &server);
     let result = res?;
     let text = content_text(&result);
@@ -533,7 +583,10 @@ for line in sys.stdin:
         r = {"tools": [{"name": "echo", "description": "Echo the input back.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}
     elif meth == "tools/call":
         a = m["params"]["arguments"]
-        if a.get("boom"):
+        if a.get("slow"):
+            import time; time.sleep(float(a["slow"]))
+            r = {"content": [{"type": "text", "text": "slow done"}]}
+        elif a.get("boom"):
             r = {"content": [{"type": "text", "text": "it broke"}], "isError": True}
         else:
             r = {"content": [{"type": "text", "text": "echo: " + a.get("text", "")}]}
@@ -749,6 +802,52 @@ for line in sys.stdin:
             .block_on(mcp_call("ghost-srv".into(), "t".into(), json!({})))
             .unwrap_err();
         assert!(err.contains("not connected"), "wrong error: {err}");
+    }
+
+    /// A call checks its server out of the map while it runs. Reconnecting in
+    /// that window used to end with the returning call putting its dead
+    /// connection back over the live one — every call after that failed on a
+    /// server that had just reconnected successfully.
+    #[cfg(unix)]
+    #[test]
+    fn a_reconnect_during_a_call_keeps_the_new_connection() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            connect_inner("gen-srv", fake_transport()).await.expect("connect");
+            let first = current_generation("gen-srv");
+
+            // A call checks the server OUT of the map for its duration…
+            let held = SERVERS
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|m| m.remove("gen-srv"))
+                .expect("connected");
+            assert_eq!(held.generation, first);
+
+            // …and a reconnect lands while it is out.
+            connect_inner("gen-srv", fake_transport()).await.expect("reconnect");
+            let second = current_generation("gen-srv");
+            assert!(second > first, "a reconnect is a new connection");
+
+            // Now the call finishes and hands its connection back.
+            return_server(held);
+
+            // The connection in the map is the one the reconnect made…
+            let kept = SERVERS
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|m| m.get("gen-srv").map(|s| s.generation));
+            assert_eq!(kept, Some(second), "the late call must not take the name back");
+
+            // …and it works.
+            let out = mcp_call("gen-srv".into(), "echo".into(), json!({ "text": "after" }))
+                .await
+                .expect("the reconnected server still answers");
+            assert!(out.contains("after"), "unexpected reply: {out}");
+            disconnect_inner("gen-srv");
+        });
     }
 
     #[test]

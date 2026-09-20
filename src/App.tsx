@@ -1638,10 +1638,15 @@ export default function App() {
     await loadAttachmentPath(path);
   }
 
+  /** Which conversation the user last asked for — two reads can come back in
+   *  either order, and the slower first pick used to land on top of the second. */
+  const openSeq = useRef(0);
   async function openConversation(id: string) {
     if (busy || id === conversationId) return;
+    const mine = ++openSeq.current;
     try {
       const stored = await getMessages(id);
+      if (mine !== openSeq.current) return;
       setMessages(
         stored.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images })),
       );
@@ -1675,6 +1680,13 @@ export default function App() {
       // Only a *chat* stream is ours to cancel here; busy from Deep Research /
       // Podcast (streamingId is null) must not be force-unlocked by a delete.
       const wasStreaming = isCurrent && streamingId != null;
+      if (isCurrent && turnStopRef.current) {
+        // The turn may still be searching, with the generation yet to start:
+        // cancelling the engine alone left the workflow running and a reply
+        // being produced for a conversation that is gone.
+        turnStopRef.current.stopped = true;
+        turnStopRef.current.wake();
+      }
       if (wasStreaming) {
         try {
           await cancelGeneration();
@@ -2075,6 +2087,16 @@ export default function App() {
       console.error(e);
     }
 
+    // Summarising is a generation of its own and takes a while; a stop pressed
+    // during it used to be swallowed, because the backend clears the cancel
+    // flag when the next generate starts. Asked again here, after the wait.
+    if (turnStop.stopped) {
+      setMessages((cur) => cur.filter((m) => m.id !== asstId));
+      setBusy(false);
+      setStreamingId(null);
+      return;
+    }
+
     // Thinking-mode control. Two mechanisms, picked by what the model supports:
     //  • Qwen3 (`thinkSwitch`): append the `/no_think` soft switch to the prompt.
     //  • Qwen3.5+ (reasoning, but no soft switch): tell the backend to pre-fill an
@@ -2321,9 +2343,13 @@ export default function App() {
     }
   }
 
+  /** A turn is under way from the first line of the handler. `busy` is only
+   *  set once streaming starts, several awaits later, and two sends in quick
+   *  succession both used to get past it. */
+  const sendingRef = useRef(false);
   async function handleSend(override?: string) {
     const text = (override ?? input).trim();
-    if (!text || busy) return;
+    if (!text || busy || sendingRef.current) return;
     // Slash command: `/webdesign` toggles web-design mode (no message sent).
     if (!override && /^\/webdesign\s*$/i.test(text)) {
       setWebDesign((v) => !v);
@@ -2335,6 +2361,17 @@ export default function App() {
       return;
     }
 
+    sendingRef.current = true;
+    try {
+      await sendTurn(text);
+    } finally {
+      sendingRef.current = false;
+    }
+  }
+
+  /** The body of a send, once it is settled that there is one. */
+  async function sendTurn(text: string) {
+    if (!model) return;
     const freshConv = conversationId === null;
     const convId = conversationId ?? uid();
     // A vision attachment rides on this very message (pixels, not OCR text)
@@ -2368,7 +2405,7 @@ export default function App() {
 
   /** Re-run the assistant turn at `index` (drops anything after it). */
   async function regenerate(index: number) {
-    if (busy || !model || !conversationId) return;
+    if (busy || sendingRef.current || !model || !conversationId) return;
     const target = messages[index];
     if (!target || target.role !== "assistant") return;
     const history = messages.slice(0, index);
@@ -2391,7 +2428,7 @@ export default function App() {
   async function editUser(index: number, newText: string) {
     const txt = newText.trim();
     setEditingId(null);
-    if (busy || !model || !conversationId || !txt) return;
+    if (busy || sendingRef.current || !model || !conversationId || !txt) return;
     const target = messages[index];
     if (!target || target.role !== "user") return;
     const editedUser: UiMessage = { id: target.id, role: "user", content: txt, images: target.images };

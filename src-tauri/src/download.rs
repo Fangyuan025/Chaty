@@ -834,6 +834,7 @@ async fn download_mlx_repo_inner(
         .collect();
     let dir = models_dir.join(&name);
     let created = !dir.exists();
+    let previous = set_model_aside(&dir)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let cancel = register_cancel(&name);
@@ -906,18 +907,51 @@ async fn download_mlx_repo_inner(
 
     match &result {
         Ok(path) => {
+            // The new copy is complete — the old one can go.
+            discard_set_aside(previous);
             let _ = on_progress.send(DownloadProgress::Done { path: path.clone() });
         }
         Err(e) => {
             // Never leave a half-model behind: it would pass is_mlx_dir and
-            // list as loadable. Only folders we created are removed.
-            if created {
-                let _ = std::fs::remove_dir_all(&dir);
-            }
+            // list as loadable. Then put back whatever was there before.
+            let _ = std::fs::remove_dir_all(&dir);
+            restore_set_aside(&dir, previous);
             let _ = on_progress.send(DownloadProgress::Error { message: e.clone() });
         }
     }
     result
+}
+
+/// Move an existing model folder out of the way before downloading over it.
+///
+/// Files used to be renamed into the folder one at a time, so a download that
+/// failed half-way left new config beside old shards — a mixture that still
+/// looks loadable. The old copy is kept under `<name>.previous` until the new
+/// one is complete, and put back if it is not.
+fn set_model_aside(dir: &std::path::Path) -> Result<Option<std::path::PathBuf>, String> {
+    if !dir.exists() {
+        return Ok(None);
+    }
+    let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let prev = dir.with_file_name(format!("{name}.previous"));
+    let _ = std::fs::remove_dir_all(&prev); // a leftover from an earlier run
+    std::fs::rename(dir, &prev)
+        .map_err(|e| format!("无法为重新下载腾出目录 (could not set the existing model aside): {e}"))?;
+    Ok(Some(prev))
+}
+
+/// The download finished: the copy set aside is no longer needed.
+fn discard_set_aside(previous: Option<std::path::PathBuf>) {
+    if let Some(prev) = previous {
+        let _ = std::fs::remove_dir_all(prev);
+    }
+}
+
+/// The download failed: put the old model back where it was.
+fn restore_set_aside(dir: &std::path::Path, previous: Option<std::path::PathBuf>) {
+    if let Some(prev) = previous {
+        let _ = std::fs::rename(prev, dir);
+    }
 }
 
 /// Stream `url` into `models/[subdir/]<filename>`, reporting progress on
@@ -1160,6 +1194,46 @@ mod tests {
         assert!(q[1].files[0].ends_with("00001-of-00002.gguf"));
         // best mmproj picked
         assert_eq!(best_mmproj(&tree).unwrap().0, "mmproj-F16.gguf");
+    }
+
+    /// Downloading over a model that is already installed must not be able to
+    /// leave new files mixed with old ones: the existing copy is set aside and
+    /// comes back untouched when the download fails.
+    #[test]
+    fn a_re_download_keeps_the_old_model_until_the_new_one_is_whole() {
+        let base = std::env::temp_dir().join(format!("chaty-redl-{}", std::process::id()));
+        let dir = base.join("Model");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), "{\"old\": true}").unwrap();
+        std::fs::write(dir.join("model.safetensors"), "old weights").unwrap();
+
+        // Aside: the folder is out of the way, its contents intact.
+        let prev = super::set_model_aside(&dir).expect("set aside").expect("there was a model");
+        assert!(!dir.exists(), "the name is free for the new download");
+        assert_eq!(std::fs::read_to_string(prev.join("model.safetensors")).unwrap(), "old weights");
+
+        // A download that fails half-way: partial files, then the restore.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), "{\"new\": true}").unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        super::restore_set_aside(&dir, Some(prev.clone()));
+        assert!(!prev.exists(), "nothing left beside it");
+        assert_eq!(std::fs::read_to_string(dir.join("config.json")).unwrap(), "{\"old\": true}");
+        assert_eq!(std::fs::read_to_string(dir.join("model.safetensors")).unwrap(), "old weights");
+
+        // And when the download succeeds, the old copy goes.
+        let prev = super::set_model_aside(&dir).unwrap().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), "{\"new\": true}").unwrap();
+        super::discard_set_aside(Some(prev.clone()));
+        assert!(!prev.exists());
+        assert_eq!(std::fs::read_to_string(dir.join("config.json")).unwrap(), "{\"new\": true}");
+
+        // Nothing there to begin with: nothing to set aside.
+        let fresh = base.join("Unseen");
+        assert!(super::set_model_aside(&fresh).unwrap().is_none());
+
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
