@@ -17,11 +17,26 @@ const SAFE = new Set([
   "printf", "test", "[", "find", "git", "cargo",
 ]);
 
-/** git subcommands that are read-only in every form. */
+/** git subcommands that are read-only in every form — subject to the flag
+ *  guard below, since several of them take the diff machinery's `--output`. */
 const GIT_FULL = new Set([
   "status", "log", "diff", "show", "blame", "grep", "ls-files", "ls-tree",
-  "ls-remote", "rev-parse", "describe", "shortlog", "reflog", "cat-file",
+  "ls-remote", "rev-parse", "describe", "shortlog", "cat-file",
 ]);
+
+/** Flags that make a reading git command write a file or run a program:
+ *  `git diff --output=f` (a diff option, so `log`/`show` take it too),
+ *  `git grep -O` (opens the matches in a pager command), `--ext-diff` (runs
+ *  the configured external diff). */
+const gitFlagWrites = (a: string): boolean =>
+  a === "-o" ||
+  a === "--output" ||
+  a.startsWith("--output=") ||
+  a === "-O" ||
+  a === "--open-files-in-pager" ||
+  a.startsWith("--open-files-in-pager=") ||
+  a === "-x" ||
+  a === "--ext-diff";
 
 /** Flags that turn `git branch` / `git tag` into a mutation. */
 const GIT_MUTATING_FLAGS = new Set([
@@ -34,9 +49,14 @@ function gitIsReadOnly(args: string[]): boolean {
   const sub = args.find((a) => !a.startsWith("-"));
   if (!sub) return true; // bare `git`, `git --version`, `git --help`
   const rest = args.slice(args.indexOf(sub) + 1);
+  if (args.some(gitFlagWrites)) return false;
   if (GIT_FULL.has(sub)) return true;
   const positionals = rest.filter((a) => !a.startsWith("-"));
   switch (sub) {
+    case "reflog":
+      // Bare / `show` / `exists` read; `expire`, `delete` and `drop` rewrite
+      // the reflog, which is how history gets thrown away for good.
+      return positionals.length === 0 || positionals[0] === "show" || positionals[0] === "exists";
     case "branch":
     case "tag":
       return positionals.length === 0 && !rest.some((a) => GIT_MUTATING_FLAGS.has(a));
@@ -76,6 +96,28 @@ function argsAreReadOnly(cmd: string, args: string[]): boolean {
       // `env CMD` executes CMD (and `env -i CMD`, `env -S…`) — only the bare
       // environment listing is auto-approved.
       return args.length === 0;
+    case "tree":
+      // `tree -o FILE` writes the listing to a file.
+      return !args.some((a) => a === "-o" || a === "-O" || a.startsWith("--output"));
+    case "xxd": {
+      // `xxd in out` / `xxd -r dump file` writes the second operand — with
+      // `-r`, the decoded bytes. Counting operands means skipping the values
+      // of the flags that take one (`xxd -l 64 a.bin` is ONE operand).
+      const takesValue = new Set(["-l", "-s", "-c", "-g", "-o"]);
+      let operands = 0;
+      for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a.startsWith("-")) {
+          if (takesValue.has(a)) i++;
+          continue;
+        }
+        operands++;
+      }
+      return operands < 2;
+    }
+    case "date":
+      // `date -s` / `date --set` sets the system clock.
+      return !args.some((a) => a === "-s" || a.startsWith("--set"));
     case "git":
       return gitIsReadOnly(args);
     case "cargo":

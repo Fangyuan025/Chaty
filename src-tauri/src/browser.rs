@@ -69,6 +69,25 @@ pub(crate) struct KeyStroke {
 /// A table rather than a guess: a key event with the wrong `windowsVirtualKeyCode`
 /// is delivered and ignored, which looks exactly like a page that did not
 /// respond — the worst failure to debug from the outside.
+/// The punctuation keys a shortcut actually asks for, with the `code` and
+/// virtual key a US layout gives them.
+fn punctuation_key(c: char) -> Option<(&'static str, u32)> {
+    Some(match c {
+        '+' | '=' => ("Equal", 187),
+        '-' | '_' => ("Minus", 189),
+        '.' | '>' => ("Period", 190),
+        ',' | '<' => ("Comma", 188),
+        '/' | '?' => ("Slash", 191),
+        ';' | ':' => ("Semicolon", 186),
+        '\'' | '"' => ("Quote", 222),
+        '[' | '{' => ("BracketLeft", 219),
+        ']' | '}' => ("BracketRight", 221),
+        '\\' | '|' => ("Backslash", 220),
+        '`' | '~' => ("Backquote", 192),
+        _ => return None,
+    })
+}
+
 pub(crate) fn parse_key(spec: &str) -> Option<KeyStroke> {
     let spec = spec.trim();
     if spec.is_empty() {
@@ -126,8 +145,25 @@ pub(crate) fn parse_key(spec: &str) -> Option<KeyStroke> {
         other => {
             let mut chars = other.chars();
             let c = chars.next()?;
-            if chars.next().is_some() || !c.is_ascii_alphanumeric() {
+            if chars.next().is_some() {
                 return None;  // multi-char and not a name we know
+            }
+            // Punctuation keys carry a code and a virtual key of their own —
+            // without them `ctrl++` (zoom in) was taken apart correctly and
+            // then rejected here, the one spelling the splitter above exists
+            // for.
+            if let Some((code, vk)) = punctuation_key(c) {
+                let text = if modifiers & (1 | 2 | 4) != 0 { None } else { Some(c.to_string()) };
+                return Some(KeyStroke {
+                    modifiers,
+                    key: c.to_string(),
+                    code: code.to_string(),
+                    vk,
+                    text,
+                });
+            }
+            if !c.is_ascii_alphanumeric() {
+                return None;
             }
             let upper = c.to_ascii_uppercase();
             let code = if c.is_ascii_digit() {
@@ -2824,6 +2860,19 @@ mod tests {
         assert_eq!(parse_key("7").unwrap().code, "Digit7");
         assert_eq!(parse_key("down").unwrap().code, "ArrowDown");
         assert_eq!(parse_key("pgdn").unwrap().vk, 34);
+
+        // Punctuation: `ctrl++` is zoom-in, and the splitter above already
+        // went to the trouble of keeping the literal '+' — it was then thrown
+        // away by the alphanumeric-only check.
+        let plus = parse_key("ctrl++").expect("ctrl++ is a key");
+        assert_eq!(plus.modifiers, 2);
+        assert_eq!(plus.key, "+");
+        assert_eq!(plus.code, "Equal");
+        assert_eq!(plus.vk, 187);
+        assert_eq!(plus.text, None, "a shortcut types nothing");
+        assert_eq!(parse_key("+").unwrap().text.as_deref(), Some("+"));
+        assert_eq!(parse_key("ctrl+-").unwrap().code, "Minus");
+        assert_eq!(parse_key("cmd+[").unwrap().code, "BracketLeft");
 
         // Refused rather than silently sent as something else.
         assert!(parse_key("").is_none());

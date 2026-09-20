@@ -10,6 +10,8 @@ export interface ConfirmOptions {
   cancelLabel?: string;
   /** Style the confirm button as destructive (red). */
   danger?: boolean;
+  /** A notice rather than a question: one button, nothing to decline. */
+  hideCancel?: boolean;
 }
 
 type ConfirmFn = (opts: ConfirmOptions) => Promise<boolean>;
@@ -76,9 +78,11 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
               {shown.title && <div className="confirm-title">{shown.title}</div>}
               <div className="confirm-msg">{shown.message}</div>
               <div className="confirm-actions">
-                <button className="confirm-cancel" onClick={() => close(false)}>
-                  {shown.cancelLabel ?? t("cancel")}
-                </button>
+                {!shown.hideCancel && (
+                  <button className="confirm-cancel" onClick={() => close(false)}>
+                    {shown.cancelLabel ?? t("cancel")}
+                  </button>
+                )}
                 <button
                   className={`confirm-ok ${shown.danger ? "danger" : ""}`}
                   onClick={() => close(true)}

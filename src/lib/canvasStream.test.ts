@@ -41,6 +41,30 @@ describe("buildScanView — patch mode", () => {
     expect(v.rows[v.scanIndex!].text).toContain("New title");
   });
 
+  // `String.replace` reads `$&`, `$$`, ``$` `` and `$'` in a STRING
+  // replacement as instructions; the scan view then showed text the model
+  // never wrote (a price of `$&` came out as the line it replaced).
+  test("a replacement carrying dollar patterns is shown as written", () => {
+    const acc = "<<<<<<< SEARCH\n<h1>Old title</h1>\n=======\n<h1>Total: $& and $$ and $`</h1>\n>>>>>>> REPLACE";
+    const v = buildScanView(BASE, acc);
+    const added = v.rows.filter((r) => r.kind === "add").map((r) => r.text).join("\n");
+    expect(added).toContain("Total: $& and $$ and $`");
+    expect(added).not.toContain("Old title");
+  });
+
+  // The applied-patch cache was keyed by base + HOW MANY patches were done,
+  // so a second attempt at the same document — one patch again, different
+  // content — was served the first attempt's result.
+  test("a retry with a different patch does not show the previous attempt", () => {
+    const patch = (text: string) =>
+      `<<<<<<< SEARCH\n<h1>Old title</h1>\n=======\n<h1>${text}</h1>\n>>>>>>> REPLACE`;
+    const first = buildScanView(BASE, patch("FIRST"));
+    expect(first.rows.some((r) => r.kind === "add" && r.text.includes("FIRST"))).toBe(true);
+    const second = buildScanView(BASE, patch("SECOND"));
+    expect(second.rows.some((r) => r.kind === "add" && r.text.includes("SECOND"))).toBe(true);
+    expect(second.rows.some((r) => r.text.includes("FIRST"))).toBe(false);
+  });
+
   test("mid-REPLACE stream applies the partial replacement live", () => {
     const acc = "<<<<<<< SEARCH\n<h1>Old title</h1>\n=======\n<h1>Half";
     const v = buildScanView(BASE, acc);

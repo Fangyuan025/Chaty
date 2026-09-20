@@ -1583,6 +1583,12 @@ const missingArg = (arg: string, example: string) =>
     ? `ERROR: 缺少 "${arg}" 参数——请带上它重发同一个工具调用,例如:\n${argsExample(example)}`
     : `ERROR: missing "${arg}" — re-issue the SAME tool call with it, e.g.:\n${argsExample(example)}`;
 const MISSING_PATH = () => missingArg("path", '{"path":"src/app.ts"}');
+const MISSING_CONTENT = () => missingArg("content", '{"path":"notes.md","content":"…"}');
+/** Did the call carry a content field at all? An empty STRING is a real
+ *  instruction ("make this file empty"); a missing field is a format slip,
+ *  and writing "" for it silently wiped whatever the path pointed at. */
+const hasContent = (a: Record<string, unknown>): boolean =>
+  [a.content, a.text, a.contents, a.body, a.file_text].some((v) => typeof v === "string");
 
 // Required-args validation and the correction examples now live on each
 // ToolSpec in the registry (REQUIRED_ARGS / ARG_EXAMPLE are derived there).
@@ -1778,6 +1784,11 @@ async function execTool(
     case "write_file": {
       const path = argPath(a);
       if (!path) return { result: MISSING_PATH() };
+      // No content field at all — the write would truncate the file to
+      // nothing. Send the call back instead: the required-args guard cannot
+      // catch this one, since an intentional empty file is a legitimate
+      // write and the guard reads an empty string as "absent".
+      if (!hasContent(a)) return { result: MISSING_CONTENT(), failed: true };
       let before = "";
       try {
         before = await readFull(path);

@@ -8,6 +8,7 @@ import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextMenu } from "./components/ContextMenu";
 import { ImagePreview } from "./components/ImagePreview";
 import { withErrorNote } from "./lib/reasoning";
+import { localSave } from "./lib/localSave";
 import { DownloadModal } from "./components/DownloadModal";
 import { HardwarePanel } from "./components/HardwarePanel";
 import { LiveMode } from "./components/LiveMode";
@@ -411,18 +412,27 @@ export default function App() {
   useEffect(() => {
     let live: { conversationId: string; messageId: string } | null = null;
     let acc = "";
+    // The backend makes this page the listener before `attachGeneration`
+    // resolves here, and reading the conversation back takes another moment:
+    // events can arrive through both windows. Dropped, they cost the tail of
+    // the reply, and a `done` among them left the page busy for good, waiting
+    // on a turn that had already finished.
+    const early = { tokens: "", end: null as StreamEvent | null, over: false };
+    const render = () =>
+      setMessages((cur) => cur.map((m) => (m.id === live!.messageId ? { ...m, content: acc } : m)));
     void attachGeneration((ev) => {
-      if (!live) return;
+      if (!live) {
+        if (ev.type === "token") early.tokens += ev.text;
+        else if (ev.type === "done" || ev.type === "error") early.end = ev;
+        return;
+      }
       if (ev.type === "token") {
         acc += ev.text;
-        setMessages((cur) =>
-          cur.map((m) => (m.id === live!.messageId ? { ...m, content: acc } : m)),
-        );
+        render();
       } else if (ev.type === "done" || ev.type === "error") {
         if (ev.type === "error") acc = withErrorNote(acc, ev.message);
-        setMessages((cur) =>
-          cur.map((m) => (m.id === live!.messageId ? { ...m, content: acc } : m)),
-        );
+        early.over = true;
+        render();
         setBusy(false);
         setStreamingId(null);
         void refreshConversations().catch(console.error);
@@ -431,7 +441,13 @@ export default function App() {
       .then(async (turn) => {
         if (!turn) return;
         live = { conversationId: turn.conversationId, messageId: turn.messageId };
-        acc = turn.text;
+        // Tokens that came in before the snapshot are not in it — the sink
+        // appends to its own copy and forwards onward, so they follow it.
+        acc = turn.text + early.tokens;
+        if (early.end) {
+          if (early.end.type === "error") acc = withErrorNote(acc, early.end.message);
+          early.over = true;
+        }
         const stored = await getMessages(turn.conversationId).catch(() => []);
         const rows = stored.map((m) => ({
           id: m.id,
@@ -442,12 +458,19 @@ export default function App() {
         // The reply is still being written, so it is not in the conversation
         // yet — put the bubble back where it was.
         if (!rows.some((m) => m.id === turn.messageId)) {
-          rows.push({ id: turn.messageId, role: "assistant", content: turn.text, images: undefined });
+          rows.push({ id: turn.messageId, role: "assistant", content: acc, images: undefined });
         }
         setMessages(rows);
         setConversationId(turn.conversationId);
-        setStreamingId(turn.messageId);
-        setBusy(true);
+        if (early.over) {
+          // It ended while this page was still putting itself back together.
+          setBusy(false);
+          setStreamingId(null);
+          void refreshConversations().catch(console.error);
+        } else {
+          setStreamingId(turn.messageId);
+          setBusy(true);
+        }
       })
       .catch(console.error);
   }, []);
@@ -547,7 +570,7 @@ export default function App() {
     localStorage.getItem("chaty.appMode") === "code" ? "code" : "chat",
   );
   useEffect(() => {
-    localStorage.setItem("chaty.appMode", appMode);
+    localSave("chaty.appMode", appMode);
   }, [appMode]);
   /** Native reasoning-effort rung for models with a ladder (Qwen3.8). Kept
    *  even while thinking is off, so toggling back restores the choice; models
@@ -655,7 +678,7 @@ export default function App() {
       document.body.classList.remove("resizing-x");
       setSidebarW(latest);
       try {
-        localStorage.setItem("chaty.sidebarW", String(latest));
+        localSave("chaty.sidebarW", String(latest));
       } catch {
         /* ignore */
       }
@@ -667,7 +690,7 @@ export default function App() {
   function resetSidebarW() {
     setSidebarW(SIDEBAR_DEFAULT);
     try {
-      localStorage.setItem("chaty.sidebarW", String(SIDEBAR_DEFAULT));
+      localSave("chaty.sidebarW", String(SIDEBAR_DEFAULT));
     } catch {
       /* ignore */
     }
@@ -706,7 +729,7 @@ export default function App() {
           // A different tokenizer charges differently — start the ratio over.
           resetCalibration();
           setModel(info);
-          localStorage.setItem(LAST_MODEL_KEY, info.path);
+          localSave(LAST_MODEL_KEY, info.path);
           noticeForLoad(info);
         } catch (e) {
           if (last) localStorage.removeItem(LAST_MODEL_KEY); // file moved/deleted
@@ -909,7 +932,7 @@ export default function App() {
   }, [messages, conversationId]);
 
   useEffect(() => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    localSave(SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
 
   // Mirror the HF endpoint setting into the ipc module, so every store
@@ -1007,7 +1030,7 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("chaty.think", thinkEnabled ? "1" : "0");
+      localSave("chaty.think", thinkEnabled ? "1" : "0");
     } catch {
       /* ignore */
     }
@@ -1015,7 +1038,7 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("chaty.effort", effort);
+      localSave("chaty.effort", effort);
     } catch {
       /* ignore */
     }
@@ -1023,7 +1046,7 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("chaty.webdesign", webDesign ? "1" : "0");
+      localSave("chaty.webdesign", webDesign ? "1" : "0");
     } catch {
       /* ignore */
     }
@@ -1440,14 +1463,17 @@ export default function App() {
   /** Hot-swap to another already-discovered model. */
   async function switchModel(path: string) {
     setShowModelMenu(false);
-    if (busy || model?.path === path) return;
+    // A load already running is the one case the old guard missed: the menu
+    // stayed open to a second pick, and the backend releases the engine lock
+    // the moment it takes the old model, so both loads went resident at once.
+    if (busy || loadingModel || model?.path === path) return;
     setLoadingModel(true);
     try {
       const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress);
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
-      localStorage.setItem(LAST_MODEL_KEY, info.path);
+      localSave(LAST_MODEL_KEY, info.path);
       noticeForLoad(info);
     } catch (e) {
       console.error(e);
@@ -1522,6 +1548,7 @@ export default function App() {
   // the folder contains.
   async function handleLoadFolder() {
     setShowModelMenu(false);
+    if (busy || loadingModel) return;
     try {
       const path = await pickModelFolder();
       if (!path) return;
@@ -1530,7 +1557,7 @@ export default function App() {
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
-      localStorage.setItem(LAST_MODEL_KEY, info.path);
+      localSave(LAST_MODEL_KEY, info.path);
       noticeForLoad(info);
       void refreshModels();
     } catch (e) {
@@ -2708,7 +2735,7 @@ export default function App() {
                         <button
                           className="mm-pick"
                           onClick={() => switchModel(m.path)}
-                          disabled={busy}
+                          disabled={busy || loadingModel}
                           title={m.path}
                         >
                           <span className="mm-name">{m.name}</span>

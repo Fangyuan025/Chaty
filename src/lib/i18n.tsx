@@ -313,6 +313,11 @@ export const T = {
     zh: "技能 = 一份写着步骤的 Markdown。系统提示只带「名字+何时用」一行,模型需要时才调 use_skill 载入正文——所以技能再多也不占上下文。放在 ~/.chaty/skills/ (全局)或 项目/.chaty/skills/ (项目,同名覆盖全局)。点「导入技能文件…」可以一次选一份或多份 .md(比如别的工具的 SKILL.md)复制进 ~/.chaty/skills/——在文件对话框里按住 Ctrl(macOS 是 ⌘)点选即可多选;没写名字的会按文件名补上。列表里是导入的技能和随应用附带的官方技能,每个都可以单独关闭。",
     en: "A skill is a markdown file of steps. The prompt carries only one line per skill (name + when); the body loads via use_skill only when needed — so skills cost almost no context. Put them in ~/.chaty/skills/ (global) or <project>/.chaty/skills/ (project, shadows global). \"Import skill files…\" copies one .md or several (another tool's SKILL.md, say) into ~/.chaty/skills/ — hold Ctrl (⌘ on macOS) in the file dialog to pick more than one — naming each from its file when it has no name. The list holds your imported skills and the ones bundled with Chaty; each can be turned off.", pt: "Uma skill é um arquivo markdown com passos. O prompt recebe apenas uma linha por skill (nome + uso); o corpo é carregado usando use_skill somente se houver necessidade — logo, skills quase não consomem contexto. Adicione-as em ~/.chaty/skills/ (global) ou <projeto>/.chaty/skills/ (projeto, substitui a global). \"Importar arquivos de skill…\" copia um ou vários .md (o SKILL.md de outra ferramenta, por exemplo) para ~/.chaty/skills/ — segure Ctrl (⌘ no macOS) na caixa de diálogo para escolher mais de um —, usando o nome do arquivo quando ele não tem nome. A lista mostra as skills importadas e as incluídas com o Chaty; cada uma pode ser desativada.",
   },
+  cmDeleteSessionFailed: {
+    zh: "删除会话失败,这个会话还在",
+    en: "Could not delete the session — it is still there",
+    pt: "Não foi possível excluir a sessão — ela continua aí",
+  },
   cmCompacted: { zh: "上下文已自动压缩", en: "Context auto-compacted", pt: "Contexto auto-comprimido" },
   cmdkGoCode: { zh: "切换到 Code 模式", en: "Switch to Code mode", pt: "Mudar para o modo Code" },
   cmdkGoChat: { zh: "切换到 Chat 模式", en: "Switch to Chat mode", pt: "Mudar para o modo Chat" },

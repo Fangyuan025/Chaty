@@ -437,8 +437,11 @@ fn arch_from_tags(tags: &[String]) -> Option<String> {
 /// Strip a llama.cpp multi-part suffix: "…-00001-of-00003" → "…", true.
 fn strip_multipart(stem: &str) -> (&str, bool) {
     let b = stem.as_bytes();
-    // pattern: -DDDDD-of-DDDDD (15 bytes)
-    if b.len() > 15 {
+    // pattern: -DDDDD-of-DDDDD (15 bytes). The cut is a BYTE offset, and a
+    // name outside ASCII can put it inside a character — slicing there panics
+    // (中aaaaaaaaaaaaa.gguf lands on byte 1 of a three-byte character). The
+    // pattern is all ASCII, so a cut that is not a boundary cannot be one.
+    if b.len() > 15 && stem.is_char_boundary(stem.len() - 15) {
         let tail = &stem[stem.len() - 15..];
         let tb = tail.as_bytes();
         if tb[0] == b'-'
@@ -1157,6 +1160,15 @@ mod tests {
         assert!(q[1].files[0].ends_with("00001-of-00002.gguf"));
         // best mmproj picked
         assert_eq!(best_mmproj(&tree).unwrap().0, "mmproj-F16.gguf");
+    }
+
+    #[test]
+    fn a_name_outside_ascii_is_not_a_shard() {
+        // The 15-byte cut lands inside 中 — slicing there used to panic, and
+        // with it the whole model listing.
+        assert_eq!(super::strip_multipart("中aaaaaaaaaaaaa"), ("中aaaaaaaaaaaaa", false));
+        assert_eq!(super::strip_multipart("模型-00001-of-00003"), ("模型", true));
+        assert_eq!(super::strip_multipart("llama-00002-of-00003"), ("llama", true));
     }
 
     #[test]

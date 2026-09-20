@@ -75,6 +75,7 @@ import {
 } from "../lib/agentLoop";
 import { isReadOnlyCommand } from "../lib/readOnlyCmd";
 import { syncMcpServers } from "../lib/mcp";
+import { localSave } from "../lib/localSave";
 import { loadSkills } from "../lib/skillFiles";
 import { loadMemoryIndex, sessionMemoryIndex } from "../lib/memoryFiles";
 import { homeDir } from "@tauri-apps/api/path";
@@ -593,11 +594,6 @@ function PlanPanel({ plan, label }: { plan: PlanItem[]; label: string }) {
 const cmThumbCache = new Map<string, string>();
 function ImgThumb({ path }: { path: string }) {
   const [src, setSrc] = useState<string | null>(cmThumbCache.get(path) ?? null);
-  // Connect enabled MCP servers once per session — their tools join the
-  // registry before the first agent turn builds its prompt.
-  useEffect(() => {
-    void syncMcpServers().catch(() => {});
-  }, []);
 
   useEffect(() => {
     let live = true;
@@ -830,6 +826,13 @@ export function CodeMode({
   const [downloads, setDownloads] = useState<AgentDlInfo[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const signalRef = useRef<AgentSignal | null>(null);
+  // Connect enabled MCP servers — their tools join the registry before the
+  // first agent turn builds its prompt. This lived in the attachment
+  // thumbnail's mount effect, where a session without a picture in it never
+  // reached the call at all and every picture in one reconnected the lot.
+  useEffect(() => {
+    void syncMcpServers().catch(() => {});
+  }, []);
   // Left behind when a run does not reach its own cleanup — i.e. the page went
   // away underneath it. Reported once on the next mount, then cleared.
   useEffect(() => {
@@ -1158,7 +1161,7 @@ export function CodeMode({
       document.body.classList.remove("resizing-x");
       setRailW(latest);
       try {
-        localStorage.setItem("chaty.code.railW", String(latest));
+        localSave("chaty.code.railW", String(latest));
       } catch {
         /* ignore */
       }
@@ -1170,7 +1173,7 @@ export function CodeMode({
   function resetRailW() {
     setRailW(RAIL_DEFAULT);
     try {
-      localStorage.setItem("chaty.code.railW", String(RAIL_DEFAULT));
+      localSave("chaty.code.railW", String(RAIL_DEFAULT));
     } catch {
       /* ignore */
     }
@@ -1276,7 +1279,20 @@ export function CodeMode({
       danger: true,
     });
     if (!ok) return;
-    await codeSessionDelete(id).catch(() => {});
+    try {
+      await codeSessionDelete(id);
+    } catch (e) {
+      // The row is still on disk, so the view must not act as though it had
+      // gone: it used to clear itself either way, and the session came back
+      // on the next refresh with nothing said.
+      await confirm({
+        message: `${t("cmDeleteSessionFailed")}\n${e instanceof Error ? e.message : String(e)}`,
+        confirmLabel: t("close"),
+        hideCancel: true,
+      });
+      refreshSessions();
+      return;
+    }
     if (id === sid) {
       // Deleting the session you're viewing must reset the view even
       // mid-run: newSession()'s running-guard is for the "+" button (don't
@@ -1296,6 +1312,10 @@ export function CodeMode({
       }
       setQueue([]);
       titlesRef.current.delete(id);
+      // Belongs to the turn that was paused in the session being deleted —
+      // left behind, the next send in the fresh session resumed with the old
+      // session's escape (newSession/openSession already clear it).
+      stuckRef.current = null;
       setSid(uid());
       setMsgs([]);
       setInput("");
@@ -1510,7 +1530,7 @@ export function CodeMode({
       const arg = cmd.slice(7).trim();
       if (arg === "off" || arg === "low" || arg === "normal" || arg === "deep") {
         setThinkMode(arg);
-        localStorage.setItem("chaty.code.think", arg);
+        localSave("chaty.code.think", arg);
       }
     } else if (cmd === "/bypass") {
       toggleBypass();
@@ -1607,6 +1627,12 @@ export function CodeMode({
     }
     if (!text || running || !model || !workspace) return;
     if (!textArg) setInput("");
+    // The session this turn belongs to, fixed BEFORE the first await below.
+    // Preparing a turn reads the project doc, the memory index and the skill
+    // files, and none of that blocks the session list: switching sessions in
+    // that window left the turn writing the OLD session's messages under the
+    // NEW session's id and workspace.
+    const turnSid = bodyRef.current.sid;
     // Sending expresses interest in the newest output — re-arm the follow.
     followRef.current = true;
     // Snapshot point: everything the agent writes/edits this turn is journaled
@@ -1693,6 +1719,13 @@ export function CodeMode({
           : "";
         return { role: m.role, content: prefix + m.text };
       });
+    // Moved on while the turn was being prepared: everything below belongs to
+    // a session that is no longer on screen, so the turn is dropped and the
+    // text handed back if the composer is still empty.
+    if (bodyRef.current.sid !== turnSid) {
+      if (!textArg) setInput((cur) => cur || text);
+      return;
+    }
     const base = [...msgs, userMsg, asst];
     const isFirstTurn = msgs.length === 0;
     setMsgs(base);
@@ -1700,13 +1733,10 @@ export function CodeMode({
     // A run in flight, recorded outside React state. The webview reloads on its
     // own sometimes and takes the turn with it; without this the session simply
     // reappeared idle and there was nothing to say what had happened.
-    localStorage.setItem(RUN_INFLIGHT_KEY, String(Date.now()));
+    localSave(RUN_INFLIGHT_KEY, String(Date.now()));
     const resumeFrom = stuckRef.current;
     stuckRef.current = null;
     setStats(null);
-    // The session this turn belongs to — if the user deletes it mid-run the
-    // live sid moves on, and the turn's results must not be written anywhere.
-    const turnSid = bodyRef.current.sid;
     // First message = the session EXISTS: on disk, in the sidebar, named
     // (fallback title from the message text; the model-polished title still
     // lands after the turn). Persisting only at turn end meant a paused or
@@ -2102,19 +2132,19 @@ export function CodeMode({
                   onClick={() => {
                     if (tab === "off") {
                       setThinkMode("off");
-                      localStorage.setItem("chaty.code.think", "off");
+                      localSave("chaty.code.think", "off");
                       return;
                     }
                     if (!nativeEffort) {
                       setThinkMode(tab as ThinkMode);
-                      localStorage.setItem("chaty.code.think", tab);
+                      localSave("chaty.code.think", tab);
                       return;
                     }
                     const mode = intensityOf(effortLevels, tab);
                     setCodeEffort(tab);
                     setThinkMode(mode);
-                    localStorage.setItem("chaty.code.effort", tab);
-                    localStorage.setItem("chaty.code.think", mode);
+                    localSave("chaty.code.effort", tab);
+                    localSave("chaty.code.think", mode);
                   }}
                   disabled={running}
                 >

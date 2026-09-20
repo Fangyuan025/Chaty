@@ -136,22 +136,28 @@ export function DownloadModal({
     return () => clearTimeout(id);
   }, [query, format, sort, runSearch]);
 
+  // Same sequencing as the search above: two clicks in a row can come back in
+  // either order, and a late first answer used to replace the second — the
+  // panel then showed one model's quants while "Get" pointed at another.
+  const detailSeq = useRef(0);
   const openDetail = useCallback(
     async (repo: string, f: "gguf" | "mlx" = format) => {
+      const my = ++detailSeq.current;
       setDetailLoading(true);
       setDetail(null);
       setError("");
       try {
         const d = await hfModelDetail(repo, f);
+        if (my !== detailSeq.current) return null;
         setDetail(d);
         // default to a mid-size quant — the classic "Q4-ish" pick
         setQuantIdx(Math.min(Math.floor(d.quants.length / 2), d.quants.length - 1));
         return d;
       } catch (e) {
-        setError(typeof e === "string" ? e : t("dlSearchFailed"));
+        if (my === detailSeq.current) setError(typeof e === "string" ? e : t("dlSearchFailed"));
         return null;
       } finally {
-        setDetailLoading(false);
+        if (my === detailSeq.current) setDetailLoading(false);
       }
     },
     [format, t],

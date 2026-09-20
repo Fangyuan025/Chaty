@@ -722,6 +722,27 @@ pub fn agent_understand_repo() -> Result<String, String> {
 }
 
 /// Smart minimal validation: figure out which tests relate to the changed
+/// Filters go AFTER `--`. Cargo itself takes a single TESTNAME, so
+/// `cargo test browser agent` is an argument error ("unexpected argument
+/// 'agent' found") and runs nothing; libtest, which reads what follows `--`,
+/// takes any number of them and matches a test that contains ANY. At most
+/// three, in the order the files were touched.
+fn cargo_test_cmd(stems: &[String]) -> String {
+    let mut seen: Vec<&str> = Vec::new();
+    for s in stems {
+        if !seen.contains(&s.as_str()) {
+            seen.push(s.as_str());
+        }
+        if seen.len() == 3 {
+            break;
+        }
+    }
+    if seen.is_empty() {
+        return "cargo test".into();
+    }
+    format!("cargo test -- {}", seen.join(" "))
+}
+
 /// files, run JUST those, and summarize failures — the find/filter/interpret
 /// work the model used to burn steps on. Targets default to the files touched
 /// this turn (checkpoint journal).
@@ -932,13 +953,11 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
     if root.join("Cargo.toml").is_file()
         && targets.iter().any(|p| p.extension().is_some_and(|e| e == "rs"))
     {
-        let mut filters: Vec<&str> = stems.iter().map(|s| s.as_str()).take(3).collect();
-        filters.dedup();
-        run_cmd(
-            "cargo test",
-            format!("cargo test {}", filters.join(" ")),
-            &mut out,
-        );
+        // `cargo test a b` is not two filters, it is an argument error
+        // ("unexpected argument 'b' found") — every Rust verification that
+        // touched two source files reported failure without having run a
+        // single test.
+        run_cmd("cargo test", cargo_test_cmd(&stems), &mut out);
         ran_any = true;
     }
 
@@ -2548,18 +2567,36 @@ pub fn agent_list_dir(path: Option<String>) -> Result<Vec<DirEntry>, String> {
 }
 
 /// Glob files by pattern (relative to the workspace, e.g. `src/**/*.rs`).
+/// Matches are confined the way every other file tool's paths are: an
+/// absolute pattern replaces the root outright when joined, and `../` walks
+/// out of it, so the results — not the pattern — are checked, and a pattern
+/// that only reaches outside asks for the directory the way a read does.
 #[tauri::command]
 pub fn agent_glob(pattern: String) -> Result<Vec<String>, String> {
     let root = workspace()?;
     let full = root.join(&pattern);
     let full = full.to_str().ok_or_else(|| tr("无效的模式", "invalid pattern"))?;
     let mut hits: Vec<String> = Vec::new();
+    let mut outside: Option<PathBuf> = None;
     for entry in glob::glob(full).map_err(|e| e.to_string())?.flatten() {
-        if entry.is_file() {
-            hits.push(rel_display(&root, &entry));
-            if hits.len() >= MAX_GLOB_HITS {
-                break;
+        if !entry.is_file() {
+            continue;
+        }
+        let checked = canonical_or_lexical(&lexical_normalize(&entry));
+        if !(checked.starts_with(&root) || in_granted_dirs(&checked)) {
+            if outside.is_none() {
+                outside = Some(checked);
             }
+            continue;
+        }
+        hits.push(rel_display(&root, &checked));
+        if hits.len() >= MAX_GLOB_HITS {
+            break;
+        }
+    }
+    if hits.is_empty() {
+        if let Some(out) = outside {
+            return Err(need_grant_err(&out, &pattern));
         }
     }
     hits.sort();
@@ -6506,6 +6543,41 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    /// glob joined its pattern onto the root and handed the result straight to
+    /// the matcher: an absolute pattern replaces the root, and `../` walks out
+    /// of it, so file names outside the workspace came back without the
+    /// directory ever being granted.
+    #[test]
+    fn glob_stays_inside_the_workspace_until_a_grant_says_otherwise() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-glob-ws-{}", std::process::id()));
+        let outside = std::env::temp_dir().join(format!("chaty-glob-out-{}", std::process::id()));
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(tmp.join("src/app.ts"), "inside").unwrap();
+        std::fs::write(outside.join("secret.txt"), "outside").unwrap();
+        set_ws(&tmp);
+        agent_clear_grants();
+
+        // Inside: unchanged.
+        assert_eq!(agent_glob("src/*.ts".into()).unwrap(), vec!["src/app.ts".to_string()]);
+
+        // Absolute pattern pointing out of the workspace: asks, lists nothing.
+        let pat = format!("{}/*.txt", outside.to_string_lossy());
+        let err = agent_glob(pat.clone()).unwrap_err();
+        assert!(err.starts_with(NEED_DIR_GRANT), "marker missing: {err}");
+
+        // Granting the directory makes the same pattern work.
+        agent_grant_dir(outside.to_string_lossy().to_string()).expect("grant");
+        let hits = agent_glob(pat).expect("granted glob");
+        assert_eq!(hits.len(), 1, "granted dir should list: {hits:?}");
+        assert!(hits[0].ends_with("secret.txt"));
+
+        agent_clear_grants();
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
     #[test]
     fn out_of_workspace_access_asks_then_grants_then_revokes() {
         let _g = serial();
@@ -7601,6 +7673,27 @@ mod tests {
         let none = agent_search_code("zebra quantum lighthouse".into(), None).expect("search");
         assert!(none.contains("没有匹配"), "junk query must report no matches: {none}");
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `cargo test a b` is an argument error, not two filters: the Rust leg of
+    /// the verification ran nothing and reported failure whenever a turn
+    /// touched two source files. The filters belong after `--`.
+    #[test]
+    fn rust_verification_passes_its_filters_to_the_test_harness() {
+        use super::cargo_test_cmd;
+        let two = vec!["browser".to_string(), "agent".to_string()];
+        assert_eq!(cargo_test_cmd(&two), "cargo test -- browser agent");
+        // Repeats collapse, and at most three.
+        let many = vec![
+            "a".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ];
+        assert_eq!(cargo_test_cmd(&many), "cargo test -- a b c");
+        // Nothing to filter by: run the suite rather than a dangling `--`.
+        assert_eq!(cargo_test_cmd(&[]), "cargo test");
     }
 
     /// read_doc_core must extract document text (docx synthesized in-test —

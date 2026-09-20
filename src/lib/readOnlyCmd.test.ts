@@ -26,6 +26,12 @@ const PASS: string[] = [
   "git tag --list",
   "git stash list",
   "git stash show",
+  "git reflog",
+  "git reflog show HEAD",
+  "tree -L 2 src",
+  "xxd -l 64 a.bin",
+  "date",
+  "date -u",
   "git config --list",
   "git config --get user.name",
   "git rev-parse HEAD",
@@ -50,6 +56,17 @@ const PASS: string[] = [
 ];
 
 const REJECT: string[] = [
+  // Reading commands whose FLAGS write: the judge used to wave these through
+  // on the strength of the first word alone (audit N02).
+  "git diff --output=/tmp/out.diff",
+  "git log --output=notes.txt",
+  "git grep -O vim pattern",
+  "git reflog expire --expire=now --all",
+  "git reflog delete HEAD@{0}",
+  "tree -o listing.txt",
+  "xxd -r dump.hex restored.bin",
+  "xxd in.bin out.txt",
+  "date -s '2020-01-01'",
   "",
   "   ",
   ";ls",

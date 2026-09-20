@@ -45,6 +45,15 @@ impl MonotonicProgress {
     }
 }
 
+/// One load at a time. The whole point of the eject below is that two models
+/// are never resident at once, and that only holds while a second load cannot
+/// start in the middle of the first: the engine lock is released as soon as
+/// the old model is taken, so two calls would sail past each other and both
+/// allocate — on unified memory, that is the swap-freeze this code exists to
+/// avoid. A second caller is turned away rather than queued: by the time the
+/// first finished, its answer would be a model nobody asked for any more.
+static LOADING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Load a GGUF file and make it the active engine. Heavy and blocking, so the
 /// actual load runs on a blocking thread.
 #[tauri::command]
@@ -56,6 +65,12 @@ pub async fn load_model(
     speculative: Option<bool>,
     on_progress: Channel<LoadProgress>,
 ) -> Result<ModelInfo, String> {
+    let _loading = LOADING.try_lock().map_err(|_| {
+        crate::agent::tr(
+            "正在加载另一个模型，请等它完成后再切换",
+            "another model is still loading — wait for it to finish before switching",
+        )
+    })?;
     // Stored paths from before the folder-layout migration point at
     // `models/Foo.gguf`; the file now lives at `models/Foo/Foo.gguf`. Follow
     // it transparently — the returned ModelInfo carries the new path, which
@@ -1135,6 +1150,29 @@ pub fn canvas_session_load(app: tauri::AppHandle, key: String) -> Result<Option<
     }
 }
 
+/// Multi-part GGUFs: only the first shard is loadable (llama.cpp pulls in the
+/// rest), so later shards must not show up as their own models. Returns the
+/// shard number of a `…-00002-of-00003.gguf` name.
+fn gguf_shard_index(name: &str) -> Option<u32> {
+    let stem = name.strip_suffix(".gguf").unwrap_or(name);
+    // The cut is a BYTE offset, and a name outside ASCII can put it inside a
+    // character — slicing there panics (中aaaaaaaaaaaaa.gguf lands on byte 1
+    // of a three-byte character). The pattern is ASCII, so a cut that is not
+    // a character boundary cannot be one.
+    if stem.len() > 15 && stem.is_char_boundary(stem.len() - 15) {
+        let tail = &stem[stem.len() - 15..];
+        let tb = tail.as_bytes();
+        if tb[0] == b'-'
+            && tb[1..6].iter().all(|c| c.is_ascii_digit())
+            && &tail[6..10] == "-of-"
+            && tb[10..15].iter().all(|c| c.is_ascii_digit())
+        {
+            return tail[1..6].parse().ok();
+        }
+    }
+    None
+}
+
 /// List `.gguf` models discovered in the scanned directories, for the in-app
 /// hot-swap picker.
 #[tauri::command]
@@ -1153,23 +1191,7 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
             .and_then(|s| s.to_str())
             .is_some_and(|n| n.to_lowercase().contains("mmproj"))
     };
-    // Multi-part GGUFs: only the first shard is loadable (llama.cpp pulls in
-    // the rest); later shards must not show up as their own models.
-    let shard_of = |name: &str| -> Option<u32> {
-        let stem = name.strip_suffix(".gguf").unwrap_or(name);
-        if stem.len() > 15 {
-            let tail = &stem[stem.len() - 15..];
-            let tb = tail.as_bytes();
-            if tb[0] == b'-'
-                && tb[1..6].iter().all(|c| c.is_ascii_digit())
-                && &tail[6..10] == "-of-"
-                && tb[10..15].iter().all(|c| c.is_ascii_digit())
-            {
-                return tail[1..6].parse().ok();
-            }
-        }
-        None
-    };
+    let shard_of = gguf_shard_index;
     let push = |path: PathBuf, out: &mut Vec<ModelEntry>, seen: &mut HashSet<PathBuf>| {
         if !path
             .extension()
@@ -1810,6 +1832,17 @@ pub async fn synthesize(
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    /// A model file named outside ASCII used to panic the listing: the shard
+    /// suffix is measured in bytes, and the cut can land inside a character.
+    #[test]
+    fn a_model_name_outside_ascii_is_listed_not_sliced() {
+        use super::gguf_shard_index;
+        assert_eq!(gguf_shard_index("中aaaaaaaaaaaaa.gguf"), None);
+        assert_eq!(gguf_shard_index("模型-00002-of-00003.gguf"), Some(2));
+        assert_eq!(gguf_shard_index("qwen-00001-of-00004.gguf"), Some(1));
+        assert_eq!(gguf_shard_index("qwen-q4.gguf"), None);
+    }
 
     /// The chosen models folder, and the three ways it can be absent. This is
     /// the one piece of issue #12 that can be checked without a Windows box,

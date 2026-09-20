@@ -52,10 +52,16 @@ export function parseStreamPatches(text: string): StreamPatch {
 /** Replace `search` in `html` leniently (CR/trailing-space tolerant). */
 function replaceOnce(html: string, search: string, replace: string): string | null {
   if (!search) return null;
-  if (html.includes(search)) return html.replace(search, replace);
+  // The replacement goes in as written: passed as a string, `String.replace`
+  // reads `$&`, `$$`, ``$` `` and `$'` in it as instructions, so a patch that
+  // inserted any of those showed something the model never wrote.
+  if (html.includes(search)) return html.replace(search, () => replace);
   const nHtml = norm(html);
   const nSearch = norm(search);
-  if (nSearch && nHtml.includes(nSearch)) return nHtml.replace(nSearch, norm(replace));
+  if (nSearch && nHtml.includes(nSearch)) {
+    const nReplace = norm(replace);
+    return nHtml.replace(nSearch, () => nReplace);
+  }
   return null;
 }
 
@@ -101,7 +107,17 @@ function fullDiffRows(base: string, next: string): ScanRow[] {
 // Applying the done patches re-walks the whole document on every stream tick,
 // but the done set only grows when a block completes — cache the applied
 // result and re-derive only the active block per tick.
-let applyCache: { base: string; count: number; virtual: string } | null = null;
+//
+// Keyed by WHAT the patches are, not how many: a retry on the same document
+// arrives with a different patch of its own, and a key of base+count showed
+// the previous attempt's changes for the new one's.
+let applyCache: { base: string; key: string; virtual: string } | null = null;
+
+/** Cheap identity for a set of completed patches. */
+const patchKey = (done: StreamPatch["done"]): string =>
+  done
+    .map((e) => `${e.search.length}:${e.replace.length}:${e.search.slice(0, 24)}→${e.replace.slice(0, 24)}`)
+    .join("|");
 
 export function buildScanView(base: string, acc: string): ScanView {
   // Full-document mode wins when a fenced document has started streaming.
@@ -140,7 +156,8 @@ export function buildScanView(base: string, acc: string): ScanView {
   }
 
   let virtual: string;
-  if (applyCache && applyCache.base === base && applyCache.count === done.length) {
+  const key = patchKey(done);
+  if (applyCache && applyCache.base === base && applyCache.key === key) {
     virtual = applyCache.virtual;
   } else {
     virtual = base;
@@ -148,7 +165,7 @@ export function buildScanView(base: string, acc: string): ScanView {
       const next = replaceOnce(virtual, e.search, e.replace);
       if (next !== null) virtual = next;
     }
-    applyCache = { base, count: done.length, virtual };
+    applyCache = { base, key, virtual };
   }
   let working = virtual;
   let searchAnchor: string | null = null;

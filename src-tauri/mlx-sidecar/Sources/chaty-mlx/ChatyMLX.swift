@@ -317,24 +317,59 @@ func healJinjaTemplateFile(dir: URL) -> Bool {
     return true
 }
 
+/// The whitespace a `-` marker claims, going left from the comment: spaces
+/// and tabs, at most one line break, spaces and tabs.
+func trimmedForMarker(_ head: Substring) -> Substring {
+    var t = head
+    while let c = t.last, c == " " || c == "\t" { t = t.dropLast() }
+    if t.last == "\n" {
+        t = t.dropLast()
+        if t.last == "\r" { t = t.dropLast() }
+    }
+    while let c = t.last, c == " " || c == "\t" { t = t.dropLast() }
+    return t
+}
+
+/// The same span going right from the comment.
+func skippedForMarker(_ s: String, from idx: String.Index) -> String.Index {
+    var i = idx
+    while i < s.endIndex, s[i] == " " || s[i] == "\t" { i = s.index(after: i) }
+    if i < s.endIndex, s[i] == "\r" {
+        let n = s.index(after: i)
+        if n < s.endIndex, s[n] == "\n" { i = s.index(after: n) }
+    } else if i < s.endIndex, s[i] == "\n" {
+        i = s.index(after: i)
+    }
+    while i < s.endIndex, s[i] == " " || s[i] == "\t" { i = s.index(after: i) }
+    return i
+}
+
 /// Delete every jinja comment together with the whitespace its `-` markers
 /// claim. Returns nil when the template has nothing to strip.
+///
+/// One comment at a time, closing each at the FIRST `#}` that follows it. A
+/// regex cannot do this: `\{#[\s\S]*?-#\}` is lazy but still reaches past an
+/// earlier `#}`, so a plain comment followed by a `-#}` one took the template
+/// text between them with it — and the healed file is written back over the
+/// model's own chat_template.
 func strippedJinjaComments(_ raw: String) -> String? {
     guard raw.contains("{#") else { return nil }
-    // Most specific first: both markers, then each single marker, then plain.
-    let rules = [
-        "[ \\t]*\\r?\\n?[ \\t]*\\{#-[\\s\\S]*?-#\\}[ \\t]*\\r?\\n?[ \\t]*",
-        "[ \\t]*\\r?\\n?[ \\t]*\\{#-[\\s\\S]*?#\\}",
-        "\\{#[\\s\\S]*?-#\\}[ \\t]*\\r?\\n?[ \\t]*",
-        "\\{#[\\s\\S]*?#\\}",
-    ]
-    var healed = raw
-    for pattern in rules {
-        guard let re = try? NSRegularExpression(pattern: pattern) else { continue }
-        healed = re.stringByReplacingMatches(
-            in: healed, range: NSRange(healed.startIndex..., in: healed), withTemplate: "")
+    var out = ""
+    var i = raw.startIndex
+    var changed = false
+    while let open = raw.range(of: "{#", range: i..<raw.endIndex) {
+        guard let close = raw.range(of: "#}", range: open.upperBound..<raw.endIndex) else {
+            break  // unterminated comment — leave the remainder untouched
+        }
+        let body = raw[open.upperBound..<close.lowerBound]
+        let head = raw[i..<open.lowerBound]
+        out += body.hasPrefix("-") ? String(trimmedForMarker(head)) : String(head)
+        i = body.hasSuffix("-") ? skippedForMarker(raw, from: close.upperBound) : close.upperBound
+        changed = true
     }
-    return healed == raw ? nil : healed
+    guard changed else { return nil }
+    out += String(raw[i..<raw.endIndex])
+    return out == raw ? nil : out
 }
 
 /// Snapshot the file about to be rewritten. A heal only ever fires on a file
