@@ -9,14 +9,17 @@ APP="${1:?usage: bundle-mlx-resources.sh <Chaty.app>}"
 SRC="$(dirname "$0")/../src-tauri/binaries"
 
 [ -d "$APP/Contents/Resources" ] || { echo "error: $APP is not an app bundle" >&2; exit 1; }
-BUNDLES=$(find "$SRC" -maxdepth 1 -name '*.bundle')
-[ -n "$BUNDLES" ] || { echo "error: no *.bundle staged in $SRC — run build-mlx-sidecar.sh first" >&2; exit 1; }
-
-for B in $BUNDLES; do
+# Null-delimited: an unquoted list splits on spaces, and one space in the
+# checkout's path would have sent the `rm -rf` below at a name made of the
+# pieces.
+FOUND=0
+while IFS= read -r -d '' B; do
+  FOUND=$((FOUND + 1))
   rm -rf "$APP/Contents/Resources/$(basename "$B")"
   cp -R "$B" "$APP/Contents/Resources/"
   echo "bundled: $(basename "$B")"
-done
+done < <(find "$SRC" -maxdepth 1 -name '*.bundle' -print0)
+[ "$FOUND" -gt 0 ] || { echo "error: no *.bundle staged in $SRC — run build-mlx-sidecar.sh first" >&2; exit 1; }
 
 # Adding files invalidates the signature; re-sign ad-hoc (matches the
 # project's "-" signingIdentity).
