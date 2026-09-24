@@ -600,6 +600,24 @@ pub fn guess_by_name(name: &str) -> Option<&'static Family> {
 
 /// Defaults adjusted for a distilled checkpoint of an otherwise normal family
 /// (SDXL-Turbo, SD-Turbo, Lightning, LCM…): a handful of steps at CFG 1.
+/// Sampling acceleration for a family: which of the engine's step caches
+/// suits its denoiser, and how eagerly it may reuse a step ("balanced" keeps
+/// the engine's own threshold, "fast" skips more). UNet models take UCache,
+/// DiT models EasyCache; a model of unknown shape gets Spectrum, which serves
+/// both. `None` = every step computed.
+pub fn step_cache(family: &str, level: &str) -> Option<(&'static str, f32)> {
+    let fast = match level {
+        "balanced" => false,
+        "fast" => true,
+        _ => return None,
+    };
+    Some(match family {
+        "sd1" | "sdxl" => ("ucache", if fast { 1.5 } else { 1.0 }),
+        "generic" => ("spectrum", 0.0),
+        _ => ("easycache", if fast { 0.35 } else { 0.2 }),
+    })
+}
+
 pub fn defaults_for(f: &Family, file_name: &str) -> Defaults {
     let mut d = f.defaults.clone();
     let name = file_name.to_lowercase();
@@ -701,5 +719,16 @@ mod tests {
         assert_eq!((d.steps, d.cfg_scale), (4, 1.0));
         let d = defaults_for(&SDXL, "sd_xl_base_1.0.gguf");
         assert_eq!(d.steps, 25);
+    }
+
+    #[test]
+    fn each_denoiser_gets_the_step_cache_it_supports() {
+        assert_eq!(step_cache("qwen-image-2.1", "off"), None);
+        assert_eq!(step_cache("qwen-image-2.1", ""), None);
+        assert_eq!(step_cache("qwen-image-2.1", "balanced"), Some(("easycache", 0.2)));
+        assert_eq!(step_cache("flux-dev", "fast"), Some(("easycache", 0.35)));
+        assert_eq!(step_cache("sdxl", "balanced"), Some(("ucache", 1.0)));
+        assert_eq!(step_cache("sd1", "fast"), Some(("ucache", 1.5)));
+        assert_eq!(step_cache("generic", "fast"), Some(("spectrum", 0.0)));
     }
 }

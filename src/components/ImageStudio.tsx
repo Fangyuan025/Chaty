@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import { useI18n, type TKey } from "../lib/i18n";
@@ -27,6 +27,7 @@ import {
 import type { ImageRun, ImageStudioState } from "../lib/useImageStudio";
 import { Icon } from "./Icon";
 import { ImageThumb } from "./ImageThumb";
+import { UserCopy, UserText } from "./UserText";
 import { useConfirm } from "./ConfirmModal";
 
 /** Ideas for an empty canvas — written to show off what these models are
@@ -88,13 +89,17 @@ function Picture({
   item,
   onPreview,
   onUseAsRef,
+  edits,
   onReuseSeed,
   notify,
   big,
 }: {
   item: ImageItem;
   onPreview: (p: string) => void;
+  /** Start the next round from this picture. */
   onUseAsRef?: (p: string) => void;
+  /** The model edits pictures: "edit this further" rather than "start from". */
+  edits: boolean;
   onReuseSeed: (seed: number) => void;
   notify: (kind: "warn" | "error", text: string) => void;
   big: boolean;
@@ -102,7 +107,10 @@ function Picture({
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   return (
-    <div className={`is-pic ${big ? "big" : ""}`} style={{ aspectRatio: `${item.width} / ${item.height}` }}>
+    <div
+      className={`is-pic ${big ? "big" : ""}`}
+      style={{ aspectRatio: `${item.width} / ${item.height}`, ["--ar" as string]: item.width / Math.max(1, item.height) }}
+    >
       <ImageThumb path={item.path} size={4096} onOpen={() => onPreview(item.path)} className="is-pic-img" />
       <div className="is-pic-bar">
         <span className="is-pic-meta">
@@ -144,7 +152,7 @@ function Picture({
             <Icon name="folder" size={14} />
           </button>
           {onUseAsRef && (
-            <button title={t("imgActUseRef")} onClick={() => onUseAsRef(item.path)}>
+            <button title={edits ? t("imgActEdit") : t("imgActUseRef")} onClick={() => onUseAsRef(item.path)}>
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <rect x="3" y="3" width="18" height="18" rx="2" />
                 <circle cx="8.5" cy="8.5" r="1.5" />
@@ -186,6 +194,7 @@ function ParamChips({ rec }: { rec: ImageRecord }) {
     p.cfgScale != null ? `CFG ${p.cfgScale}` : null,
     p.sampler || null,
     seeds.length ? `${t("imgSeed")} ${seeds.length > 1 ? `${seeds[0]}…${seeds[seeds.length - 1]}` : seeds[0]}` : null,
+    p.accel === "balanced" || p.accel === "fast" ? t("imgAccelChip", { level: t(p.accel === "fast" ? "imgAccelFast" : "imgAccelBalanced") }) : null,
     rec.elapsedMs ? fmtDuration(rec.elapsedMs) : null,
     rec.model || null,
   ].filter(Boolean) as string[];
@@ -221,11 +230,17 @@ function RunView({ run, onStop }: { run: ImageRun; onStop: (mode: "all" | "after
     detail.push(g.secsPerStep >= 1 ? `${g.secsPerStep.toFixed(1)} ${t("imgSecPerStep")}` : `${(1 / g.secsPerStep).toFixed(1)} ${t("imgStepPerSec")}`);
   detail.push(t("imgElapsed", { t: fmtDuration(now - run.startedAt) }));
   if (eta != null) detail.push(t("imgEta", { t: fmtDuration(eta * 1000) }));
+  // What the caches saved: the prompt read once for all the rounds that
+  // repeat it, and denoising steps reused.
+  if (run.cache.encode) detail.push(t("imgCacheEncode"));
+  if (run.cache.skipped > 0) detail.push(t("imgCacheSteps", { n: run.cache.skipped, total: run.cache.total }));
 
   return (
     <div className="is-run">
-      <div className="is-prompt-line">{req.prompt}</div>
-      <div className="is-run-stage" style={{ aspectRatio: `${req.width} / ${req.height}` }}>
+      <div
+        className="is-run-stage"
+        style={{ aspectRatio: `${req.width} / ${req.height}`, ["--ar" as string]: req.width / Math.max(1, req.height) }}
+      >
         {run.preview ? <img className="is-run-preview" src={run.preview} alt="" /> : <div className="is-run-ph" />}
         <div className="is-run-pct">
           <span className="is-run-num">{pct}</span>
@@ -250,6 +265,63 @@ function RunView({ run, onStop }: { run: ImageRun; onStop: (mode: "all" | "after
         <button className="is-btn danger" disabled={run.stopping === "all"} onClick={() => onStop("all")}>
           {t("imgStop")}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/** A round's prompt, as the user's side of the thread: the picture it
+ *  started from, the words, and where the picture came from. */
+function PromptBubble({
+  prompt,
+  negative,
+  reference,
+  fromRound,
+  onPreview,
+  onJump,
+  onEdit,
+}: {
+  prompt: string;
+  negative: string;
+  reference: string | null;
+  /** The earlier round the reference picture came from (1-based). */
+  fromRound: number | null;
+  onPreview: (p: string) => void;
+  onJump?: () => void;
+  /** Back into the composer, to change and send again. */
+  onEdit?: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="msg user">
+      <div className="bubble" data-copy={prompt}>
+        {reference && (
+          <span className="msg-images">
+            <ImageThumb path={reference} onOpen={() => onPreview(reference)} />
+          </span>
+        )}
+        {fromRound != null && (
+          <button className="is-from" onClick={onJump} title={t("imgJumpToRound")}>
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M9 14l-4-4 4-4M5 10h9a5 5 0 0 1 5 5v4" />
+            </svg>
+            {t("imgRefFrom", { n: fromRound })}
+          </button>
+        )}
+        <UserText content={prompt} expandLabel={t("expandAll")} collapseLabel={t("collapseText")} />
+        {negative && (
+          <span className="is-neg-line">
+            <span>{t("imgNegative")}</span> {negative}
+          </span>
+        )}
+        <UserCopy content={prompt} title={t("copyMsg")} />
+        {onEdit && (
+          <button className="user-edit" title={t("imgReuse")} onClick={onEdit}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <path d="M14.5 5.5l4 4M4 20l1-4L16 5a2 2 0 0 1 3 3L8 19l-4 1z" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
       </div>
     </div>
   );
@@ -283,11 +355,18 @@ export function ImageStudio({
   const [pop, setPop] = useState<"" | "size" | "params">("");
   const [showNeg, setShowNeg] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
+  /** Keep the newest round in view while it is (like the chat's follow). */
+  const followRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
   const run = studio.run;
   const busy = !!run;
+  const shownRun = studio.runHere ? run : null;
   const negative = studio.negative ?? settings.imgNegative;
   const edits = info.edits;
+  const rounds = studio.rounds;
+  const roundIndex = useMemo(() => new Map(rounds.map((r, i) => [r.id, i])), [rounds]);
 
   // The prompt box grows with its content, like the chat composer.
   useLayoutEffect(() => {
@@ -297,16 +376,54 @@ export function ImageStudio({
     return watchContentHeight(el, row, 200);
   }, [studio.prompt]);
 
-  // A new result or a new run starts at the top of the canvas.
+  const toBottom = useCallback((smooth: boolean) => {
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : ("instant" as ScrollBehavior) });
+  }, []);
+
+  // A session opens at its end, as a conversation does.
+  useLayoutEffect(() => {
+    followRef.current = true;
+    setShowJump(false);
+    toBottom(false);
+  }, [studio.sessionId, toBottom]);
+
+  // A new round, or the one being drawn growing (previews, finished pictures
+  // of a batch, thumbnails decoding late), stays in view while followed.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: 0 });
-  }, [studio.selectedId, run?.id]);
+    followRef.current = true;
+    toBottom(true);
+  }, [shownRun?.id, rounds.length, toBottom]);
+  useEffect(() => {
+    const inner = innerRef.current;
+    if (!inner || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (followRef.current) toBottom(false);
+    });
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, [toBottom]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    followRef.current = atEnd;
+    setShowJump(!atEnd);
+  };
+
+  const jumpTo = (id: string) => {
+    followRef.current = false;
+    document.getElementById(`is-round-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   const go = () => {
     const prompt = studio.prompt.trim();
     if (!prompt || busy) return;
+    const ref = studio.reference;
     void studio.generate(
-      buildRequest(prompt, negative, settings, d, studio.reference ? { path: studio.reference.path, edit: edits } : null),
+      buildRequest(prompt, negative, settings, d, ref ? { path: ref.path, edit: edits } : null),
+      ref?.parentId ?? null,
     );
   };
 
@@ -328,30 +445,34 @@ export function ImageStudio({
       multiple: false,
       filters: [{ name: t("imgImages"), extensions: ["png", "jpg", "jpeg", "webp", "bmp"] }],
     });
-    if (typeof picked === "string") studio.setReference({ path: picked });
+    if (typeof picked === "string") studio.setReference({ path: picked, parentId: null });
   };
 
+  /** A round's prompt and settings, back in the composer. */
   const reuse = (rec: ImageRecord) => {
     const p = rec.params;
     studio.setPrompt(rec.prompt);
     studio.setNegative(rec.negativePrompt || null);
     onSettings(settingsFromRequest(p, settings));
     const ref = referenceOf(p);
-    studio.setReference(ref ? { path: ref } : null);
+    studio.setReference(ref ? { path: ref, parentId: rec.parentId ?? null } : null);
     inputRef.current?.focus();
   };
 
+  /** The same round again, with fresh randomness, as a new round. */
   const again = (rec: ImageRecord) => {
     if (busy) return;
-    void studio.generate({
-      ...buildRequest(rec.prompt, rec.negativePrompt, settings, d, null),
-      ...rec.params,
-      prompt: rec.prompt,
-      negativePrompt: rec.negativePrompt,
-      // Again = the same request with fresh randomness.
-      seed: -1,
-      outDir: settings.imgOutputDir.trim() || null,
-    });
+    void studio.generate(
+      {
+        ...buildRequest(rec.prompt, rec.negativePrompt, settings, d, null),
+        ...rec.params,
+        prompt: rec.prompt,
+        negativePrompt: rec.negativePrompt,
+        seed: -1,
+        outDir: settings.imgOutputDir.trim() || null,
+      },
+      rec.parentId ?? null,
+    );
   };
 
   const del = async (rec: ImageRecord) => {
@@ -361,85 +482,125 @@ export function ImageStudio({
       confirmLabel: t("confirmDelete"),
       danger: true,
     });
-    if (ok) await studio.remove(rec.id, true).catch((e) => notify("error", String(e)));
+    if (ok) await studio.removeRound(rec.id).catch((e) => notify("error", String(e)));
   };
 
-  const pictureProps = {
+  const pictureProps = (roundId: string) => ({
     onPreview,
+    edits,
     onUseAsRef: (p: string) => {
-      studio.setReference({ path: p });
+      studio.setReference({ path: p, parentId: roundId });
       inputRef.current?.focus();
     },
     onReuseSeed: (seed: number) => {
       onSettings({ imgSeedLock: true, imgSeed: seed });
     },
     notify,
+  });
+
+  const fromRound = (parentId: string | null | undefined): number | null => {
+    const i = parentId ? roundIndex.get(parentId) : undefined;
+    return i === undefined ? null : i + 1;
   };
 
-  const rec = studio.selected;
   const sizeLabel = `${eff.width}×${eff.height}`;
   const ideas = lang === "zh" ? IDEAS_ZH : IDEAS_EN;
+  const refFrom = fromRound(studio.reference?.parentId);
 
   return (
-    <div className="is-studio">
-      <div className="is-canvas" ref={scrollRef}>
-        {run ? (
-          <>
-            <RunView run={run} onStop={(m) => void studio.cancel(m)} />
-            {run.images.length > 0 && <PictureGrid items={run.images} {...pictureProps} />}
-          </>
-        ) : rec ? (
-          <div className="is-record">
-            <div className="is-prompt-line selectable">{rec.prompt}</div>
-            {rec.negativePrompt && (
-              <div className="is-neg-line">
-                <span>{t("imgNegative")}</span> {rec.negativePrompt}
+    <>
+      <div className="chat-wrap">
+        <main className="chat is-thread" ref={scrollRef} onScroll={onScroll}>
+          <div ref={innerRef}>
+            {rounds.length === 0 && !shownRun ? (
+              <div className="empty is-empty">
+                <div className="empty-hero">
+                  <div className="empty-greeting">{t("imgHero")}</div>
+                  <div className="empty-sub">
+                    {t("imgHeroSub", { model: info.engineVersion || info.familyName, size: sizeLabel })}
+                  </div>
+                </div>
+                <div className="suggestions">
+                  {ideas.map((s) => (
+                    <button
+                      key={s}
+                      className="suggestion"
+                      onClick={() => {
+                        studio.setPrompt(s);
+                        inputRef.current?.focus();
+                      }}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
+            ) : (
+              <>
+                {rounds.map((rec) => {
+                  const from = fromRound(rec.parentId);
+                  return (
+                    <div key={rec.id} className="is-round" id={`is-round-${rec.id}`}>
+                      <PromptBubble
+                        prompt={rec.prompt}
+                        negative={rec.negativePrompt}
+                        reference={referenceOf(rec.params)}
+                        fromRound={from}
+                        onPreview={onPreview}
+                        onJump={rec.parentId ? () => jumpTo(rec.parentId!) : undefined}
+                        onEdit={busy ? undefined : () => reuse(rec)}
+                      />
+                      <div className="msg assistant is-reply">
+                        <PictureGrid items={rec.images} {...pictureProps(rec.id)} />
+                        <ParamChips rec={rec} />
+                        <div className="msg-actions">
+                          <button className="msg-action" title={t("imgAgainTitle")} onClick={() => again(rec)} disabled={busy}>
+                            {t("imgAgain")}
+                          </button>
+                          <button className="msg-action" onClick={() => reuse(rec)}>
+                            {t("imgReuse")}
+                          </button>
+                          <button className="msg-action" onClick={() => void del(rec)} disabled={busy}>
+                            {t("imgDelete")}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {shownRun && (
+                  <div className="is-round">
+                    <PromptBubble
+                      prompt={shownRun.request.prompt}
+                      negative={shownRun.request.negativePrompt}
+                      reference={referenceOf(shownRun.request)}
+                      fromRound={fromRound(shownRun.request.parentId)}
+                      onPreview={onPreview}
+                      onJump={shownRun.request.parentId ? () => jumpTo(shownRun.request.parentId!) : undefined}
+                    />
+                    <div className="msg assistant is-reply">
+                      <RunView run={shownRun} onStop={(m) => void studio.cancel(m)} />
+                      {shownRun.images.length > 0 && <PictureGrid items={shownRun.images} {...pictureProps(shownRun.id)} />}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
-            <ParamChips rec={rec} />
-            <PictureGrid items={rec.images} {...pictureProps} />
-            <div className="is-record-actions">
-              <button className="is-btn" onClick={() => again(rec)} disabled={busy}>
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5" />
-                </svg>
-                {t("imgAgain")}
-              </button>
-              <button className="is-btn" onClick={() => reuse(rec)}>
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4" />
-                </svg>
-                {t("imgReuse")}
-              </button>
-              <button className="is-btn danger-text" onClick={() => void del(rec)}>
-                <Icon name="x" size={12} strokeWidth={2.2} />
-                {t("imgDelete")}
-              </button>
-            </div>
           </div>
-        ) : (
-          <div className="empty is-empty">
-            <div className="empty-hero">
-              <div className="empty-greeting">{t("imgHero")}</div>
-              <div className="empty-sub">
-                {t("imgHeroSub", { model: info.engineVersion || info.familyName, size: sizeLabel })}
-              </div>
-            </div>
-            <div className="suggestions">
-              {ideas.map((s) => (
-                <button
-                  key={s}
-                  className="suggestion"
-                  onClick={() => {
-                    studio.setPrompt(s);
-                    inputRef.current?.focus();
-                  }}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
+        </main>
+        {showJump && (rounds.length > 0 || shownRun) && (
+          <button
+            className="jump-bottom"
+            title={t("jumpLatest")}
+            onClick={() => {
+              followRef.current = true;
+              toBottom(true);
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
         )}
       </div>
 
@@ -450,7 +611,10 @@ export function ImageStudio({
               <div className="is-ref">
                 <ImageThumb path={studio.reference.path} size={40} onOpen={() => onPreview(studio.reference!.path)} />
                 <div className="is-ref-text">
-                  <span className="is-ref-title">{edits ? t("imgRefEdit") : t("imgRefInit")}</span>
+                  <span className="is-ref-title">
+                    {edits ? t("imgRefEdit") : t("imgRefInit")}
+                    {refFrom != null && <em className="is-ref-from">{t("imgRefFrom", { n: refFrom })}</em>}
+                  </span>
                   {!edits && (
                     <label className="is-ref-strength" title={t("imgStrengthHint")}>
                       {t("imgStrength")} <b>{settings.imgStrength.toFixed(2)}</b>
@@ -654,6 +818,14 @@ export function ImageStudio({
                   ))}
                 </select>
               </label>
+              <label className="is-field" title={t("imgAccelHint")}>
+                <span>{t("imgAccel")}</span>
+                <select value={settings.imgAccel} onChange={(e) => onSettings({ imgAccel: e.target.value as ImageSettings["imgAccel"] })}>
+                  <option value="off">{t("off")}</option>
+                  <option value="balanced">{t("imgAccelBalanced")}</option>
+                  <option value="fast">{t("imgAccelFast")}</option>
+                </select>
+              </label>
               {settings.imgSeedLock && (
                 <label className="is-field">
                   <span>{t("imgSeed")}</span>
@@ -690,6 +862,6 @@ export function ImageStudio({
           </div>
         </div>
       </footer>
-    </div>
+    </>
   );
 }

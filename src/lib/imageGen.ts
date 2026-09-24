@@ -86,6 +86,11 @@ export interface ImageSettings {
   imgSeedLock: boolean;
   imgSeed: number;
   imgStrength: number;
+  /** Multi-turn editing: an editing model's next round edits the last
+   *  picture unless another one is picked. */
+  imgAutoChain: boolean;
+  /** Sampling acceleration (step cache): off, balanced or fast. */
+  imgAccel: "off" | "balanced" | "fast";
   imgDevice: "gpu" | "cpu";
   imgOffload: boolean;
   imgTeCpu: boolean;
@@ -120,6 +125,8 @@ export const IMAGE_SETTINGS_DEFAULTS: ImageSettings = {
   imgSeedLock: false,
   imgSeed: 42,
   imgStrength: 0.75,
+  imgAutoChain: true,
+  imgAccel: "off",
   // GPU, and all of it: the image engine offloads the way the chat engine
   // does — everything on the GPU, only what does not fit spills to RAM.
   imgDevice: "gpu",
@@ -195,6 +202,7 @@ export function buildRequest(
     initImage: ref && !ref.edit ? ref.path : null,
     strength: s.imgStrength,
     refImages: ref && ref.edit ? [ref.path] : [],
+    accel: s.imgAccel,
     outDir: s.imgOutputDir.trim() || null,
   };
 }
@@ -221,6 +229,7 @@ export function settingsFromRequest(p: Partial<ImageRequest>, s: ImageSettings):
     imgPreviewInterval: p.previewInterval ?? s.imgPreviewInterval,
     imgFormat: p.format ?? s.imgFormat,
     imgStrength: p.strength ?? s.imgStrength,
+    imgAccel: p.accel === "balanced" || p.accel === "fast" || p.accel === "off" ? p.accel : s.imgAccel,
   };
 }
 

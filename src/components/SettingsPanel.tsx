@@ -2069,6 +2069,16 @@ export function SettingsPanel({
                 </span>
                 <input type="range" min={0.05} max={1} step={0.05} value={value.imgStrength} onChange={(e) => set("imgStrength", Number(e.target.value))} />
               </label>
+              <SetRow label={t("imgAccel")} hint={t("imgAccelHint")}>
+                <div className="lang-switch">
+                  <button type="button" className={value.imgAccel === "off" ? "active" : ""} onClick={() => set("imgAccel", "off")}>{t("off")}</button>
+                  <button type="button" className={value.imgAccel === "balanced" ? "active" : ""} onClick={() => set("imgAccel", "balanced")}>{t("imgAccelBalanced")}</button>
+                  <button type="button" className={value.imgAccel === "fast" ? "active" : ""} onClick={() => set("imgAccel", "fast")}>{t("imgAccelFast")}</button>
+                </div>
+              </SetRow>
+              <SetRow label={t("imgAutoChain")} hint={t("imgAutoChainHint")}>
+                <Switch on={value.imgAutoChain} onToggle={() => set("imgAutoChain", !value.imgAutoChain)} />
+              </SetRow>
               <SetRow label={t("imgPreview")} hint={t("imgPreviewHint")}>
                 <div className="lang-switch">
                   <button type="button" className={value.imgPreview === "proj" ? "active" : ""} onClick={() => set("imgPreview", "proj")}>{t("imgPreviewFast")}</button>

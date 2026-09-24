@@ -214,7 +214,13 @@ export interface ImageRequest {
   initImage?: string | null;
   strength: number;
   refImages: string[];
+  /** Sampling acceleration: "off", "balanced" or "fast". */
+  accel?: "off" | "balanced" | "fast";
   outDir?: string | null;
+  /** The session this round belongs to. */
+  sessionId?: string | null;
+  /** The round whose picture this one starts from (multi-turn editing). */
+  parentId?: string | null;
 }
 
 export interface ImageItem {
@@ -224,7 +230,7 @@ export interface ImageItem {
   seed: number;
 }
 
-/** One press of Generate, as the history keeps it. */
+/** One round of an image session: a prompt and the pictures it made. */
 export interface ImageRecord {
   id: string;
   prompt: string;
@@ -232,10 +238,31 @@ export interface ImageRecord {
   /** The request as sent. */
   params: Partial<ImageRequest>;
   images: ImageItem[];
+  /** The model that drew it (a session can span several). */
   model: string;
   family: string;
   createdAt: number;
   elapsedMs: number;
+  sessionId: string;
+  /** The round whose picture this one started from. */
+  parentId?: string | null;
+}
+
+/** An image session — the image studio's conversation. */
+export interface ImageSession {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  pinned: boolean;
+}
+
+export interface ImageSessionData {
+  session: ImageSession;
+  /** The unsent prompt it was left with (JSON the studio owns). */
+  draft: string;
+  /** Its rounds, oldest first. */
+  records: ImageRecord[];
 }
 
 /** What the engine reports while it draws. */
@@ -243,7 +270,9 @@ export type SdEvent =
   | { type: "stage"; stage: "encode" | "weights" | "sample" | "decode" | string; index: number; count: number; seed?: number | null }
   | { type: "progress"; stage: string; step: number; steps: number; secs: number }
   | { type: "preview"; step: number; width: number; height: number; dataUrl: string }
-  | { type: "image"; index: number; path: string; width: number; height: number; seed: number };
+  | { type: "image"; index: number; path: string; width: number; height: number; seed: number }
+  /** A cache saved work: the prompt's encoding reused, or denoising steps. */
+  | { type: "cache"; kind: "conditioning" | "steps" | string; skipped: number; total: number };
 
 export type ImageEvent =
   | { type: "started"; id: string; request: ImageRequest; startedAt: number }
@@ -299,14 +328,48 @@ export async function imageCopy(path: string): Promise<void> {
   await invoke("image_copy", { path });
 }
 
-export async function imageHistoryList(): Promise<ImageRecord[]> {
-  return (await invoke<ImageRecord[]>("image_history_list")) ?? [];
+/** Create or rename an image session (id supplied by the caller). */
+export async function imageSessionSave(id: string, title: string): Promise<void> {
+  await invoke("image_session_save", { id, title });
 }
 
-export async function imageHistoryDelete(id: string, deleteFiles: boolean): Promise<void> {
-  await invoke("image_history_delete", { id, deleteFiles });
+/** Every image session, pinned first, then most recently used. */
+export async function imageSessionList(): Promise<ImageSession[]> {
+  return (await invoke<ImageSession[]>("image_session_list")) ?? [];
 }
 
+export async function imageSessionGet(id: string): Promise<ImageSessionData | null> {
+  return await invoke<ImageSessionData | null>("image_session_get", { id });
+}
+
+export async function imageSessionDraft(id: string, draft: string): Promise<void> {
+  await invoke("image_session_draft", { id, draft });
+}
+
+export async function imageSessionRename(id: string, title: string): Promise<void> {
+  await invoke("image_session_rename", { id, title });
+}
+
+export async function imageSessionSetPinned(id: string, pinned: boolean): Promise<void> {
+  await invoke("image_session_set_pinned", { id, pinned });
+}
+
+/** Delete a session; `deleteFiles` also removes the pictures it made. */
+export async function imageSessionDelete(id: string, deleteFiles: boolean): Promise<void> {
+  await invoke("image_session_delete", { id, deleteFiles });
+}
+
+/** Ids of sessions whose prompts contain `query`. */
+export async function imageSessionSearch(query: string): Promise<string[]> {
+  return (await invoke<string[]>("image_session_search", { query })) ?? [];
+}
+
+/** Delete one round of a session. */
+export async function imageGenerationDelete(id: string, deleteFiles: boolean): Promise<void> {
+  await invoke("image_generation_delete", { id, deleteFiles });
+}
+
+/** Delete every image session. */
 export async function imageHistoryClear(deleteFiles: boolean): Promise<void> {
   await invoke("image_history_clear", { deleteFiles });
 }

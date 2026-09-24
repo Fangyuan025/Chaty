@@ -72,6 +72,14 @@ CREATE TABLE IF NOT EXISTS code_step_texts (
     text        TEXT NOT NULL,
     PRIMARY KEY (session_id, step_id)
 );
+CREATE TABLE IF NOT EXISTS image_sessions (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    pinned      INTEGER NOT NULL DEFAULT 0,
+    draft       TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS image_generations (
     id              TEXT PRIMARY KEY,
     prompt          TEXT NOT NULL,
@@ -81,7 +89,9 @@ CREATE TABLE IF NOT EXISTS image_generations (
     model           TEXT NOT NULL DEFAULT '',
     family          TEXT NOT NULL DEFAULT '',
     created_at      INTEGER NOT NULL,
-    elapsed_ms      INTEGER NOT NULL DEFAULT 0
+    elapsed_ms      INTEGER NOT NULL DEFAULT 0,
+    session_id      TEXT NOT NULL DEFAULT '',
+    parent_id       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_image_generations_created ON image_generations(created_at);
 ";
@@ -100,6 +110,7 @@ pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
         "ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT '[]'",
         [],
     );
+    migrate_image_sessions(&conn);
     // Sweep messages left behind by a conversation that is already gone. No
     // screen can reach one — every read goes through a conversation id — so
     // they were pure weight in the file and a wrong number in Settings → Data.
@@ -918,7 +929,31 @@ fn get_step_text(conn: &Connection, session_id: &str, step_id: &str) -> rusqlite
     })
 }
 
-// ---- Image generations (the image studio's history) ----
+// ---- Image sessions (the image studio's conversations) ----
+//
+// The chat's shape, for pictures: a session is a conversation, and each round
+// in it — a prompt and the pictures it made — is a generation. A session is
+// not tied to a model: switching models carries on in the same one, each
+// round remembering which model drew it. Only the image studio shows them.
+
+/// A generation table from before sessions (an early build of the studio)
+/// gains the columns, and each of its rounds becomes a session of its own so
+/// nothing already drawn goes out of reach.
+fn migrate_image_sessions(conn: &Connection) {
+    let _ = conn.execute("ALTER TABLE image_generations ADD COLUMN session_id TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE image_generations ADD COLUMN parent_id TEXT", []);
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_image_generations_session ON image_generations(session_id, created_at)",
+        [],
+    );
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO image_sessions (id, title, created_at, updated_at)
+         SELECT id, substr(prompt, 1, 40), created_at, created_at
+         FROM image_generations WHERE session_id = ''",
+        [],
+    );
+    let _ = conn.execute("UPDATE image_generations SET session_id = id WHERE session_id = ''", []);
+}
 
 /// One picture of a generation, on disk.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -930,7 +965,7 @@ pub struct ImageItem {
     pub seed: i64,
 }
 
-/// One press of Generate: the prompt, the settings it ran with, and the
+/// One round of a session: the prompt, the settings it ran with, and the
 /// pictures it made.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -938,22 +973,85 @@ pub struct ImageRecord {
     pub id: String,
     pub prompt: String,
     pub negative_prompt: String,
-    /// The request as it was sent (size, steps, CFG, sampler, seed …), so a
-    /// picture can be made again or varied.
+    /// The request as it was sent (size, steps, CFG, sampler, seed, reference
+    /// picture …), so a picture can be made again or varied.
     pub params: serde_json::Value,
     pub images: Vec<ImageItem>,
     pub model: String,
     pub family: String,
     pub created_at: i64,
     pub elapsed_ms: i64,
+    #[serde(default)]
+    pub session_id: String,
+    /// The round whose picture this one started from (multi-turn editing).
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
-pub(crate) fn image_record_insert(db: &Db, r: &ImageRecord) -> Result<(), String> {
-    let conn = lock_connection(&db.0);
-    conn.execute(
-        "INSERT OR REPLACE INTO image_generations
-         (id, prompt, negative_prompt, params, images, model, family, created_at, elapsed_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageSession {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub pinned: bool,
+}
+
+/// A session opened: its rounds in order, and the unsent prompt it was left
+/// with (the frontend owns that shape, as it does a code session's).
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageSessionData {
+    pub session: ImageSession,
+    pub draft: String,
+    pub records: Vec<ImageRecord>,
+}
+
+const IMAGE_COLS: &str =
+    "id, prompt, negative_prompt, params, images, model, family, created_at, elapsed_ms, session_id, parent_id";
+
+fn image_row(r: &rusqlite::Row) -> rusqlite::Result<ImageRecord> {
+    Ok(ImageRecord {
+        id: r.get(0)?,
+        prompt: r.get(1)?,
+        negative_prompt: r.get(2)?,
+        params: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or(serde_json::Value::Null),
+        images: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
+        model: r.get(5)?,
+        family: r.get(6)?,
+        created_at: r.get(7)?,
+        elapsed_ms: r.get(8)?,
+        session_id: r.get(9)?,
+        parent_id: r.get(10)?,
+    })
+}
+
+/// Rounds matching `filter` (a WHERE clause over one parameter, or none),
+/// oldest first — the order a session reads in.
+fn image_records(conn: &Connection, filter: Option<(&str, &str)>) -> rusqlite::Result<Vec<ImageRecord>> {
+    let sql = format!(
+        "SELECT {IMAGE_COLS} FROM image_generations {} ORDER BY created_at ASC",
+        filter.map(|(w, _)| format!("WHERE {w}")).unwrap_or_default()
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = match filter {
+        Some((_, v)) => stmt.query_map(params![v], image_row)?.collect(),
+        None => stmt.query_map([], image_row)?.collect(),
+    };
+    rows
+}
+
+/// Keep a finished round — only in a session that still exists, like a chat
+/// reply (a session deleted while its picture was being drawn must not come
+/// back). Returns whether it was kept.
+fn image_record_insert_conn(conn: &Connection, r: &ImageRecord) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        &format!(
+            "INSERT OR REPLACE INTO image_generations ({IMAGE_COLS})
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+             WHERE EXISTS (SELECT 1 FROM image_sessions WHERE id = ?10)"
+        ),
         params![
             r.id,
             r.prompt,
@@ -964,44 +1062,91 @@ pub(crate) fn image_record_insert(db: &Db, r: &ImageRecord) -> Result<(), String
             r.family,
             r.created_at,
             r.elapsed_ms,
+            r.session_id,
+            r.parent_id,
         ],
+    )?;
+    if n > 0 {
+        conn.execute(
+            "UPDATE image_sessions SET updated_at = ?1 WHERE id = ?2",
+            params![now_ms(), r.session_id],
+        )?;
+    }
+    Ok(n > 0)
+}
+
+pub(crate) fn image_record_insert(db: &Db, r: &ImageRecord) -> Result<bool, String> {
+    image_record_insert_conn(&lock_connection(&db.0), r).map_err(|e| e.to_string())
+}
+
+fn image_session_upsert(conn: &Connection, id: &str, title: &str) -> rusqlite::Result<()> {
+    let now = now_ms();
+    conn.execute(
+        "INSERT INTO image_sessions (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(id) DO UPDATE SET title = ?2, updated_at = ?3",
+        params![id, title, now],
+    )?;
+    Ok(())
+}
+
+/// A session for a round that came without one (a caller other than the
+/// studio): named after its prompt, so the round is never out of reach.
+pub(crate) fn image_session_ensure(db: &Db, id: &str, title: &str) -> Result<(), String> {
+    let conn = lock_connection(&db.0);
+    conn.execute(
+        "INSERT OR IGNORE INTO image_sessions (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+        params![id, title, now_ms()],
     )
     .map(|_| ())
     .map_err(|e| e.to_string())
 }
 
-fn image_records(conn: &Connection, where_id: Option<&str>) -> rusqlite::Result<Vec<ImageRecord>> {
+fn image_sessions(conn: &Connection, id: Option<&str>) -> rusqlite::Result<Vec<ImageSession>> {
     let sql = format!(
-        "SELECT id, prompt, negative_prompt, params, images, model, family, created_at, elapsed_ms
-         FROM image_generations {} ORDER BY created_at DESC",
-        if where_id.is_some() { "WHERE id = ?1" } else { "" }
+        "SELECT id, title, created_at, updated_at, pinned FROM image_sessions {}
+         ORDER BY pinned DESC, updated_at DESC",
+        if id.is_some() { "WHERE id = ?1" } else { "" }
     );
     let mut stmt = conn.prepare(&sql)?;
     let map = |r: &rusqlite::Row| {
-        Ok(ImageRecord {
+        Ok(ImageSession {
             id: r.get(0)?,
-            prompt: r.get(1)?,
-            negative_prompt: r.get(2)?,
-            params: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or(serde_json::Value::Null),
-            images: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
-            model: r.get(5)?,
-            family: r.get(6)?,
-            created_at: r.get(7)?,
-            elapsed_ms: r.get(8)?,
+            title: r.get(1)?,
+            created_at: r.get(2)?,
+            updated_at: r.get(3)?,
+            pinned: r.get(4)?,
         })
     };
-    let rows = match where_id {
+    let rows = match id {
         Some(id) => stmt.query_map(params![id], map)?.collect(),
         None => stmt.query_map([], map)?.collect(),
     };
     rows
 }
 
-/// Every generation, newest first.
-#[tauri::command]
-pub fn image_history_list(db: State<'_, Db>) -> Result<Vec<ImageRecord>, String> {
-    let conn = lock(&db)?;
-    image_records(&conn, None).map_err(|e| e.to_string())
+fn image_session_delete_conn(conn: &Connection, id: &str) -> rusqlite::Result<Vec<ImageRecord>> {
+    let recs = image_records(conn, Some(("session_id = ?1", id)))?;
+    conn.execute("DELETE FROM image_generations WHERE session_id = ?1", params![id])?;
+    conn.execute("DELETE FROM image_sessions WHERE id = ?1", params![id])?;
+    Ok(recs)
+}
+
+/// Sessions a search finds by their prompts (titles are matched in the
+/// sidebar), most recent first.
+fn image_session_search_conn(conn: &Connection, query: &str) -> rusqlite::Result<Vec<String>> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pattern = format!("%{}%", q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT g.session_id FROM image_generations g
+         JOIN image_sessions s ON s.id = g.session_id
+         WHERE g.prompt LIKE ?1 ESCAPE '\\' OR g.negative_prompt LIKE ?1 ESCAPE '\\'
+         ORDER BY s.updated_at DESC",
+    )?;
+    let ids = stmt.query_map(params![pattern], |r| r.get::<_, String>(0))?.collect();
+    ids
 }
 
 fn remove_image_files(records: &[ImageRecord]) {
@@ -1012,11 +1157,85 @@ fn remove_image_files(records: &[ImageRecord]) {
     }
 }
 
-/// Forget one generation; `delete_files` also removes its pictures from disk.
+/// Create or rename a session (id supplied by the caller), like
+/// `save_conversation`.
 #[tauri::command]
-pub fn image_history_delete(db: State<'_, Db>, id: String, delete_files: bool) -> Result<(), String> {
+pub fn image_session_save(db: State<'_, Db>, id: String, title: String) -> Result<(), String> {
     let conn = lock(&db)?;
-    let recs = image_records(&conn, Some(&id)).map_err(|e| e.to_string())?;
+    image_session_upsert(&conn, &id, &title).map_err(|e| e.to_string())
+}
+
+/// Every session, pinned first, then most recently used.
+#[tauri::command]
+pub fn image_session_list(db: State<'_, Db>) -> Result<Vec<ImageSession>, String> {
+    let conn = lock(&db)?;
+    image_sessions(&conn, None).map_err(|e| e.to_string())
+}
+
+/// One session with its rounds, oldest first, and its unsent draft.
+#[tauri::command]
+pub fn image_session_get(db: State<'_, Db>, id: String) -> Result<Option<ImageSessionData>, String> {
+    let conn = lock(&db)?;
+    let Some(session) = image_sessions(&conn, Some(&id)).map_err(|e| e.to_string())?.into_iter().next() else {
+        return Ok(None);
+    };
+    let draft: String = conn
+        .query_row("SELECT draft FROM image_sessions WHERE id = ?1", params![id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let records = image_records(&conn, Some(("session_id = ?1", &id))).map_err(|e| e.to_string())?;
+    Ok(Some(ImageSessionData { session, draft, records }))
+}
+
+/// Keep the prompt a session was left with. Typing does not move the session
+/// up the list — only a new round does.
+#[tauri::command]
+pub fn image_session_draft(db: State<'_, Db>, id: String, draft: String) -> Result<(), String> {
+    let conn = lock(&db)?;
+    conn.execute("UPDATE image_sessions SET draft = ?1 WHERE id = ?2", params![draft, id])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn image_session_rename(db: State<'_, Db>, id: String, title: String) -> Result<(), String> {
+    let conn = lock(&db)?;
+    conn.execute("UPDATE image_sessions SET title = ?1 WHERE id = ?2", params![title, id])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn image_session_set_pinned(db: State<'_, Db>, id: String, pinned: bool) -> Result<(), String> {
+    let conn = lock(&db)?;
+    conn.execute("UPDATE image_sessions SET pinned = ?1 WHERE id = ?2", params![pinned as i64, id])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Delete a session and its rounds; `delete_files` also removes the pictures
+/// it made (never a reference picture brought in from elsewhere).
+#[tauri::command]
+pub fn image_session_delete(db: State<'_, Db>, id: String, delete_files: bool) -> Result<(), String> {
+    let conn = lock(&db)?;
+    let recs = image_session_delete_conn(&conn, &id).map_err(|e| e.to_string())?;
+    drop(conn);
+    if delete_files {
+        remove_image_files(&recs);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn image_session_search(db: State<'_, Db>, query: String) -> Result<Vec<String>, String> {
+    let conn = lock(&db)?;
+    image_session_search_conn(&conn, &query).map_err(|e| e.to_string())
+}
+
+/// Delete one round of a session; `delete_files` also removes its pictures.
+#[tauri::command]
+pub fn image_generation_delete(db: State<'_, Db>, id: String, delete_files: bool) -> Result<(), String> {
+    let conn = lock(&db)?;
+    let recs = image_records(&conn, Some(("id = ?1", &id))).map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM image_generations WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     drop(conn);
@@ -1026,12 +1245,13 @@ pub fn image_history_delete(db: State<'_, Db>, id: String, delete_files: bool) -
     Ok(())
 }
 
-/// Forget all generations; `delete_files` also removes the pictures.
+/// Delete every session and round; `delete_files` also removes the pictures.
 #[tauri::command]
 pub fn image_history_clear(db: State<'_, Db>, delete_files: bool) -> Result<(), String> {
     let conn = lock(&db)?;
     let recs = if delete_files { image_records(&conn, None).map_err(|e| e.to_string())? } else { Vec::new() };
     conn.execute("DELETE FROM image_generations", []).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM image_sessions", []).map_err(|e| e.to_string())?;
     drop(conn);
     remove_image_files(&recs);
     Ok(())
@@ -1346,6 +1566,82 @@ mod tests {
         let left: i64 =
             conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 0, "no orphan may be created");
+    }
+
+    fn image_round(id: &str, session: &str, prompt: &str, at: i64) -> super::ImageRecord {
+        super::ImageRecord {
+            id: id.into(),
+            prompt: prompt.into(),
+            negative_prompt: String::new(),
+            params: serde_json::json!({ "steps": 8 }),
+            images: vec![super::ImageItem { path: format!("/tmp/{id}.png"), width: 512, height: 512, seed: 1 }],
+            model: "z-image".into(),
+            family: "z-image".into(),
+            created_at: at,
+            elapsed_ms: 10,
+            session_id: session.into(),
+            parent_id: None,
+        }
+    }
+
+    /// Rounds drawn before sessions existed each become a session of their
+    /// own, and stay readable.
+    #[test]
+    fn early_image_rounds_become_sessions() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE image_generations (
+                id TEXT PRIMARY KEY, prompt TEXT NOT NULL, negative_prompt TEXT NOT NULL DEFAULT '',
+                params TEXT NOT NULL DEFAULT '{}', images TEXT NOT NULL DEFAULT '[]',
+                model TEXT NOT NULL DEFAULT '', family TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL, elapsed_ms INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO image_generations (id, prompt, created_at) VALUES ('g1', 'a lighthouse at dusk', 5);",
+        )
+        .unwrap();
+        conn.execute_batch(super::SCHEMA).unwrap();
+        super::migrate_image_sessions(&conn);
+        super::migrate_image_sessions(&conn); // idempotent
+
+        let sessions = super::image_sessions(&conn, None).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "g1");
+        assert_eq!(sessions[0].title, "a lighthouse at dusk");
+        let rounds = super::image_records(&conn, Some(("session_id = ?1", "g1"))).unwrap();
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0].prompt, "a lighthouse at dusk");
+    }
+
+    /// A round is kept only in a session that still exists, moves the session
+    /// up, and goes with it; its prompt finds it.
+    #[test]
+    fn an_image_round_lives_and_dies_with_its_session() {
+        let conn = db();
+        super::migrate_image_sessions(&conn);
+        assert!(!super::image_record_insert_conn(&conn, &image_round("r0", "gone", "x", 1)).unwrap());
+
+        super::image_session_upsert(&conn, "s1", "cats").unwrap();
+        super::image_session_upsert(&conn, "s2", "dogs").unwrap();
+        conn.execute("UPDATE image_sessions SET updated_at = 1", []).unwrap();
+        assert!(super::image_record_insert_conn(&conn, &image_round("r1", "s1", "a ginger cat", 10)).unwrap());
+        let mut second = image_round("r2", "s1", "make it wear a hat", 20);
+        second.parent_id = Some("r1".into());
+        assert!(super::image_record_insert_conn(&conn, &second).unwrap());
+
+        let list = super::image_sessions(&conn, None).unwrap();
+        assert_eq!(list[0].id, "s1", "a new round moves its session to the top");
+        let rounds = super::image_records(&conn, Some(("session_id = ?1", "s1"))).unwrap();
+        assert_eq!(rounds.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["r1", "r2"], "oldest first");
+        assert_eq!(rounds[1].parent_id.as_deref(), Some("r1"));
+
+        assert_eq!(super::image_session_search_conn(&conn, "HAT").unwrap(), ["s1"]);
+        assert!(super::image_session_search_conn(&conn, "dog").unwrap().is_empty(), "titles are matched by the sidebar");
+        assert!(super::image_session_search_conn(&conn, "100%").unwrap().is_empty());
+
+        let gone = super::image_session_delete_conn(&conn, "s1").unwrap();
+        assert_eq!(gone.len(), 2, "the deleted rounds come back for their files");
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM image_generations", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0);
+        assert_eq!(super::image_sessions(&conn, None).unwrap().len(), 1);
     }
 
     /// The statistics panel counts what the user can actually open, and the

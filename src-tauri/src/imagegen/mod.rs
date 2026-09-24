@@ -237,6 +237,12 @@ pub struct ImageRequest {
     /// Folder the pictures go to; empty = app-data/images/<date>.
     #[serde(default)]
     pub out_dir: Option<String>,
+    /// The session this round belongs to. Absent: a session of its own.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// The round whose picture this one starts from (multi-turn editing).
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 /// What the studio hears while a generation runs.
@@ -351,6 +357,16 @@ pub async fn image_generate(
         trf!("无法创建输出文件夹 {}:{}", "cannot create the output folder {}: {}", out_dir.display(), e)
     })?;
     let id = format!("{}-{:04x}", stamp.format("%Y%m%d%H%M%S%3f"), rand_u16());
+    // The studio names its session before the first round, as the chat does
+    // a conversation; any other caller gets one named after the prompt.
+    let session_id = match request.session_id.as_deref().filter(|s| !s.is_empty()) {
+        Some(s) => s.to_string(),
+        None => {
+            let title: String = request.params.prompt.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(40).collect();
+            crate::store::image_session_ensure(&app.state::<Db>(), &id, &title)?;
+            id.clone()
+        }
+    };
     let stem = stamp.format("%Y%m%d-%H%M%S").to_string();
     let meta = metadata_text(&request.params, &model_name);
 
@@ -369,7 +385,8 @@ pub async fn image_generate(
     }
     fire(&listener, ImageEvent::Started { id: id.clone(), request: request.clone(), started_at });
 
-    let params = request.params.clone();
+    let mut params = request.params.clone();
+    params.cache = family::step_cache(&family, &params.accel).map(|(m, t)| (m.to_string(), t));
     let dir = out_dir.clone();
     let l2 = listener.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
@@ -385,6 +402,7 @@ pub async fn image_generate(
                         SdEvent::Progress { .. } => l.progress = Some(ev.clone()),
                         SdEvent::Preview { .. } => l.preview = Some(ev.clone()),
                         SdEvent::Image { .. } => l.images.push(ev.clone()),
+                        SdEvent::Cache { .. } => {}
                     }
                 }
             }
@@ -410,12 +428,28 @@ pub async fn image_generate(
                 family: family.clone(),
                 created_at: started_at,
                 elapsed_ms: out.elapsed_ms as i64,
+                session_id: session_id.clone(),
+                parent_id: request.parent_id.clone(),
             });
-            if let Some(r) = &record {
-                if let Err(e) = crate::store::image_record_insert(&app.state::<Db>(), r) {
-                    crate::errlog::append_error("image-history-save", &e);
-                }
-            }
+            let record = match record {
+                Some(r) => match crate::store::image_record_insert(&app.state::<Db>(), &r) {
+                    Ok(true) => Some(r),
+                    // The session was deleted while this round was drawn: like
+                    // a chat reply to a deleted conversation, it is dropped —
+                    // and so are its pictures, which nothing points to now.
+                    Ok(false) => {
+                        for im in &r.images {
+                            let _ = std::fs::remove_file(&im.path);
+                        }
+                        None
+                    }
+                    Err(e) => {
+                        crate::errlog::append_error("image-history-save", &e);
+                        Some(r)
+                    }
+                },
+                None => None,
+            };
             fire(&listener, ImageEvent::Done { record: record.clone(), cancelled: out.cancelled });
             Ok(record)
         }

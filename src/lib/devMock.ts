@@ -251,7 +251,28 @@ function mockPicture(path: string, blur = 0): string {
   return "data:image/svg+xml;utf8," + svg.replace(/#/g, "%23");
 }
 
-const IMAGE_HISTORY = [
+type MockRound = {
+  id: string;
+  prompt: string;
+  negativePrompt: string;
+  params: Record<string, unknown>;
+  images: { path: string; width: number; height: number; seed: number }[];
+  model: string;
+  family: string;
+  createdAt: number;
+  elapsedMs: number;
+  sessionId: string;
+  parentId: string | null;
+};
+type MockSession = { id: string; title: string; createdAt: number; updatedAt: number; pinned: boolean; draft: string };
+
+// Image sessions: a single-round one, and a multi-turn edit (four cats, then
+// one of them given a straw hat).
+const IMAGE_SESSIONS: MockSession[] = [
+  { id: "is1", title: "A neon sign that reads \"LATE NIGHT DINER\"", createdAt: now - 20 * 60e3, updatedAt: now - 20 * 60e3, pinned: false, draft: "" },
+  { id: "is2", title: "水彩风格的橘猫趴在洒满阳光的窗台上，旁边一盆薄荷", createdAt: now - 26 * 3600e3, updatedAt: now - 25 * 3600e3, pinned: false, draft: "" },
+];
+const IMAGE_ROUNDS: MockRound[] = [
   {
     id: "ih1",
     prompt: "A neon sign that reads \"LATE NIGHT DINER\" on a rainy street corner, reflections on wet pavement, cinematic",
@@ -262,6 +283,8 @@ const IMAGE_HISTORY = [
     family: "qwen-image-2.1",
     createdAt: now - 20 * 60e3,
     elapsedMs: 41200,
+    sessionId: "is1",
+    parentId: null,
   },
   {
     id: "ih2",
@@ -278,8 +301,29 @@ const IMAGE_HISTORY = [
     family: "qwen-image-2.1",
     createdAt: now - 26 * 3600e3,
     elapsedMs: 158000,
+    sessionId: "is2",
+    parentId: null,
+  },
+  {
+    id: "ih3",
+    prompt: "给第一只猫戴上一顶小草帽，其余保持不变",
+    negativePrompt: "",
+    params: { width: 1184, height: 896, steps: 20, cfgScale: 6, sampler: "euler", batchCount: 1, refImages: ["/mock/images/cat-1.png"] },
+    images: [{ path: "/mock/images/cat-hat.png", width: 1184, height: 896, seed: 777 }],
+    model: "z_image_turbo-Q4_K",
+    family: "z-image-turbo",
+    createdAt: now - 25 * 3600e3,
+    elapsedMs: 52000,
+    sessionId: "is2",
+    parentId: "ih2",
   },
 ];
+
+function mockSessionList() {
+  return [...IMAGE_SESSIONS]
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt)
+    .map(({ draft: _d, ...s }) => s);
+}
 
 // Which model the preview has "loaded": ?model=image starts in the studio.
 let CURRENT: unknown = new URLSearchParams(window.location.search).get("model") === "image" ? IMAGE_MODEL : MODEL;
@@ -323,10 +367,57 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         edits: !p.includes("Z-Image"),
       };
     }
-    case "image_history_list":
-      return IMAGE_HISTORY;
-    case "image_history_delete":
+    case "image_session_list":
+      return mockSessionList();
+    case "image_session_get": {
+      const sess = IMAGE_SESSIONS.find((x) => x.id === args?.id);
+      if (!sess) return null;
+      const { draft, ...session } = sess;
+      const records = IMAGE_ROUNDS.filter((r) => r.sessionId === sess.id).sort((a, b) => a.createdAt - b.createdAt);
+      return { session, draft, records };
+    }
+    case "image_session_save": {
+      const id = String(args?.id);
+      const title = String(args?.title ?? "");
+      const sess = IMAGE_SESSIONS.find((x) => x.id === id);
+      if (sess) Object.assign(sess, { title, updatedAt: Date.now() });
+      else IMAGE_SESSIONS.push({ id, title, createdAt: Date.now(), updatedAt: Date.now(), pinned: false, draft: "" });
+      return null;
+    }
+    case "image_session_draft": {
+      const sess = IMAGE_SESSIONS.find((x) => x.id === args?.id);
+      if (sess) sess.draft = String(args?.draft ?? "");
+      return null;
+    }
+    case "image_session_rename": {
+      const sess = IMAGE_SESSIONS.find((x) => x.id === args?.id);
+      if (sess) sess.title = String(args?.title ?? sess.title);
+      return null;
+    }
+    case "image_session_set_pinned": {
+      const sess = IMAGE_SESSIONS.find((x) => x.id === args?.id);
+      if (sess) sess.pinned = !!args?.pinned;
+      return null;
+    }
+    case "image_session_delete": {
+      const i = IMAGE_SESSIONS.findIndex((x) => x.id === args?.id);
+      if (i >= 0) IMAGE_SESSIONS.splice(i, 1);
+      for (let k = IMAGE_ROUNDS.length - 1; k >= 0; k--) if (IMAGE_ROUNDS[k].sessionId === args?.id) IMAGE_ROUNDS.splice(k, 1);
+      return null;
+    }
+    case "image_session_search": {
+      const q = String(args?.query ?? "").toLowerCase();
+      return [...new Set(IMAGE_ROUNDS.filter((r) => r.prompt.toLowerCase().includes(q)).map((r) => r.sessionId))];
+    }
+    case "image_generation_delete": {
+      const i = IMAGE_ROUNDS.findIndex((r) => r.id === args?.id);
+      if (i >= 0) IMAGE_ROUNDS.splice(i, 1);
+      return null;
+    }
     case "image_history_clear":
+      IMAGE_SESSIONS.length = 0;
+      IMAGE_ROUNDS.length = 0;
+      return null;
     case "image_cancel":
     case "image_copy":
       return null;
@@ -342,7 +433,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "image_generate": {
       const ch = args?.onEvent as { onmessage?: (ev: unknown) => void } | undefined;
       const emit = (ev: unknown) => ch?.onmessage?.(ev);
-      const req = args?.request as { prompt: string; negativePrompt: string; width: number; height: number; steps: number; cfgScale: number; sampler: string; batchCount: number; seed: number };
+      const req = args?.request as { prompt: string; negativePrompt: string; width: number; height: number; steps: number; cfgScale: number; sampler: string; batchCount: number; seed: number; sessionId?: string | null; parentId?: string | null };
       const id = `mock-${Date.now()}`;
       const startedAt = Date.now();
       const seed0 = req.seed >= 0 ? req.seed : Math.floor(Math.random() * 4e9);
@@ -352,7 +443,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return (async () => {
         emit({ type: "started", id, request: req, startedAt });
         emit({ type: "engine", event: { type: "stage", stage: "encode", index: 0, count: n } });
-        await wait(600);
+        const seen = IMAGE_ROUNDS.some((r) => r.prompt === req.prompt);
+        if (seen) emit({ type: "engine", event: { type: "cache", kind: "conditioning", skipped: 0, total: 0 } });
+        await wait(seen ? 100 : 600);
         const images: { path: string; width: number; height: number; seed: number }[] = [];
         for (let b = 0; b < n; b++) {
           emit({ type: "engine", event: { type: "stage", stage: "sample", index: b, count: n, seed: seed0 + b } });
@@ -360,6 +453,10 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
             emit({ type: "engine", event: { type: "progress", stage: "sample", step: st, steps, secs: st ? 0.45 : 0 } });
             if (st) emit({ type: "engine", event: { type: "preview", step: st, width: 128, height: 128, dataUrl: mockPicture(`/mock/images/${id}-${b}.png`, 40 - (36 * st) / steps) } });
             await wait(450);
+          }
+          const accel = (req as { accel?: string }).accel;
+          if (accel === "balanced" || accel === "fast") {
+            emit({ type: "engine", event: { type: "cache", kind: "steps", skipped: accel === "fast" ? Math.floor(steps / 2) : Math.floor(steps / 4), total: steps } });
           }
         }
         emit({ type: "engine", event: { type: "stage", stage: "decode", index: 0, count: n } });
@@ -370,7 +467,14 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           emit({ type: "engine", event: { type: "image", index: b, ...im } });
         }
         emit({ type: "engine", event: { type: "progress", stage: "decode", step: n, steps: n, secs: 0 } });
-        const record = {
+        const sessionId = req.sessionId || id;
+        let sess = IMAGE_SESSIONS.find((x) => x.id === sessionId);
+        if (!sess) {
+          sess = { id: sessionId, title: req.prompt.slice(0, 40), createdAt: startedAt, updatedAt: startedAt, pinned: false, draft: "" };
+          IMAGE_SESSIONS.push(sess);
+        }
+        sess.updatedAt = Date.now();
+        const record: MockRound = {
           id,
           prompt: req.prompt,
           negativePrompt: req.negativePrompt,
@@ -380,8 +484,10 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           family: "qwen-image-2.1",
           createdAt: startedAt,
           elapsedMs: Date.now() - startedAt,
+          sessionId,
+          parentId: req.parentId ?? null,
         };
-        IMAGE_HISTORY.unshift(record);
+        IMAGE_ROUNDS.push(record);
         emit({ type: "done", record, cancelled: false });
         return record;
       })();

@@ -8,6 +8,7 @@ import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextMenu } from "./components/ContextMenu";
 import { ImagePreview } from "./components/ImagePreview";
 import { ImageThumb } from "./components/ImageThumb";
+import { UserCopy, UserText } from "./components/UserText";
 import { withErrorNote } from "./lib/reasoning";
 import { DownloadModal } from "./components/DownloadModal";
 import { HardwarePanel } from "./components/HardwarePanel";
@@ -130,7 +131,7 @@ import {
   resetCalibration,
   standingTail,
 } from "./lib/ctxBudget";
-import { fmtGbFromMb } from "./lib/fmt";
+import { convTitle, fmtGbFromMb } from "./lib/fmt";
 
 interface UiMessage extends ChatMessage {
   id: string;
@@ -139,50 +140,6 @@ interface UiMessage extends ChatMessage {
    *  search results before the question. Kept (in memory) so every later
    *  prompt repeats the turn exactly as the cache holds it. */
   modelContent?: string;
-}
-
-/** User-message text with a clamp for pasted walls of text: over ~15 lines or
- *  1200 chars it renders a 220px preview with a fade + expand pill. */
-function UserText({ content, expandLabel, collapseLabel }: { content: string; expandLabel: string; collapseLabel: string }) {
-  const long = content.length > 1200 || content.split("\n").length > 15;
-  const [open, setOpen] = useState(false);
-  if (!long) return <span className="user-text">{content}</span>;
-  return (
-    <>
-      <span className={`user-text ${open ? "" : "clamped"}`}>{content}</span>
-      <button className="user-expand" type="button" onClick={() => setOpen(!open)}>
-        {open ? collapseLabel : expandLabel}
-      </button>
-    </>
-  );
-}
-
-/** Hover copy button on user messages (mirrors the edit pencil). */
-function UserCopy({ content, title }: { content: string; title: string }) {
-  const [ok, setOk] = useState(false);
-  return (
-    <button
-      className="user-edit user-copy"
-      title={title}
-      onClick={() =>
-        void copyToClipboard(content).then(() => {
-          setOk(true);
-          setTimeout(() => setOk(false), 1400);
-        })
-      }
-    >
-      {ok ? (
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
-          <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      ) : (
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-          <rect x="9" y="9" width="11" height="11" rx="2" />
-          <path d="M5 15V5a2 2 0 0 1 2-2h8" strokeLinecap="round" />
-        </svg>
-      )}
-    </button>
-  );
 }
 
 // Host OS, resolved once at startup. Drives native window chrome on macOS
@@ -207,7 +164,6 @@ let bootLoadStarted = false;
 const SIDEBAR_DEFAULT = 248;
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 440;
-const convTitle = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 40) || "新对话";
 
 /** Parse `chaty://open_from_hf?model=<repo>&file=<file>` from a deep link. */
 function parseHfDeepLink(raw: string): { repo: string; file?: string } | null {
@@ -358,6 +314,7 @@ export default function App() {
     onBusy: setBusy,
     notify: (kind, text) => showNotice(kind, text),
     stoppedText: t("imgStopped"),
+    autoChain: !!model?.image?.edits && settings.imgAutoChain,
   });
   useEffect(() => {
     imageDropRef.current = imageMode
@@ -2617,12 +2574,12 @@ export default function App() {
               setShowSettings(true);
             },
           },
-          ...studio.history.slice(0, 50).map((r) => ({
-            id: `img:${r.id}`,
-            label: r.prompt.slice(0, 80),
+          ...studio.sessions.map((s) => ({
+            id: `img:${s.id}`,
+            label: s.title,
             hint: t("imgCmdkHint"),
-            keywords: `image generation 图片 ${r.prompt}`,
-            run: () => studio.select(r.id),
+            keywords: `image session 生图 会话 ${s.title}`,
+            run: () => void studio.openSession(s.id),
           })),
         ]
       : conversations.map((c) => ({
@@ -2959,7 +2916,7 @@ export default function App() {
                   }
                 : undefined
             }
-            onImageHistoryCleared={() => void studio.refresh().then(studio.startNew)}
+            onImageHistoryCleared={studio.cleared}
             maxTokensLimit={Math.max(1024, model?.nCtx ?? 4096)}
             ctxTrainLimit={model?.nCtxTrain}
             layersLimit={model?.nLayer}

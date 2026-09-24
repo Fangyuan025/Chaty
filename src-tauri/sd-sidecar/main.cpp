@@ -320,6 +320,17 @@ static void on_log(enum sd_log_level_t level, const char* text, void*) {
         if (sscanf(t.c_str(), "latent %d decoded", &i) == 1) {
             emit({{"event", "progress"}, {"id", g_job_id}, {"stage", "decode"}, {"step", i}, {"steps", g_batch_count}, {"time", 0}});
         }
+    } else if (t == "conditioning cache hit") {
+        emit({{"event", "cache"}, {"id", g_job_id}, {"kind", "conditioning"}});
+    } else if (t.find(" skipped ") != std::string::npos || t.find("completed without skipping steps") != std::string::npos) {
+        // "EasyCache skipped 5/20 steps (1.33x estimated speedup)"
+        char method[32] = {0};
+        int skipped = 0, total = 0;
+        if (sscanf(t.c_str(), "%31s skipped %d/%d steps", method, &skipped, &total) == 3) {
+            emit({{"event", "cache"}, {"id", g_job_id}, {"kind", "steps"}, {"method", method}, {"skipped", skipped}, {"total", total}});
+        } else if (t.find("completed without skipping steps") != std::string::npos) {
+            emit({{"event", "cache"}, {"id", g_job_id}, {"kind", "steps"}, {"skipped", 0}, {"total", 0}});
+        }
     } else if (starts_with(t, "loading tensors completed") && g_stage == "weights") {
         // A lazy weight load inside the generation finished; carry on with
         // the phase it interrupted.
@@ -615,6 +626,12 @@ static void do_load(json cmd) {
     // loading by itself when the model has to be split across memories.
     p.eager_load = jbool(cmd, "eager_load", true);
     p.auto_fit   = jbool(cmd, "auto_fit", true);
+    // The prompt's encoding (and, for editing models, the reference
+    // picture's) is kept for the rounds that ask for it again — "again", a
+    // batch re-run, a negative prompt that did not change — so the text and
+    // vision encoders are skipped for them. Explicit rather than trusting
+    // the library's default, which differs between its front ends.
+    p.conditioning_cache_size = std::max(0, jint(cmd, "conditioning_cache", 8));
     p.max_vram   = max_vram.empty() ? nullptr : max_vram.c_str();
     p.backend    = backend.empty() ? nullptr : backend.c_str();
     p.params_backend = params_backend.empty() ? nullptr : params_backend.c_str();
@@ -714,6 +731,29 @@ static void do_generate(json cmd) {
         s.scheduler = sd_get_default_scheduler(g_ctx, s.sample_method);
 
     g.vae_tiling_params = {jbool(cmd, "vae_tiling", false), false, 0, 0, 0.5f, 0.0f, 0.0f, nullptr};
+
+    // Sampling acceleration: denoiser work reused between steps whose input
+    // barely moved (EasyCache for DiT models, UCache for UNet, Spectrum for
+    // either). Off unless asked for; the threshold is the engine's own when
+    // not given.
+    std::string cache_mode = jstr(cmd, "cache_mode");
+    if (!cache_mode.empty() && cache_mode != "off") {
+        static const std::pair<const char*, sd_cache_mode_t> modes[] = {
+            {"easycache", SD_CACHE_EASYCACHE}, {"ucache", SD_CACHE_UCACHE},         {"dbcache", SD_CACHE_DBCACHE},
+            {"taylorseer", SD_CACHE_TAYLORSEER}, {"cache-dit", SD_CACHE_CACHE_DIT}, {"spectrum", SD_CACHE_SPECTRUM},
+        };
+        for (const auto& m : modes) {
+            if (cache_mode == m.first)
+                g.cache.mode = m.second;
+        }
+        float threshold = jfloat(cmd, "cache_threshold", -1.0f);
+        if (threshold > 0.0f) {
+            if (g.cache.mode == SD_CACHE_EASYCACHE || g.cache.mode == SD_CACHE_UCACHE)
+                g.cache.reuse_threshold = threshold;
+            else if (g.cache.mode == SD_CACHE_DBCACHE || g.cache.mode == SD_CACHE_CACHE_DIT)
+                g.cache.residual_diff_threshold = threshold;
+        }
+    }
 
     // Optional img2img source and reference pictures (editing models).
     std::vector<sd_image_t> owned;

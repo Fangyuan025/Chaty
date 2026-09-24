@@ -99,6 +99,12 @@ pub struct GenerateParams {
     pub strength: f32,
     /// Reference pictures for editing models.
     pub ref_images: Vec<String>,
+    /// Sampling acceleration: "off", "balanced" or "fast".
+    pub accel: String,
+    /// The step cache it resolved to for the loaded model (method and
+    /// reuse threshold, 0 = the engine's default) — set by the caller.
+    #[serde(skip)]
+    pub cache: Option<(String, f32)>,
 }
 
 impl Default for GenerateParams {
@@ -124,6 +130,8 @@ impl Default for GenerateParams {
             init_image: None,
             strength: 0.75,
             ref_images: Vec::new(),
+            accel: String::new(),
+            cache: None,
         }
     }
 }
@@ -147,6 +155,10 @@ pub enum SdEvent {
     /// A finished picture, already on disk.
     #[serde(rename_all = "camelCase")]
     Image { index: u32, path: String, width: u32, height: u32, seed: i64 },
+    /// A cache saved work: "conditioning" (the prompt's encoding was reused)
+    /// or "steps" (`skipped` of `total` denoising steps were reused).
+    #[serde(rename_all = "camelCase")]
+    Cache { kind: String, skipped: u32, total: u32 },
 }
 
 /// A generation that ran to its end (or was stopped with pictures made).
@@ -407,6 +419,12 @@ impl SdEngine {
         if let Some(init) = p.init_image.as_ref().filter(|s| !s.is_empty()) {
             cmd["init_image"] = json!(init);
         }
+        if let Some((mode, threshold)) = &p.cache {
+            cmd["cache_mode"] = json!(mode);
+            if *threshold > 0.0 {
+                cmd["cache_threshold"] = json!(threshold);
+            }
+        }
 
         let rx = self.lines.lock().map_err(|_| anyhow!("engine lock poisoned"))?;
         // Anything left over from a job that ended abnormally is not ours.
@@ -449,6 +467,11 @@ impl SdEngine {
                     width: u("width"),
                     height: u("height"),
                     data_url: ev["data"].as_str().unwrap_or_default().to_string(),
+                }),
+                Some("cache") => on_event(SdEvent::Cache {
+                    kind: ev["kind"].as_str().unwrap_or_default().to_string(),
+                    skipped: u("skipped"),
+                    total: u("total"),
                 }),
                 Some("image") => {
                     let path = ev["path"].as_str().unwrap_or_default().to_string();
@@ -598,10 +621,13 @@ echo '{"event":"load_progress","step":5,"steps":10}'
 echo '{"event":"loaded","version":"Qwen Image 2.1","supports_image":true,"default_sampler":"euler","default_scheduler":"simple"}'
 read gen
 id=$(echo "$gen" | sed 's/.*"id":"\([^"]*\)".*/\1/')
+echo "$gen" > "$(dirname "$0")/gen.json"
 echo '{"event":"stage","id":"'$id'","stage":"encode","index":0,"count":1}'
+echo '{"event":"cache","id":"'$id'","kind":"conditioning"}'
 echo '{"event":"stage","id":"'$id'","stage":"sample","index":0,"count":1,"seed":7}'
 echo '{"event":"progress","id":"'$id'","stage":"sample","step":1,"steps":2,"time":0.5}'
 echo '{"event":"preview","id":"'$id'","step":1,"width":8,"height":8,"data":"data:image/jpeg;base64,AA=="}'
+echo '{"event":"cache","id":"'$id'","kind":"steps","skipped":1,"total":2}'
 echo '{"event":"image","id":"'$id'","index":0,"path":"/tmp/x.png","width":64,"height":64,"seed":7}'
 echo '{"event":"done","id":"'$id'","count":1,"cancelled":false,"elapsed_ms":12}'
 read rest
@@ -618,9 +644,11 @@ read rest
         assert_eq!(fracs.lock().unwrap().as_slice(), &[0.49]);
 
         let mut events = Vec::new();
-        let out = engine
-            .generate(&GenerateParams::default(), &dir, "t", "", |e| events.push(e))
-            .unwrap();
+        let params = GenerateParams { cache: Some(("easycache".into(), 0.35)), ..Default::default() };
+        let out = engine.generate(&params, &dir, "t", "", |e| events.push(e)).unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("gen.json")).unwrap()).unwrap();
+        assert_eq!(sent["cache_mode"], "easycache", "the step cache goes to the engine");
+        assert!((sent["cache_threshold"].as_f64().unwrap() - 0.35).abs() < 1e-6);
         assert_eq!(out.images.len(), 1);
         assert_eq!(out.images[0].3, 7);
         assert!(!out.cancelled);
@@ -631,9 +659,11 @@ read rest
                 SdEvent::Progress { .. } => "progress",
                 SdEvent::Preview { .. } => "preview",
                 SdEvent::Image { .. } => "image",
+                SdEvent::Cache { kind, .. } => kind.as_str(),
             })
             .collect();
-        assert_eq!(kinds, vec!["encode", "sample", "progress", "preview", "image"]);
+        assert_eq!(kinds, vec!["encode", "conditioning", "sample", "progress", "preview", "steps", "image"]);
+        assert!(matches!(&events[5], SdEvent::Cache { skipped: 1, total: 2, .. }));
         assert!(!engine.is_busy());
         drop(engine);
         std::fs::remove_dir_all(&dir).ok();

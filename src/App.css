@@ -7782,53 +7782,69 @@ body,
    chat's own parts (composer, empty state, sidebar rows) so it reads as the
    same app in another mode, not a second one bolted on.
    ========================================================================== */
-.is-studio {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.is-canvas {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 26px 24px 12px;
-}
-.is-canvas > * {
-  max-width: 900px;
-  margin-left: auto;
-  margin-right: auto;
-}
+/* The thread: each round is the chat's own pair — the prompt as the user's
+   bubble, the pictures as the reply — so a session reads like a
+   conversation. */
 .is-empty {
   margin-top: 11vh;
 }
-.is-prompt-line {
-  font-family: var(--font-display);
-  font-size: 16.5px;
-  line-height: 1.55;
-  color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin-bottom: 12px;
+.is-round + .is-round {
+  margin-top: 26px;
 }
-.is-prompt-line.selectable {
-  user-select: text;
+.msg.assistant.is-reply {
+  margin-top: 14px;
+  align-items: stretch;
+}
+.is-reply .msg-actions {
+  margin-top: 2px;
+}
+/* Pictures sit where a reply's text starts, as in the chat. */
+.is-reply .is-grid.n1 {
+  justify-items: start;
+}
+.is-reply .is-run-stage {
+  align-self: flex-start;
 }
 .is-neg-line {
-  font-size: 13px;
+  display: block;
+  margin-top: 4px;
+  font-size: 12.5px;
   color: var(--text-dim);
-  margin: -4px 0 10px;
-  word-break: break-word;
+  white-space: pre-wrap;
 }
 .is-neg-line span {
   color: var(--faint);
   margin-right: 4px;
 }
+/* "From round 2": where the picture being edited came from. */
+.is-from {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 6px;
+  padding: 2px 8px 2px 6px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast);
+}
+.is-from:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.msg-images + .is-from {
+  display: flex;
+  width: fit-content;
+}
 .is-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 14px;
+  margin-bottom: 4px;
 }
 .is-chip {
   font-size: 11.5px;
@@ -7866,10 +7882,11 @@ body,
   background: var(--surface);
   box-shadow: var(--shadow-2);
 }
+/* One picture: as tall as the view allows, as wide as its shape then asks,
+   never wider than the column — the frame keeps the picture's proportions. */
 .is-pic.big {
-  width: auto;
-  height: min(72vh, 900px);
-  max-width: 100%;
+  width: min(100%, calc(min(62vh, 720px) * var(--ar, 1)));
+  height: auto;
 }
 .is-pic .img-thumb.is-pic-img {
   display: block;
@@ -7944,12 +7961,6 @@ body,
 .is-pic-actions button:hover {
   background: rgba(255, 255, 255, 0.28);
 }
-.is-record-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 20px;
-}
 .is-btn {
   display: inline-flex;
   align-items: center;
@@ -7992,9 +8003,8 @@ body,
 .is-run-stage {
   position: relative;
   align-self: center;
-  width: auto;
-  height: min(58vh, 640px);
-  max-width: 100%;
+  width: min(100%, calc(min(52vh, 600px) * var(--ar, 1)));
+  height: auto;
   border-radius: var(--r-lg);
   overflow: hidden;
   background: var(--surface);
@@ -8137,6 +8147,12 @@ body,
 .is-ref-title {
   font-size: 12.5px;
   color: var(--text);
+}
+.is-ref-from {
+  margin-left: 8px;
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--text-dim);
 }
 .is-ref-strength {
   display: flex;
@@ -8387,48 +8403,6 @@ body,
   justify-content: space-between;
   gap: 8px;
   padding-top: 4px;
-}
-
-/* ---- sidebar history ---- */
-.is-group-title {
-  padding: 10px 10px 4px;
-  font-size: 11px;
-  color: var(--faint);
-}
-.conv-item.is-hist {
-  gap: 9px;
-  padding: 6px 8px;
-}
-.is-hist-thumb {
-  flex: none;
-  width: 38px;
-  height: 38px;
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
-}
-.is-hist-thumb.img-thumb img {
-  width: 38px;
-  height: 38px;
-  max-height: none;
-  object-fit: cover;
-}
-.is-hist-thumb .img-thumb-ph {
-  width: 38px;
-  height: 38px;
-}
-.is-hist-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.is-hist .conv-title {
-  font-size: 13px;
-}
-.is-hist-meta {
-  font-size: 11px;
-  color: var(--faint);
 }
 
 /* ---- companion files dialog ---- */
