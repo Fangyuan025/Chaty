@@ -147,7 +147,7 @@ pub(crate) fn heal_lfm2_ff_dim(dir: &Path) -> Result<()> {
 }
 
 /// Read a safetensors header: (header byte length, parsed JSON).
-fn read_st_header(path: &Path) -> Result<(usize, Value)> {
+pub(crate) fn read_st_header(path: &Path) -> Result<(usize, Value)> {
     use std::io::Read as _;
     let mut f = std::fs::File::open(path)?;
     let mut lenb = [0u8; 8];
@@ -401,7 +401,7 @@ impl MlxEngine {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("无法启动 MLX 引擎 (failed to spawn sidecar) {sidecar:?}"))?;
-        SIDECAR_PIDS.lock().unwrap().push(child.id());
+        super::SIDECAR_PIDS.lock().unwrap().push(child.id());
         let mut stdin_pipe = child.stdin.take().context("sidecar stdin unavailable")?;
         let stdout = child.stdout.take().context("sidecar stdout unavailable")?;
 
@@ -549,6 +549,8 @@ impl MlxEngine {
             multi_image: loaded["multiImage"].as_bool().unwrap_or(true),
             mmproj: None,
             warning: loaded["warning"].as_str().map(str::to_string),
+            kind: "chat".into(),
+            image: None,
         };
 
         let child = Arc::new(Mutex::new(Some(child)));
@@ -575,27 +577,9 @@ impl MlxEngine {
                 let pid = c.id();
                 let _ = c.kill();
                 let _ = c.wait();
-                SIDECAR_PIDS.lock().unwrap().retain(|p| *p != pid);
+                super::SIDECAR_PIDS.lock().unwrap().retain(|p| *p != pid);
             }
         }
-    }
-}
-
-/// Live sidecar PIDs. The app's quit path exits via `libc::_exit` (dodging a
-/// ggml teardown SIGABRT), which skips every destructor — without an explicit
-/// reap, quitting while an MLX model is loaded orphans a sidecar that keeps
-/// the entire model resident. lib.rs calls `kill_sidecars_now` on exit.
-static SIDECAR_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
-
-pub fn kill_sidecars_now() {
-    let pids: Vec<u32> = std::mem::take(&mut *SIDECAR_PIDS.lock().unwrap());
-    for pid in pids {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(pid as i32, libc::SIGKILL);
-        }
-        #[cfg(not(unix))]
-        let _ = pid;
     }
 }
 

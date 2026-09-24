@@ -12,6 +12,7 @@ mod commands;
 pub mod download;
 pub mod gpu;
 pub mod http;
+pub mod imagegen;
 pub mod inference;
 pub mod errlog;
 pub mod mcp;
@@ -551,6 +552,15 @@ pub fn run() {
             commands::set_tray_language,
             commands::generate,
             commands::cancel_generation,
+            imagegen::image_model_probe,
+            imagegen::image_generate,
+            imagegen::image_cancel,
+            imagegen::image_attach,
+            imagegen::image_output_dir,
+            imagegen::image_copy,
+            store::image_history_list,
+            store::image_history_delete,
+            store::image_history_clear,
             commands::vision_query,
             commands::image_thumb,
             commands::save_file,
@@ -704,9 +714,9 @@ pub fn run() {
                     // Kill the automation browser first — the _exit below skips
                     // destructors, which would otherwise orphan Chrome.
                     browser::kill_now();
-                    // Same for the MLX sidecar: skipping Drop would orphan a
-                    // process holding the whole model in unified memory.
-                    inference::mlx::kill_sidecars_now();
+                    // Same for the MLX and image-engine sidecars: skipping
+                    // Drop would orphan a process holding the whole model.
+                    inference::kill_sidecars_now();
                     // And MCP stdio servers — same orphan risk, same reap.
                     mcp::kill_all_now();
                     #[cfg(unix)]

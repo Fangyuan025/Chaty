@@ -127,6 +127,8 @@ fn load_engine(path: &str, n_ctx: Option<u32>, speculative: bool) -> Result<Mode
             multi_image: true,
             mmproj: None,
             warning: None,
+            kind: "chat".into(),
+            image: None,
         };
         (Arc::new(e), info)
     } else if Path::new(path).join("config.json").is_file() {

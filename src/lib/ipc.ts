@@ -96,6 +96,219 @@ export interface ModelInfo {
   mmproj?: string | null;
   /** Non-fatal load warning code (e.g. "gpu-oom"), or null. */
   warning?: string | null;
+  /** "chat" for a language model, "image" for a diffusion model — an image
+   *  model turns the whole app into the image studio. */
+  kind?: "chat" | "image";
+  /** What the image engine loaded, when `kind` is "image". */
+  image?: ImageModelInfo | null;
+}
+
+// ---- Text-to-image ----
+
+/** A file an image model needs besides its own weights. */
+export type ImageRole = "vae" | "llm" | "llmVision" | "clipL" | "clipG" | "t5xxl";
+
+/** The settings a model family was made to be run with. */
+export interface ImageDefaults {
+  steps: number;
+  cfgScale: number;
+  /** Distilled guidance (FLUX-dev); null for models without it. */
+  guidance: number | null;
+  /** "" = the engine's default for the model. */
+  sampler: string;
+  scheduler: string;
+  /** 0 = the engine's default. */
+  flowShift: number;
+  /** Side of a square at the model's native resolution. */
+  baseSize: number;
+  /** Width and height must be multiples of this. */
+  align: number;
+  /** Whether a negative prompt does anything (it does not at CFG 1). */
+  negativePrompt: boolean;
+}
+
+export interface ImageComponent {
+  role: ImageRole;
+  path: string;
+  sizeMb: number;
+  /** "override" (chosen in Settings) | "folder" (beside the model) | "shared". */
+  source: "override" | "folder" | "shared";
+}
+
+/** A download that would supply a missing companion. */
+export interface ImageSuggestion {
+  role: ImageRole;
+  repo: string;
+  file: string;
+  size: number;
+}
+
+/** An image model before it is loaded: family, needs, what is there. */
+export interface ImageProbe {
+  path: string;
+  family: string;
+  familyName: string;
+  allInOne: boolean;
+  paramsB?: number | null;
+  quant?: string | null;
+  sizeMb: number;
+  components: ImageComponent[];
+  missing: ImageRole[];
+  suggestions: ImageSuggestion[];
+  requires: ImageRole[];
+  optional: ImageRole[];
+  defaults: ImageDefaults;
+  edits: boolean;
+}
+
+export interface ImageModelInfo {
+  family: string;
+  familyName: string;
+  /** What stable-diffusion.cpp identified the weights as. */
+  engineVersion: string;
+  components: ImageComponent[];
+  defaults: ImageDefaults;
+  /** Reference-picture editing is available. */
+  edits: boolean;
+  defaultSampler: string;
+  defaultScheduler: string;
+  /** The GPU the engine runs on, "" on the CPU. */
+  device: string;
+  onCpu: boolean;
+}
+
+/** How the image engine is loaded (Settings → Image model). Everything on
+ *  the GPU by default, spilling only what does not fit. */
+export interface ImageLoadOptions {
+  components: Record<string, string>;
+  device: "gpu" | "cpu";
+  offloadToCpu: boolean;
+  textEncoderOnCpu: boolean;
+  vaeOnCpu: boolean;
+  flashAttn: boolean;
+  threads: number;
+  maxVramGb: number;
+  mmap: boolean;
+}
+
+/** One generation request. */
+export interface ImageRequest {
+  prompt: string;
+  negativePrompt: string;
+  width: number;
+  height: number;
+  steps: number;
+  cfgScale: number;
+  guidance?: number | null;
+  sampler: string;
+  scheduler: string;
+  /** Negative = random (the engine reports the one it chose). */
+  seed: number;
+  batchCount: number;
+  flowShift: number;
+  vaeTiling: boolean;
+  clipSkip: number;
+  preview: "proj" | "vae" | "none";
+  previewInterval: number;
+  format: "png" | "jpg";
+  initImage?: string | null;
+  strength: number;
+  refImages: string[];
+  outDir?: string | null;
+}
+
+export interface ImageItem {
+  path: string;
+  width: number;
+  height: number;
+  seed: number;
+}
+
+/** One press of Generate, as the history keeps it. */
+export interface ImageRecord {
+  id: string;
+  prompt: string;
+  negativePrompt: string;
+  /** The request as sent. */
+  params: Partial<ImageRequest>;
+  images: ImageItem[];
+  model: string;
+  family: string;
+  createdAt: number;
+  elapsedMs: number;
+}
+
+/** What the engine reports while it draws. */
+export type SdEvent =
+  | { type: "stage"; stage: "encode" | "weights" | "sample" | "decode" | string; index: number; count: number; seed?: number | null }
+  | { type: "progress"; stage: string; step: number; steps: number; secs: number }
+  | { type: "preview"; step: number; width: number; height: number; dataUrl: string }
+  | { type: "image"; index: number; path: string; width: number; height: number; seed: number };
+
+export type ImageEvent =
+  | { type: "started"; id: string; request: ImageRequest; startedAt: number }
+  | { type: "engine"; event: SdEvent }
+  | { type: "done"; record: ImageRecord | null; cancelled: boolean }
+  | { type: "error"; message: string };
+
+export interface LiveImageInfo {
+  id: string;
+  request: ImageRequest;
+  startedAt: number;
+  events: SdEvent[];
+}
+
+/** Probe an image model (file or folder): family, companions found and
+ *  missing, and the downloads that fill the gap. null = not an image model. */
+export async function imageModelProbe(
+  path: string,
+  components?: Record<string, string>,
+): Promise<ImageProbe | null> {
+  return await invoke<ImageProbe | null>("image_model_probe", { path, components: components ?? null });
+}
+
+/** Generate with the loaded image model; events stream to `onEvent`. */
+export async function imageGenerate(
+  request: ImageRequest,
+  onEvent: (ev: ImageEvent) => void,
+): Promise<ImageRecord | null> {
+  const channel = new Channel<ImageEvent>();
+  channel.onmessage = onEvent;
+  return await invoke<ImageRecord | null>("image_generate", { request, onEvent: channel });
+}
+
+/** Stop the running generation: now, or once the current picture is done. */
+export async function imageCancel(mode: "all" | "after_current" = "all"): Promise<void> {
+  await invoke("image_cancel", { mode });
+}
+
+/** Rejoin a generation already running (after the page reloaded). */
+export async function imageAttach(onEvent: (ev: ImageEvent) => void): Promise<LiveImageInfo | null> {
+  const channel = new Channel<ImageEvent>();
+  channel.onmessage = onEvent;
+  return await invoke<LiveImageInfo | null>("image_attach", { onEvent: channel });
+}
+
+/** The default folder pictures are saved in (app-data/images). */
+export async function imageOutputDir(): Promise<string> {
+  return await invoke<string>("image_output_dir");
+}
+
+/** Put a picture on the clipboard as an image. */
+export async function imageCopy(path: string): Promise<void> {
+  await invoke("image_copy", { path });
+}
+
+export async function imageHistoryList(): Promise<ImageRecord[]> {
+  return (await invoke<ImageRecord[]>("image_history_list")) ?? [];
+}
+
+export async function imageHistoryDelete(id: string, deleteFiles: boolean): Promise<void> {
+  await invoke("image_history_delete", { id, deleteFiles });
+}
+
+export async function imageHistoryClear(deleteFiles: boolean): Promise<void> {
+  await invoke("image_history_clear", { deleteFiles });
 }
 
 export interface GpuInfo {
@@ -732,6 +945,8 @@ export async function loadModel(
   nCtx: number | undefined,
   speculative: boolean,
   onProgress?: (p: LoadProgress) => void,
+  /** How an image model is loaded; ignored for chat models. */
+  image?: ImageLoadOptions,
 ): Promise<ModelInfo> {
   const channel = new Channel<LoadProgress>();
   if (onProgress) channel.onmessage = onProgress;
@@ -740,6 +955,7 @@ export async function loadModel(
     gpuLayers,
     nCtx,
     speculative,
+    image: image ?? null,
     onProgress: channel,
   });
 }
@@ -759,10 +975,17 @@ export interface ModelEntry {
   sizeMb?: number;
   /** Paired vision encoder (mmproj) path, for the picker's vision badge. */
   mmproj?: string | null;
-  /** Weight format: "gguf" (llama.cpp) or "mlx" (Apple-Silicon sidecar folder). */
-  format?: "gguf" | "mlx";
+  /** Weight format: "gguf" (llama.cpp), "mlx" (Apple-Silicon sidecar folder)
+   *  or "safetensors" (an image model's denoiser). */
+  format?: "gguf" | "mlx" | "safetensors";
   /** Vision-capable once loaded (GGUF: paired mmproj; MLX: built-in tower). */
   vision?: boolean;
+  /** "image" = a text-to-image model (opens the image studio). */
+  kind?: "chat" | "image";
+  /** An image model's family, for the badge. */
+  family?: string | null;
+  /** Companions an image model still lacks (before hand-picked ones). */
+  missing?: string[];
 }
 
 export interface HfFile {
@@ -808,10 +1031,13 @@ export async function downloadModel(
   onProgress: (p: DownloadProgress) => void,
   /** Optional folder under models/ — the vision-model layout (main + mmproj side by side). */
   subdir?: string,
+  /** An existing model folder to download into instead (an image model's
+   *  companions go beside it). Must be inside a models root. */
+  dir?: string,
 ): Promise<void> {
   const channel = new Channel<DownloadProgress>();
   channel.onmessage = onProgress;
-  await invoke("download_model", { url, filename, subdir: subdir ?? null, onProgress: channel });
+  await invoke("download_model", { url, filename, subdir: subdir ?? null, dir: dir ?? null, onProgress: channel });
 }
 
 /** Sentinel rejection message of a user-cancelled download. */
@@ -828,6 +1054,8 @@ export interface HfModelHit {
   likes: number;
   updatedAt: string;
   vision: boolean;
+  /** A text-to-image model. */
+  image?: boolean;
   paramsB?: number | null;
 }
 
@@ -850,6 +1078,10 @@ export interface HfModelDetail {
   mmprojSize: number;
   readme: string;
   totalRamMb: number;
+  /** A text-to-image model. */
+  image?: boolean;
+  /** Its VAE / text encoder, fetched into the same folder with the quant. */
+  companions?: ImageSuggestion[];
 }
 
 /** Search/browse HF models. Empty query = trending storefront. */
@@ -857,6 +1089,8 @@ export async function hfSearch(
   query: string,
   format: "gguf" | "mlx",
   sort: "trending" | "downloads" | "likes" | "updated",
+  /** "image" = text-to-image models only. */
+  task: "all" | "image" = "all",
 ): Promise<HfModelHit[]> {
   return await invoke<HfModelHit[]>("hf_search", {
     query,
@@ -864,6 +1098,7 @@ export async function hfSearch(
     sort,
     limit: 30,
     endpoint: hfEndpoint,
+    task,
   });
 }
 
@@ -1064,6 +1299,8 @@ export interface DataStats {
   conversations: number;
   messages: number;
   codeSessions: number;
+  /** Pictures made in the image studio. */
+  images?: number;
   dbBytes: number;
 }
 /** Aggregate counters for the Settings → Data statistics panel. */
@@ -1475,9 +1712,10 @@ export async function saveFile(src: string, dest: string): Promise<void> {
 /** Save an image to a user-picked location via the native dialog. Returns the
  *  destination path, or null if the user cancelled. */
 export async function saveImageAs(src: string, suggestedName = "screenshot.png"): Promise<string | null> {
+  const jpeg = /\.jpe?g$/i.test(suggestedName);
   const dest = await save({
     defaultPath: suggestedName,
-    filters: [{ name: "PNG", extensions: ["png"] }],
+    filters: [jpeg ? { name: "JPEG", extensions: ["jpg", "jpeg"] } : { name: "PNG", extensions: ["png"] }],
   });
   if (!dest) return null;
   await saveFile(src, dest);

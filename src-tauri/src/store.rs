@@ -72,6 +72,18 @@ CREATE TABLE IF NOT EXISTS code_step_texts (
     text        TEXT NOT NULL,
     PRIMARY KEY (session_id, step_id)
 );
+CREATE TABLE IF NOT EXISTS image_generations (
+    id              TEXT PRIMARY KEY,
+    prompt          TEXT NOT NULL,
+    negative_prompt TEXT NOT NULL DEFAULT '',
+    params          TEXT NOT NULL DEFAULT '{}',
+    images          TEXT NOT NULL DEFAULT '[]',
+    model           TEXT NOT NULL DEFAULT '',
+    family          TEXT NOT NULL DEFAULT '',
+    created_at      INTEGER NOT NULL,
+    elapsed_ms      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_image_generations_created ON image_generations(created_at);
 ";
 
 pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
@@ -906,6 +918,125 @@ fn get_step_text(conn: &Connection, session_id: &str, step_id: &str) -> rusqlite
     })
 }
 
+// ---- Image generations (the image studio's history) ----
+
+/// One picture of a generation, on disk.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageItem {
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+    pub seed: i64,
+}
+
+/// One press of Generate: the prompt, the settings it ran with, and the
+/// pictures it made.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageRecord {
+    pub id: String,
+    pub prompt: String,
+    pub negative_prompt: String,
+    /// The request as it was sent (size, steps, CFG, sampler, seed …), so a
+    /// picture can be made again or varied.
+    pub params: serde_json::Value,
+    pub images: Vec<ImageItem>,
+    pub model: String,
+    pub family: String,
+    pub created_at: i64,
+    pub elapsed_ms: i64,
+}
+
+pub(crate) fn image_record_insert(db: &Db, r: &ImageRecord) -> Result<(), String> {
+    let conn = lock_connection(&db.0);
+    conn.execute(
+        "INSERT OR REPLACE INTO image_generations
+         (id, prompt, negative_prompt, params, images, model, family, created_at, elapsed_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            r.id,
+            r.prompt,
+            r.negative_prompt,
+            r.params.to_string(),
+            serde_json::to_string(&r.images).unwrap_or_else(|_| "[]".into()),
+            r.model,
+            r.family,
+            r.created_at,
+            r.elapsed_ms,
+        ],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+fn image_records(conn: &Connection, where_id: Option<&str>) -> rusqlite::Result<Vec<ImageRecord>> {
+    let sql = format!(
+        "SELECT id, prompt, negative_prompt, params, images, model, family, created_at, elapsed_ms
+         FROM image_generations {} ORDER BY created_at DESC",
+        if where_id.is_some() { "WHERE id = ?1" } else { "" }
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let map = |r: &rusqlite::Row| {
+        Ok(ImageRecord {
+            id: r.get(0)?,
+            prompt: r.get(1)?,
+            negative_prompt: r.get(2)?,
+            params: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or(serde_json::Value::Null),
+            images: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
+            model: r.get(5)?,
+            family: r.get(6)?,
+            created_at: r.get(7)?,
+            elapsed_ms: r.get(8)?,
+        })
+    };
+    let rows = match where_id {
+        Some(id) => stmt.query_map(params![id], map)?.collect(),
+        None => stmt.query_map([], map)?.collect(),
+    };
+    rows
+}
+
+/// Every generation, newest first.
+#[tauri::command]
+pub fn image_history_list(db: State<'_, Db>) -> Result<Vec<ImageRecord>, String> {
+    let conn = lock(&db)?;
+    image_records(&conn, None).map_err(|e| e.to_string())
+}
+
+fn remove_image_files(records: &[ImageRecord]) {
+    for r in records {
+        for im in &r.images {
+            let _ = std::fs::remove_file(&im.path);
+        }
+    }
+}
+
+/// Forget one generation; `delete_files` also removes its pictures from disk.
+#[tauri::command]
+pub fn image_history_delete(db: State<'_, Db>, id: String, delete_files: bool) -> Result<(), String> {
+    let conn = lock(&db)?;
+    let recs = image_records(&conn, Some(&id)).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM image_generations WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    drop(conn);
+    if delete_files {
+        remove_image_files(&recs);
+    }
+    Ok(())
+}
+
+/// Forget all generations; `delete_files` also removes the pictures.
+#[tauri::command]
+pub fn image_history_clear(db: State<'_, Db>, delete_files: bool) -> Result<(), String> {
+    let conn = lock(&db)?;
+    let recs = if delete_files { image_records(&conn, None).map_err(|e| e.to_string())? } else { Vec::new() };
+    conn.execute("DELETE FROM image_generations", []).map_err(|e| e.to_string())?;
+    drop(conn);
+    remove_image_files(&recs);
+    Ok(())
+}
+
 /// Aggregate counters for the Settings → Data statistics panel.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -913,6 +1044,8 @@ pub struct DataStats {
     pub conversations: i64,
     pub messages: i64,
     pub code_sessions: i64,
+    /// Pictures made in the image studio.
+    pub images: i64,
     pub db_bytes: u64,
 }
 
@@ -930,6 +1063,13 @@ pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats,
          JOIN conversations c ON c.id = m.conversation_id",
     )?;
     let code_sessions = count("SELECT COUNT(*) FROM code_sessions").unwrap_or(0);
+    let images = conn
+        .prepare("SELECT images FROM image_generations")
+        .and_then(|mut st| {
+            st.query_map([], |r| r.get::<_, String>(0))
+                .map(|rows| rows.flatten().map(|j| serde_json::from_str::<Vec<ImageItem>>(&j).map(|v| v.len() as i64).unwrap_or(0)).sum())
+        })
+        .unwrap_or(0);
     drop(conn);
     // The database is three files in WAL mode, and the log routinely outgrows
     // the main one — reporting only `chaty.db` understated what it occupies.
@@ -944,7 +1084,7 @@ pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats,
                 .sum()
         })
         .unwrap_or(0);
-    Ok(DataStats { conversations, messages, code_sessions, db_bytes })
+    Ok(DataStats { conversations, messages, code_sessions, images, db_bytes })
 }
 
 #[cfg(test)]

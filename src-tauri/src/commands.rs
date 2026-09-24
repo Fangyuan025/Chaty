@@ -48,12 +48,18 @@ impl MonotonicProgress {
 /// Load a GGUF file and make it the active engine. Heavy and blocking, so the
 /// actual load runs on a blocking thread.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // the frontend's named arguments
 pub async fn load_model(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     path: String,
     gpu_layers: Option<i32>,
     n_ctx: Option<u32>,
     speculative: Option<bool>,
+    // How to load an image model (companions picked by hand, GPU/CPU
+    // placement). Ignored for chat models; absent = the defaults, which put
+    // everything on the GPU.
+    image: Option<crate::imagegen::probe::LoadOptions>,
     on_progress: Channel<LoadProgress>,
 ) -> Result<ModelInfo, String> {
     // Stored paths from before the folder-layout migration point at
@@ -85,7 +91,10 @@ pub async fn load_model(
     let path = {
         let p = std::path::Path::new(&path);
         if p.is_dir() && !crate::inference::mlx::is_mlx_dir(p) {
-            match main_gguf_in_dir(p) {
+            // An image model's folder also holds its text encoder — often
+            // the largest GGUF there, and a chat model in its own right. The
+            // denoiser is the model.
+            match crate::imagegen::probe::image_model_in_dir(p).or_else(|| main_gguf_in_dir(p)) {
                 Some(main) => main.to_string_lossy().to_string(),
                 None => {
                     return Err(
@@ -101,8 +110,15 @@ pub async fn load_model(
     };
 
     // MLX models are folders (config.json + safetensors) driven by the
-    // Swift sidecar; GGUF stays on the in-process llama.cpp engine.
+    // Swift sidecar; diffusion models go to the image sidecar; every other
+    // GGUF stays on the in-process llama.cpp engine.
     let is_mlx = crate::inference::mlx::is_mlx_dir(std::path::Path::new(&path));
+    let is_image = !is_mlx && {
+        let p = std::path::PathBuf::from(&path);
+        tokio::task::spawn_blocking(move || crate::imagegen::probe::is_image_model(&p))
+            .await
+            .unwrap_or(false)
+    };
     #[cfg(not(target_os = "macos"))]
     if is_mlx {
         return Err(
@@ -124,13 +140,14 @@ pub async fn load_model(
     // up resident at once, which on unified memory swap-freezes the machine.
     state.cancel.store(true, Ordering::SeqCst);
     // Size of the model being ejected — used to VERIFY its memory actually
-    // came back before we start the next load. MLX models live in a sidecar
-    // process, so killing it *is* the release — nothing to verify in-process.
+    // came back before we start the next load. MLX and image models live in
+    // a sidecar process, so killing it *is* the release — nothing to verify
+    // in-process.
     let (old_size_mb, old_was_mlx) = {
         let guard = state.model.read().await;
         (
             guard.as_ref().and_then(|m| m.size_mb).unwrap_or(0),
-            guard.as_ref().is_some_and(|m| m.backend == "mlx"),
+            guard.as_ref().is_some_and(|m| m.backend == "mlx" || m.backend == "sd.cpp"),
         )
     };
     let old = state.engine.write().await.take();
@@ -207,7 +224,7 @@ pub async fn load_model(
     // Shared across the GGUF poller and the MLX callback so the bar the
     // user sees never moves backwards (see MonotonicProgress).
     let gate = Arc::new(MonotonicProgress::new());
-    if !is_mlx {
+    if !is_mlx && !is_image {
         let expected = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0).max(1);
         let done = done_flag.clone();
         let chan = on_progress.clone();
@@ -230,7 +247,20 @@ pub async fn load_model(
     }
 
     let path_for_log = path.clone();
-    let result = if is_mlx {
+    let result = if is_image {
+        let chan = on_progress.clone();
+        let gate = gate.clone();
+        let roots = model_dirs(&app);
+        let opts = image.unwrap_or_default();
+        tokio::task::spawn_blocking(move || {
+            crate::imagegen::load(std::path::Path::new(&path), &opts, &roots, move |frac| {
+                if gate.permit(frac) {
+                    let _ = chan.send(LoadProgress { phase: "weights", frac });
+                }
+            })
+        })
+        .await
+    } else if is_mlx {
         let chan = on_progress.clone();
         let gate = gate.clone();
         tokio::task::spawn_blocking(move || {
@@ -455,6 +485,14 @@ pub struct ModelEntry {
     pub format: &'static str,
     /// Vision-capable once loaded (GGUF: paired mmproj; MLX: built-in tower).
     pub vision: bool,
+    /// "chat" or "image" (a diffusion model — loading it opens the image
+    /// studio).
+    pub kind: &'static str,
+    /// An image model's family ("Qwen-Image 2.1"), for the picker's badge.
+    pub family: Option<String>,
+    /// Role keys of the companions an image model still lacks (before any
+    /// hand-picked ones from Settings are counted).
+    pub missing: Vec<String>,
 }
 
 /// The main weights inside a folder-layout GGUF model: the largest non-mmproj
@@ -532,7 +570,7 @@ fn roots_for(chosen: Option<PathBuf>, defaults: Vec<PathBuf>) -> Vec<PathBuf> {
 /// Directories scanned for models: the folder the user chose, or — when none
 /// has been — a `models/` folder next to the executable (the install dir),
 /// one under app-data (always writable), and one in the app's resources.
-fn model_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
+pub(crate) fn model_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     let mut defaults = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
@@ -1211,6 +1249,9 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
                 vision: mmproj.is_some(),
                 mmproj,
                 format: "gguf",
+                kind: "chat",
+                family: None,
+                missing: Vec::new(),
             });
         }
     };
@@ -1234,14 +1275,41 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
                 mmproj: None,
                 format: "mlx",
                 vision: crate::inference::mlx::mlx_dir_has_vision(path),
+                kind: "chat",
+                family: None,
+                missing: Vec::new(),
             });
         }
+    };
+    // An image model's folder holds its companions too — a VAE, a text
+    // encoder that is itself a chat model GGUF. The denoiser is the model the
+    // user picks; the rest belongs to it and is not listed on its own.
+    let roots = model_dirs(&app);
+    let push_image = |path: PathBuf, out: &mut Vec<ModelEntry>, seen: &mut HashSet<PathBuf>| {
+        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if !seen.insert(canon) {
+            return;
+        }
+        let probe = crate::imagegen::probe::probe_image_model(&path, &Default::default(), &roots);
+        out.push(ModelEntry {
+            name: path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            path: path.to_string_lossy().to_string(),
+            size_mb: probe.as_ref().map(|p| p.size_mb),
+            mmproj: None,
+            format: if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("gguf")) { "gguf" } else { "safetensors" },
+            vision: false,
+            kind: "image",
+            family: probe.as_ref().map(|p| p.family_name.clone()),
+            missing: probe
+                .map(|p| p.missing.iter().map(|r| r.key().to_string()).collect())
+                .unwrap_or_default(),
+        });
     };
     // Folder layout ONLY: models/<Name>/{model.gguf[, mmproj-*.gguf]} — one
     // folder per model. Loose GGUFs directly in a models root are migrated
     // into folders at startup (`migrate_models_layout`) and are deliberately
     // not listed, so the picker always reflects the canonical layout.
-    for dir in model_dirs(&app) {
+    for dir in roots.clone() {
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -1252,9 +1320,21 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
             }
             #[cfg(target_os = "macos")]
             push_mlx(&path, &mut out, &mut seen);
+            if crate::inference::mlx::is_mlx_dir(&path) {
+                continue;
+            }
             if let Ok(sub) = std::fs::read_dir(&path) {
-                for e in sub.flatten() {
-                    push(e.path(), &mut out, &mut seen);
+                let files: Vec<PathBuf> = sub.flatten().map(|e| e.path()).collect();
+                let denoisers: Vec<PathBuf> =
+                    files.iter().filter(|p| crate::imagegen::probe::is_image_model(p)).cloned().collect();
+                if denoisers.is_empty() {
+                    for f in files {
+                        push(f, &mut out, &mut seen);
+                    }
+                } else {
+                    for d in denoisers {
+                        push_image(d, &mut out, &mut seen);
+                    }
                 }
             }
         }
@@ -1311,6 +1391,7 @@ pub async fn delete_model_file(
     if !target
         .extension()
         .is_some_and(|x| x.eq_ignore_ascii_case("gguf"))
+        && !crate::imagegen::probe::is_image_model(&target)
     {
         return Err("只能删除 .gguf 模型文件 (only .gguf model files can be deleted)".into());
     }

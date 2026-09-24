@@ -832,6 +832,8 @@ impl LlamaEngine {
             multi_image: true,
             mmproj,
             warning,
+            kind: "chat".into(),
+            image: None,
         };
 
         // `tx` + the worker came from the load/back-off loop above.
@@ -2687,75 +2689,18 @@ pub(crate) const EFFORT_LOW: &str = "Reasoning effort is set to low. Keep your t
 /// `"qwen3vl"`) leaves a file whose arch matches nothing and which carries not
 /// one prefixed key — llama.cpp supports the model, but nothing in the file
 /// says which model it is.
-fn gguf_diagnosis<R: std::io::Read>(mut r: R) -> Option<String> {
-    fn take<R: std::io::Read>(r: &mut R, n: usize) -> Option<Vec<u8>> {
-        let mut b = vec![0u8; n];
-        r.read_exact(&mut b).ok()?;
-        Some(b)
-    }
-    fn u32le<R: std::io::Read>(r: &mut R) -> Option<u32> {
-        Some(u32::from_le_bytes(take(r, 4)?.try_into().ok()?))
-    }
-    fn u64le<R: std::io::Read>(r: &mut R) -> Option<u64> {
-        Some(u64::from_le_bytes(take(r, 8)?.try_into().ok()?))
-    }
-    fn string<R: std::io::Read>(r: &mut R) -> Option<String> {
-        let n = u64le(r)?;
-        // A length this large is a malformed file, not a long key.
-        if n > 1 << 20 {
-            return None;
+fn gguf_diagnosis<R: std::io::Read>(r: R) -> Option<String> {
+    let header = match super::gguf::read_header(r, false, false) {
+        Ok(h) => h,
+        Err(super::gguf::HeaderError::NotGguf) => {
+            return Some(trf!(
+                "这不是 GGUF 文件:开头不是 GGUF 魔数",
+                "not a GGUF file: it does not start with the GGUF magic"
+            ))
         }
-        String::from_utf8(take(r, n as usize)?).ok()
-    }
-    /// Read past a value without keeping it.
-    fn skip_value<R: std::io::Read>(r: &mut R, t: u32) -> Option<()> {
-        match t {
-            0 | 1 | 7 => take(r, 1).map(|_| ()),
-            2 | 3 => take(r, 2).map(|_| ()),
-            4..=6 => take(r, 4).map(|_| ()),
-            10..=12 => take(r, 8).map(|_| ()),
-            8 => string(r).map(|_| ()),
-            9 => {
-                let et = u32le(r)?;
-                let n = u64le(r)?;
-                if n > 8_000_000 {
-                    return None;
-                }
-                for _ in 0..n {
-                    skip_value(r, et)?;
-                }
-                Some(())
-            }
-            _ => None,
-        }
-    }
-
-    let magic = take(&mut r, 4)?;
-    if magic != b"GGUF" {
-        return Some(trf!(
-            "这不是 GGUF 文件:开头不是 GGUF 魔数",
-            "not a GGUF file: it does not start with the GGUF magic"
-        ));
-    }
-    let _version = u32le(&mut r)?;
-    let _n_tensors = u64le(&mut r)?;
-    let n_kv = u64le(&mut r)?;
-    if n_kv > 100_000 {
-        return None;
-    }
-
-    let mut arch: Option<String> = None;
-    let mut keys: Vec<String> = Vec::new();
-    for _ in 0..n_kv {
-        let key = string(&mut r)?;
-        let t = u32le(&mut r)?;
-        if key == "general.architecture" && t == 8 {
-            arch = string(&mut r);
-        } else {
-            skip_value(&mut r, t)?;
-        }
-        keys.push(key);
-    }
+        Err(super::gguf::HeaderError::Malformed) => return None,
+    };
+    let (arch, keys) = (header.arch, header.keys);
 
     let arch = arch?;
     let prefix = format!("{arch}.");

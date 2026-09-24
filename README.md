@@ -181,6 +181,20 @@ Text-only models keep the OCR path, so nothing regresses — and updating from a
 
 <br />
 
+## Chaty can draw
+
+Load a **text-to-image GGUF** — Qwen-Image / Qwen-Image-2.1, Z-Image, FLUX, Chroma, SD3, SDXL, SD 1.x — and the whole app switches to an image studio:
+
+- **Image mode, automatically** — the chat UI gives way to a canvas, a prompt composer and a history of every generation; the command palette, sidebar and settings only show what applies to drawing.
+- **Live progress** — an overall percentage, the current stage (encode → sample → decode), step count, seconds per step, elapsed time and ETA, over a live preview that sharpens as it denoises. Stop now, or after the current picture of a batch.
+- **Every knob** — aspect ratio and resolution, batch size, seed, negative prompt, steps, CFG, guidance, sampler, scheduler, flow shift and more, with per-family defaults. A reference image turns on img2img (or editing, for models that support it).
+- **Companion files handled** — a diffusion GGUF is just the denoiser; Chaty finds its VAE and text encoder next to it or in your other models, and offers a one-click download of anything missing.
+- **Full GPU by default**, like chat — offload, text encoder / VAE on CPU, flash attention and a VRAM cap are all in **Settings → Image model**. Runs on [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) in an isolated sidecar: a driver crash can't take the app down, and it falls back to CPU by itself.
+
+Pictures are saved as PNGs with their parameters embedded — reuse a seed, reuse all settings, copy, save, or reveal them in one click.
+
+<br />
+
 ## Models: the store, native MLX — and Chaty's own
 
 - A built-in **model store**: search Hugging Face by name or author, filter **GGUF / MLX**, sort by trending or downloads — then pick a **quantization** from a dropdown and hit download. Models, not file lists.
@@ -304,11 +318,11 @@ tag — GitHub Actions builds both installers onto a single release.
 |---|---|
 | Shell | Tauri 2 — system tray, global shortcut, single-instance |
 | Frontend | React 19 · Vite · react-markdown · KaTeX |
-| Inference | Rust · `llama-cpp-2` (llama.cpp) — Vulkan (Windows) / Metal (macOS) · MLX via an `mlx-swift-lm` sidecar (Apple Silicon) |
+| Inference | Rust · `llama-cpp-2` (llama.cpp) — Vulkan (Windows) / Metal (macOS) · MLX via an `mlx-swift-lm` sidecar (Apple Silicon) · text-to-image via a stable-diffusion.cpp sidecar (`chaty-sd`) |
 | Voice | `sherpa-rs` (ONNX Runtime, CPU) — Whisper (`base.en` for English, multilingual `base` for Chinese) + Kokoro-82M and a VITS Chinese voice |
 | Knowledge base | bge-m3 embeddings + BM25 · hybrid RRF / MMR retrieval · SQLite vector store |
 | Storage | SQLite — conversations, messages, full-text search |
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Built with [llama.cpp](https://github.com/ggml-org/llama.cpp), [Tauri](https://tauri.app), and [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
+MIT — see [LICENSE](LICENSE). Built with [llama.cpp](https://github.com/ggml-org/llama.cpp), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [Tauri](https://tauri.app), and [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).

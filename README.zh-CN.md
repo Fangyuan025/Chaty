@@ -177,6 +177,20 @@ Chaty 把这个档位做成了你真正能拧的旋钮:
 
 <br />
 
+## Chaty 能画
+
+加载一个**文生图 GGUF** —— Qwen-Image / Qwen-Image-2.1、Z-Image、FLUX、Chroma、SD3、SDXL、SD 1.x —— 整个应用自动切换成生图工作台:
+
+- **自动进入生图模式** —— 聊天界面换成画布、提示词输入框和完整的生成历史;命令面板、侧栏和设置只显示与生图相关的功能。
+- **实时进度** —— 总百分比、当前阶段(编码 → 采样 → 解码)、步数、每步耗时、已用时间与预计剩余时间,底下是随去噪逐渐清晰的实时预览。可以立即停止,也可以在批量中画完当前这张后停止。
+- **参数全可调** —— 画幅比例与分辨率、批量、种子、反向提示词、步数、CFG、引导强度、采样器、调度器、flow shift 等,并按模型家族给出默认值。加一张参考图即可图生图(支持编辑的模型可直接改图)。
+- **配套文件自动处理** —— 扩散 GGUF 只是去噪主干;Chaty 会在同目录或你的其他模型里找到它的 VAE 与文本编码器,缺什么一键下载什么。
+- **默认 GPU 加速全开**,与聊天一致 —— 卸载到 CPU、文本编码器 / VAE 放 CPU、Flash Attention、显存上限都在**设置 → 生图模型**里。基于 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp),运行在独立侧车进程中:显卡驱动崩溃不会拖垮应用,并会自动回退到 CPU。
+
+图片保存为内嵌生成参数的 PNG —— 复用种子、复用全部参数、复制、另存、在文件夹中显示,都是一键。
+
+<br />
+
 ## 模型:商店、原生 MLX,以及 Chaty 自研
 
 - 内置**模型商店**:按名称或作者搜索 Hugging Face,按 **GGUF / MLX** 筛选、按热门/下载量排序 —— 从下拉框选一个**量化版本**直接下载。看到的是模型,不是文件列表。
@@ -297,11 +311,11 @@ npm run tauri build    # → .app + .dmg
 |---|---|
 | 外壳 | Tauri 2 —— 系统托盘、全局快捷键、单实例 |
 | 前端 | React 19 · Vite · react-markdown · KaTeX |
-| 推理 | Rust · `llama-cpp-2`(llama.cpp)—— Vulkan(Windows)/ Metal(macOS) |
+| 推理 | Rust · `llama-cpp-2`(llama.cpp)—— Vulkan(Windows)/ Metal(macOS)· MLX 经 `mlx-swift-lm` 侧车(Apple Silicon)· 文生图经 stable-diffusion.cpp 侧车(`chaty-sd`) |
 | 语音 | `sherpa-rs`(ONNX Runtime,CPU)—— Whisper(英文用 `base.en`,中文用多语 `base`)+ Kokoro-82M 与 VITS 中文嗓音 |
 | 知识库 | bge-m3 向量 + BM25 · 混合 RRF / MMR 检索 · SQLite 向量库 |
 | 存储 | SQLite —— 会话、消息、全文搜索 |
 
 ## 许可证
 
-MIT —— 见 [LICENSE](LICENSE)。基于 [llama.cpp](https://github.com/ggml-org/llama.cpp)、[Tauri](https://tauri.app) 与 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 构建。
+MIT —— 见 [LICENSE](LICENSE)。基于 [llama.cpp](https://github.com/ggml-org/llama.cpp)、[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)、[Tauri](https://tauri.app) 与 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 构建。

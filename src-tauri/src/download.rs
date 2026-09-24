@@ -349,6 +349,9 @@ pub struct HfModelHit {
     pub likes: u64,
     pub updated_at: String,
     pub vision: bool,
+    /// A text-to-image model (a diffusion GGUF) — loading it opens the image
+    /// studio.
+    pub image: bool,
     /// Parameter count guessed from the name ("Qwen3-4B…" → 4.0).
     pub params_b: Option<f64>,
 }
@@ -382,6 +385,17 @@ pub struct HfModelDetail {
     pub readme: String,
     /// Total machine RAM in MiB — lets the UI hint "fits fully in memory".
     pub total_ram_mb: u64,
+    /// A text-to-image model.
+    pub image: bool,
+    /// For an image model of a known family: the VAE / text encoder it needs,
+    /// fetched into the same folder with the chosen quant.
+    pub companions: Vec<crate::imagegen::probe::Suggestion>,
+}
+
+/// The repo is a text-to-image model, by its pipeline tag or its tags.
+fn is_image_repo(tags: &[String], pipeline: Option<&str>) -> bool {
+    matches!(pipeline, Some("text-to-image") | Some("image-to-image"))
+        || tags.iter().any(|t| t == "text-to-image" || t == "image-generation")
 }
 
 fn tag_vision(tags: &[String]) -> bool {
@@ -454,7 +468,7 @@ fn strip_multipart(stem: &str) -> (&str, bool) {
 
 /// The quant label inside a GGUF filename: the token that looks like a
 /// quantization ("Q4_K_M", "IQ4_XS", "F16", "BF16", "Q8_0", "MXFP4"…).
-fn quant_label_of(stem: &str) -> String {
+pub(crate) fn quant_label_of(stem: &str) -> String {
     let looks_quant = |tok: &str| -> bool {
         let t = tok.to_ascii_uppercase();
         t == "F16"
@@ -579,6 +593,8 @@ pub async fn hf_search(
     sort: String,
     limit: Option<u32>,
     endpoint: Option<String>,
+    // "image" narrows to text-to-image models; anything else is everything.
+    task: Option<String>,
 ) -> Result<Vec<HfModelHit>, String> {
     let base = hf_base(endpoint.as_deref());
     let filter = if format == "mlx" { "mlx" } else { "gguf" };
@@ -595,6 +611,9 @@ pub async fn hf_search(
     let q = query.trim();
     if !q.is_empty() {
         url.push_str(&format!("&search={}", percent_encoding::utf8_percent_encode(q, percent_encoding::NON_ALPHANUMERIC)));
+    }
+    if task.as_deref() == Some("image") {
+        url.push_str("&pipeline_tag=text-to-image");
     }
     let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
@@ -626,6 +645,7 @@ pub async fn hf_search(
                     .unwrap_or("")
                     .to_string(),
                 vision: tag_vision(&tags),
+                image: is_image_repo(&tags, it.get("pipeline_tag").and_then(|v| v.as_str())),
                 params_b: params_from_name(&id),
                 id,
             });
@@ -648,24 +668,21 @@ pub async fn hf_model_detail(
     }
     let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
 
-    // tags (vision/arch) — tolerate failure, the tree is the critical part
-    let tags: Vec<String> = match client
+    // tags (vision/arch/task) — tolerate failure, the tree is the critical part
+    let info: serde_json::Value = match client
         .get(format!("{base}/api/models/{repo}"))
         .send()
         .await
     {
-        Ok(r) if r.status().is_success() => r
-            .json::<serde_json::Value>()
-            .await
-            .ok()
-            .and_then(|v| {
-                v.get("tags").and_then(|t| t.as_array()).map(|a| {
-                    a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()
-                })
-            })
-            .unwrap_or_default(),
-        _ => Vec::new(),
+        Ok(r) if r.status().is_success() => r.json::<serde_json::Value>().await.unwrap_or_default(),
+        _ => serde_json::Value::Null,
     };
+    let tags: Vec<String> = info
+        .get("tags")
+        .and_then(|t| t.as_array())
+        .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let pipeline = info.get("pipeline_tag").and_then(|v| v.as_str()).map(str::to_string);
 
     let tree = repo_tree(&repo, &base).await?;
     let (format, quants, mmproj) = if format == "mlx" || (!tree.iter().any(|(p, _)| p.to_lowercase().ends_with(".gguf")) && mlx_repo_check(&mlx_files(&tree)).is_ok()) {
@@ -706,7 +723,29 @@ pub async fn hf_model_detail(
     };
 
     let (mmproj, mmproj_size) = mmproj.map_or((None, 0), |(p, s)| (Some(p), s));
+    // Any GGUF in the repo is a diffusion model when the repo says it is one;
+    // its family names the VAE and encoder to fetch alongside.
+    let image = format == "gguf" && is_image_repo(&tags, pipeline.as_deref());
+    let companions = if image {
+        crate::imagegen::family::guess_by_name(&repo)
+            .map(|f| {
+                f.companions
+                    .iter()
+                    .map(|c| crate::imagegen::probe::Suggestion {
+                        role: c.role,
+                        repo: c.repo.into(),
+                        file: c.file.into(),
+                        size: c.size,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     Ok(HfModelDetail {
+        image,
+        companions,
         vision: tag_vision(&tags) || mmproj.is_some(),
         params_b: params_from_name(&repo),
         arch: arch_from_tags(&tags),
@@ -927,12 +966,30 @@ pub async fn download_model(
     url: String,
     filename: String,
     subdir: Option<String>,
+    // An existing model folder to download into instead — an image model's
+    // own folder, which is where its VAE and text encoder belong. Must be
+    // inside one of the models roots.
+    dir: Option<String>,
     on_progress: Channel<DownloadProgress>,
 ) -> Result<(), String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     // Where the weights land is the user's choice (issue #12); `root` stays
     // app-data, which is where the xet fallback wants its scratch space.
-    let models = crate::commands::models_write_dir(&app)?;
+    let (models, subdir) = match dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => {
+            let canon = std::path::Path::new(d)
+                .canonicalize()
+                .map_err(|e| format!("目标文件夹不存在 (folder not found): {e}"))?;
+            let inside = crate::commands::model_dirs(&app)
+                .iter()
+                .any(|r| r.canonicalize().is_ok_and(|rc| canon.starts_with(&rc)));
+            if !inside {
+                return Err("目标文件夹不在模型文件夹内 (folder is outside the models folder)".into());
+            }
+            (canon, None)
+        }
+        None => (crate::commands::models_write_dir(&app)?, subdir),
+    };
     let cancel = register_cancel(&filename);
     let result =
         download_inner(&root, &models, &url, &filename, subdir.as_deref(), &on_progress, &cancel)
@@ -968,8 +1025,11 @@ async fn download_inner(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let safe: String = sanitize(filename);
-    if !safe.to_lowercase().ends_with(".gguf") {
-        return Err("文件名必须以 .gguf 结尾".into());
+    // GGUF weights, and the safetensors an image model's VAE (and some text
+    // encoders) are only published as.
+    let lower = safe.to_lowercase();
+    if !(lower.ends_with(".gguf") || lower.ends_with(".safetensors") || lower.ends_with(".sft")) {
+        return Err("文件名必须以 .gguf 或 .safetensors 结尾 (only .gguf / .safetensors files)".into());
     }
     let dest = dir.join(&safe);
     let tmp = dir.join(format!("{safe}.part"));
@@ -1370,7 +1430,7 @@ mod store_e2e {
     #[ignore]
     async fn search_and_detail_both_formats() {
         // GGUF search
-        let hits = hf_search("qwen".into(), "gguf".into(), "downloads".into(), Some(10), None)
+        let hits = hf_search("qwen".into(), "gguf".into(), "downloads".into(), Some(10), None, None)
             .await
             .expect("gguf search");
         assert!(!hits.is_empty(), "no gguf hits");
@@ -1390,7 +1450,7 @@ mod store_e2e {
         eprintln!("quants: {:?}", d.quants.iter().map(|q| (q.label.clone(), q.size / 1_000_000)).collect::<Vec<_>>());
 
         // MLX search + detail (auto-detected as single-quant repo)
-        let hits = hf_search("qwen".into(), "mlx".into(), "trending".into(), Some(10), None)
+        let hits = hf_search("qwen".into(), "mlx".into(), "trending".into(), Some(10), None, None)
             .await
             .expect("mlx search");
         assert!(!hits.is_empty(), "no mlx hits");

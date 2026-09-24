@@ -136,3 +136,25 @@ jobs:
       - name: cargo test (no GPU)
         working-directory: src-tauri
         run: cargo test --no-default-features --lib --bins
+
+  sd-sidecar:
+    name: Image engine sidecar (build + protocol smoke)
+    # chaty-sd is C++ around stable-diffusion.cpp and nothing else compiles
+    # it before a release tag; a CPU build here catches a broken main.cpp or
+    # a C API change in the pinned engine. It also answers its protocol: the
+    # handshake and a ping, the same first exchange the app has with it.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable # the staged name carries the target triple
+      - name: System deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Build chaty-sd (CPU)
+        run: ./scripts/build-sd-sidecar.sh cpu
+      - name: Protocol smoke
+        run: |
+          BIN=$(ls src-tauri/binaries/chaty-sd-*)
+          OUT=$(printf '{"cmd":"ping"}\n' | "$BIN")
+          echo "$OUT"
+          echo "$OUT" | head -1 | grep -q '"event":"ready"'
+          echo "$OUT" | grep -q '"event":"pong"'

@@ -102,6 +102,50 @@ the binary or in `Contents/Frameworks` of the `.app`; if not, add them to
 `bundle.macOS.frameworks` in `tauri.macos.conf.json` (or copy them in a bundling
 hook) and rebuild.
 
+## Image engine sidecar (chaty-sd)
+
+Text-to-image models (Qwen-Image, Z-Image, FLUX, SD3, SDXL, SD 1.x…) run on
+[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) in a
+sidecar process, `chaty-sd` (`src-tauri/sd-sidecar/`). sd.cpp vendors its own
+ggml, which can't link into the same binary as llama.cpp's, so it lives in its
+own process and speaks JSON lines over stdin/stdout — the same pattern as the
+MLX sidecar. CMake fetches the pinned sd.cpp revision on the first build.
+
+```bash
+scripts/build-sd-sidecar.sh [cpu|vulkan|metal|cuda]     # → src-tauri/binaries/chaty-sd-<triple>
+npm run tauri build -- --config src-tauri/tauri.sd.conf.json       # bundle it
+# macOS, bundling both sidecars (Tauri replaces arrays when merging layers):
+npm run tauri build -- --config src-tauri/tauri.mlx-sd.conf.json
+```
+
+```powershell
+# Windows, inside a VS dev shell (or after dev.ps1's env setup):
+.\scripts\build-sd-sidecar.ps1 -Backend vulkan           # build dir C:\ct-sd (MAX_PATH)
+npm run tauri build -- --no-bundle --config src-tauri/tauri.sd.conf.json
+```
+
+- The default backend is `metal` on macOS, `vulkan` when the Vulkan SDK
+  (`glslc` / `VULKAN_SDK`) is present, `cpu` otherwise.
+- `SDCPP_SOURCE_DIR=/path/to/stable-diffusion.cpp` builds from a local checkout
+  (its `ggml` submodule must be checked out) instead of fetching.
+- x86 builds target an AVX2 baseline (`GGML_NATIVE=OFF`); on an older CPU the
+  sidecar reports a clear error instead of crashing.
+- In `tauri dev` no config layer is needed: the app also finds the sidecar in
+  `src-tauri/binaries/` and `src-tauri/sd-sidecar/build/bin/`, or wherever
+  `CHATY_SD_SIDECAR` points.
+- Like the MLX layer, a plain build without the layer still works; image models
+  then fail to load with "the image engine (chaty-sd) is missing". Release CI always
+  bundles it.
+
+Tests: `cargo test --lib -- imagegen inference::sd` covers detection, companion
+search and the protocol against a mock sidecar. The real end-to-end test is
+ignored by default:
+
+```bash
+CHATY_TEST_SD_MODEL=/path/to/z_image_turbo-Q4_K_M.gguf \
+  cargo test --lib a_real_image_model_loads_and_draws -- --ignored --nocapture
+```
+
 ## Headless engine smoke test
 
 Verifies real inference without the GUI (load GGUF → chat template → stream):
@@ -119,10 +163,14 @@ src/                     React UI (chat, streaming, model picker)
 src-tauri/src/
   inference/             InferenceBackend trait + types
     llama.rs             real llama.cpp engine (GGUF load, decode loop)
+    sd.rs                chaty-sd sidecar client (text-to-image)
+    gguf.rs              GGUF header reader shared by the loaders
     mock.rs              fake streaming engine (test double)
+  imagegen/              image models: family detection, companion files, generate
   commands.rs            load_model / get_model / generate
   state.rs               shared app state
   examples/smoke.rs      headless inference test
+src-tauri/sd-sidecar/    chaty-sd (stable-diffusion.cpp, C++) — see above
 ```
 
 ## Notes
