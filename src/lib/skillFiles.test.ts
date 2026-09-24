@@ -46,6 +46,14 @@ describe("parsing", () => {
     expect(parseSkill("---\nname: ok\n---\n", "x.md", "project")).toBeNull(); // no body
     expect(parseSkill("---\nname: bad name!\n---\nbody", "x.md", "project")).toBeNull();
   });
+
+  // Issue #18: the importer keeps a Chinese file name as the skill's name, and
+  // an ASCII-only check here then dropped the skill on every load.
+  test("a name in any script is a name", () => {
+    expect(parseSkill("---\nname: 地理学家\n---\n你是一位地理学家。", "x.md", "global")?.name).toBe("地理学家");
+    expect(parseSkill("---\nname: résumé-писатель\n---\nsteps", "x.md", "global")?.name).toBe("résumé-писатель");
+    expect(parseSkill("---\nname: हिन्दी\n---\nsteps", "x.md", "global")?.name).toBe("हिन्दी");
+  });
 });
 
 describe("prompt economics", () => {

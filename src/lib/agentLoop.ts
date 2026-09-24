@@ -289,6 +289,10 @@ export interface AgentOptions {
   maxSteps?: number;
   /** Sampling temperature for agent steps (Settings → Code; default 0.3). */
   temperature?: number;
+  /** The rest of the user's sampling (Settings → Sampling). Temperature stays
+   *  Code's own; these apply to both modes — the agent used to run on a
+   *  hard-coded top-p and repeat penalty whatever the settings said. */
+  sampling?: { topP: number; topK: number; minP: number; repeatPenalty: number };
   /** Default timeout for bash commands (seconds) when the model doesn't set one. */
   bashTimeout?: number;
   /** File-based skills (M3): the index rides in the prompt, bodies load via
@@ -1060,22 +1064,44 @@ const RAW_TEXT_PARAMS = new Set([
  *  value is JSON, as the template writes those with tojson.
  *  Exported for tests. */
 export function parseXmlToolCall(text: string): ToolCall | null {
-  // Names are sometimes quoted — `<parameter="path">`, `<parameter=path">` —
-  // and a 4B told "path is missing" for one it had written spent a dozen
-  // rounds on it.
-  const fn = /<function=["']?([^>\s"']+)["']?\s*>/.exec(text);
+  const fn = new RegExp(xmlOpenTag("function")).exec(text);
   if (!fn) return null;
   const after = text.slice(fn.index + fn[0].length);
   const end = after.indexOf("</function>");
   const body = end === -1 ? after : after.slice(0, end);
   const args: Record<string, unknown> = {};
-  const re = /<parameter=["']?([^>\s"']+)["']?\s*>\n?([\s\S]*?)\n?<\/parameter>/g;
+  const re = new RegExp(`${xmlOpenTag("parameter")}\\n?([\\s\\S]*?)\\n?<\\/parameter>`, "g");
   let m: RegExpExecArray | null;
   while ((m = re.exec(body))) {
     const key = m[1].trim();
     args[key] = RAW_TEXT_PARAMS.has(key) ? m[2] : xmlParamValue(m[2]);
   }
+  // The other way calls are written in XML: one element per argument —
+  // `<path>a.ts</path><old_string>…</old_string>` (Qwen2 7B, and the style
+  // other agents teach). Only when no `<parameter` tag is there at all, so a
+  // value holding markup is never taken apart as arguments.
+  if (!Object.keys(args).length && !new RegExp(xmlOpenTag("parameter")).test(body)) {
+    const child = /<([A-Za-z_][\w-]*)>\n?([\s\S]*?)\n?<\/\1>/g;
+    while ((m = child.exec(body))) {
+      const key = m[1];
+      if (key === "function" || key === "tool_call") continue;
+      args[key] = RAW_TEXT_PARAMS.has(key) ? m[2] : xmlParamValue(m[2]);
+    }
+  }
   return { name: fn[1].trim() as AgentToolName, args };
+}
+
+/** The opening tag of an XML call's `<function=…>` or `<parameter=…>`, as
+ *  models actually write it — not only as the template does. Names come back
+ *  quoted (`<parameter="path">`, `<parameter=path">`: a 4B told "path is
+ *  missing" for one it had written spent a dozen rounds on it), and with the
+ *  `=` turned into a `>`: a Qwen3.5 4B wrote `<parameter>old_string>` for
+ *  every edit's second argument, the whole argument was dropped, and it was
+ *  told "old_string is missing" until it gave up. Also `<parameter name="…">`.
+ *  The name must look like one, so a value is never read as a name. Captures
+ *  the name. */
+function xmlOpenTag(tag: "function" | "parameter"): string {
+  return `<${tag}(?:\\s*=\\s*|>|\\s+name\\s*=\\s*|\\s+)["']?([A-Za-z_][\\w.-]*)["']?\\s*>`;
 }
 
 /** What to tell a model whose tool call could not be parsed: what broke and
@@ -1377,7 +1403,7 @@ export function parseToolCall(text: string): ToolCall | null {
   }
   // The model's own XML format, when the call is written in it: `<function=`
   // with no JSON object opening the call body.
-  const xmlAt = text.search(/<function=[^>\s]+>/);
+  const xmlAt = text.search(new RegExp(xmlOpenTag("function")));
   if (xmlAt !== -1) {
     const tagAt = text.indexOf("<tool_call>");
     const jsonFirst = tagAt !== -1 && text.slice(tagAt + "<tool_call>".length).trimStart().startsWith("{");
@@ -1387,7 +1413,7 @@ export function parseToolCall(text: string): ToolCall | null {
     }
   }
   const open = text.indexOf("<tool_call>");
-  if (open === -1) return parseNativeToolCall(text);
+  if (open === -1) return parseNativeToolCall(text) ?? parseBareJsonCall(text);
   let body = text.slice(open + "<tool_call>".length);
   const close = body.indexOf("</tool_call>");
   if (close !== -1) body = body.slice(0, close);
@@ -1441,6 +1467,21 @@ export function parseToolCall(text: string): ToolCall | null {
     }
     obj ??= argless;
   }
+  // An arguments object with no name, the tool named in the words in front of
+  // it: `<tool_call>用write_file工具新建文件…args:{"path":…,"content":…}`
+  // (EXAONE 4 1.2B — the `args:` is the notation of our own tool list). Taken
+  // as a call only when exactly one tool is named there.
+  if (obj && typeof obj.name !== "string" && Object.keys(obj).length > 0) {
+    const lead = body.slice(0, s);
+    const named = NATIVE_TOOL_NAMES.filter((n) =>
+      new RegExp(`(^|[^A-Za-z0-9_])${n}([^A-Za-z0-9_]|$)`).test(lead),
+    );
+    if (named.length === 1) {
+      const inner = obj.arguments ?? obj.args ?? obj.parameters;
+      const args = inner && typeof inner === "object" ? (inner as Record<string, unknown>) : obj;
+      return { name: named[0] as AgentToolName, args };
+    }
+  }
   if (obj && typeof obj.name === "string") {
     // Accept "arguments" or "parameters"; else treat the rest as the args.
     // An EMPTY arguments object must not shadow flat fields: the 35B emits
@@ -1480,6 +1521,31 @@ export function parseToolCall(text: string): ToolCall | null {
     return { name: obj.name as AgentToolName, args: args as Record<string, unknown> };
   }
   return null;
+}
+
+/** A call written with no tags at all: the whole reply, once its reasoning
+ *  is set aside, is one JSON object naming a tool. QwQ-32B answered a
+ *  "create hello.txt" task with exactly `{"name":"write_file","arguments":
+ *  {…}}`, and it went to the user as the answer — nothing was written. Taken
+ *  as a call only when the object is ALL there is (a code fence around it
+ *  allowed), names a real tool and carries arguments: a JSON example inside an
+ *  explanation is prose. Exported for tests. */
+export function parseBareJsonCall(text: string): ToolCall | null {
+  const closeAt = text.lastIndexOf("</think>");
+  let t = (closeAt === -1 ? text : text.slice(closeAt + "</think>".length)).trim();
+  t = t.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  if (!t.startsWith("{") || !t.endsWith("}")) return null;
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(t) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const name = obj?.name;
+  if (typeof name !== "string" || !NATIVE_TOOL_NAMES.includes(name as AgentToolName)) return null;
+  const args = obj.arguments ?? obj.parameters;
+  if (!args || typeof args !== "object" || Array.isArray(args)) return null;
+  return { name: name as AgentToolName, args: args as Record<string, unknown> };
 }
 
 /** Runaway-reasoning check: so far the output is *only* reasoning — no tool
@@ -2607,10 +2673,14 @@ const TRAILING_CLOSERS = /(?:<\/[A-Za-z_][\w-]*>\s*){4,}(?:<\/?[\w-]*)?$/;
  * Exported for tests.
  */
 export function xmlRunsOn(raw: string): boolean {
-  const fn = raw.lastIndexOf("<function=");
-  if (fn === -1) return false;
-  const body = raw.slice(fn);
-  if (body.split("<parameter=").length > body.split("</parameter>").length) return false;
+  const fns = [...raw.matchAll(new RegExp(xmlOpenTag("function"), "g"))];
+  if (!fns.length) return false;
+  const body = raw.slice(fns[fns.length - 1].index);
+  // Opened values counted in every spelling the parser accepts: counting only
+  // `<parameter=` took a value opened as `<parameter>content>` for closed,
+  // and a page ending in `</div></body></html>` was cut off mid-write.
+  const opened = [...body.matchAll(new RegExp(xmlOpenTag("parameter"), "g"))].length;
+  if (opened > body.split("</parameter>").length - 1) return false;
   return TRAILING_CLOSERS.test(body.slice(-600));
 }
 
@@ -3452,9 +3522,11 @@ export async function runAgentTurn(
           messages,
           params: {
             temperature: stepTemp,
-            topP: 0.9,
+            topP: opts.sampling?.topP ?? 0.9,
+            topK: opts.sampling?.topK,
+            minP: opts.sampling?.minP,
             maxTokens,
-            repeatPenalty: 1.05,
+            repeatPenalty: opts.sampling?.repeatPenalty ?? 1.05,
             stop: [...CALL_CLOSERS],
             think: stepThink,
             effort: opts.effort,

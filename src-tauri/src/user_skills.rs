@@ -50,19 +50,76 @@ fn split_frontmatter(text: &str) -> Option<(Vec<(String, String)>, String)> {
     Some((fields, body.to_string()))
 }
 
-/// A name the skill loader accepts: `[a-z0-9_-]`, at most 32 characters.
+/// A name the skill loader accepts, at most 32 characters: from ASCII, letters,
+/// digits, `_` and `-`; beyond ASCII, anything but whitespace and control
+/// characters. A whitelist of "letters of every script" is never complete —
+/// Devanagari's virama is neither letter nor digit, and `हिन्दी` came out
+/// `हिन-दी` — so outside ASCII the rule excludes rather than includes.
+///
+/// This used to keep ASCII only, which turned a file called `地理学家.md` into
+/// nothing, then into the fallback `skill` — and six Chinese-named files
+/// selected together were all written to `skill.md`, each over the last, so
+/// one survived (issue #18).
 fn clean_name(raw: &str) -> String {
+    // Lower-cased in every script that has case, not just ASCII.
     let mapped: String = raw
         .trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c.to_ascii_lowercase() } else { '-' })
+        .flat_map(|c| {
+            let keep = c.is_ascii_alphanumeric()
+                || c == '_'
+                || c == '-'
+                || (!c.is_ascii() && !c.is_whitespace() && !c.is_control());
+            let lower: Vec<char> = if keep { c.to_lowercase().collect() } else { vec!['-'] };
+            lower
+        })
         .collect();
     let mut s = mapped;
     while s.contains("--") {
         s = s.replace("--", "-");
     }
     let s: String = s.trim_matches('-').chars().take(32).collect();
-    s.trim_matches('-').to_string()
+    let s = s.trim_matches('-').to_string();
+    // A file Windows will not create under any extension.
+    const RESERVED: &[&str] = &[
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+    if RESERVED.contains(&s.as_str()) {
+        format!("{s}-skill")
+    } else {
+        s
+    }
+}
+
+/// Where a skill called `name` can be written without destroying another one.
+/// The same file imported twice lands on itself; a DIFFERENT skill that
+/// happens to share the name gets `name-2`, `name-3`… — importing used to
+/// replace whatever was there without a word.
+fn free_name(dir: &Path, name: &str, render: impl Fn(&str) -> String) -> String {
+    // "Is this name free, or already holding exactly what we would write?"
+    // Compared with the file as it would be written UNDER THAT NAME — the name
+    // is part of the content, so a re-import of a file that was once given
+    // `-2` has to be recognised at `-2`.
+    let taken = |n: &str| -> Option<bool> {
+        let p = dir.join(format!("{n}.md"));
+        if !p.exists() {
+            return None;
+        }
+        Some(std::fs::read_to_string(&p).map(|t| t == render(n)).unwrap_or(false))
+    };
+    match taken(name) {
+        None | Some(true) => return name.to_string(),
+        Some(false) => {}
+    }
+    for i in 2..1000 {
+        let candidate = format!("{name}-{i}");
+        match taken(&candidate) {
+            None | Some(true) => return candidate,
+            Some(false) => {}
+        }
+    }
+    format!("{name}-{}", std::process::id())
 }
 
 fn one_line(s: &str, max: usize) -> String {
@@ -109,14 +166,22 @@ fn import_into(dir: &Path, src: &Path) -> Result<UserSkill, String> {
         name = "skill".into();
     }
     let description = field("description").map(|d| one_line(&d, 200)).unwrap_or_else(|| first_line(body));
-    let mut out = format!("---\nname: {name}\ndescription: {description}\n");
-    if let Some(when) = field("when") {
-        out.push_str(&format!("when: {}\n", one_line(&when, 200)));
-    }
-    out.push_str("---\n\n");
-    out.push_str(body);
-    out.push('\n');
+    let when = field("when").map(|w| one_line(&w, 200));
+    let render = |name: &str| {
+        let mut out = format!("---\nname: {name}\ndescription: {description}\n");
+        if let Some(when) = &when {
+            out.push_str(&format!("when: {when}\n"));
+        }
+        out.push_str("---\n\n");
+        out.push_str(body);
+        out.push('\n');
+        out
+    };
     std::fs::create_dir_all(dir).map_err(|e| trf!("创建技能目录失败: {e}", "could not create the skills folder: {e}"))?;
+    // The name decides the file, and the name is written inside the file too:
+    // a suffix chosen for the path must be the one in the frontmatter.
+    name = free_name(dir, &name, &render);
+    let out = render(&name);
     let dest = dir.join(format!("{name}.md"));
     std::fs::write(&dest, out).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
     Ok(UserSkill { name, description, path: dest.display().to_string() })
@@ -213,6 +278,60 @@ mod tests {
         std::fs::write(&odd, "---\nname: My Great Skill!\n---\nsteps\n").unwrap();
         assert_eq!(import_into(&dest, &odd).unwrap().name, "my-great-skill");
         assert_eq!(list_in(&dest).len(), 2);
+    }
+
+    /// Issue #18: six skills with Chinese file names, selected together, came
+    /// out as ONE skill called `skill` — every non-ASCII character was dropped,
+    /// each name fell back to the same word, and each file overwrote the last.
+    #[test]
+    fn skills_named_in_any_script_keep_their_names_and_do_not_overwrite_each_other() {
+        let src_dir = temp("cjk-src");
+        let dest = temp("cjk-dest");
+        let names = ["地理学家", "历史学家", "人类学家", "提示词工程师", "心理学家", "叙事学家"];
+        for n in names {
+            let f = src_dir.join(format!("{n}.md"));
+            std::fs::write(&f, format!("# {n}智能体人格\n\n你是一位{n}。\n")).unwrap();
+            let s = import_into(&dest, &f).unwrap();
+            assert_eq!(s.name, n, "a Chinese file name is a name");
+        }
+        let listed: Vec<String> = list_in(&dest).into_iter().map(|s| s.name).collect();
+        assert_eq!(listed.len(), 6, "all six are there: {listed:?}");
+
+        // Accented Latin, Cyrillic: letters, not separators.
+        let f = src_dir.join("Résumé Писатель.md");
+        std::fs::write(&f, "steps").unwrap();
+        assert_eq!(import_into(&dest, &f).unwrap().name, "résumé-писатель");
+        // Combining marks belong to the word they sit in.
+        let f = src_dir.join("हिन्दी.md");
+        std::fs::write(&f, "steps").unwrap();
+        assert_eq!(import_into(&dest, &f).unwrap().name, "हिन्दी");
+    }
+
+    #[test]
+    fn a_name_already_taken_by_another_skill_gets_its_own() {
+        let a_dir = temp("dup-a");
+        let b_dir = temp("dup-b");
+        let dest = temp("dup-dest");
+        let a = a_dir.join("persona.md");
+        let b = b_dir.join("persona.md");
+        std::fs::write(&a, "first persona").unwrap();
+        std::fs::write(&b, "second persona").unwrap();
+        assert_eq!(import_into(&dest, &a).unwrap().name, "persona");
+        assert_eq!(import_into(&dest, &b).unwrap().name, "persona-2", "a different skill is not overwritten");
+        // The same file again is the same skill, wherever it landed.
+        assert_eq!(import_into(&dest, &a).unwrap().name, "persona");
+        assert_eq!(import_into(&dest, &b).unwrap().name, "persona-2");
+        assert_eq!(list_in(&dest).len(), 2);
+        assert!(std::fs::read_to_string(dest.join("persona.md")).unwrap().contains("first persona"));
+    }
+
+    #[test]
+    fn a_name_windows_cannot_create_is_changed() {
+        let src_dir = temp("res-src");
+        let dest = temp("res-dest");
+        let f = src_dir.join("con.md");
+        std::fs::write(&f, "steps").unwrap();
+        assert_eq!(import_into(&dest, &f).unwrap().name, "con-skill");
     }
 
     #[test]

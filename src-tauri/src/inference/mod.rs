@@ -4,7 +4,9 @@
 //! [`InferenceBackend`]. The rest of the app only ever talks to this trait, so
 //! swapping or adding engines never touches the command/UI layer.
 
+pub mod jinja;
 pub mod llama;
+pub mod llama_log;
 pub use llama::llama_backend_pub;
 pub mod mlx;
 pub mod mock;

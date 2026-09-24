@@ -380,6 +380,17 @@ export default function App() {
     });
   }, []);
   const [settings, setSettings] = useState<GenSettings>(loadSettings);
+  // Settings → Sampling governs Code mode too — everything but temperature,
+  // which Code keeps as its own (Settings → Code).
+  const codeSampling = useMemo(
+    () => ({
+      topP: settings.topP,
+      topK: settings.topK,
+      minP: settings.minP,
+      repeatPenalty: settings.repeatPenalty,
+    }),
+    [settings.topP, settings.topK, settings.minP, settings.repeatPenalty],
+  );
 
   // Uncaught front-end errors land in the user-attachable error log
   // (Settings → 打开错误日志) so issue reports can carry real evidence.
@@ -1393,9 +1404,12 @@ export default function App() {
   function showNotice(kind: "warn" | "error", text: string) {
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
     setNotice({ kind, text });
+    // Long enough to read: a load failure that explains itself runs to a few
+    // lines, and nine seconds took it away mid-sentence.
+    const base = kind === "error" ? 9000 : 6000;
     noticeTimer.current = window.setTimeout(
       () => setNotice(null),
-      kind === "error" ? 9000 : 6000,
+      Math.min(25000, base + Math.max(0, text.length - 120) * 45),
     );
   }
 
@@ -1437,7 +1451,9 @@ export default function App() {
     if (/out of memory|内存不足|allocate|insufficient memory/i.test(msg)) {
       showNotice("error", t("oomFail"));
     } else {
-      showNotice("error", msg.slice(0, 220));
+      // 220 characters cut the reason off: a Windows path alone is half of
+      // that, and the reason — what to do about it — comes after the path.
+      showNotice("error", msg.slice(0, 600));
     }
   }
 
@@ -2986,6 +3002,7 @@ export default function App() {
         bashTimeout={settings.codeBashTimeout}
         ragTopK={settings.ragTopK}
         temperature={settings.codeTemperature}
+        sampling={codeSampling}
         thinkBudget={settings.codeThinkBudget}
         maxGenTokens={settings.codeMaxTokens}
         toolFormat={settings.codeToolFormat}

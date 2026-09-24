@@ -342,7 +342,7 @@ export function SetupModal({
                       {t("setupDownload")}
                     </button>
                     {st.kind === "error" && (
-                      <div className="setup-err">{st.message.slice(0, 160)}</div>
+                      <div className="setup-err">{st.message.slice(0, 600)}</div>
                     )}
                   </>
                 ) : st.kind === "resolving" ? (

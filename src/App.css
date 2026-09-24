@@ -4220,6 +4220,8 @@ button.tool-parent {
   padding: 11px 16px;
   font-size: 13px;
   line-height: 1.45;
+  /* A path has no spaces to break at. */
+  overflow-wrap: anywhere;
   color: var(--text);
   background: var(--surface-2);
   border: 1px solid var(--border-strong);

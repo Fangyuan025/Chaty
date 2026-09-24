@@ -318,7 +318,7 @@ pub fn clear_all_conversations(db: State<'_, Db>) -> Result<(), String> {
 
 /// Conversation ids whose message bodies contain `query` (case-insensitive),
 /// ordered by most-recently-updated. Powers the sidebar full-text search.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_conversations(db: State<'_, Db>, query: String) -> Result<Vec<String>, String> {
     let q = query.trim();
     if q.is_empty() {
@@ -516,8 +516,16 @@ fn search_terms(query: &str) -> Vec<Vec<char>> {
         if w.is_empty() {
             continue;
         }
-        let cjk = w.iter().any(|c| ('\u{3400}'..='\u{9fff}').contains(c));
-        if cjk && w.len() > 2 {
+        // Scripts written without spaces (Chinese, Japanese kana, Korean,
+        // Thai…): a "word" is a whole phrase, so it is also searched in pairs.
+        // Checking only the Chinese block missed a query written in kana.
+        let unspaced = w.iter().any(|&c| {
+            matches!(c as u32,
+                0x3040..=0x30FF | 0x31F0..=0x31FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF
+                | 0xF900..=0xFAFF | 0x20000..=0x3134F | 0xAC00..=0xD7AF | 0x0E00..=0x0EFF
+                | 0x1000..=0x109F | 0x1780..=0x17FF)
+        });
+        if unspaced && w.len() > 2 {
             for win in w.windows(2) {
                 push(win.to_vec());
             }
@@ -751,7 +759,7 @@ fn session_turns(data: &str, want: Option<usize>, text_cap: usize) -> (usize, Ve
 }
 
 /// Read a past Code session: the whole thing, or one turn of it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn code_session_read(
     db: State<'_, Db>,
     session_id: String,
@@ -785,7 +793,7 @@ pub fn code_session_read(
 /// Search past Code sessions: this one before a compaction dropped it, one the
 /// user pointed at, or all of them. An empty query with a session asks what
 /// that session was about.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn code_session_search(
     db: State<'_, Db>,
     query: String,
@@ -916,7 +924,7 @@ pub struct DataStats {
     pub db_bytes: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats, String> {
     let conn = lock(&db)?;
     let count = |sql: &str| -> Result<i64, String> {

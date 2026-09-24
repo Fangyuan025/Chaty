@@ -481,7 +481,7 @@ impl MlxEngine {
                     }
                     Some("loaded") => break ev["info"].clone(),
                     Some("error") => {
-                        let msg = ev["message"].as_str().unwrap_or("unknown").to_string();
+                        let msg = explain_mlx_refusal(ev["message"].as_str().unwrap_or("unknown"));
                         let dead = child.id();
                         let _ = child.kill();
                         let _ = child.wait();
@@ -584,6 +584,33 @@ impl MlxEngine {
             }
         }
     }
+}
+
+/// The sidecar's refusal in words a person can act on. An architecture the
+/// MLX engine does not implement used to surface as the Swift error's own
+/// text — `unsupportedModelType("…")` — with nothing about what to do.
+fn explain_mlx_refusal(raw: &str) -> String {
+    if let Some(rest) = raw.split("unsupportedModelType(\"").nth(1) {
+        let arch = rest.split('"').next().unwrap_or(rest);
+        return trf!(
+            "MLX 引擎还不支持模型架构 \"{arch}\"。这个模型的 GGUF 版本通常可以用 llama.cpp 引擎加载。",
+            "the MLX engine does not implement the model architecture \"{arch}\" yet. A GGUF build of the same model can usually be loaded with the llama.cpp engine."
+        );
+    }
+    if let Some(rest) = raw.split("configurationMissing(\"").nth(1) {
+        let file = rest.split('"').next().unwrap_or(rest);
+        if file == "tokenizer.json" {
+            return trf!(
+                "这个 MLX 模型没有 tokenizer.json(只带了 SentencePiece 的 tokenizer.model),MLX 引擎读不了这种分词器。这个模型的 GGUF 版本可以用 llama.cpp 引擎加载。",
+                "this MLX model ships no tokenizer.json (only SentencePiece's tokenizer.model), which the MLX engine cannot read. A GGUF build of the same model can be loaded with the llama.cpp engine."
+            );
+        }
+        return trf!(
+            "这个 MLX 模型缺少文件 {file},可能没下载完整或转换不完整。",
+            "this MLX model is missing {file} — the download or the conversion is incomplete."
+        );
+    }
+    raw.to_string()
 }
 
 /// Live sidecar PIDs. The app's quit path exits via `libc::_exit` (dodging a
@@ -873,6 +900,23 @@ fn run_generation(
 
 #[cfg(test)]
 mod tests {
+    /// An architecture the MLX engine lacks is named, with somewhere to go —
+    /// not passed on as the Swift error's own spelling.
+    #[test]
+    fn an_unsupported_architecture_says_what_to_do() {
+        let msg = super::explain_mlx_refusal("Error: unsupportedModelType(\"glm4_moe_lite\")");
+        assert!(msg.contains("glm4_moe_lite"), "{msg}");
+        assert!(msg.contains("GGUF"), "{msg}");
+        assert!(!msg.contains("unsupportedModelType"), "{msg}");
+        // A converter that shipped only SentencePiece's model.
+        let tok = super::explain_mlx_refusal("configurationMissing(\"tokenizer.json\")");
+        assert!(tok.contains("tokenizer.json") && tok.contains("GGUF"), "{tok}");
+        let other = super::explain_mlx_refusal("configurationMissing(\"config.json\")");
+        assert!(other.contains("config.json"), "{other}");
+        // Anything else passes through as it came.
+        assert_eq!(super::explain_mlx_refusal("out of memory"), "out of memory");
+    }
+
 
     /// Build a minimal valid safetensors file: `u64 len | header JSON | data`.
     fn write_st(path: &std::path::Path, keys: &[&str], data: &[u8]) -> usize {

@@ -54,6 +54,20 @@ anyhow = "1"
 # `n_layer_nextn` were not reachable from the safe API, so the MTP draft
 # context the crate can already drive could never actually be built.
 llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "6c00dd9f7b1de19420c392cd7eb092b365177fa4", features = ["sampler", "mtmd"] }
+# The same crate llama-cpp-2 is built on (same revision, so nothing extra is
+# compiled): reached directly for `llama_log_set`, so llama.cpp's own reason
+# for refusing a model can be kept instead of discarded with the rest of its
+# log.
+llama-cpp-sys-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "6c00dd9f7b1de19420c392cd7eb092b365177fa4" }
+# A real Jinja engine for GGUF chat templates. llama.cpp's own
+# `llama_chat_apply_template` does not run Jinja: it recognises a template by
+# substrings and prints its built-in version of that family, so anything the
+# model's template does beyond the canonical format — a BOS at the start, a
+# default system prompt — was silently dropped (issue #20: MiniCPM5 lost its
+# BOS and answered in fragments). minijinja + pycompat is what Hugging Face's
+# own TGI renders these templates with.
+minijinja = { version = "2.24", features = ["loop_controls", "json", "preserve_order"] }
+minijinja-contrib = { version = "2.24", features = ["pycompat"] }
 chaty-gpu-backend = { path = "gpu-backend", optional = true }
 sysinfo = "0.32"
 # Human-readable local timestamps in the user-attachable error log (already
@@ -102,9 +116,13 @@ vt100 = "0.16"
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
 ] }
+# Windows code page number → encoding, for console output that is not UTF-8
+# (already in the tree through calamine).
+codepage = "0.1.2"
 
 # macOS: Metal device query (recommendedMaxWorkingSetSize) for the offload
 # budget, AVFoundation for the app-level microphone consent prompt (TCC), and

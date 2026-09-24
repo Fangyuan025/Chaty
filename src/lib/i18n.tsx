@@ -313,6 +313,11 @@ export const T = {
     zh: "技能 = 一份写着步骤的 Markdown。系统提示只带「名字+何时用」一行,模型需要时才调 use_skill 载入正文——所以技能再多也不占上下文。放在 ~/.chaty/skills/ (全局)或 项目/.chaty/skills/ (项目,同名覆盖全局)。点「导入技能文件…」可以一次选一份或多份 .md(比如别的工具的 SKILL.md)复制进 ~/.chaty/skills/——在文件对话框里按住 Ctrl(macOS 是 ⌘)点选即可多选;没写名字的会按文件名补上。列表里是导入的技能和随应用附带的官方技能,每个都可以单独关闭。",
     en: "A skill is a markdown file of steps. The prompt carries only one line per skill (name + when); the body loads via use_skill only when needed — so skills cost almost no context. Put them in ~/.chaty/skills/ (global) or <project>/.chaty/skills/ (project, shadows global). \"Import skill files…\" copies one .md or several (another tool's SKILL.md, say) into ~/.chaty/skills/ — hold Ctrl (⌘ on macOS) in the file dialog to pick more than one — naming each from its file when it has no name. The list holds your imported skills and the ones bundled with Chaty; each can be turned off.", pt: "Uma skill é um arquivo markdown com passos. O prompt recebe apenas uma linha por skill (nome + uso); o corpo é carregado usando use_skill somente se houver necessidade — logo, skills quase não consomem contexto. Adicione-as em ~/.chaty/skills/ (global) ou <projeto>/.chaty/skills/ (projeto, substitui a global). \"Importar arquivos de skill…\" copia um ou vários .md (o SKILL.md de outra ferramenta, por exemplo) para ~/.chaty/skills/ — segure Ctrl (⌘ no macOS) na caixa de diálogo para escolher mais de um —, usando o nome do arquivo quando ele não tem nome. A lista mostra as skills importadas e as incluídas com o Chaty; cada uma pode ser desativada.",
   },
+  samplingScopeHint: {
+    zh: "Top-P、Top-K、Min-P 和重复惩罚对对话和编程都生效;温度、最大回复长度和停止词只作用于对话——编程的温度在「设置 → Code」,它的每步长度由智能体自己管理。",
+    en: "Top-P, Top-K, Min-P and the repeat penalty apply to chat and Code alike. Temperature, reply length and stop sequences are chat's only — Code's temperature is under Settings → Code, and the agent manages its own step length.",
+    pt: "Top-P, Top-K, Min-P e a penalidade de repetição valem para o chat e para o Code. Temperatura, comprimento da resposta e sequências de parada são só do chat — a temperatura do Code fica em Configurações → Code, e o agente controla o próprio comprimento de cada passo.",
+  },
   cmDeleteSessionFailed: {
     zh: "删除会话失败,这个会话还在",
     en: "Could not delete the session — it is still there",
@@ -1045,8 +1050,9 @@ export const T = {
     pt: "Limpar o log de erro? Tudo o que foi registrado até agora será apagado; novos erros continuarão sendo registrados."
   },
   conversionSuspect: {
-    zh: "该模型家族与当前内置引擎的兼容性存在已知问题(转换元数据或引擎版本尚未跟上),回复可能退化为空白或乱码。macOS 上请改用该模型的 MLX 版本(运行正常);GGUF 需等待后续版本升级引擎。",
-    en: "This model family has known compatibility issues with the bundled engine (conversion metadata or engine version lag) — replies may degenerate into blanks or noise. On macOS use the model's MLX build (works well); GGUF support awaits an engine upgrade.", pt: "Esta família de modelos tem problemas de compatibilidade conhecidos com o motor (falha de conversão ou atraso na versão) — as respostas podem degenerar em ruído ou vazio. No macOS, prefira o modelo MLX (funciona bem); o suporte GGUF requer atualização do motor."
+    zh: "这个文件看起来是按错误的架构转换的:MiniCPM 1–4 需要 llama.cpp 里它们自己的架构,被导出成普通 llama 时回复会退化成空白或乱码。换一个按原架构转换的 GGUF;macOS 上也可以用这个模型的 MLX 版本。",
+    en: "This file looks converted as the wrong architecture: MiniCPM 1–4 need their own architecture in llama.cpp, and exported as plain llama their replies degenerate into blanks or noise. Use a GGUF converted with the model's own architecture — or, on macOS, the model's MLX build.",
+    pt: "Este arquivo parece ter sido convertido com a arquitetura errada: MiniCPM 1–4 precisam da própria arquitetura no llama.cpp e, exportados como llama comum, as respostas degeneram em vazio ou ruído. Use um GGUF convertido com a arquitetura do próprio modelo — ou, no macOS, a versão MLX.",
   },
   visionConfigMissing: {
     zh: "该模型目录缺少图像处理器配置(preprocessor_config.json),视觉功能已停用,本次以纯文本模式加载。从官方模型仓库补齐该文件后重新加载即可恢复视觉能力。",

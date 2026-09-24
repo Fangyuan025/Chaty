@@ -305,7 +305,7 @@ export function KnowledgePanel({
           </>
         )}
 
-        {error && <div className="setup-err">{error.slice(0, 240)}</div>}
+        {error && <div className="setup-err">{error.slice(0, 600)}</div>}
       </div>
     </div>,
     document.body,

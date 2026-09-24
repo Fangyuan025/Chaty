@@ -19,7 +19,7 @@ pub struct MicResult {
 }
 
 /// Start capturing from the default input device. Returns the sample rate.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mic_start() -> Result<u32, String> {
     #[cfg(target_os = "macos")]
     {
@@ -45,7 +45,7 @@ pub fn mic_level() -> f32 {
 }
 
 /// Stop capturing and return everything recorded since `mic_start`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mic_stop() -> Result<MicResult, String> {
     #[cfg(target_os = "macos")]
     {
@@ -58,7 +58,7 @@ pub fn mic_stop() -> Result<MicResult, String> {
 }
 
 /// Stop capturing and discard the audio.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mic_cancel() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {

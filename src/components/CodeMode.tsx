@@ -11,7 +11,7 @@ import { diffLines } from "../lib/diff";
 import { liveScan, type LiveScan } from "../lib/liveCall";
 import { useConfirm } from "./ConfirmModal";
 import { BgTasksPanel } from "./BgTasksPanel";
-import { groupSessionsByWorkspace } from "../lib/sessionGroups";
+import { groupSessionsByWorkspace, workspaceName } from "../lib/sessionGroups";
 import { keptRestore, toTurnChange, type TurnChange } from "../lib/turnChanges";
 import { TurnChangesCard } from "./TurnChangesCard";
 import { BUILTIN_SKILLS } from "../lib/skills";
@@ -670,6 +670,7 @@ export function CodeMode({
   bashTimeout,
   ragTopK,
   temperature,
+  sampling,
   thinkBudget = 0,
   maxGenTokens = 0,
   toolFormat = "auto",
@@ -697,6 +698,8 @@ export function CodeMode({
   bashTimeout?: number;
   /** Sampling temperature for agent steps (Settings → Code). */
   temperature?: number;
+  /** Top-p / top-k / min-p / repeat penalty from Settings → Sampling. */
+  sampling?: { topP: number; topK: number; minP: number; repeatPenalty: number };
   /** Hard per-round think-token ceiling, 0 = auto (Settings → Code). */
   thinkBudget?: number;
   /** Per-round generation budget in tokens, 0 = auto (Settings → Code). */
@@ -1774,6 +1777,7 @@ export function CodeMode({
       nCtx: model.nCtx ?? undefined,
       maxSteps,
       temperature,
+      sampling,
       thinkBudget,
       maxGenTokens,
       bashTimeout,
@@ -1965,7 +1969,9 @@ export function CodeMode({
     }
   }
 
-  const wsName = workspace ? workspace.split("/").filter(Boolean).pop() : null;
+  // Either separator: split on "/" alone, a Windows workspace showed its whole
+  // path where its folder name belongs.
+  const wsName = workspace ? workspaceName(workspace) : null;
 
   const sessionRow = (s: (typeof sessions)[number]) => (
     <div
@@ -2051,7 +2057,7 @@ export function CodeMode({
               {dirGrants.map((d) => (
                 <span key={d} className="cm-grant-chip" title={d}>
                   <Icon name="folder" size={11} />
-                  <span className="cm-grant-name">{d.split("/").filter(Boolean).pop()}</span>
+                  <span className="cm-grant-name">{workspaceName(d)}</span>
                   <button className="cm-grant-del" title={t("cmGrantRevoke")} onClick={() => void revokeDir(d)}>
                     <Icon name="x" size={10} strokeWidth={2.2} />
                   </button>

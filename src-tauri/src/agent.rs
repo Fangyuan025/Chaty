@@ -269,7 +269,7 @@ pub fn agent_clear_grants() {
 /// and `limit` line count; long files get an actionable footer telling the
 /// model exactly which offset continues the read (instead of a blind cut that
 /// forced it to guess its way through page after page).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_read_file(
     path: String,
     offset: Option<usize>,
@@ -405,7 +405,7 @@ fn read_line_display(line1: usize, line: &str, anchors: bool) -> String {
 /// through read_file, which pages: a file past 12,000 lines had the page
 /// footer written into its snapshot as if it were file content, and in
 /// hashline mode every line carried its anchor.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_read_file_raw(path: String) -> Result<String, String> {
     use std::io::Read;
     let abs = resolve(&path)?;
@@ -594,7 +594,7 @@ fn dl_clear() {
 /// One-call repo orientation: README lede, manifest summary, a two-level
 /// directory tree, entry points, and a language census — the "walk around the
 /// codebase for ten steps" a fresh session used to spend on list_dir chains.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_understand_repo() -> Result<String, String> {
     let root = workspace()?;
     let mut out = String::new();
@@ -1261,7 +1261,7 @@ fn syntax_note(abs: &Path, was_clean: Option<bool>) -> String {
 }
 
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_write_file(path: String, content: String) -> Result<String, String> {
     let abs = resolve(&path)?;
     if abs.is_dir() {
@@ -1288,7 +1288,7 @@ pub fn agent_write_file(path: String, content: String) -> Result<String, String>
 
 /// Exact-string edit (like a str-replace). `old_string` must appear exactly once
 /// unless `replace_all` is set.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_edit_file(
     path: String,
     old_string: String,
@@ -1488,7 +1488,7 @@ struct ResolvedOp {
 /// JSON: an array of {op:"replace",anchor,end_anchor?,content} /
 /// {op:"insert_after",anchor,content} — anchor "0" = BOF, "EOF" = EOF for
 /// insert_after. Tolerates a stringified array (models double-encode).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_edit_lines(path: String, edits: serde_json::Value) -> Result<String, String> {
     let abs = resolve(&path)?;
     let text = std::fs::read_to_string(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
@@ -1813,7 +1813,7 @@ pub struct EditOp {
 /// Several exact-match edits to ONE file, applied atomically: every edit is
 /// validated against the in-memory result of the previous ones, and the file
 /// is only written when all of them land — a failure changes nothing.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_multi_edit(path: String, edits: Vec<EditOp>) -> Result<String, String> {
     if edits.is_empty() {
         return Err(tr("edits 为空", "no edits given"));
@@ -2303,7 +2303,7 @@ pub(crate) async fn read_doc_core(
     Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_resolve_image(path: String) -> Result<String, String> {
     // Images extracted from documents (agent_read_doc / chat attachments)
     // live in the app's own temp cache — no directory grant needed. Guard
@@ -2337,7 +2337,7 @@ pub fn agent_resolve_image(path: String) -> Result<String, String> {
 /// File outline: the definition lines (functions/classes/structs/…) with line
 /// numbers, so the model can navigate a big file without reading it whole.
 /// Regex-free keyword heuristics that cover Rust/TS/JS/Python/Go/Swift/etc.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_outline(path: String) -> Result<String, String> {
     let abs = resolve(&path)?;
     let text = std::fs::read_to_string(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
@@ -2544,7 +2544,7 @@ pub struct DirEntry {
 }
 
 /// One level of directory listing (directories first, then files, sorted).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_list_dir(path: Option<String>) -> Result<Vec<DirEntry>, String> {
     let abs = match path {
         Some(p) if !p.trim().is_empty() && p != "." => resolve(&p)?,
@@ -2571,7 +2571,7 @@ pub fn agent_list_dir(path: Option<String>) -> Result<Vec<DirEntry>, String> {
 /// absolute pattern replaces the root outright when joined, and `../` walks
 /// out of it, so the results — not the pattern — are checked, and a pattern
 /// that only reaches outside asks for the directory the way a read does.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_glob(pattern: String) -> Result<Vec<String>, String> {
     let root = workspace()?;
     let full = root.join(&pattern);
@@ -2606,7 +2606,7 @@ pub fn agent_glob(pattern: String) -> Result<Vec<String>, String> {
 /// Fast filename listing for the composer's @-mention picker: walks the
 /// workspace (skipping VCS/build dirs and hidden files), optionally filtering
 /// by a case-insensitive substring of the relative path, capped for UI use.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_list_files(query: Option<String>, limit: Option<usize>) -> Result<Vec<String>, String> {
     let root = workspace()?;
     let q = query.unwrap_or_default().to_lowercase();
@@ -2687,7 +2687,7 @@ pub fn agent_checkpoint_begin() -> u64 {
 
 /// Restore the workspace to the state BEFORE checkpoint `id`: every checkpoint
 /// with id >= `id` is reverted, newest first.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_checkpoint_revert_to(id: u64) -> Result<String, String> {
     let mut cps = CHECKPOINTS.lock().unwrap();
     let mut restored = 0usize;
@@ -2804,7 +2804,7 @@ fn cp_put_back(path: &Path, original: Option<&[u8]>) -> Result<(), String> {
 
 /// Undo one file of checkpoint `id`'s turn: back to what it held before the
 /// turn first touched it, byte for byte — or gone, if the turn created it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_checkpoint_revert_file(id: u64, path: String) -> Result<(), String> {
     let cps = CHECKPOINTS.lock().unwrap();
     let entry = cps
@@ -2825,7 +2825,7 @@ pub fn agent_checkpoint_revert_file(id: u64, path: String) -> Result<(), String>
 /// removed when it is None (the turn created it). Confined to the workspace,
 /// and not journaled — this is the user taking an edit back, not the agent
 /// making one.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_restore_file(path: String, content: Option<String>) -> Result<(), String> {
     let abs = resolve(&path)?;
     cp_put_back(&abs, content.as_deref().map(str::as_bytes))
@@ -2874,7 +2874,7 @@ fn code_tokens(s: &str) -> Vec<String> {
 /// with the file's matching definition lines (same heuristic as `outline`).
 /// One call answers "which files handle X, and through which functions?" —
 /// the decide/filter work small models used to do across many grep rounds.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_search_code(query: String, k: Option<usize>) -> Result<String, String> {
     let root = workspace()?;
     let q_tokens = code_tokens(&query);
@@ -3062,7 +3062,7 @@ pub fn agent_search_code(query: String, k: Option<usize>) -> Result<String, Stri
 }
 
 /// Regex content search over the workspace (skips VCS/build/binary dirs).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_grep(
     pattern: String,
     path: Option<String>,
@@ -3133,7 +3133,7 @@ pub fn agent_grep(
 /// `names_only`) lines whose CONTENT contains `query` — literal, case-
 /// insensitive, no regex. Fills the gap between `glob` (name PATTERNS) and
 /// `grep` (content REGEX): "find anything to do with X" in one call.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_search_files(
     query: String,
     path: Option<String>,
@@ -3417,18 +3417,36 @@ fn append_capped(buf: &Arc<Mutex<Vec<u8>>>, bytes: &[u8]) {
     }
 }
 
-/// Decode captured console bytes for the model. Valid UTF-8 passes through;
-/// on Chinese-locale Windows consoles (`dir`, error messages) the ANSI
-/// codepage (GBK) would turn to mojibake under a plain lossy conversion, so
-/// non-UTF-8 decodes as GBK there.
+/// Decode captured console bytes for the model. Valid UTF-8 passes through.
+/// Anything else on Windows is in the machine's own code page — console
+/// programs (`dir`, cmd's error messages) write in the OEM one. This used to
+/// assume GBK, which is right on a Simplified Chinese machine and mojibake on
+/// every other: Japanese (Shift-JIS), Korean, Traditional Chinese, Russian…
 fn decode_console_bytes(slice: &[u8]) -> String {
     #[cfg(windows)]
     return match std::str::from_utf8(slice) {
         Ok(ok) => ok.to_owned(),
-        Err(_) => encoding_rs::GBK.decode(slice).0.into_owned(),
+        Err(_) => console_encoding().decode(slice).0.into_owned(),
     };
     #[cfg(not(windows))]
     String::from_utf8_lossy(slice).into_owned()
+}
+
+/// The encoding this Windows machine's console output is in: the OEM code
+/// page, else the ANSI one when the OEM page is one encoding_rs does not
+/// implement (the DOS pages 437/850 of Western machines), else windows-1252.
+#[cfg(windows)]
+fn console_encoding() -> &'static encoding_rs::Encoding {
+    static ENC: std::sync::OnceLock<&'static encoding_rs::Encoding> = std::sync::OnceLock::new();
+    ENC.get_or_init(|| {
+        // SAFETY: plain queries with no arguments.
+        let (oem, ansi) = unsafe {
+            (windows::Win32::Globalization::GetOEMCP(), windows::Win32::Globalization::GetACP())
+        };
+        codepage::to_encoding(oem as u16)
+            .or_else(|| codepage::to_encoding(ansi as u16))
+            .unwrap_or(encoding_rs::WINDOWS_1252)
+    })
 }
 
 
@@ -3879,7 +3897,7 @@ pub struct ShellInfo {
 /// The shells present on this machine, the default first. A choice that is no
 /// longer installed falls back to the default, so a settings file that moves
 /// between machines cannot leave commands unrunnable.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn agent_shells() -> Vec<ShellInfo> {
     fn add(out: &mut Vec<ShellInfo>, id: &str, name: &str, path: PathBuf, default: bool) {
         if path.exists() && !out.iter().any(|s| s.id == id) {

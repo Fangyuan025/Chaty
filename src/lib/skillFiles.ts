@@ -33,6 +33,20 @@ export interface SkillFile {
 
 const MAX_BODY = 8000;
 
+/** The names the importer writes, at most 32 characters: from ASCII, letters,
+ *  digits, `_` and `-`; beyond ASCII, anything but whitespace and control
+ *  characters. An ASCII-only check silently dropped every skill named in
+ *  Chinese (issue #18), and a "letters of every script" list is never whole —
+ *  Devanagari's virama is neither letter nor digit. */
+export function isSkillName(name: string): boolean {
+  const cps = [...name];
+  return (
+    cps.length >= 1 &&
+    cps.length <= 32 &&
+    cps.every((c) => /[A-Za-z0-9_-]/.test(c) || (c.codePointAt(0)! > 0x7f && !/[\s\p{Cc}]/u.test(c)))
+  );
+}
+
 /** Parse a SKILL.md. Returns null when it has no usable frontmatter name —
  *  a malformed file is skipped, never half-loaded. */
 export function parseSkill(text: string, path: string, scope: SkillFile["scope"]): SkillFile | null {
@@ -44,7 +58,7 @@ export function parseSkill(text: string, path: string, scope: SkillFile["scope"]
     if (kv) meta[kv[1].toLowerCase()] = kv[2].trim().replace(/^["']|["']$/g, "");
   }
   const name = (meta.name ?? "").trim();
-  if (!name || !/^[a-zA-Z0-9_-]{1,32}$/.test(name)) return null;
+  if (!isSkillName(name)) return null;
   const body = m[2].trim();
   if (!body) return null;
   return {

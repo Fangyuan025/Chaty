@@ -833,7 +833,6 @@ async fn download_mlx_repo_inner(
         .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
         .collect();
     let dir = models_dir.join(&name);
-    let created = !dir.exists();
     let previous = set_model_aside(&dir)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 

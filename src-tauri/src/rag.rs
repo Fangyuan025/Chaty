@@ -725,37 +725,74 @@ fn chunk_text(text: &str) -> Vec<String> {
 // BM25 (ASCII words + CJK bigrams)
 // ---------------------------------------------------------------------------
 
+/// Scripts written without spaces between words. They are indexed as single
+/// characters and pairs of them, so a short query still meets a phrase.
+fn unspaced(c: char) -> bool {
+    matches!(c as u32,
+        0x3040..=0x30FF        // Hiragana, Katakana
+        | 0x31F0..=0x31FF      // Katakana extensions
+        | 0x3400..=0x4DBF      // CJK extension A
+        | 0x4E00..=0x9FFF      // CJK unified ideographs
+        | 0xF900..=0xFAFF      // CJK compatibility ideographs
+        | 0x20000..=0x3134F    // CJK extensions B–G
+        | 0xAC00..=0xD7AF      // Hangul syllables
+        | 0x0E00..=0x0EFF      // Thai, Lao
+        | 0x1000..=0x109F      // Myanmar
+        | 0x1780..=0x17FF      // Khmer
+    )
+}
+
+/// Part of a word in a script that spaces its words: a letter or digit of
+/// ANY script, or a combining mark that lives inside words (an Indic virama
+/// is neither letter nor digit, but the word breaks without it).
+fn word_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c as u32, 0x0300..=0x036F | 0x0900..=0x0DFF | 0x200C | 0x200D)
+}
+
+/// Keyword tokens for BM25.
+///
+/// This kept ASCII words and treated everything from U+3400 up as Chinese.
+/// Japanese kana sits below that and was never indexed; Cyrillic, Greek,
+/// Arabic and the rest were dropped outright; an accented letter split its
+/// word (Portuguese `manutenção` became `manuten`); and full-width
+/// punctuation — `，` `！` — came out as tokens of its own.
 fn bm25_tokens(s: &str) -> Vec<String> {
+    // Full-width letters and digits are the ASCII ones in another width:
+    // `ＧＰＵ` should find `gpu`.
+    let fold = |c: char| -> char {
+        let u = c as u32;
+        if (0xFF10..=0xFF19).contains(&u) || (0xFF21..=0xFF3A).contains(&u) || (0xFF41..=0xFF5A).contains(&u) {
+            char::from_u32(u - 0xFEE0).unwrap_or(c)
+        } else {
+            c
+        }
+    };
+    let chars: Vec<char> = s.chars().map(fold).collect();
     let mut out = Vec::new();
     let mut word = String::new();
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c.is_ascii_alphanumeric() {
-            word.push(c.to_ascii_lowercase());
+    let flush = |word: &mut String, out: &mut Vec<String>| {
+        if word.chars().count() >= 2 {
+            out.push(std::mem::take(word));
         } else {
-            if word.len() >= 2 {
-                out.push(std::mem::take(&mut word));
-            } else {
-                word.clear();
-            }
-            // CJK: index unigrams+bigrams so short Chinese queries match.
-            if (c as u32) >= 0x3400 {
-                out.push(c.to_string());
-                if i + 1 < chars.len() && (chars[i + 1] as u32) >= 0x3400 {
-                    let mut bg = String::new();
-                    bg.push(c);
-                    bg.push(chars[i + 1]);
-                    out.push(bg);
+            word.clear();
+        }
+    };
+    for (i, &c) in chars.iter().enumerate() {
+        if unspaced(c) {
+            flush(&mut word, &mut out);
+            out.push(c.to_string());
+            if let Some(&next) = chars.get(i + 1) {
+                if unspaced(next) {
+                    out.push([c, next].iter().collect());
                 }
             }
+        } else if word_char(c) {
+            word.extend(c.to_lowercase());
+        } else {
+            flush(&mut word, &mut out);
         }
-        i += 1;
     }
-    if word.len() >= 2 {
-        out.push(word);
-    }
+    flush(&mut word, &mut out);
     out
 }
 
@@ -827,7 +864,7 @@ pub struct RagHit {
     pub score: f32,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rag_search(app: tauri::AppHandle, query: String, k: Option<usize>) -> Result<Vec<RagHit>, String> {
     // How many chunks a question may cite. The old ceiling was 12 with a
     // default of 6, both written here — so a knowledge base of two hundred
@@ -1394,7 +1431,7 @@ const SUPPORTED_EXTS: &[&str] = &[
 /// Recursively collect ingestable files under `dir` (walks subdirectories).
 /// Skips hidden entries (dotfiles/dot-dirs) and symlinks (avoids cycles), and
 /// caps the result so an accidental huge folder can't run away.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rag_list_supported_files(dir: String) -> Result<Vec<String>, String> {
     const MAX_FILES: usize = 5000;
     let root = std::path::PathBuf::from(&dir);
@@ -1457,7 +1494,7 @@ pub struct RagDoc {
     pub enabled: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rag_list_documents(app: tauri::AppHandle) -> Result<Vec<RagDoc>, String> {
     with_db(&app, |conn| {
         let mut stmt = conn
@@ -1482,7 +1519,7 @@ pub fn rag_list_documents(app: tauri::AppHandle) -> Result<Vec<RagDoc>, String> 
 /// Concatenated text from the enabled documents, capped at `max_chars`.
 /// Used to feed the deep-dive podcast transcript generator. Chunks are pulled
 /// in document/sequence order and de-duplicated by their (doc, seq) overlap.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rag_corpus(app: tauri::AppHandle, max_chars: Option<usize>) -> Result<String, String> {
     let cap = max_chars.unwrap_or(12000).clamp(1000, 40000);
     with_db(&app, |conn| {
@@ -1532,7 +1569,7 @@ pub struct RagDocText {
 /// report with one citation per file. Each document's text is capped to a fair
 /// share of `max_chars` (so a single big file can't crowd the others out), and
 /// the overall total is capped too.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rag_corpus_docs(
     app: tauri::AppHandle,
     max_chars: Option<usize>,
@@ -1606,7 +1643,7 @@ pub fn rag_set_doc_enabled(app: tauri::AppHandle, id: i64, enabled: bool) -> Res
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rag_remove_document(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     with_db(&app, |conn| {
         conn.execute("DELETE FROM chunks WHERE doc_id = ?1", params![id])
@@ -1619,7 +1656,7 @@ pub fn rag_remove_document(app: tauri::AppHandle, id: i64) -> Result<(), String>
 
 /// Empty the whole knowledge base — drop every document and its chunks. The
 /// embedding model is left as-is (downloaded once); only indexed content goes.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rag_clear_all(app: tauri::AppHandle) -> Result<(), String> {
     with_db(&app, |conn| {
         conn.execute("DELETE FROM chunks", [])
@@ -2132,6 +2169,27 @@ mod tests {
         assert!(toks.contains(&"metal".to_string()));
         assert!(toks.contains(&"后端".to_string())); // CJK bigram
         assert!(toks.contains(&"gpu".to_string()));
+    }
+
+    /// Every script a knowledge base might be written in, not just ASCII and
+    /// Chinese.
+    #[test]
+    fn tokenizer_indexes_every_script() {
+        let has = |text: &str, tok: &str| bm25_tokens(text).contains(&tok.to_string());
+        // Japanese kana was below the old cut-off and never indexed.
+        assert!(has("キャッシュの再利用", "キャ"));
+        assert!(has("キャッシュの再利用", "再利"));
+        // Cyrillic and Greek were dropped entirely.
+        assert!(has("Привет, мир", "привет"));
+        assert!(has("Καλημέρα κόσμε", "καλημέρα"));
+        // An accented letter no longer splits its word.
+        assert!(has("A manutenção preventiva", "manutenção"));
+        // Combining marks stay inside the word.
+        assert!(has("हिन्दी भाषा", "हिन्दी"));
+        // Full-width letters meet their ASCII spelling.
+        assert!(has("ＧＰＵ加速", "gpu"));
+        // Full-width punctuation is punctuation.
+        assert!(!bm25_tokens("你好，世界！").iter().any(|t| t.contains('，') || t.contains('！')));
     }
 
     #[test]

@@ -183,7 +183,7 @@ static ZH_TTS: OnceLock<Mutex<VitsTts>> = OnceLock::new();
 /// layer, but the system dialog only appears once something in the process
 /// requests capture access — which nothing does unless we ask here. Returns
 /// whether access is (now) authorized; always true on other platforms.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn request_mic_permission() -> bool {
     #[cfg(target_os = "macos")]
     unsafe {
@@ -203,7 +203,10 @@ pub fn request_mic_permission() -> bool {
             let _ = tx.send(granted.as_bool());
         });
         AVCaptureDevice::requestAccessForMediaType_completionHandler(media, &block);
-        // Wait for the dialog; commands run off the main thread, so blocking is fine.
+        // Wait for the dialog. Fine only because the command is declared
+        // `async`: a plain `#[tauri::command] fn` runs ON the main thread, and
+        // this wait froze the whole window for as long as the system dialog
+        // stayed unanswered.
         rx.recv_timeout(std::time::Duration::from_secs(300))
             .unwrap_or(false)
     }

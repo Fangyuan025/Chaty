@@ -101,30 +101,48 @@ pub fn clear_gpu_cap() {
     let _ = std::fs::remove_file(base.join(GPU_BLOCKED));
 }
 
-/// Known bad-conversion tells, per model family. Two cases so far:
-/// * MiniCPM5 is plain llama-arch BY DESIGN — its tell is the tokenizer:
-///   official conversions declare `tokenizer.ggml.pre = "minicpm5"`, while
-///   files made with pre-MiniCPM5 convert scripts fall back to "llama-bpe"
-///   and degenerate (the owner's two downloads: deterministic whitespace on
-///   zh prompts, token salad on en — both with a textbook-perfect prompt).
-/// * MiniCPM 1–3 DO need their own architecture (µP scalers live in the
-///   arch handling), so those exported as plain "llama" are broken.
-fn conversion_suspect(name: &str, arch: &str, tokenizer_pre: &str) -> bool {
-    let _ = tokenizer_pre;
+/// String metadata to override at load, as `(key, value)`. For now only what
+/// `CHATY_KV_OVERRIDE="key=value;key=value"` asks for — a way to test what a
+/// file would do with one field corrected, without rewriting the file.
+fn metadata_repairs(_path: &Path) -> Vec<(String, String)> {
+    std::env::var("CHATY_KV_OVERRIDE")
+        .ok()
+        .map(|spec| {
+            spec.split(';')
+                .filter_map(|kv| kv.split_once('='))
+                .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A string override as llama.cpp takes it: at most 127 bytes and a NUL.
+fn str_override(value: &str) -> Option<llama_cpp_2::model::params::kv_overrides::ParamOverrideValue> {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 128 || bytes.contains(&0) {
+        return None;
+    }
+    let mut buf = [0 as std::os::raw::c_char; 128];
+    for (i, b) in bytes.iter().enumerate() {
+        buf[i] = *b as std::os::raw::c_char;
+    }
+    Some(llama_cpp_2::model::params::kv_overrides::ParamOverrideValue::Str(buf))
+}
+
+/// Known bad-conversion tells. MiniCPM 1–4 carry µP scalers that llama.cpp
+/// only applies under their own architecture, so a file exported as plain
+/// "llama" is broken whatever it is called.
+///
+/// MiniCPM5 used to be flagged wholesale — its official GGUF answered in
+/// fragments here and the engine version took the blame. The real cause was
+/// the rendering: its template writes its own BOS, llama.cpp's built-in
+/// renderer dropped it, and the file declares no automatic one (issue #20).
+/// With the template rendered as written, the official 1B and a community 2B
+/// both answer properly, so the family is no longer suspect — MiniCPM5 is
+/// plain llama by design.
+fn conversion_suspect(name: &str, arch: &str, _tokenizer_pre: &str) -> bool {
     let n = name.to_lowercase();
-    // MiniCPM5: even the OFFICIAL GGUF (llama arch, llama-bpe pre) degenerates
-    // on the llama.cpp this build bundles — upstream b10330 runs the same file
-    // fine, so the support gap is in the engine version, not any one file.
-    // Flag the whole family until the bundled engine catches up; the MLX
-    // build runs perfectly through the sidecar meanwhile.
-    if n.contains("minicpm5") {
-        return true;
-    }
-    // MiniCPM 1-3 need their own arch (µP scalers); plain-llama exports are broken.
-    if n.contains("minicpm") {
-        return arch == "llama";
-    }
-    false
+    n.contains("minicpm") && !n.contains("minicpm5") && arch == "llama"
 }
 
 /// Call once at process start, BEFORE any llama backend init. Returns true
@@ -223,10 +241,10 @@ fn llama_backend() -> Result<&'static LlamaBackend> {
     if let Some(b) = LLAMA_BACKEND.get() {
         return Ok(b);
     }
-    let mut backend = LlamaBackend::init().context("failed to initialize llama.cpp backend")?;
-    if std::env::var("CHATY_LLAMA_LOG").as_deref() != Ok("1") {
-        backend.void_logs();
-    }
+    let backend = LlamaBackend::init().context("failed to initialize llama.cpp backend")?;
+    // Not voided any more: warnings and errors are kept so a refused model
+    // can be explained in llama.cpp's own words (see llama_log).
+    super::llama_log::install();
     let _ = LLAMA_BACKEND.set(backend);
     Ok(LLAMA_BACKEND.get().unwrap())
 }
@@ -564,10 +582,20 @@ impl LlamaEngine {
             // unload — the next big load then swap-freezes the machine.
             #[cfg(target_os = "macos")]
             let params = params.with_use_mmap(false);
+            // Metadata the file got wrong, corrected before llama.cpp reads it.
+            let mut params = Box::pin(params);
+            for (key, value) in metadata_repairs(Path::new(path)) {
+                let Ok(k) = std::ffi::CString::new(key.as_str()) else { continue };
+                let Some(v) = str_override(&value) else { continue };
+                eprintln!("[llama] metadata repair: {key} = {value}");
+                params.as_mut().append_kv_override(&k, v);
+            }
+            let log_mark = super::llama_log::mark();
             let model = match LlamaModel::load_from_file(backend, path, &params) {
                 Ok(m) => Arc::new(m),
                 Err(e) => {
                     let msg = format!("{e:#}");
+                    let said = super::llama_log::since(log_mark);
                     if layers > 0 && is_oom(&msg) {
                         oom_fallback = true;
                         eprintln!("weight-load OOM at {layers} gpu layers; backing off");
@@ -577,15 +605,21 @@ impl LlamaEngine {
                     if is_oom(&msg) {
                         bail!("加载模型权重时内存不足 (out of memory while loading the model weights)");
                     }
-                    // llama.cpp's null pointer says nothing. The file usually
-                    // does — read its header and pass on what it says.
-                    if let Some(why) = std::fs::File::open(path)
-                        .ok()
-                        .and_then(|f| gguf_diagnosis(std::io::BufReader::new(f)))
-                    {
+                    // llama.cpp's null pointer says nothing, but its log does:
+                    // that is the reason, in its own words. The file's header
+                    // is only read when the log had nothing to offer.
+                    if let Some(why) = super::llama_log::explain_refusal(&said).or_else(|| {
+                        std::fs::File::open(path)
+                            .ok()
+                            .and_then(|f| gguf_diagnosis(std::io::BufReader::new(f)))
+                    }) {
+                        // The file's name, not its path: the reason comes after
+                        // it and has to survive being shown in a notice (the
+                        // full path is in the error log's entry for this load).
+                        let file = Path::new(path).file_name().and_then(|s| s.to_str()).unwrap_or(path);
                         bail!(trf!(
-                            "无法加载 GGUF 模型 {path}:{why}",
-                            "cannot load the GGUF model {path}: {why}"
+                            "无法加载 GGUF 模型 {file}:{why}",
+                            "cannot load the GGUF model {file}: {why}"
                         ));
                     }
                     return Err(e).with_context(|| format!("failed to load GGUF model: {path}"));
@@ -774,17 +808,15 @@ impl LlamaEngine {
             && !engine_can_prefill_think
             && template_usable
             && (switch_probe.contains("no_think") || switch_probe.contains("/think"));
+        // Evidence only: a paired vision encoder, or vision metadata in the
+        // file. A list of family names used to stand in for both and said
+        // "multimodal" for Gemma 3 1B, which is text-only — every size of a
+        // family is not the family's biggest member.
         let multimodal = mmproj.is_some()
             || model
                 .meta_val_str(&format!("{arch}.vision.block_count"))
                 .is_ok()
-            || model.meta_val_str("clip.has_vision_encoder").is_ok()
-            || [
-                "-vl", " vl", "vision", "llava", "mllama", "qwen2vl", "qwen2.5-vl",
-                "minicpm-v", "internvl", "pixtral", "idefics", "smolvlm", "gemma-3",
-            ]
-            .iter()
-            .any(|k| name_lc.contains(k) || arch_lc.contains(k));
+            || model.meta_val_str("clip.has_vision_encoder").is_ok();
         let quant = model
             .meta_val_str("general.file_type")
             .ok()
@@ -1572,9 +1604,7 @@ fn run_turn(
         if std::env::var("CHATY_DUMP_PROMPT").as_deref() == Ok("1") {
             eprintln!("PROMPT[{} chars]>>>{prompt}<<<END", prompt.len());
         }
-        let mut tokens = model
-            .str_to_token(&prompt, AddBos::Always)
-            .context("tokenization failed")?;
+        let mut tokens = tokenize_prompt(model, &prompt)?;
         let mut n_prompt = tokens.len();
 
         if n_prompt + 4 >= n_ctx as usize {
@@ -2560,8 +2590,8 @@ fn build_prompt_pair(
     // which is the default in code mode.
     let messages = with_think_off_prefix(model, messages, think);
     let messages = messages.as_slice();
-    let body = render_chat(model, messages, false).unwrap_or_default();
-    let mut prompt = render_chat(model, messages, true)?;
+    let body = render_chat_with(model, messages, false, think).unwrap_or_default();
+    let mut prompt = render_chat_with(model, messages, true, think)?;
 
     // Qwen3.5+ dropped the `/no_think` soft switch and default to reasoning. To
     // honour a "thinking off" request we pre-fill an empty reasoning block right
@@ -2760,11 +2790,11 @@ fn gguf_diagnosis<R: std::io::Read>(mut r: R) -> Option<String> {
     let arch = arch?;
     let prefix = format!("{arch}.");
     if keys.iter().any(|k| k.starts_with(&prefix)) {
-        // A well-formed file whose architecture this build does not implement.
-        return Some(trf!(
-            "这个 llama.cpp 版本不认识架构 \"{arch}\"",
-            "this llama.cpp build does not know the architecture \"{arch}\""
-        ));
+        // A well-formed header. Whether this build implements the architecture
+        // is not something the header can say — assuming it did not is how an
+        // unsupported quantization type came out as "does not know qwen35"
+        // (issue #20). llama.cpp's own log answers that; nothing to add here.
+        return None;
     }
     Some(trf!(
         "GGUF 的 general.architecture 是 \"{arch}\" —— 那是模型的名字,不是架构标识,\
@@ -2982,22 +3012,147 @@ fn render_gemma4(messages: &[ChatMessage], think: Option<bool>, add_gen: bool) -
     p
 }
 
-/// Apply the chat template with a robust fallback chain:
-/// 1. the GGUF's embedded template as-is;
-/// 2. the embedded template with system messages folded into the first user
-///    turn — Gemma-family templates raise "system role not supported";
-/// 3. llama.cpp's *built-in* template for the architecture — newer models
-///    (e.g. Gemma 3/4) often embed Jinja the vendored llama.cpp can't parse
-///    even though the wire format is unchanged;
-/// 4. ChatML as a last resort.
-fn render_chat(model: &LlamaModel, messages: &[ChatMessage], add_ass: bool) -> Result<String> {
-    fn to_chat(msgs: &[ChatMessage]) -> Result<Vec<LlamaChatMessage>> {
-        msgs.iter()
-            .map(|m| LlamaChatMessage::new(role_str(&m.role).to_string(), m.content.clone()))
-            .collect::<std::result::Result<_, _>>()
-            .context("invalid message content")
+/// The text of a special token, or nothing when the model has no such token.
+///
+/// A vocabulary without a BOS (GLM-Edge's has none) reports an id outside the
+/// vocabulary, and llama.cpp answers a piece lookup for it with a C++
+/// `out_of_range` — which Rust cannot catch across the FFI boundary, so the
+/// whole process aborted on load. The id is checked before it is asked about.
+fn special_text(model: &LlamaModel, token: LlamaToken) -> String {
+    if token.0 < 0 || token.0 >= model.n_vocab() {
+        return String::new();
     }
+    String::from_utf8(piece_bytes(model, token)).unwrap_or_default()
+}
 
+/// Tokenize a rendered prompt the way it will be fed: a template that writes
+/// its own BOS has one already, and llama.cpp adding another in front of it
+/// (it does whenever the vocabulary asks for automatic BOS) doubles it.
+fn tokenize_prompt(model: &LlamaModel, prompt: &str) -> Result<Vec<LlamaToken>> {
+    let bos = special_text(model, model.token_bos());
+    let add = if !bos.is_empty() && prompt.starts_with(&bos) { AddBos::Never } else { AddBos::Always };
+    model.str_to_token(prompt, add).context("tokenization failed")
+}
+
+/// `text` with every `<think>…</think>` block (and the blank lines after it)
+/// removed — for comparing two renderings on everything but reasoning.
+fn without_think_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find("<think>") {
+        let Some(close) = rest[open..].find("</think>") else { break };
+        out.push_str(&rest[..open]);
+        rest = rest[open + close + "</think>".len()..].trim_start_matches('\n');
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The model's own template, compiled — when, and only when, llama.cpp's
+/// built-in rendition of it differs from what the template itself produces.
+/// Decided once per template (jinja.rs has the reasoning). `CHATY_JINJA=0`
+/// turns the whole thing off, `=1` uses the template for every model that has
+/// one — both for comparing.
+fn jinja_template(model: &LlamaModel) -> Option<std::sync::Arc<super::jinja::Compiled>> {
+    let mode = std::env::var("CHATY_JINJA").ok();
+    if mode.as_deref() == Some("0") {
+        return None;
+    }
+    let src = model.meta_val_str("tokenizer.chat_template").ok().filter(|t| !t.trim().is_empty())?;
+    let bos = special_text(model, model.token_bos());
+    let eos = special_text(model, model.token_eos());
+    let key = super::jinja::key_of(&src, &bos, &eos);
+    if let Some(d) = super::jinja::decided(key) {
+        return d;
+    }
+    let choice = decide_jinja(model, &src, &bos, &eos, mode.as_deref() == Some("1"));
+    super::jinja::decide(key, choice.clone());
+    choice
+}
+
+fn decide_jinja(
+    model: &LlamaModel,
+    src: &str,
+    bos: &str,
+    eos: &str,
+    force: bool,
+) -> Option<std::sync::Arc<super::jinja::Compiled>> {
+    let compiled = match super::jinja::Compiled::new(src, bos, eos) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[llama] chat template kept on the built-in rendition: {e}");
+            return None;
+        }
+    };
+    let role = |r: &str| match r {
+        "system" => Role::System,
+        "assistant" => Role::Assistant,
+        _ => Role::User,
+    };
+    let mut compared = false;
+    let mut differs: Option<String> = None;
+    for probe in super::jinja::probes() {
+        let turns: Vec<super::jinja::Turn> =
+            probe.iter().map(|(r, c)| super::jinja::Turn { role: r, content: c, reasoning: None }).collect();
+        // A template that refuses the conversation (no system role, say)
+        // cannot be compared on it — the other probe still can.
+        let Ok(own) = compiled.render(&turns, false) else { continue };
+        let msgs: Vec<ChatMessage> = probe
+            .iter()
+            .map(|(r, c)| ChatMessage { role: role(r), content: c.to_string(), images: vec![], reasoning_content: None })
+            .collect();
+        compared = true;
+        let Ok(built_in) = render_builtin(model, &msgs, false) else {
+            differs = Some("the built-in engine cannot render it".into());
+            continue;
+        };
+        // How reasoning is carried in HISTORY is the engine's call, not the
+        // template's to impose here: it is what keeps a conversation's prompt
+        // an append of the last one (think-off prefixes, reasoning left
+        // inline). A template that writes an empty think block into past
+        // turns is not rendered wrongly by the built-in engine on that account.
+        let (own, built_in) = (without_think_blocks(&own), without_think_blocks(&built_in));
+        let (a, b) = (tokenize_prompt(model, &own).ok()?, tokenize_prompt(model, &built_in).ok()?);
+        if a != b {
+            let at = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+            let show = |t: &[LlamaToken]| {
+                let bytes: Vec<u8> = t.iter().skip(at).take(8).flat_map(|&x| piece_bytes(model, x)).collect();
+                String::from_utf8_lossy(&bytes).replace('\n', "\\n")
+            };
+            differs = Some(format!("token {at}: template {:?} vs built-in {:?}", show(&a), show(&b)));
+        }
+    }
+    if force || (compared && differs.is_some()) {
+        eprintln!(
+            "[llama] chat template: rendering the model's own Jinja — {}",
+            differs.as_deref().unwrap_or("forced by CHATY_JINJA=1")
+        );
+        Some(std::sync::Arc::new(compiled))
+    } else {
+        None
+    }
+}
+
+/// Render the chat for the model:
+/// 0. Muse-Glimmer's format, natively (its template is not Jinja-renderable
+///    by either engine);
+/// 1. the model's own Jinja template, when llama.cpp's rendition of it was
+///    shown to differ (jinja.rs);
+/// 2. otherwise llama.cpp's built-in engine — see `render_builtin` for its
+///    fallback chain (system folded into the user turn, built-in templates
+///    for the architecture).
+fn render_chat(model: &LlamaModel, messages: &[ChatMessage], add_ass: bool) -> Result<String> {
+    render_chat_with(model, messages, add_ass, None)
+}
+
+/// `render_chat` with the thinking request passed on to templates that read
+/// `enable_thinking` (only the model's own template, rendered as Jinja, can).
+fn render_chat_with(
+    model: &LlamaModel,
+    messages: &[ChatMessage],
+    add_ass: bool,
+    think: Option<bool>,
+) -> Result<String> {
     // ATEM has no thinking-off branch — the rung ladder is the control — so
     // `think` never reaches this renderer, which is why it can live here rather
     // than beside the Gemma 4 one. Every caller needs it, the load-time probes
@@ -3005,6 +3160,44 @@ fn render_chat(model: &LlamaModel, messages: &[ChatMessage], add_ass: bool) -> R
     // store turns for a protocol the model does not speak.
     if is_muse_glimmer(model) {
         return Ok(render_muse_glimmer(messages, add_ass));
+    }
+    // Gemma 4 is rendered natively for generation (build_prompt_pair), and the
+    // load-time probes have to see the same format: through here they used to
+    // measure llama.cpp's built-in "gemma" template, which is Gemma 3's
+    // `<start_of_turn>` protocol, and decide how to store turns for a format
+    // the model is never sent.
+    if is_gemma4(model) {
+        return Ok(render_gemma4(messages, None, add_ass));
+    }
+
+    // The model's own template, where llama.cpp's built-in rendition of it
+    // was shown not to be what the model was trained on (see jinja.rs).
+    if let Some(j) = jinja_template(model) {
+        let turns: Vec<super::jinja::Turn> = messages
+            .iter()
+            .map(|m| super::jinja::Turn {
+                role: role_str(&m.role),
+                content: &m.content,
+                reasoning: m.reasoning_content.as_deref(),
+            })
+            .collect();
+        match j.render_with(&turns, add_ass, think) {
+            Ok(p) => return Ok(p),
+            Err(e) => eprintln!("[llama] chat template did not render this conversation ({e}); using the built-in rendition"),
+        }
+    }
+    render_builtin(model, messages, add_ass)
+}
+
+/// llama.cpp's own rendering of the chat — the embedded template as its
+/// built-in engine understands it, then the fallbacks. Kept for every model
+/// whose template it renders faithfully.
+fn render_builtin(model: &LlamaModel, messages: &[ChatMessage], add_ass: bool) -> Result<String> {
+    fn to_chat(msgs: &[ChatMessage]) -> Result<Vec<LlamaChatMessage>> {
+        msgs.iter()
+            .map(|m| LlamaChatMessage::new(role_str(&m.role).to_string(), m.content.clone()))
+            .collect::<std::result::Result<_, _>>()
+            .context("invalid message content")
     }
 
     let chat = to_chat(messages)?;
@@ -3389,6 +3582,50 @@ fn build_sampler(model: &LlamaModel, params: &GenParams) -> LlamaSampler {
 #[cfg(test)]
 mod tests {
 
+    /// Issue #20, end to end through the real loader: a file whose weights use
+    /// a quantization type this build lacks. The header is well-formed and its
+    /// architecture is one llama.cpp knows — the refusal is about the tensor
+    /// type, and the message has to say THAT, in llama.cpp's own terms, rather
+    /// than the old guess that the architecture was unknown.
+    #[test]
+    fn an_unsupported_quantization_is_named_not_mistaken_for_an_architecture() {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"GGUF");
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&1u64.to_le_bytes()); // one tensor
+        b.extend_from_slice(&1u64.to_le_bytes()); // one key
+        let key = "general.architecture";
+        b.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        b.extend_from_slice(key.as_bytes());
+        b.extend_from_slice(&8u32.to_le_bytes());
+        b.extend_from_slice(&6u64.to_le_bytes());
+        b.extend_from_slice(b"qwen35");
+        // Tensor info: name, n_dims, dims, type, offset.
+        let name = "blk.0.attn_q.weight";
+        b.extend_from_slice(&(name.len() as u64).to_le_bytes());
+        b.extend_from_slice(name.as_bytes());
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&32u64.to_le_bytes());
+        b.extend_from_slice(&57u32.to_le_bytes()); // not a type this build has
+        b.extend_from_slice(&0u64.to_le_bytes());
+        let path = std::env::temp_dir().join(format!("chaty-badquant-{}.gguf", std::process::id()));
+        std::fs::write(&path, &b).unwrap();
+
+        let backend = super::llama_backend().expect("backend");
+        let mark = super::super::llama_log::mark();
+        let loaded = llama_cpp_2::model::LlamaModel::load_from_file(
+            backend,
+            &path,
+            &llama_cpp_2::model::params::LlamaModelParams::default(),
+        );
+        assert!(loaded.is_err(), "the file must be refused");
+        let said = super::super::llama_log::since(mark);
+        let why = super::super::llama_log::explain_refusal(&said).expect("llama.cpp said why");
+        assert!(why.contains("57"), "names the type: {why}\nlog: {said:?}");
+        assert!(!why.contains("qwen35"), "not blamed on the architecture: {why}");
+        std::fs::remove_file(&path).ok();
+    }
+
     /// A GGUF the loader refuses must come back with the reason, not with
     /// llama.cpp's null pointer. The shapes that matter: a file that is not a
     /// GGUF at all, and the one the owner hit — a converter that wrote the
@@ -3427,11 +3664,12 @@ mod tests {
         assert!(msg.contains("converter") || msg.contains("转换"), "names the cause: {msg}");
 
         // Well-formed, but an architecture this build does not implement.
-        let msg = super::gguf_diagnosis(Cursor::new(gguf("somearch", &["somearch.block_count"])))
-            .unwrap();
+        // A well-formed header says nothing about whether this build has the
+        // architecture — issue #20 was a guess that it did not. That is left
+        // to llama.cpp's own log (llama_log::explain_refusal).
         assert!(
-            msg.contains("does not know") || msg.contains("不认识"),
-            "unsupported, not malformed: {msg}"
+            super::gguf_diagnosis(Cursor::new(gguf("somearch", &["somearch.block_count"]))).is_none(),
+            "a well-formed header is not diagnosed from the header"
         );
     }
 
@@ -3602,14 +3840,12 @@ mod tests {
     /// means the previous load killed the process → promote it to the
     /// persistent block; a clean dir stays unblocked; the block persists.
     /// Broken conversions must be flagged; official files and ordinary
-    /// llama models must not. MiniCPM5's tell is the pre-tokenizer (its
-    /// llama arch is legitimate); MiniCPM 1–3's tell is the arch itself.
+    /// llama models must not. MiniCPM 1–4's tell is the plain-llama arch;
+    /// MiniCPM5 IS plain llama and works (issue #20 was the rendering).
     #[test]
     fn conversion_suspect_flags_wrong_converter() {
-        // MiniCPM5 GGUFs (official included) degenerate on the bundled
-        // engine — the whole family is flagged until the engine catches up.
-        assert!(conversion_suspect("MiniCPM5-1B-F16.gguf MiniCPM5 1B", "llama", "llama-bpe"));
-        assert!(conversion_suspect("MiniCPM5-1B-F16.gguf MiniCPM5 1B", "llama", "minicpm5"));
+        assert!(!conversion_suspect("MiniCPM5-1B-F16.gguf MiniCPM5 1B", "llama", "llama-bpe"));
+        assert!(!conversion_suspect("MiniCPM5-2B-heretic.gguf Raw_Model", "llama", "minicpm5"));
         // Older MiniCPM families need their own arch.
         assert!(conversion_suspect("minicpm-2b.Q4.gguf ", "llama", "llama-bpe"));
         assert!(!conversion_suspect("MiniCPM3-4B.gguf MiniCPM3", "minicpm3", "minicpm3"));

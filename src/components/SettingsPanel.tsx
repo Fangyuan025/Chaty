@@ -735,7 +735,7 @@ export function SettingsPanel({
     void syncMcpServers(list).then((rs) => {
       setMcpStatus((prev) => {
         const st: Record<string, string> = { ...prev };
-        for (const r of rs) st[r.server] = r.error ? `✗ ${r.error.slice(0, 90)}` : `✓ ${r.tools} tools`;
+        for (const r of rs) st[r.server] = r.error ? `✗ ${r.error.slice(0, 240)}` : `✓ ${r.tools} tools`;
         return st;
       });
     });
@@ -1011,6 +1011,7 @@ export function SettingsPanel({
 
           {cat === "sampling" && (
             <>
+              <div className="settings-hint">{t("samplingScopeHint")}</div>
               <label className="field">
                 <span>
                   <em className="has-tip" data-tip={t("tipTemperature")}>{t("temperature")}</em> <b>{value.temperature.toFixed(2)}</b>

@@ -312,13 +312,13 @@ pub async fn get_model(state: State<'_, AppState>) -> Result<Option<ModelInfo>, 
 }
 
 /// CPU / RAM / GPU info + the compiled GPU backend, for the hardware panel.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_hardware_info() -> crate::gpu::HardwareInfo {
     crate::gpu::hardware()
 }
 
 /// Live VRAM usage of the primary GPU (polled by the hardware panel).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_gpu_usage() -> Option<crate::gpu::GpuUsage> {
     crate::gpu::gpu_usage()
 }
@@ -415,14 +415,14 @@ pub fn reset_gpu_layer_cap() {
 }
 
 /// Write `content` to `path` (used by conversation export after a save dialog).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| format!("写入文件失败 (failed to write file): {e}"))
 }
 
 /// Write base64 little-endian f32 mono PCM to `path` as a 16-bit PCM WAV file
 /// (used to export the generated deep-dive podcast audio).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn write_wav_file(path: String, audio: String, sample_rate: u32) -> Result<(), String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(audio.as_bytes())
@@ -1039,7 +1039,7 @@ pub fn open_data_dir(app: tauri::AppHandle) -> Result<String, String> {
 /// by Deep Research to export a report as PDF: WKWebView's own `window.print()`
 /// is a no-op, but the system browser prints (and saves as PDF, CJK included)
 /// reliably. Returns the file path.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_html_report(
     app: tauri::AppHandle,
     html: String,
@@ -1125,6 +1125,9 @@ fn prune_exports(dir: &Path, ext: &str, keep: usize) {
 }
 
 /// Persist one canvas session (key = content hash chosen by the frontend).
+// Synchronous on purpose: the canvas saves on every version change without
+// waiting, and saves run in call order only while they run on one thread —
+// off it, an older save could land after a newer one and drop a version.
 #[tauri::command]
 pub fn canvas_session_save(app: tauri::AppHandle, key: String, data: String) -> Result<(), String> {
     // The key is a frontend-computed hex hash — refuse anything path-like.
@@ -1138,7 +1141,7 @@ pub fn canvas_session_save(app: tauri::AppHandle, key: String, data: String) -> 
 }
 
 /// Load one canvas session; Ok(None) when there is none.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn canvas_session_load(app: tauri::AppHandle, key: String) -> Result<Option<String>, String> {
     if key.is_empty() || key.len() > 64 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("bad canvas session key".into());
@@ -1175,7 +1178,7 @@ fn gguf_shard_index(name: &str) -> Option<u32> {
 
 /// List `.gguf` models discovered in the scanned directories, for the in-app
 /// hot-swap picker.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
     // Loose GGUFs dropped into a models root WHILE the app runs get organized
     // right here, so reopening the picker is enough — no restart. Idempotent
