@@ -2780,7 +2780,7 @@ export default function App() {
                               {t("imageBadge")}
                             </span>
                           ) : null}
-                          {m.kind === "image" && (m.missing?.length ?? 0) > 0 && !settings.imgComponents[m.path] ? (
+                          {m.kind === "image" && (m.missing ?? []).some((role) => !settings.imgComponents[m.path]?.[role]) ? (
                             <span className="mm-warn" title={t("imgMissingBadgeTip")}>!</span>
                           ) : null}
                           {m.sizeMb ? (

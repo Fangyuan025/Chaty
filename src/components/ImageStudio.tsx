@@ -20,6 +20,8 @@ import {
   effective,
   etaSeconds,
   fmtDuration,
+  referenceOf,
+  settingsFromRequest,
   type ImageSettings,
 } from "../lib/imageGen";
 import type { ImageRun, ImageStudioState } from "../lib/useImageStudio";
@@ -333,16 +335,9 @@ export function ImageStudio({
     const p = rec.params;
     studio.setPrompt(rec.prompt);
     studio.setNegative(rec.negativePrompt || null);
-    onSettings({
-      imgSteps: p.steps ?? settings.imgSteps,
-      imgCfg: p.cfgScale ?? settings.imgCfg,
-      imgSampler: p.sampler ?? settings.imgSampler,
-      imgScheduler: p.scheduler ?? settings.imgScheduler,
-      imgBatch: p.batchCount ?? settings.imgBatch,
-      imgAspect: "custom",
-      imgCustomW: p.width ?? settings.imgCustomW,
-      imgCustomH: p.height ?? settings.imgCustomH,
-    });
+    onSettings(settingsFromRequest(p, settings));
+    const ref = referenceOf(p);
+    studio.setReference(ref ? { path: ref } : null);
     inputRef.current?.focus();
   };
 

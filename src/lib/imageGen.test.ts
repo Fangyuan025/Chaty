@@ -7,6 +7,8 @@ import {
   etaSeconds,
   loadOptions,
   percent,
+  referenceOf,
+  settingsFromRequest,
   sizeFor,
   smooth,
   type GenState,
@@ -89,6 +91,41 @@ describe("the request", () => {
     expect(o).toMatchObject({ device: "gpu", offloadToCpu: false, textEncoderOnCpu: false, vaeOnCpu: false, flashAttn: true });
     const picked = loadOptions({ ...IMAGE_SETTINGS_DEFAULTS, imgComponents: { "/m/q.gguf": { vae: "/v.safetensors" } } }, "/m/q.gguf");
     expect(picked.components).toEqual({ vae: "/v.safetensors" });
+  });
+
+  test("reusing a generation brings back every setting it ran with", () => {
+    const custom = {
+      ...IMAGE_SETTINGS_DEFAULTS,
+      imgAspect: "custom",
+      imgCustomW: 832,
+      imgCustomH: 1216,
+      imgSteps: 30,
+      imgCfg: 4.5,
+      imgGuidance: 3.5,
+      imgSampler: "dpm++2m",
+      imgScheduler: "karras",
+      imgFlowShift: 3,
+      imgBatch: 3,
+      imgVaeTiling: true,
+      imgClipSkip: 2,
+      imgPreview: "vae" as const,
+      imgPreviewInterval: 4,
+      imgFormat: "jpg" as const,
+      imgStrength: 0.4,
+    };
+    const sent = buildRequest("a cat", "", custom, { ...QWEN21, guidance: 2.5 }, { path: "/a.png", edit: false });
+    const back = { ...IMAGE_SETTINGS_DEFAULTS, ...settingsFromRequest(sent, IMAGE_SETTINGS_DEFAULTS) };
+    // The same request comes out of the restored settings.
+    expect(buildRequest("a cat", "", back, { ...QWEN21, guidance: 2.5 }, { path: "/a.png", edit: false })).toEqual(sent);
+    expect(referenceOf(sent)).toBe("/a.png");
+    expect(referenceOf(buildRequest("x", "", custom, QWEN21, { path: "/b.png", edit: true }))).toBe("/b.png");
+    expect(referenceOf(buildRequest("x", "", custom, QWEN21, null))).toBeNull();
+  });
+
+  test("a record missing fields keeps the current settings for them", () => {
+    const s = { ...IMAGE_SETTINGS_DEFAULTS, imgSteps: 12, imgStrength: 0.6 };
+    const back = settingsFromRequest({ width: 512, height: 768, guidance: null }, s);
+    expect(back).toMatchObject({ imgAspect: "custom", imgCustomW: 512, imgCustomH: 768, imgSteps: 12, imgStrength: 0.6, imgGuidance: 0 });
   });
 });
 

@@ -199,6 +199,36 @@ export function buildRequest(
   };
 }
 
+/** The settings a recorded request ran with, for "reuse prompt & settings":
+ *  everything that shapes the picture, back as it was sent. The seed stays as
+ *  it is (reusing one has its own action), and so does the output folder. */
+export function settingsFromRequest(p: Partial<ImageRequest>, s: ImageSettings): Partial<ImageSettings> {
+  return {
+    imgAspect: "custom",
+    imgCustomW: p.width ?? s.imgCustomW,
+    imgCustomH: p.height ?? s.imgCustomH,
+    imgSteps: p.steps ?? s.imgSteps,
+    imgCfg: p.cfgScale ?? s.imgCfg,
+    // null: the model takes no guidance, so the setting has nothing to say.
+    imgGuidance: p.guidance ?? s.imgGuidance,
+    imgSampler: p.sampler ?? s.imgSampler,
+    imgScheduler: p.scheduler ?? s.imgScheduler,
+    imgFlowShift: p.flowShift ?? s.imgFlowShift,
+    imgBatch: p.batchCount ?? s.imgBatch,
+    imgVaeTiling: p.vaeTiling ?? s.imgVaeTiling,
+    imgClipSkip: p.clipSkip ?? s.imgClipSkip,
+    imgPreview: p.preview ?? s.imgPreview,
+    imgPreviewInterval: p.previewInterval ?? s.imgPreviewInterval,
+    imgFormat: p.format ?? s.imgFormat,
+    imgStrength: p.strength ?? s.imgStrength,
+  };
+}
+
+/** The reference picture a recorded request used, if any. */
+export function referenceOf(p: Partial<ImageRequest>): string | null {
+  return p.initImage || p.refImages?.[0] || null;
+}
+
 /** How the engine is loaded, for the model at `path`. */
 export function loadOptions(s: ImageSettings, path: string): ImageLoadOptions {
   return {
