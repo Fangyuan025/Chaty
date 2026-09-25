@@ -89,7 +89,9 @@ describe("markdown blocks", () => {
         }
       }
     }
-  });
+    // Renders hundreds of prefixes twice each: under a second here, over five
+    // on a busy CI runner — work, not a hang.
+  }, 30_000);
 
   it("finds the same blocks incrementally as from scratch", () => {
     for (const text of TEXTS) {
