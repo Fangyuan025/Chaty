@@ -2648,6 +2648,18 @@ fn build_prompt_pair(
             prompt.push_str("<think>\n");
         }
     }
+    // A namespaced thought the template opened and has no off branch for (K2
+    // Horizon's templates before IFM added `enable_thinking`): closed the way
+    // the later template closes it, `<ifm|think>\n</ifm|think>\n`.
+    if think == Some(false) {
+        if let Some(tag) = preopened_think_tag(&prompt).filter(|t| *t != "<think>") {
+            let closer = format!("</{}\n", &tag[1..]);
+            if !prompt.ends_with('\n') {
+                prompt.push('\n');
+            }
+            prompt.push_str(&closer);
+        }
+    }
     if think == Some(false) && template_uses_think {
         let tail = prompt.trim_end();
         let already_closed = tail.ends_with("</think>");

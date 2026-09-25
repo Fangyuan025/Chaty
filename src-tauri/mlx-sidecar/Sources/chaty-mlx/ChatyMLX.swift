@@ -587,7 +587,11 @@ func preopenedThinkTag(_ text: String) -> String? {
 func thinkOffSuffix(_ promptText: String) -> String {
     guard let tag = preopenedThinkTag(promptText) else { return Engine.thinkOffPrefix }
     let closer = "</" + tag.dropFirst()
-    return tag == "<think>" ? "\n" + closer + "\n\n" : closer
+    // A namespaced tag closes as the template that has an off branch closes
+    // it: K2 Horizon's writes `<ifm|think>\n</ifm|think>\n`. Without the
+    // line break after it, the MoVA 36B took the closed thought as a place to
+    // start reasoning in plain text.
+    return tag == "<think>" ? "\n" + closer + "\n\n" : closer + "\n"
 }
 
 /// Does the template still render earlier turns the same way once a NEW user
