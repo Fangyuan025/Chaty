@@ -267,6 +267,57 @@ pub fn tabbed_like_file(new: &str, old: &str, file: &str) -> Option<String> {
     (out != new).then_some(out)
 }
 
+/// Recipe lines of a Makefile the model wrote with no indentation at all.
+/// A recipe line has to start with a tab — `make` stops with "missing
+/// separator" otherwise — and models add `go vet ./...` under `go test ./...`
+/// flush left (Gemma 4 E4B and a Qwen3.5 4B both did). Only lines that are
+/// plainly recipe lines are touched: inside a rule (after its target line or
+/// another recipe line, no blank line between), and not a target, an
+/// assignment, a directive or a comment themselves.
+pub fn makefile_recipe_tabs(new: &str, old: &str, path: &str) -> Option<String> {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let is_make = name == "Makefile" || name == "makefile" || name == "GNUmakefile" || name.ends_with(".mk");
+    if !is_make {
+        return None;
+    }
+    let target = |l: &str| {
+        let t = l.trim_end();
+        match t.find(':') {
+            Some(i) => !t[..i].contains('=') && !t[i..].starts_with(":=") && !t.starts_with('#'),
+            None => false,
+        }
+    };
+    let assignment = |l: &str| {
+        let head = l.split('#').next().unwrap_or("");
+        ["=", ":=", "?=", "+=", "!="].iter().any(|op| head.contains(op)) && !target(l)
+    };
+    const DIRECTIVES: &[&str] = &[
+        "include", "-include", "sinclude", "ifeq", "ifneq", "ifdef", "ifndef", "else", "endif",
+        "define", "endef", "export", "unexport", "override", "vpath", "private",
+    ];
+    let directive = |l: &str| DIRECTIVES.iter().any(|d| l == *d || l.starts_with(&format!("{d} ")) || l.starts_with(&format!("{d}(")));
+    let mut in_rule = old.lines().next().is_some_and(|l| l.starts_with('\t') || target(l));
+    let mut out = String::with_capacity(new.len() + 8);
+    let mut changed = false;
+    for piece in new.split_inclusive('\n') {
+        let line = piece.trim_end_matches(['\n', '\r']);
+        if line.trim().is_empty() {
+            in_rule = false;
+        } else if line.starts_with('\t') {
+            in_rule = true;
+        } else if line.starts_with(' ') || line.starts_with('#') || directive(line) || assignment(line) {
+            // left as written
+        } else if target(line) {
+            in_rule = true;
+        } else if in_rule {
+            out.push('\t');
+            changed = true;
+        }
+        out.push_str(piece);
+    }
+    changed.then_some(out)
+}
+
 /// A value written as one line with its line breaks spelled out: `\n` and
 /// `\t` as two characters each, where real ones were meant. A model does this
 /// in formats that take text as written (Gemma 4 wrote a Makefile rule as
@@ -869,6 +920,20 @@ mod tests {
 
     fn ok(text: &str, old: &str, new: &str) -> Located {
         locate(text, old, new).unwrap_or_else(|m| panic!("expected a match, got {m:?}"))
+    }
+
+    #[test]
+    fn a_makefile_recipe_line_written_flush_left_gets_its_tab() {
+        // Gemma 4 E4B, verbatim in shape.
+        assert_eq!(
+            makefile_recipe_tabs("test:\n\tgo test ./...\ngo vet ./...", "test:\n\tgo test ./...", "Makefile").as_deref(),
+            Some("test:\n\tgo test ./...\n\tgo vet ./...")
+        );
+        // Targets, assignments, directives, comments and what follows a blank
+        // line are not recipe lines; other files are not Makefiles.
+        let untouched = "test:\n\tgo test\n\nlint: fmt\nGOFLAGS := -v\ninclude common.mk\n# note\nall: test";
+        assert_eq!(makefile_recipe_tabs(untouched, "x", "build/rules.mk"), None);
+        assert_eq!(makefile_recipe_tabs("test:\n\tgo test\ngo vet", "x", "notes.md"), None);
     }
 
     #[test]

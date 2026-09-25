@@ -1307,6 +1307,13 @@ pub fn agent_write_file(path: String, content: String) -> Result<String, String>
 }
 
 /// Said whenever `\n` written as two characters was taken as a line break.
+fn recipe_tab_note() -> String {
+    tr(
+        "(Makefile 的配方行必须以 Tab 开头,新写的配方行没有缩进,已补上 Tab)",
+        " (a Makefile recipe line must start with a tab; the new recipe lines had none, so one was added)",
+    )
+}
+
 fn retabbed_note() -> String {
     tr(
         "(新写的行用空格缩进,而这个文件只用 Tab 缩进,已改成 Tab 写入)",
@@ -1348,13 +1355,16 @@ pub fn agent_edit_file(
     let abs = resolve(&path)?;
     let text = std::fs::read_to_string(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
     let (new_string, retabbed) = match crate::edit_match::tabbed_like_file(&new_string, &old_string, &text) {
-        Some(fixed) => (fixed, true),
-        None => (new_string, false),
+        Some(fixed) => (fixed, Some(retabbed_note())),
+        None => match crate::edit_match::makefile_recipe_tabs(&new_string, &old_string, &path) {
+            Some(fixed) => (fixed, Some(recipe_tab_note())),
+            None => (new_string, None),
+        },
     };
     let spelled = format!(
         "{}{}",
         if spelled { spelled_note() } else { String::new() },
-        if retabbed { retabbed_note() } else { String::new() }
+        retabbed.unwrap_or_default()
     );
     cp_record(&abs);
     let was_clean = syntax_check(&abs).map(|r| r.is_ok());
@@ -1885,7 +1895,9 @@ pub fn agent_multi_edit(path: String, edits: Vec<EditOp>) -> Result<String, Stri
             return Err(trf!("第 {n}/{total} 条 old_string 与 new_string 相同;未应用任何修改", "edit {n}/{total} is a no-op — nothing changed"));
         }
         let fixed = crate::edit_match::spelled_out_breaks(&e.new_string, &e.old_string).unwrap_or_else(|| e.new_string.clone());
-        let fixed = crate::edit_match::tabbed_like_file(&fixed, &e.old_string, &cur).unwrap_or(fixed);
+        let fixed = crate::edit_match::tabbed_like_file(&fixed, &e.old_string, &cur)
+            .or_else(|| crate::edit_match::makefile_recipe_tabs(&fixed, &e.old_string, &path))
+            .unwrap_or(fixed);
         let e = &EditOp { old_string: e.old_string.clone(), new_string: fixed, replace_all: e.replace_all };
         // replace_all with no verbatim match still takes one unique loose match
         // (an E4B's retyped block, indented six where the file has four, failed
