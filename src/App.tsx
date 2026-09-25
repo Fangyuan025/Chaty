@@ -5,6 +5,18 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrent as getDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { AssistantMessage } from "./components/AssistantMessage";
+import { maybeAutorun } from "./lib/debugProbe";
+import { recencyGroups, type RecencyKey } from "./lib/recency";
+
+/** Sidebar group headings, by recency (see recency.ts). */
+const RECENCY_LABEL: Record<RecencyKey, "recencyPinned" | "recencyToday" | "recencyYesterday" | "recencyWeek" | "recencyMonth" | "recencyOlder"> = {
+  pinned: "recencyPinned",
+  today: "recencyToday",
+  yesterday: "recencyYesterday",
+  week: "recencyWeek",
+  month: "recencyMonth",
+  older: "recencyOlder",
+};
 import { ContextMenu } from "./components/ContextMenu";
 import { ImagePreview } from "./components/ImagePreview";
 import { withErrorNote } from "./lib/reasoning";
@@ -721,6 +733,8 @@ export default function App() {
         const current = await getModel();
         if (current) {
           setModel(current);
+          // Development builds: a reply to reproduce, sent once the page is up.
+          void maybeAutorun((t) => autorunSend.current(t), () => setAppMode("chat"));
           return;
         }
         // Otherwise auto-load: last session's model, else the first GGUF found
@@ -2363,6 +2377,12 @@ export default function App() {
    *  set once streaming starts, several awaits later, and two sends in quick
    *  succession both used to get past it. */
   const sendingRef = useRef(false);
+  /** The latest send, for the development autorun (debugProbe) — a handler
+   *  captured at mount would see no model and open the folder picker. */
+  const autorunSend = useRef<(text: string) => void>(() => {});
+  autorunSend.current = (text: string) => {
+    if (model) void handleSend(text);
+  };
   async function handleSend(override?: string) {
     const text = (override ?? input).trim();
     if (!text || busy || sendingRef.current) return;
@@ -2722,12 +2742,14 @@ export default function App() {
             className={`mode-tab ${appMode === "chat" ? "active" : ""}`}
             onClick={() => setAppMode("chat")}
           >
+            <Icon name="chat" size={13} strokeWidth={1.8} />
             {t("modeChat")}
           </button>
           <button
             className={`mode-tab ${appMode === "code" ? "active" : ""}`}
             onClick={() => setAppMode("code")}
           >
+            <Icon name="code" size={13} strokeWidth={1.8} />
             {t("modeCode")}
           </button>
         </div>
@@ -2770,8 +2792,9 @@ export default function App() {
                   className="model-menu-refresh"
                   onClick={() => void refreshModels()}
                   title={t("refreshModels")}
+                  aria-label={t("refreshModels")}
                 >
-                  ⟳
+                  <Icon name="refresh" size={13} strokeWidth={1.9} />
                 </button>
               </div>
               <div className="model-menu-list">
@@ -2808,7 +2831,7 @@ export default function App() {
                         </button>
                         <span className="mm-trail">
                           {active ? (
-                            <span className="mm-dot" />
+                            <Icon name="check" size={13} strokeWidth={2.1} className="mm-check" />
                           ) : (
                             <button
                               className="mm-del"
@@ -2826,37 +2849,43 @@ export default function App() {
                   })
                 )}
               </div>
-              <button className="model-menu-file" onClick={handleLoadFolder}>
-                {t("loadFromFolder")}
-              </button>
-              <button
-                className="model-menu-file"
-                onClick={() => {
-                  setShowModelMenu(false);
-                  setShowDownload(true);
-                }}
-              >
-                {t("dlTitle")}
-              </button>
-              <button
-                className="model-menu-file"
-                onClick={() => {
-                  setShowModelMenu(false);
-                  openModelsFolder();
-                }}
-              >
-                {t("openModelsDir")}
-              </button>
-              {model && (
-                <button
-                  className="model-menu-file model-menu-eject"
-                  onClick={handleEject}
-                  disabled={busy || loadingModel}
-                  title={t("ejectModel")}
-                >
-                  {t("ejectModel")}
+              <div className="model-menu-actions">
+                <button className="model-menu-file" onClick={handleLoadFolder}>
+                  <Icon name="plus" size={14} />
+                  {t("loadFromFolder")}
                 </button>
-              )}
+                <button
+                  className="model-menu-file"
+                  onClick={() => {
+                    setShowModelMenu(false);
+                    setShowDownload(true);
+                  }}
+                >
+                  <Icon name="download" size={14} />
+                  {t("dlTitle")}
+                </button>
+                <button
+                  className="model-menu-file"
+                  onClick={() => {
+                    setShowModelMenu(false);
+                    openModelsFolder();
+                  }}
+                >
+                  <Icon name="folder" size={14} />
+                  {t("openModelsDir")}
+                </button>
+                {model && (
+                  <button
+                    className="model-menu-file model-menu-eject"
+                    onClick={handleEject}
+                    disabled={busy || loadingModel}
+                    title={t("ejectModel")}
+                  >
+                    <Icon name="eject" size={14} />
+                    {t("ejectModel")}
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -3049,7 +3078,13 @@ export default function App() {
                 {conversations.length === 0 ? t("noConversations") : t("noMatches")}
               </div>
             ) : (
-              visibleConvs.map((c) => (
+              (q
+                ? [{ key: "results" as const, items: visibleConvs }]
+                : recencyGroups(visibleConvs)
+              ).map((g) => (
+              <div key={g.key} className="conv-group">
+                {g.key !== "results" && <div className="conv-group-label">{t(RECENCY_LABEL[g.key])}</div>}
+              {g.items.map((c) => (
                 <div
                   key={c.id}
                   className={`conv-item ${c.id === conversationId ? "active" : ""} ${
@@ -3113,11 +3148,12 @@ export default function App() {
                     </>
                   )}
                 </div>
+              ))}
+              </div>
               ))
             )}
           </div>
           <div className="side-status" title={model ? model.name : ""}>
-            <span className="ss-dot" />
             <span className="ss-meta">v{__APP_VERSION__}</span>
           </div>
           <div

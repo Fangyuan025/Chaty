@@ -1,6 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 // Anthropic-style reading serif for model output & suggestion cards (bundled offline).
+// The interface's own voice, bundled so it looks the same offline: Instrument
+// Sans for the chrome, JetBrains Mono for code. CJK falls through to the
+// platform's own (PingFang / YaHei), which is what reads naturally there.
+import "@fontsource-variable/instrument-sans/wdth.css";
+import "@fontsource-variable/jetbrains-mono/wght.css";
 import "@fontsource/source-serif-4/400.css";
 import "@fontsource/source-serif-4/400-italic.css";
 import "@fontsource/source-serif-4/600.css";

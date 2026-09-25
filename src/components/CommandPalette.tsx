@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
+import { Icon } from "./Icon";
 import { useExitTransition } from "../lib/useExit";
 
 export interface Command {
@@ -86,14 +87,17 @@ export function CommandPalette({
   return createPortal(
     <div className={`cmdk-overlay ${closing ? "closing" : ""}`} onMouseDown={onClose}>
       <div className="cmdk" onMouseDown={(e) => e.stopPropagation()}>
-        <input
-          ref={inputRef}
-          className="cmdk-input"
-          placeholder={t("cmdkPlaceholder")}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={onKey}
-        />
+        <div className="cmdk-search">
+          <Icon name="search" size={15} strokeWidth={1.9} />
+          <input
+            ref={inputRef}
+            className="cmdk-input"
+            placeholder={t("cmdkPlaceholder")}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onKey}
+          />
+        </div>
         <div className="cmdk-list">
           {filtered.length === 0 ? (
             <div className="cmdk-empty">{t("cmdkEmpty")}</div>
@@ -111,6 +115,11 @@ export function CommandPalette({
               </button>
             ))
           )}
+        </div>
+        <div className="cmdk-foot">
+          <span><kbd>↑</kbd><kbd>↓</kbd>{t("cmdkMove")}</span>
+          <span><kbd>↵</kbd>{t("cmdkRun")}</span>
+          <span><kbd>esc</kbd>{t("cmdkClose")}</span>
         </div>
       </div>
     </div>,

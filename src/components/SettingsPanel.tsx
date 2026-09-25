@@ -102,7 +102,7 @@ export interface GenSettings {
   codeMaxTokens: number;
   /** Code mode: how the model writes tool calls — "auto" = the format its
    *  chat template was trained on; or one format for every model. */
-  codeToolFormat: "auto" | "xml" | "json" | "gemma" | "lfm";
+  codeToolFormat: "auto" | "xml" | "json" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm";
   /** Code mode: the format for a model whose template names none. */
   codeToolFallback: "xml" | "json";
   /** Shell id commands run in ("" = this platform's default; issue #19). */
@@ -258,11 +258,14 @@ export function parseStops(raw: string): string[] {
 type CatId = "general" | "chat" | "sampling" | "model" | "code" | "voice" | "data" | "about";
 
 /** Tool-call formats by the family that trained them. */
-const TOOL_FORMAT_LABEL: Record<"xml" | "json" | "gemma" | "lfm", string> = {
+const TOOL_FORMAT_LABEL: Record<"xml" | "json" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm", string> = {
   xml: "XML",
   json: "JSON",
   gemma: "Gemma",
   lfm: "LFM",
+  ifm: "K2",
+  glm: "GLM",
+  minicpm: "MiniCPM",
 };
 
 const CAT_ICONS: Record<CatId, string> = {
@@ -426,6 +429,17 @@ export function SettingsPanel({
   const { t, lang, setLang } = useI18n();
   const confirm = useConfirm();
   const [cat, setCat] = useState<CatId>("general");
+  // Every slider in here is controlled, so each drag re-renders: after each
+  // render, tell each one how full it is, for the track to draw its fill.
+  const modalRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    modalRef.current?.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((r) => {
+      const min = Number(r.min || 0);
+      const max = Number(r.max || 100);
+      const pct = max > min ? ((Number(r.value) - min) / (max - min)) * 100 : 0;
+      r.style.setProperty("--fill", `${Math.max(0, Math.min(100, pct))}%`);
+    });
+  });
   const [presetName, setPresetName] = useState("");
   const [upd, setUpd] = useState<UpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
@@ -790,7 +804,7 @@ export function SettingsPanel({
       </div>
     )}
     <div className={`settings-overlay ${closing ? "closing" : ""}`} onMouseDown={onClose}>
-      <div className="settings-modal" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="settings-modal" ref={modalRef} onMouseDown={(e) => e.stopPropagation()}>
         <aside className="settings-nav">
           <div className="settings-nav-title">{t("settingsTitle")}</div>
           {cats.map((c) => (
@@ -1363,19 +1377,19 @@ export function SettingsPanel({
                 </SetRow>
               )}
 
+              {/* Eight formats and counting: a menu, not a row of buttons
+                  that squeezes the label into a column. */}
               <SetRow label={t("cmToolFormat")} hint={t("cmToolFormatHint")}>
-                <div className="lang-switch">
-                  {(["auto", "xml", "json", "gemma", "lfm"] as const).map((f) => (
-                    <button
-                      key={f}
-                      type="button"
-                      className={value.codeToolFormat === f ? "active" : ""}
-                      onClick={() => set("codeToolFormat", f)}
-                    >
-                      {f === "auto" ? t("cmToolFormatAuto") : TOOL_FORMAT_LABEL[f]}
-                    </button>
-                  ))}
-                </div>
+                <Select
+                  className="field-select"
+                  value={value.codeToolFormat}
+                  ariaLabel={t("cmToolFormat")}
+                  onChange={(v) => set("codeToolFormat", String(v) as GenSettings["codeToolFormat"])}
+                  options={(["auto", "xml", "json", "gemma", "lfm", "ifm", "glm", "minicpm"] as const).map((f) => ({
+                    value: f,
+                    label: f === "auto" ? t("cmToolFormatAuto") : TOOL_FORMAT_LABEL[f],
+                  }))}
+                />
               </SetRow>
               {value.codeToolFormat === "auto" && (
                 <SetRow label={t("cmToolFallback")} hint={t("cmToolFallbackHint")}>

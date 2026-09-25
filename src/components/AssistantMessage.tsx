@@ -63,7 +63,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         <StreamingContext.Provider value={streaming}>
         {answer && (
           <div className="answer" data-copy={answer}>
-            <Markdown cites={sources}>{answer}</Markdown>
+            <Markdown cites={sources} blocks>{answer}</Markdown>
           </div>
         )}
         {busyHint && !answer ? (
@@ -129,7 +129,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           </button>
           {expanded && (
             <div ref={thinkBodyRef} className={`think-body ${focusMode ? "focus" : ""}`}>
-              <Markdown>{reasoning}</Markdown>
+              <Markdown blocks>{reasoning}</Markdown>
             </div>
           )}
         </div>
@@ -137,7 +137,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 
       {cleanAnswer && (
         <div className="answer" data-copy={cleanAnswer}>
-          <Markdown cites={sources}>{cleanAnswer}</Markdown>
+          <Markdown cites={sources} blocks>{cleanAnswer}</Markdown>
         </div>
       )}
 

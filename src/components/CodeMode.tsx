@@ -2093,7 +2093,14 @@ export function CodeMode({
                   onClick={() => setShowBg((v) => !v)}
                 >
                   {live > 0 ? <span className="cm-spin" /> : <Icon name="check" size={12} strokeWidth={2.4} />}
-                  {live > 0 ? t("cmBgCount", { n: String(live) }) : t("bgTitle")}
+                  {live > 0 ? (
+                    <>
+                      <span className="cm-bg-n">{live}</span>
+                      <span className="cm-head-label">{t("cmBgCount", { n: String(live) })}</span>
+                    </>
+                  ) : (
+                    <span className="cm-head-label">{t("bgTitle")}</span>
+                  )}
                 </button>
               );
             })()}
@@ -2168,7 +2175,8 @@ export function CodeMode({
             onClick={toggleBypass}
             title={t("cmBypassHint")}
           >
-            <span className="cm-bypass-dot" /> {t("cmBypass")}
+            <Icon name="bolt" size={12} strokeWidth={1.9} />
+            <span className="cm-head-label">{t("cmBypass")}</span>
           </button>
         </div>
 

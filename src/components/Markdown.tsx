@@ -1,5 +1,6 @@
 import {
   createContext,
+  memo,
   useContext,
   useEffect,
   useMemo,
@@ -14,7 +15,9 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
+import hljs from "highlight.js/lib/common";
 import "katex/dist/katex.min.css";
+import { mdBlocks, type BlockCache } from "../lib/mdBlocks";
 import { useI18n } from "../lib/i18n";
 import { copyToClipboard } from "../lib/clipboard";
 import { fitPop } from "../lib/popFit";
@@ -26,6 +29,9 @@ const rehypePlugins = [
   [rehypeKatex, { throwOnError: false }],
   [rehypeHighlight, { ignoreMissing: true }],
 ] as const;
+/** For a fenced block still being written: its lines are highlighted one by
+ *  one as they complete (StreamLinesCode), not the whole block every frame. */
+const rehypeStreamingPlugins = [[rehypeKatex, { throwOnError: false }]] as const;
 
 // ---------------------------------------------------------------------------
 // Inline citations: 【N】 tokens → hoverable superscript anchors
@@ -302,28 +308,8 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
     });
   };
 
-  return (
-    <div className={`code-block ${foldable ? "foldable" : ""}`}>
-      {foldable && (
-        <button
-          className="code-fold-toggle"
-          type="button"
-          onClick={() => setOverride(!expanded)}
-        >
-          <span className={`think-caret ${expanded ? "open" : ""}`}>▶</span>
-          <span className="code-fold-lang">{lang || "code"}</span>
-          <span className="code-fold-count">
-            {lines} {t("codeLines")}
-          </span>
-        </button>
-      )}
-      {lang && <span className="code-lang">{lang}</span>}
-      <div
-        ref={focusRef}
-        className={`code-fold-body ${foldable && !expanded ? (focusMode ? "focus" : "preview") : ""}`}
-        onClick={foldable && !expanded ? () => setOverride(true) : undefined}
-      >
-        <div className="code-actions">
+  const actions = (
+    <div className="code-actions">
         {isHtml && openCanvas && (
           <button
             className="code-btn"
@@ -389,7 +375,32 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
             </svg>
           )}
         </button>
+    </div>
+  );
+
+  // One header for every block: the fold switch (or the language) on the
+  // left, the actions on the right — where they never cover the code.
+  return (
+    <div className={`code-block ${foldable ? "foldable" : ""}`}>
+      <div className="code-head">
+        {foldable ? (
+          <button className="code-fold-toggle" type="button" onClick={() => setOverride(!expanded)}>
+            <span className={`think-caret ${expanded ? "open" : ""}`}>▶</span>
+            <span className="code-fold-lang">{lang || "code"}</span>
+            <span className="code-fold-count">
+              {lines} {t("codeLines")}
+            </span>
+          </button>
+        ) : (
+          <span className="code-lang">{lang || "text"}</span>
+        )}
+        {actions}
       </div>
+      <div
+        ref={focusRef}
+        className={`code-fold-body ${foldable && !expanded ? (focusMode ? "focus" : "preview") : ""}`}
+        onClick={foldable && !expanded ? () => setOverride(true) : undefined}
+      >
         <pre ref={ref} {...props}>
           {children}
         </pre>
@@ -400,23 +411,114 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
 
 const components = { pre: CodeBlock, sup: SupRenderer } as const;
 
+/** One line of a code block still being written, highlighted on its own and
+ *  never again: the lines above it do not change, so they do not re-render,
+ *  and the block's DOM grows at its end instead of being rebuilt — which is
+ *  what WebKit could not repaint fast enough. A construct spanning lines (a
+ *  block comment, a template string) is coloured line by line until the fence
+ *  closes; the block is then highlighted whole, once. */
+const CodeLine = memo(function CodeLine({ text, lang, nl }: { text: string; lang: string; nl: boolean }) {
+  const html = useMemo(() => {
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
+      } catch {
+        /* plain below */
+      }
+    }
+    return text.replace(/[&<>]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"));
+  }, [text, lang]);
+  return (
+    <>
+      <span dangerouslySetInnerHTML={{ __html: html }} />
+      {nl ? "\n" : null}
+    </>
+  );
+});
+
+/** The `code` of a fenced block still being written (see CodeLine). */
+function StreamLinesCode({ className, children }: ComponentPropsWithoutRef<"code">) {
+  const text = typeof children === "string" ? children : Array.isArray(children) ? children.join("") : "";
+  const lang = /language-([\w+#.-]+)/.exec(className ?? "")?.[1]?.toLowerCase() ?? "";
+  const lines = text.split("\n");
+  return (
+    <code className={`${className ?? ""} hljs`.trim()}>
+      {lines.map((l, i) => (
+        <CodeLine key={i} text={l} lang={lang} nl={i < lines.length - 1} />
+      ))}
+    </code>
+  );
+}
+
+const streamingComponents = { pre: CodeBlock, sup: SupRenderer, code: StreamLinesCode } as const;
+
+/** One top-level block, rendered on its own and re-rendered only when its own
+ *  source changes. */
+const Block = memo(function Block({
+  src,
+  plugins,
+  openFence,
+}: {
+  src: string;
+  plugins: unknown;
+  openFence: boolean;
+}) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={(openFence ? rehypeStreamingPlugins : plugins) as never}
+      components={openFence ? streamingComponents : components}
+    >
+      {src}
+    </ReactMarkdown>
+  );
+});
+
 /** Markdown renderer with GFM tables, KaTeX math, and code highlighting.
- *  When `cites` is given, inline 【N】 markers become hoverable anchors. */
-export function Markdown({ children, cites }: { children: string; cites?: CiteSource[] }) {
+ *  When `cites` is given, inline 【N】 markers become hoverable anchors.
+ *
+ *  `blocks`: render block by block (see mdBlocks) — for replies that stream
+ *  in, where re-rendering the whole text on every frame is what stalled the
+ *  page. Finished text renders identically either way. */
+export function Markdown({
+  children,
+  cites,
+  blocks,
+}: {
+  children: string;
+  cites?: CiteSource[];
+  blocks?: boolean;
+}) {
   const count = cites?.length ?? 0;
   const plugins = useMemo(
     () => (count > 0 ? [...rehypePlugins, [rehypeCites, { count }]] : rehypePlugins),
     [count],
   );
+  const cache = useRef<BlockCache | undefined>(undefined);
+  const parts = useMemo(() => {
+    if (!blocks) return null;
+    try {
+      const b = mdBlocks(children, cache.current);
+      cache.current = { text: children, blocks: b };
+      return b;
+    } catch {
+      cache.current = undefined;
+      return null;
+    }
+  }, [blocks, children]);
   return (
     <CitesContext.Provider value={cites ?? []}>
-      <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={plugins as never}
-        components={components}
-      >
-        {children}
-      </ReactMarkdown>
+      {parts ? (
+        parts.map((b) => <Block key={b.start} src={b.src} plugins={plugins} openFence={!!b.openFence} />)
+      ) : (
+        <ReactMarkdown
+          remarkPlugins={remarkPlugins}
+          rehypePlugins={plugins as never}
+          components={components}
+        >
+          {children}
+        </ReactMarkdown>
+      )}
     </CitesContext.Provider>
   );
 }

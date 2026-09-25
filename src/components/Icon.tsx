@@ -16,6 +16,13 @@ const PATHS: Record<string, string> = {
   // Folder — CodeMode drew this same path inline three times.
   folder: "M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z",
   lines: "M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01",
+  // The two modes, on their switch.
+  chat: "M5 5.5h14a1.5 1.5 0 011.5 1.5v8.5a1.5 1.5 0 01-1.5 1.5H10l-4.5 3.5V17H5a1.5 1.5 0 01-1.5-1.5V7A1.5 1.5 0 015 5.5z",
+  code: "M8.5 7.5L4 12l4.5 4.5M15.5 7.5L20 12l-4.5 4.5M13.2 5l-2.4 14",
+  // Auto-approve: runs without asking.
+  bolt: "M13.5 3L5.5 13.5h6L10.5 21l8-10.5h-6L13.5 3z",
+  refresh: "M20 12a8 8 0 11-2.34-5.66L20 8.5M20 3.5v5h-5",
+  eject: "M12 5l7 8H5l7-8zM5 18.5h14",
 };
 
 export function Icon({
