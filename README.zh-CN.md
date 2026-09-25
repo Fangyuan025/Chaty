@@ -23,8 +23,8 @@
 <br />
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-code-light.jpg" />
-  <img src="docs/screenshots/shot-code.jpg" width="900" alt="Chaty 编程模式：任务计划、工具步骤、真实差异，以及这一轮改过的文件" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-code-zh-light.jpg" />
+  <img src="docs/screenshots/shot-code-zh.jpg" width="900" alt="Chaty 编程模式：任务计划、工具步骤、真实差异，以及这一轮改过的文件" />
 </picture>
 
 <sub>编程模式：智能体找到上游的修复，改了解析器，补上测试，跑完整套用例——用的是同一台笔记本上跑着的模型。</sub>
@@ -42,8 +42,8 @@
 看得见思路的对话。思考过程实时写进一个可以收起的面板；支持思考档位的模型——Qwen3.8 的 low · medium · xhigh、Muse-Glimmer 的四档、K2 Horizon 的档位——每条消息都能选它想多深。
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-chat-light.jpg" />
-  <img src="docs/screenshots/shot-chat.jpg" width="860" alt="一条带高亮 Rust 代码、表格和 KaTeX 公式的回答" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-chat-zh-light.jpg" />
+  <img src="docs/screenshots/shot-chat-zh.jpg" width="860" alt="一条带高亮 Rust 代码、表格和 KaTeX 公式的回答" />
 </picture>
 
 - **边生成边渲染**——高亮代码、表格、KaTeX、Mermaid，以及能直接运行的 HTML。内容按块逐个渲染，模型再快窗口也不卡。
@@ -111,7 +111,7 @@
 
 实时对话模式完全不用动手：Whisper 听你说，模型回答，本地语音一句一句读出来——中文英文都行。语音在 CPU 上运行，不和模型抢显存。你一停下这一句就发出去；任何回答都能朗读。
 
-<img src="docs/screenshots/shot-live.jpg" width="860" alt="Chaty 实时对话模式：发光的圆球正在聆听，下方是退出按钮" />
+<img src="docs/screenshots/shot-live-zh.jpg" width="860" alt="Chaty 实时对话模式：发光的圆球正在聆听，下方是退出按钮" />
 
 ## 专门对付小模型会犯的错
 
