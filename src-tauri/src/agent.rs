@@ -6456,11 +6456,20 @@ mod tests {
         assert_eq!(decode_console_bytes("hello 世界".as_bytes()), "hello 世界");
         #[cfg(windows)]
         {
-            // "找不到文件" (file not found) as GBK bytes — what a Chinese-locale
-            // cmd.exe actually writes.
-            let (gbk, _, _) = encoding_rs::GBK.encode("找不到文件 test");
-            assert!(std::str::from_utf8(&gbk).is_err(), "fixture must not be valid UTF-8");
-            assert_eq!(decode_console_bytes(&gbk), "找不到文件 test");
+            // "File not found" as this machine's console writes it. A
+            // Chinese-locale cmd.exe writes GBK, a Western one windows-1252,
+            // a Russian one 866 — the fixture is whichever sample this
+            // machine's code page can spell (CI's runners are Western).
+            let enc = console_encoding();
+            let samples = ["找不到文件 test", "Fichier introuvable — café", "Файл не найден"];
+            let (text, bytes) = samples
+                .iter()
+                .find_map(|t| {
+                    let (b, _, unmappable) = enc.encode(t);
+                    (!unmappable && std::str::from_utf8(&b).is_err()).then(|| (*t, b.into_owned()))
+                })
+                .expect("no sample this code page can spell");
+            assert_eq!(decode_console_bytes(&bytes), text, "decoded as {}", enc.name());
         }
     }
 
