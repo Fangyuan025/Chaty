@@ -1321,7 +1321,9 @@ export function looseLiteral(t: string): unknown {
       out += num[0];
       i += num[0].length;
     } else if (/[A-Za-z_$]/.test(c)) {
-      const w = /^[\w$-]+/.exec(t.slice(i))![0];
+      // A bare word runs through the dots and slashes of a path (`[src/a.ts,
+      // b.ts]`), never through the colon that ends a key.
+      const w = /^[\w$./-]+/.exec(t.slice(i))![0];
       out += WORDS[w] ?? JSON.stringify(w);
       i += w.length;
     } else if (c === "," && /^,\s*[\]}]/.test(t.slice(i))) {

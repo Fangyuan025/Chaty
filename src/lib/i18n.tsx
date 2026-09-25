@@ -465,6 +465,7 @@ export const T = {
   inputPhNoModel: { zh: "先加载一个模型…", en: "Load a model first…", pt: "Carregue um modelo primeiro…" },
   webDesignOff: { zh: "网页设计模式：已关闭（/webdesign 切换）", en: "Web design mode: off (/webdesign to toggle)", pt: "Modo web design: desligado (/webdesign para alternar)" },
   webDesignChip: { zh: "网页设计模式", en: "Web design mode", pt: "Modo web design" },
+  chipOff: { zh: "关闭", en: "Turn off", pt: "Desligar" },
   inputPhDesign: { zh: "描述你想要的界面，模型会生成单文件 HTML…", en: "Describe the UI you want — get a single-file HTML…", pt: "Descreva a interface que você deseja — receba um HTML de arquivo único…" },
   toolsMenu: { zh: "工具", en: "Tools", pt: "Ferramentas" },
   toolAttach: { zh: "添加附件", en: "Attach a file", pt: "Anexar arquivo" },

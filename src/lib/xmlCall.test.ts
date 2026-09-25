@@ -268,6 +268,8 @@ describe("a structured argument written as a JS or Python literal", () => {
       n: -25,
       v: null,
     });
+    expect(looseLiteral("[src/a.ts, lib/b.test.ts]")).toEqual(["src/a.ts", "lib/b.test.ts"]);
+    expect(looseLiteral("{path: src/a.ts, limit: 20}")).toEqual({ path: "src/a.ts", limit: 20 });
     // Text that is neither stays text.
     expect(looseLiteral("[see the notes above]")).toBeUndefined();
     expect(parseToolCall("<function=write_file>\n<parameter=path>\na.md\n</parameter>\n<parameter=content>\n[draft, v2]\n</parameter>\n</function>")?.args.content).toBe("[draft, v2]");

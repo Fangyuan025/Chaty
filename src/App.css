@@ -2466,7 +2466,8 @@ body.resizing-x {
   border-color: var(--border-strong);
 }
 .csel.open .csel-trigger {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 .csel-trigger:disabled {
   opacity: 0.5;
@@ -2522,12 +2523,12 @@ body.resizing-x {
   background: var(--surface);
 }
 .csel-opt.active {
-  color: var(--accent);
+  color: var(--text);
   font-weight: 600;
 }
 .csel-opt svg {
   flex-shrink: 0;
-  color: var(--accent);
+  color: var(--text-dim);
 }
 
 /* Full-width dropdown inside a settings .field column. */
@@ -3197,7 +3198,7 @@ body.resizing-x {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
 }
 .cvp-follow:hover {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
 }
 .cvp-pending {
   opacity: 0.38;
@@ -3252,7 +3253,7 @@ body.resizing-x {
   cursor: pointer;
 }
 .canvas-selchip:hover {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
 }
 .canvas-selx {
   opacity: 0.7;
@@ -3992,8 +3993,8 @@ a:focus-visible,
 }
 
 .tool-toggle.active {
-  color: var(--accent);
-  background: var(--accent-soft);
+  color: var(--text);
+  background: var(--ink-soft);
 }
 
 /* The + icon spins 90° clockwise as the menu opens, and unwinds (counter-
@@ -4215,7 +4216,7 @@ a:focus-visible,
   cursor: default;
 }
 .tool-item.on {
-  color: var(--accent);
+  color: var(--text);
 }
 .ti-icon {
   width: 17px;
@@ -4228,7 +4229,7 @@ a:focus-visible,
 .ti-check {
   width: 14px;
   text-align: center;
-  color: var(--accent);
+  color: var(--text-dim);
 }
 
 /* ---- tools-menu hover submenus (groups) ---- */
@@ -5125,20 +5126,29 @@ button.tool-parent {
 }
 
 /* Web-design mode chip in the composer */
+/* Switches that are on for the next message: quiet, neutral chips — a fact
+   about the message, not a call to action. */
 .mode-bar {
   display: flex;
-  padding: 0 4px 8px;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 768px;
+  margin: 0 auto;
+  padding: 0 6px 8px;
 }
 .mode-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 6px 5px 11px;
-  font-size: 12.5px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border: 1px solid rgba(63, 138, 101, 0.35);
+  padding: 3px 4px 3px 9px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--ink-faint);
+  border: 1px solid var(--border);
   border-radius: var(--r-full);
+}
+.mode-chip > svg {
+  color: var(--faint);
 }
 .mode-chip-x {
   display: inline-flex;
@@ -5146,16 +5156,17 @@ button.tool-parent {
   justify-content: center;
   width: 18px;
   height: 18px;
-  font-size: 16px;
   line-height: 1;
-  color: var(--accent);
+  color: var(--faint);
   background: transparent;
   border: none;
   border-radius: 50%;
   cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
 }
 .mode-chip-x:hover {
-  background: var(--accent-soft);
+  color: var(--text);
+  background: var(--ink-soft);
 }
 
 /* ---------- Deep Research (docked into the chat area) ---------- */
@@ -5710,7 +5721,7 @@ button.tool-parent {
   transition: border-color 0.12s, background 0.12s;
 }
 .cm-welcome-pick:hover {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   background: var(--surface-2);
 }
 .cm-user-row {
@@ -6377,7 +6388,7 @@ button.tool-parent {
   transition: border-color 0.12s, color 0.12s;
 }
 .cm-welcome-eg:hover {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   color: var(--text);
 }
 
@@ -6492,7 +6503,7 @@ button.tool-parent {
 }
 .bg-act:hover {
   color: var(--text);
-  border-color: var(--accent);
+  border-color: var(--border-strong);
 }
 .bg-act.danger:hover {
   color: var(--danger);
@@ -6662,7 +6673,7 @@ button.tool-parent {
 .cm-changes-undo:hover:not(:disabled),
 .cm-change-undo:hover:not(:disabled) {
   color: var(--text);
-  border-color: var(--accent);
+  border-color: var(--border-strong);
 }
 .cm-changes-undo:disabled,
 .cm-change-undo:disabled {
@@ -7607,14 +7618,14 @@ body,
   font-size: 10.5px;
   padding: 1px 7px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  color: var(--accent);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
   margin-left: 6px;
   vertical-align: 1px;
 }
 .dl-vision-note {
   font-size: 12px;
-  color: var(--accent);
+  color: var(--text-dim);
   margin: 4px 0 2px;
 }
 .dl-mmproj-tag {
@@ -7682,8 +7693,8 @@ body,
   transition: color 0.15s, border-color 0.15s;
 }
 .cm-attach-btn:hover:not(:disabled) {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--text);
+  border-color: var(--border-strong);
 }
 .cm-attach-btn:disabled {
   opacity: 0.4;
@@ -7737,7 +7748,7 @@ body,
   border: 1px solid var(--border-2); background: var(--surface); color: var(--text);
   font-size: 12.5px; cursor: pointer; transition: color 0.15s, border-color 0.15s;
 }
-.cm-preview-btn:hover { border-color: var(--accent); color: var(--accent); }
+.cm-preview-btn:hover { border-color: var(--border-strong); background: var(--surface-2); }
 .cm-preview-close {
   width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
   border: 1px solid var(--border-2); background: var(--surface); color: var(--text-dim); cursor: pointer;
@@ -7898,9 +7909,9 @@ body,
 }
 .store-badge-fmt,
 .store-badge-vision {
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--border);
+  color: var(--text-dim);
+  background: var(--ink-faint);
 }
 .store-dl-box {
   border: 1px solid var(--border);
