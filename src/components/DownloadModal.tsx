@@ -3,6 +3,7 @@ import { platform } from "@tauri-apps/plugin-os";
 import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
+import { Select } from "./Select";
 import { Markdown } from "./Markdown";
 import { fmtBytes, fmtCount } from "../lib/fmt";
 import { OrgAvatar } from "./VendorIcon";
@@ -324,35 +325,40 @@ export function DownloadModal({
               />
             </div>
             <div className="store-filters">
-              <select
+              {/* The app's own menus: the OS popup looked like another program's,
+                  most of all on Windows. */}
+              <Select
                 value={format}
                 disabled={active}
-                onChange={(e) => setFormat(e.target.value as "gguf" | "mlx")}
-                title={t("storeFormat")}
-              >
-                <option value="gguf">GGUF</option>
-                {IS_MACOS && <option value="mlx">MLX</option>}
-              </select>
-              <select
+                ariaLabel={t("storeFormat")}
+                onChange={(v) => setFormat(v)}
+                options={[
+                  { value: "gguf" as const, label: "GGUF" },
+                  ...(IS_MACOS ? [{ value: "mlx" as const, label: "MLX" }] : []),
+                ]}
+              />
+              <Select
                 value={task}
                 disabled={active}
-                onChange={(e) => setTask(e.target.value as "all" | "image")}
-                title={t("storeTask")}
-              >
-                <option value="all">{t("storeTaskAll")}</option>
-                <option value="image">{t("storeTaskImage")}</option>
-              </select>
-              <select
+                ariaLabel={t("storeTask")}
+                onChange={(v) => setTask(v)}
+                options={[
+                  { value: "all" as const, label: t("storeTaskAll") },
+                  { value: "image" as const, label: t("storeTaskImage") },
+                ]}
+              />
+              <Select
                 value={sort}
                 disabled={active}
-                onChange={(e) => setSort(e.target.value as typeof sort)}
-                title={t("storeSort")}
-              >
-                <option value="trending">{t("storeTrending")}</option>
-                <option value="downloads">{t("storeDownloads")}</option>
-                <option value="likes">{t("storeLikes")}</option>
-                <option value="updated">{t("storeUpdated")}</option>
-              </select>
+                ariaLabel={t("storeSort")}
+                onChange={(v) => setSort(v)}
+                options={[
+                  { value: "trending" as typeof sort, label: t("storeTrending") },
+                  { value: "downloads" as typeof sort, label: t("storeDownloads") },
+                  { value: "likes" as typeof sort, label: t("storeLikes") },
+                  { value: "updated" as typeof sort, label: t("storeUpdated") },
+                ]}
+              />
             </div>
             <div className="store-hits">
               {listLoading ? (
@@ -429,17 +435,13 @@ export function DownloadModal({
 
                 <div className="store-dl-box">
                   <div className="store-quant-row">
-                    <select
+                    <Select
                       value={quantIdx}
                       disabled={active || detail.quants.length <= 1}
-                      onChange={(e) => setQuantIdx(Number(e.target.value))}
-                    >
-                      {detail.quants.map((q, i) => (
-                        <option key={q.label} value={i}>
-                          {q.label} · {fmtSize(q.size)}
-                        </option>
-                      ))}
-                    </select>
+                      ariaLabel={t("storeQuant")}
+                      onChange={(v) => setQuantIdx(v)}
+                      options={detail.quants.map((q, i) => ({ value: i, label: `${q.label} · ${fmtSize(q.size)}` }))}
+                    />
                     {!active ? (
                       <button
                         className="dl-get store-get"

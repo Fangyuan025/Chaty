@@ -585,7 +585,7 @@ export const T = {
   visionBadge: { zh: "视觉", en: "Vision", pt: "Visão" },
   visionBadgeTip: { zh: "支持视觉——加载后可直接理解图片", en: "Vision-capable — understands images once loaded", pt: "Capaz de visão — entende imagens uma vez carregadas" },
   mlxBadgeTip: { zh: "MLX 文件夹模型，由 Apple Silicon 专用引擎运行", en: "MLX folder model — runs on the Apple-Silicon-native engine", pt: "Modelo em pasta MLX — roda no motor nativo Apple-Silicon" },
-  storeSearchPh: { zh: "搜索模型，或粘贴仓库链接后回车…", en: "Search models, or paste a repo link and press Enter…", pt: "Pesquisar modelos, ou colar link de repo e pressionar Enter…" },
+  storeSearchPh: { zh: "搜索模型，或粘贴仓库链接…", en: "Search models, or paste a repo link…", pt: "Pesquisar modelos ou colar um link…" },
   storeFormat: { zh: "格式", en: "Format", pt: "Formato" },
   storeSort: { zh: "排序", en: "Sort", pt: "Ordenar" },
   storeTrending: { zh: "热门", en: "Trending", pt: "Em alta" },
@@ -1304,6 +1304,7 @@ export const T = {
   storeTask: { zh: "类型", en: "Type", pt: "Tipo" },
   storeTaskAll: { zh: "全部", en: "All", pt: "Todos" },
   storeTaskImage: { zh: "文生图", en: "Text to image", pt: "Texto para imagem" },
+  storeQuant: { zh: "量化版本", en: "Quantization", pt: "Quantização" },
   storeImageIncluded: { zh: "含 VAE 与文本编码器", en: "VAE and text encoder included", pt: "VAE e codificador de texto incluídos" },
   storeImageManual: { zh: "配套文件需加载时再选", en: "companion files chosen at load", pt: "arquivos complementares escolhidos ao carregar" },
 } satisfies Record<string, Entry>;
