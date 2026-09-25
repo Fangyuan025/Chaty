@@ -19,6 +19,7 @@ import {
   agentEditFile,
   agentEditLines,
   agentMultiEdit,
+  agentEditCheck,
   agentOutline,
   agentResolveImage,
   browserNavigate,
@@ -73,11 +74,12 @@ import { normalizeChannels, withoutToolCallSpans } from "./voiceText";
 import { asksAboutThePast, jitHintFor, missingArgLadder, type HintKey } from "./jitHints";
 import {
   argsExample,
-  CALL_CLOSERS,
+  callClosers,
   callExample,
   callFormat,
   callRule,
   callStart,
+  withoutCalls,
   callTag,
   closeOpenCalls,
   formatOf,
@@ -98,7 +100,18 @@ import {
 } from "./wrapupGate";
 import { isReadOnlyCommand, isSymbolicCheck } from "./readOnlyCmd";
 import { diffLines } from "./diff";
-import { liveFileCall, type LiveView } from "./liveCall";
+import {
+  compactValue,
+  callAt,
+  callRegion,
+  liveFileCall,
+  unCdata,
+  XML_COMPACT,
+  XML_SCAFFOLD,
+  xmlOpenTag,
+  xmlValueEnd,
+  type LiveView,
+} from "./liveCall";
 import { platform } from "@tauri-apps/plugin-os";
 
 // The bash tool runs through cmd.exe on Windows — the prompt must say so, or
@@ -400,6 +413,25 @@ export function thinkPart(raw: string): string {
   let m: RegExpExecArray | null;
   while ((m = re.exec(s))) parts.push(m[1].trim());
   return parts.filter(Boolean).join("\n\n");
+}
+
+/** The reasoning as it is shown: a call the model wrote inside its thought
+ *  (Qwen3.5 does; generation then stops at the call's closer, still inside
+ *  it) belongs on the step card, and its markup read as a wall of tags in the
+ *  thought. The recorded turn keeps it — see thinkPart. */
+function shownThought(raw: string): string {
+  return withoutCalls(thinkPart(raw))
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** The call a turn makes (see callAt for which one that is). */
+export function turnCall(raw: string): ToolCall | null {
+  const at = callAt(raw);
+  if (at !== -1) return parseToolCall(raw.slice(at));
+  // The forms with no markers (a bare JSON object), after the thought.
+  const region = callRegion(raw);
+  return callStart(region) === -1 ? parseToolCall(region) : null;
 }
 
 /** Prose outside every think block and before any tool call. */
@@ -1070,39 +1102,88 @@ export function parseXmlToolCall(text: string): ToolCall | null {
   const end = after.indexOf("</function>");
   const body = end === -1 ? after : after.slice(0, end);
   const args: Record<string, unknown> = {};
-  const re = new RegExp(`${xmlOpenTag("parameter")}\\n?([\\s\\S]*?)\\n?<\\/parameter>`, "g");
   let m: RegExpExecArray | null;
-  while ((m = re.exec(body))) {
+  // Where the `<parameter>` values are: markup inside one is the value, never
+  // arguments of the call. A value ends at `</parameter>` — or at `</name>`
+  // where that is plainly the end of it (the next thing is another argument
+  // or the end of the call): a Qwen3.5 4B wrote `<parameter=path>a.swift</path>`
+  // and the path ran on through the next argument to its `</parameter>`.
+  const spans: [number, number][] = [];
+  const open = new RegExp(xmlOpenTag("parameter"), "g");
+  while ((m = open.exec(body))) {
     const key = m[1].trim();
-    args[key] = RAW_TEXT_PARAMS.has(key) ? m[2] : xmlParamValue(m[2]);
+    const start = m.index + m[0].length;
+    const end = xmlValueEnd(body, start, key, true);
+    if (!end) break;
+    const v = unCdata(body.slice(start, end.at).replace(/^\n/, "").replace(/\n$/, ""));
+    args[key] = RAW_TEXT_PARAMS.has(key) ? v : xmlParamValue(v);
+    spans.push([m.index, end.at + end.len]);
+    open.lastIndex = end.at + end.len;
   }
   // The other way calls are written in XML: one element per argument —
   // `<path>a.ts</path><old_string>…</old_string>` (Qwen2 7B, and the style
-  // other agents teach). Only when no `<parameter` tag is there at all, so a
-  // value holding markup is never taken apart as arguments.
-  if (!Object.keys(args).length && !new RegExp(xmlOpenTag("parameter")).test(body)) {
-    const child = /<([A-Za-z_][\w-]*)>\n?([\s\S]*?)\n?<\/\1>/g;
-    while ((m = child.exec(body))) {
-      const key = m[1];
-      if (key === "function" || key === "tool_call") continue;
-      args[key] = RAW_TEXT_PARAMS.has(key) ? m[2] : xmlParamValue(m[2]);
+  // other agents teach). Models also MIX the two within one call, and close
+  // an element the way a parameter closes: a Qwen3.5 4B wrote
+  // `<path>cart.ts</path>` followed by `<parameter=old_string>…`, and
+  // `<path>cart.ts</parameter>`. Read only where no `<parameter>` value is,
+  // the path was dropped, and the call was refused as "missing path" — which
+  // the model, reading its own call back, wrote again, until edit_file was
+  // disabled for the turn. Everything from a `<parameter` that never closed
+  // onward is a value still being written, and is left alone too.
+  let scaffold = body;
+  for (const [a, b] of spans.reverse()) scaffold = `${scaffold.slice(0, a)}\n${scaffold.slice(b)}`;
+  const unclosed = new RegExp(xmlOpenTag("parameter")).exec(scaffold);
+  if (unclosed) scaffold = scaffold.slice(0, unclosed.index);
+  // `</name>` where nothing is open and a value follows is an opener too — a
+  // 4B wrote `</limit>\n50\n</limit>` and `</files>\n["a.swift"]\n</parameter>`.
+  // And `<path=a.ts>` is name and value in one tag (see XML_COMPACT). Read in
+  // order, each value whole, so neither is taken from inside another's value.
+  const child = /<(\/?)([A-Za-z_][\w-]*)>/g;
+  const compact = new RegExp(XML_COMPACT.source, "g");
+  const opens = (e: RegExpExecArray) =>
+    !XML_SCAFFOLD.has(e[2]) && (!e[1] || /^\n?[^<\s]/.test(scaffold.slice(e.index + e[0].length)));
+  for (let from = 0; ; ) {
+    child.lastIndex = from;
+    compact.lastIndex = from;
+    let e = child.exec(scaffold);
+    while (e && !opens(e)) e = child.exec(scaffold);
+    let c = compact.exec(scaffold);
+    while (c && XML_SCAFFOLD.has(c[1])) c = compact.exec(scaffold);
+    if (c && (!e || c.index < e.index)) {
+      const v = compactValue(c[2]);
+      if (!(c[1] in args)) args[c[1]] = RAW_TEXT_PARAMS.has(c[1]) ? v : xmlParamValue(v);
+      from = c.index + c[0].length;
+      continue;
+    }
+    if (!e) break;
+    const key = e[2];
+    const start = e.index + e[0].length;
+    const end = xmlValueEnd(scaffold, start, key, false);
+    if (!end) break;
+    from = end.at + end.len;
+    if (key in args) continue;
+    const v = scaffold.slice(start, end.at).replace(/^\n/, "").replace(/\n$/, "");
+    args[key] = RAW_TEXT_PARAMS.has(key) ? v : xmlParamValue(v);
+  }
+  // `<parameter>` with no name at all. A Qwen3.5 4B sent its edits array
+  // that way, was told old_string was missing, and sent the same call again
+  // until it was stopped. The value says what it is: an array of edits, an
+  // object of arguments, or the one argument the call is still without.
+  const tool = fn[1].trim();
+  for (const u of body.matchAll(/<parameter>[ \t]*\n([\s\S]*?)\n?<\/parameter>/g)) {
+    const v = xmlParamValue(u[1]);
+    if (Array.isArray(v) && v.some((e) => e && typeof e === "object" && ("old_string" in e || "old_str" in e))) {
+      args.edits ??= v;
+    } else if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k, x] of Object.entries(v)) if (!(k in args)) args[k] = x;
+    } else if (typeof v === "string" && v.trim()) {
+      const need = (REQUIRED_ARGS[tool] ?? []).find((k) => !k.split("|").some((alt) => alt in args));
+      if (need) args[need.split("|")[0]] = v;
     }
   }
-  return { name: fn[1].trim() as AgentToolName, args };
+  return { name: tool as AgentToolName, args };
 }
 
-/** The opening tag of an XML call's `<function=…>` or `<parameter=…>`, as
- *  models actually write it — not only as the template does. Names come back
- *  quoted (`<parameter="path">`, `<parameter=path">`: a 4B told "path is
- *  missing" for one it had written spent a dozen rounds on it), and with the
- *  `=` turned into a `>`: a Qwen3.5 4B wrote `<parameter>old_string>` for
- *  every edit's second argument, the whole argument was dropped, and it was
- *  told "old_string is missing" until it gave up. Also `<parameter name="…">`.
- *  The name must look like one, so a value is never read as a name. Captures
- *  the name. */
-function xmlOpenTag(tag: "function" | "parameter"): string {
-  return `<${tag}(?:\\s*=\\s*|>|\\s+name\\s*=\\s*|\\s+)["']?([A-Za-z_][\\w.-]*)["']?\\s*>`;
-}
 
 /** What to tell a model whose tool call could not be parsed: what broke and
  *  where, and — from the second failure in a row — a smaller way to make the
@@ -1125,6 +1206,18 @@ export function describeInvalidCall(raw: string, streak: number, lang: "zh" | "e
     what = zh
       ? '它用了 <|tool_call_start|>[工具名(…)]<|tool_call_end|> 写法,但格式不对或没写完整:参数写成 参数名="值",之间用逗号,最后以 )]<|tool_call_end|> 结束。'
       : 'it uses the <|tool_call_start|>[tool_name(…)]<|tool_call_end|> form but is malformed or unfinished: arguments are name="value" separated by commas, and the call ends with )]<|tool_call_end|>.';
+  } else if (/<function\s+name\s*=/.test(raw)) {
+    what = zh
+      ? '它用了 <function name="…"> 写法但格式不对或没写完整:每个参数写成 <param name="参数名">值</param>(值里有 <、& 或换行就用 <![CDATA[ … ]]> 包住),最后以 </function> 结束。'
+      : 'it uses the <function name="…"> form but is malformed or unfinished: each argument is <param name="argument_name">value</param> (a value holding <, & or a line break goes inside <![CDATA[ … ]]>), and the call ends with </function>.';
+  } else if (/<tool_call>\s*[A-Za-z_][\w.-]*\s*<arg_key>/.test(raw) || raw.includes("<arg_key>")) {
+    what = zh
+      ? "它用了 <tool_call>工具名<arg_key>…</arg_key><arg_value>…</arg_value></tool_call> 写法但格式不对或没写完整:工具名紧跟在 <tool_call> 后面;每个参数写成 <arg_key>参数名</arg_key> 加 <arg_value>值</arg_value>;最后以 </tool_call> 结束。"
+      : "it uses the <tool_call>tool_name<arg_key>…</arg_key><arg_value>…</arg_value></tool_call> form but is malformed or unfinished: the tool name follows <tool_call> directly; each argument is <arg_key>name</arg_key> followed by <arg_value>value</arg_value>; and the call ends with </tool_call>.";
+  } else if (raw.includes("<ifm|tool_call")) {
+    what = zh
+      ? "它用了 <ifm|tool_call> 写法但格式不对或没写完整:工具名紧跟在 <ifm|tool_call> 后面、单独一行;每个参数写成 <ifm|arg_key>参数名</ifm|arg_key> 加 <ifm|arg_value>值</ifm|arg_value>;最后以 </ifm|tool_call> 结束。"
+      : "it uses the <ifm|tool_call> form but is malformed or unfinished: the tool name follows <ifm|tool_call> on its own line; each argument is <ifm|arg_key>name</ifm|arg_key> followed by <ifm|arg_value>value</ifm|arg_value>; and the call ends with </ifm|tool_call>.";
   } else if (/<function=/.test(body)) {
     what = zh
       ? "它用了 <function=…> 写法但没写完整:每个 <parameter=名字> 都要有对应的 </parameter>,最后要有 </function>。"
@@ -1181,17 +1274,68 @@ export function describeInvalidCall(raw: string, streak: number, lang: "zh" | "e
 
 function xmlParamValue(v: string): unknown {
   const t = v.trim();
-  if (t === "true") return true;
-  if (t === "false") return false;
+  if (t === "true" || t === "True") return true;
+  if (t === "false" || t === "False") return false;
   if ((t.startsWith("[") && t.endsWith("]")) || (t.startsWith("{") && t.endsWith("}"))) {
     try {
       const j = JSON.parse(t) as unknown;
       if (typeof j === "object" && j !== null) return j;
     } catch {
-      /* text that only looks like JSON */
+      // Not JSON — perhaps the JS or Python literal a model wrote for it.
+      const j = looseLiteral(t);
+      if (typeof j === "object" && j !== null) return j;
     }
   }
   return v;
+}
+
+/** A JS or Python literal read as the JSON it means: bare keys, 'single'
+ *  quotes, True/False/None, a trailing comma, a bare word as a value. A 32B
+ *  tune sent its plan as `{ content: "…", status: pending }`; read as text,
+ *  the plan was empty. Undefined when the text is not such a literal. */
+export function looseLiteral(t: string): unknown {
+  const WORDS: Record<string, string> = { true: "true", True: "true", false: "false", False: "false", null: "null", None: "null" };
+  let out = "";
+  for (let i = 0; i < t.length; ) {
+    const c = t[i];
+    if (c === '"' || c === "'") {
+      let s = "";
+      let j = i + 1;
+      for (; j < t.length && t[j] !== c; j++) {
+        if (t[j] !== "\\" || j + 1 >= t.length) {
+          s += t[j];
+          continue;
+        }
+        const e = t[++j];
+        if (e === "u" && /^[0-9a-fA-F]{4}$/.test(t.slice(j + 1, j + 5))) {
+          s += String.fromCharCode(parseInt(t.slice(j + 1, j + 5), 16));
+          j += 4;
+        } else s += { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f" }[e] ?? e;
+      }
+      if (j >= t.length) return undefined;
+      out += JSON.stringify(s);
+      i = j + 1;
+    } else if (/[-\d]/.test(c)) {
+      const num = /^-?\d[\d.eE+-]*/.exec(t.slice(i));
+      if (!num) return undefined;
+      out += num[0];
+      i += num[0].length;
+    } else if (/[A-Za-z_$]/.test(c)) {
+      const w = /^[\w$-]+/.exec(t.slice(i))![0];
+      out += WORDS[w] ?? JSON.stringify(w);
+      i += w.length;
+    } else if (c === "," && /^,\s*[\]}]/.test(t.slice(i))) {
+      i++;
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  try {
+    return JSON.parse(out) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Gemma 4's own call — the one its chat template teaches:
@@ -1393,9 +1537,104 @@ function gemmaCallAt(text: string, start: number): ToolCall | null {
   }
 }
 
+/** K2 Horizon's own format, as its template writes a call:
+ *
+ *      <ifm|tool_calls>
+ *      <ifm|tool_call>name
+ *      <ifm|arg_key>key</ifm|arg_key>
+ *      <ifm|arg_value>value</ifm|arg_value>
+ *      </ifm|tool_call>
+ *      </ifm|tool_calls>
+ *
+ *  with an optional `<ifm|arg_type>` between key and value (its `xml_typed`
+ *  variant), and its JSON variant `<ifm|tool_call>{"name":…,"arguments":…}`.
+ *  A value is written as is — text raw, anything else as JSON. */
+export function parseIfmToolCall(text: string): ToolCall | null {
+  return parseArgKeyCall(text, "ifm|");
+}
+
+/** GLM-4.5/4.6/4.7's own form — K2's without the namespace, and the
+ *  `<tool_call>` it shares with the JSON and XML forms holding a bare name:
+ *  `<tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value></tool_call>`
+ *  (4.5 puts each tag on a line of its own). */
+export const GLM_CALL_HEAD = /<tool_call>\s*[A-Za-z_][\w.-]*\s*(?:<arg_key>|<\/tool_call>)/;
+
+/** A call written as a name and `arg_key`/`arg_value` pairs, in K2's
+ *  namespace (`ifm|`) or GLM's (none). */
+function parseArgKeyCall(text: string, ns: "ifm|" | ""): ToolCall | null {
+  const opener = `<${ns}tool_call>`;
+  const open = ns ? text.indexOf(opener) : text.search(GLM_CALL_HEAD);
+  if (open === -1) return null;
+  let body = text.slice(open + opener.length);
+  const close = body.indexOf(`</${ns}tool_call>`);
+  if (close !== -1) body = body.slice(0, close);
+  const head = body.trimStart();
+  if (head.startsWith("{")) return parseToolCall(`<tool_call>${head}</tool_call>`);
+  const name = /^([A-Za-z_][\w.-]*)/.exec(head)?.[1];
+  if (!name) return null;
+  const args: Record<string, unknown> = {};
+  const n = ns ? "ifm\\|" : "";
+  const pair = new RegExp(
+    `<${n}arg_key>\\s*([^<]*?)\\s*</${n}arg_key>\\s*(?:<${n}arg_type>[^<]*</${n}arg_type>\\s*)?<${n}arg_value>([\\s\\S]*?)(?:</${n}arg_value>|(?=<${n}arg_key>)|$)`,
+    "g",
+  );
+  let m: RegExpExecArray | null;
+  while ((m = pair.exec(body))) {
+    const key = m[1];
+    if (!key) continue;
+    // One newline hugging the value on each side is layout, as in the XML form.
+    const v = m[2].replace(/^\n/, "").replace(/\n$/, "");
+    args[key] = RAW_TEXT_PARAMS.has(key) ? v : xmlParamValue(v);
+  }
+  return { name: name as AgentToolName, args };
+}
+
 /** Exported for the write-stall regression tests: the parser must survive the
  *  tool-call shapes real local models actually emit. */
 export function parseToolCall(text: string): ToolCall | null {
+  const call = parseAnyCall(text);
+  return call && { ...call, args: tidyKeys(call.args) };
+}
+
+/** Argument names as the tools know them: `" new_string"` — a key a model
+ *  wrote with a stray space — is `new_string`. Top level, and inside each
+ *  item of an edits array. */
+function tidyKeys(args: Record<string, unknown>): Record<string, unknown> {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+  let out: Record<string, unknown> | null = null;
+  for (const [k, v] of Object.entries(args)) {
+    const t = k.trim();
+    if (t === k || !t || t in args) continue;
+    out ??= { ...args };
+    delete out[k];
+    out[t] = v;
+  }
+  const res = out ?? args;
+  for (const list of ["edits", "changes", "replacements"]) {
+    const items = res[list];
+    if (!Array.isArray(items)) continue;
+    const tidied = items.map((e) => (e && typeof e === "object" && !Array.isArray(e) ? tidyKeys(e as Record<string, unknown>) : e));
+    if (tidied.some((e, i) => e !== items[i])) {
+      out ??= { ...args };
+      out[list] = tidied;
+    }
+  }
+  return out ?? args;
+}
+
+function parseAnyCall(text: string): ToolCall | null {
+  // K2 Horizon's own format — its markers are special tokens no other format
+  // writes.
+  if (text.includes("<ifm|tool_call>")) {
+    const ifm = parseIfmToolCall(text);
+    if (ifm) return ifm;
+  }
+  // GLM's: a bare tool name after `<tool_call>` — never JSON's `{` nor XML's
+  // `<function=` — so it is told apart before either is tried.
+  if (GLM_CALL_HEAD.test(text) && text.search(GLM_CALL_HEAD) === text.indexOf("<tool_call>")) {
+    const glm = parseArgKeyCall(text, "");
+    if (glm) return glm;
+  }
   // Gemma 4's own format.
   if (text.includes("<|tool_call>")) {
     const gemma = parseGemmaToolCall(text);
@@ -1627,6 +1866,11 @@ export const argOld = (a: Record<string, unknown>): string =>
   asStr(a.old_string ?? a.old_str ?? a.old ?? a.search ?? a.from);
 export const argNew = (a: Record<string, unknown>): string =>
   asStr(a.new_string ?? a.new_str ?? a.new ?? a.replace ?? a.to);
+/** Did an edit say what to put in? An empty string is a real instruction
+ *  (delete this); no field at all is a slip, and reading it as "" deleted
+ *  whatever the old_string matched. */
+const hasNew = (a: Record<string, unknown>): boolean =>
+  [a.new_string, a.new_str, a.new, a.replace, a.to].some((v) => v !== undefined && v !== null);
 /** multi_edit's edits array, with per-item aliases normalized. */
 export const argEdits = (a: Record<string, unknown>): EditOp[] => {
   const raw = a.edits ?? a.changes ?? a.replacements;
@@ -1649,6 +1893,22 @@ const missingArg = (arg: string, example: string) =>
     ? `ERROR: 缺少 "${arg}" 参数——请带上它重发同一个工具调用,例如:\n${argsExample(example)}`
     : `ERROR: missing "${arg}" — re-issue the SAME tool call with it, e.g.:\n${argsExample(example)}`;
 const MISSING_PATH = () => missingArg("path", '{"path":"src/app.ts"}');
+/** Where, in the call it just made, the model wrote one of `names` in a way
+ *  that was not read as an argument — the line, to show back to it. Only a
+ *  name standing where an argument's name stands (after `<` or a quote, or
+ *  before `=` `:` `>`) counts: the word inside some other value does not. */
+export function unreadArg(raw: string, names: string[]): string | undefined {
+  const at = callStart(raw);
+  const call = at === -1 ? raw : raw.slice(at);
+  for (const n of names) {
+    const re = new RegExp(`^[^\\n]*(?:<|["'])\\s*${n}\\b|^[^\\n]*\\b${n}\\s*[=:>]`, "m");
+    const m = re.exec(call);
+    if (!m) continue;
+    const line = call.slice(m.index).split("\n")[0].trim();
+    return line.length > 120 ? `${line.slice(0, 117)}…` : line;
+  }
+  return undefined;
+}
 const MISSING_CONTENT = () => missingArg("content", '{"path":"notes.md","content":"…"}');
 /** Did the call carry a content field at all? An empty STRING is a real
  *  instruction ("make this file empty"); a missing field is a format slip,
@@ -1880,7 +2140,41 @@ async function execTool(
       // parser missed arrives as nothing, and the engine then called the empty
       // strings "identical" — which the model believed, and gave up on the tool.
       if (edits.length === 0 && !argOld(a)) {
+        // An edits array that arrived as text did not parse: saying
+        // "old_string is missing" sent the model to look for an argument it
+        // never meant to write. Say what failed, and where.
+        const list = a.edits ?? a.changes ?? a.replacements;
+        if (typeof list === "string" && list.trim()) {
+          let why = "";
+          try {
+            JSON.parse(list);
+          } catch (e) {
+            why = String((e as Error).message ?? e).slice(0, 160);
+          }
+          return {
+            result: isZh()
+              ? `ERROR: edits 读不出来——它得是一个 JSON 数组${why ? `(解析错误:${why})` : ""}。字符串里的双引号要写成 \\",换行写成 \\n。只改一处时更简单:不用 edits,直接给 old_string 和 new_string。`
+              : `ERROR: edits could not be read — it has to be a JSON array${why ? ` (parse error: ${why})` : ""}. Inside a string write a double quote as \\" and a line break as \\n. For a single change it is simpler to skip edits and give old_string and new_string.`,
+            failed: true,
+          };
+        }
         return { result: missingArg("old_string", '{"path":"src/app.ts","old_string":"…","new_string":"…"}') };
+      }
+      const items = (a.edits ?? a.changes ?? a.replacements) as unknown;
+      const noNew =
+        edits.length > 0 && Array.isArray(items)
+          ? items.findIndex((e) => !!e && typeof e === "object" && !hasNew(e as Record<string, unknown>))
+          : hasNew(a)
+            ? -1
+            : 0;
+      if (noNew !== -1) {
+        const which = edits.length > 0 ? (isZh() ? `第 ${noNew + 1}/${edits.length} 条 edit ` : `edit ${noNew + 1} of ${edits.length} `) : "";
+        return {
+          result: isZh()
+            ? `ERROR: ${which}没有 new_string,edit_file 没有改动文件。要删掉这段就写 "new_string": "",否则写上替换后的文字再重发。`
+            : `ERROR: ${which}has no new_string, so edit_file left the file as it was. To delete the text write "new_string": "", otherwise give the replacement and send it again.`,
+          failed: true,
+        };
       }
       let before = "";
       try {
@@ -2652,7 +2946,7 @@ export function stubWrittenBodies(turn: string, lang: "zh" | "en"): string {
 
 /** One complete call in any format, as stored in history. */
 const CALL_BLOCK =
-  /<tool_call>\s*([^]*?)\s*<\/tool_call>|<\|tool_call>[^]*?<tool_call\|>|<\|tool_call_start\|>[^]*?<\|tool_call_end\|>/g;
+  /<tool_call>\s*([^]*?)\s*<\/tool_call>|<\|tool_call>[^]*?<tool_call\|>|<\|tool_call_start\|>[^]*?<\|tool_call_end\|>|<ifm\|tool_calls>[^]*?<\/ifm\|tool_calls>|<ifm\|tool_call>[^]*?<\/ifm\|tool_call>|<function\s+name\s*=[^]*?<\/function>/g;
 
 const WRITE_TOOLS = /^(write_file|edit_file|multi_edit)$/;
 
@@ -2680,7 +2974,7 @@ export function xmlRunsOn(raw: string): boolean {
   // `<parameter=` took a value opened as `<parameter>content>` for closed,
   // and a page ending in `</div></body></html>` was cut off mid-write.
   const opened = [...body.matchAll(new RegExp(xmlOpenTag("parameter"), "g"))].length;
-  if (opened > body.split("</parameter>").length - 1) return false;
+  if (opened > body.split(/<\/param(?:eter)?>/).length - 1) return false;
   return TRAILING_CLOSERS.test(body.slice(-600));
 }
 
@@ -3282,6 +3576,10 @@ export async function runAgentTurn(
   // completion is never an answer; the agents45 third-party shim already
   // established the fix shape — retry hotter, bounded.
   let emptyStreak = 0;
+  /** Edits stopped mid-call in a row because their old_string was not in the
+   *  file — from the second, the next step samples hotter and is told how to
+   *  look before it writes again. */
+  let editMisses = 0;
   // The same unparseable call, again and again. The repeat breaker only sees
   // calls that PARSED, so a model stuck re-emitting one broken call (a bash
   // command with bare double quotes inside its JSON string) spent a whole
@@ -3336,7 +3634,7 @@ export async function runAgentTurn(
     if (!cb.onLiveStep) return;
     const view = liveFileCall(raw);
     if (!view) return;
-    if (!live) live = { id: uid(), view, thinking: thinkPart(raw), claimed: false, settled: false };
+    if (!live) live = { id: uid(), view, thinking: shownThought(raw), claimed: false, settled: false };
     const cur = live;
     cur.view = view;
     // The file as it stands, read once its path has arrived: a rewrite is
@@ -3488,6 +3786,47 @@ export async function runAgentTurn(
       let degenerated = false;
       let closersCut = false;
       let prefillShown = false;
+      // ── Edit probe ── an edit's old_string is checked against the file as it
+      // is written. A miss used to be found only after the whole call —
+      // new_string included, often the larger half — had been generated, and
+      // on a long block a small model misses again the same way. Stopped at
+      // the first line that cannot be in the file, the round costs what was
+      // written up to there.
+      const editProbe = { open: true, busy: false, key: "", cut: false, miss: "" };
+      const probeEdit = () => {
+        if (editProbe.busy || editProbe.cut) return;
+        const v = liveFileCall(raw);
+        if (!v || (v.name !== "edit_file" && v.name !== "multi_edit") || !v.path || !v.edits?.length) return;
+        const at = v.edits.length - 1;
+        const cur = v.edits[at];
+        if (cur.old === undefined) return;
+        const prior: EditOp[] = [];
+        for (const e of v.edits.slice(0, at)) {
+          if (!e.oldDone || !e.newDone || e.old === undefined || e.new === undefined) return;
+          prior.push({ old_string: e.old, new_string: e.new });
+        }
+        const done = cur.oldDone === true;
+        const upTo = done ? cur.old.length : cur.old.lastIndexOf("\n") + 1;
+        const judged = cur.old.slice(0, upTo);
+        // Two complete lines before anything is judged; a finished one always.
+        if (!done && judged.split("\n").filter((l) => l.trim()).length < 2) return;
+        const key = `${v.path}\u0000${at}\u0000${done ? "done" : upTo}`;
+        if (key === editProbe.key) return;
+        editProbe.key = key;
+        editProbe.busy = true;
+        agentEditCheck(v.path, prior, judged, done).then(
+          () => {
+            editProbe.busy = false;
+          },
+          (e: unknown) => {
+            editProbe.busy = false;
+            if (!editProbe.open || opts.signal.cancelled) return;
+            editProbe.miss = e instanceof Error ? e.message : String(e);
+            editProbe.cut = true;
+            void cancelGeneration().catch(() => {});
+          },
+        );
+      };
       const t0 = performance.now();
       // After an intercepted repeat, sample hotter once to escape the pattern.
       const baseTemp = opts.temperature ?? 0.3;
@@ -3527,7 +3866,7 @@ export async function runAgentTurn(
             minP: opts.sampling?.minP,
             maxTokens,
             repeatPenalty: opts.sampling?.repeatPenalty ?? 1.05,
-            stop: [...CALL_CLOSERS],
+            stop: callClosers(callFormat()),
             think: stepThink,
             effort: opts.effort,
           },
@@ -3559,7 +3898,7 @@ export async function runAgentTurn(
             cb.onStats?.(baseTokens + liveTokens, lastTps);
             // Once a live card is up, the reasoning that led to it rides on
             // the card, above it, as it does on every finished step.
-            if (!live) cb.onThinking(thinkPart(raw));
+            if (!live) cb.onThinking(shownThought(raw));
             cb.onAssistantText(proseAfter(raw));
             if (cb.onLiveStep && performance.now() - liveShownAt >= LIVE_CARD_MS) {
               liveShownAt = performance.now();
@@ -3591,6 +3930,8 @@ export async function runAgentTurn(
               closersCut = true;
               void cancelGeneration().catch(() => {});
             }
+            // A line or an argument just ended: the moments an edit can be judged.
+            if (/[\n>"]/.test(ev.text)) probeEdit();
           } else if (ev.type === "done") {
             baseTokens += ev.stats.completionTokens;
             lastTps = ev.stats.tokensPerSecond;
@@ -3614,6 +3955,7 @@ export async function runAgentTurn(
         calibrate(sentRaw, n);
         overflowAt = n;
       });
+      editProbe.open = false;
       // Safety: a cancelled/errored step may end mid-prefill — clear the ring.
       cb.onPrefill?.(null);
       if (opts.signal.cancelled) return;
@@ -3701,7 +4043,43 @@ export async function runAgentTurn(
         continue;
       }
       emptyStreak = 0;
-      const thinking = thinkPart(raw);
+      const thinking = shownThought(raw);
+
+      // ── Edit stopped mid-call ── its old_string could not be in the file
+      // (see the edit probe above). Recorded like any failed tool step: the
+      // turn as generated, closed so the call reads as one, and the reason —
+      // the report the finished call would have earned, with the closest
+      // lines — so the next attempt can copy them.
+      if (editProbe.cut) {
+        editMisses++;
+        const v = liveFileCall(raw);
+        const name = v?.name === "multi_edit" ? "multi_edit" : "edit_file";
+        const call: ToolCall = { name, args: v?.path ? { path: v.path } : {} };
+        storeAssistantTurn(messages, raw, opts.reasoningField);
+        const why =
+          lang === "zh"
+            ? `${name} 未执行:old_string 边写边和文件核对过,已写出的行在文件里找不到,所以没等 new_string 写完就停下了。\n${editProbe.miss}`
+            : `${name} was not run: old_string was checked against the file as it was written, and the lines written so far are not in it — so the call was stopped before new_string.\n${editProbe.miss}`;
+        const advice =
+          editMisses >= 2
+            ? lang === "zh"
+              ? "\n\n连续多次对不上:先用 read_file(带 offset/limit)看要改的那几行现在的样子,old_string 只放要改的行加一行上下文。"
+              : "\n\nSeveral misses in a row: read_file the lines you want to change (with offset/limit) to see them as they are now, and keep old_string to the changed lines plus one line of context."
+            : "";
+        const result = `ERROR: ${why}${advice}`;
+        const stepObj: ToolStep = { id: uid(), call, status: "error", thinking, result };
+        const shown = live as Live | null;
+        if (shown && !shown.claimed && sameFileTool(shown.view.name, name)) {
+          stepObj.id = shown.id;
+          stepObj.live = { ...shown.view, before: shown.before };
+        }
+        cb.onStep(stepObj);
+        if (editMisses >= 2) hotNext = true;
+        lastResultErrored = true;
+        lastResultText = result;
+        pushUser(toolResultMsg(name, result), call);
+        continue;
+      }
 
       // ── Think budget (user setting) ── the round was cut at the ceiling.
       // Graceful close: the reasoning STAYS in context (capped) and the model
@@ -3723,7 +4101,7 @@ export async function runAgentTurn(
         continue;
       }
 
-      const call = parseToolCall(raw);
+      const call = turnCall(raw);
       if (call) {
         invalidStreak = 0;
         lastInvalidRaw = "";
@@ -3782,7 +4160,7 @@ export async function runAgentTurn(
         // Any of the formats a model may write a call in — Gemma's
         // `<|tool_call>` holds no `<tool_call>`, so looking for that alone
         // passed a broken Gemma call off as a final answer.
-        if (/<tool_call>|<\|tool_call>|<\|tool_call_start\|>|<function=/.test(raw) && step < maxSteps - 1) {
+        if (/<tool_call>|<\|tool_call>|<\|tool_call_start\|>|<function=|<ifm\|tool_call|<function\s+name\s*=/.test(callRegion(raw)) && step < maxSteps - 1) {
           // Verbatim, like the tool-call path. Recording `proseOnly(raw)` here
           // stripped the very markup the nudge below is about — the model was
           // asked to fix a call it could no longer see — and it also made the
@@ -3956,6 +4334,7 @@ export async function runAgentTurn(
       }
       // A valid tool call = real progress; clear the stuck-thinking streak.
       stuckThinkCount = 0;
+      editMisses = 0;
 
       // ── Required-args guard ──
       // A call missing a required argument is a format slip, not an action:
@@ -4001,6 +4380,7 @@ export async function runAgentTurn(
           ARG_EXAMPLE[call.name] ?? `{"${argShown}":"…"}`,
           n,
           lang,
+          unreadArg(raw, missing[0].split("|")),
         );
         // From the 3rd slip the stuck state deserves a visible card.
         if (n >= 3) cb.onStep({ id: uid(), call, status: "error", result: note });
@@ -4020,11 +4400,18 @@ export async function runAgentTurn(
       // re-reads the system prompt with it. It also cost the model the thread
       // of its own work between steps. Compaction reclaims the oldest reasoning
       // if the window gets tight.
-      const withClose = /<\|tool_call>|<\|tool_call_start\|>/.test(raw)
-        ? closeOpenCalls(raw)
-        : raw.includes("</tool_call>")
-          ? raw
-          : `${raw}</tool_call>`;
+      // `</tool_call>` is put back only in the formats it closes — a model may
+      // write it (and have it trimmed as the stop) without having opened one.
+      // Every other format is closed by its own pairs: a K2 or MiniCPM turn
+      // given a `</tool_call>` it never wrote no longer matches what was
+      // generated, and teaches the model markup of another format.
+      const rawFormat = formatOf(raw);
+      const withClose =
+        rawFormat === "json" || rawFormat === "xml"
+          ? raw.includes("</tool_call>")
+            ? raw
+            : `${raw}</tool_call>`
+          : closeOpenCalls(raw);
       // Verbatim, in whatever markup this model reasons in — normalizing it to
       // `<think>` would feed channel-style reasoners (Gemma 4) tags they never
       // saw in training, and only an exact copy of what was generated lets the

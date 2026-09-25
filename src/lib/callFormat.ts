@@ -6,11 +6,14 @@
  *    json   Qwen3, QwQ        <tool_call>{"name":"…","arguments":{…}}</tool_call>
  *    gemma  Gemma 4           <|tool_call>call:name{key:<|"|>text<|"|>,n:5}<tool_call|>
  *    lfm    LFM2              <|tool_call_start|>[name(key="value")]<|tool_call_end|>
+ *    minicpm MiniCPM5         <function name="name"><param name="key">value</param></function>
+ *    ifm    K2 Horizon        <ifm|tool_calls>\n<ifm|tool_call>name\n<ifm|arg_key>key</ifm|arg_key>\n<ifm|arg_value>value</ifm|arg_value>\n</ifm|tool_call>\n</ifm|tool_calls>
+ *    glm    GLM-4.5/4.6/4.7   <tool_call>name\n<arg_key>key</arg_key>\n<arg_value>value</arg_value>\n</tool_call>
  *
  *  Every format is always PARSED; this decides what the prompt and every
  *  correction teach, so none of them teaches a model a format it was not
  *  trained on. Set at the start of each turn. */
-export type CallFormat = "json" | "xml" | "gemma" | "lfm";
+export type CallFormat = "json" | "xml" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm";
 
 let format: CallFormat = "json";
 
@@ -48,6 +51,18 @@ export function callRule(zh: boolean, f: CallFormat): string {
       return zh
         ? '- 每次只调用一个工具。想清楚要做什么之后,按下面的格式输出这一个调用就立即停止——同一条消息里不要再写说明文字,也不要写第二个调用(思考不算):\n<|tool_call_start|>[工具名(参数名="文字值", 数字参数=5)]<|tool_call_end|>\n  必填参数一个都不能少;文字值里的双引号写成 \\",换行写成 \\n。'
         : '- Call ONE tool at a time. Think it through, then write the one call in this form and STOP immediately — no prose and no second call in that message (your reasoning does not count):\n<|tool_call_start|>[tool_name(argument_name="text value", number_argument=5)]<|tool_call_end|>\n  Every required argument must be there; inside a text value write a double quote as \\" and a newline as \\n.';
+    case "minicpm":
+      return zh
+        ? '- 每次只调用一个工具。想清楚要做什么之后,按下面的格式输出这一个调用就立即停止——同一条消息里不要再写说明文字,也不要写第二个调用(思考不算):\n<function name="工具名"><param name="参数名">参数值</param></function>\n  必填参数一个都不能少,每个参数一对 <param name="…"></param>;参数值里有 <、& 或换行时,用 <![CDATA[ … ]]> 包住;数组或对象类型的参数(比如 multi_edit 的 edits)写成 JSON。'
+        : '- Call ONE tool at a time. Think it through, then write the one call in this form and STOP immediately — no prose and no second call in that message (your reasoning does not count):\n<function name="tool_name"><param name="argument_name">the value</param></function>\n  Every required argument must be there, each in its own <param name="…"></param>; a value holding <, & or a line break goes inside <![CDATA[ … ]]>; an array or object argument (multi_edit\'s edits, say) is written as JSON.';
+    case "ifm":
+      return zh
+        ? "- 每次只调用一个工具。想清楚要做什么之后,按下面的格式输出这一个调用就立即停止——同一条消息里不要再写说明文字,也不要写第二个调用(思考不算):\n<ifm|tool_calls>\n<ifm|tool_call>工具名\n<ifm|arg_key>参数名</ifm|arg_key>\n<ifm|arg_value>参数值(可以多行,原样书写,不需要任何转义)</ifm|arg_value>\n</ifm|tool_call>\n</ifm|tool_calls>\n  必填参数一个都不能少,每个参数一对 arg_key/arg_value;数组或对象类型的参数(比如 multi_edit 的 edits)写成 JSON。"
+        : "- Call ONE tool at a time. Think it through, then write the one call in this form and STOP immediately — no prose and no second call in that message (your reasoning does not count):\n<ifm|tool_calls>\n<ifm|tool_call>tool_name\n<ifm|arg_key>argument_name</ifm|arg_key>\n<ifm|arg_value>the value (any number of lines, written as is, nothing escaped)</ifm|arg_value>\n</ifm|tool_call>\n</ifm|tool_calls>\n  Every required argument must be there, each as an arg_key/arg_value pair; an array or object argument (multi_edit's edits, say) is written as JSON.";
+    case "glm":
+      return zh
+        ? "- 每次只调用一个工具。想清楚要做什么之后,按下面的格式输出这一个调用就立即停止——同一条消息里不要再写说明文字,也不要写第二个调用(思考不算):\n<tool_call>工具名\n<arg_key>参数名</arg_key>\n<arg_value>参数值(可以多行,原样书写,不需要任何转义)</arg_value>\n</tool_call>\n  必填参数一个都不能少,每个参数一对 arg_key/arg_value;数组或对象类型的参数(比如 multi_edit 的 edits)写成 JSON。"
+        : "- Call ONE tool at a time. Think it through, then write the one call in this form and STOP immediately — no prose and no second call in that message (your reasoning does not count):\n<tool_call>tool_name\n<arg_key>argument_name</arg_key>\n<arg_value>the value (any number of lines, written as is, nothing escaped)</arg_value>\n</tool_call>\n  Every required argument must be there, each as an arg_key/arg_value pair; an array or object argument (multi_edit's edits, say) is written as JSON.";
     default:
       return zh
         ? '- 每次只调用一个工具。想清楚要做什么之后,只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 就立即停止——同一条消息里不要再写说明文字,也不要写第二个调用(思考不算)。'
@@ -56,23 +71,53 @@ export function callRule(zh: boolean, f: CallFormat): string {
 }
 
 /** The closing marker of each format — generation stops at whichever comes. */
-export const CALL_CLOSERS = ["</tool_call>", "<tool_call|>", "<|tool_call_end|>"];
+export const CALL_CLOSERS = ["</tool_call>", "<tool_call|>", "<|tool_call_end|>", "</ifm|tool_call>"];
 
+/** Where generation stops for a turn taught `f`: every format's closer, plus
+ *  MiniCPM5's `</function>` — which only closes a call in that format; in the
+ *  XML one it is followed by `</tool_call>`, which is where that call ends. */
+export function callClosers(f: CallFormat): string[] {
+  return f === "minicpm" ? [...CALL_CLOSERS, "</function>"] : [...CALL_CLOSERS];
+}
+
+// Inner before outer: K2's call closes, then the block around it — with the
+// newline its template writes before the block's closer.
 const CALL_PAIRS: [string, string][] = [
   ["<tool_call>", "</tool_call>"],
   ["<|tool_call>", "<tool_call|>"],
   ["<|tool_call_start|>", "<|tool_call_end|>"],
+  ["<ifm|tool_call>", "</ifm|tool_call>"],
+  ["<ifm|tool_calls>", "\n</ifm|tool_calls>"],
+  ["<function name=", "</function>"],
 ];
 
 /** Where the first tool call in a model's output begins, in any format; -1
  *  when there is none. */
 export function callStart(text: string): number {
   let at = -1;
-  for (const m of ["<tool_call>", "<|tool_call>", "<|tool_call_start|>", "<function="]) {
+  for (const m of ["<tool_call>", "<|tool_call>", "<|tool_call_start|>", "<function=", "<ifm|tool_call", "<function name="]) {
     const i = text.indexOf(m);
     if (i !== -1 && (at === -1 || i < at)) at = i;
   }
   return at;
+}
+
+/** `text` without the tool calls written in it — reasoning as a person reads
+ *  it, where a call is markup, not thought (its step card shows it). A call
+ *  still being written runs to the end. */
+export function withoutCalls(text: string): string {
+  let out = "";
+  let rest = text;
+  for (;;) {
+    const c = callStart(rest);
+    if (c === -1) return out + rest;
+    out += rest.slice(0, c);
+    const tail = rest.slice(c);
+    const close = CALL_PAIRS.find(([o]) => tail.startsWith(o))?.[1] ?? "</function>";
+    const k = tail.indexOf(close);
+    if (k === -1) return out;
+    rest = tail.slice(k + close.length);
+  }
 }
 
 /** Put back the closer the stop sequence trimmed off, in the format the call
@@ -86,6 +131,9 @@ export function closeOpenCalls(turn: string): string {
 
 /** The format a call in a model's output was written in. */
 export function formatOf(text: string): CallFormat {
+  if (text.includes("<ifm|tool_call")) return "ifm";
+  if (/<tool_call>\s*[A-Za-z_][\w.-]*\s*(?:<arg_key>|<\/tool_call>)/.test(text)) return "glm";
+  if (/<function\s+name\s*=/.test(text)) return "minicpm";
   if (text.includes("<|tool_call>")) return "gemma";
   if (text.includes("<|tool_call_start|>")) return "lfm";
   const at = text.indexOf("<tool_call>");
@@ -109,6 +157,16 @@ export function renderCall(name: string, args: Record<string, unknown>, f: CallF
       return `<|tool_call>call:${name}{${entries.map(([k, v]) => `${k}:${gemmaValue(v)}`).join(",")}}<tool_call|>`;
     case "lfm":
       return `<|tool_call_start|>[${name}(${entries.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")})]<|tool_call_end|>`;
+    case "minicpm":
+      return `<function name="${name}">${entries.map(([k, v]) => `<param name="${k}">${minicpmValue(v)}</param>`).join("")}</function>`;
+    case "glm":
+      return `<tool_call>${name}\n${entries
+        .map(([k, v]) => `<arg_key>${k}</arg_key>\n<arg_value>${typeof v === "string" ? v : JSON.stringify(v)}</arg_value>\n`)
+        .join("")}</tool_call>`;
+    case "ifm":
+      return `<ifm|tool_calls>\n<ifm|tool_call>${name}\n${entries
+        .map(([k, v]) => `<ifm|arg_key>${k}</ifm|arg_key>\n<ifm|arg_value>${typeof v === "string" ? v : JSON.stringify(v)}</ifm|arg_value>\n`)
+        .join("")}</ifm|tool_call>\n</ifm|tool_calls>`;
     default:
       return `<tool_call>${JSON.stringify({ name, arguments: args })}</tool_call>`;
   }
@@ -130,11 +188,24 @@ export function oneCall(zh: boolean): string {
       return zh ? "一个 <|tool_call>call:工具名{…}<tool_call|> 工具调用" : "one <|tool_call>call:tool_name{…}<tool_call|> tool call";
     case "lfm":
       return zh ? "一个 <|tool_call_start|>[工具名(…)]<|tool_call_end|> 工具调用" : "one <|tool_call_start|>[tool_name(…)]<|tool_call_end|> tool call";
+    case "ifm":
+      return zh ? "一个 <ifm|tool_call>工具名 …</ifm|tool_call> 工具调用" : "one <ifm|tool_call>tool_name …</ifm|tool_call> tool call";
+    case "glm":
+      return zh ? "一个 <tool_call>工具名<arg_key>…</tool_call> 工具调用" : "one <tool_call>tool_name<arg_key>…</tool_call> tool call";
+    case "minicpm":
+      return zh ? '一个 <function name="工具名">…</function> 工具调用' : 'one <function name="tool_name">…</function> tool call';
     default:
       return zh
         ? '一行 <tool_call>{"name":"...","arguments":{...}}</tool_call>'
         : 'a single line <tool_call>{"name":"...","arguments":{...}}</tool_call>';
   }
+}
+
+/** A value the way MiniCPM5's template writes it: as is, unless it holds `<`,
+ *  `&` or a line break, which go inside CDATA; anything not text as JSON. */
+function minicpmValue(v: unknown): string {
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return typeof v === "string" && /[<&\n]/.test(s) ? `<![CDATA[${s}]]>` : s;
 }
 
 /** A value the way Gemma 4's template writes it: text between <|"|>, numbers
@@ -169,6 +240,16 @@ export function callExample(name: string, json: string): string {
       return `call:${name}{${entries.map(([k, v]) => `${k}:${gemmaValue(v)}`).join(",")}}`;
     case "lfm":
       return `${name}(${entries.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")})`;
+    case "minicpm":
+      return `<function name="${name}">${entries.map(([k, v]) => `<param name="${k}">${minicpmValue(v)}</param>`).join("")}</function>`;
+    case "glm":
+      return `<tool_call>${name}${entries
+        .map(([k, v]) => `<arg_key>${k}</arg_key><arg_value>${typeof v === "string" ? v : JSON.stringify(v)}</arg_value>`)
+        .join("")}</tool_call>`;
+    case "ifm":
+      return `<ifm|tool_call>${name} ${entries
+        .map(([k, v]) => `<ifm|arg_key>${k}</ifm|arg_key><ifm|arg_value>${typeof v === "string" ? v : JSON.stringify(v)}</ifm|arg_value>`)
+        .join("")}</ifm|tool_call>`;
     default:
       return `${name} ${json}`;
   }
@@ -209,6 +290,14 @@ export function argsExample(json: string): string {
       return entries.map(([k, v]) => `${k}:${gemmaValue(v)}`).join(",");
     case "lfm":
       return entries.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
+    case "ifm":
+      return entries
+        .map(([k, v]) => `<ifm|arg_key>${k}</ifm|arg_key>\n<ifm|arg_value>${typeof v === "string" ? v : JSON.stringify(v)}</ifm|arg_value>`)
+        .join("\n");
+    case "glm":
+      return entries.map(([k, v]) => `<arg_key>${k}</arg_key>\n<arg_value>${typeof v === "string" ? v : JSON.stringify(v)}</arg_value>`).join("\n");
+    case "minicpm":
+      return entries.map(([k, v]) => `<param name="${k}">${minicpmValue(v)}</param>`).join("");
   }
   return `arguments: ${json}`;
 }

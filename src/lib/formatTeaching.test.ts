@@ -30,7 +30,7 @@ const { rememberFact } = await import("./memoryFiles");
 const { fullDoc } = await import("./mcp");
 
 type Fmt = "json" | "xml" | "gemma" | "lfm";
-const NATIVE = ["xml", "gemma", "lfm"] as const;
+const NATIVE = ["xml", "gemma", "lfm", "ifm", "glm", "minicpm"] as const;
 
 // A JSON object with a quoted key — the shape these tests keep out.
 const JSON_KEY = /\{\s*\\?"[a-z_]+\\?"\s*:/;

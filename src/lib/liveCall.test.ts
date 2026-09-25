@@ -64,7 +64,15 @@ describe("a write the model is still writing", () => {
     const quoted = `<think>\nI could call ${renderCall("write_file", { path: "a.txt", content: "hi" }, "xml")} but`;
     expect(liveFileCall(quoted)).toBeNull();
     // Gemma's thought channel likewise.
-    expect(liveFileCall(`<|channel>thought\n${renderCall("write_file", { path: "a", content: "b" }, "gemma")}`)).toBeNull();
+    expect(liveFileCall(`<|channel>thought\nmaybe ${renderCall("write_file", { path: "a", content: "b" }, "gemma")} or not`)).toBeNull();
+  });
+
+  it("is a card when the call is written mid-thought, where it runs", () => {
+    // Qwen3.5 writes the call inside its reasoning; generation stops at the
+    // closer, and the call is run.
+    const v = liveFileCall(`<think>\nWrite it.\n<tool_call>\n<function=write_file>\n<parameter=path>\na.txt\n</parameter>\n<parameter=content>\nhel`);
+    expect(v).toMatchObject({ name: "write_file", path: "a.txt", content: "hel" });
+    expect(liveFileCall(`<|channel>thought\n${renderCall("write_file", { path: "a", content: "b" }, "gemma")}`)?.path).toBe("a");
   });
 
   it("treats a thought marker inside the file being written as file text", () => {
@@ -118,6 +126,28 @@ describe("an edit the model is still writing", () => {
       expect(end).toEqual(edits.map((e) => [e.old_string, e.new_string]));
     });
   }
+});
+
+describe("an XML call written the other ways", () => {
+  // The same spellings the call parser reads, read the same way while they
+  // stream — the edit probe and the live card both depend on it.
+  it("reads a path written as an element next to <parameter> values", () => {
+    const v = liveFileCall("<tool_call>\n<function=edit_file>\n<path>cart.ts</path>\n<parameter=old_string>\nabc\nde");
+    expect(v?.path).toBe("cart.ts");
+    expect(v?.edits?.[0]).toMatchObject({ old: "abc\nde", oldDone: false });
+  });
+
+  it("reads elements closed as parameters, and the other opener spellings", () => {
+    const v = liveFileCall("<tool_call>\n<function=edit_file>\n<path>a.ts</parameter>\n<parameter>old_string>\nx\n</parameter>\n<parameter name=\"new_string\">\ny");
+    expect(v?.path).toBe("a.ts");
+    expect(v?.edits?.[0]).toMatchObject({ old: "x", oldDone: true, new: "y", newDone: false });
+  });
+
+  it("keeps markup inside a value as the value", () => {
+    const v = liveFileCall("<tool_call>\n<function=write_file>\n<parameter=path>\ni.html\n</parameter>\n<parameter=content>\n<title>t</title>\n<body>");
+    expect(v?.path).toBe("i.html");
+    expect(v?.content).toBe("<title>t</title>\n<body>");
+  });
 });
 
 describe("the live view", () => {

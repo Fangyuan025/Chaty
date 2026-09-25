@@ -15,8 +15,8 @@ const BROWSER_HINT: Record<"zh" | "en", string> = {
 };
 
 const EDIT_FAIL_HINT: Record<"zh" | "en", string> = {
-  zh: `[编辑提示] old_string 匹配失败的恢复法:先用 read_file 重读目标区域,以文件**当前**内容为准(你记忆里的内容可能已过时);从读到的内容或上面的"最相似位置"里**逐字**复制(含空格与缩进)作为 old_string;同一文件多处修改用 edits 数组一次原子提交。`,
-  en: `[Edit hint] Recovering from a failed old_string match: re-read the target region with read_file and trust the file's CURRENT content (your memory of it may be stale); copy old_string VERBATIM (spaces and indentation included) from what you just read or from the closest-match shown above; for several changes in one file use one atomic edits array.`,
+  zh: `[编辑提示] old_string 匹配失败的恢复法:先用 read_file 重读目标区域,以文件**当前**内容为准(你记忆里的内容可能已过时);从读到的内容或上面报告里的最接近位置(标 ✗ 的是和你写的不一样的行)**逐字**复制(含空格与缩进、不带行号)作为 old_string,只放要改的行加一行上下文;同一文件多处修改用 edits 数组一次原子提交。`,
+  en: `[Edit hint] Recovering from a failed old_string match: re-read the target region with read_file and trust the file's CURRENT content (your memory of it may be stale); copy old_string VERBATIM (spaces and indentation included, line numbers left out) from what you just read or from the closest place in the report above (the lines marked ✗ are the ones that differ), keeping it to the changed lines plus one line of context; for several changes in one file use one atomic edits array.`,
 };
 
 // understand_repo is legitimately called with {} — and in no-think mode the
@@ -92,8 +92,17 @@ export function missingArgLadder(
   example: string,
   attempt: number,
   lang: "zh" | "en",
+  seen?: string,
 ): string {
   const zh = lang === "zh";
+  // The model did write the argument, in a shape that does not read as one.
+  // "Missing path" alone sends it back to write the same thing again — it can
+  // see its path right there in its own call.
+  if (seen && attempt <= 2) {
+    return zh
+      ? `ERROR: 没读到 "${arg}" 参数——你写的 \`${seen}\` 不是参数的写法,所以这次调用等于没带 ${arg}。按下面的格式重发 ${name}:\n${argsExample(example)}`
+      : `ERROR: no "${arg}" argument was read — \`${seen}\` is not how an argument is written, so the call went out without ${arg}. Re-issue ${name} in this form:\n${argsExample(example)}`;
+  }
   if (attempt <= 1) {
     return zh
       ? `ERROR: 缺少 "${arg}" 参数——请带上它重发 ${name},例如:\n${argsExample(example)}`
@@ -185,10 +194,14 @@ export function jitHintFor(
     shown.add("tty");
     return TTY_HINT[lang];
   }
+  // Only for an old_string that is not in the file. One that is there more
+  // than once was copied right, and its report already says what to do
+  // (replace_all, or a line of context); "re-read the file and copy it
+  // verbatim" sat under that report and pointed the other way.
   if (
     (name === "edit_file" || name === "multi_edit") &&
     !shown.has("editFail") &&
-    /未找到 old_string|不唯一|old_string not found|not unique/.test(resultText)
+    /未找到 old_string|old_string not found/.test(resultText)
   ) {
     shown.add("editFail");
     return EDIT_FAIL_HINT[lang];

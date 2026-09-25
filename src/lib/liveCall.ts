@@ -8,7 +8,7 @@
 // screen, and tolerant of output that ends anywhere — mid-key, mid-escape,
 // mid-marker.
 
-import { callStart } from "./callFormat";
+import { callStart, withoutCalls } from "./callFormat";
 import { diffLines } from "./diff";
 
 export type LiveTool = "write_file" | "edit_file" | "multi_edit";
@@ -64,20 +64,46 @@ const EDITS_KEYS = ["edits", "changes", "replacements"];
  *  thought is not the call — but a thought marker AFTER the call opens is
  *  text the call is writing (a file may well contain `<think>`). */
 function callText(raw: string): string | null {
+  const at = callAt(raw);
+  return at === -1 ? null : raw.slice(at);
+}
+
+/** Where a turn's reasoning ends: past its last closing think marker — any
+ *  family's (`</think>`, Gemma's `<channel|>`, K2's `</ifm|think…>`) — or -1. */
+export function thoughtEnd(raw: string): number {
+  const close = /<\/think>|<channel\|>|<\/ifm[|｜]think\w*>/g;
+  let end = -1;
+  for (let m: RegExpExecArray | null; (m = close.exec(raw)); ) end = m.index + m[0].length;
+  return end;
+}
+
+/** Where the call a turn makes begins, or -1. A call after the reasoning is
+ *  the one the model settled on. Otherwise the first call, even one written
+ *  mid-thought — Qwen3.5 does that, and generation stops at its closer, still
+ *  inside the thought: it runs, and its card is the only place the change can
+ *  be watched, since the shown thought leaves call markup out. But a call the
+ *  thought went on past was only quoted in it, and is not one. */
+export function callAt(raw: string): number {
   const c = callStart(raw);
-  if (c === -1) return null;
-  const first = (tags: string[]) =>
-    tags.reduce((m, t) => {
-      const k = raw.indexOf(t);
-      return k !== -1 && (m === -1 || k < m) ? k : m;
-    }, -1);
-  const open = first(["<think>", "<|channel>"]);
-  const close = first(["</think>", "<channel|>"]);
-  if ((open === -1 || open > c) && (close === -1 || close > c)) return raw.slice(c);
-  if (close === -1) return null; // still reasoning
-  const rest = raw.slice(close + (raw.startsWith("</think>", close) ? "</think>".length : "<channel|>".length));
-  const c2 = callStart(rest);
-  return c2 === -1 ? null : rest.slice(c2);
+  if (c === -1) return -1;
+  const end = thoughtEnd(raw);
+  if (end !== -1) {
+    const c2 = callStart(raw.slice(end));
+    if (c2 !== -1) return end + c2;
+  }
+  const inThought = end !== -1 ? c < end : /<think>|<\|channel>|<ifm[|｜]think/.test(raw.slice(0, c));
+  if (inThought) {
+    const rest = end !== -1 ? raw.slice(c, end).replace(/(?:<\/think>|<channel\|>|<\/ifm[|｜]think\w*>)$/, "") : raw.slice(c);
+    if (withoutCalls(rest).trim()) return -1;
+  }
+  return c;
+}
+
+/** The part of a turn a call is looked for in: after the reasoning once it
+ *  has closed — markup inside a finished thought was thought, not a call. */
+export function callRegion(raw: string): string {
+  const end = thoughtEnd(raw);
+  return end === -1 ? raw : raw.slice(end);
 }
 
 /** `v` without a trailing prefix of `marker` — the start of a closing marker
@@ -89,25 +115,127 @@ function withoutPartialMarker(v: string, marker: string): string {
   return v;
 }
 
+/** The opening tag of an XML call's `<function=…>` or `<parameter=…>`, as
+ *  models actually write it — not only as the template does. Names come back
+ *  quoted (`<parameter="path">`, `<parameter=path">`: a 4B told "path is
+ *  missing" for one it had written spent a dozen rounds on it), and with the
+ *  `=` turned into a `>`: a Qwen3.5 4B wrote `<parameter>old_string>` for
+ *  every edit's second argument, the whole argument was dropped, and it was
+ *  told "old_string is missing" until it gave up. Also `<parameter name="…">`.
+ *  The name must look like one, so a value is never read as a name. Captures
+ *  the name. Shared by the call parser and the live one, so a call is read
+ *  the same way while it streams as when it is run. */
+export function xmlOpenTag(tag: "function" | "parameter"): string {
+  // MiniCPM5's template writes an argument as `<param name="…">`.
+  const name = tag === "parameter" ? "(?:parameter|param)" : tag;
+  return `<${name}(?:\\s*=\\s*|>|\\s+name\\s*=\\s*|\\s+)["']?([A-Za-z_][\\w.-]*)["']?\\s*>`;
+}
+
+/** A value wrapped in CDATA — MiniCPM5's template wraps any that holds `<`,
+ *  `&` or a newline — is the text inside it. Still arriving, the wrapper's
+ *  head is dropped and a half-written tail held back. */
+export function unCdata(v: string): string {
+  const head = /^\s*<!\[CDATA\[/.exec(v);
+  if (!head) return v;
+  const body = v.slice(head[0].length);
+  const end = body.lastIndexOf("]]>");
+  if (end !== -1) return body.slice(0, end);
+  return body.replace(/\]\]?$/, "");
+}
+
+/** Arguments whose value is a file's or a program's text — markup of any
+ *  kind may be in it. */
+const MARKUP_VALUES = new Set(["content", "old_string", "new_string", "code", "text", "edits"]);
+
+/** Where an XML argument's value ends: at its closer, or at the closer of
+ *  the other style where that is plainly the end — the next thing after it
+ *  is another argument, the end of the call, or nothing. `param`: opened as
+ *  `<parameter=…>` (else as `<name>`). Null when it has not ended. Shared by the
+ *  call parser and the live reader, so both end a value at the same place. */
+export function xmlValueEnd(body: string, from: number, key: string, param: boolean): { at: number; len: number } | null {
+  // The value's own closer: `</parameter>` — or `</param>`, MiniCPM5's form —
+  // when it was opened as a parameter, `</key>` when opened as an element.
+  const find = (tags: string[]) =>
+    tags
+      .map((t) => ({ at: body.indexOf(t, from), len: t.length }))
+      .filter((c) => c.at !== -1)
+      .sort((x, y) => x.at - y.at)[0] ?? null;
+  const own = find(param ? ["</parameter>", "</param>"] : [`</${key}>`]);
+  const other = param ? `</${key}>` : "</parameter>";
+  // A file's text may hold `</content>` of its own (an Atom feed does), so a
+  // bulk value opened as a parameter ends only where parameters end.
+  let b = param && MARKUP_VALUES.has(key) ? -1 : body.indexOf(other, from);
+  // The other style's closer counts only where an argument could end.
+  while (b !== -1 && (!own || b < own.at)) {
+    const next = body.slice(b + other.length).trimStart();
+    if (next === "" || /^<(?:param(?:eter)?\b|\/function>|\/tool_call>|\/param(?:eter)?>|[A-Za-z_][\w-]*(?:>|\s*=))/.test(next)) break;
+    b = body.indexOf(other, b + other.length);
+  }
+  if (b !== -1 && (!own || b < own.at)) return { at: b, len: other.length };
+  return own;
+}
+
+/** Tags that are the call's own scaffolding, never an argument. */
+export const XML_SCAFFOLD = new Set(["function", "tool_call", "parameter", "param"]);
+
+/** `<path=a.ts>` — an argument written in the shape of the opener around it,
+ *  name and value in one tag. A Qwen2.5 32B tune wrote read_file this way and
+ *  once lost the `>` as well (`<symbol=applyDiscount</symbol>`); read as
+ *  nothing, the call went out with no path, came back "missing path", and was
+ *  sent again exactly as before. One-line values only — anything longer is
+ *  not this slip. Group 1 is the name, group 2 the value. */
+export const XML_COMPACT = /<([A-Za-z_][\w-]*)\s*=\s*("[^"\n]*"|'[^'\n]*'|[^<>\n]*?)\s*(?:>(?:<\/\1>)?|<\/\1>)/g;
+
+/** The value of a compact argument, without the quotes it may carry. */
+export function compactValue(v: string): string {
+  return /^(["']).*\1$/.test(v) ? v.slice(1, -1) : v;
+}
+
 // ── xml: <function=name> <parameter=key>\nvalue\n</parameter> ──
+// …and one element per argument (`<path>a.ts</path>`), mixed with the above
+// and closed either way — read in order, each value consumed whole, so markup
+// inside a value is never taken for an argument.
 function xmlArgs(body: string): Arg[] {
   const args: Arg[] = [];
-  const opens = [...body.matchAll(/<parameter=["']?([^>\s"']+)["']?\s*>/g)];
-  for (let n = 0; n < opens.length; n++) {
-    const m = opens[n];
-    let start = (m.index ?? 0) + m[0].length;
-    if (body[start] === "\n") start++;
-    const close = body.indexOf("</parameter>", start);
-    const limit = n + 1 < opens.length ? (opens[n + 1].index ?? body.length) : body.length;
-    if (close !== -1 && close <= limit) {
-      let v = body.slice(start, close);
-      if (v.endsWith("\n")) v = v.slice(0, -1);
-      args.push({ key: m[1], text: v, done: true });
-    } else {
-      args.push({ key: m[1], text: withoutPartialMarker(body.slice(start, limit), "\n</parameter>"), done: false });
+  const param = new RegExp(xmlOpenTag("parameter"), "g");
+  // `</name>` where nothing is open and a value follows opens one too.
+  const element = /<(\/?)([A-Za-z_][\w-]*)>/g;
+  const opens = (e: RegExpExecArray) =>
+    !XML_SCAFFOLD.has(e[2]) && (!e[1] || /^\n?[^<\s]/.test(body.slice(e.index + e[0].length)));
+  const compact = new RegExp(XML_COMPACT.source, "g");
+  let i = 0;
+  for (;;) {
+    param.lastIndex = i;
+    element.lastIndex = i;
+    compact.lastIndex = i;
+    const p = param.exec(body);
+    let e = element.exec(body);
+    while (e && !opens(e)) e = element.exec(body);
+    let c = compact.exec(body);
+    while (c && XML_SCAFFOLD.has(c[1])) c = compact.exec(body);
+    if (c && (!p || c.index < p.index) && (!e || c.index < e.index)) {
+      if (!args.some((a) => a.key === c![1])) args.push({ key: c[1], text: compactValue(c[2]), done: true });
+      i = c.index + c[0].length;
+      continue;
     }
+    const m = p && (!e || p.index <= e.index) ? p : e;
+    if (!m) return args;
+    const key = m === p ? m[1] : m[2];
+    let start = m.index + m[0].length;
+    if (body[start] === "\n") start++;
+    const end = xmlValueEnd(body, start, key, m === p);
+    if (!end) {
+      let v = body.slice(start);
+      for (const c of ["</parameter>", "</param>", `</${key}>`]) v = withoutPartialMarker(v, `\n${c}`);
+      args.push({ key, text: unCdata(v), done: false });
+      return args;
+    }
+    const close = end.at;
+    let v = body.slice(start, close);
+    if (v.endsWith("\n")) v = v.slice(0, -1);
+    if (!args.some((a) => a.key === key)) args.push({ key, text: unCdata(v), done: true });
+    i = close + end.len;
   }
-  return args;
 }
 
 // ── A cursor over text that may end at any point ──
@@ -277,6 +405,29 @@ function gemmaArgs(src: string): Arg[] {
   }
 }
 
+// ── arg_key/arg_value pairs: K2 Horizon's (`<ifm|arg_key>`) and GLM's (`<arg_key>`) ──
+function argKeyArgs(src: string, ns: "ifm|" | "" = "ifm|"): Arg[] {
+  const args: Arg[] = [];
+  const n = ns ? "ifm\\|" : "";
+  const key = new RegExp(`<${n}arg_key>\\s*([^<]*?)\\s*</${n}arg_key>\\s*(?:<${n}arg_type>[^<]*</${n}arg_type>\\s*)?<${n}arg_value>`, "g");
+  const closer = `</${ns}arg_value>`;
+  let m: RegExpExecArray | null;
+  while ((m = key.exec(src))) {
+    let start = m.index + m[0].length;
+    if (src[start] === "\n") start++;
+    const close = src.indexOf(closer, start);
+    if (close === -1) {
+      args.push({ key: m[1], text: withoutPartialMarker(src.slice(start), `\n${closer}`), done: false });
+      return args;
+    }
+    let v = src.slice(start, close);
+    if (v.endsWith("\n")) v = v.slice(0, -1);
+    args.push({ key: m[1], text: v, done: true });
+    key.lastIndex = close + closer.length;
+  }
+  return args;
+}
+
 // ── lfm: [name(key="text", n=5)] ──
 function lfmArgs(src: string): Arg[] {
   const sc = new Scan(src);
@@ -412,6 +563,21 @@ export function liveFileCall(raw: string): LiveView | null {
     if (!head || !LIVE_TOOLS.has(head[1])) return null;
     name = head[1];
     args = gemmaArgs(s.slice(head[0].length));
+  } else if (s.startsWith("<ifm|tool_call")) {
+    const head = /^(?:<ifm\|tool_calls>\s*)?<ifm\|tool_call>/.exec(s);
+    if (!head) return null;
+    const body = s.slice(head[0].length);
+    if (body.trimStart().startsWith("{")) {
+      const j = jsonArgs(body.trimStart());
+      name = j.name;
+      args = j.args;
+    } else {
+      const nm = /^([A-Za-z_][\w.-]*)\s/.exec(body);
+      if (!nm) return null;
+      name = nm[1];
+      args = argKeyArgs(body.slice(nm[0].length));
+    }
+    if (!name || !LIVE_TOOLS.has(name)) return null;
   } else if (s.startsWith("<|tool_call_start|>")) {
     const head = /^<\|tool_call_start\|>\s*\[?\s*([\w.-]+)\s*\(/.exec(s);
     if (!head || !LIVE_TOOLS.has(head[1])) return null;
@@ -420,12 +586,17 @@ export function liveFileCall(raw: string): LiveView | null {
   } else {
     const body = s.startsWith("<tool_call>") ? s.slice("<tool_call>".length) : s;
     const trimmed = body.trimStart();
+    const glm = s.startsWith("<tool_call>") ? /^([A-Za-z_][\w.-]*)\s*<arg_key>/.exec(trimmed) : null;
     if (trimmed.startsWith("{")) {
       const j = jsonArgs(trimmed);
       name = j.name;
       args = j.args;
+    } else if (glm) {
+      name = glm[1];
+      const end = trimmed.indexOf("</tool_call>");
+      args = argKeyArgs(trimmed.slice(glm[1].length, end === -1 ? undefined : end), "");
     } else {
-      const fn = /<function=["']?([^>\s"']+)["']?\s*>/.exec(body);
+      const fn = new RegExp(xmlOpenTag("function")).exec(body);
       if (!fn) return null;
       name = fn[1];
       const end = body.indexOf("</function>", fn.index + fn[0].length);

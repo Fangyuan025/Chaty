@@ -204,7 +204,9 @@ for (let t = 1; t <= TURNS; t++) {
     ws,
     "zh",
     {
-      thinkMode: "normal",
+      // THINK / TEMP / TOP_P / TOP_K / MIN_P / REPEAT: run it the way a user
+      // has set Code mode up (the owner's: deep, 0.7, 0.95, 20, 0, 1.1).
+      thinkMode: (process.env.THINK ?? "normal") as never,
       // TOOLFORMAT: auto (the model's own template, as the app picks it) | xml | json | gemma | lfm
       toolFormat: ((f: string) => (f === "auto" ? ((info as { toolFormat?: string }).toolFormat ?? "xml") : f))(
         process.env.TOOLFORMAT ?? "auto",
@@ -219,7 +221,15 @@ for (let t = 1; t <= TURNS; t++) {
       ...(process.env.SESSION === "0" ? {} : { sessionId: "audit-session" }),
       nCtx: info.nCtx,
       maxSteps: Number(process.env.MAXSTEPS ?? 14),
-      temperature: 0.3,
+      temperature: process.env.TEMP ? Number(process.env.TEMP) : 0.3,
+      sampling: process.env.TEMP
+        ? {
+            topP: process.env.TOP_P ? Number(process.env.TOP_P) : undefined,
+            topK: process.env.TOP_K ? Number(process.env.TOP_K) : undefined,
+            minP: process.env.MIN_P ? Number(process.env.MIN_P) : undefined,
+            repeatPenalty: process.env.REPEAT ? Number(process.env.REPEAT) : undefined,
+          }
+        : undefined,
       signal,
       autoApproveEdits: true,
       autoRunReadOnly: true,

@@ -110,6 +110,28 @@ describe("normalizeChannels", () => {
     const s = "tags like <end> and <message> are prose";
     expect(normalizeChannels(s)).toBe(s);
   });
+
+  // K2 Horizon names its reasoning `<ifm|think>` (and `think_fast` /
+  // `think_faster` at lower effort). The generation prompt opens the span, so
+  // the stream carries the engine's synthetic `<think>` and the model's close.
+  it("reads namespaced reasoning tags as <think>", () => {
+    expect(normalizeChannels("<ifm|think>\nplan\n</ifm|think>42")).toBe("<think>\nplan\n</think>42");
+    expect(normalizeChannels("<think>\nplan</ifm|think_fast>42")).toBe("<think>\nplan</think>42");
+    expect(stripThink("<think>\nplan</ifm|think_faster>42")).toBe("42");
+    expect(answerOnly("<ifm|think>still going")).toBe("");
+  });
+
+  it("does not flash a namespaced tag that is still arriving", () => {
+    // K2's tags are single tokens, but a text-level split (a byte-level
+    // tokenizer spelling one out) must not show the half that has arrived.
+    for (const partial of ["</ifm|", "</ifm|th", "</ifm|think_fa"]) {
+      expect(normalizeChannels(`<think>\nplan${partial}`)).toBe("<think>\nplan");
+    }
+    // Comparisons and ordinary markup keep their text.
+    for (const prose of ["a<b", "x < y", "<div>ok</div>", "use a|b"]) {
+      expect(normalizeChannels(prose)).toBe(prose);
+    }
+  });
 });
 
 describe("stripThink / answerOnly on channel input", () => {

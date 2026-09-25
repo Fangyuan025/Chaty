@@ -84,7 +84,7 @@ export interface ModelInfo {
   reasoningField?: boolean;
   /** The tool-call format the chat template was trained on — read from the
    *  template at load. null ⇒ the template names none (unknown family). */
-  toolFormat?: "xml" | "json" | "gemma" | "lfm" | null;
+  toolFormat?: "xml" | "json" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm" | null;
   supportsTools: boolean;
   multimodal: boolean;
   /** The vision encoder (mmproj) is loaded — images actually work this session. */
@@ -1231,6 +1231,14 @@ export interface EditOp {
 /** Several exact-match edits to one file, applied atomically. */
 export async function agentMultiEdit(path: string, edits: EditOp[]): Promise<string> {
   return await invoke<string>("agent_multi_edit", { path, edits });
+}
+
+/** Whether an edit still being written can land: resolves when it can (or
+ *  cannot be judged), rejects with the message the finished call would get
+ *  when it cannot. `done`: old_string is complete; otherwise only its complete
+ *  lines are judged. */
+export async function agentEditCheck(path: string, prior: EditOp[], oldString: string, done: boolean): Promise<void> {
+  await invoke<null>("agent_edit_check", { path, prior, oldString, done });
 }
 
 /** Definition lines (functions/classes/…) of a file, with line numbers. */

@@ -155,10 +155,23 @@ fn canonical_or_lexical(p: &Path) -> PathBuf {
     if let Ok(c) = p.canonicalize() {
         return c;
     }
-    if let (Some(parent), Some(name)) = (p.parent(), p.file_name()) {
-        if let Ok(cp) = parent.canonicalize() {
-            return cp.join(name);
+    // The deepest ancestor that exists, canonical, with the part not yet
+    // created put back on. Only the parent was tried before, so a new file in
+    // a new folder, named by its absolute path through an alias (a workspace
+    // under macOS's /var or /tmp, a symlinked projects folder), kept its alias
+    // spelling, did not start with the canonical root, and was refused as
+    // outside the workspace — the model was told the user had denied access
+    // to its own workspace. What does not exist yet cannot be a symlink, and
+    // the path is already free of `..`.
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut cur = p;
+    while let (Some(parent), Some(name)) = (cur.parent(), cur.file_name()) {
+        tail.push(name);
+        if let Ok(mut out) = parent.canonicalize() {
+            out.extend(tail.iter().rev());
+            return out;
         }
+        cur = parent;
     }
     p.to_path_buf()
 }
@@ -1264,6 +1277,12 @@ fn syntax_note(abs: &Path, was_clean: Option<bool>) -> String {
 #[tauri::command(async)]
 pub fn agent_write_file(path: String, content: String) -> Result<String, String> {
     let abs = resolve(&path)?;
+    // A whole file on one line with its line breaks spelled out (see
+    // edit_match::spelled_out_breaks) is a file of real lines.
+    let (content, spelled) = match crate::edit_match::spelled_out_breaks(&content, "") {
+        Some(fixed) => (fixed, true),
+        None => (content, false),
+    };
     if abs.is_dir() {
         return Err(trf!(
             "目标是一个目录，不能写入；请提供文件路径: {path}",
@@ -1278,12 +1297,28 @@ pub fn agent_write_file(path: String, content: String) -> Result<String, String>
     std::fs::write(&abs, content.as_bytes()).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
     let root = workspace()?;
     Ok(trf!(
-        "已写入 {} ({} 字节){}",
-        "wrote {} ({} bytes){}",
+        "已写入 {} ({} 字节){}{}",
+        "wrote {} ({} bytes){}{}",
         rel_display(&root, &abs),
         content.len(),
+        if spelled { spelled_note() } else { String::new() },
         syntax_note(&abs, was_clean)
     ))
+}
+
+/// Said whenever `\n` written as two characters was taken as a line break.
+fn retabbed_note() -> String {
+    tr(
+        "(新写的行用空格缩进,而这个文件只用 Tab 缩进,已改成 Tab 写入)",
+        " (the new lines were indented with spaces in a file indented only with tabs, so they were written with tabs)",
+    )
+}
+
+fn spelled_note() -> String {
+    tr(
+        "(内容里的 \\n、\\t 是写出来的两个字符、值里没有真正的换行,已按换行/制表符写入;这个工具的参数值原样书写,直接换行即可)",
+        " (the value spelled line breaks out as the two characters \\n / \\t and held no real one, so they were written as line breaks and tabs; this tool takes values as written — just break the line)",
+    )
 }
 
 /// Exact-string edit (like a str-replace). `old_string` must appear exactly once
@@ -1306,47 +1341,47 @@ pub fn agent_edit_file(
     if old_string == new_string {
         return Err(tr("old_string 与 new_string 相同", "old_string and new_string are identical — no-op edit"));
     }
+    let (new_string, spelled) = match crate::edit_match::spelled_out_breaks(&new_string, &old_string) {
+        Some(fixed) => (fixed, true),
+        None => (new_string, false),
+    };
     let abs = resolve(&path)?;
     let text = std::fs::read_to_string(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
+    let (new_string, retabbed) = match crate::edit_match::tabbed_like_file(&new_string, &old_string, &text) {
+        Some(fixed) => (fixed, true),
+        None => (new_string, false),
+    };
+    let spelled = format!(
+        "{}{}",
+        if spelled { spelled_note() } else { String::new() },
+        if retabbed { retabbed_note() } else { String::new() }
+    );
     cp_record(&abs);
     let was_clean = syntax_check(&abs).map(|r| r.is_ok());
     let count = text.matches(&old_string).count();
     if count == 0 {
-        // Not verbatim — but a retyped old_string usually differs only in
-        // indentation or trailing spaces. One unique such place is taken.
-        if let Some(updated) = loose_replace(&text, &old_string, &new_string) {
-            std::fs::write(&abs, updated.text.as_bytes()).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
-            let root = workspace()?;
-            let span = new_string.matches('\n').count() + 1;
-            return Ok(trf!(
-                "已编辑 {}(old_string 和文件在缩进/行尾空白上不一致,已按唯一匹配的那几行替换,并套用了文件的缩进)。修改后该处内容:\n{}{}",
-                "edited {} (old_string differed from the file in indentation or trailing spaces; the one place its lines match was replaced, in the file's indentation). The region now reads:\n{}{}",
-                rel_display(&root, &abs),
-                numbered_context(&updated.text, updated.start_line, span),
-                syntax_note(&abs, was_clean)
-            ));
-        }
-        // JSON escapes (\n, \") written into a value that is taken as
-        // written — a model just off a JSON-valued argument does it.
-        if let Some(updated) = unescaped_replace(&text, &old_string, &new_string) {
-            std::fs::write(&abs, updated.text.as_bytes()).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
-            let root = workspace()?;
-            let span = updated.text[..].lines().count().min(updated.start_line + 20) - updated.start_line;
-            return Ok(trf!(
-                "已编辑 {}(old_string 里的 \\n、\\\" 是写出来的转义符,文件里对应的是真实的换行/引号;已按还原后的内容唯一匹配并替换)。修改后该处内容:\n{}{}",
-                "edited {} (old_string spelled out escapes such as \\n or \\\" where the file has a real newline or quote; the one place the unescaped text matches was replaced). The region now reads:\n{}{}",
-                rel_display(&root, &abs),
-                numbered_context(&updated.text, updated.start_line, span.max(1)),
-                syntax_note(&abs, was_clean)
-            ));
-        }
-        return Err(not_found_error(&text, &old_string));
+        // Not verbatim. A retyped old_string drifts in ways that say nothing
+        // about which lines it means (see edit_match): the one place it
+        // clearly names is taken, and the lines it kept stay as the file has
+        // them.
+        let m = crate::edit_match::locate(&text, &old_string, &new_string).map_err(miss_message)?;
+        std::fs::write(&abs, m.text.as_bytes()).map_err(|e| trf!("写入失败: {e}", "write failed: {e}"))?;
+        let root = workspace()?;
+        return Ok(format!(
+            "{}{}{}\n{}{}",
+            located_note(&rel_display(&root, &abs), &m),
+            spelled,
+            trf!("修改后该处内容:", " The region now reads:"),
+            numbered_context(&m.text, m.start_line, m.span),
+            syntax_note(&abs, was_clean)
+        ));
     }
     let all = replace_all.unwrap_or(false);
     if count > 1 && !all {
+        let at = occurrence_lines(&text, &old_string);
         return Err(trf!(
-            "old_string 出现 {count} 次，不唯一；请提供更多上下文或用 replace_all",
-            "old_string is not unique ({count} matches) — add more context or use replace_all"
+            "old_string 出现 {count} 次(第 {at} 行),不唯一。要全部替换就加 replace_all: true;只改其中一处就多带一行能区分位置的上下文。",
+            "old_string is not unique ({count} matches, lines {at}). To change every one, pass replace_all: true; to change one, add a neighbouring line that tells them apart."
         ));
     }
     let pos = text.find(&old_string).unwrap_or(0);
@@ -1362,10 +1397,11 @@ pub fn agent_edit_file(
     // without spending another read_file step.
     let span = new_string.matches('\n').count() + 1;
     Ok(trf!(
-        "已编辑 {}（替换 {} 处）。修改后该处内容:\n{}{}",
-        "edited {} ({} replacement(s)). The region now reads:\n{}{}",
+        "已编辑 {}（替换 {} 处）{}。修改后该处内容:\n{}{}",
+        "edited {} ({} replacement(s)){}. The region now reads:\n{}{}",
         rel_display(&root, &abs),
         if all { count } else { 1 },
+        spelled,
         numbered_context(&updated, start_line, span),
         syntax_note(&abs, was_clean)
     ))
@@ -1644,162 +1680,179 @@ fn numbered_context(text: &str, line0: usize, span: usize) -> String {
     out
 }
 
-/// "Did you mean": when an exact-match edit misses, locate the line most
-/// similar to the needle's first meaningful line and show its neighborhood —
-/// one glance instead of a full re-read to fix the next attempt.
-fn closest_snippet(text: &str, needle: &str) -> Option<String> {
-    let target = needle.lines().map(str::trim).find(|l| !l.is_empty())?;
-    let t_tokens: std::collections::HashSet<&str> = target.split_whitespace().collect();
-    if t_tokens.is_empty() {
-        return None;
+/// The 1-based lines where `needle` starts in `text`, the first several.
+fn occurrence_lines(text: &str, needle: &str) -> String {
+    let mut lines: Vec<String> = text
+        .match_indices(needle)
+        .take(8)
+        .map(|(at, _)| (text[..at].matches('\n').count() + 1).to_string())
+        .collect();
+    if text.matches(needle).count() > 8 {
+        lines.push("…".into());
     }
-    let mut best_line = 0usize;
-    let mut best_score = 0.0f32;
-    for (i, line) in text.lines().enumerate() {
-        let l = line.trim();
-        if l.is_empty() {
-            continue;
-        }
-        let score = if l == target {
-            1.0
-        } else if l.contains(target) || target.contains(l) {
-            0.9
-        } else {
-            let l_tokens: std::collections::HashSet<&str> = l.split_whitespace().collect();
-            let inter = t_tokens.intersection(&l_tokens).count() as f32;
-            let union = t_tokens.union(&l_tokens).count() as f32;
-            inter / union.max(1.0)
-        };
-        if score > best_score {
-            best_score = score;
-            best_line = i;
-        }
-    }
-    if best_score < 0.34 {
-        return None;
-    }
-    Some(numbered_context(text, best_line, 1))
+    lines.join(", ")
 }
 
-/// The file after a loose replacement, and the line it starts at.
-struct Loose {
-    text: String,
-    start_line: usize,
-}
-
-/// `old_string` → `new_string` where old_string matches the file line for
-/// line once each line's leading and trailing whitespace is set aside — how a
-/// model's retyped old_string usually differs from the file (two spaces for
-/// four, a tab, a trailing space, a CRLF). Only a UNIQUE such place is taken;
-/// new_string is re-indented from old_string's indentation to the file's.
-/// None when nothing matches, or more than one place does.
-fn loose_replace(text: &str, old_string: &str, new_string: &str) -> Option<Loose> {
-    let needle: Vec<&str> = old_string.trim_matches('\n').split('\n').collect();
-    if needle.iter().all(|l| l.trim().is_empty()) {
-        return None;
-    }
-    let lines: Vec<&str> = text.split('\n').collect();
-    let n = needle.len();
-    if lines.len() < n {
-        return None;
-    }
-    let mut found = None;
-    for i in 0..=lines.len() - n {
-        if (0..n).all(|k| lines[i + k].trim() == needle[k].trim()) {
-            if found.is_some() {
-                return None; // ambiguous — the model has to say which
-            }
-            found = Some(i);
-        }
-    }
-    let i = found?;
-    let indent = |l: &str| l[..l.len() - l.trim_start().len()].to_string();
-    let (from, to) = (indent(needle[0]), indent(lines[i]));
-    let new_body = new_string.trim_matches('\n');
-    let replacement: String = if from == to {
-        new_body.to_string()
-    } else {
-        new_body
-            .split('\n')
-            .map(|l| match l.strip_prefix(from.as_str()) {
-                Some(rest) => format!("{to}{rest}"),
-                None => l.to_string(),
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    // Keep a CRLF file CRLF.
-    let crlf = lines[i].ends_with('\r');
-    let replacement = if crlf {
-        replacement.split('\n').map(|l| l.trim_end_matches('\r')).collect::<Vec<_>>().join("\r\n") + "\r"
-    } else {
-        replacement
-    };
-    let start: usize = lines[..i].iter().map(|l| l.len() + 1).sum();
-    let last = i + n - 1;
-    let end: usize = lines[..last].iter().map(|l| l.len() + 1).sum::<usize>() + lines[last].len();
-    let mut out = String::with_capacity(text.len() + replacement.len());
-    out.push_str(&text[..start]);
-    out.push_str(&replacement);
-    out.push_str(&text[end..]);
-    Some(Loose { text: out, start_line: i })
-}
-
-/// `s` with its JSON escapes undone (`\n`, `\t`, `\"`, `\\`) — None when it
-/// holds none to undo.
-fn unescape_json_like(s: &str) -> Option<String> {
-    if !(s.contains("\\n") || s.contains("\\\"") || s.contains("\\t")) {
-        return None;
-    }
-    let mut out = String::with_capacity(s.len());
-    let mut it = s.chars().peekable();
-    while let Some(c) = it.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-        match it.peek().copied() {
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('"') => out.push('"'),
-            Some('\\') => out.push('\\'),
-            _ => {
-                out.push(c);
-                continue;
-            }
-        }
-        it.next();
-    }
-    Some(out)
-}
-
-/// The last resort for an old_string that matches nowhere: undo JSON escapes
-/// in it (and in new_string) and match again — verbatim and unique, then
-/// loosely. Code that really contains `\n` never gets here: it matched as
-/// written.
-fn unescaped_replace(text: &str, old_string: &str, new_string: &str) -> Option<Loose> {
-    let old = unescape_json_like(old_string)?;
-    let new = unescape_json_like(new_string).unwrap_or_else(|| new_string.to_string());
-    if text.matches(&old).count() == 1 {
-        let pos = text.find(&old)?;
-        return Some(Loose { text: text.replacen(&old, &new, 1), start_line: text[..pos].matches('\n').count() });
-    }
-    loose_replace(text, &old, &new)
-}
-
-fn not_found_error(text: &str, old_string: &str) -> String {
-    let hint = closest_snippet(text, old_string)
-        .map(|s| {
+/// What the model is told when an edit's old_string could not be placed.
+fn miss_message(m: crate::edit_match::Miss) -> String {
+    match m {
+        crate::edit_match::Miss::NotFound(report) => report,
+        crate::edit_match::Miss::Ambiguous(at) => {
+            let at = at.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ");
             trf!(
-                "\n文件中最相似的位置(从这里逐字复制 old_string):\n{s}",
-                "\nclosest match in the file (copy old_string verbatim from here):\n{s}"
+                "old_string 不逐字匹配;忽略空白后它出现在多处(第 {at} 行),无法确定是哪一处 —— 请逐字复制,并多带一行能区分位置的上下文",
+                "old_string is not verbatim, and once whitespace is set aside it matches several places (lines {at}) — copy it exactly, with a neighbouring line that tells them apart"
             )
-        })
-        .unwrap_or_default();
-    trf!(
-        "未找到 old_string（需与文件内容逐字匹配）{hint}",
-        "old_string not found — it must match the file content exactly{hint}"
+        }
+    }
+}
+
+/// How a loose match was taken, for the result the model reads.
+fn located_note(file: &str, m: &crate::edit_match::Located) -> String {
+    use crate::edit_match::Tier;
+    let (a, b) = m.lines;
+    match m.tier {
+        Tier::Normalized => trf!(
+            "已编辑 {file}(old_string 和文件在空白/缩进、引号、不可见字符或抄来的行号上不一致,已按唯一对得上的第 {a}-{b} 行替换;你保留未改的行按文件原样保留)。",
+            "edited {file} (old_string differed from the file in whitespace, quotes, invisible characters or copied line numbers; the one place its lines match, lines {a}-{b}, was replaced — the lines you kept stay as the file has them)."
+        ),
+        Tier::Unescaped => trf!(
+            "已编辑 {file}(old_string 里的 \\n、\\\" 是写出来的转义符,文件里对应的是真实的换行/引号;已按还原后唯一匹配的第 {a}-{b} 行替换)。",
+            "edited {file} (old_string spelled out escapes such as \\n or \\\" where the file has a real newline or quote; the one place the unescaped text matches, lines {a}-{b}, was replaced)."
+        ),
+        Tier::Similar => {
+            let pct = (m.similarity * 100.0).round() as u32;
+            trf!(
+                "已编辑 {file}:old_string 没有逐字匹配,但第 {a}-{b} 行与它 {pct}% 相似且明显是唯一最接近的一处,已替换(你保留未改的行按文件原样保留)。请核对下面的结果是否符合本意。",
+                "edited {file}: old_string did not match exactly, but lines {a}-{b} are {pct}% alike and clearly the one place it means, so they were replaced (the lines you kept stay as the file has them). Check below that this is what you meant."
+            )
+        }
+    }
+}
+
+/// Can the edit being written still land? Asked WHILE the model writes it:
+/// with `done` false, `old_string` is what has arrived so far (its complete
+/// lines are judged); with `done` true it is finished and new_string has not
+/// been written yet. `prior` are the edits of the same call already complete,
+/// applied first as multi_edit would.
+///
+/// An Err is the same message the finished call would have earned, so the
+/// caller can stop the generation there instead of paying for new_string —
+/// on a long block that is most of the call. The judgement is the one the
+/// edit itself makes (edit_match), so nothing that would have landed is cut:
+/// a partial old_string is failed only when no place in the file keeps every
+/// line so far above the floor that even the loosest match requires.
+/// Anything this cannot judge — a path outside the workspace, an unreadable
+/// file, a prior edit that fails — is left for the call itself to report.
+#[tauri::command(async)]
+pub fn agent_edit_check(path: String, prior: Vec<EditOp>, old_string: String, done: bool) -> Result<(), String> {
+    let Ok(abs) = resolve(&path) else { return Ok(()) };
+    let Ok(mut cur) = std::fs::read_to_string(&abs) else { return Ok(()) };
+    for (i, e) in prior.iter().enumerate() {
+        if e.old_string.is_empty() {
+            return Ok(());
+        }
+        match apply_one(&cur, e, &prior[..i]) {
+            Ok(next) => cur = next,
+            Err(_) => return Ok(()),
+        }
+    }
+    if old_string.trim().is_empty() || cur.contains(&old_string) {
+        return Ok(());
+    }
+    // The old_string as the edits before it would have it (see `rebased`).
+    let again = rebased(
+        &EditOp { old_string: old_string.clone(), new_string: String::new(), replace_all: false },
+        &prior,
     )
+    .map(|r| r.old_string);
+    if done {
+        let found = |o: &str| cur.contains(o) || crate::edit_match::locate(&cur, o, "").is_ok();
+        if again.as_deref().is_some_and(found) {
+            return Ok(());
+        }
+        return crate::edit_match::locate(&cur, &old_string, "").map(|_| ()).map_err(miss_message);
+    }
+    if crate::edit_match::prefix_viable(&cur, &old_string)
+        || again.as_deref().is_some_and(|o| crate::edit_match::prefix_viable(&cur, o))
+    {
+        return Ok(());
+    }
+    // What would be said of the lines written so far — they are already wrong.
+    let complete = &old_string[..old_string.rfind('\n').unwrap_or(0)];
+    Err(match crate::edit_match::locate(&cur, complete, "") {
+        Err(miss) => miss_message(miss),
+        Ok(_) => return Ok(()),
+    })
+}
+
+/// Why one edit of a multi-edit did not apply.
+enum EditFail {
+    Miss(crate::edit_match::Miss),
+    NotUnique(usize, String),
+}
+
+/// A later edit written against the file as it WAS, after an earlier edit of
+/// the same call already changed that text. Small models plan a rename this
+/// way — every `qty` to `quantity` first, then a line that still says
+/// `line.qty * line.unit` — and in order, the later edit finds nothing. Its
+/// old_string with the earlier replacements applied is the text it means;
+/// its new_string gets them too where it still speaks the old way. None when
+/// no earlier edit touches it.
+fn rebased(e: &EditOp, earlier: &[EditOp]) -> Option<EditOp> {
+    let (mut old, mut new) = (e.old_string.clone(), e.new_string.clone());
+    let mut touched = false;
+    for k in earlier {
+        // Only an edit whose text holds the earlier one's AND more is written
+        // against the text before it. The same old_string again is the same
+        // target named twice: rebased, it became "replace what the first edit
+        // wrote" — with a second new_string the model had garbled to nothing,
+        // that deleted the line the first edit had just fixed.
+        if k.old_string.is_empty() || e.old_string == k.old_string || !old.contains(&k.old_string) {
+            continue;
+        }
+        let apply = |t: &str| {
+            if k.replace_all {
+                t.replace(&k.old_string, &k.new_string)
+            } else {
+                t.replacen(&k.old_string, &k.new_string, 1)
+            }
+        };
+        old = apply(&old);
+        if new.contains(&k.old_string) && !new.contains(&k.new_string) {
+            new = apply(&new);
+        }
+        touched = true;
+    }
+    (touched && old != new).then_some(EditOp { old_string: old, new_string: new, replace_all: e.replace_all })
+}
+
+/// One edit applied to the text so far — the judgement multi_edit makes, and
+/// the one the streaming check makes of the edits before the one it judges,
+/// so a stream is never stopped for something the call itself would take.
+fn apply_one(cur: &str, e: &EditOp, earlier: &[EditOp]) -> Result<String, EditFail> {
+    let direct = |e: &EditOp| -> Result<String, EditFail> {
+        let count = cur.matches(&e.old_string).count();
+        match count {
+            0 => crate::edit_match::locate(cur, &e.old_string, &e.new_string)
+                .map(|m| m.text)
+                .map_err(EditFail::Miss),
+            1 => Ok(cur.replacen(&e.old_string, &e.new_string, 1)),
+            _ if e.replace_all => Ok(cur.replace(&e.old_string, &e.new_string)),
+            n => Err(EditFail::NotUnique(n, occurrence_lines(cur, &e.old_string))),
+        }
+    };
+    // The very same edit again: done already, by the first one.
+    if earlier.iter().any(|k| k.old_string == e.old_string && k.new_string == e.new_string) && !cur.contains(&e.old_string) {
+        return Ok(cur.to_string());
+    }
+    match direct(e) {
+        Err(EditFail::Miss(miss)) => match rebased(e, earlier) {
+            Some(r) => direct(&r).map_err(|_| EditFail::Miss(miss)),
+            None => Err(EditFail::Miss(miss)),
+        },
+        other => other,
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1822,6 +1875,7 @@ pub fn agent_multi_edit(path: String, edits: Vec<EditOp>) -> Result<String, Stri
     let text = std::fs::read_to_string(&abs).map_err(|e| trf!("读取失败: {e}", "read failed: {e}"))?;
     let mut cur = text;
     let total = edits.len();
+    let mut fixed_before: Vec<EditOp> = Vec::with_capacity(edits.len());
     for (i, e) in edits.iter().enumerate() {
         let n = i + 1;
         if e.old_string.is_empty() {
@@ -1830,36 +1884,35 @@ pub fn agent_multi_edit(path: String, edits: Vec<EditOp>) -> Result<String, Stri
         if e.old_string == e.new_string {
             return Err(trf!("第 {n}/{total} 条 old_string 与 new_string 相同;未应用任何修改", "edit {n}/{total} is a no-op — nothing changed"));
         }
-        let count = cur.matches(&e.old_string).count();
-        // replace_all with no verbatim match still takes one unique loose match:
-        // an E4B's retyped block, indented six where the file has four, failed
-        // only because it also asked for replace_all.
-        if count == 0 {
-            if let Some(updated) = loose_replace(&cur, &e.old_string, &e.new_string)
-                .or_else(|| unescaped_replace(&cur, &e.old_string, &e.new_string))
-            {
-                cur = updated.text;
-                continue;
+        let fixed = crate::edit_match::spelled_out_breaks(&e.new_string, &e.old_string).unwrap_or_else(|| e.new_string.clone());
+        let fixed = crate::edit_match::tabbed_like_file(&fixed, &e.old_string, &cur).unwrap_or(fixed);
+        let e = &EditOp { old_string: e.old_string.clone(), new_string: fixed, replace_all: e.replace_all };
+        // replace_all with no verbatim match still takes one unique loose match
+        // (an E4B's retyped block, indented six where the file has four, failed
+        // only because it also asked for replace_all), and an edit written
+        // against text an earlier edit already changed is rebased onto it.
+        match apply_one(&cur, e, &fixed_before) {
+            Ok(next) => cur = next,
+            Err(EditFail::Miss(miss)) => {
+                return Err(trf!(
+                    "第 {n}/{total} 条编辑失败,整个 multi_edit 原子回退、文件未改动(前 {} 条都对得上,修好这一条即可):\n{}",
+                    "edit {n}/{total} failed — multi_edit is atomic, nothing changed (the {} before it matched; fix this one):\n{}",
+                    n - 1,
+                    miss_message(miss)
+                ));
+            }
+            Err(EditFail::NotUnique(count, at)) => {
+                return Err(trf!(
+                    "第 {n}/{total} 条 old_string 出现 {count} 次(第 {at} 行),不唯一;文件未改动。要全部替换就给这一条加 \"replace_all\": true,只改其中一处就多带一行能区分位置的上下文。",
+                    "edit {n}/{total} is not unique ({count} matches, lines {at}) — nothing changed. To change every one, give this edit \"replace_all\": true; to change one, add a neighbouring line that tells them apart."
+                ));
             }
         }
-        if count == 0 {
-            return Err(trf!(
-                "第 {n}/{total} 条编辑失败,整个 multi_edit 原子回退、文件未改动:\n{}",
-                "edit {n}/{total} failed — multi_edit is atomic, nothing changed:\n{}",
-                not_found_error(&cur, &e.old_string)
-            ));
-        }
-        if count > 1 && !e.replace_all {
-            return Err(trf!(
-                "第 {n}/{total} 条 old_string 出现 {count} 次,不唯一;文件未改动",
-                "edit {n}/{total} is not unique ({count} matches) — nothing changed"
-            ));
-        }
-        cur = if e.replace_all {
-            cur.replace(&e.old_string, &e.new_string)
-        } else {
-            cur.replacen(&e.old_string, &e.new_string, 1)
-        };
+        fixed_before.push(EditOp {
+            old_string: e.old_string.clone(),
+            new_string: e.new_string.clone(),
+            replace_all: e.replace_all,
+        });
     }
     cp_record(&abs);
     let was_clean = syntax_check(&abs).map(|r| r.is_ok());
@@ -6476,6 +6529,87 @@ mod tests {
         assert_eq!(std::fs::read_to_string(tmp.join("f.txt")).unwrap(), "one\nTWO\ngamma\n");
     }
 
+    /// A rename planned the way small models plan one (Pepe 32B, verbatim
+    /// shape): every `qty` first, then a line still written the old way.
+    #[test]
+    fn a_later_edit_written_against_the_old_text_is_rebased() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-rebase-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        let body = "export function lineTotal(line: Line): number {\n  return line.qty * line.unit;\n}\n";
+        std::fs::write(tmp.join("cart.ts"), body).unwrap();
+        let edits = || {
+            vec![
+                EditOp { old_string: "qty".into(), new_string: "quantity".into(), replace_all: true },
+                EditOp {
+                    old_string: "line.qty * line.unit".into(),
+                    new_string: "line.qty * line.price".into(),
+                    replace_all: false,
+                },
+            ]
+        };
+        // The streaming check does not stop it either.
+        let mut first = edits();
+        let second = first.pop().unwrap();
+        assert!(agent_edit_check("cart.ts".into(), first, second.old_string.clone(), true).is_ok());
+        agent_multi_edit("cart.ts".into(), edits()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("cart.ts")).unwrap(),
+            "export function lineTotal(line: Line): number {\n  return line.quantity * line.price;\n}\n"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn a_new_file_named_through_an_alias_of_the_workspace_is_inside_it() {
+        let _g = serial();
+        let real = std::env::temp_dir().join(format!("chaty-agent-alias-{}", std::process::id()));
+        let alias = std::env::temp_dir().join(format!("chaty-agent-alias-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&real);
+        let _ = std::fs::remove_file(&alias);
+        std::fs::create_dir_all(&real).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        #[cfg(not(unix))]
+        return;
+        set_ws(&real);
+        // A file in a folder that does not exist yet, by its absolute path
+        // through the alias: inside the workspace, and written there.
+        let target = alias.join("tests").join("test_main.py");
+        agent_write_file(target.to_string_lossy().into(), "ok\n".into()).unwrap();
+        assert_eq!(std::fs::read_to_string(real.join("tests/test_main.py")).unwrap(), "ok\n");
+        // Reading one that is not there is "not found", not "outside".
+        let err = agent_read_file(alias.join("nope/x.py").to_string_lossy().into(), None, None, None, None).unwrap_err();
+        assert!(!err.contains("NEED_DIR_GRANT"), "{err}");
+        let _ = std::fs::remove_file(&alias);
+        std::fs::remove_dir_all(&real).ok();
+    }
+
+    #[test]
+    fn the_same_target_named_twice_is_not_rebased_onto_the_first_edit() {
+        // Assistant Pepe 32B, verbatim in shape: the second item repeats the
+        // first's old_string and its new_string key came out as " new_string",
+        // so it arrived empty. Rebased, it deleted the line the first had fixed.
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-dup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        let body = "export interface Line {\n  qty: number;\n}\n";
+        std::fs::write(tmp.join("cart.ts"), body).unwrap();
+        let op = |o: &str, n: &str| EditOp { old_string: o.into(), new_string: n.into(), replace_all: false };
+        let garbled = vec![op("  qty: number", "  quantity: number"), op("  qty: number", "")];
+        assert!(agent_multi_edit("cart.ts".into(), garbled).is_err());
+        assert_eq!(std::fs::read_to_string(tmp.join("cart.ts")).unwrap(), body);
+        // Written twice the same, it is done once.
+        let twice = vec![op("  qty: number", "  quantity: number"), op("  qty: number", "  quantity: number")];
+        agent_multi_edit("cart.ts".into(), twice).unwrap();
+        assert_eq!(std::fs::read_to_string(tmp.join("cart.ts")).unwrap(), "export interface Line {\n  quantity: number;\n}\n");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     #[test]
     fn edit_miss_suggests_closest_line() {
         let _g = serial();
@@ -6751,29 +6885,31 @@ mod tests {
     /// lands, in the file's indentation — once, and only where it is unique.
     #[test]
     fn a_retyped_old_string_is_matched_loosely_but_only_uniquely() {
+        use crate::edit_match::{locate, Miss};
         let text = "def a():\n    x = 1\n    if x:\n        return 2  \n\ndef b():\n    return 3\n";
         // Two spaces where the file has four, and no trailing spaces.
-        let r = loose_replace(text, "  if x:\n      return 2", "  if x:\n      return 20").unwrap();
+        let r = locate(text, "  if x:\n      return 2", "  if x:\n      return 20").unwrap();
         assert_eq!(r.text, "def a():\n    x = 1\n    if x:\n        return 20\n\ndef b():\n    return 3\n");
         assert_eq!(r.start_line, 2);
         // Ambiguous: two places match once whitespace is ignored.
         let twice = "a\n  b\nc\n    b\n";
-        assert!(loose_replace(twice, "b", "B").is_none());
+        assert!(matches!(locate(twice, "b", "B"), Err(Miss::Ambiguous(_))));
         // Nothing like it.
-        assert!(loose_replace(text, "return 99", "x").is_none());
+        assert!(locate(text, "return 99", "x").is_err());
         // A CRLF file stays CRLF.
         let crlf = "one\r\n  two\r\nthree\r\n";
-        assert_eq!(loose_replace(crlf, "two", "2").unwrap().text, "one\r\n  2\r\nthree\r\n");
+        assert_eq!(locate(crlf, "two", "2").unwrap().text, "one\r\n  2\r\nthree\r\n");
     }
 
     /// A model writing text-as-written arguments right after a JSON-valued
     /// one kept the JSON escapes: `\"\"\"Price…\"\"\"\n    base = 2.5`.
     #[test]
     fn an_old_string_with_json_escapes_still_lands() {
+        use crate::edit_match::{locate, unescape_json_like};
         let text = "def price_for_kiwis(qty):\n    \"\"\"Price for kiwis.\"\"\"\n    base = 2.5\n    return base * qty\n";
         let old = r#"def price_for_kiwis(qty):\n    \"\"\"Price for kiwis.\"\"\"\n    base = 2.5"#;
         let new = r#"def price_for_kiwis(qty, discount=0):\n    \"\"\"Price for kiwis.\"\"\"\n    base = 2.5"#;
-        let r = unescaped_replace(text, old, new).unwrap();
+        let r = locate(text, old, new).unwrap();
         assert_eq!(r.text, "def price_for_kiwis(qty, discount=0):\n    \"\"\"Price for kiwis.\"\"\"\n    base = 2.5\n    return base * qty\n");
         // Nothing to undo: not this tier's business.
         assert!(unescape_json_like("plain text").is_none());

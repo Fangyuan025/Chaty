@@ -51,9 +51,8 @@ describe("jitHintFor", () => {
     const h = jitHintFor("edit_file", "未找到 old_string(需与文件内容逐字匹配)", "zh", shown);
     expect(h).toContain("[编辑提示]");
     expect(jitHintFor("multi_edit", "old_string not found", "en", new Set())).toContain("[Edit hint]");
-    expect(jitHintFor("edit_file", "old_string is not unique (3 matches)", "en", new Set())).toContain(
-      "[Edit hint]",
-    );
+    // Not unique: copied right; its own report says what to do.
+    expect(jitHintFor("edit_file", "old_string is not unique (3 matches)", "en", new Set())).toBe("");
   });
 
   test("hints stay bounded and single-language", () => {

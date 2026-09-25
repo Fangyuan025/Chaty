@@ -45,6 +45,8 @@ function trimPartialTag(s: string): string {
   const body = tail.replace(/^<[|｜]?/, "");
   if (MARKER_WORDS.some((w) => w.startsWith(body) || (w + "|").startsWith(body) || (w + "｜").startsWith(body)))
     return s.slice(0, lt);
+  // A namespaced reasoning tag still arriving: `<ifm|thi`, `</ifm|`.
+  if (/^\/?[a-z0-9]+[|｜](?:t(?:h(?:i(?:n(?:k(?:_[a-z]*)?)?)?)?)?)?$/i.test(body)) return s.slice(0, lt);
   return s;
 }
 
@@ -66,7 +68,11 @@ function trimPartialTag(s: string): string {
  *  the reply; the whole span goes, an unfinished one included. Display only —
  *  the recorded turn keeps every token of it. */
 export function withoutToolCallSpans(s: string): string {
-  return s.replace(/<[|｜]tool_call_start[|｜]>[\s\S]*?(?:<[|｜]tool_call_end[|｜]>|$)/gi, "");
+  return s
+    .replace(/<[|｜]tool_call_start[|｜]>[\s\S]*?(?:<[|｜]tool_call_end[|｜]>|$)/gi, "")
+    // K2 Horizon's call block, and a bare call without the block around it.
+    .replace(/<ifm[|｜]tool_calls>[\s\S]*?(?:<\/ifm[|｜]tool_calls>|$)/gi, "")
+    .replace(/<ifm[|｜]tool_call>[\s\S]*?(?:<\/ifm[|｜]tool_call>|$)/gi, "");
 }
 
 export function normalizeChannels(s: string): string {
@@ -84,12 +90,20 @@ export function normalizeChannels(s: string): string {
   // pipe — a plain `<think>` is the Qwen convention this function's OUTPUT
   // uses and must pass through untouched.
   if (
-    !/<[|｜]?(channel|turn)\b|\b(channel|turn)[|｜]>|<(?:[|｜](?:think|message|end|return|start|eom|eot)|(?:think|message|end|return|start|eom|eot)[|｜])|\bto=[\w.*-]+[ \t]*<[|｜]message[|｜]>/i.test(
+    !/<[|｜]?(channel|turn)\b|\b(channel|turn)[|｜]>|<(?:[|｜](?:think|message|end|return|start|eom|eot)|(?:think|message|end|return|start|eom|eot)[|｜])|\bto=[\w.*-]+[ \t]*<[|｜]message[|｜]>|<\/?[a-z0-9]+[|｜]think/i.test(
       held,
     )
   )
     return held;
   const t = held
+    // Namespaced reasoning tags: K2 Horizon writes `<ifm|think>…</ifm|think>`
+    // and, at lower effort, `think_fast` / `think_faster` spans. They are the
+    // plain `<think>` convention under another name, so they become exactly
+    // that — including a close whose opener was the generation prompt's and
+    // reached this text as the engine's synthetic `<think>`. The namespace
+    // comes before the pipe, which keeps these apart from Gemma 4's `<|think|>`.
+    .replace(/<[a-z0-9]+[|｜]think(?:_[a-z]+)*>/gi, "<think>")
+    .replace(/<\/[a-z0-9]+[|｜]think(?:_[a-z]+)*>/gi, "</think>")
     // ATEM (Muse Glimmer) addresses each span to a recipient rather than
     // naming a channel: `to=self` is the reasoning, anything else — `to=user`,
     // `to=<tool>` — is the turn leaving that channel. The opening
