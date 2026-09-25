@@ -75,7 +75,7 @@ public struct MuseGlimmerVisionConfiguration: Decodable, Sendable {
         // `rope_parameters` also carries a `rope_type` string, so it cannot be
         // read as a flat number map.
         let rope = try? c.nestedContainer(keyedBy: RopeKeys.self, forKey: .ropeParameters)
-        ropeTheta = (try? rope?.decodeIfPresent(Float.self, forKey: .theta)) ?? 10_000 ?? 10_000
+        ropeTheta = (try? rope?.decodeIfPresent(Float.self, forKey: .theta)) ?? 10_000
         // Every fourth layer, and the last one, look at the whole image.
         let layerCount = hiddenLayers
         layerTypes =
@@ -502,7 +502,7 @@ public class MuseGlimmerVLM: Module, VLMModel, KVCacheDimensionProvider {
         let image32 = Int32(config.imageTokenId)
         let video32 = Int32(config.videoTokenId)
         let isSlot = { (t: Int32) in t == image32 || t == video32 }
-        var flat = embeddings.reshaped(-1, embeddings.dim(-1))
+        let flat = embeddings.reshaped(-1, embeddings.dim(-1))
         var row = 0
         var i = 0
         while i < ids.count {

@@ -53,12 +53,15 @@ anyhow = "1"
 # Fork of utilityai/llama-cpp-rs at 3d5f424 plus one commit: `load_mtp` and
 # `n_layer_nextn` were not reachable from the safe API, so the MTP draft
 # context the crate can already drive could never actually be built.
-llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "6c00dd9f7b1de19420c392cd7eb092b365177fa4", features = ["sampler", "mtmd"] }
+# Its llama.cpp submodule points at Fangyuan025/llama.cpp chaty/k2-horizon:
+# the same llama.cpp revision with K2 Horizon backported on top from
+# MBZUAI-IFM's branch (the one IFM's own GGUFs name) until upstream has it.
+llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "01da17ebc56d54ac0abccc55daaa424bd5368528", features = ["sampler", "mtmd"] }
 # The same crate llama-cpp-2 is built on (same revision, so nothing extra is
 # compiled): reached directly for `llama_log_set`, so llama.cpp's own reason
 # for refusing a model can be kept instead of discarded with the rest of its
 # log.
-llama-cpp-sys-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "6c00dd9f7b1de19420c392cd7eb092b365177fa4" }
+llama-cpp-sys-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "01da17ebc56d54ac0abccc55daaa424bd5368528" }
 # A real Jinja engine for GGUF chat templates. llama.cpp's own
 # `llama_chat_apply_template` does not run Jinja: it recognises a template by
 # substrings and prints its built-in version of that family, so anything the

@@ -168,6 +168,10 @@ struct ModelMeta {
     /// probed against the real template at load, never named. See
     /// `probeTurnPrefix`.
     var turnPrefix = ""
+    /// The template refuses an assistant turn with no thinking field (K2
+    /// Horizon's does); every prompt is then rendered here with one filled in,
+    /// since the library's own path sends role and content only.
+    var reasoningRequired = false
     /// Native reasoning-effort ladder the template accepts, weakest first
     /// (Qwen3.8: low/medium/xhigh). Empty ⇒ no effort control.
     var effortLevels: [String] = []
@@ -467,17 +471,29 @@ struct SafeStreamingDetokenizer {
         // A byte-fallback character split across tokens decodes to U+FFFD
         // until its last byte arrives — hold the piece back rather than
         // emitting a replacement character.
-        if newSegment.last == "\u{fffd}" { return nil }
-        let new: String
-        if newSegment.hasPrefix(segment) {
-            new = String(newSegment.dropFirst(segment.count))
+        if newSegment.unicodeScalars.last == "\u{fffd}" { return nil }
+        // Compared as Unicode scalars, never as Characters. A Swift Character
+        // is a grapheme cluster, and a token that brings a combining scalar —
+        // the variation selector after "☀", a skin tone, the next person of a
+        // ZWJ family, the second half of a flag — turns the last Character
+        // streamed into a different one. Character-wise the old text was then
+        // no longer a prefix of the new, the fallback below re-sent the whole
+        // cluster, and every such emoji came out doubled: "☀☀️". Scalar-wise
+        // it is a plain append of U+FE0F, which joins "☀" where it lands.
+        let was = Array(segment.unicodeScalars)
+        let now = Array(newSegment.unicodeScalars)
+        let common: Int
+        if now.count >= was.count && now[..<was.count].elementsEqual(was) {
+            common = was.count
         } else {
             // The decoder rewrote text already streamed out. Nothing can be
             // retracted, so re-anchor on the longest common prefix and emit
             // the rest: worst case a character repeats, none is dropped.
-            let common = zip(newSegment, segment).prefix { $0 == $1 }.count
-            new = String(newSegment.dropFirst(common))
+            common = zip(now, was).prefix { $0 == $1 }.count
         }
+        var scalars = String.UnicodeScalarView()
+        scalars.append(contentsOf: now[common...])
+        let new = String(scalars)
         if new.isEmpty { return nil }
         if new.hasSuffix("\n") {
             startNewSegment()
@@ -512,6 +528,68 @@ struct HistoryShape {
     var reasoningField = false
 }
 
+/// The chat template applied the way the model's own code would call it. A
+/// template that refuses an assistant turn carrying no thinking field — K2
+/// Horizon's raises "Assistant message is missing a thinking field" — is given
+/// an empty one on each such turn: the shape it renders for a turn that did not
+/// reason. Anything else that fails, fails as before.
+func applyTemplate(
+    _ tokenizer: any MLXLMCommon.Tokenizer, messages: [[String: any Sendable]],
+    extra: [String: any Sendable]?
+) throws -> [Int] {
+    do {
+        return try tokenizer.applyChatTemplate(
+            messages: messages, tools: nil, additionalContext: extra)
+    } catch {
+        var filled = false
+        let retry: [[String: any Sendable]] = messages.map { m in
+            guard (m["role"] as? String) == "assistant", m["reasoning_content"] == nil,
+                m["reasoning"] == nil
+            else { return m }
+            var c = m
+            c["reasoning_content"] = ""
+            filled = true
+            return c
+        }
+        guard filled else { throw error }
+        return try tokenizer.applyChatTemplate(messages: retry, tools: nil, additionalContext: extra)
+    }
+}
+
+/// The reasoning tag a generation prompt ends on when its template pre-opens
+/// the block: `<think>`, or a namespaced one — K2 Horizon opens `<ifm|think>`,
+/// `<ifm|think_fast>` or `<ifm|think_faster>` by rung. A closing tag is not an
+/// opener, and neither is Gemma 4's `<|think|>` control token, whose pipes wrap
+/// the name rather than namespace it. Mirrors the llama.cpp engine's
+/// `preopened_think_tag`.
+func preopenedThinkTag(_ text: String) -> String? {
+    let tail = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard tail.hasSuffix(">"), let lt = tail.range(of: "<", options: .backwards) else { return nil }
+    let tag = String(tail[lt.lowerBound...])
+    let inner = tag.dropFirst().dropLast()
+    var name = Substring(inner)
+    if let bar = inner.firstIndex(of: "|") {
+        let ns = inner[inner.startIndex ..< bar]
+        guard !ns.isEmpty, ns.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else {
+            return nil
+        }
+        name = inner[inner.index(after: bar)...]
+    }
+    let rung = name.hasPrefix("think_") ? name.dropFirst("think_".count) : ""
+    let reasoning =
+        name == "think" || (!rung.isEmpty && rung.allSatisfy { $0.isASCII && $0.isLowercase })
+    return reasoning ? tag : nil
+}
+
+/// What turns reasoning off after a prompt: the close of the block its template
+/// already opened, spelled as that template spells an empty one, or a whole
+/// empty block where it opened none.
+func thinkOffSuffix(_ promptText: String) -> String {
+    guard let tag = preopenedThinkTag(promptText) else { return Engine.thinkOffPrefix }
+    let closer = "</" + tag.dropFirst()
+    return tag == "<think>" ? "\n" + closer + "\n\n" : closer
+}
+
 /// Does the template still render earlier turns the same way once a NEW user
 /// question arrives? Qwen's does not — history loses its reasoning block the
 /// moment it stops being the current query — and that is what costs a full
@@ -527,8 +605,7 @@ func templateSurvivesFollowUp(
 ) -> Bool {
     func render(_ msgs: [[String: any Sendable]]) -> String? {
         guard
-            let ids = try? tokenizer.applyChatTemplate(
-                messages: msgs, tools: nil, additionalContext: extra)
+            let ids = try? applyTemplate(tokenizer, messages: msgs, extra: extra)
         else { return nil }
         return tokenizer.decode(tokenIds: ids, skipSpecialTokens: false)
     }
@@ -614,8 +691,7 @@ struct LearnedLayout {
     ) -> LearnedLayout? {
         func render(_ msgs: [[String: any Sendable]]) -> String? {
             guard
-                let ids = try? tokenizer.applyChatTemplate(
-                    messages: msgs, tools: nil, additionalContext: extra)
+                let ids = try? applyTemplate(tokenizer, messages: msgs, extra: extra)
             else { return nil }
             return tokenizer.decode(tokenIds: ids, skipSpecialTokens: false)
         }
@@ -685,25 +761,14 @@ struct LearnedLayout {
         // right can still tokenize differently and miss the cache.
         func matches(_ conv: [(role: String, content: String)]) -> Bool {
             guard
-                let expected = try? tokenizer.applyChatTemplate(
-                    messages: conv.map { msg($0.role, $0.content) }, tools: nil,
-                    additionalContext: extra)
+                let expected = try? applyTemplate(
+                    tokenizer, messages: conv.map { msg($0.role, $0.content) }, extra: extra)
             else { return false }
             return tokenizer.encode(text: out.render(conv), addSpecialTokens: false) == expected
         }
         let m1 = matches([("system", "PROBE_S"), ("user", "PROBE_A")])
         let m2 = matches([("user", "PROBE_A"), ("assistant", "PROBE_B"), ("user", "PROBE_C")])
         if !m1 || !m2 {
-            if let e = try? tokenizer.applyChatTemplate(
-                messages: [msg("user", "PROBE_A"), msg("assistant", "PROBE_B"), msg("user", "PROBE_C")],
-                tools: nil, additionalContext: extra)
-            {
-            }
-            if let e = try? tokenizer.applyChatTemplate(
-                messages: [msg("system", "PROBE_S"), msg("user", "PROBE_A")],
-                tools: nil, additionalContext: extra)
-            {
-            }
             return nil
         }
 
@@ -735,12 +800,13 @@ func templateKeepsStoredReasoning(
     let closer = String(emptyBlock[close.lowerBound...])
     let stored = opener + "PROBE_REASON" + closer + "PROBE_ANS"
     guard
-        let ids = try? tokenizer.applyChatTemplate(
+        let ids = try? applyTemplate(
+            tokenizer,
             messages: [
                 ["role": "user", "content": "q1"],
                 ["role": "assistant", "content": stored],
                 ["role": "user", "content": "q2"],
-            ], tools: nil, additionalContext: extra)
+            ], extra: extra)
     else { return true }
     return tokenizer.decode(tokenIds: ids, skipSpecialTokens: false).contains("PROBE_REASON")
 }
@@ -751,13 +817,12 @@ func probeTurnPrefix(
 ) -> String {
     func render(_ msgs: [[String: any Sendable]]) -> String? {
         guard
-            let ids = try? tokenizer.applyChatTemplate(
-                messages: msgs, tools: nil, additionalContext: extra)
+            let ids = try? applyTemplate(tokenizer, messages: msgs, extra: extra)
         else { return nil }
         let text = tokenizer.decode(tokenIds: ids, skipSpecialTokens: false)
         // A template without the kwarg never writes a block; the sidecar adds
         // one after rendering, so the probe has to model that same step.
-        return appendsOwnBlock ? text + Engine.thinkOffPrefix : text
+        return appendsOwnBlock ? text + thinkOffSuffix(text) : text
     }
     let opening: [[String: any Sendable]] = [["role": "user", "content": "q"]]
     let follow: [[String: any Sendable]] = [["role": "user", "content": "q2"]]
@@ -781,14 +846,13 @@ func probeTurnPrefix(
 func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
     let reasoning = "PROBE_REASONING"
     let answer = "PROBE_ANSWER"
-    let reasoned = "\(reasoning)\n</think>\n\n\(answer)"
     // Render the way generation actually will — a template asked without
     // `enable_thinking` takes its no-reasoning branch, and the probe would then
     // be measuring a prompt shape that never occurs.
     func render(_ messages: [[String: any Sendable]]) -> String? {
         guard
-            let ids = try? tokenizer.applyChatTemplate(
-                messages: messages, tools: nil, additionalContext: ["enable_thinking": true])
+            let ids = try? applyTemplate(
+                tokenizer, messages: messages, extra: ["enable_thinking": true])
         else { return nil }
         return tokenizer.decode(tokenIds: ids)
     }
@@ -800,9 +864,14 @@ func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
     // The stored turn always carries the opening tag; what the model *generated*
     // does not when the template pre-opened it. Both conventions exist (Qwen3.5
     // pre-opens, Qwen3 emits the tag itself).
-    var inlineContent = "<think>\n" + reasoned
-    var generated =
-        first.hasSuffix("<think>\n") || first.hasSuffix("<think>") ? reasoned : inlineContent
+    // In the model's own tag: K2 Horizon reasons in `<ifm|think>`, and a
+    // `<think>` in its stored turn would be text to its template.
+    let preopened = preopenedThinkTag(first)
+    let tag = preopened ?? "<think>"
+    let closeTag = "</" + tag.dropFirst()
+    let reasonedInTag = "\(reasoning)\n\(closeTag)\n\n\(answer)"
+    var inlineContent = tag + "\n" + reasonedInTag
+    var generated = preopened != nil ? reasonedInTag : inlineContent
     // ATEM addresses spans to a recipient instead of tagging them, so a turn
     // that reasoned looks nothing like the `<think>` spelling above and every
     // shape would fail to append. The generation prompt stops after
@@ -814,7 +883,13 @@ func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
     }
 
     let probeResult = "PROBE_TOOL_RESULT"
-    func appends(toolRole: Bool, reasoningField: Bool) -> Bool {
+    /// `settled`: compare against the template's own rendering of the stored
+    /// turn instead of the spelling guessed above — for a template that
+    /// normalises the whitespace around reasoning (K2 Horizon's), where no
+    /// guess reproduces it and every shape failed for a reason that says
+    /// nothing about the role or the field. Only asked when no shape passes
+    /// as generated, so a model that did keeps the shape it had.
+    func appends(toolRole: Bool, reasoningField: Bool, settled: Bool = false) -> Bool {
         var turn: [String: any Sendable] = ["role": "assistant"]
         if reasoningField {
             turn["content"] = answer
@@ -825,6 +900,14 @@ func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
         let second =
             opening + [turn, ["role": toolRole ? "tool" : "user", "content": probeResult]]
         guard let p = render(second) else { return false }
+        if settled {
+            // The template always appends its generation prompt, so the turn as
+            // it settles is what precedes the tail it shares with `first`.
+            guard let own = render(opening + [turn]), own.hasPrefix(first) else { return false }
+            let tail = zip(first.reversed(), own.reversed()).prefix { $0 == $1 }.count
+            let body = String(own.dropLast(tail))
+            return body.contains(answer) && p.hasPrefix(body) && p.contains(probeResult)
+        }
         // The turn has to APPEND — anything else and every round re-reads the
         // conversation — and the result has to actually be in there. A template
         // with no branch for a role can drop the message instead of failing,
@@ -846,6 +929,14 @@ func probeHistoryShape(_ tokenizer: any MLXLMCommon.Tokenizer) -> HistoryShape {
         HistoryShape(toolRole: false, reasoningField: true),
         HistoryShape(toolRole: false, reasoningField: false),
     ] where appends(toolRole: shape.toolRole, reasoningField: shape.reasoningField) {
+        return shape
+    }
+    for shape in [
+        HistoryShape(toolRole: true, reasoningField: true),
+        HistoryShape(toolRole: true, reasoningField: false),
+        HistoryShape(toolRole: false, reasoningField: true),
+        HistoryShape(toolRole: false, reasoningField: false),
+    ] where appends(toolRole: shape.toolRole, reasoningField: shape.reasoningField, settled: true) {
         return shape
     }
     return HistoryShape()
@@ -924,7 +1015,9 @@ func inspectModelDir(_ dir: URL) -> ModelMeta {
         meta.effortLevels = ["low", "medium", "high", "xhigh"]
         meta.effortKwarg = "reasoning_strength"
     } else if template.contains("reasoning_effort") {
-        meta.effortLevels = ["low", "medium", "xhigh"].filter {
+        // Whichever of the four rungs the template names: Qwen3.8 takes
+        // low/medium/xhigh, K2 Horizon and gpt-oss low/medium/high.
+        meta.effortLevels = ["low", "medium", "high", "xhigh"].filter {
             template.contains("'\($0)'") || template.contains("\"\($0)\"")
         }
         meta.effortKwarg = "reasoning_effort"
@@ -1046,6 +1139,7 @@ final class Engine: @unchecked Sendable {
             // Architectures mlx-swift-lm does not carry, taught to the
             // factory before it is asked for one. Idempotent.
             await MuseGlimmerRegistration.register()
+            await K2HorizonRegistration.register()
             await MuseGlimmerVisionRegistration.register()
             let loadText: @Sendable () async throws -> ModelContainer = {
                 try await LLMModelFactory.shared.loadContainer(
@@ -1105,6 +1199,15 @@ final class Engine: @unchecked Sendable {
             let shape = await container.perform { ctx in probeHistoryShape(ctx.tokenizer) }
             meta.toolRole = shape.toolRole
             meta.reasoningField = shape.reasoningField
+            meta.reasoningRequired = await container.perform { ctx in
+                let turn: [[String: any Sendable]] = [
+                    ["role": "user", "content": "q"], ["role": "assistant", "content": "a"],
+                    ["role": "user", "content": "q2"],
+                ]
+                return (try? ctx.tokenizer.applyChatTemplate(
+                    messages: turn, tools: nil, additionalContext: nil)) == nil
+                    && (try? applyTemplate(ctx.tokenizer, messages: turn, extra: nil)) != nil
+            }
             if meta.supportsThinking {
                 let thinkArg = meta.thinkArg
                 let appendsOwn = !thinkArg
@@ -1371,14 +1474,14 @@ final class Engine: @unchecked Sendable {
             let text = layout.render(messages.map { (role: $0.role, content: $0.content) })
             let ids = context.tokenizer.encode(text: text, addSpecialTokens: false)
             lmInput = LMInput(text: .init(tokens: MLXArray(ids.map(Int32.init))))
-        } else if carriesReasoning && !hasImages {
+        } else if (carriesReasoning || meta.reasoningRequired) && !hasImages {
             let dicts: [[String: any Sendable]] = messages.map { m in
                 var d: [String: any Sendable] = ["role": m.role, "content": m.content]
                 if let r = m.reasoningContent, !r.isEmpty { d["reasoning_content"] = r }
                 return d
             }
-            let ids = try context.tokenizer.applyChatTemplate(
-                messages: dicts, tools: nil, additionalContext: extra.isEmpty ? nil : extra)
+            let ids = try applyTemplate(
+                context.tokenizer, messages: dicts, extra: extra.isEmpty ? nil : extra)
             lmInput = LMInput(text: .init(tokens: MLXArray(ids.map(Int32.init))))
         } else {
             lmInput = try await context.processor.prepare(input: userInput)
@@ -1561,8 +1664,12 @@ final class Engine: @unchecked Sendable {
         // land in the chunked text tail, after every image placeholder, so
         // the processor's image positions are untouched — only the legacy
         if p.think == false, !meta.thinkArg, meta.supportsThinking, segmented {
+            // Closing the block the template already opened, where it opened
+            // one (K2 Horizon pre-opens `<ifm|think>` and has no off switch).
+            let tail = context.tokenizer.decode(
+                tokenIds: Array(tokens.suffix(8)), skipSpecialTokens: false)
             tokens += context.tokenizer.encode(
-                text: Self.thinkOffPrefix, addSpecialTokens: false)
+                text: thinkOffSuffix(tail), addSpecialTokens: false)
         }
 
         // What this prompt ends with after the assistant header. Recorded with
@@ -1616,11 +1723,15 @@ final class Engine: @unchecked Sendable {
         // thinking is enabled, so the model streams reasoning without the
         // opening tag. Emit it synthetically so the UI's think panel sees a
         // complete block (mirrors the llama.cpp engine's behaviour).
-        if p.think != false {
+        // Whatever was asked: a prompt that still ends on an opened thought
+        // puts the model inside one, and the stream has to say so.
+        do {
             let tail = context.tokenizer.decode(
                 tokenIds: Array(tokens.suffix(6)), skipSpecialTokens: false)
-            if tail.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("<think>") {
-                out.emit(["event": "token", "text": "<think>\n"])
+            // The template's own tag: a stored turn carries it back to the
+            // template, which reads K2 Horizon's `<ifm|think>` and not `<think>`.
+            if let tag = preopenedThinkTag(tail) {
+                out.emit(["event": "token", "text": tag + "\n"])
             }
         }
 
@@ -2088,7 +2199,7 @@ final class Engine: @unchecked Sendable {
         // passes changes, and on this hardware that is what costs time.
         let speculation = self.mtp
         let hiddenSource = context.model as? HiddenStateProviding
-        var mtpCache: [KVCache] = speculation?.head.newCache() ?? []
+        let mtpCache: [KVCache] = speculation?.head.newCache() ?? []
         let mtpStats = ProcessInfo.processInfo.environment["CHATY_MLX_MTP_STATS"] == "1"
         var mtpRounds = 0
         var mtpAccepted = 0

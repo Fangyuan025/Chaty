@@ -112,7 +112,7 @@ própria — cada passo exibido ao vivo, cada mudança atrás de uma aprovação
 - Feito para modelos locais: chave de raciocínio **Off / Normal / Deep**, um **anel de progresso do processamento do prompt**, um anel de uso de contexto com compactação automática, leituras de arquivo inteiro dimensionadas à sua janela de contexto, `search_code` ranqueado + `search_docs` da base de conhecimento, e quebra de loops para modelos pequenos repetitivos.
 - Sessões persistentes, memória de projeto (**AGENTS.md**), **/skills** personalizadas e comandos de barra.
 - Ajuste em **Configurações → Código**: limite de passos, timeout de comandos, temperatura por passo, formato das chamadas de ferramenta, aprovação automática de edições, navegador headless e lista de comandos permitidos.
-- **O formato de chamada de cada modelo** — Qwen3.5 / 3.6 / 3.8 foram treinados para escrever chamadas de ferramenta em XML, Qwen3 e QwQ em JSON, Gemma 4 e LFM num formato próprio. O Chaty lê o formato do template de chat do modelo e fala nele, então edições longas deixam de voltar como JSON quebrado; uma família cujo template não indica formato recebe XML, e dá para escolher um à mão em Configurações → Código.
+- **O formato de chamada de cada modelo** — Qwen3.5 / 3.6 / 3.8 foram treinados para escrever chamadas de ferramenta em XML, Qwen3 e QwQ em JSON; Gemma 4, LFM, GLM-4.5 / 4.6 / 4.7, MiniCPM5 e K2 Horizon cada um num formato próprio. O Chaty lê o formato do template de chat do modelo e fala nele, então edições longas deixam de voltar como JSON quebrado; uma família cujo template não indica formato recebe XML, e dá para escolher um à mão em Configurações → Código.
 - O acesso a arquivos nunca sai da pasta que você escolheu; acesso fora do workspace pede permissão por pasta; um comando `sudo` pergunta antes com um prompt de senha seguro; downloads caem no workspace e também são cobertos pelos checkpoints.
 
 </details>
@@ -246,7 +246,7 @@ Modelos só-texto mantêm o caminho de OCR, então nada regride — e ao atualiz
 
 - Conversas, modelos e índices moram numa única **pasta de dados local** — copie para fazer backup, limpe com um clique.
 - **Aceleração de GPU**: **Vulkan** multi-fabricante (Windows) e **Metal** (Apple Silicon, offload total em memória unificada), autoajuste ciente de VRAM com recuo em OOM e fallback para CPU.
-- **Qualquer `.gguf` — ou pasta MLX** — tokenizer e template de chat vêm do próprio modelo; tratamento de primeira classe para Llama 3 e Muse-Glimmer (visão, e seu protocolo de raciocínio ATEM), Gemma 3 / 4 e Qwen 3 / 3.5 / 3.6 / 3.8 (incluindo suas escadas de esforço de raciocínio).
+- **Qualquer `.gguf` — ou pasta MLX** — tokenizer e template de chat vêm do próprio modelo; tratamento de primeira classe para Llama 3 e Muse-Glimmer (visão, e seu protocolo de raciocínio ATEM), Gemma 3 / 4, Qwen 3 / 3.5 / 3.6 / 3.8, GLM-4.5 / 4.7, MiniCPM5 e o K2 Horizon da IFM — denso e MoVA, nos dois motores (incluindo suas escadas de esforço de raciocínio).
 - **Contexto ajustável** que adapta o comprimento treinado do modelo à sua memória e resume turnos antigos perto do limite; **troca segura de modelo** e controles completos de amostragem com presets salváveis.
 
 </td>

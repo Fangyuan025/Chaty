@@ -96,38 +96,7 @@ fn res<T: serde::Serialize>(r: Result<T, String>) -> Result<Value, String> {
 fn load_engine(path: &str, n_ctx: Option<u32>, speculative: bool) -> Result<ModelInfo, String> {
     let (engine, info): (Engine, ModelInfo) = if path == "mock" {
         let e = MockBackend::new("mock");
-        let info = ModelInfo {
-            name: "mock".into(),
-            path: "mock".into(),
-            backend: "mock".into(),
-            loaded: true,
-            arch: None,
-            size_mb: None,
-            params_b: None,
-            n_ctx_train: Some(16384),
-            n_ctx,
-            n_layer: None,
-            speculative: false,
-            speculative_on: false,
-            gpu_layers: 0,
-            gpu_name: None,
-            model_name: Some("mock".into()),
-            quant: None,
-            n_embd: None,
-            has_chat_template: true,
-            supports_thinking: false,
-            think_switch: false,
-            effort_levels: Vec::new(),
-            tool_role: false,
-            reasoning_field: false,
-            tool_format: None,
-            supports_tools: true,
-            multimodal: false,
-            vision_ready: false,
-            multi_image: true,
-            mmproj: None,
-            warning: None,
-        };
+        let info = chaty_lib::inference::mock::mock_info(n_ctx);
         (Arc::new(e), info)
     } else if Path::new(path).join("config.json").is_file() {
         let (e, info) = MlxEngine::load(path, n_ctx, speculative, |_| {}).map_err(|e| e.to_string())?;
@@ -252,6 +221,16 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
                 .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()));
             match (req_s(&args, "path"), edits) {
                 (Ok(p), Ok(e)) => res(ag::agent_multi_edit(p, e)),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        }
+        "agent_edit_check" => {
+            let prior: Vec<ag::EditOp> = arg(&args, "prior")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            match (req_s(&args, "path"), req_s(&args, "old_string")) {
+                (Ok(p), Ok(o)) => res(ag::agent_edit_check(p, prior, o, b_arg(&args, "done").unwrap_or(false))),
                 (Err(e), _) | (_, Err(e)) => Err(e),
             }
         }

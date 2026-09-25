@@ -248,7 +248,18 @@ pub struct ModelInfo {
 ///  - "json":  Hermes, `<tool_call>{"name": …, "arguments": {…}}</tool_call>`
 ///    (Qwen2.5/Qwen3, QwQ)
 pub fn native_tool_format(template: &str) -> Option<&'static str> {
-    if template.contains("<|tool_call>") {
+    // K2 Horizon: `<ifm|tool_call>name` + `<ifm|arg_key>`/`<ifm|arg_value>`
+    // pairs, all special tokens of its own.
+    if template.contains("<ifm|tool_call>") {
+        Some("ifm")
+    } else if template.contains("<arg_key>") {
+        // GLM-4.5/4.6/4.7: the same pairs without a namespace, after a bare
+        // tool name in `<tool_call>` — which JSON would otherwise claim.
+        Some("glm")
+    } else if template.contains("<param name=") {
+        // MiniCPM5: `<function name="…"><param name="…">…</param></function>`.
+        Some("minicpm")
+    } else if template.contains("<|tool_call>") {
         Some("gemma")
     } else if template.contains("<|tool_call_start|>") {
         Some("lfm")
@@ -276,6 +287,13 @@ mod tool_format_tests {
         assert_eq!(native_tool_format(qwen3), Some("json"));
         assert_eq!(native_tool_format(gemma4), Some("gemma"));
         assert_eq!(native_tool_format(lfm), Some("lfm"));
+        let k2 = "{{- \"\\n<ifm|tool_call>\" + tool_call.name + \"\\n\" }}{{- \"<ifm|arg_key>\" + key + \"</ifm|arg_key>\\n\" }}";
+        assert_eq!(native_tool_format(k2), Some("ifm"));
+        // GLM-4.7-Flash, verbatim.
+        let glm = "{{- '<tool_call>' + tc.name -}}\n{% set _args = tc.arguments %}{% for k, v in _args.items() %}<arg_key>{{ k }}</arg_key><arg_value>{{ v | tojson(ensure_ascii=False) if v is not string else v }}</arg_value>{% endfor %}</tool_call>";
+        assert_eq!(native_tool_format(glm), Some("glm"));
+        let minicpm5 = "{{- '<function name=\"' ~ tool_call.name ~ '\">' }}{{- '<param name=\"' ~ param_name ~ '\">' }}";
+        assert_eq!(native_tool_format(minicpm5), Some("minicpm"));
         assert_eq!(native_tool_format("{% for m in messages %}{{ m.content }}{% endfor %}"), None);
     }
 

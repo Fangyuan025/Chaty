@@ -10,6 +10,7 @@ pub mod mic;
 pub mod rag;
 mod commands;
 pub mod download;
+pub mod edit_match;
 pub mod gpu;
 pub mod http;
 pub mod inference;
@@ -373,6 +374,19 @@ pub fn run() {
         )
         .manage(AppState::default())
         .setup(|app| {
+            // A development build started with CHATY_MOCK_REPLY answers from
+            // the mock engine, already loaded — the page takes a model the
+            // backend holds instead of loading the last one, so rendering can
+            // be exercised at any speed without a model in memory.
+            #[cfg(debug_assertions)]
+            if std::env::var_os("CHATY_MOCK_REPLY").is_some() {
+                let st = app.state::<AppState>();
+                tauri::async_runtime::block_on(async {
+                    *st.engine.write().await =
+                        Some(std::sync::Arc::new(inference::mock::MockBackend::new("mock")));
+                    *st.model.write().await = Some(inference::mock::mock_info(Some(16384)));
+                });
+            }
             // ---- main window: sized for the screen, then shown ----
             open_main_window(app);
             #[cfg(target_os = "macos")]
@@ -517,6 +531,8 @@ pub fn run() {
             errlog::open_error_log,
             commands::eject_model,
             commands::get_model,
+            commands::debug_autorun,
+            commands::debug_report,
             commands::get_hardware_info,
             commands::get_gpu_usage,
             commands::note_frontend_ready,
@@ -592,6 +608,7 @@ pub fn run() {
             agent::agent_write_file,
             agent::agent_edit_file,
             agent::agent_multi_edit,
+            agent::agent_edit_check,
             agent::agent_outline,
             agent::agent_resolve_image,
             agent::browser_navigate,

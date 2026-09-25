@@ -306,6 +306,34 @@ pub async fn eject_model(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 /// Current model metadata, or `null` if nothing is loaded.
+/// Development builds only: the message `CHATY_AUTORUN` asks the page to send
+/// once it is up, so a rendering problem can be reproduced — and measured,
+/// see `debug_report` — in the real webview with no one at the keyboard.
+/// Release builds answer nothing.
+#[tauri::command]
+pub fn debug_autorun() -> Option<String> {
+    #[cfg(debug_assertions)]
+    {
+        std::env::var("CHATY_AUTORUN").ok()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
+}
+
+/// Development builds only: the page's measurements of an autorun, written to
+/// `CHATY_REPORT`.
+#[tauri::command]
+pub fn debug_report(text: String) {
+    #[cfg(debug_assertions)]
+    if let Ok(path) = std::env::var("CHATY_REPORT") {
+        let _ = std::fs::write(path, text);
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = text;
+}
+
 #[tauri::command]
 pub async fn get_model(state: State<'_, AppState>) -> Result<Option<ModelInfo>, String> {
     Ok(state.model.read().await.clone())

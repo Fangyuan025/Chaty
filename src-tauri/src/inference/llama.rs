@@ -1501,9 +1501,9 @@ fn run_turn(
     }
 
     let (prompt, prompt_body) = if media_turn {
-        build_prompt_pair(model, &inject_media_markers(&req.messages), req.params.think)?
+        build_prompt_pair(model, &inject_media_markers(&req.messages), req.params.think, req.params.effort.as_deref())?
     } else {
-        (build_prompt(model, &req.messages, req.params.think)?, String::new())
+        (build_prompt(model, &req.messages, req.params.think, req.params.effort.as_deref())?, String::new())
     };
     // Native reasoning-effort rung (Qwen3.8). The template rendered with
     // llama.cpp's default kwargs already carries the `xhigh` sentence, so a
@@ -1516,12 +1516,17 @@ fn run_turn(
         ),
         _ => (prompt, prompt_body),
     };
-    // Qwen3.5/3.6-style templates PRE-OPEN the reasoning block: the prompt
-    // ends with "<think>\n" and the model starts mid-reasoning, so the UI
-    // would never see an opening tag. Emit a synthetic one so the stream is
-    // well-formed for the frontend's think-panel parser.
-    if req.params.think != Some(false) && prompt.trim_end().ends_with("<think>") {
-        sink.emit(StreamEvent::Token { text: "<think>\n".to_string() })?;
+    // Templates that PRE-OPEN the reasoning block end the prompt on the
+    // opening tag, and the model starts mid-reasoning, so the UI would never
+    // see one. Emit that same tag so the stream is well-formed for the
+    // frontend's think parser — and so the turn, stored as streamed, carries
+    // the model's own tag back to its template (K2 Horizon's reads
+    // `<ifm|think>` out of the content; a `<think>` there would be text).
+    // Whatever was asked: a prompt that still ends on an opened thought (a
+    // template with no off switch the engine could not close) puts the model
+    // inside one, and the stream has to say so.
+    if let Some(tag) = preopened_think_tag(&prompt) {
+        sink.emit(StreamEvent::Token { text: format!("{tag}\n") })?;
     }
 
     let n_batch = (dec.ctx().n_batch() as usize).max(1);
@@ -1745,6 +1750,7 @@ fn run_turn(
     // diverges at exactly that position.
     let dump_gen = std::env::var("CHATY_DUMP_GEN_TOKENS").as_deref() == Ok("1");
     let mut gen_ids: Vec<i32> = Vec::new();
+    let turn_end = turn_end_tokens(model);
 
     // How much of `out` is actually resident in the KV. See the snapshot below.
     let mut decoded_len = 0usize;
@@ -1802,7 +1808,7 @@ fn run_turn(
                 t
             }
         };
-        if model.is_eog_token(token) {
+        if model.is_eog_token(token) || turn_end.contains(&token) {
             break;
         }
         if dump_gen {
@@ -2408,8 +2414,13 @@ fn done_event_reused(
 
 /// Render messages into a prompt using the model's embedded chat template,
 /// falling back to ChatML if the GGUF doesn't carry one.
-fn build_prompt(model: &LlamaModel, messages: &[ChatMessage], think: Option<bool>) -> Result<String> {
-    build_prompt_pair(model, messages, think).map(|(full, _)| full)
+fn build_prompt(
+    model: &LlamaModel,
+    messages: &[ChatMessage],
+    think: Option<bool>,
+    effort: Option<&str>,
+) -> Result<String> {
+    build_prompt_pair(model, messages, think, effort).map(|(full, _)| full)
 }
 
 /// Render the prompt twice: the FULL prompt (generation header + any thinking
@@ -2570,6 +2581,7 @@ fn build_prompt_pair(
     model: &LlamaModel,
     messages: &[ChatMessage],
     think: Option<bool>,
+    effort: Option<&str>,
 ) -> Result<(String, String)> {
     // Gemma 4 ships a Jinja template the vendored llama.cpp can't parse, and
     // the old built-in "gemma" template uses the wrong (<start_of_turn>) turn
@@ -2590,8 +2602,14 @@ fn build_prompt_pair(
     // which is the default in code mode.
     let messages = with_think_off_prefix(model, messages, think);
     let messages = messages.as_slice();
-    let body = render_chat_with(model, messages, false, think).unwrap_or_default();
-    let mut prompt = render_chat_with(model, messages, true, think)?;
+    // The rung travels only with thinking on: a template's off branch is the
+    // off switch, and a rung asked for alongside it means nothing.
+    let kw = super::jinja::Kwargs {
+        enable_thinking: think,
+        reasoning_effort: effort.filter(|_| think != Some(false)),
+    };
+    let body = render_chat_with(model, messages, false, kw).unwrap_or_default();
+    let mut prompt = render_chat_with(model, messages, true, kw)?;
 
     // Qwen3.5+ dropped the `/no_think` soft switch and default to reasoning. To
     // honour a "thinking off" request we pre-fill an empty reasoning block right
@@ -2652,6 +2670,29 @@ fn build_prompt_pair(
     // (true for every sane template; guard against odd ones).
     let body = if prompt.starts_with(&body) { body } else { String::new() };
     Ok((prompt, body))
+}
+
+/// The reasoning tag a generation prompt ends on, when its template pre-opens
+/// the block: `<think>` (Qwen3.5+, and the prefill Chaty restores), or a
+/// namespaced one — K2 Horizon opens `<ifm|think>`, `<ifm|think_fast>` or
+/// `<ifm|think_faster>` depending on the rung. A closing tag (the empty block
+/// of thinking-off) is not an opener, and neither is Gemma 4's `<|think|>`
+/// control token, whose pipes wrap the name instead of namespacing it.
+pub(crate) fn preopened_think_tag(prompt: &str) -> Option<&str> {
+    let tail = prompt.trim_end();
+    if !tail.ends_with('>') {
+        return None;
+    }
+    let tag = &tail[tail.rfind('<')?..];
+    let inner = &tag[1..tag.len() - 1];
+    let name = match inner.split_once('|') {
+        Some((ns, name)) if !ns.is_empty() && ns.chars().all(|c| c.is_ascii_alphanumeric()) => name,
+        Some(_) => return None,
+        None => inner,
+    };
+    let reasoning = name == "think"
+        || name.strip_prefix("think_").is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_lowercase()));
+    reasoning.then_some(tag)
 }
 
 /// Qwen 3.5 and everything after it (3.6, 3.8, …) share one paradigm: no
@@ -2808,7 +2849,6 @@ fn gguf_diagnosis<R: std::io::Read>(mut r: R) -> Option<String> {
 }
 
 fn probe_tool_role(model: &LlamaModel) -> bool {
-    const REASONED: &str = "PROBE_REASONING\n</think>\n\nPROBE_ANSWER";
     let msg = |role: Role, content: &str| ChatMessage {
     reasoning_content: None,
         role,
@@ -2823,14 +2863,25 @@ fn probe_tool_role(model: &LlamaModel) -> bool {
     // The stored turn always carries the opening tag; what the model *generated*
     // does not when the template pre-opened it. Both conventions exist (Qwen3.5
     // pre-opens, Qwen3 emits the tag itself), and getting this backwards makes
-    // the probe test a shape that never occurs.
-    let stored = format!("<think>\n{REASONED}");
-    let generated = if first.trim_end().ends_with("<think>") {
-        REASONED.to_string()
-    } else {
-        stored.clone()
-    };
+    // the probe test a shape that never occurs. The tag is the template's own:
+    // a K2 Horizon turn reasons in `<ifm|think>`, and a `<think>` in its stored
+    // turn would be text to that template, not reasoning.
+    let preopened = preopened_think_tag(&first);
+    let open = preopened.unwrap_or("<think>");
+    let close = format!("</{}", &open[1..]);
+    let reasoned = format!("PROBE_REASONING\n{close}\n\nPROBE_ANSWER");
+    let stored = format!("{open}\n{reasoned}");
+    let generated = if preopened.is_some() { reasoned.clone() } else { stored.clone() };
     const PROBE_RESULT: &str = "PROBE_TOOL_RESULT";
+    // The turn as the template itself settles it. Where a template normalises
+    // the whitespace around the reasoning (K2 Horizon's re-renders the close
+    // as `\n</ifm|think>\n` whatever the turn held), the spelling above is
+    // not the one the model writes, and comparing against it failed the tool
+    // role for a reason that has nothing to do with the role. What the role
+    // decides is whether a result after the turn leaves that turn as it was.
+    let settled = render_chat(model, &[opening[0].clone(), opening[1].clone(), msg(Role::Assistant, &stored)], false)
+        .ok()
+        .filter(|a| a.starts_with(&first) && a.contains("PROBE_ANSWER"));
     let appends = |tool_role: Role| {
         let second = [
             opening[0].clone(),
@@ -2844,7 +2895,9 @@ fn probe_tool_role(model: &LlamaModel) -> bool {
                 // there. A template with no branch for a role can drop the
                 // message rather than fail — which appends perfectly well and
                 // hands the model nothing.
-                p.starts_with(&format!("{first}{generated}")) && p.contains(PROBE_RESULT)
+                let kept = p.starts_with(&format!("{first}{generated}"))
+                    || settled.as_deref().is_some_and(|a| p.starts_with(a));
+                kept && p.contains(PROBE_RESULT)
             })
             .unwrap_or(false)
     };
@@ -2872,7 +2925,9 @@ pub(crate) fn effort_levels_of(template: &str) -> Vec<String> {
     if !template.contains("reasoning_effort") {
         return Vec::new();
     }
-    ["low", "medium", "xhigh"]
+    // The rungs the template names, whichever of the four it offers: Qwen3.8
+    // takes low/medium/xhigh, K2 Horizon and gpt-oss low/medium/high.
+    ["low", "medium", "high", "xhigh"]
         .iter()
         .filter(|lvl| template.contains(&format!("'{lvl}'")) || template.contains(&format!("\"{lvl}\"")))
         .map(|s| s.to_string())
@@ -3025,6 +3080,51 @@ fn special_text(model: &LlamaModel, token: LlamaToken) -> String {
     String::from_utf8(piece_bytes(model, token)).unwrap_or_default()
 }
 
+/// The token the model's own template closes an assistant turn with, when the
+/// vocabulary does not already treat it as the end of generation.
+///
+/// llama.cpp knows a list of turn-end tokens by their text (`<|im_end|>`,
+/// `<|eot_id|>`, `<end_of_turn>`…) plus whatever the file declares. A model
+/// with a turn token of its own and no metadata for it — K2 Horizon's
+/// `<|ifm|im_end|>` — kept generating past the end of its answer, and the
+/// token's text ended every reply. The template says what ends a turn: render
+/// one assistant message and look at what follows it. Only a special token
+/// counts (a tag that is one token by itself), never ordinary text.
+fn turn_end_tokens(model: &LlamaModel) -> Vec<LlamaToken> {
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<u64, Vec<i32>>>> = OnceLock::new();
+    let src = model.meta_val_str("tokenizer.chat_template").unwrap_or_default();
+    let key = super::jinja::key_of(&src, &special_text(model, model.token_bos()), "turn-end");
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return hit.into_iter().map(LlamaToken).collect();
+    }
+    const MARK: &str = "CHATY_TURN_END_PROBE";
+    let msg = |role: Role, content: &str| ChatMessage {
+        role,
+        content: content.into(),
+        images: vec![],
+        reasoning_content: None,
+    };
+    let found: Vec<i32> = render_chat(model, &[msg(Role::User, "q"), msg(Role::Assistant, MARK)], false)
+        .ok()
+        .and_then(|text| {
+            let after = &text[text.find(MARK)? + MARK.len()..];
+            let first = *model.str_to_token(after, AddBos::Never).ok()?.first()?;
+            let piece = special_text(model, first);
+            let single = model.str_to_token(&piece, AddBos::Never).ok()? == vec![first];
+            let tag = piece.len() >= 3 && piece.starts_with('<') && piece.ends_with('>');
+            (single && tag && !model.is_eog_token(first)).then_some(vec![first.0])
+        })
+        .unwrap_or_default();
+    if !found.is_empty() {
+        eprintln!("[llama] the template ends a turn with {:?}; generation stops there too", found);
+    }
+    if let Ok(mut c) = cache.lock() {
+        c.insert(key, found.clone());
+    }
+    found.into_iter().map(LlamaToken).collect()
+}
+
 /// Tokenize a rendered prompt the way it will be fed: a template that writes
 /// its own BOS has one already, and llama.cpp adding another in front of it
 /// (it does whenever the vocabulary asks for automatic BOS) doubles it.
@@ -3142,7 +3242,7 @@ fn decide_jinja(
 ///    fallback chain (system folded into the user turn, built-in templates
 ///    for the architecture).
 fn render_chat(model: &LlamaModel, messages: &[ChatMessage], add_ass: bool) -> Result<String> {
-    render_chat_with(model, messages, add_ass, None)
+    render_chat_with(model, messages, add_ass, super::jinja::Kwargs::default())
 }
 
 /// `render_chat` with the thinking request passed on to templates that read
@@ -3151,7 +3251,7 @@ fn render_chat_with(
     model: &LlamaModel,
     messages: &[ChatMessage],
     add_ass: bool,
-    think: Option<bool>,
+    kw: super::jinja::Kwargs,
 ) -> Result<String> {
     // ATEM has no thinking-off branch — the rung ladder is the control — so
     // `think` never reaches this renderer, which is why it can live here rather
@@ -3181,7 +3281,7 @@ fn render_chat_with(
                 reasoning: m.reasoning_content.as_deref(),
             })
             .collect();
-        match j.render_with(&turns, add_ass, think) {
+        match j.render_with(&turns, add_ass, kw) {
             Ok(p) => return Ok(p),
             Err(e) => eprintln!("[llama] chat template did not render this conversation ({e}); using the built-in rendition"),
         }
@@ -3722,6 +3822,24 @@ mod tests {
             )
         };
         assert_eq!(with(Role::Tool), with(Role::User));
+    }
+
+    /// K2 Horizon's ladder is high/medium/low, and the rung picks the tag the
+    /// generation prompt opens with — each of which is the reasoning opener
+    /// the engine has to echo, where a closed block or Gemma's control token
+    /// is not.
+    #[test]
+    fn namespaced_reasoning_tags_and_ladders() {
+        let k2 = "{%- set effort = reasoning_effort | default('high') -%}{%- elif effort == 'high' -%}{%- elif effort == 'medium' -%}{%- elif effort == 'low' -%}";
+        assert_eq!(super::effort_levels_of(k2), vec!["low", "medium", "high"]);
+        let open = super::preopened_think_tag;
+        assert_eq!(open("<|ifm|im_start|>assistant\n<ifm|think>\n"), Some("<ifm|think>"));
+        assert_eq!(open("<|ifm|im_start|>assistant\n<ifm|think_faster>\n"), Some("<ifm|think_faster>"));
+        assert_eq!(open("<|im_start|>assistant\n<think>\n"), Some("<think>"));
+        assert_eq!(open("<|ifm|im_start|>assistant\n<ifm|think>\n</ifm|think>\n"), None);
+        assert_eq!(open("<|turn>model\n<|think|>"), None);
+        assert_eq!(open("<|im_start|>assistant\n"), None);
+        assert_eq!(open("<start_of_turn>model\n<thinking_budget>"), None);
     }
 
     #[test]
@@ -7206,7 +7324,7 @@ mod real_scenarios_e2e {
         Some((name, args))
     }
 
-    struct Report { name: &'static str, done: bool, steps: Vec<String>, final_text: String, note: String }
+    struct Report { name: &'static str, done: bool, steps: Vec<String>, final_text: String }
 
     #[allow(clippy::too_many_arguments)]
     fn drive(
@@ -7275,7 +7393,7 @@ mod real_scenarios_e2e {
             if done() && !final_text.is_empty() { break; }
         }
         let finished = done() || !final_text.is_empty();
-        Report { name, done: finished, steps, final_text, note: String::new() }
+        Report { name, done: finished, steps, final_text }
     }
 
     #[test]
@@ -7298,7 +7416,7 @@ mod real_scenarios_e2e {
         let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
 
         // Reuse the PRODUCTION system prompt so the probe measures what ships.
-        let sys = systemPrompt_for_probe();
+        let sys = system_prompt_for_probe();
 
         let mut reports: Vec<Report> = Vec::new();
         macro_rules! run { ($n:expr,$t:expr,$m:expr,$d:expr) => { reports.push(drive(&model,backend,&mtmd,n_ctx,nt,&rt,$n,&sys,$t,$m,&$d)); }; }
@@ -7343,7 +7461,7 @@ mod real_scenarios_e2e {
     // probe so it measures the SAME guidance users get. Kept in sync by hand
     // with agentLoop.ts systemPrompt(); if they drift, the probe still works —
     // it just measures this copy.
-    fn systemPrompt_for_probe() -> String {
+    fn system_prompt_for_probe() -> String {
         // A faithful condensation of the shipping browser+web guidance.
         "你是 Chaty 的浏览器/网页自动化助手,帮用户在真实网页上完成任务。每步只输出一行 <tool_call>{\"name\":..,\"arguments\":{..}}</tool_call> 然后停止,系统会用 <tool_result> 回你。\n\
          工具:\n\

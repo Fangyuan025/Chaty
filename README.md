@@ -109,7 +109,7 @@ itself — every step shown live, every change behind an approval + diff.
 - Built for local models: an **Off / Normal / Deep** reasoning switch, a **prompt-processing progress ring**, a context-usage ring with automatic compaction, whole-file reads sized to your context window, ranked `search_code` + knowledge-base `search_docs`, and loop-breaking for repetitive small models.
 - Persistent sessions, project memory (**AGENTS.md**), custom **/skills**, and slash commands.
 - Tune it under **Settings → Code**: step limit, command timeout, step temperature, tool-call format, an auto-approve-edits toggle, a headless-browser toggle, and a command allowlist.
-- **Each model's own tool-call format** — Qwen3.5 / 3.6 / 3.8 were trained to write tool calls as XML, Qwen3 and QwQ as JSON, Gemma 4 and LFM in forms of their own. Chaty reads the format from the model's chat template and speaks it, so long edits stop coming back as broken JSON; a family whose template names none gets XML, and Settings → Code can pick one by hand.
+- **Each model's own tool-call format** — Qwen3.5 / 3.6 / 3.8 were trained to write tool calls as XML, Qwen3 and QwQ as JSON; Gemma 4, LFM, GLM-4.5 / 4.6 / 4.7, MiniCPM5 and K2 Horizon each in a form of their own. Chaty reads the format from the model's chat template and speaks it, so long edits stop coming back as broken JSON; a family whose template names none gets XML, and Settings → Code can pick one by hand.
 - File access never leaves the folder you pick; out-of-workspace access asks per folder; a `sudo` command asks first with a secure password prompt; downloads land in the workspace and are covered by checkpoints too.
 
 </details>
@@ -243,7 +243,7 @@ Text-only models keep the OCR path, so nothing regresses — and updating from a
 
 - Conversations, models, and indexes live in one **local data folder** — copy it to back up, clear it in a click.
 - **GPU acceleration**: cross-vendor **Vulkan** (Windows) and **Metal** (Apple Silicon, offload-all on unified memory), VRAM-aware auto-tuning with OOM back-off and CPU fallback.
-- **Any `.gguf` — or MLX folder** — tokenizer and chat template come from the model itself; first-class handling for Llama 3 and Muse-Glimmer (vision, and its ATEM reasoning protocol), Gemma 3 / 4, and Qwen 3 / 3.5 / 3.6 / 3.8 (including their reasoning-effort ladders).
+- **Any `.gguf` — or MLX folder** — tokenizer and chat template come from the model itself; first-class handling for Llama 3 and Muse-Glimmer (vision, and its ATEM reasoning protocol), Gemma 3 / 4, Qwen 3 / 3.5 / 3.6 / 3.8, GLM-4.5 / 4.7, MiniCPM5, and IFM's K2 Horizon — dense and MoVA, on both engines (including their reasoning-effort ladders).
 - **Adjustable context** that auto-fits the model's trained length to your memory and summarizes older turns near the limit; **safe model switching** and full sampling controls with saveable presets.
 
 </td>

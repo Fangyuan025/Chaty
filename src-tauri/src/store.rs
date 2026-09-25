@@ -1070,11 +1070,11 @@ mod tests {
     /// by its arguments, and by whether it failed.
     #[test]
     fn a_tool_call_is_part_of_the_record() {
-        let byName = hits("edit_file", 8);
-        assert_eq!(byName[0].1.role, "edit_file", "{byName:#?}");
-        assert_eq!(byName[0].1.step_id.as_deref(), Some("s1"));
-        let byArgs = hits("Login.tsx", 8);
-        assert!(byArgs.iter().any(|(_, h)| h.role == "edit_file"), "{byArgs:#?}");
+        let by_name = hits("edit_file", 8);
+        assert_eq!(by_name[0].1.role, "edit_file", "{by_name:#?}");
+        assert_eq!(by_name[0].1.step_id.as_deref(), Some("s1"));
+        let by_args = hits("Login.tsx", 8);
+        assert!(by_args.iter().any(|(_, h)| h.role == "edit_file"), "{by_args:#?}");
         // The failed step is findable as a failure, in either language.
         for q in ["失败", "failed"] {
             let failures = hits(q, 8);

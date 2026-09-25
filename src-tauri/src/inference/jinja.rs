@@ -66,20 +66,12 @@ impl Compiled {
     }
 
     pub fn render(&self, turns: &[Turn], add_generation_prompt: bool) -> Result<String> {
-        self.render_with(turns, add_generation_prompt, None)
+        self.render_with(turns, add_generation_prompt, Kwargs::default())
     }
 
-    /// `enable_thinking`: the convention most templates that reason read
-    /// (Qwen3, EXAONE 4, SmolLM3, MiniCPM5…). Left undefined when the caller
-    /// has no preference, so the template's own default applies — and set
-    /// when it does, or a template that defaults to thinking OFF (EXAONE 4)
-    /// could never be made to think.
-    pub fn render_with(
-        &self,
-        turns: &[Turn],
-        add_generation_prompt: bool,
-        enable_thinking: Option<bool>,
-    ) -> Result<String> {
+    /// Render with the caller's template kwargs. Each is left undefined when
+    /// the caller has no preference, so the template's own default applies.
+    pub fn render_with(&self, turns: &[Turn], add_generation_prompt: bool, kw: Kwargs) -> Result<String> {
         // Field order is what Python's dict would give: a template that dumps
         // a whole message with `tojson` prints its keys in this order.
         #[derive(serde::Serialize)]
@@ -94,18 +86,35 @@ impl Compiled {
             .map(|t| Value::from_serialize(Msg { role: t.role, content: t.content, reasoning_content: t.reasoning }))
             .collect();
         let tmpl = self.env.get_template("chat").map_err(|e| anyhow!("{e}"))?;
-        let base = minijinja::context! {
-            messages => messages,
-            add_generation_prompt => add_generation_prompt,
-            bos_token => self.bos.as_str(),
-            eos_token => self.eos.as_str(),
-        };
-        let ctx = match enable_thinking {
-            Some(on) => minijinja::context! { enable_thinking => on, ..base },
-            None => base,
-        };
-        tmpl.render(ctx).map_err(|e| anyhow!("chat template failed to render: {e}"))
+        let mut ctx: std::collections::BTreeMap<&str, Value> = std::collections::BTreeMap::new();
+        ctx.insert("messages", Value::from(messages));
+        ctx.insert("add_generation_prompt", Value::from(add_generation_prompt));
+        ctx.insert("bos_token", Value::from(self.bos.as_str()));
+        ctx.insert("eos_token", Value::from(self.eos.as_str()));
+        if let Some(on) = kw.enable_thinking {
+            ctx.insert("enable_thinking", Value::from(on));
+        }
+        if let Some(rung) = kw.reasoning_effort {
+            ctx.insert("reasoning_effort", Value::from(rung));
+        }
+        tmpl.render(Value::from_serialize(&ctx)).map_err(|e| anyhow!("chat template failed to render: {e}"))
     }
+}
+
+/// What the caller asks of a template beyond the conversation.
+///
+/// `enable_thinking`: the convention most templates that reason read (Qwen3,
+/// EXAONE 4, SmolLM3, MiniCPM5, K2 Horizon…). Set only when the caller has a
+/// preference — a template that defaults to thinking OFF (EXAONE 4) could
+/// never be made to think otherwise.
+///
+/// `reasoning_effort`: the rung, for templates that offer a ladder under that
+/// name (Qwen3.8: low/medium/xhigh; K2 Horizon: low/medium/high, which also
+/// picks the reasoning tag the turn opens with).
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Kwargs<'a> {
+    pub enable_thinking: Option<bool>,
+    pub reasoning_effort: Option<&'a str>,
 }
 
 /// `tojson` as transformers defines it — Python's `json.dumps`:
@@ -241,8 +250,16 @@ fn write_json(v: &Value, o: &JsonOpts, level: usize, out: &mut String) -> std::r
 
 /// `{% generation %}…{% endgeneration %}` is a transformers extension that
 /// marks the assistant's tokens for training masks; rendering prints what is
-/// inside and nothing else. minijinja does not know the tag (LFM2's template
-/// uses it), so it is taken out before compiling — the body stays.
+/// inside and nothing else. minijinja does not know the tag (LFM2's and K2
+/// Horizon's templates use it), so it becomes `{% if true %}…{% endif %}` —
+/// a block tag that does nothing, which is exactly what it is to the renderer.
+///
+/// It has to stay a TAG. Deleting it merged the text on either side into one
+/// run, and trim_blocks / lstrip_blocks no longer applied where the tag had
+/// stood: the next `{%-` then ate the newline before it along with the
+/// indentation, and K2 Horizon's stored turns came out `assistant<ifm|think>`
+/// where transformers writes `assistant\n<ifm|think>` — every earlier turn
+/// in a different shape from the one the model generated.
 fn without_generation_tags(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut rest = source;
@@ -250,18 +267,30 @@ fn without_generation_tags(source: &str) -> String {
         let Some(close) = rest[open..].find("%}") else { break };
         let tag = &rest[open + 2..open + close];
         let word = tag.trim().trim_matches('-').trim();
-        if word == "generation" || word == "endgeneration" {
-            // Whitespace control on the tag still applies to its surroundings.
-            let head = &rest[..open];
-            out.push_str(if tag.starts_with('-') { head.trim_end() } else { head });
-            rest = &rest[open + close + 2..];
-            if tag.ends_with('-') {
-                rest = rest.trim_start();
+        let stand_in = match word {
+            "generation" => Some("if true"),
+            "endgeneration" => Some("endif"),
+            _ => None,
+        };
+        out.push_str(&rest[..open]);
+        match stand_in {
+            // Whitespace control on the tag keeps applying to its surroundings.
+            Some(w) => {
+                out.push_str("{%");
+                if tag.starts_with('-') {
+                    out.push('-');
+                }
+                out.push(' ');
+                out.push_str(w);
+                out.push(' ');
+                if tag.ends_with('-') {
+                    out.push('-');
+                }
+                out.push_str("%}");
             }
-        } else {
-            out.push_str(&rest[..open + close + 2]);
-            rest = &rest[open + close + 2..];
+            None => out.push_str(&rest[open..open + close + 2]),
         }
+        rest = &rest[open + close + 2..];
     }
     out.push_str(rest);
     out
@@ -373,6 +402,19 @@ mod tests {
         assert_eq!(out, "U:q|A:a|");
     }
 
+    /// The tag's own whitespace rules still apply where it stood. K2 Horizon's
+    /// template prints the role, then opens `{% generation %}` on the next
+    /// line; transformers keeps the newline between them (expected value from
+    /// jinja2 with transformers' settings), and dropping the tag used to let
+    /// the following `{%-` eat it.
+    #[test]
+    fn generation_tags_keep_the_whitespace_around_them() {
+        let src = "{%- for message in messages -%}\n    {%- if message.role == \"assistant\" -%}\n        {{- '<s>' + message.role }}\n        {% generation %}\n        {%- if true -%}\n            {{- '<t>\\n' + message.content }}\n        {%- endif -%}\n        {{- '<e>' -}}\n        {%- endgeneration -%}\n    {%- else -%}\n        {{- '<s>' + message.role + '\\n' + message.content + '<e>' }}\n    {%- endif -%}\n{%- endfor -%}\n";
+        let c = Compiled::new(src, "", "").unwrap();
+        let out = c.render(&turns(&[("user", "q"), ("assistant", "a")]), false).unwrap();
+        assert_eq!(out, "<s>user\nq<e><s>assistant\n<t>\na<e>");
+    }
+
     /// `tojson` renders as Python's `json.dumps` does, keywords and all.
     #[test]
     fn tojson_matches_transformers() {
@@ -406,9 +448,23 @@ mod tests {
     fn thinking_reaches_the_template() {
         let src = "{% if enable_thinking is defined and enable_thinking is true %}ON{% elif enable_thinking is defined %}OFF{% else %}DEFAULT{% endif %}";
         let c = Compiled::new(src, "", "").unwrap();
-        assert_eq!(c.render_with(&[], true, Some(true)).unwrap(), "ON");
-        assert_eq!(c.render_with(&[], true, Some(false)).unwrap(), "OFF");
-        assert_eq!(c.render_with(&[], true, None).unwrap(), "DEFAULT");
+        let think = |on| Kwargs { enable_thinking: on, ..Kwargs::default() };
+        assert_eq!(c.render_with(&[], true, think(Some(true))).unwrap(), "ON");
+        assert_eq!(c.render_with(&[], true, think(Some(false))).unwrap(), "OFF");
+        assert_eq!(c.render_with(&[], true, think(None)).unwrap(), "DEFAULT");
+    }
+
+    /// The rung reaches a template that offers a ladder (K2 Horizon's shape:
+    /// the rung picks the tag the turn opens with), and the default stands
+    /// when none is asked for.
+    #[test]
+    fn effort_reaches_the_template() {
+        let src = "{%- set effort = reasoning_effort | default('high') -%}{%- if enable_thinking is defined and enable_thinking is false -%}{{- '<t>\\n</t>\\n' }}{%- elif effort == 'high' -%}{{- '<t>\\n' }}{%- elif effort == 'low' -%}{{- '<t_faster>\\n' }}{%- endif -%}";
+        let c = Compiled::new(src, "", "").unwrap();
+        let kw = |on, rung| Kwargs { enable_thinking: on, reasoning_effort: rung };
+        assert_eq!(c.render_with(&[], true, kw(None, None)).unwrap(), "<t>\n");
+        assert_eq!(c.render_with(&[], true, kw(Some(true), Some("low"))).unwrap(), "<t_faster>\n");
+        assert_eq!(c.render_with(&[], true, kw(Some(false), Some("low"))).unwrap(), "<t>\n</t>\n");
     }
 
     #[test]
