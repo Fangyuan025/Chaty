@@ -26,6 +26,7 @@ import {
 } from "../lib/imageGen";
 import type { ImageRun, ImageStudioState } from "../lib/useImageStudio";
 import { Icon } from "./Icon";
+import { Select } from "./Select";
 import { ImageThumb } from "./ImageThumb";
 import { UserCopy, UserText } from "./UserText";
 import { useConfirm } from "./ConfirmModal";
@@ -51,6 +52,12 @@ const STAGE_KEY: Record<string, TKey> = {
   sample: "imgStageSample",
   decode: "imgStageDecode",
 };
+
+/** How full a slider is, for the track's fill (the app's slider style). */
+function fill(v: number, min: number, max: number): React.CSSProperties {
+  const pct = max > min ? ((v - min) / (max - min)) * 100 : 0;
+  return { ["--fill" as string]: `${Math.max(0, Math.min(100, pct))}%` };
+}
 
 function basename(p: string): string {
   return p.split(/[/\\]/).pop() || p;
@@ -190,7 +197,7 @@ function ParamChips({ rec }: { rec: ImageRecord }) {
   const seeds = rec.images.map((i) => i.seed);
   const chips = [
     p.width && p.height ? `${p.width}×${p.height}` : null,
-    p.steps ? t("imgStepsN", { n: p.steps }) : null,
+    p.steps ? (p.steps === 1 ? t("imgStepOne") : t("imgStepsN", { n: p.steps })) : null,
     p.cfgScale != null ? `CFG ${p.cfgScale}` : null,
     p.sampler || null,
     seeds.length ? `${t("imgSeed")} ${seeds.length > 1 ? `${seeds[0]}…${seeds[seeds.length - 1]}` : seeds[0]}` : null,
@@ -252,7 +259,7 @@ function RunView({ run, onStop }: { run: ImageRun; onStop: (mode: "all" | "after
       </div>
       <div className="is-run-info">
         <span className="is-run-label">
-          <span className="is-dot" /> {run.stopping ? t("imgStopping") : stage}
+          <span className="cm-spin" /> {run.stopping ? t("imgStopping") : stage}
         </span>
         <span className="is-run-detail">{detail.join(" · ")}</span>
       </div>
@@ -624,6 +631,7 @@ export function ImageStudio({
                         max={1}
                         step={0.05}
                         value={settings.imgStrength}
+                        style={fill(settings.imgStrength, 0.05, 1)}
                         onChange={(e) => onSettings({ imgStrength: Number(e.target.value) })}
                       />
                     </label>
@@ -731,7 +739,7 @@ export function ImageStudio({
 
           <div className="is-bar-item is-stepper" title={t("imgBatch")}>
             <button disabled={eff.batch <= 1} onClick={() => onSettings({ imgBatch: eff.batch - 1 })}>−</button>
-            <span>{t("imgCountN", { n: eff.batch })}</span>
+            <span>{eff.batch === 1 ? t("imgCountOne") : t("imgCountN", { n: eff.batch })}</span>
             <button disabled={eff.batch >= 8} onClick={() => onSettings({ imgBatch: eff.batch + 1 })}>+</button>
           </div>
 
@@ -767,7 +775,7 @@ export function ImageStudio({
                 <circle cx="16" cy="7" r="2" />
                 <circle cx="10" cy="17" r="2" />
               </svg>
-              {t("imgStepsN", { n: eff.steps })} · CFG {eff.cfgScale}
+              {eff.steps === 1 ? t("imgStepOne") : t("imgStepsN", { n: eff.steps })} · CFG {eff.cfgScale}
             </button>
             <Pop open={pop === "params"} onClose={() => setPop("")} className="is-pop-params">
               <label className="is-field">
@@ -775,57 +783,62 @@ export function ImageStudio({
                   {t("imgSteps")} <b>{eff.steps}</b>
                   {settings.imgSteps <= 0 && <em>{t("imgRecommended")}</em>}
                 </span>
-                <input type="range" min={1} max={100} step={1} value={eff.steps} onChange={(e) => onSettings({ imgSteps: Number(e.target.value) })} />
+                <input type="range" min={1} max={100} step={1} value={eff.steps} style={fill(eff.steps, 1, 100)} onChange={(e) => onSettings({ imgSteps: Number(e.target.value) })} />
               </label>
               <label className="is-field">
                 <span>
                   CFG <b>{eff.cfgScale}</b>
                   {settings.imgCfg <= 0 && <em>{t("imgRecommended")}</em>}
                 </span>
-                <input type="range" min={1} max={20} step={0.5} value={eff.cfgScale} onChange={(e) => onSettings({ imgCfg: Number(e.target.value) })} />
+                <input type="range" min={1} max={20} step={0.5} value={eff.cfgScale} style={fill(eff.cfgScale, 1, 20)} onChange={(e) => onSettings({ imgCfg: Number(e.target.value) })} />
               </label>
               {eff.guidance != null && (
                 <label className="is-field">
                   <span>
                     {t("imgGuidance")} <b>{eff.guidance}</b>
                   </span>
-                  <input type="range" min={0} max={10} step={0.1} value={eff.guidance} onChange={(e) => onSettings({ imgGuidance: Number(e.target.value) })} />
+                  <input type="range" min={0} max={10} step={0.1} value={eff.guidance} style={fill(eff.guidance ?? 0, 0, 10)} onChange={(e) => onSettings({ imgGuidance: Number(e.target.value) })} />
                 </label>
               )}
-              <label className="is-field">
+              {/* The app's own menus, not the OS popup: a div, since a label
+                  would forward every click on its text to the trigger. */}
+              <div className="is-field">
                 <span>{t("imgSampler")}</span>
-                <select value={settings.imgSampler} onChange={(e) => onSettings({ imgSampler: e.target.value })}>
-                  <option value="">
-                    {t("imgAuto")} ({d.sampler || info.defaultSampler || "—"})
-                  </option>
-                  {SAMPLERS.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="is-field">
+                <Select
+                  value={settings.imgSampler}
+                  ariaLabel={t("imgSampler")}
+                  onChange={(v) => onSettings({ imgSampler: v })}
+                  options={[
+                    { value: "", label: `${t("imgAuto")} (${d.sampler || info.defaultSampler || "—"})` },
+                    ...SAMPLERS.map((s) => ({ value: s, label: s })),
+                  ]}
+                />
+              </div>
+              <div className="is-field">
                 <span>{t("imgScheduler")}</span>
-                <select value={settings.imgScheduler} onChange={(e) => onSettings({ imgScheduler: e.target.value })}>
-                  <option value="">
-                    {t("imgAuto")} ({d.scheduler || info.defaultScheduler || "—"})
-                  </option>
-                  {SCHEDULERS.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="is-field" title={t("imgAccelHint")}>
+                <Select
+                  value={settings.imgScheduler}
+                  ariaLabel={t("imgScheduler")}
+                  onChange={(v) => onSettings({ imgScheduler: v })}
+                  options={[
+                    { value: "", label: `${t("imgAuto")} (${d.scheduler || info.defaultScheduler || "—"})` },
+                    ...SCHEDULERS.map((s) => ({ value: s, label: s })),
+                  ]}
+                />
+              </div>
+              <div className="is-field" title={t("imgAccelHint")}>
                 <span>{t("imgAccel")}</span>
-                <select value={settings.imgAccel} onChange={(e) => onSettings({ imgAccel: e.target.value as ImageSettings["imgAccel"] })}>
-                  <option value="off">{t("off")}</option>
-                  <option value="balanced">{t("imgAccelBalanced")}</option>
-                  <option value="fast">{t("imgAccelFast")}</option>
-                </select>
-              </label>
+                <Select
+                  value={settings.imgAccel}
+                  ariaLabel={t("imgAccel")}
+                  onChange={(v) => onSettings({ imgAccel: v })}
+                  options={[
+                    { value: "off" as ImageSettings["imgAccel"], label: t("off") },
+                    { value: "balanced" as ImageSettings["imgAccel"], label: t("imgAccelBalanced") },
+                    { value: "fast" as ImageSettings["imgAccel"], label: t("imgAccelFast") },
+                  ]}
+                />
+              </div>
               {settings.imgSeedLock && (
                 <label className="is-field">
                   <span>{t("imgSeed")}</span>
@@ -836,7 +849,7 @@ export function ImageStudio({
                       title={t("imgSeedDice")}
                       onClick={() => onSettings({ imgSeed: Math.floor(Math.random() * 4294967295) })}
                     >
-                      🎲
+                      <Icon name="refresh" size={13} strokeWidth={1.9} />
                     </button>
                   </span>
                 </label>

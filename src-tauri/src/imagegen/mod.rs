@@ -552,11 +552,20 @@ mod tests {
         eprintln!("loaded {} as {:?}; progress ticks {}", info.name, info.image.as_ref().map(|i| &i.engine_version), fracs.lock().unwrap().len());
         let engine = backend.as_image().expect("an image engine");
         let out = std::env::temp_dir().join(format!("chaty-sd-e2e-{}", std::process::id()));
+        // Small and quick by default; `CHATY_TEST_SD_SIZE` / `CHATY_TEST_SD_STEPS`
+        // (0 = the model's own) to see what it draws at real settings.
+        let env_num = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
+        let side = env_num("CHATY_TEST_SD_SIZE").unwrap_or(256);
+        let steps = match env_num("CHATY_TEST_SD_STEPS") {
+            Some(0) => info.image.as_ref().map(|i| i.defaults.steps).unwrap_or(20),
+            Some(n) => n,
+            None => info.image.as_ref().map(|i| i.defaults.steps.min(4)).unwrap_or(4),
+        };
         let params = GenerateParams {
-            prompt: "a lighthouse at dusk".into(),
-            width: 256,
-            height: 256,
-            steps: info.image.as_ref().map(|i| i.defaults.steps.min(4)).unwrap_or(4),
+            prompt: std::env::var("CHATY_TEST_SD_PROMPT").unwrap_or_else(|_| "a lighthouse at dusk".into()),
+            width: side,
+            height: side,
+            steps,
             cfg_scale: info.image.as_ref().map(|i| i.defaults.cfg_scale).unwrap_or(1.0),
             seed: 1,
             ..Default::default()
@@ -573,7 +582,13 @@ mod tests {
         assert!(Path::new(&result.images[0].0).is_file());
         assert!(stages.contains(&"sample".to_string()) && stages.contains(&"decode".to_string()), "{stages:?}");
         backend.unload();
-        std::fs::remove_dir_all(&out).ok();
+        // `CHATY_TEST_SD_KEEP=1` keeps the picture, to look at.
+        if std::env::var_os("CHATY_TEST_SD_KEEP").is_some() {
+            eprintln!("kept {} ({} ms)", result.images[0].0, result.elapsed_ms);
+            eprintln!("info {}", serde_json::to_string(&info).unwrap_or_default());
+        } else {
+            std::fs::remove_dir_all(&out).ok();
+        }
     }
 
     #[test]

@@ -21,6 +21,9 @@ export function Select<T extends string | number>({
   ariaLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
+  // Opens upward when the window has no room below — a menu in a popover
+  // over the composer would otherwise run off the bottom of the window.
+  const [up, setUp] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const current = options.find((o) => o.value === value);
 
@@ -41,7 +44,7 @@ export function Select<T extends string | number>({
   }, [open]);
 
   return (
-    <div className={`csel${open ? " open" : ""}${className ? " " + className : ""}`} ref={rootRef}>
+    <div className={`csel${open ? " open" : ""}${up ? " up" : ""}${className ? " " + className : ""}`} ref={rootRef}>
       <button
         type="button"
         className="csel-trigger"
@@ -49,7 +52,16 @@ export function Select<T extends string | number>({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}
-        onClick={() => !disabled && setOpen((o) => !o)}
+        onClick={() => {
+          if (disabled) return;
+          if (!open && rootRef.current) {
+            // The menu is at most 260px tall (.csel-menu).
+            const r = rootRef.current.getBoundingClientRect();
+            const below = window.innerHeight - r.bottom;
+            setUp(below < 272 && r.top > below);
+          }
+          setOpen((o) => !o);
+        }}
       >
         <span className="csel-value">{current?.label ?? ""}</span>
         <svg className="csel-chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
