@@ -197,6 +197,137 @@ const CODE_SESSIONS = [
   { id: "cs2", title: "Add a README to the project", workspace: "/Users/dev/projects/parser-kit", updatedAt: now - 86400e3 },
 ];
 
+// ---- Image studio fixtures ----
+const IMAGE_MODEL = {
+  name: "qwen-image-2.1-Q4_K_M",
+  path: "/models/Qwen-Image-2.1/qwen-image-2.1-Q4_K_M.gguf",
+  backend: "sd.cpp",
+  loaded: true,
+  arch: "Qwen-Image 2.1",
+  sizeMb: 10900,
+  paramsB: 7.1,
+  gpuLayers: -1,
+  gpuName: "Apple M4 Pro",
+  modelName: "qwen-image-2.1-Q4_K_M",
+  quant: "Q4_K_M",
+  hasChatTemplate: false,
+  supportsThinking: false,
+  thinkSwitch: false,
+  supportsTools: false,
+  multimodal: false,
+  visionReady: false,
+  speculative: false,
+  speculativeOn: false,
+  kind: "image",
+  image: {
+    family: "qwen-image-2.1",
+    familyName: "Qwen-Image 2.1",
+    engineVersion: "Qwen Image 2.1",
+    components: [
+      { role: "vae", path: "/models/Qwen-Image-2.1/qwen_image_2.1_vae_bf16.safetensors", sizeMb: 648, source: "folder" },
+      { role: "llm", path: "/models/Qwen-Image-2.1/Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf", sizeMb: 4911, source: "folder" },
+      { role: "llmVision", path: "/models/Qwen-Image-2.1/mmproj-F16.gguf", sizeMb: 1106, source: "folder" },
+    ],
+    defaults: { steps: 20, cfgScale: 6, guidance: null, sampler: "euler", scheduler: "", flowShift: 0, baseSize: 1024, align: 32, negativePrompt: true },
+    edits: true,
+    defaultSampler: "euler",
+    defaultScheduler: "simple",
+    device: "Apple M4 Pro",
+    onCpu: false,
+  },
+};
+
+/** A picture for a mock image path: a landscape whose hue follows the name. */
+function mockPicture(path: string, blur = 0): string {
+  let h = 0;
+  for (const c of path) h = (h * 31 + c.charCodeAt(0)) % 360;
+  const sky1 = `hsl(${h},70%,72%)`;
+  const sky2 = `hsl(${(h + 40) % 360},60%,86%)`;
+  const hill = `hsl(${(h + 150) % 360},35%,45%)`;
+  const hill2 = `hsl(${(h + 170) % 360},40%,30%)`;
+  const f = blur ? `<filter id='b'><feGaussianBlur stdDeviation='${blur}'/></filter>` : "";
+  const g = blur ? " filter='url(%23b)'" : "";
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='1024' height='1024'><defs>${f}<linearGradient id='s' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='${sky1}'/><stop offset='1' stop-color='${sky2}'/></linearGradient></defs><g${g}><rect width='1024' height='1024' fill='url(%23s)'/><circle cx='760' cy='230' r='90' fill='%23fff3c4'/><path d='M0 700 L300 430 L520 640 L720 480 L1024 720 L1024 1024 L0 1024 Z' fill='${hill}'/><path d='M0 830 L240 640 L560 850 L1024 700 L1024 1024 L0 1024 Z' fill='${hill2}'/></g></svg>`;
+  return "data:image/svg+xml;utf8," + svg.replace(/#/g, "%23");
+}
+
+type MockRound = {
+  id: string;
+  prompt: string;
+  negativePrompt: string;
+  params: Record<string, unknown>;
+  images: { path: string; width: number; height: number; seed: number }[];
+  model: string;
+  family: string;
+  createdAt: number;
+  elapsedMs: number;
+  sessionId: string;
+  parentId: string | null;
+};
+type MockSession = { id: string; title: string; createdAt: number; updatedAt: number; pinned: boolean; draft: string };
+
+// Image sessions: a single-round one, and a multi-turn edit (four cats, then
+// one of them given a straw hat).
+const IMAGE_SESSIONS: MockSession[] = [
+  { id: "is1", title: "A neon sign that reads \"LATE NIGHT DINER\"", createdAt: now - 20 * 60e3, updatedAt: now - 20 * 60e3, pinned: false, draft: "" },
+  { id: "is2", title: "水彩风格的橘猫趴在洒满阳光的窗台上，旁边一盆薄荷", createdAt: now - 26 * 3600e3, updatedAt: now - 25 * 3600e3, pinned: false, draft: "" },
+];
+const IMAGE_ROUNDS: MockRound[] = [
+  {
+    id: "ih1",
+    prompt: "A neon sign that reads \"LATE NIGHT DINER\" on a rainy street corner, reflections on wet pavement, cinematic",
+    negativePrompt: "",
+    params: { width: 1024, height: 1024, steps: 20, cfgScale: 6, sampler: "euler", batchCount: 1 },
+    images: [{ path: "/mock/images/diner.png", width: 1024, height: 1024, seed: 3141592 }],
+    model: "qwen-image-2.1-Q4_K_M",
+    family: "qwen-image-2.1",
+    createdAt: now - 20 * 60e3,
+    elapsedMs: 41200,
+    sessionId: "is1",
+    parentId: null,
+  },
+  {
+    id: "ih2",
+    prompt: "水彩风格的橘猫趴在洒满阳光的窗台上，旁边一盆薄荷",
+    negativePrompt: "模糊，变形",
+    params: { width: 1184, height: 896, steps: 20, cfgScale: 6, sampler: "euler", batchCount: 4 },
+    images: [
+      { path: "/mock/images/cat-1.png", width: 1184, height: 896, seed: 42 },
+      { path: "/mock/images/cat-2.png", width: 1184, height: 896, seed: 43 },
+      { path: "/mock/images/cat-3.png", width: 1184, height: 896, seed: 44 },
+      { path: "/mock/images/cat-4.png", width: 1184, height: 896, seed: 45 },
+    ],
+    model: "qwen-image-2.1-Q4_K_M",
+    family: "qwen-image-2.1",
+    createdAt: now - 26 * 3600e3,
+    elapsedMs: 158000,
+    sessionId: "is2",
+    parentId: null,
+  },
+  {
+    id: "ih3",
+    prompt: "给第一只猫戴上一顶小草帽，其余保持不变",
+    negativePrompt: "",
+    params: { width: 1184, height: 896, steps: 20, cfgScale: 6, sampler: "euler", batchCount: 1, refImages: ["/mock/images/cat-1.png"] },
+    images: [{ path: "/mock/images/cat-hat.png", width: 1184, height: 896, seed: 777 }],
+    model: "z_image_turbo-Q4_K",
+    family: "z-image-turbo",
+    createdAt: now - 25 * 3600e3,
+    elapsedMs: 52000,
+    sessionId: "is2",
+    parentId: "ih2",
+  },
+];
+
+function mockSessionList() {
+  return [...IMAGE_SESSIONS]
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt)
+    .map(({ draft: _d, ...s }) => s);
+}
+
+// Which model the preview has "loaded": ?model=image starts in the studio.
+let CURRENT: unknown = new URLSearchParams(window.location.search).get("model") === "image" ? IMAGE_MODEL : MODEL;
+
 /** Command → canned response. Anything unlisted returns a benign default. */
 // Session dir grants (out-of-workspace access) — lets the grant pipeline be
 // exercised end-to-end in the browser preview.
@@ -207,7 +338,160 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
   switch (cmd) {
     // ---- model / hardware ----
     case "get_model":
-      return MODEL;
+      return CURRENT;
+    case "load_model":
+      CURRENT = String(args?.path ?? "").includes("Qwen-Image") ? IMAGE_MODEL : MODEL;
+      return CURRENT;
+    case "eject_model":
+      CURRENT = null;
+      return null;
+    case "image_model_probe": {
+      const p = String(args?.path ?? "");
+      const lacks = p.includes("Z-Image") && !(args?.components as Record<string, string> | null)?.llm;
+      return {
+        path: p.includes("Z-Image") ? "/models/Z-Image-Turbo/z_image_turbo-Q4_K.gguf" : IMAGE_MODEL.path,
+        family: p.includes("Z-Image") ? "z-image-turbo" : "qwen-image-2.1",
+        familyName: p.includes("Z-Image") ? "Z-Image Turbo" : "Qwen-Image 2.1",
+        allInOne: false,
+        paramsB: p.includes("Z-Image") ? 6.2 : 7.1,
+        quant: "Q4_K_M",
+        sizeMb: 4200,
+        components: lacks
+          ? [{ role: "vae", path: "/models/Z-Image-Turbo/ae.safetensors", sizeMb: 320, source: "folder" }]
+          : IMAGE_MODEL.image.components,
+        missing: lacks ? ["llm"] : [],
+        suggestions: lacks ? [{ role: "llm", repo: "unsloth/Qwen3-4B-Instruct-2507-GGUF", file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", size: 2.5e9 }] : [],
+        requires: ["vae", "llm"],
+        optional: p.includes("Z-Image") ? [] : ["llmVision"],
+        defaults: IMAGE_MODEL.image.defaults,
+        edits: !p.includes("Z-Image"),
+      };
+    }
+    case "image_session_list":
+      return mockSessionList();
+    case "image_session_get": {
+      const sess = IMAGE_SESSIONS.find((x) => x.id === args?.id);
+      if (!sess) return null;
+      const { draft, ...session } = sess;
+      const records = IMAGE_ROUNDS.filter((r) => r.sessionId === sess.id).sort((a, b) => a.createdAt - b.createdAt);
+      return { session, draft, records };
+    }
+    case "image_session_save": {
+      const id = String(args?.id);
+      const title = String(args?.title ?? "");
+      const sess = IMAGE_SESSIONS.find((x) => x.id === id);
+      if (sess) Object.assign(sess, { title, updatedAt: Date.now() });
+      else IMAGE_SESSIONS.push({ id, title, createdAt: Date.now(), updatedAt: Date.now(), pinned: false, draft: "" });
+      return null;
+    }
+    case "image_session_draft": {
+      const sess = IMAGE_SESSIONS.find((x) => x.id === args?.id);
+      if (sess) sess.draft = String(args?.draft ?? "");
+      return null;
+    }
+    case "image_session_rename": {
+      const sess = IMAGE_SESSIONS.find((x) => x.id === args?.id);
+      if (sess) sess.title = String(args?.title ?? sess.title);
+      return null;
+    }
+    case "image_session_set_pinned": {
+      const sess = IMAGE_SESSIONS.find((x) => x.id === args?.id);
+      if (sess) sess.pinned = !!args?.pinned;
+      return null;
+    }
+    case "image_session_delete": {
+      const i = IMAGE_SESSIONS.findIndex((x) => x.id === args?.id);
+      if (i >= 0) IMAGE_SESSIONS.splice(i, 1);
+      for (let k = IMAGE_ROUNDS.length - 1; k >= 0; k--) if (IMAGE_ROUNDS[k].sessionId === args?.id) IMAGE_ROUNDS.splice(k, 1);
+      return null;
+    }
+    case "image_session_search": {
+      const q = String(args?.query ?? "").toLowerCase();
+      return [...new Set(IMAGE_ROUNDS.filter((r) => r.prompt.toLowerCase().includes(q)).map((r) => r.sessionId))];
+    }
+    case "image_generation_delete": {
+      const i = IMAGE_ROUNDS.findIndex((r) => r.id === args?.id);
+      if (i >= 0) IMAGE_ROUNDS.splice(i, 1);
+      return null;
+    }
+    case "image_history_clear":
+      IMAGE_SESSIONS.length = 0;
+      IMAGE_ROUNDS.length = 0;
+      return null;
+    case "image_cancel":
+    case "image_copy":
+      return null;
+    case "image_attach":
+      return null;
+    case "image_output_dir":
+      return "/Users/dev/Library/Application Support/com.chaty.desktop/images";
+    case "image_data_url":
+      if (String(args?.path ?? "").startsWith("/mock/")) return mockPicture(String(args?.path));
+      return null;
+    // A generation: prompt, a few denoising steps with sharpening previews,
+    // decode, then the pictures — the whole progress UI, in the browser.
+    case "image_generate": {
+      const ch = args?.onEvent as { onmessage?: (ev: unknown) => void } | undefined;
+      const emit = (ev: unknown) => ch?.onmessage?.(ev);
+      const req = args?.request as { prompt: string; negativePrompt: string; width: number; height: number; steps: number; cfgScale: number; sampler: string; batchCount: number; seed: number; sessionId?: string | null; parentId?: string | null };
+      const id = `mock-${Date.now()}`;
+      const startedAt = Date.now();
+      const seed0 = req.seed >= 0 ? req.seed : Math.floor(Math.random() * 4e9);
+      const n = Math.max(1, req.batchCount);
+      const steps = Math.max(1, Math.min(req.steps, 12));
+      const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      return (async () => {
+        emit({ type: "started", id, request: req, startedAt });
+        emit({ type: "engine", event: { type: "stage", stage: "encode", index: 0, count: n } });
+        const seen = IMAGE_ROUNDS.some((r) => r.prompt === req.prompt);
+        if (seen) emit({ type: "engine", event: { type: "cache", kind: "conditioning", skipped: 0, total: 0 } });
+        await wait(seen ? 100 : 600);
+        const images: { path: string; width: number; height: number; seed: number }[] = [];
+        for (let b = 0; b < n; b++) {
+          emit({ type: "engine", event: { type: "stage", stage: "sample", index: b, count: n, seed: seed0 + b } });
+          for (let st = 0; st <= steps; st++) {
+            emit({ type: "engine", event: { type: "progress", stage: "sample", step: st, steps, secs: st ? 0.45 : 0 } });
+            if (st) emit({ type: "engine", event: { type: "preview", step: st, width: 128, height: 128, dataUrl: mockPicture(`/mock/images/${id}-${b}.png`, 40 - (36 * st) / steps) } });
+            await wait(450);
+          }
+          const accel = (req as { accel?: string }).accel;
+          if (accel === "balanced" || accel === "fast") {
+            emit({ type: "engine", event: { type: "cache", kind: "steps", skipped: accel === "fast" ? Math.floor(steps / 2) : Math.floor(steps / 4), total: steps } });
+          }
+        }
+        emit({ type: "engine", event: { type: "stage", stage: "decode", index: 0, count: n } });
+        await wait(500);
+        for (let b = 0; b < n; b++) {
+          const im = { path: `/mock/images/${id}-${b}.png`, width: req.width, height: req.height, seed: seed0 + b };
+          images.push(im);
+          emit({ type: "engine", event: { type: "image", index: b, ...im } });
+        }
+        emit({ type: "engine", event: { type: "progress", stage: "decode", step: n, steps: n, secs: 0 } });
+        const sessionId = req.sessionId || id;
+        let sess = IMAGE_SESSIONS.find((x) => x.id === sessionId);
+        if (!sess) {
+          sess = { id: sessionId, title: req.prompt.slice(0, 40), createdAt: startedAt, updatedAt: startedAt, pinned: false, draft: "" };
+          IMAGE_SESSIONS.push(sess);
+        }
+        sess.updatedAt = Date.now();
+        const record: MockRound = {
+          id,
+          prompt: req.prompt,
+          negativePrompt: req.negativePrompt,
+          params: req,
+          images,
+          model: IMAGE_MODEL.name,
+          family: "qwen-image-2.1",
+          createdAt: startedAt,
+          elapsedMs: Date.now() - startedAt,
+          sessionId,
+          parentId: req.parentId ?? null,
+        };
+        IMAGE_ROUNDS.push(record);
+        emit({ type: "done", record, cancelled: false });
+        return record;
+      })();
+    }
     case "list_models":
       return [
         { name: MODEL.name, path: MODEL.path, sizeMb: MODEL.sizeMb, format: "gguf" },
@@ -215,8 +499,11 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         { name: "Gemma-4-E4B-Q8.gguf", path: "/models/gemma4.gguf", sizeMb: 4900, mmproj: "/models/gemma4/mmproj-F16.gguf", format: "gguf", vision: true },
         { name: "Qwen3.5-2B-4bit-MLX", path: "/models/Qwen3.5-2B-4bit-MLX", sizeMb: 1600, format: "mlx", vision: true },
         { name: "Qwen3-4B-4bit-MLX", path: "/models/Qwen3-4B-4bit-MLX", sizeMb: 2200, format: "mlx" },
+        { name: "qwen-image-2.1-Q4_K_M", path: IMAGE_MODEL.path, sizeMb: 10900, format: "gguf", kind: "image", family: "Qwen-Image 2.1", missing: [] },
+        { name: "z_image_turbo-Q4_K", path: "/models/Z-Image-Turbo/z_image_turbo-Q4_K.gguf", sizeMb: 4200, format: "gguf", kind: "image", family: "Z-Image Turbo", missing: ["llm"] },
       ];
     case "image_thumb":
+      if (String(args?.path ?? "").startsWith("/mock/")) return mockPicture(String(args?.path));
       return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='220'><defs><linearGradient id='s' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%23aee3f5'/><stop offset='1' stop-color='%23e8f6dd'/></linearGradient></defs><rect width='320' height='220' fill='url(%23s)'/><circle cx='250' cy='58' r='26' fill='%23ffd66e'/><path d='M0 160 L90 92 L150 150 L210 105 L320 175 L320 220 L0 220 Z' fill='%236fae7a'/><path d='M0 190 L70 140 L160 195 L320 150 L320 220 L0 220 Z' fill='%23477a54'/></svg>";
     case "get_hardware_info":
       return { cpu: "Apple M4 Pro (14 核)", cpuThreads: 14, ramMb: 49152, gpuBackend: "Metal", gpu: { name: "Apple M4 Pro", vramMb: 40200 } };
@@ -242,7 +529,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return null;
 
     case "data_stats":
-      return { conversations: 5, messages: 48, codeSessions: 2, dbBytes: 2_400_000 };
+      return { conversations: 5, messages: 48, codeSessions: 2, images: 5, dbBytes: 2_400_000 };
 
     // ---- extended web tools (Code mode) ----
     case "site_search": {

@@ -122,6 +122,8 @@ pub fn mock_info(n_ctx: Option<u32>) -> super::ModelInfo {
         multi_image: true,
         mmproj: None,
         warning: None,
+        kind: "chat".into(),
+        image: None,
     }
 }
 

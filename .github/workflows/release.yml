@@ -63,12 +63,18 @@ jobs:
           [ -n "$SIDE_XCODE" ] || SIDE_XCODE=$(dirname "$(dirname "$(xcode-select -p)")")
           echo "sidecar Xcode: $SIDE_XCODE"
           DEVELOPER_DIR="$SIDE_XCODE/Contents/Developer" ./scripts/build-mlx-sidecar.sh
+      - name: Build image engine sidecar (chaty-sd, Metal)
+        # stable-diffusion.cpp in its own process (it carries its own ggml,
+        # which cannot share a binary with llama.cpp's). Staged into
+        # src-tauri/binaries/ for externalBin.
+        run: ./scripts/build-sd-sidecar.sh metal
       - name: Build .app (Metal)
         # Only the "app" bundle: Tauri's bundle_dmg.sh drives Finder via
         # AppleScript, which fails on headless CI runners. The extra --config
-        # layer bundles the MLX sidecar (kept out of the base config so local
-        # `tauri dev` works without Xcode).
-        run: npm run tauri build -- --bundles app --config src-tauri/tauri.mlx.conf.json
+        # layer bundles the MLX and image sidecars (kept out of the base config
+        # so local `tauri dev` works without them). One layer naming both:
+        # config layers merge arrays by replacing them.
+        run: npm run tauri build -- --bundles app --config src-tauri/tauri.mlx-sd.conf.json
       - name: Bundle MLX resource bundles (metallib) + re-sign
         run: ./scripts/bundle-mlx-resources.sh src-tauri/target/release/bundle/macos/Chaty.app
       - name: Package .dmg (headless hdiutil)
@@ -120,8 +126,15 @@ jobs:
           cmake -S SPIRV-Headers -B SPIRV-Headers/build
           cmake --install SPIRV-Headers/build --prefix "$env:VULKAN_SDK"
       - run: npm ci
+      - name: Build image engine sidecar (chaty-sd, Vulkan)
+        shell: pwsh
+        run: .\scripts\build-sd-sidecar.ps1 -Backend vulkan
+        env:
+          CMAKE_PREFIX_PATH: ${{ env.VULKAN_SDK }}
       - name: Build chaty.exe (Vulkan, no bundler)
-        run: npm run tauri build -- --no-bundle
+        # The sd config layer makes tauri-build copy chaty-sd.exe next to
+        # chaty.exe in the target dir, where the installer picks it up.
+        run: npm run tauri build -- --no-bundle --config src-tauri/tauri.sd.conf.json
         env:
           # newer llama.cpp's Vulkan backend does find_package(SPIRV-Headers/-Tools);
           # point CMake at the Vulkan SDK, which ships those config packages.
@@ -205,8 +218,10 @@ jobs:
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad gstreamer1.0-gl
       - run: npm ci
+      - name: Build image engine sidecar (chaty-sd, Vulkan)
+        run: ./scripts/build-sd-sidecar.sh vulkan
       - name: Build AppImage (Vulkan)
-        run: npm run tauri build -- --verbose --bundles appimage
+        run: npm run tauri build -- --verbose --bundles appimage --config src-tauri/tauri.sd.conf.json
         env:
           # linuxdeploy is itself an AppImage; runners have no FUSE by
           # default (round two of the first Linux release found this).

@@ -36,7 +36,16 @@ import { loadMcpServers, saveMcpServers, syncMcpServers, type McpServerCfg } fro
 import catalog from "../lib/mcpStore.catalog.json";
 import { disabledSkills, officialSkills, setDisabledSkills } from "../lib/skillFiles";
 import { skillsDeleteUser, skillsImport, skillsListUser, type UserSkill } from "../lib/ipc";
-import { fmtBytes } from "../lib/fmt";
+import { fmtBytes, fmtGbFromMb } from "../lib/fmt";
+import {
+  ASPECTS,
+  BASE_SIZES,
+  IMAGE_SETTINGS_DEFAULTS,
+  SAMPLERS,
+  SCHEDULERS,
+  type ImageSettings,
+} from "../lib/imageGen";
+import { imageHistoryClear, imageOutputDir, type ModelInfo } from "../lib/ipc";
 import logoUrl from "../assets/logo.png";
 
 export interface PromptPreset {
@@ -46,7 +55,10 @@ export interface PromptPreset {
 
 export type Theme = "dark" | "light" | "system";
 
-export interface GenSettings {
+/** Everything Settings stores. The image studio's part (ImageSettings, all
+ *  `img…`) lives beside the chat settings: which of them the panel shows
+ *  follows the loaded model, but a setting outlives a model switch. */
+export interface GenSettings extends ImageSettings {
   theme: Theme;
   systemPrompt: string;
   temperature: number;
@@ -155,6 +167,7 @@ export interface GenSettings {
 }
 
 export const defaultSettings: GenSettings = {
+  ...IMAGE_SETTINGS_DEFAULTS,
   theme: "dark",
   systemPrompt: "",
   temperature: 0.7,
@@ -255,7 +268,17 @@ export function parseStops(raw: string): string[] {
     .filter(Boolean);
 }
 
-type CatId = "general" | "chat" | "sampling" | "model" | "code" | "voice" | "data" | "about";
+type CatId =
+  | "general"
+  | "chat"
+  | "sampling"
+  | "model"
+  | "code"
+  | "voice"
+  | "imageGen"
+  | "imageModel"
+  | "data"
+  | "about";
 
 /** Tool-call formats by the family that trained them. */
 const TOOL_FORMAT_LABEL: Record<"xml" | "json" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm", string> = {
@@ -275,6 +298,8 @@ const CAT_ICONS: Record<CatId, string> = {
   model: "M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4m0 0l8-4m-8 4v10",
   code: "M8 6l-6 6 6 6M16 6l6 6-6 6",
   voice: "M12 3a3 3 0 013 3v6a3 3 0 11-6 0V6a3 3 0 013-3zM19 11a7 7 0 11-14 0M12 18v3",
+  imageGen: "M4 5h16v14H4zM4 15l4.5-4.5 4 4 2.5-2.5L20 17M15.5 9.5h.01",
+  imageModel: "M12 2.5l2.2 6.3L20.5 11l-6.3 2.2L12 19.5l-2.2-6.3L3.5 11l6.3-2.2z",
   data: "M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3",
   about: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 8h.01M12 12v5",
 };
@@ -289,6 +314,7 @@ interface StatsView {
   convs: number;
   msgs: number;
   code: number;
+  images: number;
   db: number;
   models: number;
   modelBytes: number;
@@ -401,6 +427,11 @@ export function SettingsPanel({
   onModelsChanged,
   reloading = false,
   onDataCleared,
+  mode = "chat",
+  imageModel,
+  focusCat,
+  onManageComponents,
+  onImageHistoryCleared,
 }: {
   open: boolean;
   value: GenSettings;
@@ -425,6 +456,18 @@ export function SettingsPanel({
   reloading?: boolean;
   /** Called after the user clears all conversations, so the app can reset. */
   onDataCleared?: () => void;
+  /** "image" when an image model is loaded: the panel offers the image
+   *  studio's settings and hides the ones only a language model uses. */
+  mode?: "chat" | "image";
+  /** The loaded image model — its recommended values label the "auto"
+   *  choices, and its companion files are listed. */
+  imageModel?: ModelInfo | null;
+  /** Open on this category (the studio's "more settings" link). */
+  focusCat?: "imageGen" | "imageModel" | null;
+  /** Show the loaded image model's companion files dialog. */
+  onManageComponents?: () => void;
+  /** The image history was cleared here. */
+  onImageHistoryCleared?: () => void;
 }) {
   const { t, lang, setLang } = useI18n();
   const confirm = useConfirm();
@@ -540,6 +583,7 @@ export function SettingsPanel({
           convs: ds.conversations,
           msgs: ds.messages,
           code: ds.codeSessions,
+          images: ds.images ?? 0,
           db: ds.dbBytes,
           models: models.length,
           // sizeMb is mebibytes (bytes / 1024²) — scaling it by 1e6 quietly
@@ -562,9 +606,33 @@ export function SettingsPanel({
       .catch((e) => console.error("models root:", e));
   };
   useEffect(() => {
-    if (open && cat === "model") refreshModelsRoot();
+    if (open && (cat === "model" || cat === "imageModel")) refreshModelsRoot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, cat]);
+
+  // The studio's "more settings" link opens straight onto its category; and a
+  // model switch that takes a category away lands back on General.
+  useEffect(() => {
+    if (open && focusCat) setCat(focusCat);
+  }, [open, focusCat]);
+  useEffect(() => {
+    const has = (id: CatId) =>
+      mode === "image" ? ["general", "imageGen", "imageModel", "data", "about"].includes(id) : !["imageGen", "imageModel"].includes(id);
+    if (!has(cat)) setCat("general");
+  }, [mode, cat]);
+
+  // Where pictures are saved when no folder is chosen, for the hint.
+  const [defaultImageDir, setDefaultImageDir] = useState("");
+  useEffect(() => {
+    if (open && cat === "imageGen" && !defaultImageDir) {
+      void imageOutputDir().then((d) => setDefaultImageDir(d ?? "")).catch(() => {});
+    }
+  }, [open, cat, defaultImageDir]);
+
+  async function chooseImageDir() {
+    const dir = await openDialog({ directory: true });
+    if (typeof dir === "string") set("imgOutputDir", dir);
+  }
 
   /** Pick a folder for models. The backend refuses one it cannot write to, and
    *  that refusal is shown here rather than surfacing on a later download. */
@@ -776,18 +844,131 @@ export function SettingsPanel({
     setAllowInput("");
   };
 
-  const cats: { id: CatId; label: string }[] = [
-    { id: "general", label: t("setCatGeneral") },
-    { id: "chat", label: t("setCatChat") },
-    { id: "sampling", label: t("setCatSampling") },
-    { id: "model", label: t("setCatModel") },
-    { id: "code", label: "Code" },
-    { id: "voice", label: t("setCatVoice") },
-    { id: "data", label: t("setCatData") },
-    { id: "about", label: t("setCatAbout") },
-  ];
+  // With an image model loaded the panel is the image studio's: its own two
+  // categories, the general ones, and none of what only a language model
+  // reads (sampling, context, thinking, tools, voice, Code).
+  const cats: { id: CatId; label: string }[] =
+    mode === "image"
+      ? [
+          { id: "general", label: t("setCatGeneral") },
+          { id: "imageGen", label: t("setCatImageGen") },
+          { id: "imageModel", label: t("setCatImageModel") },
+          { id: "data", label: t("setCatData") },
+          { id: "about", label: t("setCatAbout") },
+        ]
+      : [
+          { id: "general", label: t("setCatGeneral") },
+          { id: "chat", label: t("setCatChat") },
+          { id: "sampling", label: t("setCatSampling") },
+          { id: "model", label: t("setCatModel") },
+          { id: "code", label: "Code" },
+          { id: "voice", label: t("setCatVoice") },
+          { id: "data", label: t("setCatData") },
+          { id: "about", label: t("setCatAbout") },
+        ];
 
   if (!mounted) return null;
+
+  // Where pictures go when no folder is chosen — shown as the path hint.
+  const imgDefaults = imageModel?.image?.defaults ?? null;
+  const imgInfo = imageModel?.image ?? null;
+  const roleLabel: Record<string, string> = {
+    vae: t("imgRoleVae"),
+    llm: t("imgRoleLlm"),
+    llmVision: t("imgRoleLlmVision"),
+    clipL: t("imgRoleClipL"),
+    clipG: t("imgRoleClipG"),
+    t5xxl: t("imgRoleT5"),
+  };
+  const baseName = (p: string) => p.split(/[/\\]/).pop() || p;
+
+  // Where models live and how they are found — the same whichever kind of
+  // model is loaded, so both model categories show these rows.
+  const modelLibraryRows = (
+    <>
+      <SetRow label={t("setAutoLoadLast")} hint={t("setAutoLoadLastHint")}>
+        <Switch on={value.autoLoadLast} onToggle={() => set("autoLoadLast", !value.autoLoadLast)} />
+      </SetRow>
+      <SetRow label={t("modelsFolder")} hint={t("modelsFolderHint")}>
+        {/* Three independent actions, not a choice between three
+            states — `lang-switch` would draw them as one segmented
+            control with an active segment, which is a lie about what
+            they do. `row-btns` is what the voice-sample buttons use. */}
+        <div className="row-btns">
+          <button type="button" className="data-btn" onClick={() => void openModelsDir().catch(console.error)}>
+            {t("openModelsDir")}
+          </button>
+          <button type="button" className="data-btn" onClick={() => void chooseModelsFolder()}>
+            {t("changeModelsDir")}
+          </button>
+          {modelsRoot?.custom && (
+            <button type="button" className="data-btn" onClick={() => void resetModelsFolder()}>
+              {t("resetModelsDir")}
+            </button>
+          )}
+        </div>
+      </SetRow>
+      {modelsRoot && (
+        <div className="settings-hint">
+          <code>{modelsRoot.custom ?? modelsRoot.effective}</code>
+          {modelsRoot.custom && !modelsRoot.available && (
+            <> — {t("modelsDirMissing")}</>
+          )}
+        </div>
+      )}
+      {rootHidden > 0 && (
+        <div className="settings-hint">{t("modelsDirHidden").replace("{n}", String(rootHidden))}</div>
+      )}
+      {rootError && <div className="settings-hint settings-error">{rootError}</div>}
+
+      <label className="field">
+        <span><em className="has-tip" data-tip={t("tipHfEndpoint")}>{t("hfEndpoint")}</em></span>
+        <div className="lang-switch">
+          <button
+            type="button"
+            className={value.hfEndpoint === HF_ENDPOINT_OFFICIAL ? "active" : ""}
+            onClick={() => set("hfEndpoint", HF_ENDPOINT_OFFICIAL)}
+          >
+            {t("hfEndpointOfficial")}
+          </button>
+          <button
+            type="button"
+            className={value.hfEndpoint === HF_ENDPOINT_MIRROR ? "active" : ""}
+            onClick={() => set("hfEndpoint", HF_ENDPOINT_MIRROR)}
+          >
+            hf-mirror.com
+          </button>
+          <button
+            type="button"
+            className={
+              value.hfEndpoint !== HF_ENDPOINT_OFFICIAL && value.hfEndpoint !== HF_ENDPOINT_MIRROR
+                ? "active"
+                : ""
+            }
+            onClick={() => {
+              if (value.hfEndpoint === HF_ENDPOINT_OFFICIAL || value.hfEndpoint === HF_ENDPOINT_MIRROR) {
+                set("hfEndpoint", "https://");
+              }
+            }}
+          >
+            {t("hfEndpointCustom")}
+          </button>
+        </div>
+      </label>
+      {value.hfEndpoint !== HF_ENDPOINT_OFFICIAL && value.hfEndpoint !== HF_ENDPOINT_MIRROR && (
+        <div className="preset-add">
+          <input
+            type="text"
+            placeholder="https://…"
+            value={value.hfEndpoint}
+            onChange={(e) => set("hfEndpoint", e.target.value)}
+            spellCheck={false}
+          />
+        </div>
+      )}
+      <div className="settings-hint">{t("hfEndpointHint")}</div>
+    </>
+  );
 
   return createPortal(
     <>
@@ -1184,87 +1365,7 @@ export function SettingsPanel({
                   {reloading ? "…" : t("reloadApply")}
                 </button>
               )}
-              <SetRow label={t("setAutoLoadLast")} hint={t("setAutoLoadLastHint")}>
-                <Switch on={value.autoLoadLast} onToggle={() => set("autoLoadLast", !value.autoLoadLast)} />
-              </SetRow>
-              <SetRow label={t("modelsFolder")} hint={t("modelsFolderHint")}>
-                {/* Three independent actions, not a choice between three
-                    states — `lang-switch` would draw them as one segmented
-                    control with an active segment, which is a lie about what
-                    they do. `row-btns` is what the voice-sample buttons use. */}
-                <div className="row-btns">
-                  <button type="button" className="data-btn" onClick={() => void openModelsDir().catch(console.error)}>
-                    {t("openModelsDir")}
-                  </button>
-                  <button type="button" className="data-btn" onClick={() => void chooseModelsFolder()}>
-                    {t("changeModelsDir")}
-                  </button>
-                  {modelsRoot?.custom && (
-                    <button type="button" className="data-btn" onClick={() => void resetModelsFolder()}>
-                      {t("resetModelsDir")}
-                    </button>
-                  )}
-                </div>
-              </SetRow>
-              {modelsRoot && (
-                <div className="settings-hint">
-                  <code>{modelsRoot.custom ?? modelsRoot.effective}</code>
-                  {modelsRoot.custom && !modelsRoot.available && (
-                    <> — {t("modelsDirMissing")}</>
-                  )}
-                </div>
-              )}
-              {rootHidden > 0 && (
-                <div className="settings-hint">{t("modelsDirHidden").replace("{n}", String(rootHidden))}</div>
-              )}
-              {rootError && <div className="settings-hint settings-error">{rootError}</div>}
-
-              <label className="field">
-                <span><em className="has-tip" data-tip={t("tipHfEndpoint")}>{t("hfEndpoint")}</em></span>
-                <div className="lang-switch">
-                  <button
-                    type="button"
-                    className={value.hfEndpoint === HF_ENDPOINT_OFFICIAL ? "active" : ""}
-                    onClick={() => set("hfEndpoint", HF_ENDPOINT_OFFICIAL)}
-                  >
-                    {t("hfEndpointOfficial")}
-                  </button>
-                  <button
-                    type="button"
-                    className={value.hfEndpoint === HF_ENDPOINT_MIRROR ? "active" : ""}
-                    onClick={() => set("hfEndpoint", HF_ENDPOINT_MIRROR)}
-                  >
-                    hf-mirror.com
-                  </button>
-                  <button
-                    type="button"
-                    className={
-                      value.hfEndpoint !== HF_ENDPOINT_OFFICIAL && value.hfEndpoint !== HF_ENDPOINT_MIRROR
-                        ? "active"
-                        : ""
-                    }
-                    onClick={() => {
-                      if (value.hfEndpoint === HF_ENDPOINT_OFFICIAL || value.hfEndpoint === HF_ENDPOINT_MIRROR) {
-                        set("hfEndpoint", "https://");
-                      }
-                    }}
-                  >
-                    {t("hfEndpointCustom")}
-                  </button>
-                </div>
-              </label>
-              {value.hfEndpoint !== HF_ENDPOINT_OFFICIAL && value.hfEndpoint !== HF_ENDPOINT_MIRROR && (
-                <div className="preset-add">
-                  <input
-                    type="text"
-                    placeholder="https://…"
-                    value={value.hfEndpoint}
-                    onChange={(e) => set("hfEndpoint", e.target.value)}
-                    spellCheck={false}
-                  />
-                </div>
-              )}
-              <div className="settings-hint">{t("hfEndpointHint")}</div>
+              {modelLibraryRows}
             </>
           )}
 
@@ -1824,6 +1925,331 @@ export function SettingsPanel({
             </>
           )}
 
+
+          {cat === "imageGen" && (
+            <>
+              {!imgDefaults && <div className="settings-hint">{t("imgSetNoModel")}</div>}
+              <label className="field">
+                <span>{t("imgAspect")}</span>
+                <div className="lang-switch is-set-wrap">
+                  {ASPECTS.map((a) => (
+                    <button key={a} type="button" className={value.imgAspect === a ? "active" : ""} onClick={() => set("imgAspect", a)}>
+                      {a}
+                    </button>
+                  ))}
+                  <button type="button" className={value.imgAspect === "custom" ? "active" : ""} onClick={() => set("imgAspect", "custom")}>
+                    {t("imgAspectCustom")}
+                  </button>
+                </div>
+              </label>
+              {value.imgAspect === "custom" ? (
+                <div className="field">
+                  <span>{t("imgCustomSize")}</span>
+                  <div className="is-set-size">
+                    <input type="number" min={64} max={4096} step={imgDefaults?.align ?? 64} value={value.imgCustomW} onChange={(e) => set("imgCustomW", Number(e.target.value))} />
+                    <span>×</span>
+                    <input type="number" min={64} max={4096} step={imgDefaults?.align ?? 64} value={value.imgCustomH} onChange={(e) => set("imgCustomH", Number(e.target.value))} />
+                  </div>
+                  {imgDefaults && <div className="settings-hint">{t("imgAlignHint", { n: imgDefaults.align })}</div>}
+                </div>
+              ) : (
+                <label className="field">
+                  <span><em className="has-tip" data-tip={t("imgResolutionTip")}>{t("imgResolution")}</em></span>
+                  <div className="lang-switch is-set-wrap">
+                    <button type="button" className={value.imgBase <= 0 ? "active" : ""} onClick={() => set("imgBase", 0)}>
+                      {t("imgAuto")}{imgDefaults ? ` (${imgDefaults.baseSize})` : ""}
+                    </button>
+                    {BASE_SIZES.map((b) => (
+                      <button key={b} type="button" className={value.imgBase === b ? "active" : ""} onClick={() => set("imgBase", b)}>
+                        {b}
+                      </button>
+                    ))}
+                  </div>
+                </label>
+              )}
+
+              <LimitField
+                label={t("imgSteps")}
+                tip={t("imgStepsTip")}
+                offLabel={`${t("imgRecommended")}${imgDefaults ? ` ${imgDefaults.steps}` : ""}`}
+                onLabel={t("gpuCustom")}
+                off={value.imgSteps <= 0}
+                onOff={(o) => set("imgSteps", o ? 0 : imgDefaults?.steps ?? 20)}
+                value={value.imgSteps}
+              >
+                <input type="range" min={1} max={100} step={1} value={value.imgSteps > 0 ? value.imgSteps : imgDefaults?.steps ?? 20} onChange={(e) => set("imgSteps", Number(e.target.value))} />
+              </LimitField>
+              <LimitField
+                label="CFG"
+                tip={t("imgCfgTip")}
+                offLabel={`${t("imgRecommended")}${imgDefaults ? ` ${imgDefaults.cfgScale}` : ""}`}
+                onLabel={t("gpuCustom")}
+                off={value.imgCfg <= 0}
+                onOff={(o) => set("imgCfg", o ? 0 : imgDefaults?.cfgScale ?? 7)}
+                value={value.imgCfg}
+              >
+                <input type="range" min={1} max={20} step={0.5} value={value.imgCfg > 0 ? value.imgCfg : imgDefaults?.cfgScale ?? 7} onChange={(e) => set("imgCfg", Number(e.target.value))} />
+              </LimitField>
+              {imgDefaults?.guidance != null && (
+                <LimitField
+                  label={t("imgGuidance")}
+                  tip={t("imgGuidanceTip")}
+                  offLabel={`${t("imgRecommended")} ${imgDefaults.guidance}`}
+                  onLabel={t("gpuCustom")}
+                  off={value.imgGuidance <= 0}
+                  onOff={(o) => set("imgGuidance", o ? 0 : imgDefaults.guidance ?? 3.5)}
+                  value={value.imgGuidance}
+                >
+                  <input type="range" min={0.1} max={10} step={0.1} value={value.imgGuidance > 0 ? value.imgGuidance : imgDefaults.guidance} onChange={(e) => set("imgGuidance", Number(e.target.value))} />
+                </LimitField>
+              )}
+              <LimitField
+                label={t("imgFlowShift")}
+                tip={t("imgFlowShiftTip")}
+                offLabel={t("imgRecommended")}
+                onLabel={t("gpuCustom")}
+                off={value.imgFlowShift <= 0}
+                onOff={(o) => set("imgFlowShift", o ? 0 : imgDefaults?.flowShift || 3)}
+                value={value.imgFlowShift}
+              >
+                <input type="range" min={0.5} max={12} step={0.5} value={value.imgFlowShift > 0 ? value.imgFlowShift : imgDefaults?.flowShift || 3} onChange={(e) => set("imgFlowShift", Number(e.target.value))} />
+              </LimitField>
+              <SetRow label={t("imgSampler")} hint={t("imgSamplerHint")}>
+                <Select
+                  value={value.imgSampler}
+                  ariaLabel={t("imgSampler")}
+                  options={[
+                    { value: "", label: `${t("imgAuto")} (${imgDefaults?.sampler || imgInfo?.defaultSampler || "—"})` },
+                    ...SAMPLERS.map((x) => ({ value: x, label: x })),
+                  ]}
+                  onChange={(v) => set("imgSampler", v)}
+                />
+              </SetRow>
+              <SetRow label={t("imgScheduler")} hint={t("imgSchedulerHint")}>
+                <Select
+                  value={value.imgScheduler}
+                  ariaLabel={t("imgScheduler")}
+                  options={[
+                    { value: "", label: `${t("imgAuto")} (${imgDefaults?.scheduler || imgInfo?.defaultScheduler || "—"})` },
+                    ...SCHEDULERS.map((x) => ({ value: x, label: x })),
+                  ]}
+                  onChange={(v) => set("imgScheduler", v)}
+                />
+              </SetRow>
+              <label className="field">
+                <span>
+                  {t("imgBatch")} <b>{value.imgBatch}</b>
+                </span>
+                <input type="range" min={1} max={8} step={1} value={value.imgBatch} onChange={(e) => set("imgBatch", Number(e.target.value))} />
+              </label>
+              <SetRow label={t("imgSeed")} hint={t("imgSeedHint")}>
+                <div className="row-btns">
+                  <div className="lang-switch">
+                    <button type="button" className={!value.imgSeedLock ? "active" : ""} onClick={() => set("imgSeedLock", false)}>
+                      {t("imgSeedRandom")}
+                    </button>
+                    <button type="button" className={value.imgSeedLock ? "active" : ""} onClick={() => set("imgSeedLock", true)}>
+                      {t("imgSeedFixed")}
+                    </button>
+                  </div>
+                  {value.imgSeedLock && (
+                    <input className="is-set-seed" type="number" min={0} value={value.imgSeed} onChange={(e) => set("imgSeed", Math.max(0, Number(e.target.value) || 0))} />
+                  )}
+                </div>
+              </SetRow>
+              {(!imgDefaults || imgDefaults.negativePrompt) ? (
+                <label className="field">
+                  <span><em className="has-tip" data-tip={t("imgNegativeTip")}>{t("imgNegativeDefault")}</em></span>
+                  <textarea rows={2} placeholder={t("imgNegativePh")} value={value.imgNegative} onChange={(e) => set("imgNegative", e.target.value)} />
+                </label>
+              ) : (
+                <div className="settings-hint">{t("imgNegativeUnused")}</div>
+              )}
+              {(imgInfo?.family === "sd1" || imgInfo?.family === "sdxl") && (
+                <LimitField
+                  label="CLIP skip"
+                  tip={t("imgClipSkipTip")}
+                  offLabel={t("imgAuto")}
+                  onLabel={t("gpuCustom")}
+                  off={value.imgClipSkip <= 0}
+                  onOff={(o) => set("imgClipSkip", o ? -1 : 2)}
+                  value={value.imgClipSkip}
+                >
+                  <input type="range" min={1} max={12} step={1} value={value.imgClipSkip > 0 ? value.imgClipSkip : 2} onChange={(e) => set("imgClipSkip", Number(e.target.value))} />
+                </LimitField>
+              )}
+              <label className="field">
+                <span>
+                  <em className="has-tip" data-tip={t("imgStrengthHint")}>{t("imgStrength")}</em> <b>{value.imgStrength.toFixed(2)}</b>
+                </span>
+                <input type="range" min={0.05} max={1} step={0.05} value={value.imgStrength} onChange={(e) => set("imgStrength", Number(e.target.value))} />
+              </label>
+              <SetRow label={t("imgAccel")} hint={t("imgAccelHint")}>
+                <div className="lang-switch">
+                  <button type="button" className={value.imgAccel === "off" ? "active" : ""} onClick={() => set("imgAccel", "off")}>{t("off")}</button>
+                  <button type="button" className={value.imgAccel === "balanced" ? "active" : ""} onClick={() => set("imgAccel", "balanced")}>{t("imgAccelBalanced")}</button>
+                  <button type="button" className={value.imgAccel === "fast" ? "active" : ""} onClick={() => set("imgAccel", "fast")}>{t("imgAccelFast")}</button>
+                </div>
+              </SetRow>
+              <SetRow label={t("imgAutoChain")} hint={t("imgAutoChainHint")}>
+                <Switch on={value.imgAutoChain} onToggle={() => set("imgAutoChain", !value.imgAutoChain)} />
+              </SetRow>
+              <SetRow label={t("imgPreview")} hint={t("imgPreviewHint")}>
+                <div className="lang-switch">
+                  <button type="button" className={value.imgPreview === "proj" ? "active" : ""} onClick={() => set("imgPreview", "proj")}>{t("imgPreviewFast")}</button>
+                  <button type="button" className={value.imgPreview === "vae" ? "active" : ""} onClick={() => set("imgPreview", "vae")}>{t("imgPreviewExact")}</button>
+                  <button type="button" className={value.imgPreview === "none" ? "active" : ""} onClick={() => set("imgPreview", "none")}>{t("off")}</button>
+                </div>
+              </SetRow>
+              {value.imgPreview !== "none" && (
+                <label className="field">
+                  <span>
+                    {t("imgPreviewEvery")} <b>{value.imgPreviewInterval}</b>
+                  </span>
+                  <input type="range" min={1} max={10} step={1} value={value.imgPreviewInterval} onChange={(e) => set("imgPreviewInterval", Number(e.target.value))} />
+                </label>
+              )}
+              <SetRow label={t("imgVaeTiling")} hint={t("imgVaeTilingHint")}>
+                <Switch on={value.imgVaeTiling} onToggle={() => set("imgVaeTiling", !value.imgVaeTiling)} />
+              </SetRow>
+              <SetRow label={t("imgFormat")} hint={t("imgFormatHint")}>
+                <div className="lang-switch">
+                  <button type="button" className={value.imgFormat === "png" ? "active" : ""} onClick={() => set("imgFormat", "png")}>PNG</button>
+                  <button type="button" className={value.imgFormat === "jpg" ? "active" : ""} onClick={() => set("imgFormat", "jpg")}>JPG</button>
+                </div>
+              </SetRow>
+              <SetRow label={t("imgOutputDir")} hint={t("imgOutputDirHint")}>
+                <div className="row-btns">
+                  <button type="button" className="data-btn" onClick={() => void openExternal(value.imgOutputDir.trim() || defaultImageDir).catch(console.error)}>
+                    {t("imgOpenFolder")}
+                  </button>
+                  <button type="button" className="data-btn" onClick={() => void chooseImageDir()}>
+                    {t("changeModelsDir")}
+                  </button>
+                  {value.imgOutputDir.trim() && (
+                    <button type="button" className="data-btn" onClick={() => set("imgOutputDir", "")}>
+                      {t("resetModelsDir")}
+                    </button>
+                  )}
+                </div>
+              </SetRow>
+              <div className="settings-hint">
+                <code>{value.imgOutputDir.trim() || defaultImageDir}</code>
+              </div>
+              <button
+                className="settings-reset"
+                onClick={() =>
+                  onChange({
+                    ...value,
+                    imgAspect: IMAGE_SETTINGS_DEFAULTS.imgAspect,
+                    imgBase: IMAGE_SETTINGS_DEFAULTS.imgBase,
+                    imgSteps: IMAGE_SETTINGS_DEFAULTS.imgSteps,
+                    imgCfg: IMAGE_SETTINGS_DEFAULTS.imgCfg,
+                    imgGuidance: IMAGE_SETTINGS_DEFAULTS.imgGuidance,
+                    imgFlowShift: IMAGE_SETTINGS_DEFAULTS.imgFlowShift,
+                    imgSampler: IMAGE_SETTINGS_DEFAULTS.imgSampler,
+                    imgScheduler: IMAGE_SETTINGS_DEFAULTS.imgScheduler,
+                    imgBatch: IMAGE_SETTINGS_DEFAULTS.imgBatch,
+                    imgClipSkip: IMAGE_SETTINGS_DEFAULTS.imgClipSkip,
+                    imgStrength: IMAGE_SETTINGS_DEFAULTS.imgStrength,
+                    imgSeedLock: IMAGE_SETTINGS_DEFAULTS.imgSeedLock,
+                  })
+                }
+              >
+                {t("resetDefaults")}
+              </button>
+            </>
+          )}
+
+          {cat === "imageModel" && (
+            <>
+              {imageModel && imgInfo && (
+                <div className="is-set-model">
+                  <div className="is-set-model-name">{imageModel.name}</div>
+                  <div className="is-set-model-meta">
+                    {[
+                      imgInfo.familyName,
+                      // The engine's own name for it, when it says more than the family.
+                      imgInfo.engineVersion.toLowerCase().replace(/[^a-z0-9]/g, "") !== imgInfo.familyName.toLowerCase().replace(/[^a-z0-9]/g, "")
+                        ? imgInfo.engineVersion
+                        : null,
+                      imageModel.quant,
+                      imageModel.sizeMb ? fmtGbFromMb(imageModel.sizeMb) : null,
+                      imgInfo.onCpu ? "CPU" : imgInfo.device || "GPU",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </div>
+                  {imgInfo.components.length > 0 && (
+                    <div className="is-set-comps">
+                      {imgInfo.components.map((c) => (
+                        <div key={c.role} className="is-set-comp" title={c.path}>
+                          <span>{roleLabel[c.role] ?? c.role}</span>
+                          <code>{baseName(c.path)}</code>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {onManageComponents && (
+                    <button type="button" className="data-btn" onClick={onManageComponents}>
+                      {t("imgManageComponents")}
+                    </button>
+                  )}
+                </div>
+              )}
+              <label className="field">
+                <span><em className="has-tip" data-tip={t("imgDeviceTip")}>{t("imgDevice")}</em></span>
+                <div className="lang-switch">
+                  <button type="button" className={value.imgDevice === "gpu" ? "active" : ""} onClick={() => set("imgDevice", "gpu")}>{t("imgDeviceGpu")}</button>
+                  <button type="button" className={value.imgDevice === "cpu" ? "active" : ""} onClick={() => set("imgDevice", "cpu")}>{t("imgDeviceCpu")}</button>
+                </div>
+              </label>
+              <div className="settings-hint">{t("imgDeviceHint")}</div>
+              <SetRow label={t("imgOffload")} hint={t("imgOffloadHint")}>
+                <Switch on={value.imgOffload && value.imgDevice === "gpu"} disabled={value.imgDevice === "cpu"} onToggle={() => set("imgOffload", !value.imgOffload)} />
+              </SetRow>
+              <SetRow label={t("imgTeCpu")} hint={t("imgTeCpuHint")}>
+                <Switch on={value.imgTeCpu} disabled={value.imgDevice === "cpu"} onToggle={() => set("imgTeCpu", !value.imgTeCpu)} />
+              </SetRow>
+              <SetRow label={t("imgVaeCpu")} hint={t("imgVaeCpuHint")}>
+                <Switch on={value.imgVaeCpu} disabled={value.imgDevice === "cpu"} onToggle={() => set("imgVaeCpu", !value.imgVaeCpu)} />
+              </SetRow>
+              <SetRow label={t("imgFlashAttn")} hint={t("imgFlashAttnHint")}>
+                <Switch on={value.imgFlashAttn} onToggle={() => set("imgFlashAttn", !value.imgFlashAttn)} />
+              </SetRow>
+              <LimitField
+                label={t("imgMaxVram")}
+                tip={t("imgMaxVramTip")}
+                offLabel={t("noLimit")}
+                onLabel={t("gpuCustom")}
+                off={value.imgMaxVram <= 0}
+                onOff={(o) => set("imgMaxVram", o ? 0 : 8)}
+                value={`${value.imgMaxVram} GB`}
+              >
+                <input type="range" min={1} max={96} step={1} value={value.imgMaxVram > 0 ? value.imgMaxVram : 8} onChange={(e) => set("imgMaxVram", Number(e.target.value))} />
+              </LimitField>
+              <LimitField
+                label={t("imgThreads")}
+                offLabel={t("imgAuto")}
+                onLabel={t("gpuCustom")}
+                off={value.imgThreads <= 0}
+                onOff={(o) => set("imgThreads", o ? 0 : 4)}
+                value={value.imgThreads}
+              >
+                <input type="range" min={1} max={64} step={1} value={value.imgThreads > 0 ? value.imgThreads : 4} onChange={(e) => set("imgThreads", Number(e.target.value))} />
+              </LimitField>
+              <SetRow label={t("imgMmap")} hint={t("imgMmapHint")}>
+                <Switch on={value.imgMmap} onToggle={() => set("imgMmap", !value.imgMmap)} />
+              </SetRow>
+              {onReloadModel && (
+                <button className="settings-reload" onClick={onReloadModel} disabled={reloading}>
+                  {reloading ? "…" : t("reloadApply")}
+                </button>
+              )}
+              {modelLibraryRows}
+            </>
+          )}
+
           {cat === "data" && (
             <>
               <div className="stats-grid">
@@ -1838,6 +2264,10 @@ export function SettingsPanel({
                 <div className="stat-tile">
                   <span className="stat-num">{stats ? stats.code : "–"}</span>
                   <span className="stat-label">{t("statCodeSessions")}</span>
+                </div>
+                <div className="stat-tile">
+                  <span className="stat-num">{stats ? stats.images : "–"}</span>
+                  <span className="stat-label">{t("statImages")}</span>
                 </div>
                 <div className="stat-tile">
                   <span className="stat-num">
@@ -1887,6 +2317,32 @@ export function SettingsPanel({
                   }}
                 >
                   {t("clearAllChats")}
+                </button>
+              </SetRow>
+              <SetRow label={t("imgClearHistory")} hint={t("imgClearHistoryHint")}>
+                <button
+                  type="button"
+                  className="data-btn danger"
+                  onClick={async () => {
+                    if (
+                      !(await confirm({
+                        message: t("imgClearHistoryConfirm"),
+                        title: t("imgClearHistory"),
+                        confirmLabel: t("imgClearHistory"),
+                        danger: true,
+                      }))
+                    ) {
+                      return;
+                    }
+                    imageHistoryClear(true)
+                      .then(() => {
+                        onImageHistoryCleared?.();
+                        refreshStats();
+                      })
+                      .catch(console.error);
+                  }}
+                >
+                  {t("imgClearHistory")}
                 </button>
               </SetRow>
               <SetRow label={t("clearKb")} hint={t("clearKbHint")}>

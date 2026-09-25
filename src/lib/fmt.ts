@@ -28,3 +28,9 @@ export function fmtGbFromMb(mb: number): string {
   if (!Number.isFinite(mb) || mb <= 0) return "";
   return `${(mb / 1024).toFixed(1)} GB`;
 }
+
+/** A conversation's title from its first message: one line, 40 characters.
+ *  Image sessions are named from their first prompt the same way. */
+export function convTitle(text: string): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, 40) || "新对话";
+}

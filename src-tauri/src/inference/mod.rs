@@ -4,19 +4,61 @@
 //! [`InferenceBackend`]. The rest of the app only ever talks to this trait, so
 //! swapping or adding engines never touches the command/UI layer.
 
+pub mod gguf;
 pub mod jinja;
 pub mod llama;
 pub mod llama_log;
 pub use llama::llama_backend_pub;
 pub mod mlx;
 pub mod mock;
+pub mod sd;
 
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
+
+/// Live sidecar PIDs — the MLX engine and the image engine both run as child
+/// processes. The app's quit path exits via `libc::_exit` (dodging a ggml
+/// teardown SIGABRT), which skips every destructor — without an explicit reap,
+/// quitting while a model is loaded orphans a sidecar that keeps the entire
+/// model resident. lib.rs calls `kill_sidecars_now` on exit. (On Windows the
+/// sidecars see their stdin close when the app goes and exit by themselves.)
+pub(crate) static SIDECAR_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+pub fn kill_sidecars_now() {
+    let pids: Vec<u32> = std::mem::take(&mut *SIDECAR_PIDS.lock().unwrap());
+    if pids.is_empty() {
+        return;
+    }
+    // A pid only means something while the process behind it is still the one
+    // that was recorded. A sidecar that died on its own (or was reaped on a
+    // path that failed to deregister it) leaves a number the system is free
+    // to hand to anybody, so the name is checked before the signal.
+    let mut sys = sysinfo::System::new();
+    let want: Vec<sysinfo::Pid> = pids.iter().map(|p| sysinfo::Pid::from_u32(*p)).collect();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&want), true);
+    for pid in pids {
+        let ours = sys
+            .process(sysinfo::Pid::from_u32(pid))
+            .map(|p| {
+                let name = p.name().to_string_lossy();
+                name.contains("chaty-mlx") || name.contains("chaty-sd")
+            })
+            .unwrap_or(false);
+        if !ours {
+            continue;
+        }
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+        #[cfg(not(unix))]
+        let _ = pid;
+    }
+}
 
 /// A single chat turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,7 +279,15 @@ pub struct ModelInfo {
     /// Non-fatal load warning code for the UI (e.g. "gpu-oom" when the GPU
     /// offload had to be reduced to fit memory). `None` on a clean load.
     pub warning: Option<String>,
+    /// "chat" for a language model, "image" for a diffusion model. The whole
+    /// interface follows this: an image model turns the app into an image
+    /// studio, with only the settings and tools that apply to one.
+    pub kind: String,
+    /// What the image engine loaded, when `kind` is "image".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<crate::imagegen::ImageModelInfo>,
 }
+
 
 /// Which tool-call format a chat template teaches its model. The template is
 /// how the model was trained to write a call; a guess from its name is not.
@@ -325,6 +375,12 @@ pub trait InferenceBackend: Send + Sync {
     fn unload(&self) {}
     /// Short identifier for telemetry / UI ("mock", "llama.cpp", …).
     fn name(&self) -> &str;
+
+    /// The image engine behind this backend, when it is one. Image generation
+    /// reaches the loaded engine through this; every chat backend says `None`.
+    fn as_image(&self) -> Option<&sd::SdEngine> {
+        None
+    }
 
     /// Stream a completion for `req`, emitting [`StreamEvent`]s on `sink`.
     /// Implementations should send `Started` first and exactly one terminal

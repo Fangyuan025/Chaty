@@ -14,6 +14,7 @@ import {
   downloadModel,
   downloadMlxRepo,
   cancelDownload,
+  imageModelProbe,
   modelFolderFor,
   DOWNLOAD_CANCELLED,
   type HfModelHit,
@@ -95,6 +96,8 @@ export function DownloadModal({
   const [query, setQuery] = useState("");
   const [format, setFormat] = useState<"gguf" | "mlx">("gguf");
   const [sort, setSort] = useState<"trending" | "downloads" | "likes" | "updated">("trending");
+  /** "image" narrows the store to text-to-image models. */
+  const [task, setTask] = useState<"all" | "image">("all");
   const [hits, setHits] = useState<HfModelHit[]>([]);
   const [listLoading, setListLoading] = useState(false);
   // -- detail state --
@@ -111,12 +114,12 @@ export function DownloadModal({
   const seq = useRef(0);
 
   const runSearch = useCallback(
-    async (q: string, f: "gguf" | "mlx", s: typeof sort) => {
+    async (q: string, f: "gguf" | "mlx", s: typeof sort, k: "all" | "image") => {
       const my = ++seq.current;
       setListLoading(true);
       setError("");
       try {
-        const found = await hfSearch(q, f, s);
+        const found = await hfSearch(q, f, s, k);
         if (my === seq.current) setHits(found);
       } catch (e) {
         if (my === seq.current) {
@@ -132,9 +135,9 @@ export function DownloadModal({
 
   // storefront on open + debounced live search
   useEffect(() => {
-    const id = setTimeout(() => void runSearch(query, format, sort), query ? 350 : 0);
+    const id = setTimeout(() => void runSearch(query, format, sort, task), query ? 350 : 0);
     return () => clearTimeout(id);
-  }, [query, format, sort, runSearch]);
+  }, [query, format, sort, task, runSearch]);
 
   // Same sequencing as the search above: two clicks in a row can come back in
   // either order, and a late first answer used to replace the second — the
@@ -171,8 +174,11 @@ export function DownloadModal({
       setActive(true);
       setError("");
       etaStore.current = [];
-      const grandTotal =
-        d.format === "mlx" ? quant.size : quant.size + (d.mmproj ? d.mmprojSize : 0);
+      // An image model's VAE and text encoder come with it (estimated here;
+      // ones already on disk are skipped below).
+      const companionBytes = d.image ? (d.companions ?? []).reduce((a, c) => a + c.size, 0) : 0;
+      let grandTotal =
+        d.format === "mlx" ? quant.size : quant.size + (d.mmproj ? d.mmprojSize : 0) + companionBytes;
       setProgress({ done: 0, total: grandTotal });
       setEta(null);
       const tick = (done: number) => {
@@ -190,6 +196,7 @@ export function DownloadModal({
           const subdir = modelFolderFor(d.id);
           const files = [...quant.files, ...(d.mmproj ? [d.mmproj] : [])];
           let doneBase = 0;
+          let mainPath = "";
           for (const path of files) {
             const name = path.split("/").pop() ?? path;
             cancelKey.current = name;
@@ -201,6 +208,8 @@ export function DownloadModal({
                 if (p.type === "progress") {
                   thisFile = p.downloaded;
                   tick(doneBase + thisFile);
+                } else if (p.type === "done") {
+                  if (!mainPath) mainPath = p.path;
                 } else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) {
                   setError(p.message);
                 }
@@ -208,6 +217,35 @@ export function DownloadModal({
               subdir,
             );
             doneBase += thisFile;
+          }
+          // An image model: fetch what it still lacks into its own folder —
+          // asking the model itself, so an encoder another model already
+          // brought is reused instead of downloaded again.
+          if (d.image && mainPath) {
+            const probe = await imageModelProbe(mainPath).catch(() => null);
+            const todo = probe?.suggestions ?? [];
+            grandTotal = doneBase + todo.reduce((a, c) => a + c.size, 0);
+            const dir = mainPath.replace(/[/\\][^/\\]*$/, "");
+            for (const c of todo) {
+              const name = c.file.split("/").pop() ?? c.file;
+              cancelKey.current = name;
+              let thisFile = 0;
+              await downloadModel(
+                hfResolveUrl(c.repo, c.file),
+                name,
+                (p) => {
+                  if (p.type === "progress") {
+                    thisFile = p.downloaded;
+                    tick(doneBase + thisFile);
+                  } else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) {
+                    setError(p.message);
+                  }
+                },
+                undefined,
+                dir,
+              );
+              doneBase += thisFile;
+            }
           }
         }
         onDownloaded();
@@ -248,7 +286,11 @@ export function DownloadModal({
   };
 
   const quant = detail?.quants[quantIdx];
-  const needBytes = quant ? quant.size + (detail?.format === "gguf" && detail.mmproj ? detail.mmprojSize : 0) : 0;
+  const needBytes = quant
+    ? quant.size +
+      (detail?.format === "gguf" && detail.mmproj ? detail.mmprojSize : 0) +
+      (detail?.image ? (detail.companions ?? []).reduce((a, c) => a + c.size, 0) : 0)
+    : 0;
   const fitsRam = detail ? needBytes * 1.15 < detail.totalRamMb * 1024 * 1024 : false;
   const pct = progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : 0;
 
@@ -292,6 +334,15 @@ export function DownloadModal({
                 {IS_MACOS && <option value="mlx">MLX</option>}
               </select>
               <select
+                value={task}
+                disabled={active}
+                onChange={(e) => setTask(e.target.value as "all" | "image")}
+                title={t("storeTask")}
+              >
+                <option value="all">{t("storeTaskAll")}</option>
+                <option value="image">{t("storeTaskImage")}</option>
+              </select>
+              <select
                 value={sort}
                 disabled={active}
                 onChange={(e) => setSort(e.target.value as typeof sort)}
@@ -332,6 +383,7 @@ export function DownloadModal({
                       <span className="store-hit-name">
                         {h.name}
                         {h.vision && <span className="mm-vision">{t("visionBadge")}</span>}
+                        {h.image && <span className="mm-img">{t("imageBadge")}</span>}
                       </span>
                       <span className="store-hit-sub">
                         {h.author}
@@ -372,6 +424,7 @@ export function DownloadModal({
                   {detail.vision && (
                     <span className="store-badge store-badge-vision">{t("visionBadge")}</span>
                   )}
+                  {detail.image && <span className="store-badge store-badge-image">{t("imageBadge")}</span>}
                 </div>
 
                 <div className="store-dl-box">
@@ -423,7 +476,10 @@ export function DownloadModal({
                     {detail.format === "mlx" && !IS_MACOS
                       ? t("storeMlxMacOnly")
                       : (fitsRam ? t("storeFitsRam") : t("storeOverRam")) +
-                        (detail.format === "gguf" && detail.mmproj ? ` · ${t("storeVisionIncluded")}` : "")}
+                        (detail.format === "gguf" && detail.mmproj ? ` · ${t("storeVisionIncluded")}` : "") +
+                        (detail.image
+                          ? ` · ${(detail.companions?.length ?? 0) > 0 ? t("storeImageIncluded") : t("storeImageManual")}`
+                          : "")}
                   </div>
                 </div>
 

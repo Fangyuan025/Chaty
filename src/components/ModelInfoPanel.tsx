@@ -2,6 +2,7 @@ import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import type { ModelInfo } from "../lib/ipc";
 import { fmtGbFromMb } from "../lib/fmt";
+import { ROLE_KEY } from "./ImageComponentsModal";
 
 /** Top-right popover with the probed GGUF metadata for the loaded model. */
 export function ModelInfoPanel({
@@ -53,6 +54,45 @@ export function ModelInfoPanel({
                 <span className="hw-v">{fmtGbFromMb(model.sizeMb)}</span>
               </div>
             )}
+            {model.kind === "image" && model.image ? (
+              <>
+                {model.image.engineVersion &&
+                  model.image.engineVersion.toLowerCase().replace(/[^a-z0-9]/g, "") !==
+                    model.image.familyName.toLowerCase().replace(/[^a-z0-9]/g, "") && (
+                  <div className="hw-row">
+                    <span className="hw-k">{t("miImageEngine")}</span>
+                    <span className="hw-v">{model.image.engineVersion}</span>
+                  </div>
+                )}
+                <div className="hw-row">
+                  <span className="hw-k">{t("miEngine")}</span>
+                  <span className="hw-v">
+                    {model.backend}
+                    <small> · {model.image.onCpu ? "CPU" : model.image.device || "GPU"}</small>
+                  </span>
+                </div>
+                <div className="hw-row">
+                  <span className="hw-k">{t("miImageDefaults")}</span>
+                  <span className="hw-v">
+                    {model.image.defaults.baseSize}² · {t("imgStepsN", { n: model.image.defaults.steps })} · CFG {model.image.defaults.cfgScale}
+                  </span>
+                </div>
+                <div className="hw-divider" />
+                {model.image.components.map((c) => (
+                  <div key={c.role} className="hw-row">
+                    <span className="hw-k">{t(ROLE_KEY[c.role])}</span>
+                    <span className="hw-v mi-file" title={c.path}>
+                      {c.path.split(/[/\\]/).pop()}
+                    </span>
+                  </div>
+                ))}
+                <div className="hw-row">
+                  <span className="hw-k">{t("miImageEdit")}</span>
+                  {cap(model.image.edits)}
+                </div>
+              </>
+            ) : (
+            <>
             <div className="hw-row">
               <span className="hw-k">{t("miContext")}</span>
               <span className="hw-v">
@@ -101,6 +141,8 @@ export function ModelInfoPanel({
               <span className="hw-k">{t("miVision")}</span>
               {cap(model.visionReady)}
             </div>
+            </>
+            )}
           </div>
         )}
       </div>

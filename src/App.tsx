@@ -10,6 +10,8 @@ import { RECENCY_LABEL, recencyGroups } from "./lib/recency";
 
 import { ContextMenu } from "./components/ContextMenu";
 import { ImagePreview } from "./components/ImagePreview";
+import { ImageThumb } from "./components/ImageThumb";
+import { UserCopy, UserText } from "./components/UserText";
 import { withErrorNote } from "./lib/reasoning";
 import { localSave } from "./lib/localSave";
 import { DownloadModal } from "./components/DownloadModal";
@@ -47,6 +49,11 @@ import { IconPin, IconPinFilled, IconEdit } from "./components/icons";
 import { PodcastPanel } from "./components/PodcastPanel";
 import { DeepResearchPanel } from "./components/DeepResearchPanel";
 import { CodeMode } from "./components/CodeMode";
+import { ImageStudio } from "./components/ImageStudio";
+import { ImageSidebar } from "./components/ImageSidebar";
+import { ImageComponentsModal } from "./components/ImageComponentsModal";
+import { useImageStudio } from "./lib/useImageStudio";
+import { loadOptions as imageLoadOptions } from "./lib/imageGen";
 import { answerOnly, cleanTitle, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
 // The reasoning/answer split the agent loop uses. Its stripThink leaves source
 // markers alone, which matters here: the content has to rejoin with the
@@ -63,6 +70,7 @@ import {
   generate,
   getMessages,
   getModel,
+  imageModelProbe,
   listConversations,
   listModels,
   loadModel,
@@ -80,7 +88,6 @@ import {
   pickAttachmentFile,
   pickModelFolder,
   readAttachment,
-  imageThumb,
   browserRenderHtml,
 
   isVisionImagePath,
@@ -128,7 +135,7 @@ import {
   resetCalibration,
   standingTail,
 } from "./lib/ctxBudget";
-import { fmtGbFromMb } from "./lib/fmt";
+import { convTitle, fmtGbFromMb } from "./lib/fmt";
 
 interface UiMessage extends ChatMessage {
   id: string;
@@ -137,94 +144,6 @@ interface UiMessage extends ChatMessage {
    *  search results before the question. Kept (in memory) so every later
    *  prompt repeats the turn exactly as the cache holds it. */
   modelContent?: string;
-}
-
-/** Module-level thumbnail cache: path → data URL (survives re-renders). */
-const thumbCache = new Map<string, string>();
-
-/** Self-loading thumbnail for a local image path; hides itself if unreadable. */
-/** User-message text with a clamp for pasted walls of text: over ~15 lines or
- *  1200 chars it renders a 220px preview with a fade + expand pill. */
-function UserText({ content, expandLabel, collapseLabel }: { content: string; expandLabel: string; collapseLabel: string }) {
-  const long = content.length > 1200 || content.split("\n").length > 15;
-  const [open, setOpen] = useState(false);
-  if (!long) return <span className="user-text">{content}</span>;
-  return (
-    <>
-      <span className={`user-text ${open ? "" : "clamped"}`}>{content}</span>
-      <button className="user-expand" type="button" onClick={() => setOpen(!open)}>
-        {open ? collapseLabel : expandLabel}
-      </button>
-    </>
-  );
-}
-
-/** Hover copy button on user messages (mirrors the edit pencil). */
-function UserCopy({ content, title }: { content: string; title: string }) {
-  const [ok, setOk] = useState(false);
-  return (
-    <button
-      className="user-edit user-copy"
-      title={title}
-      onClick={() =>
-        void copyToClipboard(content).then(() => {
-          setOk(true);
-          setTimeout(() => setOk(false), 1400);
-        })
-      }
-    >
-      {ok ? (
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
-          <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      ) : (
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-          <rect x="9" y="9" width="11" height="11" rx="2" />
-          <path d="M5 15V5a2 2 0 0 1 2-2h8" strokeLinecap="round" />
-        </svg>
-      )}
-    </button>
-  );
-}
-
-function ImageThumb({
-  path,
-  size = 168,
-  onOpen,
-}: {
-  path: string;
-  size?: number;
-  /** Clicking the picture opens it full size (issue #18: it did nothing). */
-  onOpen?: () => void;
-}) {
-  const [src, setSrc] = useState<string | null>(thumbCache.get(path) ?? null);
-  useEffect(() => {
-    let live = true;
-    if (!thumbCache.has(path)) {
-      imageThumb(path, 512)
-        .then((d) => {
-          thumbCache.set(path, d);
-          if (live) setSrc(d);
-        })
-        .catch(() => {
-          if (live) setSrc("");
-        });
-    }
-    return () => {
-      live = false;
-    };
-  }, [path]);
-  if (src === "") return null; // moved/deleted — degrade quietly
-  return (
-    <span
-      className={onOpen ? "img-thumb img-thumb-open" : "img-thumb"}
-      style={{ maxWidth: size, maxHeight: size }}
-      role={onOpen ? "button" : undefined}
-      onClick={onOpen}
-    >
-      {src ? <img src={src} alt="" /> : <span className="img-thumb-ph" />}
-    </span>
-  );
 }
 
 // Host OS, resolved once at startup. Drives native window chrome on macOS
@@ -241,13 +160,14 @@ const IS_MACOS = OS_PLATFORM === "macos";
 const uid = () => Math.random().toString(36).slice(2);
 const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
 const SETTINGS_KEY = "chaty.settings";
+/** A stable "nothing picked by hand" for an image model's companions. */
+const NO_OVERRIDES: Record<string, string> = {};
 const LAST_MODEL_KEY = "chaty.lastModel";
 /** Boot auto-load must run once per page load, not once per (Strict)mount. */
 let bootLoadStarted = false;
 const SIDEBAR_DEFAULT = 248;
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 440;
-const convTitle = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 40) || "新对话";
 
 /** Parse `chaty://open_from_hf?model=<repo>&file=<file>` from a deep link. */
 function parseHfDeepLink(raw: string): { repo: string; file?: string } | null {
@@ -394,6 +314,31 @@ export default function App() {
     }),
     [settings.topP, settings.topK, settings.minP, settings.repeatPenalty],
   );
+  // An image model turns the whole app into the image studio: its own
+  // canvas, history and settings, and none of the chat-only tools.
+  const imageMode = model?.kind === "image";
+  /** The companion-files dialog: for which model, and whether to load it
+   *  once nothing is missing. */
+  const [compFor, setCompFor] = useState<{ path: string; loadAfter: boolean } | null>(null);
+  /** Open Settings on one of the image categories. */
+  const [settingsFocus, setSettingsFocus] = useState<"imageGen" | "imageModel" | null>(null);
+  /** Where a dropped file goes in the studio (a reference picture). */
+  const imageDropRef = useRef<((path: string) => void) | null>(null);
+  const studio = useImageStudio({
+    active: imageMode,
+    onBusy: setBusy,
+    notify: (kind, text) => showNotice(kind, text),
+    stoppedText: t("imgStopped"),
+    autoChain: !!model?.image?.edits && settings.imgAutoChain,
+  });
+  useEffect(() => {
+    imageDropRef.current = imageMode
+      ? (path: string) => {
+          if (/\.(png|jpe?g|webp|bmp)$/i.test(path)) studio.setReference({ path });
+          else showNotice("warn", t("imgDropNotImage"));
+        }
+      : null;
+  });
 
   // Uncaught front-end errors land in the user-attachable error log
   // (Settings → 打开错误日志) so issue reports can carry real evidence.
@@ -741,7 +686,7 @@ export default function App() {
         if (!target) return;
         setLoadingModel(true);
         try {
-          const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress);
+          const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, target));
           // A different tokenizer charges differently — start the ratio over.
           resetCalibration();
           setModel(info);
@@ -1083,7 +1028,8 @@ export default function App() {
         } else if (p.type === "drop") {
           setDragging(false);
           const path = p.paths?.[0];
-          if (path) void loadAttachmentPath(path);
+          if (path && imageDropRef.current) imageDropRef.current(path);
+          else if (path) void loadAttachmentPath(path);
         }
       })
       .then((fn) => {
@@ -1447,6 +1393,8 @@ export default function App() {
       showNotice("warn", t("conversionSuspect"));
     } else if (info.warning === "vision-config-missing") {
       showNotice("warn", t("visionConfigMissing"));
+    } else if (info.warning === "image-gpu-crash-cpu") {
+      showNotice("warn", t("imgGpuCrashCpu"));
     }
   }
 
@@ -1481,16 +1429,30 @@ export default function App() {
     }
   }
 
-  /** Hot-swap to another already-discovered model. */
+  /** Hot-swap to another already-discovered model. An image model that is
+   *  still missing a companion file (VAE, text encoder) opens the dialog that
+   *  fetches it instead of failing to load. */
   async function switchModel(path: string) {
     setShowModelMenu(false);
     // A load already running is the one case the old guard missed: the menu
     // stayed open to a second pick, and the backend releases the engine lock
     // the moment it takes the old model, so both loads went resident at once.
     if (busy || loadingModel || model?.path === path) return;
+    if (availableModels.find((m) => m.path === path)?.kind === "image") {
+      const probe = await imageModelProbe(path, settings.imgComponents[path]).catch(() => null);
+      if (probe && probe.missing.length > 0) {
+        setCompFor({ path: probe.path, loadAfter: true });
+        return;
+      }
+    }
+    await loadPath(path);
+  }
+
+  /** Load `path` as the active model, whatever kind it is. */
+  async function loadPath(path: string) {
     setLoadingModel(true);
     try {
-      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress);
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, path));
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -1510,7 +1472,7 @@ export default function App() {
     if (!model || busy || loadingModel) return;
     setLoadingModel(true);
     try {
-      const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress);
+      const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, model.path));
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -1573,8 +1535,19 @@ export default function App() {
     try {
       const path = await pickModelFolder();
       if (!path) return;
+      // A folder holding an image model that still lacks a companion file:
+      // offer to fetch it rather than failing the load.
+      const found = await imageModelProbe(path).catch(() => null);
+      const probe = found
+        ? ((await imageModelProbe(found.path, settings.imgComponents[found.path]).catch(() => null)) ?? found)
+        : null;
+      if (probe && probe.missing.length > 0) {
+        setCompFor({ path: probe.path, loadAfter: true });
+        void refreshModels();
+        return;
+      }
       setLoadingModel(true);
-      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress);
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, probe?.path ?? path));
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -1592,6 +1565,10 @@ export default function App() {
 
   function handleNewChat() {
     if (busy) return;
+    if (imageMode) {
+      studio.startNew();
+      return;
+    }
     setConversationId(null);
     setMessages([]);
     setStats(null);
@@ -2610,8 +2587,11 @@ export default function App() {
     : conversations;
 
   // Command-palette actions: static commands + load-model + jump-to-conversation.
+  // The image studio keeps only what applies to it (no chat/code mode, no
+  // knowledge base, web search or voice), and jumps to generations instead.
+  const chatOnly = new Set(["mode", "live", "kb", "web"]);
   const commands: Command[] = [
-    { id: "new", label: t("newChat"), keywords: "new chat 新对话", run: handleNewChat },
+    { id: "new", label: imageMode ? t("imgNew") : t("newChat"), keywords: "new chat 新对话 新建", run: handleNewChat },
     {
       id: "mode",
       label: appMode === "code" ? t("cmdkGoChat") : t("cmdkGoCode"),
@@ -2674,14 +2654,33 @@ export default function App() {
         keywords: `model 模型 ${m.name}`,
         run: () => void switchModel(m.path),
       })),
-    ...conversations.map((c) => ({
-      id: `conv:${c.id}`,
-      label: c.title,
-      hint: t("cmdkChatHint"),
-      keywords: `chat conversation 对话 ${c.title}`,
-      run: () => void openConversation(c.id),
-    })),
-  ];
+    ...(imageMode
+      ? [
+          {
+            id: "image-settings",
+            label: t("setCatImageGen"),
+            keywords: "image settings 生图 参数",
+            run: () => {
+              setSettingsFocus("imageGen");
+              setShowSettings(true);
+            },
+          },
+          ...studio.sessions.map((s) => ({
+            id: `img:${s.id}`,
+            label: s.title,
+            hint: t("imgCmdkHint"),
+            keywords: `image session 生图 会话 ${s.title}`,
+            run: () => void studio.openSession(s.id),
+          })),
+        ]
+      : conversations.map((c) => ({
+          id: `conv:${c.id}`,
+          label: c.title,
+          hint: t("cmdkChatHint"),
+          keywords: `chat conversation 对话 ${c.title}`,
+          run: () => void openConversation(c.id),
+        }))),
+  ].filter((c) => !(imageMode && chatOnly.has(c.id)));
 
   return (
     <CanvasOpenContext.Provider value={openInCanvas}>
@@ -2721,29 +2720,40 @@ export default function App() {
               <path d="M12 16V4M12 4l-4 4M12 4l4 4" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" strokeLinecap="round" />
             </svg>
-            <span>{t("dropToAttach")}</span>
+            <span>{imageMode ? t("imgDropRef") : t("dropToAttach")}</span>
           </div>
         </div>
       )}
       <header className="titlebar" data-tauri-drag-region>
         <div className="brand">Chaty</div>
 
-        <div className="mode-switch" role="tablist" aria-label="Mode">
-          <button
-            className={`mode-tab ${appMode === "chat" ? "active" : ""}`}
-            onClick={() => setAppMode("chat")}
-          >
-            <Icon name="chat" size={13} strokeWidth={1.8} />
-            {t("modeChat")}
-          </button>
-          <button
-            className={`mode-tab ${appMode === "code" ? "active" : ""}`}
-            onClick={() => setAppMode("code")}
-          >
-            <Icon name="code" size={13} strokeWidth={1.8} />
-            {t("modeCode")}
-          </button>
-        </div>
+        {imageMode ? (
+          // Loading an image model IS the mode switch: chat and Code need a
+          // language model, so the studio is the one mode there is.
+          <div className="mode-switch" role="tablist" aria-label="Mode">
+            <button className="mode-tab active" title={t("imgModeTip")}>
+              <Icon name="image" size={13} strokeWidth={1.8} />
+              {t("modeImage")}
+            </button>
+          </div>
+        ) : (
+          <div className="mode-switch" role="tablist" aria-label="Mode">
+            <button
+              className={`mode-tab ${appMode === "chat" ? "active" : ""}`}
+              onClick={() => setAppMode("chat")}
+            >
+              <Icon name="chat" size={13} strokeWidth={1.8} />
+              {t("modeChat")}
+            </button>
+            <button
+              className={`mode-tab ${appMode === "code" ? "active" : ""}`}
+              onClick={() => setAppMode("code")}
+            >
+              <Icon name="code" size={13} strokeWidth={1.8} />
+              {t("modeCode")}
+            </button>
+          </div>
+        )}
 
         <div className="model-wrap">
           <button
@@ -2757,6 +2767,7 @@ export default function App() {
             {model ? (
               <>
                 <span className="chip-name">{model.name.replace(/\.gguf$/i, "")}</span>
+                {model.kind === "image" ? <span className="chip-meta chip-img">{t("imageBadge")}</span> : null}
                 {model.paramsB ? (
                   <span className="chip-meta">{model.paramsB.toFixed(1)}B</span>
                 ) : null}
@@ -2815,6 +2826,14 @@ export default function App() {
                             <span className="mm-vision" title={t("visionBadgeTip")}>
                               {t("visionBadge")}
                             </span>
+                          ) : null}
+                          {m.kind === "image" ? (
+                            <span className="mm-img" title={m.family ? `${t("imageBadgeTip")} · ${m.family}` : t("imageBadgeTip")}>
+                              {t("imageBadge")}
+                            </span>
+                          ) : null}
+                          {m.kind === "image" && (m.missing ?? []).some((role) => !settings.imgComponents[m.path]?.[role]) ? (
+                            <span className="mm-warn" title={t("imgMissingBadgeTip")}>!</span>
                           ) : null}
                           {m.sizeMb ? (
                             <span className="mm-size">{fmtGbFromMb(m.sizeMb)}</span>
@@ -2907,7 +2926,7 @@ export default function App() {
           )}
         </div>
 
-        {messages.length > 0 && (
+        {messages.length > 0 && !imageMode && (
           <div className="settings-wrap">
             <button
               className={`icon-btn ${showExport ? "active" : ""}`}
@@ -2983,7 +3002,22 @@ export default function App() {
             open={showSettings}
             value={settings}
             onChange={setSettings}
-            onClose={() => setShowSettings(false)}
+            onClose={() => {
+              setShowSettings(false);
+              setSettingsFocus(null);
+            }}
+            mode={imageMode ? "image" : "chat"}
+            imageModel={imageMode ? model : null}
+            focusCat={settingsFocus}
+            onManageComponents={
+              imageMode && model
+                ? () => {
+                    setShowSettings(false);
+                    setCompFor({ path: model.path, loadAfter: false });
+                  }
+                : undefined
+            }
+            onImageHistoryCleared={studio.cleared}
             maxTokensLimit={Math.max(1024, model?.nCtx ?? 4096)}
             ctxTrainLimit={model?.nCtxTrain}
             layersLimit={model?.nLayer}
@@ -3017,7 +3051,7 @@ export default function App() {
 
       <CodeMode
         model={model}
-        active={appMode === "code"}
+        active={appMode === "code" && !imageMode}
         maxSteps={settings.codeMaxSteps}
         bashTimeout={settings.codeBashTimeout}
         ragTopK={settings.ragTopK}
@@ -3039,8 +3073,12 @@ export default function App() {
         autoTitle={settings.autoTitle}
       />
 
-      <div className="body" style={appMode === "code" ? { display: "none" } : undefined}>
+      <div className="body" style={appMode === "code" && !imageMode ? { display: "none" } : undefined}>
         <aside className="sidebar" ref={asideRef} style={{ width: sidebarW }}>
+          {imageMode ? (
+            <ImageSidebar studio={studio} busy={busy} notify={showNotice} />
+          ) : (
+          <>
           <button className="new-chat" onClick={handleNewChat} disabled={busy}>
             <Icon name="plus" size={13} strokeWidth={2} /> {t("newChat")}
           </button>
@@ -3144,6 +3182,8 @@ export default function App() {
               ))
             )}
           </div>
+          </>
+          )}
           <div className="side-status" title={model ? model.name : ""}>
             <span className="ss-meta">v{__APP_VERSION__}</span>
           </div>
@@ -3158,6 +3198,22 @@ export default function App() {
         </aside>
 
         <div className="main">
+          {imageMode && model ? (
+            <ImageStudio
+              model={model}
+              studio={studio}
+              settings={settings}
+              onSettings={(patch) => setSettings((cur) => ({ ...cur, ...patch }))}
+              onOpenSettings={() => {
+                setSettingsFocus("imageGen");
+                setShowSettings(true);
+              }}
+              onPreview={setPreviewImg}
+              notify={showNotice}
+              sendKey={settings.sendKey}
+            />
+          ) : (
+          <>
           {showDeepResearch && (
             <DeepResearchPanel
               model={model}
@@ -3840,6 +3896,8 @@ export default function App() {
               )}
             </div>
           </footer>
+          </>
+          )}
         </div>
       </div>
       <ContextMenu />
@@ -3933,6 +3991,25 @@ export default function App() {
           voiceSpeed={settings.voiceSpeed}
           onClose={() => setShowPodcast(false)}
           onLockChange={setBusy}
+        />
+      )}
+      {compFor && (
+        <ImageComponentsModal
+          path={compFor.path}
+          overrides={settings.imgComponents[compFor.path] ?? NO_OVERRIDES}
+          onOverrides={(next) =>
+            setSettings((cur) => ({ ...cur, imgComponents: { ...cur.imgComponents, [compFor.path]: next } }))
+          }
+          onLoad={() => {
+            const target = compFor;
+            setCompFor(null);
+            if (model?.path === target.path) void reloadModel();
+            else void loadPath(target.path);
+          }}
+          onClose={() => {
+            setCompFor(null);
+            void refreshModels();
+          }}
         />
       )}
       {showSetup && (

@@ -47,6 +47,18 @@ export function HardwarePanel({
 
   const accel = () => {
     if (!model) return <span className="hw-accel off">{t("hwNoModel")}</span>;
+    // The image engine places whole components, not layers: all of it on the
+    // GPU unless it runs on the CPU.
+    if (model.kind === "image") {
+      return model.image?.onCpu ? (
+        <span className="hw-accel off">{t("hwCpuOnly")}</span>
+      ) : (
+        <span className="hw-accel on">
+          {t("hwImageGpu")}
+          {model.gpuName ? <small> · {model.gpuName}</small> : null}
+        </span>
+      );
+    }
     if (model.gpuLayers > 0) {
       return (
         <span className="hw-accel on">
