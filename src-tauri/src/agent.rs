@@ -1730,6 +1730,10 @@ fn located_note(file: &str, m: &crate::edit_match::Located) -> String {
             "已编辑 {file}(old_string 里的 \\n、\\\" 是写出来的转义符,文件里对应的是真实的换行/引号;已按还原后唯一匹配的第 {a}-{b} 行替换)。",
             "edited {file} (old_string spelled out escapes such as \\n or \\\" where the file has a real newline or quote; the one place the unescaped text matches, lines {a}-{b}, was replaced)."
         ),
+        Tier::Pattern => trf!(
+            "已编辑 {file}(old_string 里的 \\s 是正则写法——edit_file 按原文逐字匹配,不是正则搜索;这次按空白通配唯一对上了第 {a}-{b} 行,已替换。下次直接从文件原样抄写)。",
+            "edited {file} (old_string used \\s, a regular-expression class — edit_file matches the text as written, it is not a pattern search; read as whitespace it matched one place, lines {a}-{b}, which was replaced. Next time copy the text as it is)."
+        ),
         Tier::Similar => {
             let pct = (m.similarity * 100.0).round() as u32;
             trf!(

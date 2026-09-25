@@ -37,6 +37,8 @@ pub enum Tier {
     Unescaped,
     /// Closely similar, and unambiguously the closest.
     Similar,
+    /// Written as a pattern — `\s+` where the file has whitespace.
+    Pattern,
 }
 
 #[derive(Debug)]
@@ -773,6 +775,25 @@ pub fn locate(text: &str, old: &str, new: &str) -> Result<Located, Miss> {
         return Err(Miss::Ambiguous(at));
     }
 
+    // An old_string written as a regular expression. A Qwen3-8B tune took
+    // edit_file for a pattern search and wrote `{\s+\s*return total * 0.9;`,
+    // three times, each cut as "not found". Only the whitespace classes are
+    // read as patterns — `.` `*` `(` are everyday code — and only where the
+    // file does not hold such a class itself and exactly one place matches.
+    // A new_string written the same way cannot be put into the file, so it
+    // stays a miss.
+    if let Some(re) = whitespace_pattern(old, text) {
+        let hits: Vec<_> = re.find_iter(text).collect();
+        if hits.len() == 1 && !new.contains("\\s") {
+            let m = hits[0];
+            let start_line = text[..m.start()].matches('\n').count();
+            let lines = (start_line + 1, start_line + m.as_str().matches('\n').count() + 1);
+            let out = format!("{}{}{}", &text[..m.start()], new, &text[m.end()..]);
+            let span = new.matches('\n').count() + 1;
+            return Ok(Located { tier: Tier::Pattern, text: out, start_line, span, lines, similarity: 1.0 });
+        }
+    }
+
     // Tier 4: one clearly closest window.
     let mut best: Option<(f32, f32, usize, usize)> = None; // (score, runner-up, variant, window)
     for (vi, (o, _, _)) in vs.iter().enumerate() {
@@ -800,6 +821,41 @@ pub fn locate(text: &str, old: &str, new: &str) -> Result<Located, Miss> {
 /// lines above the similarity floor, which is also the least any match
 /// `locate` takes: the answer never cuts off an edit that would have landed.
 /// Fewer than two lines are not judged.
+/// `old` as a regular expression in which only `\s`, `\s+` and `\s*` are
+/// special (and a run of real whitespace matches any whitespace). None when
+/// it has no such class, or the file itself spells one — then the class is
+/// text, not a pattern.
+fn whitespace_pattern(old: &str, file: &str) -> Option<regex::Regex> {
+    if !old.contains("\\s") || file.contains("\\s") {
+        return None;
+    }
+    let mut pat = String::new();
+    let mut rest = old;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("\\s") {
+            let (q, after) = match after.chars().next() {
+                Some(c @ ('+' | '*')) => (c.to_string(), &after[1..]),
+                _ => (String::new(), after),
+            };
+            pat.push_str(&format!(r"\s{q}"));
+            rest = after;
+        } else {
+            let next = rest.find("\\s").unwrap_or(rest.len());
+            let lit = &rest[..next];
+            for (i, piece) in lit.split(char::is_whitespace).enumerate() {
+                if i > 0 {
+                    pat.push_str(r"\s+");
+                }
+                pat.push_str(&regex::escape(piece));
+            }
+            rest = &rest[next..];
+        }
+    }
+    // Runs of `\s+` from adjacent spaces collapse to one.
+    let pat = pat.replace(r"\s+\s+", r"\s+");
+    regex::Regex::new(&pat).ok()
+}
+
 pub fn prefix_viable(text: &str, partial_old: &str) -> bool {
     let Some(cut) = partial_old.rfind('\n') else { return true };
     let complete = &partial_old[..cut];
@@ -920,6 +976,21 @@ mod tests {
 
     fn ok(text: &str, old: &str, new: &str) -> Located {
         locate(text, old, new).unwrap_or_else(|m| panic!("expected a match, got {m:?}"))
+    }
+
+    #[test]
+    fn an_old_string_written_as_a_whitespace_pattern_lands_where_it_clearly_means() {
+        // Josiefied Qwen3-8B, verbatim.
+        let file = "function price(customer, total) {\n  if (customer.tier === 'gold') {\n    return total * 0.9;\n  }\n  return total;\n}\n";
+        let old = "if (customer.tier === 'gold') {\\s+\\s*return total * 0.9;\\s*}\\s*return total;";
+        let new = "if (customer.tier === 'gold') {\n    return total * 0.8;\n  }\n  return total;";
+        let m = locate(file, old, new).unwrap();
+        assert_eq!(m.tier, Tier::Pattern);
+        assert_eq!(m.text, file.replace("0.9", "0.8"));
+        // A file that spells `\s` itself: the class is text there.
+        assert!(locate("re = /\\s+/;\nx = 1;\n", "x\\s=\\s2", "y").is_err());
+        // A new_string written as a pattern cannot be written into the file.
+        assert!(locate(file, old, "if (x)\\s{").is_err());
     }
 
     #[test]
