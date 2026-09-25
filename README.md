@@ -111,6 +111,8 @@ Drop in PDFs, Word files, slides, spreadsheets, Markdown or code. Chaty indexes 
 
 Live mode is a hands-free conversation: Whisper listens, the model answers, and a local voice reads the reply back sentence by sentence — in English or Chinese. Speech runs on the CPU, so it never competes with the model for GPU memory. Silence sends your turn; any answer can be read aloud.
 
+<img src="docs/screenshots/shot-live.jpg" width="860" alt="Chaty's Live mode: a glowing orb listening, with a button to leave live mode" />
+
 ## Built around what small models get wrong
 
 A frontier model can hold a workflow together on its own. A model that fits on your laptop often can't: it repeats the call it just made, sends an empty argument, retypes the line it means to change slightly wrong, and calls the job done without running it. Chaty is engineered for that model.
