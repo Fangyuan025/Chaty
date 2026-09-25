@@ -1630,6 +1630,7 @@ final class Engine: @unchecked Sendable {
         // prompts can carry user content, so this never logs by default.
         if ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_PROMPT"] == "1" {
             log("PROMPT[\(tokens.count) tok]>>>" + context.tokenizer.decode(tokenIds: tokens) + "<<<END")
+            log("PROMPT_IDS \(tokens.prefix(64))")
         }
 
         // Ordered image identities — must match the order the processor lays
@@ -2108,6 +2109,7 @@ final class Engine: @unchecked Sendable {
             log("STREAMED[\(dumpStreamed.count)]>>>" + dumpStreamed + "<<<END")
             log("WHOLE[\(whole.count)]>>>" + whole + "<<<END")
             log("MATCH=\(dumpStreamed == whole)")
+            log("IDS \(dumpIds.prefix(40))")
         }
         if reason == "eos", let i = info {
             switch i.stopReason {
@@ -2150,8 +2152,15 @@ final class Engine: @unchecked Sendable {
         }
 
         let sampler = gp.sampler()
+        // The repetition penalty counts what the model has written, not the
+        // prompt — as llama.cpp's does on the GGUF side. Seeded with the
+        // prompt's tail, it penalised the turn's own markup: GLM-4.7-Flash's
+        // end of turn is `<|user|>`, which is in every prompt, so with the
+        // default 1.1 it could not stop after "42" and rambled on; with
+        // `<think>` and the role header penalised too it misread its own
+        // question ("17 + 25" became "7 + ?"). Every model's end-of-turn
+        // marker sits in the last few prompt tokens.
         var processor = gp.processor()
-        processor?.prompt(MLXArray(tokens.map(Int32.init)))
 
         var stopIds = context.configuration.eosTokenIds
         if let eos = context.tokenizer.eosTokenId { stopIds.insert(eos) }
@@ -2167,7 +2176,10 @@ final class Engine: @unchecked Sendable {
         let minThought = 16
         var banRow: MLXArray?
         func sample(_ logits: MLXArray) -> Int {
-            var l = logits[0..., -1, 0...]
+            // In fp32 before anything touches them: a bf16 logit near 100 is
+            // good to half a unit, so a penalty's division lands on ties and
+            // the pick between them is arbitrary.
+            var l = logits[0..., -1, 0...].asType(.float32)
             if let processor { l = processor.process(logits: l) }
             if let close = emptyThoughtClose, done < minThought {
                 if banRow == nil {
@@ -2529,6 +2541,7 @@ final class Engine: @unchecked Sendable {
             log("STREAMED[\(dumpStreamed.count)]>>>" + dumpStreamed + "<<<END")
             log("WHOLE[\(whole.count)]>>>" + whole + "<<<END")
             log("MATCH=\(dumpStreamed == whole)")
+            log("IDS \(dumpIds.prefix(40))")
         }
         if mtpStats, mtpRounds > 0 {
             let rates = zip(mtpHits, mtpTries).map { t in
