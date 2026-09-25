@@ -2,308 +2,173 @@
 
 **English** · [简体中文](README.zh-CN.md) · [Português (BR)](README.pt-BR.md)
 
-<img src="icon.png" width="88" height="88" alt="Chaty" />
+<img src="icon.png" width="84" height="84" alt="Chaty" />
 
 # Chaty
 
-### Private, on-device AI — your models, your data, your machine.
+**The models on your disk, put to work.**
 
-Chaty runs open LLMs **100% offline** in a polished desktop app.
-No account, no cloud, no telemetry — with a local coding agent, a document
-knowledge base, Deep Research, and hands-free voice built right in.
+Chat, a coding agent, an image studio, answers from your own documents, and a voice to talk to —<br />
+on open models running entirely on your own Mac or PC. No account, no cloud, no telemetry.
 
-[![Latest release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=19c37d)](../../releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Fangyuan025/Chaty/total?color=8a63d2&cacheSeconds=3600)](../../releases)
+[![Release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=3a3a3a)](../../releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Fangyuan025/Chaty/total?color=3a3a3a&cacheSeconds=3600)](../../releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/Fangyuan025/Chaty/ci.yml?branch=main&label=CI)](../../actions)
-[![Windows · Vulkan](https://img.shields.io/badge/Windows-Vulkan-0078D6?logo=windows&logoColor=white)](../../releases)
-[![macOS · Metal + MLX](https://img.shields.io/badge/macOS-Metal_%2B_MLX-000000?logo=apple&logoColor=white)](../../releases)
-[![Muse-Glimmer · vision + 4 rungs](https://img.shields.io/badge/Muse--Glimmer-vision_%2B_4_rungs-6b4fbb)](#reasoning-effort-as-a-first-class-control)
-[![Qwen3.8 · reasoning effort](https://img.shields.io/badge/Qwen3.8-reasoning_effort-6b4fbb)](#reasoning-effort-as-a-first-class-control)
-[![100% offline](https://img.shields.io/badge/100%25-offline-19c37d)](https://chaty.ca)
-[![Rust + Tauri 2](https://img.shields.io/badge/Rust_+_Tauri_2-CE412B?logo=rust&logoColor=white)](#architecture)
-[![License: MIT](https://img.shields.io/badge/License-MIT-444)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-3a3a3a)](LICENSE)
 
-[**↓ Download**](../../releases) · [**Website**](https://chaty.ca) · [**Docs**](https://chaty.ca/docs.html) · [**Chaty model on Hugging Face**](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)
+[**Download**](../../releases/latest) · [**Website**](https://chaty.ca) · [**Docs**](https://chaty.ca/docs.html) · [**Changelog**](CHANGELOG.md)
+
+<sub>macOS (Apple Silicon) · Windows 10/11 · Linux (AppImage) — GGUF on llama.cpp, MLX natively on Apple Silicon, text-to-image on stable-diffusion.cpp</sub>
 
 <br />
 
-<img src="docs/screenshots/demo.gif" width="860" alt="Chaty's local coding agent reading an out-of-workspace file behind a one-click permission grant" />
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-code-light.jpg" />
+  <img src="docs/screenshots/shot-code.jpg" width="900" alt="Chaty's Code mode: a task plan, tool steps, a real diff and the files the turn changed" />
+</picture>
 
-<sub>A local coding agent — searches GitHub, reads the source, edits your files, and runs the tests. **All on your machine.**</sub>
+<sub>Code mode: the agent found the upstream fix, patched the parser, added a test and ran the suite — on a model running on the same laptop.</sub>
 
 </div>
 
 ---
 
-## Why Chaty
+## Contents
 
-- 🔒 **Truly private** — every model, document, and conversation stays on your device. No sign-up, no server, nothing phoned home.
-- ⚡ **Native and fast** — a Rust + llama.cpp core with **Vulkan / Metal** GPU offload that auto-tunes to your hardware and falls back gracefully to CPU.
-- 🧰 **More than a chat box** — a coding agent, a knowledge base (RAG), Deep Research, hands-free voice, and a self-healing Design Canvas — all offline.
-- 🧠 **Runs almost anything** — Llama 3 / **Muse-Glimmer**, Gemma 3 / 4, Qwen 3 / 3.5 / 3.6 / **3.8**, *any* GGUF from Hugging Face — and **MLX models natively on Apple Silicon** — plus **Chaty's own fine-tuned model**.
-- 💻 **Friendly to modest hardware** — a first-launch *“Set up for me”* picks a model sized to your RAM and downloads it in one click.
+[Chat](#chat) · [Code](#code) · [Image](#image) · [Documents and research](#documents-and-research) · [Voice](#voice) · [Built for small models](#built-around-what-small-models-get-wrong) · [Models](#models) · [Privacy](#privacy) · [Install](#install) · [Build](#build) · [Architecture](#architecture)
 
-<br />
+## Chat
 
-## Reasoning effort as a first-class control
+A chat that shows its work. Reasoning streams into a panel you can fold away; on models with an effort ladder — Qwen3.8's low · medium · xhigh, Muse-Glimmer's four rungs, K2 Horizon's — you choose how hard it thinks, message by message.
 
-Some models ship a native **reasoning-effort ladder** they were trained to obey —
-[Qwen3.8](https://huggingface.co/Qwen/Qwen3.8-27B) has three rungs (`low` · `medium` ·
-`xhigh`), [Muse-Glimmer](https://huggingface.co/meta-models/Muse-Glimmer-30B) four (`low` ·
-`medium` · `high` · `xhigh`). The rung arrives as a chat-template kwarg, so a runtime that
-doesn't know about it silently gets the default and you wait through maximum-length thinking
-for "what's 2 + 2".
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-chat-light.jpg" />
+  <img src="docs/screenshots/shot-chat.jpg" width="860" alt="A chat answer with highlighted Rust code, a table and a KaTeX formula" />
+</picture>
 
-Chaty treats the ladder as a control you actually turn:
+- **Rendered as it streams** — highlighted code, tables, KaTeX, Mermaid, and HTML you can run in place. Blocks render one by one, so a fast model doesn't make the window stutter.
+- **What's on, at a glance** — a quiet line above the composer names what the next message will use (thinking, web search, the knowledge base), each one click from off.
+- **Pictures in** — any vision model: a GGUF with its projector, or an MLX build.
+- **Canvas** — ask for a page and watch it build in a live preview beside its source; later changes land as patches.
+- **Web search without a key**, full-text search across your history, and export to Markdown or JSON.
+- **Your way** — warm or cool dark, paper or cream light, four code themes, English · 简体中文 · Português.
 
-<table>
-<tr><td width="52%">
+## Code
 
-- **Chat** — the thinking item in the `+` menu opens a submenu of the model's *own* rungs;
-  pick one and it applies to the next message.
-- **Code** — the Off / Normal / Deep switch becomes the model's own ladder, however many
-  rungs it has, so an agent step can reason briefly and keep moving. `Off` stays Chaty's: a
-  ladder has no rung for not thinking at all.
-- **Both engines, honestly.** On MLX the rung rides along as the template kwarg. llama.cpp
-  takes no custom kwargs — so Chaty rewrites the rendered prompt into the requested rung,
-  producing output **byte-identical** to what the official template emits for it.
-- **Detected from the template, never the model name** — a renamed or re-quantized finetune
-  keeps its ladder, and every model *without* one keeps the plain on/off toggle it always had.
+A coding agent for the model you can actually run. Switch to **Code**, open a folder, describe the task. The agent reads, searches, edits and runs commands in your project — each step shown as it happens, each edit as a real diff — and ends the turn with a card listing every file it changed, each one undoable.
 
-</td><td width="48%">
+- **You stay in charge** — a live task plan; edits and commands wait for approval unless you allow them. File access is confined to the workspace; on macOS its shell runs in the system sandbox.
+- **Commands that keep running** — dev servers and watchers move to the background; a command that asks a question (`[y/N]`, `Password:`, a REPL, a scaffolder's menu) gets a terminal to answer in.
+- **It remembers** — project memory in plain Markdown; it can search its own past sessions, and you can @-mention one to bring it in.
+- **Tools you add** — MCP servers (with a curated, live-tested list), skills written as Markdown, and a browser it can drive.
+- **Nothing done on red** — a turn ends at a gate: whatever changed since the last passing run is verified first.
 
-Same question, same seed, one rung apart — Qwen3.8-27B (8-bit MLX, 48 GB Apple Silicon):
+**Measured.** One local model for every row — Qwen3.5-35B-A3B (MoE, ~3 B active), mxfp8 on MLX, reasoning off, one machine:
 
-| rung | thinking | tokens | time |
-|---|---|---|---|
-| `low` | 725 chars | 158 | **24 s** |
-| `medium` | 879 chars | 226 | 31 s |
-| `xhigh` *(model default)* | 4 661 chars | 936 | 125 s |
-
-Five times the wait, or five times the deliberation — your call, per message.
-
-</td></tr>
-</table>
-
-<br />
-
-## A local coding agent
-
-Flip the **Chat · Code** switch and Chaty becomes an agent for your codebase. Point it
-at a folder, describe the task, and it explores, edits, and verifies the project by
-itself — every step shown live, every change behind an approval + diff.
-
-- 🌐 **The whole web as a tool** — key-less search of **GitHub** (repos, issues, *and code*), Reddit, YouTube, Bilibili, and any domain; fetching adapts to the content (articles → Markdown, PDFs → text, videos → transcripts).
-- 🧭 **Drives a real browser** — opens pages, reads dynamic content as text, clicks and fills whole forms with real mouse events, logs in and paginates — and *looks* with the vision model when it matters.
-- 🧠 **Tools that do the thinking** — `understand_repo` orients in one call, `search_code` ranks files by relevance, `read_file` lifts a single symbol plus its call sites, `validate_change` runs just the tests the change touches. Small models spend their steps on decisions, not grunt work.
-- ✏️ **Precise edits, real shell** — exact-string patches behind a diff preview with a **syntax gate**, plus commands and long **background jobs** (dev servers, builds) sandboxed to the workspace.
-- ⏪ **You stay in control** — per-action approval, a command allowlist, prompt-injection defense on everything it reads, and **one-click checkpoint rewind** that restores files *and* rolls back the conversation.
-- 🔌 **MCP, sized for small models** — connect any Model Context Protocol server (stdio or streamable HTTP), or one-click a **curated, version-pinned store entry** that's live-certified against Chaty's own client. Tool docs are synthesized lean so a 16K context fits as many servers as you like; every result is injection-defended and untrusted servers need per-call approval.
-- 📚 **Skills & project memory** — drop a `SKILL.md` of procedural steps in `~/.chaty/skills/` (or per-project) and the agent loads it only when relevant; `remember` saves non-obvious findings to `.chaty/memory/` so the next session starts knowing them. Plain markdown, human-editable, never leaves the machine.
-
-<details>
-<summary>More Code-mode details</summary>
-
-- Reads **PDF / Word / Excel / PowerPoint** (a scanned PDF has no text layer and says so); `search_files` finds by name or content; file outlines navigate big files; failed patches get “did-you-mean” hints.
-- Browser automation is verified end-to-end against real sites, and can run in your real Chrome — watch it work, logins and all.
-- Built for local models: an **Off / Normal / Deep** reasoning switch, a **prompt-processing progress ring**, a context-usage ring with automatic compaction, whole-file reads sized to your context window, ranked `search_code` + knowledge-base `search_docs`, and loop-breaking for repetitive small models.
-- Persistent sessions, project memory (**AGENTS.md**), custom **/skills**, and slash commands.
-- Tune it under **Settings → Code**: step limit, command timeout, step temperature, tool-call format, an auto-approve-edits toggle, a headless-browser toggle, and a command allowlist.
-- **Each model's own tool-call format** — Qwen3.5 / 3.6 / 3.8 were trained to write tool calls as XML, Qwen3 and QwQ as JSON; Gemma 4, LFM, GLM-4.5 / 4.6 / 4.7, MiniCPM5 and K2 Horizon each in a form of their own. Chaty reads the format from the model's chat template and speaks it, so long edits stop coming back as broken JSON; a family whose template names none gets XML, and Settings → Code can pick one by hand.
-- File access never leaves the folder you pick; out-of-workspace access asks per folder; a `sudo` command asks first with a secure password prompt; downloads land in the workspace and are covered by checkpoints too.
-
-</details>
-
-<br />
-
-## Benchmarks
-
-One local model for every row — **Qwen3.5-35B-A3B** (MoE, ~3 B active per token), mxfp8 on MLX, reasoning off, entirely on one machine:
-
-| SWE-bench Verified — 45-task macOS-validated subset | Resolved |
+| SWE-bench Verified, 45-task macOS-validated subset | Resolved |
 | --- | --- |
-| **Chaty agent (v1.9)** — the full tool loop, 16K context | **15/45 (33 %)** |
+| **Chaty agent** (v1.9, 16K context) | **15/45 (33 %)** |
 | qwen-code 0.20 — the model family's own CLI (needs 32K) | 12/45 (27 %) |
-| pi 0.81 — minimal 4-tool agent CLI | 10/45 (22 %) |
+| pi 0.81 — minimal 4-tool agent | 10/45 (22 %) |
 | opencode 1.18 | 7/45 (16 %) |
 | bare bash agent — single-tool ablation | 6/45 (13 %) |
 
-Same model, same tasks, same grading, one machine — five agent designs. Chaty leads the field, including the model family's own first-party CLI ([qwen-code](https://github.com/QwenLM/qwen-code)) while using **half its context window**, and resolves **2.5×** the bare-bash ablation. That's the design thesis measured: with frontier models a thin scaffold is enough — on small local models, the intelligence has to live in the tools (repo-aware search, symbol reads, precise edits, recovery guards, post-edit diagnostics). Methodology, per-agent configs, and honest-comparison notes (subset, macOS harness — *not* comparable to leaderboard numbers): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+A subset on a macOS harness, so not comparable with leaderboard numbers; the method, configs and caveats are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-<br />
+## Image
 
-## Design Canvas
-
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-hero-light.jpg" />
-  <img src="docs/screenshots/canvas-hero-dark.jpg" width="860" alt="Design Canvas: live preview beside the actual source, element↔line inspect, console" />
-</picture>
-
-- **Preview | code, side by side** — every page opens as a split studio: live preview left, the **actual source** right, syntax-highlighted and palette-following. Three drag-resizable columns, fullscreen, page reload, and a **Console** tab for the page's logs and errors.
-- **Point at what you mean** — Inspect links the panes both ways: hover an element and the code jumps to its line; click a code line and the element flashes. **Click to select** (⌘/Ctrl multi-select) and your next instruction edits exactly those elements — or open the source yourself with the **Edit** button.
-- **Watch the edit happen** — iterations stream in Cursor-style: the code pane scans the document line by line and lands on a **Changes** diff (+N/−N, same language as Code mode).
-
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-scan-light.jpg" />
-  <img src="docs/screenshots/canvas-scan-dark.jpg" width="860" alt="Live line-by-line scan while the model edits the page" />
-</picture>
-
-- **Self-healing, persistent** — runtime errors offer a one-click **Fix** (always asks first); a compat layer keeps browser-clean pages clean here too (history API, cookies, clipboard); and each reply keeps its canvas session across close/reopen, with version history, a confirmed reset, and export to a standalone `.html`.
-
-<br />
-
-## Chat that renders everything
+Load a text-to-image model and the whole app becomes an image studio: sessions that read like conversations, a live preview while it draws, and each model's recommended settings filled in.
 
 <table>
 <tr>
-<td width="50%"><img src="docs/screenshots/shot-chat.jpg" alt="Rich chat rendering — syntax-highlighted code, tables, and KaTeX math" /></td>
-<td width="50%"><img src="docs/screenshots/shot-chat-light.jpg" alt="The same conversation in Chaty's light theme" /></td>
+<td width="50%"><img src="docs/screenshots/plate-diner.jpg" alt="A neon sign reading LATE NIGHT DINER on a rainy street corner" /></td>
+<td width="50%"><img src="docs/screenshots/plate-shokudo.jpg" alt="A red neon sign reading 深夜食堂 on a rainy street at night" /></td>
 </tr>
-</table>
-
-- A streaming, foldable **`<think>`** panel that follows the model's reasoning as it generates.
-- **KaTeX** math, tables, **Mermaid** diagrams, per-block code copy, and in-app rendering of single-file HTML — including playable web games.
-- A **⌘K command palette**, pinnable / renameable conversations, drag-and-drop attachments, export (Markdown / JSON), and full-text search.
-- Four palettes (two dark, two light) with system-theme following, native UI zoom, reduced-motion support, and an **English / 简体中文 / Português (BR)** UI.
-
-<br />
-
-## Chaty can see
-
-Load a **vision model** (its weights and `mmproj` encoder live together in one folder, paired automatically) and image understanding turns on everywhere:
-
-- **Chat** — attach a picture and ask about it; follow-ups stay fast (already-seen images aren't re-encoded).
-- **Code** — the agent reads screenshots and can look at any image with `view_image`; the composer takes images and documents just like chat.
-- **Knowledge base** — imported images get a written description beside their OCR text, so search finds what's *in* them; images embedded **inside** PDFs, Word, Excel and PowerPoint files are extracted and described too.
-- **Canvas** — the model sees the live rendered page when you ask for an edit.
-
-Text-only models keep the OCR path, so nothing regresses — and updating from an older version, a one-time prompt tidies your existing loose `.gguf` files into the one-folder-per-model layout with a single click.
-
-<br />
-
-## Chaty can draw
-
-Load a **text-to-image GGUF** — Qwen-Image / Qwen-Image-2.1, Z-Image, FLUX, Chroma, SD3, SDXL, SD 1.x — and the whole app switches to an image studio:
-
-- **Image mode, automatically** — the chat gives way to image sessions: the same sidebar, thread and composer, with each round a prompt and the pictures it made; the command palette, sidebar and settings only show what applies to drawing.
-- **Sessions like conversations** — saved on disk, pinnable, renameable and searchable by their prompts, with each session's unsent prompt kept; they carry on across model switches (each round remembers which model drew it) and appear only while an image model is loaded.
-- **Multi-turn editing** — with an editing model, every round's picture becomes the one the next prompt edits ("make the hat red"), and any earlier picture can be picked up again; each round shows which round it came from.
-- **Live progress** — an overall percentage, the current stage (encode → sample → decode), step count, seconds per step, elapsed time and ETA, over a live preview that sharpens as it denoises. Stop now, or after the current picture of a batch.
-- **Every knob** — aspect ratio and resolution, batch size, seed, negative prompt, steps, CFG, guidance, sampler, scheduler, flow shift and more, with per-family defaults. A reference image turns on img2img (or editing, for models that support it).
-- **Caches that save real time** — a prompt (and reference picture) already encoded is not encoded again, so "again" and re-rolls skip the text and vision encoders; an optional sampling speed-up reuses denoising steps that barely change (EasyCache for DiT models, UCache for UNet).
-- **Companion files handled** — a diffusion GGUF is just the denoiser; Chaty finds its VAE and text encoder next to it or in your other models, and offers a one-click download of anything missing.
-- **Full GPU by default**, like chat — offload, text encoder / VAE on CPU, flash attention and a VRAM cap are all in **Settings → Image model**. Runs on [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) in an isolated sidecar: a driver crash can't take the app down, and it falls back to CPU by itself.
-
-Pictures are saved as PNGs with their parameters embedded — reuse a seed, reuse all settings, copy, save, or reveal them in one click.
-
-<br />
-
-## Models: the store, native MLX — and Chaty's own
-
-- A built-in **model store**: search Hugging Face by name or author, filter **GGUF / MLX**, sort by trending or downloads — then pick a **quantization** from a dropdown and hit download. Models, not file lists.
-- Parameter / architecture / vision badges, the repo's README rendered in-app, and a **"fits fully in memory"** hint sized to your machine. Vision models fetch their encoder automatically; pasting a repo link still works.
-- **MLX runs natively** on Apple Silicon: mlx-community folder models load through Apple's MLX stack in an isolated sidecar — same chat, vision, reasoning controls, Code agent and knowledge-base support as GGUF, and ejecting a model *always* returns its memory.
-- **Chaty's own fine-tune** — a Qwen3.5-4B distilled from a much larger teacher for leaner on-device single-file web design, with a baked-in Chaty identity and grounded citations. A one-click pick in *“Set up for me”*, fully open on **[Hugging Face](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)**.
-
-<br />
-
-## A private knowledge base
-
-<table>
 <tr>
-<td width="52%">
-
-- Index **PDF, Word, Excel, Markdown, ~90 text/code formats, and images** into an on-device store — one file or a whole folder. Images are read by **OCR *and*, with a vision model, described in words** so you can search what's *in* the picture.
-- **Hybrid retrieval**: bge-m3 vectors + BM25 keywords, fused with RRF, de-duplicated with MMR, expanded with neighbors.
-- **Strict grounding** — answers come only from your files, with **per-file citations** and hover-preview of the source passage. Chaty says when something isn't covered instead of guessing.
-- **One-click report** — a cited, NotebookLM-style overview of the whole base, exportable to PDF or Markdown.
-
-</td>
-<td width="48%"><img src="docs/screenshots/shot-knowledge.jpg" alt="Local knowledge base — indexed documents with per-file toggles and one-click report / podcast" /></td>
+<td><sub>“A neon sign that reads LATE NIGHT DINER on a rainy street corner…” — Z-Image Turbo, Q4_K_M, 1024², 8 steps, 2 min 51 s</sub></td>
+<td><sub>“雨夜街角的霓虹灯招牌，写着「深夜食堂」…” — Qwen-Image 2.1, Q4_K_M, 1024², 20 steps, 16 min 10 s</sub></td>
 </tr>
 </table>
 
-<br />
+<sub>Straight out of Chaty, unedited, on an Apple M4 Pro with 48 GB.</sub>
 
-## Deep Research & the web
+- **The families that matter** — Z-Image and Z-Image Turbo, Qwen-Image 2.1, FLUX.1 dev and schnell, Chroma, Stable Diffusion 1.x, 2.x, XL and 3.x.
+- **The other files, found** — a text-to-image GGUF is only the denoiser; Chaty finds its VAE and text encoder beside it, or downloads the missing ones in one click.
+- **Keep going from a picture** — start the next round from any image; models that edit take it as a reference and change only what you ask.
+- **Saved with its recipe** — PNGs carry the prompt and settings inside, filed by date.
 
-- Give a topic and Chaty plans queries, runs **multiple rounds** of web search interleaved with reasoning, and writes a structured, cited report — **exportable to PDF or Markdown**.
-- Honest by design: the reference list contains only sources it actually cited.
-- A free, key-less, multi-provider search chain (Brave → Bing → DuckDuckGo → Wikipedia) so one blocked provider never breaks search.
+It runs on [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) in a helper process — Metal on a Mac, Vulkan on Windows and Linux — so a driver crash ends the helper, not the app.
 
-<br />
+## Documents and research
 
-## Hands-free voice
+Drop in PDFs, Word files, slides, spreadsheets, Markdown or code. Chaty indexes them on your machine, retrieves by meaning and by keyword, and cites the passage behind each claim — or says plainly when your documents don't cover the question.
 
-<table>
-<tr>
-<td width="48%"><img src="docs/screenshots/shot-live.jpg" alt="Live voice mode — an animated orb for continuous, hands-free conversation" /></td>
-<td width="52%">
+- **Scans, read page by page** by a vision model; charts inside documents can be described so they're searchable too.
+- **Deep Research** — several rounds of web search and reasoning, written up as a report that cites only what it used; export to PDF or Markdown.
+- **A two-host podcast** from a knowledge base, saved as WAV.
 
-- **Live mode** — continuous, hands-free conversation with an animated orb.
-- Voice in/out with silence auto-send and read-aloud — **11 voices** with speed control.
-- **English or Chinese** — recognition and a Chinese voice switch on with the interface language, or from Settings → Voice. English stays on the English-only model, which is more accurate on English.
-- **Deep-dive podcast** — turn your knowledge base into a NotebookLM-style two-host audio show, with WAV export.
-- All voice runs on the **CPU**, so it never competes with the LLM for VRAM.
+## Voice
 
-</td>
-</tr>
-</table>
+Live mode is a hands-free conversation: Whisper listens, the model answers, and a local voice reads the reply back sentence by sentence — in English or Chinese. Speech runs on the CPU, so it never competes with the model for GPU memory. Silence sends your turn; any answer can be read aloud.
 
-<br />
+## Built around what small models get wrong
 
-## Everything stays on your machine
+A frontier model can hold a workflow together on its own. A model that fits on your laptop often can't: it repeats the call it just made, sends an empty argument, retypes the line it means to change slightly wrong, and calls the job done without running it. Chaty is engineered for that model.
 
-<table>
-<tr>
-<td width="52%">
+| | |
+|---|---|
+| **Its own dialect** | Tool calls are taught and read in the format each model was trained on — XML, JSON, Gemma, LFM, K2, GLM, MiniCPM — taken from its chat template, not assumed. |
+| **Edits that land** | An edit is checked against the file while it's still being written. A retyped line with the wrong spaces, escapes or line numbers still lands when exactly one place fits. |
+| **Slips caught at the step** | Repeated calls, empty arguments and plans left unexecuted are noticed where they happen, with a correction that shows the model what it wrote. |
+| **Nothing done on red** | Changes since the last passing run are verified before a turn may end. |
+| **A cache that carries over** | Each turn's prompt is an append to the last, so the model's cache is reused instead of read again from the top. |
+| **One app** | No server, no port, no API key, no config file. |
 
-- Conversations, models, and indexes live in one **local data folder** — copy it to back up, clear it in a click.
-- **GPU acceleration**: cross-vendor **Vulkan** (Windows) and **Metal** (Apple Silicon, offload-all on unified memory), VRAM-aware auto-tuning with OOM back-off and CPU fallback.
-- **Any `.gguf` — or MLX folder** — tokenizer and chat template come from the model itself; first-class handling for Llama 3 and Muse-Glimmer (vision, and its ATEM reasoning protocol), Gemma 3 / 4, Qwen 3 / 3.5 / 3.6 / 3.8, GLM-4.5 / 4.7, MiniCPM5, and IFM's K2 Horizon — dense and MoVA, on both engines (including their reasoning-effort ladders).
-- **Adjustable context** that auto-fits the model's trained length to your memory and summarizes older turns near the limit; **safe model switching** and full sampling controls with saveable presets.
+## Models
 
-</td>
-<td width="48%"><img src="docs/screenshots/shot-settings.jpg" alt="Settings — a local data dashboard showing conversations, models, and knowledge-base stats" /></td>
-</tr>
-</table>
+Any GGUF runs on llama.cpp (Metal, or Vulkan on NVIDIA, AMD and Intel); on Apple Silicon, MLX folders run natively too. Search and download from Hugging Face inside the app — or point Chaty at a folder you already have. These families get their templates, reasoning controls and tool-call formats wired in:
 
-> **Offline-first.** The network is used only for optional web search and one-time model downloads.
+| Family | What's wired in |
+|---|---|
+| Qwen 3 · 3.5 · 3.6 · 3.8 | Thinking on or off; Qwen3.8's effort ladder; vision where the model has it |
+| Gemma 3 · 4 | Vision; Gemma 4's own tool-call format and reasoning |
+| K2 Horizon · MoVA | Its effort ladder and `<ifm\|arg_key>` tool calls, on both engines |
+| GLM-4.5 · 4.6 · 4.7 | Its `<tool_call>name<arg_key>…` tool calls |
+| Llama 3 · Muse-Glimmer | Vision, and Muse-Glimmer's four-rung effort ladder |
+| MiniCPM5 · LFM 2.5 | Each family's own tool-call format |
+| [Chaty · Qwen3.5-4B design](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF) | Our own fine-tune for single-file web pages — one click at first launch |
 
-<br />
+A community fine-tune whose chat template differs from llama.cpp's built-in guess is run with its own template, as transformers would run it.
+
+## Privacy
+
+Models, conversations, documents and pictures live in a folder on your disk. There's no account and no server of ours to trust — delete the folder, and it's gone.
+
+The network is used only for: **web search and Deep Research** when you turn them on; **downloads you start** (models, voices, embedding files); and **one update check** — a request to GitHub for the latest release, a few seconds after launch. Details in [Privacy & data](https://chaty.ca/docs.html#privacy).
 
 ## Install
 
-Grab the latest build from the [**Releases**](../../releases) page:
+Download from the [latest release](../../releases/latest):
 
 | Platform | File | Notes |
 |---|---|---|
-| Windows x64 | `Chaty_*_x64-setup.exe` | Per-user installer — no admin required |
-| macOS (Apple Silicon) | `Chaty_*_aarch64.dmg` | See the first-launch note below |
+| macOS (Apple Silicon) | `Chaty_*_aarch64.dmg` | Metal and MLX. See the first-launch note below |
+| Windows 10 / 11 (x64) | `Chaty_*_x64-setup.exe` | Vulkan. Per-user installer, no admin needed |
+| Linux (x86-64) | `Chaty_*_amd64.AppImage` | Vulkan. Beta — `chmod +x`, then run it |
 
-**macOS first launch.** Chaty is ad-hoc signed but not notarized (there's no paid Apple
-Developer account behind it), so Gatekeeper warns on first open. The app is safe — everything
-runs locally. Clear the download quarantine once:
+**macOS first launch.** Chaty is signed but not notarized (there's no paid Apple Developer account behind it), so Gatekeeper warns on first open. Clear the download quarantine once, then open Chaty as usual:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Chaty.app
 ```
 
-then open Chaty normally. (Or: open it, dismiss the warning, and choose **System Settings →
-Privacy & Security → Open Anyway**.) On macOS the writable models folder lives in app data —
-use **Open models folder** in the model menu — or point it at another drive with
-**Settings → Model → Models folder → Change location**.
+Or open it, dismiss the warning, and choose **System Settings → Privacy & Security → Open Anyway**.
+
+Small quantized language models run in 8 GB of memory; text-to-image models want 16 GB or more. Chaty sizes GPU offload to your memory and refuses a model that can't fit rather than freezing the machine. New to it? [Getting started](https://chaty.ca/docs.html#getting-started).
 
 ## Build
 
 Full details in **[BUILD.md](BUILD.md)**.
-
-```powershell
-# Windows
-npm install
-.\dev.ps1                            # dev
-npm run tauri build -- --no-bundle   # release exe → compile the Inno installer
-```
 
 ```bash
 # macOS (Apple Silicon)
@@ -312,20 +177,31 @@ npm run tauri dev      # dev (Metal)
 npm run tauri build    # → .app + .dmg
 ```
 
-Releases are produced by CI: bump with `scripts/bump-version.sh x.y.z`, then push a `vx.y.z`
-tag — GitHub Actions builds both installers onto a single release.
+```powershell
+# Windows
+npm install
+.\dev.ps1                            # dev
+npm run tauri build -- --no-bundle   # release exe → compile the Inno installer
+```
+
+The MLX and image engines are separate helpers — `scripts/build-mlx-sidecar.sh` and `scripts/build-sd-sidecar.{sh,ps1}`. Releases come from CI: bump with `scripts/bump-version.sh x.y.z`, push a `vx.y.z` tag, and GitHub Actions builds all three platforms onto one release.
 
 ## Architecture
 
 | Layer | Stack |
 |---|---|
-| Shell | Tauri 2 — system tray, global shortcut, single-instance |
-| Frontend | React 19 · Vite · react-markdown · KaTeX |
-| Inference | Rust · `llama-cpp-2` (llama.cpp) — Vulkan (Windows) / Metal (macOS) · MLX via an `mlx-swift-lm` sidecar (Apple Silicon) · text-to-image via a stable-diffusion.cpp sidecar (`chaty-sd`) |
-| Voice | `sherpa-rs` (ONNX Runtime, CPU) — Whisper (`base.en` for English, multilingual `base` for Chinese) + Kokoro-82M and a VITS Chinese voice |
+| Shell | Tauri 2 — tray, global shortcut, single instance |
+| Interface | React 19 · Vite · react-markdown · KaTeX · Mermaid |
+| Language models | Rust · `llama-cpp-2` (llama.cpp — Metal / Vulkan) · MLX through an `mlx-swift-lm` helper on Apple Silicon · chat templates rendered with minijinja where a model's own differs |
+| Image models | stable-diffusion.cpp in the `chaty-sd` helper |
+| Voice | `sherpa-rs` (ONNX Runtime, CPU) — Whisper, Kokoro-82M, and a VITS Chinese voice |
 | Knowledge base | bge-m3 embeddings + BM25 · hybrid RRF / MMR retrieval · SQLite vector store |
-| Storage | SQLite — conversations, messages, full-text search |
+| Storage | SQLite — conversations, sessions, full-text search |
+
+## Contributing
+
+Bug reports are welcome — attaching the error log (**Settings → Data → Open error log**) usually turns days of guessing into minutes. See [Contributing](https://chaty.ca/docs.html#contributing) for building, testing and the benchmarks.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Built with [llama.cpp](https://github.com/ggml-org/llama.cpp), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [Tauri](https://tauri.app), and [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
+MIT — see [LICENSE](LICENSE). Built on [llama.cpp](https://github.com/ggml-org/llama.cpp), [MLX](https://github.com/ml-explore/mlx-swift), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [Tauri](https://tauri.app) and [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).

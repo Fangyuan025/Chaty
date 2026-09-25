@@ -1,5 +1,220 @@
 # Changelog
 
+## v2.3.0 — Put to work (2026-09-25)
+
+### Image generation
+
+- **Text-to-image models load, and the whole app becomes an image studio.**
+  A diffusion GGUF — Qwen-Image 2.1, Qwen-Image, Z-Image and Z-Image Turbo,
+  FLUX.1, Chroma, Stable Diffusion 3, XL and 1.x — is recognised when it is
+  loaded, by its tensors (files like unsloth's Qwen-Image-2.1 carry no
+  metadata at all), and runs on stable-diffusion.cpp in a helper process of
+  its own, `chaty-sd`: Metal on a Mac, Vulkan on Windows and Linux. A crash
+  in a GPU driver ends the helper, not the app, and the load retries on the
+  CPU by itself. Measured on an M4 Pro with 48 GB at 1024 × 1024: Z-Image
+  Turbo draws in 2 min 51 s (8 steps), Qwen-Image 2.1 in 16 min 10 s
+  (20 steps at CFG 6) — Chinese signage as legible as English.
+
+- **Sessions like the chat's.** The sidebar lists image sessions — pinned
+  first, renameable, searchable by the prompts inside them — and each reads as
+  a thread of rounds: the prompt as your bubble, the pictures as the reply,
+  with the same actions (again with a new seed, reuse the prompt and every
+  setting, delete). Each session keeps its unsent prompt, and a session is
+  not tied to a model: switching image models carries on in the same one.
+
+- **Drawn where you can watch it.** An overall percentage, the stage (reading
+  the prompt, drawing, decoding), seconds per step, elapsed time and an
+  estimate of what's left, over a live preview; stop now, or after the
+  current picture of a batch. Every knob is there — size and aspect, batch,
+  seed, negative prompt, steps, CFG, guidance, sampler, scheduler, flow
+  shift — each on the family's recommendation until you change it.
+
+- **Editing from a picture.** With a model that edits (Qwen-Image 2.1 with
+  its vision encoder), each round's picture becomes the one the next prompt
+  edits, and any earlier picture can be picked up again; other models redraw
+  from a reference at the strength you set. Each round shows the round it
+  came from.
+
+- **The other files, found.** A diffusion GGUF is only the denoiser. Its VAE
+  and text encoders are found beside it or among your other models, a
+  missing one is a one-click download into the model's folder, and the store
+  can fetch them with the quant.
+
+- **Caches that skip work.** A prompt — and a reference picture — already
+  encoded is not encoded again, so "again" and re-rolls skip the encoders
+  (Z-Image Turbo: 1.03 s → 0 s). An optional sampling speed-up reuses steps
+  that barely change: 2 of 8 skipped on Z-Image Turbo.
+
+- Pictures are PNGs with the prompt and settings inside, filed by date.
+  Everything goes on the GPU by default; the text encoder or the VAE can move
+  to the CPU, weights can wait in RAM, and the engine's VRAM can be capped.
+
+### Models
+
+- **K2 Horizon, on both engines.** IFM's K2 Horizon (0.9B, 3.7B, 7B and
+  MoVA-36B-A4B) loads as GGUF and as MLX. llama.cpp gains the architecture,
+  backported from IFM's branch; the MLX side has an implementation of its own
+  — grouped RMSNorm, sigmoid routing whose bias only picks experts, MoVA's
+  routed value experts, the softplus attention gate. Its reasoning opens with
+  tags of its own, which the effort ladder picks through the template, and
+  with thinking off both engines close the thought the way its own template
+  does. On the edit stress set: MoVA-36B-A4B (MLX 4-bit) 5/5, 3.7B MLX 5/5.
+
+- **GLM-4.5 / 4.6 / 4.7 and MiniCPM5 tool calls.** GLM writes
+  `<tool_call>name<arg_key>…`; read as JSON, the fallback for a template Chaty
+  did not recognise, a GLM call was no call at all. MiniCPM5 writes
+  `<function name><param name>` with CDATA values. Both are read, taught,
+  closed and streamed now: GLM-4.7-Flash 5/5 on the edit stress set,
+  MiniCPM5 0/5 → 4/5.
+
+- **Templates rendered as they were trained.** llama.cpp does not run a
+  GGUF's Jinja template: it recognises the family by substrings and prints
+  its own version, dropping whatever the template did beyond it. MiniCPM5's
+  official GGUF writes its own BOS in the template, and rendered the built-in
+  way had none and answered in fragments (#20). Templates are now rendered
+  with minijinja in an environment that behaves like transformers', and used
+  only for a model whose rendering really differs from the built-in one:
+  MiniCPM5-1B 0/4 → 2/4, Llama 3.x gets its date header, Phi-4 stops being
+  fed Phi-3's format, EXAONE 4 13/20 → 16/20; every model whose built-in
+  rendering was faithful is byte-identical to before.
+
+- **A refused model says why.** llama.cpp's log was thrown away, so a refusal
+  came back as a null pointer and the reason was guessed from the header — an
+  unsupported quantization was reported as "does not know the architecture
+  qwen35" (#20). The reason now comes from what llama.cpp said, the notice
+  keeps it whole, and the MLX engine's refusals are explained too.
+
+- **MLX models stop cleanly.** The MLX engine seeded its repetition penalty
+  with the prompt's last twenty tokens — the turn's own markup, and for GLM
+  the very token it must write to stop; GLM-4.7-Flash could not end a turn at
+  the default 1.1 and misread its own question. The penalty sees only
+  generated tokens now, as llama.cpp's does, and logits are sampled in fp32.
+  Every MLX model was a little less able to stop.
+
+- **MLX: emoji no longer double.** Text streamed by grapheme cluster sent a
+  cluster that grows as its parts arrive (☀ + a variation selector) twice.
+
+### Code mode: edits
+
+- **An edit that cannot land is stopped while it is being written.**
+  old_string is checked against the file line by line as it streams; once a
+  written line is in no place in the file, generation stops before
+  new_string, and the model gets the report the finished call would have
+  earned, with the closest lines.
+
+- **Retyped old_strings land where they clearly mean.** Whitespace, escapes
+  written out, line numbers copied in, a line or two misremembered, a
+  whitespace class written as a pattern (`\s+`) — matched in tiers and taken
+  only where one place clearly wins; the lines the model did not mean to
+  change keep the file's own spelling.
+
+- **Several edits to one file** written against the text before any of them
+  are rebased onto the edits before them, and the same edit named twice is
+  done once. An edit with no new_string at all is refused instead of deleting
+  what old_string matched; write_file with no content field no longer empties
+  the file.
+
+- **Makefiles.** New lines follow a tab-indented file, and a recipe line
+  written flush left gets its tab — a recipe with spaces is a syntax error the
+  model cannot see in what it reads back.
+
+- **The rest of a long diff opens.** A step card showed a long diff's first
+  400 rows and "rest collapsed" as dead text; the line now opens the rest, on
+  a step card and in a turn's changes. A file too big to keep whole on its
+  card has its whole diff kept beside the session, fetched when asked for.
+
+### Code mode: calls as models write them
+
+- Mixed XML styles, arguments written as their own opener (`<path=a.ts>`),
+  `<parameter>` tags with no name, stray spaces in argument names, structured
+  arguments written as JS or Python literals, a reply that is nothing but a
+  JSON call — each was an "empty-argument call" in a real run, and each is
+  read now. When an argument still cannot be read, the correction shows the
+  model the line it wrote.
+
+- **A call written inside the reasoning** runs when the thought stopped at it
+  (Qwen3.5 does this), is drawn as a live card, and no longer shows as a wall
+  of tags in the thought; a call made after the thought is the one run, and
+  one the thought only quoted is not.
+
+- **Sampling is shared with chat, all of it but temperature.** Top-p, top-k,
+  min-p and the repeat penalty used to be hard-coded in Code; now they, the
+  max length (which caps each step, never below 512) and the stop sequences
+  come from Settings → Sampling. Code keeps its own temperature, and its
+  separate per-step limit is gone.
+
+- A workspace reached through a symlink (macOS's /var and /tmp, a linked
+  projects folder) refused absolute paths to folders not yet created — the
+  model was told the user had denied access to its own workspace. The
+  read-only judge let `git diff --output`, `git reflog expire`, `tree -o` and
+  `xxd -r` through without asking. `glob` with an absolute pattern searched
+  outside the workspace. The Rust leg of validate_change passed its test
+  filters where cargo reads options, and ran nothing.
+
+### Chat
+
+- **What the next message will use is in view.** A quiet line above the
+  composer names what is on — thinking (with its rung), web search, the
+  knowledge base, web design, read-aloud — each with its own way off, beside
+  the last reply's token stats (#18).
+
+- **Code blocks stay up while a fast model writes.** A streaming reply was
+  re-rendered whole every frame, re-highlighting every code block. It is
+  rendered block by block now, the block being written line by line: frame
+  p95 23–28 ms → 18–19 ms.
+
+- **Skill files named in any script.** A Chinese file name fell back to
+  `skill`, and several such files overwrote one another (#18).
+
+- Knowledge-base keyword search indexes every script — kana, Cyrillic,
+  accented Latin, Indic marks, full-width letters.
+
+### Settings
+
+- **Regrouped.** General and Appearance; Chat, Knowledge base and Voice;
+  Model and Sampling; Code and Skills & MCP; Data and About — and with an
+  image model loaded, Image generation and Image model in place of the ones
+  only a language model reads. Long pages are split under small headings, and
+  a category opens at its top.
+
+### Look and feel
+
+- **A quieter, more finished look.** The window is one frame with the working
+  area inset in it; Instrument Sans and JetBrains Mono, bundled; the composer
+  floats; conversations are grouped by recency, their titles no longer cut
+  short by hidden row actions; code blocks get a header; step cards join into
+  one list, success ticks go quiet and only failures take colour. The status
+  dots, the breathing pulse and the green spinners are gone, and the accent is
+  kept for the primary action and real states. Code mode's top bar belongs to
+  its panel, and its running status sits inside the composer, clear of the
+  transcript's fade.
+
+- Menus are the app's own throughout — the model store's filters and the
+  image studio's pickers were the OS's — and open upward when there is no
+  room below.
+
+### Reliability
+
+- Two models could load at once: one load at a time now, front and back.
+- A GGUF named outside ASCII crashed the model list.
+- The Jinja comment stripper could swallow the template between two comments.
+- A vocabulary without a BOS aborted the process (GLM-Edge).
+- An MCP call returning after its server reconnected put the dead
+  connection back; MCP servers connected only in sessions with a picture.
+- Switching sessions while a turn was being prepared wrote the old session's
+  messages under the new one's id; a page rejoining a turn in flight could
+  stay busy for good.
+- Two sends in quick succession could start two turns; stopping during a
+  summary was swallowed; deleting the conversation being answered left a
+  search running.
+- An interrupted OCR or MLX download could leave a model that looks whole
+  and never loads.
+- Forty-two commands that can take a while — knowledge-base search, grep and
+  glob, the model list, the microphone permission wait — ran on the main
+  thread and froze the window.
+- Windows: console output that is not UTF-8 is read with the machine's own
+  code page.
+
 ## v2.2.2 — While it runs (2026-09-17)
 
 ### Code mode: commands that ask for input

@@ -2,323 +2,206 @@
 
 [English](README.md) · **简体中文** · [Português (BR)](README.pt-BR.md)
 
-<img src="icon.png" width="88" height="88" alt="Chaty" />
+<img src="icon.png" width="84" height="84" alt="Chaty" />
 
 # Chaty
 
-### 私密的本地 AI —— 你的模型、你的数据、你自己的设备。
+**硬盘里的模型，真正干起活来。**
 
-Chaty 是一款精致的桌面应用,让开源大模型**完全离线**运行。
-无需账号、不上云、零遥测 —— 还内置本地编码智能体、文档知识库、
-Deep Research 与免手语音。
+对话、编程智能体、文生图、从你自己的文档里找答案，还有能开口说话的语音——<br />
+全部跑在你自己 Mac 或 PC 上的开源模型里。无需账号，不上云，零遥测。
 
-[![Latest release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=19c37d)](../../releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Fangyuan025/Chaty/total?color=8a63d2&cacheSeconds=3600)](../../releases)
+[![Release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=3a3a3a)](../../releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Fangyuan025/Chaty/total?color=3a3a3a&cacheSeconds=3600)](../../releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/Fangyuan025/Chaty/ci.yml?branch=main&label=CI)](../../actions)
-[![Windows · Vulkan](https://img.shields.io/badge/Windows-Vulkan-0078D6?logo=windows&logoColor=white)](../../releases)
-[![macOS · Metal + MLX](https://img.shields.io/badge/macOS-Metal_%2B_MLX-000000?logo=apple&logoColor=white)](../../releases)
-[![Muse-Glimmer · 视觉 + 四档](https://img.shields.io/badge/Muse--Glimmer-视觉_%2B_四档-6b4fbb)](#把思考档位做成一等公民)
-[![Qwen3.8 · reasoning effort](https://img.shields.io/badge/Qwen3.8-思考档位-6b4fbb)](#把思考档位做成一等公民)
-[![100% offline](https://img.shields.io/badge/100%25-offline-19c37d)](https://chaty.ca)
-[![Rust + Tauri 2](https://img.shields.io/badge/Rust_+_Tauri_2-CE412B?logo=rust&logoColor=white)](#架构)
-[![License: MIT](https://img.shields.io/badge/License-MIT-444)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-3a3a3a)](LICENSE)
 
-[**↓ 下载**](../../releases) · [**官网**](https://chaty.ca) · [**文档**](https://chaty.ca/docs.html) · [**Hugging Face 上的 Chaty 模型**](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)
+[**下载**](../../releases/latest) · [**官网**](https://chaty.ca) · [**文档**](https://chaty.ca/docs.html) · [**更新日志**](CHANGELOG.md)
+
+<sub>macOS（Apple Silicon）· Windows 10/11 · Linux（AppImage）—— GGUF 跑在 llama.cpp 上，Apple Silicon 原生跑 MLX，文生图跑在 stable-diffusion.cpp 上</sub>
 
 <br />
 
-<img src="docs/screenshots/demo.gif" width="860" alt="Chaty 本地编码智能体:一键授权后读取工作区外文件并总结" />
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-code-light.jpg" />
+  <img src="docs/screenshots/shot-code.jpg" width="900" alt="Chaty 编程模式：任务计划、工具步骤、真实差异，以及这一轮改过的文件" />
+</picture>
 
-<sub>一个本地编码智能体 —— 搜 GitHub、读源码、改你的文件、跑测试。**全在你自己的机器上。**</sub>
+<sub>编程模式：智能体找到上游的修复，改了解析器，补上测试，跑完整套用例——用的是同一台笔记本上跑着的模型。</sub>
 
 </div>
 
 ---
 
-## 为什么选 Chaty
+## 目录
 
-- 🔒 **真正私密** —— 每个模型、文档、对话都留在你的设备上。无需注册、没有服务器、不向任何地方回传。
-- ⚡ **原生而快** —— Rust + llama.cpp 内核,**Vulkan / Metal** GPU 卸载,按硬件自动调优,放不下时平稳回退 CPU。
-- 🧰 **不只是聊天框** —— 编码智能体、知识库(RAG)、Deep Research、免手语音,以及会自愈的设计画布 —— 全部离线。
-- 🧠 **几乎什么都能跑** —— Llama 3 / **Muse-Glimmer**、Gemma 3 / 4、Qwen 3 / 3.5 / 3.6 / **3.8**、Hugging Face 上的*任意* GGUF,**Apple Silicon 上还能原生跑 MLX 模型** —— 还有 **Chaty 自研微调模型**。
-- 💻 **对弱硬件友好** —— 首次启动的「为我配置」会按你的内存挑一个合适的模型,一键下载。
+[对话](#对话) · [编程](#编程) · [文生图](#文生图) · [文档与研究](#文档与研究) · [语音](#语音) · [为小模型而做](#专门对付小模型会犯的错) · [模型](#模型) · [隐私](#隐私) · [安装](#安装) · [构建](#构建) · [架构](#架构)
 
-<br />
+## 对话
 
-## 把思考档位做成一等公民
+看得见思路的对话。思考过程实时写进一个可以收起的面板；支持思考档位的模型——Qwen3.8 的 low · medium · xhigh、Muse-Glimmer 的四档、K2 Horizon 的档位——每条消息都能选它想多深。
 
-有些模型自带原生**思考档位**,是训练时就学会服从的指令——[Qwen3.8](https://huggingface.co/Qwen/Qwen3.8-27B)
-三档(`low` · `medium` · `xhigh`),[Muse-Glimmer](https://huggingface.co/meta-models/Muse-Glimmer-30B)
-四档(`low` · `medium` · `high` · `xhigh`)。档位以对话模板 kwarg 的形式传入,所以不认识它的
-运行时只会静默拿到默认档:问「1+1 等于几」也要等它把最长的思考走完。
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-chat-light.jpg" />
+  <img src="docs/screenshots/shot-chat.jpg" width="860" alt="一条带高亮 Rust 代码、表格和 KaTeX 公式的回答" />
+</picture>
 
-Chaty 把这个档位做成了你真正能拧的旋钮:
+- **边生成边渲染**——高亮代码、表格、KaTeX、Mermaid，以及能直接运行的 HTML。内容按块逐个渲染，模型再快窗口也不卡。
+- **开着什么，一眼可见**——输入框上方一行小字写明下一条消息会用到什么（思考、联网搜索、知识库），点一下就能关。
+- **也能看图**——任何视觉模型：带投影文件的 GGUF，或 MLX 版本。
+- **Canvas 设计台**——让它做一个网页，看着它在源码旁的实时预览里成形；之后的修改以补丁落地。
+- **联网搜索不要密钥**，历史对话全文搜索，可导出 Markdown 或 JSON。
+- **按你的习惯**——暖炭或冷黑的深色、纸白或米色的浅色，四种代码配色，English · 简体中文 · Português。
 
-<table>
-<tr><td width="52%">
+## 编程
 
-- **聊天** —— `+` 菜单里的「思考模式」展开成模型**自己的**档位子菜单,选中即对下一条消息生效。
-- **Code 模式** —— 原本的「不思考 / 标准 / 深入」直接换成模型自己的阶梯,它有几档就是几档,
-  让 agent 的每一步可以只想一小会儿就继续干活。「不思考」仍归 Chaty:阶梯本身没有「不想」这一档。
-- **两个引擎,都老实做。** MLX 侧档位作为模板 kwarg 原样传下去;llama.cpp 不接受自定义 kwarg,
-  于是 Chaty 直接把渲染后的提示词改写成目标档位——结果与官方模板渲染**逐字节一致**。
-- **按模板探测,不看模型名** —— 改过名字、重新量化的微调版照样认得出档位;而**没有**档位的模型,
-  界面还是原来那个开关,一个像素都不会变。
+为你真正跑得动的模型打造的编程智能体。切到 **编程**，打开一个文件夹，描述任务。智能体在你的项目里读文件、搜索、修改、跑命令——每一步都实时显示，每处修改都是真实的差异——一轮结束时，一张卡片列出它改过的每个文件，每个都能撤销。
 
-</td><td width="48%">
+- **决定权在你**——实时任务计划；修改和命令都等你批准，除非你允许它自己跑。文件访问限制在工作区内；macOS 上它的 shell 还跑在系统沙盒里。
+- **命令可以一直跑**——开发服务器和监听进程转到后台；会停下来问问题的命令（`[y/N]`、`Password:`、REPL、脚手架的菜单）会得到一个终端去回答。
+- **它记得**——项目记忆就是普通的 Markdown；它能搜索自己过去的会话，你也可以用 @ 把某一段拉进来。
+- **工具随你加**——MCP 服务器（附一份实测过的精选清单）、用 Markdown 写的技能，还有一个它能自己操作的浏览器。
+- **红着的构建不算完成**——每一轮结束前都有一道关：自上次测试通过以来的改动先验证。
 
-同一个问题、同一个随机种子,只差一档 —— Qwen3.8-27B(8-bit MLX,48 GB Apple Silicon):
+**实测。** 每一行都是同一个本地模型——Qwen3.5-35B-A3B（MoE，每 token 约 3B 激活），MLX mxfp8，关闭思考，同一台机器：
 
-| 档位 | 思考量 | tokens | 耗时 |
-|---|---|---|---|
-| `low` | 725 字 | 158 | **24 秒** |
-| `medium` | 879 字 | 226 | 31 秒 |
-| `xhigh`(模型默认) | 4 661 字 | 936 | 125 秒 |
-
-五倍的等待,还是五倍的深思——每条消息都由你决定。
-
-</td></tr>
-</table>
-
-<br />
-
-<br />
-
-## 一个本地编码智能体
-
-拨动 **Chat · Code** 开关,Chaty 就成了你代码库的智能体。选一个文件夹、描述任务,
-它便自主探索、修改并验证项目 —— 每一步实时可见,每处改动都先审批 + 看 diff。
-
-- 🌐 **整个互联网都是它的工具** —— 无 key 站内搜索 **GitHub**(仓库、issue、*代码*)、Reddit、YouTube、B站及任意域名;抓取按内容自适应(文章→Markdown、PDF→文本、视频→字幕转写)。
-- 🧭 **能开真实浏览器** —— 打开网页、把动态内容当文字读、用真实鼠标事件点击和整表单填写、登录、翻页 —— 该用视觉时才截图亲眼看。
-- 🧠 **会思考的工具** —— `understand_repo` 一次摸清仓库、`search_code` 按相关度排序、`read_file` 只取一个符号加全部调用处、`validate_change` 只跑与改动相关的测试。粗活下沉进工具,小模型只做决策。
-- ✏️ **精确编辑 + 真 shell** —— 带 diff 预览与**语法门**的精确文本补丁,以及沙箱限定在工作区内的命令与长时**后台任务**(dev server、构建)。
-- ⏪ **一切由你掌控** —— 逐条审批、命令白名单、对读到的一切内容做防注入,以及**检查点一键回滚**:恢复文件*并*回退对话。
-- 🔌 **为小模型定制的 MCP** —— 连接任意 Model Context Protocol 服务器(stdio 或 Streamable HTTP),或一键添加**版本钉死、经真连认证的精选商店条目**。工具文档自动瘦身,16K 上下文也装得下任意多服务器;所有结果过防注入,未信任服务器逐次审批。
-- 📚 **技能与项目记忆** —— 把一页步骤写成 `SKILL.md` 放进 `~/.chaty/skills/`(或项目级),智能体只在相关时加载;`remember` 把非显而易见的发现存进 `.chaty/memory/`,下一个会话开局即知。纯 Markdown、人可编辑、永不离开本机。
-
-<details>
-<summary>更多 Code 模式细节</summary>
-
-- 直接读 **PDF / Word / Excel / PowerPoint**(扫描件没有文本层,会直接说明);`search_files` 按名字或内容查找;outline 大纲导航大文件;补丁失配时给「你是不是想改这里」提示。
-- 浏览器自动化在真实网站上端到端验证过,还能开进你的真实 Chrome —— 全程围观,登录状态也保留。
-- 为本地模型而生:**Off / Normal / Deep** 思考强度开关、**提示词处理进度环**、上下文用量环 + 自动压缩、按上下文窗口定预算的整文件读取、`search_code` 语义检索 + 知识库 `search_docs`,以及防复读循环打断。
-- 会话持久化、项目记忆(**AGENTS.md**)、自定义 **/技能** 与 slash 命令。
-- 在**设置 → Code** 里调:单轮步数上限、命令超时、步骤温度、工具调用格式、自动批准编辑开关、后台运行浏览器开关,以及命令白名单。
-- **按模型自己的格式调用工具** —— Qwen3.5 / 3.6 / 3.8 训练时用 XML 写工具调用,Qwen3、QwQ 用 JSON,Gemma 4、LFM、GLM-4.5 / 4.6 / 4.7、MiniCPM5、K2 Horizon 各有自己的写法。Chaty 从模型的聊天模板里读出格式并照着用,长文件编辑不再因为 JSON 写坏而反复重来;模板里读不出格式的家族默认用 XML,也可以在设置 → Code 里手动指定。
-- 文件访问永远不出你选的文件夹;工作区外访问按目录询问;sudo 会先询问并有安全的密码输入框;下载落进工作区,也一并纳入检查点回滚。
-
-</details>
-
-<br />
-
-## 跑分
-
-下表每一行都是**同一个本地模型**——Qwen3.5-35B-A3B(MoE,每 token 仅 ~3B 激活),mxfp8 · MLX,关闭思考,全程单机:
-
-| SWE-bench Verified — 45 题 macOS 验证子集 | 解出 |
+| SWE-bench Verified，经 macOS 验证的 45 题子集 | 解决 |
 | --- | --- |
-| **Chaty 智能体(v1.9)**——完整工具链,16K 上下文 | **15/45(33%)** |
-| qwen-code 0.20——模型家族官方 CLI(需 32K) | 12/45(27%) |
-| pi 0.81——极简四工具 agent CLI | 10/45(22%) |
-| opencode 1.18 | 7/45(16%) |
-| 裸 bash 智能体——单工具消融对照 | 6/45(13%) |
+| **Chaty 智能体**（v1.9，16K 上下文） | **15/45（33%）** |
+| qwen-code 0.20——模型官方自己的 CLI（需要 32K） | 12/45（27%） |
+| pi 0.81——极简的 4 工具智能体 | 10/45（22%） |
+| opencode 1.18 | 7/45（16%） |
+| 纯 bash 智能体——单工具消融 | 6/45（13%） |
 
-同模型、同任务、同判分、同一台机器——五种智能体设计同台。Chaty 领跑全场:领先模型家族自家的官方 CLI([qwen-code](https://github.com/QwenLM/qwen-code))且**只用它一半的上下文窗口**,是裸 bash 消融的 **2.5 倍**。这正是设计论点的实测版:前沿大模型配一层薄脚手架就够用,而**小模型上,智能必须下沉到工具里**——仓库感知检索、符号级阅读、精确编辑、恢复护栏、编辑后诊断。方法学、各家配置与诚实对比说明(子集、macOS 环境——**不可**与官方排行榜数字直接对比):[docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
+这是子集，且跑在 macOS 上，不能和排行榜数字直接比较；方法、配置与注意事项见 [docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
 
-<br />
+## 文生图
 
-## 设计画布
-
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-hero-light.jpg" />
-  <img src="docs/screenshots/canvas-hero-dark.jpg" width="860" alt="设计画布:实时预览与真实源码并排,元素↔代码行对照,控制台" />
-</picture>
-
-- **预览 | 代码,并排呈现** —— 每个页面都在分栏工作室中打开:左边实时预览,右边**真实源码**,语法高亮、跟随你的代码配色。三栏宽度自由拖拽,支持全屏、页面刷新,以及镜像页面日志与报错的**控制台**标签。
-- **指哪改哪** —— 对照模式把两栏双向连起来:悬停元素,代码跳到对应行;点代码行,页面元素闪烁定位。**点击即选中**(⌘/Ctrl 多选),下一条指令只改选中的元素 —— 想亲手改就点**编辑**按钮直接开源码。
-- **亲眼看着它改** —— 迭代过程 Cursor 式流式呈现:代码栏逐行扫描全文,完成后落到**变更**视图(+N/−N,与 Code 模式同款红绿 diff)。
-
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/canvas-scan-light.jpg" />
-  <img src="docs/screenshots/canvas-scan-dark.jpg" width="860" alt="模型修改页面时的逐行扫描" />
-</picture>
-
-- **自愈修复,版本留存** —— 运行时错误给出一键**修复**(始终先征求同意);兼容层保证真浏览器里能跑的页面在画布里同样干净(history 路由、cookie、剪贴板);每条回答的画布会话关闭再开都在,版本历史可回退、可确认重置,并可导出为独立 `.html`。
-
-<br />
-
-## 什么都能渲染的聊天
+载入一个文生图模型，整个应用就变成画室：会话读起来像对话，绘制时有实时预览，每个模型的推荐参数都替你填好。
 
 <table>
 <tr>
-<td width="50%"><img src="docs/screenshots/shot-chat.jpg" alt="富文本渲染:语法高亮代码、表格与 KaTeX 数学" /></td>
-<td width="50%"><img src="docs/screenshots/shot-chat-light.jpg" alt="同一段对话在 Chaty 浅色主题下" /></td>
+<td width="50%"><img src="docs/screenshots/plate-diner.jpg" alt="雨夜街角写着 LATE NIGHT DINER 的霓虹灯招牌" /></td>
+<td width="50%"><img src="docs/screenshots/plate-shokudo.jpg" alt="雨夜街头写着深夜食堂的红色霓虹招牌" /></td>
 </tr>
-</table>
-
-- 流式、可折叠的 **`<think>`** 面板,随生成自动跟随模型推理。
-- **KaTeX** 数学、表格、**Mermaid** 图、逐块代码复制,以及应用内渲染单文件 HTML —— 含可玩的网页游戏。
-- **⌘K 命令面板**、可置顶/重命名的对话、拖拽附件、导出(Markdown / JSON)与全文搜索。
-- 四套配色(深浅各两款,可跟随系统)、原生界面缩放、减少动态效果支持,以及 **English / 简体中文 / Português (BR)** 界面。
-
-<br />
-
-## Chaty 能看见
-
-加载一个**视觉模型**(权重与 `mmproj` 编码器放在同一个文件夹里,自动配对),识图能力就会在各处打开:
-
-- **聊天** —— 附一张图直接问;追问也很快(看过的图不再重复编码)。
-- **Code** —— 智能体能读截图、用 `view_image` 看任意图片;输入框像聊天一样收图片和文档。
-- **知识库** —— 导入的图片除 OCR 外还会生成一段文字描述,让你能搜到图里*画的是什么*。
-- **画布** —— 让它改页面时,模型能看到当前渲染出的实际效果。
-
-纯文本模型继续走 OCR,不影响任何原有功能 —— 而从旧版本升级时,一个一次性弹窗会引导你把散放的 `.gguf` 一键归入「一个模型一个文件夹」的布局。
-
-<br />
-
-## Chaty 能画
-
-加载一个**文生图 GGUF** —— Qwen-Image / Qwen-Image-2.1、Z-Image、FLUX、Chroma、SD3、SDXL、SD 1.x —— 整个应用自动切换成生图工作台:
-
-- **自动进入生图模式** —— 聊天换成生图会话:同样的侧栏、消息流和输入框,每一轮是一条提示词和它画出的图;命令面板、侧栏和设置只显示与生图相关的功能。
-- **会话和对话一样** —— 本地落盘,可置顶、重命名、按提示词搜索,每个会话记住未发送的草稿;换模型也能接着画(每一轮记得是哪个模型画的),只有加载生图模型时才会显示。
-- **多轮改图** —— 用支持改图的模型时,每一轮的图自动成为下一条提示词要改的图(「把帽子换成红色」),也可以挑任意一轮的图继续改,每一轮都标出它改自哪一轮。
-- **实时进度** —— 总百分比、当前阶段(编码 → 采样 → 解码)、步数、每步耗时、已用时间与预计剩余时间,底下是随去噪逐渐清晰的实时预览。可以立即停止,也可以在批量中画完当前这张后停止。
-- **参数全可调** —— 画幅比例与分辨率、批量、种子、反向提示词、步数、CFG、引导强度、采样器、调度器、flow shift 等,并按模型家族给出默认值。加一张参考图即可图生图(支持编辑的模型可直接改图)。
-- **缓存省下真时间** —— 编码过的提示词(和参考图)不再重复编码,「再来一次」和重画直接跳过文本/视觉编码器;可选的采样加速会复用几乎没变的去噪步骤(DiT 模型用 EasyCache,UNet 用 UCache)。
-- **配套文件自动处理** —— 扩散 GGUF 只是去噪主干;Chaty 会在同目录或你的其他模型里找到它的 VAE 与文本编码器,缺什么一键下载什么。
-- **默认 GPU 加速全开**,与聊天一致 —— 卸载到 CPU、文本编码器 / VAE 放 CPU、Flash Attention、显存上限都在**设置 → 生图模型**里。基于 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp),运行在独立侧车进程中:显卡驱动崩溃不会拖垮应用,并会自动回退到 CPU。
-
-图片保存为内嵌生成参数的 PNG —— 复用种子、复用全部参数、复制、另存、在文件夹中显示,都是一键。
-
-<br />
-
-## 模型:商店、原生 MLX,以及 Chaty 自研
-
-- 内置**模型商店**:按名称或作者搜索 Hugging Face,按 **GGUF / MLX** 筛选、按热门/下载量排序 —— 从下拉框选一个**量化版本**直接下载。看到的是模型,不是文件列表。
-- 参数量 / 架构 / 视觉徽章、应用内直接渲染仓库 README,还有按你机器内存给出的**「可完整载入内存」**提示。视觉模型自动附带编码器;粘贴仓库链接的老用法依然可用。
-- **MLX 原生运行**(Apple Silicon):mlx-community 的文件夹模型通过 Apple MLX 栈在独立侧车进程中运行 —— 对话、视觉、思考开关、Code 智能体、知识库与 GGUF 完全同级,弹出模型时内存*必定*全数归还。
-- **Chaty 自研微调** —— 从更大的教师模型蒸馏而来的 Qwen3.5-4B,为本地单文件网页设计调校,内置 Chaty 身份认同与带引用的回答。「为我配置」里的一键选项,在 **[Hugging Face](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF)** 完全开源。
-
-<br />
-
-## 一个私密的知识库
-
-<table>
 <tr>
-<td width="52%">
-
-- 把 **PDF、Word、Excel、Markdown、约 90 种文本/代码格式、图片**索引进本地库 —— 单文件或整文件夹。图片会走 **OCR**,配合视觉模型还会**用文字描述画面内容**,让你能搜到图里画的是什么。
-- **混合检索**:bge-m3 向量 + BM25 关键词,RRF 融合、MMR 去重、邻接分块扩展。
-- **严格 grounding** —— 答案只来自你的文档,**按文件引用**并悬停预览出处段落;没覆盖到的内容 Chaty 会直说,而不是瞎猜。
-- **一键报告** —— 对整个知识库生成带引用的 NotebookLM 式综述,可导出 PDF / Markdown。
-
-</td>
-<td width="48%"><img src="docs/screenshots/shot-knowledge.jpg" alt="本地知识库:带逐文件开关的索引文档,以及一键报告 / 播客" /></td>
+<td><sub>“A neon sign that reads LATE NIGHT DINER on a rainy street corner…”——Z-Image Turbo，Q4_K_M，1024²，8 步，2 分 51 秒</sub></td>
+<td><sub>“雨夜街角的霓虹灯招牌，写着「深夜食堂」…”——Qwen-Image 2.1，Q4_K_M，1024²，20 步，16 分 10 秒</sub></td>
 </tr>
 </table>
 
-<br />
+<sub>Chaty 直接输出，未经修图；Apple M4 Pro，48 GB 内存。</sub>
 
-## Deep Research 与联网
+- **主流的模型家族**——Z-Image 与 Z-Image Turbo、Qwen-Image 2.1、FLUX.1 dev 与 schnell、Chroma、Stable Diffusion 1.x、2.x、XL 与 3.x。
+- **配套文件，自动找齐**——文生图 GGUF 只包含去噪模型；Chaty 会在旁边找到它的 VAE 和文本编码器，缺的一键下载。
+- **从一张图接着画**——下一轮可以从任何一张图开始；支持改图的模型会把它当参考，只改你说的地方。
+- **连同配方一起保存**——PNG 里写着提示词和参数，按日期存放。
 
-- 给一个主题,Chaty 会规划查询、进行**多轮**联网搜索并穿插推理,最终写出结构化的带引用报告 —— **可导出 PDF 或 Markdown**。
-- 天然诚实:参考文献只列它真正引用过的来源。
-- 免费、免密钥的多 provider 搜索链(Brave → Bing → DuckDuckGo → Wikipedia),单个被封不会让搜索失效。
+底层是 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)，运行在一个辅助进程里——Mac 上用 Metal，Windows 和 Linux 上用 Vulkan——显卡驱动崩溃只会结束辅助进程，不会带走整个应用。
 
-<br />
+## 文档与研究
 
-## 免手语音
+把 PDF、Word、幻灯片、表格、Markdown 或代码拖进来。Chaty 在本机建索引，按语义也按关键词检索，每一句都标出依据的段落——文档里没有的，就直说没有。
 
-<table>
-<tr>
-<td width="48%"><img src="docs/screenshots/shot-live.jpg" alt="实时语音模式:一个动态光球,连续免手对话" /></td>
-<td width="52%">
+- **扫描件逐页读懂**——由视觉模型转写；文档里的图表也能被描述出来，一样能搜到。
+- **深度研究**——多轮联网搜索与推理，写成一份只引用用到的来源的报告，可导出 PDF 或 Markdown。
+- **双人播客**——把一个知识库变成两个声音之间的对谈，存成 WAV。
 
-- **实时模式** —— 配一个动态光球的连续、免手语音对话。
-- 语音输入/输出,静音自动发送 + 朗读 —— **11 种嗓音** + 语速调节。
-- **中文或英文** —— 识别与中文嗓音随界面语言自动开启,也可在 设置 → 语音 里打开。英文继续用纯英文模型,它在英文上更准。
-- **深读播客** —— 把知识库变成 NotebookLM 风格的双主持人音频节目,支持 WAV 导出。
-- 所有语音都跑在 **CPU** 上,绝不与大模型抢显存。
+## 语音
 
-</td>
-</tr>
-</table>
+实时对话模式完全不用动手：Whisper 听你说，模型回答，本地语音一句一句读出来——中文英文都行。语音在 CPU 上运行，不和模型抢显存。你一停下这一句就发出去；任何回答都能朗读。
 
-<br />
+## 专门对付小模型会犯的错
 
-## 一切都留在你的机器上
+前沿大模型自己就能把一套流程撑下来。能放进你笔记本的模型往往不行：刚调用过的工具再调一遍，参数传个空的，要改的那一行抄得差一点，没跑过就说做完了。Chaty 正是为这样的模型打造的。
 
-<table>
-<tr>
-<td width="52%">
+| | |
+|---|---|
+| **说它自己的方言** | 工具调用按每个模型训练时用的格式来教、来读——XML、JSON、Gemma、LFM、K2、GLM、MiniCPM——从它的聊天模板里读出来，而不是想当然。 |
+| **改得上去** | 修改在模型还在写的时候就和文件逐行比对。抄错了空格、转义或带上了行号，只要文件里恰好只有一处对得上，照样改得上去。 |
+| **错在哪一步，就在哪一步纠正** | 重复调用、空参数、计划写了却不动手，都在发生的那一步被发现，纠正时把模型自己写的那一行原样给它看。 |
+| **红着的构建不算完成** | 自上次测试通过以来的改动，验证过才允许一轮结束。 |
+| **缓存接着用** | 每一轮的提示词都是在上一轮后面追加出来的，模型的缓存能直接接上，不必从头再读一遍。 |
+| **就是一个应用** | 不用起服务，没有端口，不要 API 密钥，没有配置文件。 |
 
-- 会话、模型、索引都在一个**本地数据文件夹**里 —— 拷走即备份,一键即清空。
-- **GPU 加速**:跨厂商 **Vulkan**(Windows)与 **Metal**(Apple Silicon,统一内存下全量卸载),按显存自动调优,带 OOM 回退与 CPU 兜底。
-- **任意 `.gguf` 或 MLX 文件夹** —— 分词器与对话模板都取自文件本身;一流支持 Llama 3、Muse-Glimmer(含视觉与它的 ATEM 推理协议)、Gemma 3 / 4、Qwen 3 / 3.5 / 3.6 / 3.8、GLM-4.5 / 4.7、MiniCPM5,以及 IFM 的 K2 Horizon(稠密与 MoVA,两个引擎都支持)(含它们的思考档位)。
-- **可调上下文**,自动把模型训练长度适配到你的内存,接近上限时总结较早的对话;**安全切换模型**,完整采样控制 + 可保存预设。
+## 模型
 
-</td>
-<td width="48%"><img src="docs/screenshots/shot-settings.jpg" alt="设置:展示会话、模型与知识库统计的本地数据面板" /></td>
-</tr>
-</table>
+任何 GGUF 都能在 llama.cpp 上跑（Metal，或 NVIDIA、AMD、Intel 上的 Vulkan）；Apple Silicon 上，MLX 文件夹也能原生运行。在应用里就能搜索、下载 Hugging Face 上的模型——也可以把 Chaty 指向你已有的文件夹。下面这些家族的模板、思考控制和工具调用格式都已接好：
 
-> **离线优先。** 网络仅用于可选的联网搜索和一次性模型下载。
+| 家族 | 已接好的能力 |
+|---|---|
+| Qwen 3 · 3.5 · 3.6 · 3.8 | 思考开关；Qwen3.8 的思考档位；模型自带视觉时可看图 |
+| Gemma 3 · 4 | 视觉；Gemma 4 自己的工具调用格式与推理 |
+| K2 Horizon · MoVA | 思考档位与 `<ifm\|arg_key>` 式工具调用，两个引擎都支持 |
+| GLM-4.5 · 4.6 · 4.7 | `<tool_call>名字<arg_key>…` 式工具调用 |
+| Llama 3 · Muse-Glimmer | 视觉，以及 Muse-Glimmer 的四档思考 |
+| MiniCPM5 · LFM 2.5 | 各自家族的工具调用格式 |
+| [Chaty · Qwen3.5-4B 设计版](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF) | 我们自己微调的单文件网页设计模型——首次启动一键安装 |
 
-<br />
+社区微调模型的聊天模板和 llama.cpp 内置的猜测不一致时，Chaty 直接执行模型自己的模板，行为与 transformers 一致。
+
+## 隐私
+
+模型、对话、文档和图片，都放在你硬盘上的一个文件夹里。没有账号，也没有我们的服务器需要你信任——删掉那个文件夹，就什么都不剩。
+
+只有这些时候会用到网络：你打开的 **联网搜索与深度研究**；**你发起的下载**（模型、语音、向量模型文件）；以及 **一次更新检查**——启动几秒后向 GitHub 查询最新版本。详见[隐私与数据](https://chaty.ca/docs.html#privacy)。
 
 ## 安装
 
-到 [**Releases**](../../releases) 页面获取最新构建:
+从[最新版本](../../releases/latest)下载：
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| Windows x64 | `Chaty_*_x64-setup.exe` | 单用户安装,无需管理员权限 |
-| macOS（Apple Silicon） | `Chaty_*_aarch64.dmg` | 见下方首次启动说明 |
+| macOS（Apple Silicon） | `Chaty_*_aarch64.dmg` | Metal 与 MLX。首次启动见下方说明 |
+| Windows 10 / 11（x64） | `Chaty_*_x64-setup.exe` | Vulkan。按用户安装，无需管理员权限 |
+| Linux（x86-64） | `Chaty_*_amd64.AppImage` | Vulkan。测试版——`chmod +x` 后直接运行 |
 
-**macOS 首次启动。** Chaty 是 ad-hoc 签名但未公证(背后没有付费的 Apple Developer 账号),
-所以首次打开时 Gatekeeper 会报警。应用是安全的 —— 一切都在本地运行。清除一次下载隔离属性即可:
+**macOS 首次启动。** Chaty 已签名但未经公证（背后没有付费的 Apple 开发者账号），所以第一次打开时 Gatekeeper 会警告。在终端里清除一次下载隔离标记，之后照常打开：
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Chaty.app
 ```
 
-然后正常打开 Chaty。(或:先打开、忽略警告,再到 **系统设置 → 隐私与安全性 → 仍要打开**。)
-macOS 上可写的模型文件夹在应用数据目录里 —— 用模型菜单里的 **打开模型文件夹**;
-想放到别的盘,用 **设置 → 模型 → 模型文件夹 → 更改位置**。
+或者先打开一次、关掉警告，再到 **系统设置 → 隐私与安全性 → 仍要打开**。
+
+小的量化语言模型 8 GB 内存就能跑；文生图模型建议 16 GB 以上。Chaty 会按你的内存分配 GPU 负载，放不下的模型直接拒绝加载，而不是把电脑卡死。第一次用？看[快速上手](https://chaty.ca/docs.html#getting-started)。
 
 ## 构建
 
-详见 **[BUILD.md](BUILD.md)**。
+完整说明见 **[BUILD.md](BUILD.md)**。
+
+```bash
+# macOS（Apple Silicon）
+npm install
+npm run tauri dev      # 开发（Metal）
+npm run tauri build    # → .app + .dmg
+```
 
 ```powershell
 # Windows
 npm install
 .\dev.ps1                            # 开发
-npm run tauri build -- --no-bundle   # 生成 exe → 再编译 Inno 安装包
+npm run tauri build -- --no-bundle   # 发行版 exe → 再编译 Inno 安装包
 ```
 
-```bash
-# macOS（Apple Silicon）
-npm install
-npm run tauri dev      # 开发(Metal)
-npm run tauri build    # → .app + .dmg
-```
-
-发布由 CI 完成:用 `scripts/bump-version.sh x.y.z` 升版本,推一个 `vx.y.z` tag —— GitHub Actions 会把两个平台的安装包打到同一个 release。
+MLX 与文生图引擎是单独的辅助程序——`scripts/build-mlx-sidecar.sh` 和 `scripts/build-sd-sidecar.{sh,ps1}`。发行版由 CI 构建：用 `scripts/bump-version.sh x.y.z` 改版本号，推送 `vx.y.z` 标签，GitHub Actions 会把三个平台的安装包构建到同一个 release 上。
 
 ## 架构
 
 | 层 | 技术栈 |
 |---|---|
-| 外壳 | Tauri 2 —— 系统托盘、全局快捷键、单实例 |
-| 前端 | React 19 · Vite · react-markdown · KaTeX |
-| 推理 | Rust · `llama-cpp-2`(llama.cpp)—— Vulkan(Windows)/ Metal(macOS)· MLX 经 `mlx-swift-lm` 侧车(Apple Silicon)· 文生图经 stable-diffusion.cpp 侧车(`chaty-sd`) |
-| 语音 | `sherpa-rs`(ONNX Runtime,CPU)—— Whisper(英文用 `base.en`,中文用多语 `base`)+ Kokoro-82M 与 VITS 中文嗓音 |
-| 知识库 | bge-m3 向量 + BM25 · 混合 RRF / MMR 检索 · SQLite 向量库 |
-| 存储 | SQLite —— 会话、消息、全文搜索 |
+| 外壳 | Tauri 2——托盘、全局快捷键、单实例 |
+| 界面 | React 19 · Vite · react-markdown · KaTeX · Mermaid |
+| 语言模型 | Rust · `llama-cpp-2`（llama.cpp——Metal / Vulkan）· Apple Silicon 上通过 `mlx-swift-lm` 辅助进程跑 MLX · 模型自带模板与内置渲染不一致时用 minijinja 渲染 |
+| 文生图 | `chaty-sd` 辅助进程中的 stable-diffusion.cpp |
+| 语音 | `sherpa-rs`（ONNX Runtime，CPU）——Whisper、Kokoro-82M，以及一个 VITS 中文音色 |
+| 知识库 | bge-m3 向量 + BM25 · RRF / MMR 混合检索 · SQLite 向量库 |
+| 存储 | SQLite——对话、会话、全文搜索 |
 
-## 许可证
+## 参与贡献
 
-MIT —— 见 [LICENSE](LICENSE)。基于 [llama.cpp](https://github.com/ggml-org/llama.cpp)、[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)、[Tauri](https://tauri.app) 与 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 构建。
+欢迎报告问题——附上错误日志（**设置 → 数据 → 打开错误日志**），往往能把几天的猜测变成几分钟的定位。构建、测试与基准测试见[参与贡献](https://chaty.ca/docs.html#contributing)。
+
+## 许可
+
+MIT——见 [LICENSE](LICENSE)。构建于 [llama.cpp](https://github.com/ggml-org/llama.cpp)、[MLX](https://github.com/ml-explore/mlx-swift)、[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)、[Tauri](https://tauri.app) 和 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)。

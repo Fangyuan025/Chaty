@@ -266,62 +266,47 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## Commands that ask for input
+            ## Pictures, drawn on your own GPU
 
-            A command that stops to ask — a `[y/N]`, a password prompt, `rm -i`, a
-            Python `input()` — used to fail at once in code mode. It now moves to
-            the background the way a dev server does, and the model answers it
-            with the new `bg_input` tool, typing a line or pressing keys. REPLs,
-            editors and project scaffolders run in a terminal of their own
-            (ConPTY on Windows), and arrow-key menus are driven with arrow keys.
-            Commands also run in bash now, as the tool's name always said.
+            Load a text-to-image model — Z-Image Turbo, Qwen-Image 2.1, FLUX.1,
+            Chroma, Stable Diffusion — and the whole app becomes an image studio:
+            sessions that read like conversations, a live preview while it draws,
+            each model's recommended settings filled in, and editing that starts
+            the next round from any picture. A GGUF is only the denoiser; Chaty
+            finds its VAE and text encoder, or downloads the missing ones in one
+            click. It runs on stable-diffusion.cpp in a helper of its own — Metal
+            on a Mac, Vulkan on Windows and Linux. On an M4 Pro, Z-Image Turbo
+            draws 1024 × 1024 in under three minutes.
 
-            ## Edits you can watch
+            ## Each model in its own dialect
 
-            A write or edit shows its card while the model is still writing it:
-            the block being replaced is found and lit, rewritten in place, and the
-            view moves on to the next, the way Canvas applies a patch. A call that
-            is stopped takes its card with it.
+            K2 Horizon loads on both engines, MoVA-36B included, with its own
+            reasoning tags and effort ladder. GLM-4.5/4.6/4.7 and MiniCPM5 tool
+            calls are read and written in their own formats — GLM's had been no
+            call at all. A GGUF whose own chat template says more than
+            llama.cpp's built-in guess is rendered from the template, as
+            transformers would (MiniCPM5 answered in fragments without it), and
+            a refused model says why in llama.cpp's own words.
 
-            ## Files by the handful, in the shell you use
+            ## Edits that land
 
-            Reading five files used to be five round trips; `multi_read` takes a
-            list and brings them back together, naming any it could not read
-            without losing the ones it could. And on Windows, where the shell is
-            `cmd` but models write bash, Settings → Code now lists the shells you
-            actually have — Git Bash, PowerShell — and runs commands in the one
-            you pick.
+            An edit is checked against the file while the model is still writing
+            it, and stopped the moment it cannot land. A retyped line with the
+            wrong spaces, escapes or line numbers lands where exactly one place
+            fits; calls written in every shape small models actually use are
+            read; and a long diff now opens in full.
 
-            ## The agent remembers your sessions
+            ## A quieter, more finished look
 
-            A session's record outlives what the model can hold in front of it,
-            so asked what was decided earlier, the agent used to go looking in
-            the code. It searches its own record now — this session and every
-            other one, tool calls included, each marked done or failed — and
-            reads back what it finds: a whole session, one turn with every call
-            that turn made, or one of those calls in full. "Which session did we
-            talk about the database schema in, and what was said?" is one
-            question with one answer. Typing `@` in the composer also offers
-            your other sessions alongside the workspace's files, to point it at
-            one directly.
+            The window is redesigned: one frame, a floating composer, the app's
+            own menus throughout, and the accent kept for what matters. Settings
+            are regrouped, and a line above the composer shows what the next
+            message will use. All of Settings → Sampling but temperature now
+            applies to Code as well.
 
-            Gemma 4 on MLX reasons again in code mode and in long chats, where
-            it had taken to opening its thinking and closing it again empty.
-
-            ## Long chats with search stay fast
-
-            With web search or the knowledge base on, every chat turn read the
-            whole conversation again. Search results now stay with the question
-            they answered and side generations keep their own cache: 0% of the
-            conversation reused per turn became 96–99%.
-
-            ## Also
-
-            A code session opens at its end with a button back down to it, a new
-            session no longer inherits the last one's pause, servers left running
-            when Chaty was killed are stopped, skill files can be imported in
-            Settings several at a time, and a click outside an approval dialog no
-            longer denies it.
+            Also: MLX models stop cleanly (the repetition penalty had been
+            counting the prompt's own markup), and a round of fixes to races,
+            recovery paths and a window that froze on slow commands.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
@@ -334,9 +319,9 @@ jobs:
             |---|---|
             | **Windows x64** | `Chaty_*_x64-setup.exe` — per-user installer, no admin |
             | **macOS (Apple Silicon)** | `Chaty_*_aarch64.dmg` |
-            | **Linux x64 (beta)** | `Chaty_*_amd64.AppImage` — `chmod +x` and run. First Linux release — please report anything odd |
+            | **Linux x64 (beta)** | `Chaty_*_amd64.AppImage` — `chmod +x` and run |
 
-            ### ⚠️ macOS first launch — "Apple could not verify…" / "damaged"
+            ### macOS first launch — "Apple could not verify…" / "damaged"
 
             Chaty is **ad-hoc signed but not notarized** (no paid Apple Developer
             account), so Gatekeeper flags it on first launch. The app is safe —
