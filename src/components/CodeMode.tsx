@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { RECENCY_LABEL, recencyGroups } from "../lib/recency";
 import { ImagePreview } from "./ImagePreview";
 import { resolveToolFormat, type CallFormat } from "../lib/callFormat";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -544,11 +545,14 @@ function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label
   return (
     <div className={`cm-think ${live ? "live" : ""}`}>
       <button className="cm-think-head" onClick={() => setOpen((o) => !o)}>
-        {live && <span className="cm-spin" />}
+        {live ? (
+          <span className="cm-spin" />
+        ) : (
+          <span className={`cm-think-caret ${open ? "open" : ""}`}>
+            <Icon name="chevron-right" size={11} strokeWidth={2} />
+          </span>
+        )}
         <span className="cm-think-label">{label}</span>
-        <span className={`cm-think-caret ${open || live ? "open" : ""}`}>
-          <Icon name="chevron-right" size={11} strokeWidth={2} />
-        </span>
       </button>
       {(open || live) && (
         <div ref={bodyRef} className={`cm-think-body ${focus ? "focus" : ""}`}>
@@ -2029,11 +2033,16 @@ export function CodeMode({
               );
             })
           ) : (
-            sessions.map(sessionRow)
+            // Grouped by when they were last touched, as the chat sidebar is.
+            recencyGroups(sessions).map((g) => (
+              <div key={g.key} className="conv-group">
+                <div className="conv-group-label">{t(RECENCY_LABEL[g.key])}</div>
+                {g.items.map(sessionRow)}
+              </div>
+            ))
           )}
         </div>
         <div className="side-status" title={model ? model.name : ""}>
-          <span className="ss-dot" />
           <span className="ss-meta">v{__APP_VERSION__}</span>
         </div>
         <div
@@ -2051,6 +2060,7 @@ export function CodeMode({
           <button className="cm-ws" onClick={() => void pickWorkspace()} disabled={running} title={workspace ?? ""}>
             <Icon name="folder" size={14} />
             {wsName ? <span className="cm-ws-name">{wsName}</span> : <span className="cm-ws-pick">{t("cmOpenFolder")}</span>}
+            <Icon name="chevron-down" size={11} strokeWidth={2} className="cm-ws-caret" />
           </button>
           {(dirGrants.length > 0 || workspace) && (
             <div className="cm-grants">
@@ -2064,8 +2074,8 @@ export function CodeMode({
                 </span>
               ))}
               {workspace && (
-                <button className="cm-grant-add" title={t("cmGrantAddTip")} onClick={() => void addGrantDir()}>
-                  +
+                <button className="cm-grant-add" title={t("cmGrantAddTip")} aria-label={t("cmGrantAddTip")} onClick={() => void addGrantDir()}>
+                  <Icon name="plus" size={13} strokeWidth={2} />
                 </button>
               )}
             </div>

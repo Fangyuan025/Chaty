@@ -382,7 +382,7 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   // left, the actions on the right — where they never cover the code.
   return (
     <div className={`code-block ${foldable ? "foldable" : ""}`}>
-      <div className="code-head">
+      <div className="codeblock-head">
         {foldable ? (
           <button className="code-fold-toggle" type="button" onClick={() => setOverride(!expanded)}>
             <span className={`think-caret ${expanded ? "open" : ""}`}>▶</span>

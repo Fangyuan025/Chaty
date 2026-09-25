@@ -6,17 +6,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrent as getDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { AssistantMessage } from "./components/AssistantMessage";
 import { maybeAutorun } from "./lib/debugProbe";
-import { recencyGroups, type RecencyKey } from "./lib/recency";
+import { RECENCY_LABEL, recencyGroups } from "./lib/recency";
 
-/** Sidebar group headings, by recency (see recency.ts). */
-const RECENCY_LABEL: Record<RecencyKey, "recencyPinned" | "recencyToday" | "recencyYesterday" | "recencyWeek" | "recencyMonth" | "recencyOlder"> = {
-  pinned: "recencyPinned",
-  today: "recencyToday",
-  yesterday: "recencyYesterday",
-  week: "recencyWeek",
-  month: "recencyMonth",
-  older: "recencyOlder",
-};
 import { ContextMenu } from "./components/ContextMenu";
 import { ImagePreview } from "./components/ImagePreview";
 import { withErrorNote } from "./lib/reasoning";

@@ -1500,7 +1500,9 @@ body.resizing-x {
   font-size: 13px;
   line-height: 1.6;
 }
-.code-head {
+/* A code block's own header — not Code mode's top bar (`.code-head`), whose
+   rounded panel this tinted, square strip used to poke out of. */
+.codeblock-head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -5637,28 +5639,51 @@ button.tool-parent {
     padding: 4px 7px;
   }
 }
+/* Code mode's top bar. It belongs to the rounded panel it heads: no fill of
+   its own, the panel's corners, a hairline under it. Every control in it is
+   one height (28px) and one radius (8px) — a set, not a collection. */
 .code-head {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
+  gap: 6px;
+  height: 48px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--border);
+  border-radius: var(--inset-radius) var(--inset-radius) 0 0;
 }
+.code-head .cm-ws,
+.code-head .cm-bgjobs,
+.code-head .cm-bypass,
+.code-head .cm-think-switch {
+  height: 28px;
+  border-radius: 8px;
+}
+/* The workspace reads as the panel's title: a ghost button, the folder name
+   in weight, a small caret that says it opens a picker. */
 .cm-ws {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   max-width: 60%;
-  padding: 6px 11px;
-  font-size: 12.5px;
+  padding: 0 8px;
+  font-size: 13px;
   color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
   cursor: pointer;
+  transition: background var(--t-fast);
+}
+.cm-ws svg {
+  flex: none;
+  color: var(--text-dim);
+}
+.cm-ws .cm-ws-caret {
+  color: var(--faint);
 }
 .cm-ws:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  background: var(--ink-faint);
 }
 .cm-ws-name {
   font-weight: 600;
@@ -5677,19 +5702,24 @@ button.tool-parent {
   align-items: center;
   gap: 6px;
   white-space: nowrap;
-  padding: 6px 11px;
+  padding: 0 10px;
   font-size: 12.5px;
   color: var(--text-dim);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: 8px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
 }
+.cm-bypass:hover {
+  color: var(--text);
+  background: var(--ink-faint);
+}
+/* On, it is a warning: nothing is asked before files change. */
 .cm-bypass.on {
-  color: #b26a00;
-  border-color: rgba(210, 130, 0, 0.5);
-  background: rgba(210, 130, 0, 0.1);
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
 }
 
 /* ---- scroll / messages ---- */
@@ -5722,9 +5752,11 @@ button.tool-parent {
 .cm-welcome {
   margin: auto;
   text-align: center;
-  max-width: 440px;
+  width: min(560px, 100%);
+  padding: 0 24px;
 }
 .cm-welcome-title {
+  animation: rise-in 420ms var(--ease-out) both;
   font-family: var(--font-display);
   font-size: 40px;
   font-weight: 600;
@@ -5737,22 +5769,24 @@ button.tool-parent {
   -webkit-text-fill-color: transparent;
 }
 .cm-welcome-sub {
-  font-size: 16px;
+  animation: rise-in 420ms var(--ease-out) 60ms both;
+  font-size: 15px;
   line-height: 1.6;
   color: var(--text-dim);
 }
 .cm-welcome-pick {
+  animation: rise-in 420ms var(--ease-out) 110ms both;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-top: 18px;
-  padding: 10px 18px;
+  margin-top: 22px;
+  padding: 9px 16px;
   font-size: 13.5px;
   font-weight: 550;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-full);
+  border-radius: var(--r-md);
   cursor: pointer;
   transition: border-color 0.12s, background 0.12s;
 }
@@ -5915,12 +5949,13 @@ button.tool-parent {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 6px 3px 8px;
-  font-size: 11.5px;
+  height: 24px;
+  padding: 0 4px 0 8px;
+  font-size: 12px;
   color: var(--text-dim);
-  background: var(--panel);
+  background: transparent;
   border: 1px solid var(--border);
-  border-radius: var(--r-sm);
+  border-radius: 6px;
   white-space: nowrap;
   flex: none;
 }
@@ -5941,22 +5976,26 @@ button.tool-parent {
 }
 .cm-grant-del:hover {
   color: var(--danger);
-  background: var(--accent-soft);
+  background: var(--danger-soft);
 }
 .cm-grant-add {
   flex: none;
-  padding: 2px 8px;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--faint);
   background: transparent;
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--r-sm);
+  border: none;
+  border-radius: 6px;
   cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
 }
 .cm-grant-add:hover {
   color: var(--text);
-  border-color: var(--accent);
+  background: var(--ink-faint);
 }
 
 /* ---- prompt-processing progress ring (prefill) ---- */
@@ -6181,7 +6220,8 @@ button.tool-parent {
   background: var(--accent-bright);
 }
 .cm-send:disabled {
-  opacity: 0.4;
+  background: var(--surface-2);
+  color: var(--faint);
   cursor: default;
   box-shadow: none;
 }
@@ -6204,28 +6244,31 @@ button.tool-parent {
 /* Thinking-intensity switch (header) */
 .cm-think-switch {
   display: inline-flex;
+  align-items: center;
   gap: 2px;
   padding: 2px;
-  background: var(--surface);
+  background: transparent;
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: 8px;
 }
 .cm-think-tab {
+  height: 22px;
   white-space: nowrap;
-  padding: 4px 10px;
-  font-size: 11.5px;
+  padding: 0 9px;
+  font-size: 12px;
   color: var(--text-dim);
   background: transparent;
   border: none;
-  border-radius: var(--r-sm);
+  border-radius: 6px;
   cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
 }
 .cm-think-tab:hover:not(:disabled) {
   color: var(--text);
 }
 .cm-think-tab.active {
   color: var(--text);
-  background: var(--bg-elev);
+  background: var(--ink-soft);
 }
 .cm-think-tab:disabled {
   opacity: 0.5;
@@ -6233,10 +6276,8 @@ button.tool-parent {
 }
 
 /* Reasoning panel (per step + final) */
-.cm-think {
-  border-left: 2px solid var(--border-strong);
-  padding-left: 10px;
-}
+/* Reasoning, as chat shows it: a quiet line — caret, then the words — and,
+   opened, the thought set off by a hairline on its left. */
 .cm-think-head {
   display: inline-flex;
   align-items: center;
@@ -6246,6 +6287,10 @@ button.tool-parent {
   padding: 2px 0;
   cursor: pointer;
   font-size: 12px;
+  color: var(--faint);
+  transition: color var(--t-fast);
+}
+.cm-think-head:hover {
   color: var(--text-dim);
 }
 .cm-think-caret {
@@ -6256,7 +6301,9 @@ button.tool-parent {
   transform: rotate(90deg);
 }
 .cm-think-body {
-  margin-top: 2px;
+  margin: 6px 0 2px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--text-dim);
@@ -6405,27 +6452,37 @@ button.tool-parent {
 }
 
 /* ---- welcome example tasks ---- */
+/* Starting points: one column of outlined cards, like chat's suggestions —
+   these are whole sentences, and a row of pills cut them to fit. */
 .cm-welcome-egs {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+  display: grid;
   gap: 8px;
-  margin-top: 20px;
-  max-width: 560px;
+  margin-top: 32px;
+  text-align: left;
 }
 .cm-welcome-eg {
-  padding: 8px 14px;
-  font-size: 12.5px;
+  animation: rise-in 420ms var(--ease-out) both;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  text-align: left;
   color: var(--text-dim);
-  background: var(--surface);
+  background: transparent;
   border: 1px solid var(--border);
-  border-radius: var(--r-full);
+  border-radius: 12px;
   cursor: pointer;
-  transition: border-color 0.12s, color 0.12s;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
 }
+.cm-welcome-eg:nth-child(1) { animation-delay: 120ms; }
+.cm-welcome-eg:nth-child(2) { animation-delay: 160ms; }
+.cm-welcome-eg:nth-child(3) { animation-delay: 200ms; }
 .cm-welcome-eg:hover {
-  border-color: var(--border-strong);
   color: var(--text);
+  background: var(--surface);
+  border-color: var(--border-strong);
 }
 
 /* ---- queued messages (typed while the agent was running) ---- */
@@ -6478,19 +6535,19 @@ button.tool-parent {
   align-items: center;
   gap: 7px;
   white-space: nowrap;
-  padding: 5px 12px;
+  padding: 0 10px;
   font-size: 12px;
   color: var(--text-dim);
-  background: var(--surface);
+  background: transparent;
   border: 1px solid var(--border);
-  border-radius: var(--r-full);
+  border-radius: 8px;
   cursor: pointer;
-  transition: border-color 0.12s, color 0.12s;
+  transition: background var(--t-fast), color var(--t-fast);
 }
 .cm-bgjobs:hover,
 .cm-bgjobs.active {
   color: var(--text);
-  border-color: var(--border-strong);
+  background: var(--ink-faint);
 }
 /* The bare count stands in for the label when the column is narrow. */
 .cm-bg-n {
@@ -7717,20 +7774,20 @@ body,
 }
 .cm-attach-btn {
   flex: none;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
   color: var(--text-dim);
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition: color var(--t-fast), background var(--t-fast);
 }
 .cm-attach-btn:hover:not(:disabled) {
   color: var(--text);
-  border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 .cm-attach-btn:disabled {
   opacity: 0.4;

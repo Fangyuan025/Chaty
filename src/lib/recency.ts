@@ -38,3 +38,17 @@ export function recencyGroups<T extends { updatedAt: number; pinned?: boolean }>
   }
   return ORDER.filter((k) => by.has(k)).map((key) => ({ key, items: by.get(key)! }));
 }
+
+/** The i18n key of each group's heading — shared by the chat sidebar and the
+ *  Code mode session rail, so both read the same. */
+export const RECENCY_LABEL: Record<
+  RecencyKey,
+  "recencyPinned" | "recencyToday" | "recencyYesterday" | "recencyWeek" | "recencyMonth" | "recencyOlder"
+> = {
+  pinned: "recencyPinned",
+  today: "recencyToday",
+  yesterday: "recencyYesterday",
+  week: "recencyWeek",
+  month: "recencyMonth",
+  older: "recencyOlder",
+};
