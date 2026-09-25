@@ -33,6 +33,13 @@
 
 ---
 
+## 为什么选 Chaty
+
+- **一个应用，五种用途。** 对话、编程智能体、文生图工作室、基于你自己文档的问答，还有能直接说话的语音——同一批本地模型，同一个窗口。不用跑服务，不占端口，不要 API key。
+- **为装得进笔记本的模型而设计。** 工具调用用每个模型训练时的格式，编辑在写出的过程中就和文件逐行比对，失误在出现的那一步就被纠正——让小模型也能把真活干完。[怎么做到的 →](#专门对付小模型会犯的错)
+- **GGUF 和 MLX 都是原生支持。** llama.cpp 在各个平台上跑 Metal 或 Vulkan，Apple Silicon 上原生跑 MLX；内置模型商店直接搜 Hugging Face，并告诉你哪些文件放得进你的内存。
+- **完全属于你。** 模型、对话、文档和图片都在你硬盘上的一个文件夹里。没有账号，没有遥测——删掉文件夹，就什么都不剩。
+
 ## 目录
 
 [对话](#对话) · [编程](#编程) · [文生图](#文生图) · [文档与研究](#文档与研究) · [语音](#语音) · [为小模型而做](#专门对付小模型会犯的错) · [模型](#模型) · [隐私](#隐私) · [安装](#安装) · [构建](#构建) · [架构](#架构)
@@ -186,6 +193,13 @@ npm install
 npm run tauri build -- --no-bundle   # 发行版 exe → 再编译 Inno 安装包
 ```
 
+```bash
+# Linux——WebKitGTK 与 Vulkan SDK 所需的包见 BUILD.md
+npm install
+npm run tauri dev
+npm run tauri build -- --bundles appimage
+```
+
 MLX 与文生图引擎是单独的辅助程序——`scripts/build-mlx-sidecar.sh` 和 `scripts/build-sd-sidecar.{sh,ps1}`。发行版由 CI 构建：用 `scripts/bump-version.sh x.y.z` 改版本号，推送 `vx.y.z` 标签，GitHub Actions 会把三个平台的安装包构建到同一个 release 上。
 
 ## 架构
@@ -202,7 +216,9 @@ MLX 与文生图引擎是单独的辅助程序——`scripts/build-mlx-sidecar.s
 
 ## 参与贡献
 
-欢迎报告问题——附上错误日志（**设置 → 数据 → 打开错误日志**），往往能把几天的猜测变成几分钟的定位。构建、测试与基准测试见[参与贡献](https://chaty.ca/docs.html#contributing)。
+欢迎报告问题——附上错误日志（**设置 → 数据 → 打开错误日志**），往往能把几天的猜测变成几分钟的定位。构建、测试与基准测试见[参与贡献](https://chaty.ca/docs.html#contributing)和[开发者指南](https://chaty.ca/docs.html#developers)。
+
+如果 Chaty 对你有用，点一个 star 能让更多人找到它。
 
 ## 许可
 

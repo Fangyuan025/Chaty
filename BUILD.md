@@ -102,6 +102,30 @@ the binary or in `Contents/Frameworks` of the `.app`; if not, add them to
 `bundle.macOS.frameworks` in `tauri.macos.conf.json` (or copy them in a bundling
 hook) and rebuild.
 
+## Build (Linux)
+
+Beta. Tauri 2's WebKitGTK stack plus audio, and for the GPU build the Vulkan
+SDK — package names below are Ubuntu 22.04's, where `vulkan-sdk` comes from
+LunarG's apt repository (`glslc` is not in Ubuntu's own archive):
+
+```bash
+wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+  | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc >/dev/null
+sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
+  https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+sudo apt-get update
+sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+  patchelf libasound2-dev libssl-dev ninja-build vulkan-sdk
+npm install
+npm run tauri dev                               # Vulkan build
+npm run tauri build -- --bundles appimage       # → bundle/appimage/*.AppImage
+```
+
+Without the Vulkan SDK, `--no-default-features` gives a CPU-only build, as on
+Windows. Bundling the AppImage needs `libfuse2`, or `APPIMAGE_EXTRACT_AND_RUN=1`
+where FUSE is missing (CI runners); the release job in
+`.github/workflows/release.yml` is the reference build.
+
 ## Image engine sidecar (chaty-sd)
 
 Text-to-image models (Qwen-Image, Z-Image, FLUX, SD3, SDXL, SD 1.x…) run on

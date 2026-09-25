@@ -33,6 +33,13 @@ com modelos abertos rodando inteiramente no seu Mac ou PC. Sem conta, sem nuvem,
 
 ---
 
+## Por que o Chaty
+
+- **Um app, cinco trabalhos.** Chat, um agente de programação, um estúdio de imagens, respostas a partir dos seus próprios documentos e uma voz para conversar — com os mesmos modelos locais, numa só janela. Sem servidor para rodar, sem porta, sem chave de API.
+- **Feito para o modelo que cabe no seu notebook.** Chamadas de ferramenta no formato em que cada modelo foi treinado, edições conferidas com o arquivo enquanto ainda estão sendo escritas, deslizes pegos no passo em que acontecem — para que um modelo pequeno termine trabalho de verdade. [Como →](#feito-para-o-que-modelos-pequenos-erram)
+- **GGUF e MLX, ambos nativos.** llama.cpp em Metal ou Vulkan em todas as plataformas, MLX no Apple Silicon, e uma loja de modelos que busca no Hugging Face e diz quais arquivos cabem na sua memória.
+- **Totalmente seu.** Modelos, conversas, documentos e imagens ficam numa pasta no seu disco. Sem conta, sem telemetria — apague a pasta e não sobra nada.
+
 ## Conteúdo
 
 [Chat](#chat) · [Code](#code) · [Imagem](#imagem) · [Documentos e pesquisa](#documentos-e-pesquisa) · [Voz](#voz) · [Feito para modelos pequenos](#feito-para-o-que-modelos-pequenos-erram) · [Modelos](#modelos) · [Privacidade](#privacidade) · [Instalação](#instalação) · [Compilação](#compilação) · [Arquitetura](#arquitetura)
@@ -186,6 +193,13 @@ npm install
 npm run tauri build -- --no-bundle   # exe de release → compile o instalador Inno
 ```
 
+```bash
+# Linux — os pacotes de WebKitGTK e do Vulkan SDK estão no BUILD.md
+npm install
+npm run tauri dev
+npm run tauri build -- --bundles appimage
+```
+
 Os motores MLX e de imagem são auxiliares separados — `scripts/build-mlx-sidecar.sh` e `scripts/build-sd-sidecar.{sh,ps1}`. As versões saem do CI: ajuste a versão com `scripts/bump-version.sh x.y.z`, envie uma tag `vx.y.z` e o GitHub Actions compila as três plataformas numa só release.
 
 ## Arquitetura
@@ -202,7 +216,9 @@ Os motores MLX e de imagem são auxiliares separados — `scripts/build-mlx-side
 
 ## Contribuindo
 
-Relatos de bugs são bem-vindos — anexar o log de erros (**Configurações → Dados → Abrir log de erro**) costuma transformar dias de palpites em minutos. Veja [Contribuindo](https://chaty.ca/docs.html#contributing) para compilar, testar e rodar os benchmarks.
+Relatos de bugs são bem-vindos — anexar o log de erros (**Configurações → Dados → Abrir log de erro**) costuma transformar dias de palpites em minutos. Veja [Contribuindo](https://chaty.ca/docs.html#contributing) e o [guia do desenvolvedor](https://chaty.ca/docs.html#developers) para compilar, testar e rodar os benchmarks.
+
+Se o Chaty for útil para você, uma estrela ajuda outras pessoas a encontrá-lo.
 
 ## Licença
 

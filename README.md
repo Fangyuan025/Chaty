@@ -33,6 +33,13 @@ on open models running entirely on your own Mac or PC. No account, no cloud, no 
 
 ---
 
+## Why Chaty
+
+- **One app, five jobs.** Chat, a coding agent, an image studio, answers from your own documents, and a voice to talk to — on the same local models, in one window. No server to run, no port, no API key.
+- **Built for the model that fits on your laptop.** Tool calls in the format each model was trained on, edits checked against the file while they're still being written, slips caught at the step they happen — so a small model finishes real work. [How it's done →](#built-around-what-small-models-get-wrong)
+- **GGUF and MLX, both native.** llama.cpp on Metal or Vulkan on every platform, MLX on Apple Silicon, and a model store that searches Hugging Face and tells you which files fit in your memory.
+- **Yours, completely.** Models, chats, documents and pictures live in a folder on your disk. No account, no telemetry — delete the folder and it's gone.
+
 ## Contents
 
 [Chat](#chat) · [Code](#code) · [Image](#image) · [Documents and research](#documents-and-research) · [Voice](#voice) · [Built for small models](#built-around-what-small-models-get-wrong) · [Models](#models) · [Privacy](#privacy) · [Install](#install) · [Build](#build) · [Architecture](#architecture)
@@ -186,6 +193,13 @@ npm install
 npm run tauri build -- --no-bundle   # release exe → compile the Inno installer
 ```
 
+```bash
+# Linux — WebKitGTK and Vulkan SDK packages are listed in BUILD.md
+npm install
+npm run tauri dev
+npm run tauri build -- --bundles appimage
+```
+
 The MLX and image engines are separate helpers — `scripts/build-mlx-sidecar.sh` and `scripts/build-sd-sidecar.{sh,ps1}`. Releases come from CI: bump with `scripts/bump-version.sh x.y.z`, push a `vx.y.z` tag, and GitHub Actions builds all three platforms onto one release.
 
 ## Architecture
@@ -202,7 +216,9 @@ The MLX and image engines are separate helpers — `scripts/build-mlx-sidecar.sh
 
 ## Contributing
 
-Bug reports are welcome — attaching the error log (**Settings → Data → Open error log**) usually turns days of guessing into minutes. See [Contributing](https://chaty.ca/docs.html#contributing) for building, testing and the benchmarks.
+Bug reports are welcome — attaching the error log (**Settings → Data → Open error log**) usually turns days of guessing into minutes. See [Contributing](https://chaty.ca/docs.html#contributing) and the [developer guide](https://chaty.ca/docs.html#developers) for building, testing and the benchmarks.
+
+If Chaty is useful to you, a star helps other people find it.
 
 ## License
 
