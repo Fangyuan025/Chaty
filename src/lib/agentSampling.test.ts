@@ -67,3 +67,17 @@ describe("Code mode sampling", () => {
     expect(p).toMatchObject({ temperature: 0.3, topP: 0.9, repeatPenalty: 1.05 });
   });
 });
+
+describe("Code mode shares the sampling page's length and stops", () => {
+  it("ends a step at the user's stop sequences as well as at a call's closer", async () => {
+    const [p] = await stepParams({
+      sampling: { topP: 0.9, topK: 40, minP: 0.05, repeatPenalty: 1, stop: ["###"] },
+    });
+    expect(p.stop).toEqual(expect.arrayContaining(["</tool_call>", "###"]));
+  });
+
+  it("caps each step at the max length", async () => {
+    const [p] = await stepParams({ maxGenTokens: 3000, nCtx: 16384 });
+    expect(p.maxTokens).toBe(3000);
+  });
+});

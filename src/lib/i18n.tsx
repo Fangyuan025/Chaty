@@ -100,11 +100,11 @@ export const T = {
   cmSlashBypass: { zh: "切换自动批准", en: "Toggle auto-approve", pt: "Alternar aprovação automática" },
   cmSlashHelp: { zh: "显示可用命令", en: "Show commands", pt: "Mostrar comandos" },
   cmLines: { zh: "行", en: "lines", pt: "linhas" },
-  cmDiffMore: { zh: "… 共 {n} 处改动，已折叠余下部分", en: "… {n} changed lines total, rest collapsed", pt: "… {n} linhas alteradas no total, o resto foi recolhido" },
+  cmDiffMore: { zh: "… 共 {n} 处改动，点击展开余下部分", en: "… {n} changed lines in all — show the rest", pt: "… {n} linhas alteradas no total — mostrar o resto" },
   cmEditN: { zh: "修改 {n}", en: "edit {n}", pt: "editar {n}" },
   cmMaxSteps: { zh: "单轮最大步数", en: "Max steps per turn", pt: "Máx. de passos por turno" },
   cmMaxStepsHint: {
-    zh: "Code 模式一轮任务最多执行的工具步数。达到上限会暂停，回复「继续」可接着做。复杂任务可调高。",
+    zh: "编程模式一轮任务最多执行的工具步数。达到上限会暂停，回复「继续」可接着做。复杂任务可调高。",
     en: "How many tool steps a Code-mode turn may take before pausing. Reply \"continue\" to resume. Raise it for complex tasks.", pt: "Quantos passos um turno do modo Code pode realizar antes de pausar. Responda \"continue\" para retomar. Aumente para tarefas complexas.",
   },
   cmBashTimeout: { zh: "命令超时", en: "Command timeout", pt: "Tempo limite de comandos" },
@@ -127,7 +127,7 @@ export const T = {
   cmSudoAllow: { zh: "确认以 sudo 运行", en: "Run with sudo", pt: "Executar com sudo" },
   cmSudoPwPlaceholder: { zh: "sudo 密码（可留空）", en: "sudo password (optional)", pt: "senha do sudo (opcional)" },
   cmSudoPwNote: {
-    zh: "密码仅本机使用：经加密通道直接喂给 sudo,不会显示、不写入日志或历史、也不发给模型。若系统已配置免密可留空。",
+    zh: "密码仅本机使用：经加密通道直接喂给 sudo，不会显示、不写入日志或历史、也不发给模型。若系统已配置免密可留空。",
     en: "Used locally only: piped straight to sudo, never shown, logged, saved to history, or sent to the model. Leave blank if your system is passwordless.", pt: "Usado apenas localmente: enviado diretamente para o sudo, nunca exibido, registrado, salvo no histórico ou enviado ao modelo. Deixe em branco se o seu sistema não exige senha.",
   },
   cmGrantRevoke: { zh: "取消该目录的访问授权", en: "Revoke access to this directory", pt: "Revogar acesso a este diretório" },
@@ -137,23 +137,18 @@ export const T = {
   },
   cmTemp: { zh: "步骤温度", en: "Step temperature", pt: "Temperatura do passo" },
   cmTempHint: {
-    zh: "Code 模式每步生成的采样温度。低 = 更稳定可复现（默认 0.3），高 = 更有创造性但更容易跑偏。",
-    en: "Sampling temperature for each agent step. Lower = steadier and more reproducible (default 0.3); higher = more creative but less predictable.", pt: "Temperatura de amostragem para cada passo do agente. Mais baixa = mais constante e reprodutível (padrão 0.3); mais alta = mais criativa, porém menos previsível.",
+    zh: "编程模式每步生成的采样温度。低 = 更稳定可复现（默认 0.3），高 = 更有创造性但更容易跑偏。其余采样参数与对话共用，在「采样」里。",
+    en: "Sampling temperature for each agent step. Lower = steadier and more reproducible (default 0.3); higher = more creative but less predictable. The rest of the sampling is shared with chat, under Sampling.", pt: "Temperatura de amostragem para cada passo do agente. Mais baixa = mais constante e reprodutível (padrão 0.3); mais alta = mais criativa, porém menos previsível. O resto da amostragem é compartilhado com o chat, em Amostragem.",
   },
   cmThinkBudget: { zh: "思考预算 (tokens)", en: "Think budget (tokens)", pt: "Orçamento de raciocínio (tokens)" },
   cmThinkBudgetOff: { zh: "不限", en: "off", pt: "desligado" },
   cmThinkBudgetHint: {
-    zh: "每步思考的 token 上限。超出后思考块被温和收束：已有思考保留在上下文里，模型基于它直接行动——不丢内容、不断连贯。0 = 不限制（单步生成上限自然封顶）；滑杆上限即当前模型的上下文窗口。低温下容易无限思考的模型建议设 1000-2000。",
-    en: "Hard per-step ceiling on thinking tokens. Over budget the think block closes gracefully: the reasoning stays in context and the model acts on it — nothing discarded, coherence kept. 0 = no ceiling (the per-step generation limit still bounds it); the slider tops out at the loaded model's context window. For models that loop in thought at low temperature, 1000-2000 works well.", pt: "Limite rígido de tokens de raciocínio por passo. Ao exceder o orçamento, o bloco de raciocínio é fechado de forma suave: o raciocínio permanece no contexto e o modelo age com base nele — nada é descartado, a coerência é mantida. 0 = sem teto (o limite de geração por passo ainda restringe); o controle vai até a janela de contexto do modelo carregado. Para modelos que entram em loop de raciocínio em baixas temperaturas, 1000-2000 costuma funcionar bem.",
-  },
-  cmMaxTokens: { zh: "单步生成上限 (tokens)", en: "Per-step output limit (tokens)", pt: "Limite de saída por passo (tokens)" },
-  cmMaxTokensHint: {
-    zh: "每个 agent 步骤的生成 token 上限。0 = 不限制（由上下文窗口自然封顶）；滑杆上限即当前模型的上下文窗口。调低可以防长跑，调高给长思考和大文件写入留空间。",
-    en: "Generation cap per agent step. 0 = no cap of its own (the context window still bounds it); the slider tops out at the loaded model's context window. Lower it to bound runaways, raise it for long reasoning and big file writes.", pt: "Limite de geração por passo do agente. 0 = sem limite próprio (a janela de contexto ainda restringe); o controle vai até a janela de contexto do modelo carregado. Diminua para restringir fugas, aumente para raciocínios longos e escritas de arquivos grandes.",
+    zh: "每步思考的 token 上限。超出后思考块被温和收束：已有思考保留在上下文里，模型基于它直接行动——不丢内容、不断连贯。0 = 不限制（由「采样」里的最大生成长度封顶）；滑杆上限即当前模型的上下文窗口。低温下容易无限思考的模型建议设 1000-2000。",
+    en: "Hard per-step ceiling on thinking tokens. Over budget the think block closes gracefully: the reasoning stays in context and the model acts on it — nothing discarded, coherence kept. 0 = no ceiling (Sampling's max length still bounds it); the slider tops out at the loaded model's context window. For models that loop in thought at low temperature, 1000-2000 works well.", pt: "Limite rígido de tokens de raciocínio por passo. Ao exceder o orçamento, o bloco de raciocínio é fechado de forma suave: o raciocínio permanece no contexto e o modelo age com base nele — nada é descartado, a coerência é mantida. 0 = sem teto (o comprimento máximo em Amostragem ainda restringe); o controle vai até a janela de contexto do modelo carregado. Para modelos que entram em loop de raciocínio em baixas temperaturas, 1000-2000 costuma funcionar bem.",
   },
   cmShell: { zh: "命令使用的终端", en: "Shell for commands", pt: "Shell para comandos" },
   cmShellHint: {
-    zh: "智能体执行 bash 工具时使用的终端。Windows 默认是 cmd,而模型通常写 Linux/bash 命令——装了 Git Bash 或 PowerShell 就能在这里换。",
+    zh: "智能体执行 bash 工具时使用的终端。Windows 默认是 cmd，而模型通常写 Linux/bash 命令——装了 Git Bash 或 PowerShell 就能在这里换。",
     en: "The shell the agent's bash tool runs commands in. Windows defaults to cmd while models write Linux/bash commands — pick Git Bash or PowerShell here if you have them.",
     pt: "O shell em que a ferramenta bash do agente executa comandos. No Windows o padrão é o cmd, mas os modelos escrevem comandos Linux/bash — escolha Git Bash ou PowerShell aqui, se os tiver.",
   },
@@ -276,12 +271,12 @@ export const T = {
   cmSkillNamePh: { zh: "技能名（将成为 /命令）", en: "Skill name (becomes a /command)", pt: "Nome da skill (torna-se um comando /)" },
   cmSkillPromptPh: { zh: "提示词模板：选中技能后会填入输入框，可再补充细节…", en: "Prompt template — inserted into the composer when invoked…", pt: "Modelo de prompt — inserido na caixa de texto quando convocado…" },
   cmSkillsHint: {
-    zh: "自定义可复用的任务模板。在 Code 输入框键入 / 即可调用，如 /review、/写测试。",
+    zh: "自定义可复用的任务模板。在编程模式的输入框键入 / 即可调用，如 /review、/写测试。",
     en: "Reusable task templates. Type / in the Code composer to invoke, e.g. /review.", pt: "Modelos de tarefas reutilizáveis. Digite / na caixa de texto do modo Código para invocar, ex: /revisar.",
   },
   cmMcp: { zh: "MCP 服务器", en: "MCP servers", pt: "Servidores MCP" },
   cmMcpHint: {
-    zh: "连接 MCP 服务器，把外部工具带给编码智能体：填命令(stdio)或 https:// 地址(Streamable HTTP)。未勾选「信任」的服务器，每次工具调用都需要你批准；工具结果一律按不可信内容处理。",
+    zh: "连接 MCP 服务器，把外部工具带给编码智能体：填命令（stdio）或 https:// 地址（Streamable HTTP）。未勾选「信任」的服务器，每次工具调用都需要你批准；工具结果一律按不可信内容处理。",
     en: "Connect MCP servers to bring external tools to the coding agent: a command (stdio) or an https:// URL (streamable HTTP). Unless marked trusted, every call needs your approval; results are always treated as untrusted content.", pt: "Conecte servidores MCP para disponibilizar ferramentas externas ao agente: um comando (stdio) ou uma URL https:// (HTTP contínuo). Ao menos que marcada como confiável, cada execução exigirá sua aprovação; os resultados são sempre tratados como conteúdo não confiável.",
   },
   cmMcpNamePh: { zh: "别名（如 gh）", en: "alias (e.g. gh)", pt: "apelido (ex: gh)" },
@@ -290,12 +285,12 @@ export const T = {
   cmMcpTrusted: { zh: "信任", en: "trusted", pt: "confiável" },
   cmMemory: { zh: "项目记忆", en: "Project memory", pt: "Memória do projeto" },
   cmMemoryHint: {
-    zh: "让智能体把对后续会话有用的非显而易见发现存进 <工作区>/.chaty/memory/（纯 Markdown,人可编辑，永不上云）；新会话开始时把索引带进上下文。关掉则不加载也不提供记忆工具。",
+    zh: "让智能体把对后续会话有用的非显而易见发现存进 <工作区>/.chaty/memory/（纯 Markdown，人可编辑，永不上云）；新会话开始时把索引带进上下文。关掉则不加载也不提供记忆工具。",
     en: "Let the agent save non-obvious findings future sessions need into <workspace>/.chaty/memory/ (plain markdown, human-editable, never leaves the machine); the index rides into context at the start of a new session. Off = no index loaded and no memory tool offered.", pt: "Permite que o agente guarde descobertas não triviais necessárias para sessões futuras em <workspace>/.chaty/memory/ (apenas markdown, editável por humanos, nunca sai da máquina); o índice é trazido para o contexto no início de uma nova sessão. Desligado = nenhum índice carregado e a ferramenta de memória não é oferecida.",
   },
   cmMcpStore: { zh: "精选服务器", en: "Curated servers", pt: "Servidores curados" },
   cmMcpStoreHint: {
-    zh: "每个条目版本钉死、权限透明，并通过 Chaty 的实连认证(cargo store_cert)。添加后可在上方列表里启停。",
+    zh: "每个条目版本钉死、权限透明，并通过 Chaty 的实连认证（cargo store_cert）。添加后可在上方列表里启停。",
     en: "Every entry is version-pinned, permission-transparent, and live-certified against Chaty's client (cargo store_cert). Once added, manage it in the list above.", pt: "Cada entrada tem sua versão fixada, permissões transparentes e é certificada dinamicamente pelo client do Chaty (cargo store_cert). Uma vez adicionado, você pode gerenciar pela lista acima.",
   },
   cmMcpCertified: { zh: "已认证", en: "certified", pt: "certificado" },
@@ -314,9 +309,9 @@ export const T = {
     en: "A skill is a markdown file of steps. The prompt carries only one line per skill (name + when); the body loads via use_skill only when needed — so skills cost almost no context. Put them in ~/.chaty/skills/ (global) or <project>/.chaty/skills/ (project, shadows global). \"Import skill files…\" copies one .md or several (another tool's SKILL.md, say) into ~/.chaty/skills/ — hold Ctrl (⌘ on macOS) in the file dialog to pick more than one — naming each from its file when it has no name. The list holds your imported skills and the ones bundled with Chaty; each can be turned off.", pt: "Uma skill é um arquivo markdown com passos. O prompt recebe apenas uma linha por skill (nome + uso); o corpo é carregado usando use_skill somente se houver necessidade — logo, skills quase não consomem contexto. Adicione-as em ~/.chaty/skills/ (global) ou <projeto>/.chaty/skills/ (projeto, substitui a global). \"Importar arquivos de skill…\" copia um ou vários .md (o SKILL.md de outra ferramenta, por exemplo) para ~/.chaty/skills/ — segure Ctrl (⌘ no macOS) na caixa de diálogo para escolher mais de um —, usando o nome do arquivo quando ele não tem nome. A lista mostra as skills importadas e as incluídas com o Chaty; cada uma pode ser desativada.",
   },
   samplingScopeHint: {
-    zh: "Top-P、Top-K、Min-P 和重复惩罚对对话和编程都生效；温度、最大回复长度和停止词只作用于对话——编程的温度在「设置 → Code」，它的每步长度由智能体自己管理。",
-    en: "Top-P, Top-K, Min-P and the repeat penalty apply to chat and Code alike. Temperature, reply length and stop sequences are chat's only — Code's temperature is under Settings → Code, and the agent manages its own step length.",
-    pt: "Top-P, Top-K, Min-P e a penalidade de repetição valem para o chat e para o Code. Temperatura, comprimento da resposta e sequências de parada são só do chat — a temperatura do Code fica em Configurações → Code, e o agente controla o próprio comprimento de cada passo.",
+    zh: "除温度外，这里的参数对对话和编程都生效；编程的温度在「设置 → 编程」。编程模式里，最大生成长度限制的是每一步，且至少 512，保证放得下一次工具调用。",
+    en: "Everything here but temperature applies to chat and Code alike; Code's temperature is under Settings → Code. In Code, the max length caps each step, and never below 512 so a tool call still fits.",
+    pt: "Tudo aqui, exceto a temperatura, vale para o chat e para o Code; a temperatura do Code fica em Configurações → Code. No Code, o comprimento máximo limita cada passo, nunca abaixo de 512, para que uma chamada de ferramenta ainda caiba.",
   },
   cmDeleteSessionFailed: {
     zh: "删除会话失败，这个会话还在",
@@ -324,8 +319,8 @@ export const T = {
     pt: "Não foi possível excluir a sessão — ela continua aí",
   },
   cmCompacted: { zh: "上下文已自动压缩", en: "Context auto-compacted", pt: "Contexto auto-comprimido" },
-  cmdkGoCode: { zh: "切换到 Code 模式", en: "Switch to Code mode", pt: "Mudar para o modo Code" },
-  cmdkGoChat: { zh: "切换到 Chat 模式", en: "Switch to Chat mode", pt: "Mudar para o modo Chat" },
+  cmdkGoCode: { zh: "切换到编程模式", en: "Switch to Code mode", pt: "Mudar para o modo Code" },
+  cmdkGoChat: { zh: "切换到对话模式", en: "Switch to Chat mode", pt: "Mudar para o modo Chat" },
   setCatGeneral: { zh: "通用", en: "General", pt: "Geral" },
   setCatChat: { zh: "对话", en: "Chat", pt: "Chat" },
   setCatSampling: { zh: "采样", en: "Sampling", pt: "Amostragem" },
@@ -333,6 +328,23 @@ export const T = {
   setCatVoice: { zh: "语音", en: "Voice", pt: "Voz" },
   setCatData: { zh: "数据", en: "Data", pt: "Dados" },
   setCatAbout: { zh: "关于", en: "About", pt: "Sobre" },
+  setCatAppearance: { zh: "外观", en: "Appearance", pt: "Aparência" },
+  setCatKnowledge: { zh: "知识库", en: "Knowledge base", pt: "Base de conhecimento" },
+  setCatExtensions: { zh: "技能与 MCP", en: "Skills & MCP", pt: "Skills e MCP" },
+  secLoad: { zh: "加载", en: "Loading", pt: "Carregamento" },
+  secLibrary: { zh: "模型库", en: "Library", pt: "Biblioteca" },
+  secGeneration: { zh: "生成", en: "Generation", pt: "Geração" },
+  secRunning: { zh: "运行", en: "Running", pt: "Execução" },
+  secPermissions: { zh: "权限", en: "Permissions", pt: "Permissões" },
+  secDisplay: { zh: "显示", en: "Display", pt: "Exibição" },
+  secSkills: { zh: "技能", en: "Skills", pt: "Skills" },
+  secMcp: { zh: "MCP", en: "MCP", pt: "MCP" },
+  secSize: { zh: "尺寸", en: "Size", pt: "Tamanho" },
+  secPromptRef: { zh: "提示词与参考图", en: "Prompt & reference", pt: "Prompt e referência" },
+  secPreviewOutput: { zh: "预览与保存", en: "Preview & saving", pt: "Pré-visualização e salvamento" },
+  secDevice: { zh: "运行设备", en: "Hardware", pt: "Hardware" },
+  secStorage: { zh: "存储", en: "Storage", pt: "Armazenamento" },
+  secClear: { zh: "清除", en: "Clear", pt: "Limpar" },
   aboutTagline: {
     zh: "本地、私密的 GGUF / MLX 模型桌面聊天应用",
     en: "Local, private desktop chat for GGUF & MLX models", pt: "App desktop offline e privado para chat com modelos GGUF & MLX",
@@ -374,7 +386,7 @@ export const T = {
   canvasFollow: { zh: "↓ 跟随修改", en: "↓ Follow edits", pt: "↓ Seguir alterações" },
   canvasEditModeLabel: { zh: "画布 HTML 编辑模式", en: "Canvas HTML edit mode", pt: "Modo de edição HTML do Canvas" },
   canvasEditModeHint: {
-    zh: "补丁：模型输出查找/替换块，快但要求逐字回显；整页重写：模型输出完整 HTML,系统随流式输出实时计算 diff——较小的模型建议用重写，更稳。",
+    zh: "补丁：模型输出查找/替换块，快但要求逐字回显；整页重写：模型输出完整 HTML，系统随流式输出实时计算 diff——较小的模型建议用重写，更稳。",
     en: "Patch: the model emits search/replace blocks — fast, but needs verbatim echoes. Rewrite: the model streams the full HTML and the system diffs it live — the reliable choice for smaller models.", pt: "Patch: o modelo emite blocos de pesquisar/substituir — rápido, porém requer retorno idêntico. Reescrever: o modelo faz streaming do HTML completo e o sistema calcula a diferença (diff) ao vivo — a escolha mais confiável para modelos menores.",
   },
   canvasEditModePatch: { zh: "补丁", en: "Patch", pt: "Patch" },
@@ -382,7 +394,7 @@ export const T = {
   canvasDragHint: { zh: "拖动调宽 · 双击复位", en: "Drag to resize · double-click to reset", pt: "Arraste para redimensionar · clique duplo para restaurar" },
   canvasComposerEditing: { zh: "正在手动编辑——保存或取消后可继续对话", en: "Hand-editing — save or cancel to keep iterating", pt: "Edição manual — salve ou cancele para continuar iterando" },
   canvasSelPrefix: {
-    zh: "请只修改以下选中的元素，其余保持不变:",
+    zh: "请只修改以下选中的元素，其余保持不变：",
     en: "Modify ONLY these selected elements; keep everything else unchanged:", pt: "Modifique APENAS os elementos selecionados; mantenha todo o restante inalterado:",
   },
   canvasSelHint: { zh: "已选 {n} 个元素，修改将只落在选中处", en: "{n} element(s) selected — the edit targets them", pt: "{n} elemento(s) selecionado(s) — a edição será aplicada apenas a eles" },
@@ -676,7 +688,7 @@ export const T = {
   },
   dataFolder: { zh: "数据文件夹", en: "Data folder", pt: "Pasta de dados" },
   clearChatsHint: {
-    zh: "删除全部对话与 Code 会话记录，不可撤销。",
+    zh: "删除全部对话与编程会话记录，不可撤销。",
     en: "Deletes every conversation and Code session. Irreversible.", pt: "Exclui todas as conversas e sessões de Código. Irreversível."
   },
   clearKb: { zh: "清空知识库", en: "Clear knowledge base", pt: "Limpar base de conhecimento" },
@@ -690,7 +702,7 @@ export const T = {
   },
   statConvs: { zh: "对话", en: "Conversations", pt: "Conversas" },
   statMsgs: { zh: "消息", en: "Messages", pt: "Mensagens" },
-  statCodeSessions: { zh: "Code 会话", en: "Code sessions", pt: "Sessões de código" },
+  statCodeSessions: { zh: "编程会话", en: "Code sessions", pt: "Sessões de código" },
   statModels: { zh: "本地模型", en: "Local models", pt: "Modelos locais" },
   statKbDocs: { zh: "知识库文档", en: "KB documents", pt: "Documentos (KB)" },
   statKbChunks: { zh: "知识块", en: "KB chunks", pt: "Fragmentos (KB)" },
@@ -761,7 +773,7 @@ export const T = {
   voicePreviewBtn: { zh: "播放示例", en: "Play sample", pt: "Tocar exemplo" },
   chineseVoice: { zh: "中文语音支持", en: "Chinese voice support", pt: "Suporte a voz em chinês" },
   chineseVoiceHint: {
-    zh: "识别用多语言 Whisper,含中文的回复由中文 VITS 朗读。中文界面默认开启，关掉即回到纯英文的 base.en。",
+    zh: "识别用多语言 Whisper，含中文的回复由中文 VITS 朗读。中文界面默认开启，关掉即回到纯英文的 base.en。",
     en: "Recognition uses multilingual Whisper, and a reply containing Chinese is read by the Chinese VITS voice. On by default in the Chinese interface; turn it off to keep English-only base.en and its accuracy.", pt: "O reconhecimento usa o Whisper multilíngue, e as respostas que contêm chinês são lidas pela voz VITS em chinês. Ativado por padrão na interface chinesa; desligue para priorizar o modelo em inglês base.en e garantir a precisão."
   },
   voiceEn: { zh: "英文音色", en: "English voice", pt: "Voz em inglês" },
@@ -930,8 +942,8 @@ export const T = {
     en: ">1 discourages repetition; too high hurts fluency", pt: ">1 desencoraja repetições; muito alto prejudica a fluidez"
   },
   tipMaxTokens: {
-    zh: "单次回复的最大 token 数；“不限制”时由上下文窗口决定",
-    en: "Max tokens per reply; with no limit, the context window is the bound", pt: "Máximo de tokens por resposta; sem limite, a janela de contexto é a fronteira"
+    zh: "单次回复（编程模式下是每一步）的最大 token 数；“不限制”时由上下文窗口决定",
+    en: "Max tokens per reply (per step in Code); with no limit, the context window is the bound", pt: "Máximo de tokens por resposta (por passo no Code); sem limite, a janela de contexto é a fronteira"
   },
   tipStopSeqs: {
     zh: "模型一旦输出这些字符串就立即停止生成",
@@ -1067,7 +1079,7 @@ export const T = {
     pt: "Este arquivo parece ter sido convertido com a arquitetura errada: MiniCPM 1–4 precisam da própria arquitetura no llama.cpp e, exportados como llama comum, as respostas degeneram em vazio ou ruído. Use um GGUF convertido com a arquitetura do próprio modelo — ou, no macOS, a versão MLX.",
   },
   visionConfigMissing: {
-    zh: "该模型目录缺少图像处理器配置(preprocessor_config.json),视觉功能已停用，本次以纯文本模式加载。从官方模型仓库补齐该文件后重新加载即可恢复视觉能力。",
+    zh: "该模型目录缺少图像处理器配置（preprocessor_config.json），视觉功能已停用，本次以纯文本模式加载。从官方模型仓库补齐该文件后重新加载即可恢复视觉能力。",
     en: "This model folder is missing its image-processor configuration (preprocessor_config.json), so vision is disabled and the model was loaded text-only. Restore that file from the official model repo and reload to re-enable vision.", pt: "Falta a configuração do processador de imagem (preprocessor_config.json) nesta pasta de modelo, então a visão está desativada e o modelo foi carregado apenas com texto. Restaure esse arquivo do repositório oficial e recarregue para reativar a visão."
   },
   gpuCrashCpu: {
@@ -1160,9 +1172,11 @@ export const T = {
   imgStageDecode: { zh: "解码图像", en: "Decoding the image", pt: "Decodificando a imagem" },
   imgPicN: { zh: "第 {i}/{n} 张", en: "Picture {i}/{n}", pt: "Imagem {i}/{n}" },
   imgStepsN: { zh: "{n} 步", en: "{n} steps", pt: "{n} passos" },
-  imgCountN: { zh: "{n} 张", en: "{n} pics", pt: "{n} imgs" },
-  imgSecPerStep: { zh: "秒/步", en: "s/step", pt: "s/passo" },
-  imgStepPerSec: { zh: "步/秒", en: "steps/s", pt: "passos/s" },
+  imgStepOne: { zh: "1 步", en: "1 step", pt: "1 passo" },
+  imgCountN: { zh: "{n} 张", en: "{n} pictures", pt: "{n} imagens" },
+  imgCountOne: { zh: "1 张", en: "1 picture", pt: "1 imagem" },
+  imgSecPerStep: { zh: "s/步", en: "s/step", pt: "s/passo" },
+  imgStepPerSec: { zh: "步/s", en: "steps/s", pt: "passos/s" },
   imgElapsed: { zh: "已用 {t}", en: "{t} elapsed", pt: "{t} decorridos" },
   imgEta: { zh: "剩余约 {t}", en: "~{t} left", pt: "~{t} restantes" },
   imgSeed: { zh: "种子", en: "Seed", pt: "Semente" },
@@ -1242,7 +1256,7 @@ export const T = {
   imgDeviceTip: { zh: "默认全部放到 GPU，放不下的部分才自动溢出到内存", en: "Everything on the GPU by default; only what doesn't fit spills to RAM", pt: "Tudo na GPU por padrão; só o que não cabe vai para a RAM" },
   imgDeviceGpu: { zh: "GPU 加速", en: "GPU", pt: "GPU" },
   imgDeviceCpu: { zh: "仅 CPU", en: "CPU only", pt: "Só CPU" },
-  imgDeviceHint: { zh: "改动后点「重新加载以应用」生效。仅 CPU 可以运行，但一张图可能要几分钟。", en: "Reload to apply. CPU only works, but a picture may take minutes.", pt: "Recarregue para aplicar. Só CPU funciona, mas uma imagem pode levar minutos." },
+  imgDeviceHint: { zh: "改动后点「重新加载模型以生效」。仅 CPU 可以运行，但一张图可能要几分钟。", en: "Reload to apply. CPU only works, but a picture may take minutes.", pt: "Recarregue para aplicar. Só CPU funciona, mas uma imagem pode levar minutos." },
   imgOffload: { zh: "省显存模式", en: "Save VRAM", pt: "Economizar VRAM" },
   imgOffloadHint: { zh: "权重常驻内存、用到时再搬到 GPU。显存不够时开启，速度会变慢", en: "Keep weights in RAM and move them to the GPU as needed. For small GPUs; slower", pt: "Mantém os pesos na RAM e os move para a GPU quando necessário. Para GPUs pequenas; mais lento" },
   imgTeCpu: { zh: "文本编码器放在 CPU", en: "Text encoder on the CPU", pt: "Codificador de texto na CPU" },
@@ -1280,7 +1294,7 @@ export const T = {
   imgRoleClipG: { zh: "CLIP-G 文本编码器", en: "CLIP-G text encoder", pt: "Codificador de texto CLIP-G" },
   imgRoleT5: { zh: "T5-XXL 文本编码器", en: "T5-XXL text encoder", pt: "Codificador de texto T5-XXL" },
   imgClearHistory: { zh: "清空生图会话", en: "Clear image sessions", pt: "Limpar sessões de imagem" },
-  imgClearHistoryHint: { zh: "删除所有生图会话及其图片文件", en: "Deletes every image session and its picture files", pt: "Exclui todas as sessões de imagem e seus arquivos" },
+  imgClearHistoryHint: { zh: "删除所有生图会话及其图片文件，不可撤销。", en: "Deletes every image session and its picture files. This can't be undone.", pt: "Exclui todas as sessões de imagem e seus arquivos. Não pode ser desfeito." },
   imgClearHistoryConfirm: { zh: "将删除全部生图会话和其中的图片文件，无法撤销。确定吗？", en: "Every image session and the picture files in it will be deleted. This can't be undone. Continue?", pt: "Todas as sessões de imagem e os arquivos nelas serão excluídos. Não pode ser desfeito. Continuar?" },
   statImages: { zh: "生成图片", en: "Images", pt: "Imagens" },
   miImageEngine: { zh: "识别为", en: "Identified as", pt: "Identificado como" },

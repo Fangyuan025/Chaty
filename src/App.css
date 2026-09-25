@@ -1059,7 +1059,9 @@ body.resizing-x {
      into a scrollbar, and one that comes and goes with a hover preview is a
      layout feedback loop on Windows (issue #14). */
   overflow-x: hidden;
-  padding: 28px 0 12px;
+  /* The bottom padding clears the composer's fade (28px): at the end of the
+     transcript the last reply's actions sit above it, not dimmed under it. */
+  padding: 28px 0 32px;
   scroll-behavior: smooth;
 }
 
@@ -2051,8 +2053,8 @@ body.resizing-x {
   width: 208px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding: 18px 12px;
+  gap: 2px;
+  padding: 16px 10px;
   background: var(--bg-elev);
   border-right: 1px solid var(--border);
   overflow-y: auto;
@@ -2061,14 +2063,27 @@ body.resizing-x {
   font-size: 13.5px;
   font-weight: 650;
   color: var(--text);
-  padding: 6px 12px 16px;
+  padding: 6px 12px 12px;
+}
+/* Categories come in groups — the app, chat, the model, Code, your data —
+   set apart by a hairline rather than a heading each: the items name
+   themselves, and a heading over "Chat" reading "Chat" says nothing. */
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-nav-sep {
+  height: 1px;
+  margin: 7px 12px;
+  background: var(--border);
 }
 .settings-nav-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 11px 14px;
-  font-size: 13.5px;
+  gap: 11px;
+  padding: 8px 12px;
+  font-size: 13px;
   color: var(--text-dim);
   background: transparent;
   border: none;
@@ -2120,6 +2135,18 @@ body.resizing-x {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+/* A heading over a run of related rows, for the pages long enough to need
+   them (Code, the image studio). Quiet: small, dim, no rule — the grouped
+   list below it is what draws the edge. */
+.settings-section {
+  margin: 14px 4px -2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.settings-pane-body > .settings-section:first-child {
+  margin-top: 0;
 }
 /* Fields inside the settings body. Consecutive ones read as ONE grouped
    list — a shared hairline between rows, the rounded corners only on the
@@ -2177,21 +2204,6 @@ body.resizing-x {
 }
 .field-row .data-btn {
   flex: none;
-}
-/* Error log: "open" and "clear" act on the same file, so they stack in one
-   row rather than taking a row each. The row grows to fit them. */
-.log-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-}
-.log-actions .lang-switch,
-.log-actions .data-btn {
-  width: 100%;
-}
-.log-actions .data-btn {
-  justify-content: center;
 }
 /* Little palette swatch inside scheme segment buttons. */
 .scheme-dot {
@@ -2393,8 +2405,9 @@ body.resizing-x {
 
 /* Sliders: a hairline track filled in the text tone up to the value, and a
    plain white thumb — the same on WebKit and on WebView2, whose native bar
-   was a thick coloured strip. `--fill` is set by the settings panel. */
-.field input[type="range"] {
+   was a thick coloured strip. `--fill` is set by whoever renders the slider
+   (the settings panel, the image studio). */
+:is(.field, .is-field, .is-ref-strength) input[type="range"] {
   width: 100%;
   height: 18px;
   margin: 4px 0 0;
@@ -2403,7 +2416,7 @@ body.resizing-x {
   appearance: none;
   cursor: pointer;
 }
-.field input[type="range"]::-webkit-slider-runnable-track {
+:is(.field, .is-field, .is-ref-strength) input[type="range"]::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 2px;
   background: linear-gradient(
@@ -2412,7 +2425,7 @@ body.resizing-x {
     var(--border-strong) var(--fill, 50%) 100%
   );
 }
-.field input[type="range"]::-webkit-slider-thumb {
+:is(.field, .is-field, .is-ref-strength) input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 14px;
@@ -2423,13 +2436,13 @@ body.resizing-x {
   box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.25), 0 1px 3px rgba(0, 0, 0, 0.35);
   transition: transform var(--t-fast) var(--ease);
 }
-.field input[type="range"]:hover::-webkit-slider-thumb {
+:is(.field, .is-field, .is-ref-strength) input[type="range"]:hover::-webkit-slider-thumb {
   transform: scale(1.08);
 }
-.field input[type="range"]:focus-visible {
+:is(.field, .is-field, .is-ref-strength) input[type="range"]:focus-visible {
   outline: none;
 }
-.field input[type="range"]:focus-visible::-webkit-slider-thumb {
+:is(.field, .is-field, .is-ref-strength) input[type="range"]:focus-visible::-webkit-slider-thumb {
   box-shadow: 0 0 0 3px var(--ink-soft), 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 
@@ -2504,6 +2517,10 @@ body.resizing-x {
   border-radius: var(--r-md);
   box-shadow: var(--shadow-3);
   animation: ctxin 0.1s ease-out;
+}
+.csel.up .csel-menu {
+  top: auto;
+  bottom: calc(100% + 5px);
 }
 .csel-opt {
   display: flex;
@@ -3033,8 +3050,8 @@ body.resizing-x {
   background: var(--surface);
 }
 .canvas-ver.active {
-  background: var(--accent-soft);
-  border-color: rgba(63, 138, 101, 0.3);
+  background: var(--surface-2);
+  border-color: var(--border-strong);
 }
 .cv-num {
   font-size: 11px;
@@ -3542,8 +3559,7 @@ body.resizing-x {
   outline: none;
 }
 .canvas-input:focus {
-  border-color: rgba(63, 138, 101, 0.5);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--border-strong);
 }
 .canvas-input:disabled {
   opacity: 0.6;
@@ -4602,7 +4618,7 @@ button.tool-parent {
   font-size: 13px;
   color: var(--text);
   background: var(--surface-2);
-  border: 1px solid rgba(63, 138, 101, 0.4);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-full);
   box-shadow: var(--shadow-3);
   animation: toastin 0.18s ease-out;
@@ -5736,7 +5752,8 @@ button.tool-parent {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 22px clamp(16px, 6%, 64px);
+  /* Bottom padding clears the composer's fade, as the chat's does. */
+  padding: 22px clamp(16px, 6%, 64px) 32px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -5818,6 +5835,13 @@ button.tool-parent {
 }
 .cm-user-row:hover .cm-rewind {
   opacity: 1;
+}
+/* The row already caps the width at 82% of the thread. A second 82% on the
+   bubble resolved against the row — whose width is the bubble's own — and so
+   always came out narrower than the text: even a short line wrapped. */
+.cm-user-row > .cm-user {
+  max-width: none;
+  min-width: 0;
 }
 .cm-rewind:hover {
   color: var(--text);
@@ -5905,7 +5929,7 @@ button.tool-parent {
   max-width: 860px;
   width: 100%;
   margin: 0 auto;
-  padding: 8px 16px;
+  padding: 0 17px 8px;
   font-size: 12.5px;
   color: var(--text-dim);
 }
@@ -6154,12 +6178,25 @@ button.tool-parent {
 .cm-dl.ctx {
   color: var(--faint);
 }
+/* The rest of a long diff: a line that opens it. */
 .cm-dl-more {
+  width: 100%;
   margin-top: 4px;
   padding-top: 6px;
-  border-top: 1px dashed var(--border);
+  font: inherit;
+  text-align: left;
   color: var(--text-faint);
-  font-style: italic;
+  background: transparent;
+  border: none;
+  border-top: 1px dashed var(--border);
+  cursor: pointer;
+  transition: color var(--t-fast);
+}
+.cm-dl-more:hover:not(:disabled) {
+  color: var(--text);
+}
+.cm-dl-more:disabled {
+  cursor: default;
 }
 
 /* ---- composer (matches the chat composer: rounded pill + circular send) ---- */
@@ -6365,7 +6402,7 @@ button.tool-parent {
   font-family: var(--font-mono);
   font-variant-ligatures: none;
   font-size: 12px;
-  color: var(--accent);
+  color: var(--text);
   min-width: 72px;
 }
 .skill-row:not(.on) .skill-row-name {
@@ -7693,8 +7730,11 @@ body,
 }
 /* Format and capability tags: quiet, square-shouldered labels — facts about
    the file, not calls to action. */
+/* One badge look for everything a model is: format, vision, image. */
 .mm-vision,
-.mm-fmt {
+.mm-fmt,
+.mm-img,
+.chip-img {
   flex: none;
   font-size: 10px;
   font-weight: 500;
@@ -8160,11 +8200,10 @@ body,
   flex: none;
   font-size: 10px;
   font-weight: 600;
-  color: var(--accent);
-  border: 1px solid currentcolor;
+  color: var(--text-dim);
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
   padding: 1px 7px;
-  opacity: 0.85;
 }
 .mcp-store-inputs {
   flex-basis: 100%;
@@ -8491,19 +8530,6 @@ body,
   color: var(--text);
   font-weight: 500;
 }
-.is-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-  animation: is-pulse 1.4s ease-in-out infinite;
-}
-@keyframes is-pulse {
-  50% {
-    opacity: 0.4;
-  }
-}
 .is-run-detail {
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
@@ -8586,7 +8612,7 @@ body,
   outline: none;
 }
 .is-neg input:focus {
-  border-color: rgba(63, 138, 101, 0.5);
+  border-color: var(--border-strong);
 }
 .is-bar {
   max-width: 768px;
@@ -8619,9 +8645,9 @@ body,
   background: var(--surface);
 }
 .is-bar-btn.on {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  background: var(--accent-soft);
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 .is-stepper {
   display: inline-flex;
@@ -8702,9 +8728,9 @@ body,
   color: var(--text);
 }
 .is-aspects button.on {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
-  background: var(--accent-soft);
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 .is-aspect-box {
   display: block;
@@ -8761,9 +8787,9 @@ body,
   color: var(--text);
 }
 .is-bases button.on {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
-  background: var(--accent-soft);
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 .is-field {
   display: flex;
@@ -8782,16 +8808,11 @@ body,
   font-style: normal;
   margin-left: 6px;
   font-size: 11px;
-  color: var(--accent);
+  color: var(--faint);
 }
-.is-field select {
+.is-field .csel-trigger {
   padding: 5px 8px;
-  font: inherit;
   font-size: 12.5px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
 }
 .is-seed-row {
   display: flex;
@@ -8870,12 +8891,11 @@ body,
   background: var(--surface-2);
 }
 .is-comp-row.ok .is-comp-state {
-  color: var(--on-accent);
-  background: var(--accent);
+  color: var(--text);
 }
 .is-comp-row.missing .is-comp-state {
-  color: #fff;
-  background: var(--warn);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
 }
 .is-comp-main {
   flex: 1;
@@ -8931,9 +8951,10 @@ body,
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
-  padding: 12px 14px;
-  margin-bottom: 14px;
+  padding: 13px 16px;
+  margin-bottom: 4px;
   background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--r-md);
 }
 .is-set-model-name {
@@ -8968,19 +8989,6 @@ body,
 }
 
 /* ---- badges ---- */
-.mm-img,
-.chip-img {
-  flex: none;
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, #b07cd8 50%, transparent);
-  color: #b07cd8;
-  margin-left: 6px;
-}
-.chip-img {
-  margin-left: 0;
-}
 .mm-warn {
   flex: none;
   width: 15px;
@@ -8996,8 +9004,9 @@ body,
   border-radius: 50%;
 }
 .store-badge-image {
-  color: #b07cd8;
-  border-color: color-mix(in srgb, #b07cd8 45%, transparent);
+  border-color: var(--border);
+  color: var(--text-dim);
+  background: var(--ink-faint);
 }
 .mi-file {
   max-width: 190px;
@@ -9018,8 +9027,7 @@ body,
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .is-run-ph,
-  .is-dot {
+  .is-run-ph {
     animation: none;
   }
 }

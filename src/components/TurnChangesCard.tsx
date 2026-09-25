@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
-import { diffLines } from "../lib/diff";
+import { DiffView } from "./DiffView";
 import { changeTotals, startsFolded, type TurnChange } from "../lib/turnChanges";
 
 /** Every file a turn changed, under its answer: the net +/− of each, its diff
@@ -90,28 +90,16 @@ export function TurnChangesCard({
 
 function ChangeDiff({ change }: { change: TurnChange }) {
   const { t } = useI18n();
-  const d = useMemo(
-    () =>
-      change.before !== undefined || change.after !== undefined
-        ? diffLines(change.before ?? "", change.after ?? "")
-        : null,
-    [change],
-  );
   if (change.binary) return <div className="cm-change-note">{t("cmChangeBinaryNote")}</div>;
-  if (!d) return <div className="cm-change-note">{t("cmChangeTooBig")}</div>;
+  if (change.before === undefined && change.after === undefined) {
+    return <div className="cm-change-note">{t("cmChangeTooBig")}</div>;
+  }
   return (
-    <pre className="cm-diff cm-change-diff">
-      {d.rows.map((l, i) => (
-        <div key={i} className={`cm-dl ${l.kind}`}>
-          <span className="cm-dl-mark">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}</span>
-          {l.text}
-        </div>
-      ))}
-      {d.truncated && (
-        <div className="cm-dl ctx cm-dl-more">
-          {t("cmDiffMore").replace("{n}", String(change.added + change.removed))}
-        </div>
-      )}
-    </pre>
+    <DiffView
+      className="cm-change-diff"
+      before={change.before ?? ""}
+      after={change.after ?? ""}
+      total={change.added + change.removed}
+    />
   );
 }

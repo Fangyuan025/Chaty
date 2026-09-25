@@ -191,6 +191,9 @@ export interface ToolStep {
   /** Exact +N/−M for a diff whose contents were capped for the card. The badge
    *  prefers these, so a big edit still reports the true totals. */
   diffCounts?: { added: number; removed: number };
+  /** `diff` was capped for the card; the whole of it went to the host
+   *  (`onStepDiff`), for the card to fetch when asked for the rest. */
+  fullDiff?: boolean;
   /** Absolute path of an image this step produced — the UI renders a
    *  clickable preview. For a full-page capture this is the WHOLE page, not
    *  the first of the segments the model was fed. */
@@ -231,6 +234,9 @@ export interface AgentCallbacks {
    *  card's copy (`step.result`: trimmed for the renderer, and without the
    *  notes appended for the model). The host keeps it outside the session. */
   onStepText?: (stepId: string, text: string) => void;
+  /** A step's diff was too big to keep on its card: the whole of it, for the
+   *  host to store apart from the session (as `onStepText` does). */
+  onStepDiff?: (stepId: string, diff: NonNullable<ToolStep["diff"]>) => void;
   /** Live generation stats: total tokens this turn + current tokens/sec. */
   onStats?: (tokens: number, tps: number) => void;
   /** Context window position after a step (prompt + output tokens used). */
@@ -289,9 +295,10 @@ export interface AgentOptions {
    *  it — nothing is discarded (owner call: a 35B at low temperature loops
    *  in thought; cutting must not cost coherence). */
   thinkBudget?: number;
-  /** User-set per-round generation budget in tokens (0/undefined = the
-   *  per-thinkMode default). Always clamped to what the context window can
-   *  actually hold, floored at 512 so a tool call still fits. */
+  /** User-set per-round generation budget in tokens — Settings → Sampling's
+   *  max length (0/undefined = no ceiling of its own). Always clamped to what
+   *  the context window can actually hold, floored at 512 so a tool call
+   *  still fits. */
   maxGenTokens?: number;
   /** From ModelInfo — picks the right no-think mechanism per model family
    *  (Qwen3 soft switch vs. Qwen3.5+/Gemma think-flag), mirroring chat mode. */
@@ -304,8 +311,9 @@ export interface AgentOptions {
   temperature?: number;
   /** The rest of the user's sampling (Settings → Sampling). Temperature stays
    *  Code's own; these apply to both modes — the agent used to run on a
-   *  hard-coded top-p and repeat penalty whatever the settings said. */
-  sampling?: { topP: number; topK: number; minP: number; repeatPenalty: number };
+   *  hard-coded top-p and repeat penalty whatever the settings said. The
+   *  user's stop sequences join the call closers. */
+  sampling?: { topP: number; topK: number; minP: number; repeatPenalty: number; stop?: string[] };
   /** Default timeout for bash commands (seconds) when the model doesn't set one. */
   bashTimeout?: number;
   /** File-based skills (M3): the index rides in the prompt, bodies load via
@@ -3868,7 +3876,7 @@ export async function runAgentTurn(
             minP: opts.sampling?.minP,
             maxTokens,
             repeatPenalty: opts.sampling?.repeatPenalty ?? 1.05,
-            stop: callClosers(callFormat()),
+            stop: [...callClosers(callFormat()), ...(opts.sampling?.stop ?? [])],
             think: stepThink,
             effort: opts.effort,
           },
@@ -4942,6 +4950,10 @@ export async function runAgentTurn(
         const capped = capDiffForCard(out.diff, lang);
         stepObj.diff = capped.diff;
         stepObj.diffCounts = capped.counts;
+        if (capped.counts && out.diff) {
+          stepObj.fullDiff = true;
+          cb.onStepDiff?.(stepObj.id, out.diff);
+        }
         if (["edit_file", "edit_lines", "multi_edit", "write_file"].includes(call.name)) {
           const p = asStr(call.args?.path);
           if (p && !resultText.startsWith("ERROR")) {

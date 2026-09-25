@@ -304,15 +304,17 @@ export default function App() {
   }, []);
   const [settings, setSettings] = useState<GenSettings>(loadSettings);
   // Settings → Sampling governs Code mode too — everything but temperature,
-  // which Code keeps as its own (Settings → Code).
+  // which Code keeps as its own (Settings → Code). The stop sequences end a
+  // step where they end a reply, alongside the call closers.
   const codeSampling = useMemo(
     () => ({
       topP: settings.topP,
       topK: settings.topK,
       minP: settings.minP,
       repeatPenalty: settings.repeatPenalty,
+      stop: parseStops(settings.stop),
     }),
-    [settings.topP, settings.topK, settings.minP, settings.repeatPenalty],
+    [settings.topP, settings.topK, settings.minP, settings.repeatPenalty, settings.stop],
   );
   // An image model turns the whole app into the image studio: its own
   // canvas, history and settings, and none of the chat-only tools.
@@ -3058,7 +3060,8 @@ export default function App() {
         temperature={settings.codeTemperature}
         sampling={codeSampling}
         thinkBudget={settings.codeThinkBudget}
-        maxGenTokens={settings.codeMaxTokens}
+        // The sampling page's max length caps each step as it caps a reply.
+        maxGenTokens={settings.limitTokens ? settings.maxTokens : 0}
         toolFormat={settings.codeToolFormat}
         toolFallback={settings.codeToolFallback}
         autoApproveEdits={settings.codeAutoApproveEdits}

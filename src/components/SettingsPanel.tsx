@@ -109,9 +109,6 @@ export interface GenSettings extends ImageSettings {
    *  Over budget the think block closes gracefully — reasoning kept, model
    *  told to act on it. */
   codeThinkBudget: number;
-  /** Code mode: per-round generation budget in tokens (0 = auto by think
-   *  depth; always clamped to the context window). */
-  codeMaxTokens: number;
   /** Code mode: how the model writes tool calls — "auto" = the format its
    *  chat template was trained on; or one format for every model. */
   codeToolFormat: "auto" | "xml" | "json" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm";
@@ -201,7 +198,6 @@ export const defaultSettings: GenSettings = {
   codeBashTimeout: 60,
   codeTemperature: 0.3,
   codeThinkBudget: 0,
-  codeMaxTokens: 0,
   // Each family writes calls the way its template taught it; a template that
   // names no format gets XML — nothing in it is escaped, so a long edit can't
   // come out broken the way one line of JSON does.
@@ -270,11 +266,14 @@ export function parseStops(raw: string): string[] {
 
 type CatId =
   | "general"
+  | "appearance"
   | "chat"
-  | "sampling"
-  | "model"
-  | "code"
+  | "knowledge"
   | "voice"
+  | "model"
+  | "sampling"
+  | "code"
+  | "extensions"
   | "imageGen"
   | "imageModel"
   | "data"
@@ -293,6 +292,9 @@ const TOOL_FORMAT_LABEL: Record<"xml" | "json" | "gemma" | "lfm" | "ifm" | "glm"
 
 const CAT_ICONS: Record<CatId, string> = {
   general: "M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18",
+  appearance: "M12 21a9 9 0 110-18c4.97 0 9 3.58 9 8 0 2.2-1.8 3.5-3.5 3.5H15a1.8 1.8 0 00-1.3 3.05A2.03 2.03 0 0112 21zM7.5 11.5h.01M10.5 7.5h.01M15.5 8.5h.01",
+  knowledge: "M4 19.5A2.5 2.5 0 016.5 17H20V3H6.5A2.5 2.5 0 004 5.5zM4 19.5A2.5 2.5 0 006.5 22H20v-5",
+  extensions: "M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 01-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 10-3.214 3.214c.446.166.855.497.925.968a.979.979 0 01-.276.837l-1.61 1.61a2.404 2.404 0 01-1.705.707 2.402 2.402 0 01-1.704-.706l-1.568-1.568a1.026 1.026 0 00-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 11-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 00-.289-.877l-1.568-1.568A2.402 2.402 0 011.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 103.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0112 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 113.237 3.237c-.464.18-.894.527-.967 1.02z",
   chat: "M21 12a8 8 0 01-8 8H5l-2 2V12a8 8 0 018-8h2a8 8 0 018 8z",
   sampling: "M4 20V10M10 20V4M16 20v-8M22 20H2",
   model: "M4 7l8-4 8 4v10l-8 4-8-4zM4 7l8 4m0 0l8-4m-8 4v10",
@@ -303,6 +305,21 @@ const CAT_ICONS: Record<CatId, string> = {
   data: "M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3",
   about: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 8h.01M12 12v5",
 };
+
+/** The nav, group by group. An image model loaded makes the app the image
+ *  studio, and the panel shows the studio's categories in place of those
+ *  only a language model reads. */
+function catGroupsFor(mode: "chat" | "image"): CatId[][] {
+  return mode === "image"
+    ? [["general", "appearance"], ["imageGen", "imageModel"], ["data", "about"]]
+    : [
+        ["general", "appearance"],
+        ["chat", "knowledge", "voice"],
+        ["model", "sampling"],
+        ["code", "extensions"],
+        ["data", "about"],
+      ];
+}
 
 /** Modifier-key glyph for the current platform (send-shortcut labels). */
 const MOD_KEY = /mac/i.test(navigator.platform ?? navigator.userAgent) ? "⌘" : "Ctrl +";
@@ -483,6 +500,12 @@ export function SettingsPanel({
       r.style.setProperty("--fill", `${Math.max(0, Math.min(100, pct))}%`);
     });
   });
+  // Every category shares one scrolling body: a new one starts at its top,
+  // not wherever the last one was scrolled to.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+  }, [cat]);
   const [presetName, setPresetName] = useState("");
   const [upd, setUpd] = useState<UpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
@@ -616,9 +639,7 @@ export function SettingsPanel({
     if (open && focusCat) setCat(focusCat);
   }, [open, focusCat]);
   useEffect(() => {
-    const has = (id: CatId) =>
-      mode === "image" ? ["general", "imageGen", "imageModel", "data", "about"].includes(id) : !["imageGen", "imageModel"].includes(id);
-    if (!has(cat)) setCat("general");
+    if (!catGroupsFor(mode).some((g) => g.includes(cat))) setCat("general");
   }, [mode, cat]);
 
   // Where pictures are saved when no folder is chosen, for the hint.
@@ -737,7 +758,7 @@ export function SettingsPanel({
   // Read afresh whenever the Code page is shown: the panel stays mounted, and
   // a file put in the folder by hand used to appear only after a restart.
   useEffect(() => {
-    if (open && cat === "code") {
+    if (open && (cat === "code" || cat === "extensions")) {
       // `?? []` on both: an older backend (or the browser preview) answers a
       // command it does not have with null, and a null list here took the
       // whole settings page down with it.
@@ -846,26 +867,25 @@ export function SettingsPanel({
 
   // With an image model loaded the panel is the image studio's: its own two
   // categories, the general ones, and none of what only a language model
-  // reads (sampling, context, thinking, tools, voice, Code).
-  const cats: { id: CatId; label: string }[] =
-    mode === "image"
-      ? [
-          { id: "general", label: t("setCatGeneral") },
-          { id: "imageGen", label: t("setCatImageGen") },
-          { id: "imageModel", label: t("setCatImageModel") },
-          { id: "data", label: t("setCatData") },
-          { id: "about", label: t("setCatAbout") },
-        ]
-      : [
-          { id: "general", label: t("setCatGeneral") },
-          { id: "chat", label: t("setCatChat") },
-          { id: "sampling", label: t("setCatSampling") },
-          { id: "model", label: t("setCatModel") },
-          { id: "code", label: "Code" },
-          { id: "voice", label: t("setCatVoice") },
-          { id: "data", label: t("setCatData") },
-          { id: "about", label: t("setCatAbout") },
-        ];
+  // reads (sampling, context, thinking, tools, voice, Code). Categories come
+  // in groups — the app, chat, the model, Code, the image studio, your data —
+  // and the groups are set apart in the nav.
+  const catLabel: Record<CatId, string> = {
+    general: t("setCatGeneral"),
+    appearance: t("setCatAppearance"),
+    chat: t("setCatChat"),
+    knowledge: t("setCatKnowledge"),
+    voice: t("setCatVoice"),
+    model: t("setCatModel"),
+    sampling: t("setCatSampling"),
+    code: t("modeCode"),
+    extensions: t("setCatExtensions"),
+    imageGen: t("setCatImageGen"),
+    imageModel: t("setCatImageModel"),
+    data: t("setCatData"),
+    about: t("setCatAbout"),
+  };
+  const catGroups = catGroupsFor(mode);
 
   if (!mounted) return null;
 
@@ -886,9 +906,6 @@ export function SettingsPanel({
   // model is loaded, so both model categories show these rows.
   const modelLibraryRows = (
     <>
-      <SetRow label={t("setAutoLoadLast")} hint={t("setAutoLoadLastHint")}>
-        <Switch on={value.autoLoadLast} onToggle={() => set("autoLoadLast", !value.autoLoadLast)} />
-      </SetRow>
       <SetRow label={t("modelsFolder")} hint={t("modelsFolderHint")}>
         {/* Three independent actions, not a choice between three
             states — `lang-switch` would draw them as one segmented
@@ -988,30 +1005,35 @@ export function SettingsPanel({
       <div className="settings-modal" ref={modalRef} onMouseDown={(e) => e.stopPropagation()}>
         <aside className="settings-nav">
           <div className="settings-nav-title">{t("settingsTitle")}</div>
-          {cats.map((c) => (
-            <button
-              key={c.id}
-              className={`settings-nav-item ${cat === c.id ? "active" : ""}`}
-              onClick={() => setCat(c.id)}
-            >
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <path d={CAT_ICONS[c.id]} />
-              </svg>
-              {c.label}
-            </button>
+          {catGroups.map((group, gi) => (
+            <div key={group[0]} className="settings-nav-group">
+              {gi > 0 && <div className="settings-nav-sep" aria-hidden="true" />}
+              {group.map((id) => (
+                <button
+                  key={id}
+                  className={`settings-nav-item ${cat === id ? "active" : ""}`}
+                  onClick={() => setCat(id)}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                    <path d={CAT_ICONS[id]} />
+                  </svg>
+                  {catLabel[id]}
+                </button>
+              ))}
+            </div>
           ))}
         </aside>
 
         <div className="settings-pane">
           {/* Fixed pane header: category title + close. Only the body scrolls. */}
           <div className="settings-pane-head">
-            <span className="settings-pane-title">{cats.find((c) => c.id === cat)?.label}</span>
+            <span className="settings-pane-title">{catLabel[cat]}</span>
             <button className="settings-close" onClick={onClose} aria-label={t("cancel")}>
               <Icon name="x" size={11} strokeWidth={2.2} />
             </button>
           </div>
 
-          <div className="settings-pane-body">
+          <div className="settings-pane-body" ref={bodyRef}>
           {cat === "general" && (
             <>
               <SetRow label={t("language")}>
@@ -1023,6 +1045,23 @@ export function SettingsPanel({
                   ))}
                 </div>
               </SetRow>
+              <SetRow label={t("setSendKey")} hint={t("setSendKeyHint")}>
+                <div className="lang-switch">
+                  <button type="button" className={value.sendKey === "enter" ? "active" : ""} onClick={() => set("sendKey", "enter")}>Enter</button>
+                  <button type="button" className={value.sendKey === "modEnter" ? "active" : ""} onClick={() => set("sendKey", "modEnter")}>{MOD_KEY} Enter</button>
+                </div>
+              </SetRow>
+              <SetRow label={t("setAutoTitle")} hint={t("setAutoTitleHint")}>
+                <Switch on={value.autoTitle} onToggle={() => set("autoTitle", !value.autoTitle)} />
+              </SetRow>
+              <SetRow label={t("setAutoLoadLast")} hint={t("setAutoLoadLastHint")}>
+                <Switch on={value.autoLoadLast} onToggle={() => set("autoLoadLast", !value.autoLoadLast)} />
+              </SetRow>
+            </>
+          )}
+
+          {cat === "appearance" && (
+            <>
               <SetRow label={t("theme")}>
                 <div className="lang-switch">
                   <button type="button" className={value.theme === "system" ? "active" : ""} onClick={() => set("theme", "system")}>{t("themeSystem")}</button>
@@ -1063,44 +1102,24 @@ export function SettingsPanel({
                   ))}
                 </div>
               </SetRow>
-              <SetRow label={t("setSendKey")} hint={t("setSendKeyHint")}>
+              <SetRow label={t("setAnswerSize")} hint={t("setAnswerSizeHint")}>
                 <div className="lang-switch">
-                  <button type="button" className={value.sendKey === "enter" ? "active" : ""} onClick={() => set("sendKey", "enter")}>Enter</button>
-                  <button type="button" className={value.sendKey === "modEnter" ? "active" : ""} onClick={() => set("sendKey", "modEnter")}>{MOD_KEY} Enter</button>
+                  <button type="button" className={value.answerSize === "sm" ? "active" : ""} onClick={() => set("answerSize", "sm")}>{t("sizeSm")}</button>
+                  <button type="button" className={value.answerSize === "md" ? "active" : ""} onClick={() => set("answerSize", "md")}>{t("sizeMd")}</button>
+                  <button type="button" className={value.answerSize === "lg" ? "active" : ""} onClick={() => set("answerSize", "lg")}>{t("sizeLg")}</button>
+                </div>
+              </SetRow>
+              <SetRow label={t("setCodeTheme")} hint={t("setCodeThemeHint")}>
+                <div className="lang-switch">
+                  {(Object.keys(CODE_THEMES) as CodeTheme[]).map((k) => (
+                    <button key={k} type="button" className={value.codeTheme === k ? "active" : ""} onClick={() => set("codeTheme", k)}>
+                      {CODE_THEMES[k].label}
+                    </button>
+                  ))}
                 </div>
               </SetRow>
               <SetRow label={t("setReduceMotion")} hint={t("setReduceMotionHint")}>
                 <Switch on={value.reduceMotion} onToggle={() => set("reduceMotion", !value.reduceMotion)} />
-              </SetRow>
-              <SetRow label={t("errorLog")} hint={t("errorLogHint")}>
-                {/* Open and clear sit one above the other: they act on the same
-                    file, so a row each would read as two unrelated settings. */}
-                <div className="log-actions">
-                  <div className="lang-switch">
-                    <button type="button" onClick={() => { void openErrorLog().catch(() => {}); }}>
-                      {t("errorLogOpen")}
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    className="data-btn danger"
-                    onClick={async () => {
-                      if (
-                        !(await confirm({
-                          message: t("confirmClearErrorLog"),
-                          title: t("errorLogClear"),
-                          confirmLabel: t("errorLogClear"),
-                          danger: true,
-                        }))
-                      ) {
-                        return;
-                      }
-                      void clearErrorLog().catch(console.error);
-                    }}
-                  >
-                    {t("errorLogClear")}
-                  </button>
-                </div>
               </SetRow>
             </>
           )}
@@ -1148,15 +1167,6 @@ export function SettingsPanel({
                   </button>
                 </div>
               </div>
-              <SetRow label={t("setCodeTheme")} hint={t("setCodeThemeHint")}>
-                <div className="lang-switch">
-                  {(Object.keys(CODE_THEMES) as CodeTheme[]).map((k) => (
-                    <button key={k} type="button" className={value.codeTheme === k ? "active" : ""} onClick={() => set("codeTheme", k)}>
-                      {CODE_THEMES[k].label}
-                    </button>
-                  ))}
-                </div>
-              </SetRow>
               <SetRow label={t("chatCollapseCode")} hint={t("chatCollapseCodeHint")}>
                 <Switch
                   on={value.chatCollapseCode}
@@ -1169,17 +1179,11 @@ export function SettingsPanel({
                   <button type="button" className={value.canvasEditMode === "rewrite" ? "active" : ""} onClick={() => set("canvasEditMode", "rewrite")}>{t("canvasEditModeRewrite")}</button>
                 </div>
               </SetRow>
-              <SetRow label={t("setAnswerSize")} hint={t("setAnswerSizeHint")}>
-                <div className="lang-switch">
-                  <button type="button" className={value.answerSize === "sm" ? "active" : ""} onClick={() => set("answerSize", "sm")}>{t("sizeSm")}</button>
-                  <button type="button" className={value.answerSize === "md" ? "active" : ""} onClick={() => set("answerSize", "md")}>{t("sizeMd")}</button>
-                  <button type="button" className={value.answerSize === "lg" ? "active" : ""} onClick={() => set("answerSize", "lg")}>{t("sizeLg")}</button>
-                </div>
-              </SetRow>
-              <SetRow label={t("setAutoTitle")} hint={t("setAutoTitleHint")}>
-                <Switch on={value.autoTitle} onToggle={() => set("autoTitle", !value.autoTitle)} />
-              </SetRow>
+            </>
+          )}
 
+          {cat === "knowledge" && (
+            <>
               <label className="field">
                 <span>
                   <em className="has-tip" data-tip={t("tipRagTopK")}>{t("ragTopK")}</em> <b>{value.ragTopK}</b>
@@ -1194,652 +1198,12 @@ export function SettingsPanel({
                 />
               </label>
               <div className="settings-hint">{t("ragTopKHint")}</div>
-
               <SetRow label={t("kbCaptionImages")} hint={t("kbCaptionImagesHint")}>
                 <Switch
                   on={value.kbCaptionImages}
                   onToggle={() => set("kbCaptionImages", !value.kbCaptionImages)}
                 />
               </SetRow>
-            </>
-          )}
-
-          {cat === "sampling" && (
-            <>
-              <div className="settings-hint">{t("samplingScopeHint")}</div>
-              <label className="field">
-                <span>
-                  <em className="has-tip" data-tip={t("tipTemperature")}>{t("temperature")}</em> <b>{value.temperature.toFixed(2)}</b>
-                </span>
-                <input type="range" min={0} max={1.5} step={0.05} value={value.temperature} onChange={(e) => set("temperature", Number(e.target.value))} />
-              </label>
-              <label className="field">
-                <span>
-                  <em className="has-tip" data-tip={t("tipTopP")}>Top-P</em> <b>{value.topP.toFixed(2)}</b>
-                </span>
-                <input type="range" min={0.1} max={1} step={0.01} value={value.topP} onChange={(e) => set("topP", Number(e.target.value))} />
-              </label>
-              <LimitField
-                label={t("maxTokens")}
-                tip={t("tipMaxTokens")}
-                offLabel={t("noLimit")}
-                onLabel={t("gpuCustom")}
-                off={!value.limitTokens}
-                onOff={(o) => set("limitTokens", !o)}
-                value={Math.min(value.maxTokens, maxTokensLimit)}
-              >
-                <input
-                  type="range"
-                  min={128}
-                  max={maxTokensLimit}
-                  step={128}
-                  value={Math.min(value.maxTokens, maxTokensLimit)}
-                  onChange={(e) => set("maxTokens", Number(e.target.value))}
-                />
-              </LimitField>
-              <label className="field">
-                <span>
-                  <em className="has-tip" data-tip={t("tipTopK")}>Top-K</em> <b>{value.topK === 0 ? t("off") : value.topK}</b>
-                </span>
-                <input type="range" min={0} max={100} step={1} value={value.topK} onChange={(e) => set("topK", Number(e.target.value))} />
-              </label>
-              <label className="field">
-                <span>
-                  <em className="has-tip" data-tip={t("tipMinP")}>Min-P</em> <b>{value.minP.toFixed(2)}</b>
-                </span>
-                <input type="range" min={0} max={0.5} step={0.01} value={value.minP} onChange={(e) => set("minP", Number(e.target.value))} />
-              </label>
-              <label className="field">
-                <span>
-                  <em className="has-tip" data-tip={t("tipRepeatPenalty")}>{t("repeatPenalty")}</em> <b>{value.repeatPenalty.toFixed(2)}</b>
-                </span>
-                <input type="range" min={1} max={1.5} step={0.01} value={value.repeatPenalty} onChange={(e) => set("repeatPenalty", Number(e.target.value))} />
-              </label>
-              <label className="field">
-                <span><em className="has-tip" data-tip={t("tipStopSeqs")}>{t("stopSeqs")}</em></span>
-                <textarea rows={2} placeholder={t("stopSeqsPh")} value={value.stop} onChange={(e) => set("stop", e.target.value)} />
-              </label>
-              <button
-                className="settings-reset"
-                onClick={() =>
-                  onChange({
-                    ...value,
-                    temperature: defaultSettings.temperature,
-                    topP: defaultSettings.topP,
-                    limitTokens: defaultSettings.limitTokens,
-                    maxTokens: defaultSettings.maxTokens,
-                    topK: defaultSettings.topK,
-                    minP: defaultSettings.minP,
-                    repeatPenalty: defaultSettings.repeatPenalty,
-                    stop: defaultSettings.stop,
-                  })
-                }
-              >
-                {t("resetDefaults")}
-              </button>
-            </>
-          )}
-
-          {cat === "model" && (
-            <>
-              <label className="field">
-                <span><em className="has-tip" data-tip={t("tipGpuAccel")}>{t("gpuAccel")}</em></span>
-                <div className="lang-switch">
-                  <button type="button" className={value.gpuLayers < 0 ? "active" : ""} onClick={() => set("gpuLayers", -1)}>{t("gpuAuto")}</button>
-                  <button type="button" className={value.gpuLayers === 0 ? "active" : ""} onClick={() => set("gpuLayers", 0)}>{t("gpuOff")}</button>
-                  <button
-                    type="button"
-                    className={value.gpuLayers > 0 ? "active" : ""}
-                    onClick={() => set("gpuLayers", value.gpuLayers > 0 ? value.gpuLayers : 20)}
-                  >
-                    {t("gpuCustom")}
-                  </button>
-                </div>
-              </label>
-              {value.gpuLayers > 0 && (
-                <label className="field">
-                  <span>
-                    {t("gpuLayersLabel")} <b>{value.gpuLayers}</b>
-                  </span>
-                  <input
-                    type="range"
-                    min={1}
-                    max={Math.max(1, layersLimit ?? 80)}
-                    step={1}
-                    value={value.gpuLayers}
-                    onChange={(e) => set("gpuLayers", Number(e.target.value))}
-                  />
-                </label>
-              )}
-              <div className="settings-hint">{t("gpuHint")}</div>
-
-              <label className="field">
-                <span><em className="has-tip" data-tip={t("tipCtxLength")}>{t("ctxLength")}</em></span>
-                <div className="lang-switch">
-                  <button type="button" className={value.contextLength <= 0 ? "active" : ""} onClick={() => set("contextLength", 0)}>{t("ctxAuto")}</button>
-                  <button
-                    type="button"
-                    className={value.contextLength > 0 ? "active" : ""}
-                    onClick={() => set("contextLength", value.contextLength > 0 ? value.contextLength : 8192)}
-                  >
-                    {t("gpuCustom")}
-                  </button>
-                </div>
-              </label>
-              {value.contextLength > 0 &&
-                (() => {
-                  // Slider ceiling = the loaded model's trained context (fallback
-                  // 32768 when nothing is loaded) — no point offering more.
-                  const ctxMax = Math.max(4096, ctxTrainLimit ?? 32768);
-                  return (
-                    <label className="field">
-                      <span>
-                        {t("ctxTokens")} <b>{Math.min(value.contextLength, ctxMax)}</b>
-                      </span>
-                      <input
-                        type="range"
-                        min={2048}
-                        max={ctxMax}
-                        step={2048}
-                        value={Math.min(value.contextLength, ctxMax)}
-                        onChange={(e) => set("contextLength", Number(e.target.value))}
-                      />
-                    </label>
-                  );
-                })()}
-              <div className="settings-hint">{t("ctxHint")}</div>
-
-              <SetRow
-                label={`${t("specDecode")} · ${t("experimental")}`}
-                hint={specSupported ? t("specDecodeHint") : t("specDecodeUnsupported")}
-              >
-                <Switch
-                  on={value.speculative && !!specSupported}
-                  disabled={!specSupported}
-                  onToggle={() => set("speculative", !value.speculative)}
-                />
-              </SetRow>
-
-              {onReloadModel && (
-                <button className="settings-reload" onClick={onReloadModel} disabled={reloading}>
-                  {reloading ? "…" : t("reloadApply")}
-                </button>
-              )}
-              {modelLibraryRows}
-            </>
-          )}
-
-          {cat === "code" && (
-            <>
-              <LimitField
-                label={t("cmMaxSteps")}
-                offLabel={t("noLimit")}
-                onLabel={t("gpuCustom")}
-                off={value.codeMaxSteps <= 0}
-                onOff={(o) => set("codeMaxSteps", o ? 0 : 64)}
-                value={value.codeMaxSteps}
-              >
-                <input
-                  type="range"
-                  min={8}
-                  max={256}
-                  step={4}
-                  value={value.codeMaxSteps}
-                  onChange={(e) => set("codeMaxSteps", Number(e.target.value))}
-                />
-              </LimitField>
-              <div className="settings-hint">{t("cmMaxStepsHint")}</div>
-
-              <LimitField
-                label={t("cmBashTimeout")}
-                offLabel={t("noLimit")}
-                onLabel={t("gpuCustom")}
-                off={value.codeBashTimeout <= 0}
-                onOff={(o) => set("codeBashTimeout", o ? 0 : 60)}
-                value={`${value.codeBashTimeout}s`}
-              >
-                <input
-                  type="range"
-                  min={10}
-                  max={1800}
-                  step={10}
-                  value={value.codeBashTimeout}
-                  onChange={(e) => set("codeBashTimeout", Number(e.target.value))}
-                />
-              </LimitField>
-              <div className="settings-hint">{t("cmBashTimeoutHint")}</div>
-
-              <label className="field">
-                <span>
-                  {t("cmTemp")} <b>{value.codeTemperature.toFixed(2)}</b>
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={value.codeTemperature}
-                  onChange={(e) => set("codeTemperature", Number(e.target.value))}
-                />
-              </label>
-              <div className="settings-hint">{t("cmTempHint")}</div>
-
-              <label className="field">
-                <span>
-                  {t("cmThinkBudget")}{" "}
-                  <b>{value.codeThinkBudget > 0 ? value.codeThinkBudget : t("cmThinkBudgetOff")}</b>
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={maxTokensLimit}
-                  step={250}
-                  value={value.codeThinkBudget}
-                  onChange={(e) => set("codeThinkBudget", Number(e.target.value))}
-                />
-              </label>
-              <div className="settings-hint">{t("cmThinkBudgetHint")}</div>
-
-              <label className="field">
-                <span>
-                  {t("cmMaxTokens")}{" "}
-                  <b>{value.codeMaxTokens > 0 ? value.codeMaxTokens : t("cmThinkBudgetOff")}</b>
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={maxTokensLimit}
-                  step={512}
-                  value={value.codeMaxTokens}
-                  onChange={(e) => set("codeMaxTokens", Number(e.target.value))}
-                />
-              </label>
-              <div className="settings-hint">{t("cmMaxTokensHint")}</div>
-
-              {shells.length > 1 && (
-                <SetRow label={t("cmShell")} hint={t("cmShellHint")}>
-                  <Select
-                    className="field-select"
-                    value={shells.some((sh) => sh.id === value.codeShell) ? value.codeShell : ""}
-                    ariaLabel={t("cmShell")}
-                    onChange={(v) => {
-                      const id = String(v);
-                      set("codeShell", id);
-                      void agentSetShell(id || null).catch(() => {});
-                    }}
-                    options={[
-                      {
-                        value: "",
-                        label: `${t("cmShellDefault")} · ${shells.find((sh) => sh.default)?.name ?? ""}`,
-                      },
-                      ...shells.map((sh) => ({ value: sh.id, label: sh.name })),
-                    ]}
-                  />
-                </SetRow>
-              )}
-
-              {/* Eight formats and counting: a menu, not a row of buttons
-                  that squeezes the label into a column. */}
-              <SetRow label={t("cmToolFormat")} hint={t("cmToolFormatHint")}>
-                <Select
-                  className="field-select"
-                  value={value.codeToolFormat}
-                  ariaLabel={t("cmToolFormat")}
-                  onChange={(v) => set("codeToolFormat", String(v) as GenSettings["codeToolFormat"])}
-                  options={(["auto", "xml", "json", "gemma", "lfm", "ifm", "glm", "minicpm"] as const).map((f) => ({
-                    value: f,
-                    label: f === "auto" ? t("cmToolFormatAuto") : TOOL_FORMAT_LABEL[f],
-                  }))}
-                />
-              </SetRow>
-              {value.codeToolFormat === "auto" && (
-                <SetRow label={t("cmToolFallback")} hint={t("cmToolFallbackHint")}>
-                  <div className="lang-switch">
-                    {(["xml", "json"] as const).map((f) => (
-                      <button
-                        key={f}
-                        type="button"
-                        className={value.codeToolFallback === f ? "active" : ""}
-                        onClick={() => set("codeToolFallback", f)}
-                      >
-                        {TOOL_FORMAT_LABEL[f]}
-                      </button>
-                    ))}
-                  </div>
-                </SetRow>
-              )}
-
-              <SetRow label={t("cmAutoEdits")} hint={t("cmAutoEditsHint")}>
-                <Switch
-                  on={value.codeAutoApproveEdits}
-                  onToggle={() => set("codeAutoApproveEdits", !value.codeAutoApproveEdits)}
-                />
-              </SetRow>
-              <SetRow label={t("cmAutoReadOnly")} hint={t("cmAutoReadOnlyHint")}>
-                <Switch
-                  on={value.codeAutoRunReadOnly}
-                  onToggle={() => set("codeAutoRunReadOnly", !value.codeAutoRunReadOnly)}
-                />
-              </SetRow>
-              <SetRow label={t("cmHeadless")} hint={t("cmHeadlessHint")}>
-                <Switch
-                  on={value.codeBrowserHeadless}
-                  onToggle={() => set("codeBrowserHeadless", !value.codeBrowserHeadless)}
-                />
-              </SetRow>
-              <SetRow label={t("cmMemory")} hint={t("cmMemoryHint")}>
-                <Switch
-                  on={value.codeMemory}
-                  onToggle={() => set("codeMemory", !value.codeMemory)}
-                />
-              </SetRow>
-              <SetRow label={t("cmLiveCardsOpen")} hint={t("cmLiveCardsOpenHint")}>
-                <Switch
-                  on={value.codeLiveCardsOpen}
-                  onToggle={() => set("codeLiveCardsOpen", !value.codeLiveCardsOpen)}
-                />
-              </SetRow>
-              <SetRow label={t("cmGroupByWs")} hint={t("cmGroupByWsHint")}>
-                <Switch
-                  on={value.codeGroupByWorkspace}
-                  onToggle={() => set("codeGroupByWorkspace", !value.codeGroupByWorkspace)}
-                />
-              </SetRow>
-
-              <div className="field">
-                <span>{t("cmAllowlist")}</span>
-                {value.codeAllowedCommands.length > 0 && (
-                  <div className="preset-chips">
-                    {value.codeAllowedCommands.map((p) => (
-                      <span key={p} className="preset-chip">
-                        <span className="preset-apply allow-chip">{p}</span>
-                        <button
-                          type="button"
-                          className="preset-del"
-                          title={t("cancel")}
-                          onClick={() =>
-                            set("codeAllowedCommands", value.codeAllowedCommands.filter((x) => x !== p))
-                          }
-                        ><Icon name="x" size={11} strokeWidth={2.2} /></button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <div className="preset-add">
-                  <input
-                    type="text"
-                    placeholder={t("cmAllowlistPh")}
-                    value={allowInput}
-                    onChange={(e) => setAllowInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        addAllow();
-                      }
-                    }}
-                  />
-                  <button type="button" onClick={addAllow} disabled={!allowInput.trim()}>
-                    {t("presetSave")}
-                  </button>
-                </div>
-              </div>
-              <div className="settings-hint">{t("cmAllowlistHint")}</div>
-
-              <div className="field">
-                <span>{t("cmBuiltinSkills")}</span>
-                <div className="skill-rows">
-                  {BUILTIN_SKILLS.map((s) => {
-                    const enabled = !value.codeDisabledSkills.includes(s.name);
-                    return (
-                      <button
-                        key={s.name}
-                        type="button"
-                        className={`skill-row ${enabled ? "on" : ""}`}
-                        onClick={() =>
-                          set(
-                            "codeDisabledSkills",
-                            enabled
-                              ? [...value.codeDisabledSkills, s.name]
-                              : value.codeDisabledSkills.filter((n) => n !== s.name),
-                          )
-                        }
-                      >
-                        <span className="skill-row-name">/{s.name}</span>
-                        <span className="skill-row-desc">{lang === "zh" ? s.desc.zh : s.desc.en}</span>
-                        <span className="skill-row-toggle" aria-hidden="true">
-                          <span className="skill-row-knob" />
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="field">
-                <span>{t("cmSkills")}</span>
-                {value.codeSkills.length > 0 && (
-                  <div className="preset-chips">
-                    {value.codeSkills.map((s) => (
-                      <span key={s.name} className="preset-chip">
-                        <button
-                          type="button"
-                          className="preset-apply"
-                          title={s.prompt}
-                          onClick={() => {
-                            setSkillName(s.name);
-                            setSkillPrompt(s.prompt);
-                          }}
-                        >
-                          /{s.name}
-                        </button>
-                        <button type="button" className="preset-del" title={t("cancel")} onClick={() => deleteSkill(s.name)}><Icon name="x" size={11} strokeWidth={2.2} /></button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <div className="preset-add">
-                  <input
-                    type="text"
-                    placeholder={t("cmSkillNamePh")}
-                    value={skillName}
-                    onChange={(e) => setSkillName(e.target.value)}
-                  />
-                  <button type="button" onClick={saveSkill} disabled={!skillName.trim() || !skillPrompt.trim()}>
-                    {t("presetSave")}
-                  </button>
-                </div>
-                <textarea
-                  rows={3}
-                  placeholder={t("cmSkillPromptPh")}
-                  value={skillPrompt}
-                  onChange={(e) => setSkillPrompt(e.target.value)}
-                />
-              </div>
-              <div className="settings-hint">{t("cmSkillsHint")}</div>
-
-              <div className="field">
-                <span>{t("cmMcp")}</span>
-                {mcpServers.length > 0 && (
-                  <div className="skill-rows">
-                    {mcpServers.map((sv) => (
-                      <div key={sv.name} className={`skill-row mcp-row ${sv.enabled ? "on" : ""}`}>
-                        <button
-                          type="button"
-                          className="skill-row-toggle"
-                          title={sv.enabled ? "on" : "off"}
-                          onClick={() =>
-                            applyMcp(mcpServers.map((x) => (x.name === sv.name ? { ...x, enabled: !x.enabled } : x)))
-                          }
-                        >
-                          <span className="skill-row-knob" />
-                        </button>
-                        <span className="skill-row-name">{sv.name}</span>
-                        <span className="skill-row-desc">
-                          {sv.transport === "http" ? sv.url : [sv.command, ...(sv.args ?? [])].join(" ")}
-                          {mcpStatus[sv.name] ? ` · ${mcpStatus[sv.name]}` : ""}
-                        </span>
-                        <label className="mcp-trust" title={t("cmMcpHint")}>
-                          <input
-                            type="checkbox"
-                            checked={sv.trusted === true}
-                            onChange={(e) =>
-                              applyMcp(mcpServers.map((x) => (x.name === sv.name ? { ...x, trusted: e.target.checked } : x)))
-                            }
-                          />
-                          {t("cmMcpTrusted")}
-                        </label>
-                        <button type="button" className="preset-del" title={t("cancel")} onClick={() => applyMcp(mcpServers.filter((x) => x.name !== sv.name))}>
-                          <Icon name="x" size={11} strokeWidth={2.2} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="preset-add">
-                  <input type="text" placeholder={t("cmMcpNamePh")} value={mcpName} onChange={(e) => setMcpName(e.target.value)} style={{ maxWidth: 120 }} />
-                  <input type="text" placeholder={t("cmMcpCmdPh")} value={mcpCmd} onChange={(e) => setMcpCmd(e.target.value)} />
-                  <button type="button" onClick={addMcp} disabled={!mcpName.trim() || !mcpCmd.trim()}>
-                    {t("presetSave")}
-                  </button>
-                </div>
-                {/^https?:\/\//.test(mcpCmd.trim()) && (
-                  <input type="password" placeholder={t("cmMcpTokenPh")} value={mcpToken} onChange={(e) => setMcpToken(e.target.value)} />
-                )}
-              </div>
-              <div className="settings-hint">{t("cmMcpHint")}</div>
-
-              <div className="field">
-                <span>{t("cmMcpStore")}</span>
-                <div className="skill-rows">
-                  {catalog.entries.map((en) => {
-                    const installed = mcpServers.some((x) => x.name === en.id);
-                    const needsInput =
-                      (en as { needsToken?: boolean }).needsToken === true ||
-                      ((en as { placeholders?: unknown[] }).placeholders?.length ?? 0) > 0;
-                    const open = storeOpen === en.id;
-                    return (
-                      <div key={en.id} className="skill-row mcp-row on">
-                        <span className="skill-row-name">{lang === "zh" ? en.title.zh : en.title.en}</span>
-                        <span className="skill-row-desc" title={lang === "zh" ? en.permNote.zh : en.permNote.en}>
-                          {lang === "zh" ? en.desc.zh : en.desc.en}
-                        </span>
-                        {en.probe != null && <span className="mcp-cert">✓ {t("cmMcpCertified")}</span>}
-                        <button
-                          type="button"
-                          className="preset-apply"
-                          disabled={installed}
-                          onClick={() => {
-                            if (installed) return;
-                            if (needsInput && !open) {
-                              setStoreOpen(en.id);
-                              setStoreInput({});
-                              return;
-                            }
-                            addFromStore(en);
-                          }}
-                        >
-                          {installed ? t("cmMcpAdded") : t("cmMcpAddBtn")}
-                        </button>
-                        {open && !installed && (
-                          <div className="mcp-store-inputs">
-                            {((en as { placeholders?: { key: string; label: { zh: string; en: string } }[] }).placeholders ?? []).map((ph) => (
-                              <input
-                                key={ph.key}
-                                type="text"
-                                placeholder={lang === "zh" ? ph.label.zh : ph.label.en}
-                                value={storeInput[ph.key] ?? ""}
-                                onChange={(ev) => setStoreInput((v) => ({ ...v, [ph.key]: ev.target.value }))}
-                              />
-                            ))}
-                            {(en as { needsToken?: boolean }).needsToken && (
-                              <input
-                                type="password"
-                                placeholder={t("cmMcpTokenPh")}
-                                value={storeInput.token ?? ""}
-                                onChange={(ev) => setStoreInput((v) => ({ ...v, token: ev.target.value }))}
-                              />
-                            )}
-                            <button type="button" className="preset-apply" onClick={() => addFromStore(en)}>
-                              {t("cmMcpAddBtn")}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="settings-hint">{t("cmMcpStoreHint")}</div>
-
-              <div className="field">
-                <span>{t("cmSkillFiles")}</span>
-                <div className="skill-rows">
-                  {userSkills.map((sk) => {
-                    const on = !skillOff.includes(sk.name);
-                    return (
-                      // Laid out as the built-in rows are — the whole row
-                      // toggles, its switch in the same column — with a
-                      // remove button just before the switch. A div, since a
-                      // button cannot hold the remove button.
-                      <div
-                        key={sk.path}
-                        role="button"
-                        tabIndex={0}
-                        aria-pressed={on}
-                        className={`skill-row ${on ? "on" : ""}`}
-                        onClick={() => toggleSkill(sk.name)}
-                        onKeyDown={(e) => {
-                          if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
-                          e.preventDefault();
-                          toggleSkill(sk.name);
-                        }}
-                      >
-                        <span className="skill-row-name">{sk.name}</span>
-                        <span className="skill-row-desc">{sk.description}</span>
-                        <button
-                          type="button"
-                          className="skill-row-del"
-                          title={t("cmSkillRemove")}
-                          aria-label={t("cmSkillRemove")}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void removeUserSkill(sk);
-                          }}
-                        >
-                          <Icon name="x" size={11} strokeWidth={2.2} />
-                        </button>
-                        <span className="skill-row-toggle" aria-hidden="true">
-                          <span className="skill-row-knob" />
-                        </span>
-                      </div>
-                    );
-                  })}
-                  {officialSkills().map((sk) => {
-                    const on = !skillOff.includes(sk.name);
-                    return (
-                      <button
-                        key={sk.name}
-                        type="button"
-                        className={`skill-row ${on ? "on" : ""}`}
-                        onClick={() => toggleSkill(sk.name)}
-                      >
-                        <span className="skill-row-name">{sk.name}</span>
-                        <span className="skill-row-desc">{sk.description}</span>
-                        <span className="skill-row-toggle" aria-hidden="true">
-                          <span className="skill-row-knob" />
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="preset-add">
-                <button type="button" onClick={() => void importSkillFiles()}>
-                  {t("cmSkillImport")}
-                </button>
-              </div>
-              {skillImportNote && <div className="settings-hint skill-import-note">{skillImportNote}</div>}
-              <div className="settings-hint">{t("cmSkillFilesHint")}</div>
             </>
           )}
 
@@ -1925,10 +1289,631 @@ export function SettingsPanel({
             </>
           )}
 
+          {cat === "model" && (
+            <>
+              <div className="settings-section">{t("secLoad")}</div>
+              <label className="field">
+                <span><em className="has-tip" data-tip={t("tipGpuAccel")}>{t("gpuAccel")}</em></span>
+                <div className="lang-switch">
+                  <button type="button" className={value.gpuLayers < 0 ? "active" : ""} onClick={() => set("gpuLayers", -1)}>{t("gpuAuto")}</button>
+                  <button type="button" className={value.gpuLayers === 0 ? "active" : ""} onClick={() => set("gpuLayers", 0)}>{t("gpuOff")}</button>
+                  <button
+                    type="button"
+                    className={value.gpuLayers > 0 ? "active" : ""}
+                    onClick={() => set("gpuLayers", value.gpuLayers > 0 ? value.gpuLayers : 20)}
+                  >
+                    {t("gpuCustom")}
+                  </button>
+                </div>
+              </label>
+              {value.gpuLayers > 0 && (
+                <label className="field">
+                  <span>
+                    {t("gpuLayersLabel")} <b>{value.gpuLayers}</b>
+                  </span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={Math.max(1, layersLimit ?? 80)}
+                    step={1}
+                    value={value.gpuLayers}
+                    onChange={(e) => set("gpuLayers", Number(e.target.value))}
+                  />
+                </label>
+              )}
+              <div className="settings-hint">{t("gpuHint")}</div>
+              <label className="field">
+                <span><em className="has-tip" data-tip={t("tipCtxLength")}>{t("ctxLength")}</em></span>
+                <div className="lang-switch">
+                  <button type="button" className={value.contextLength <= 0 ? "active" : ""} onClick={() => set("contextLength", 0)}>{t("ctxAuto")}</button>
+                  <button
+                    type="button"
+                    className={value.contextLength > 0 ? "active" : ""}
+                    onClick={() => set("contextLength", value.contextLength > 0 ? value.contextLength : 8192)}
+                  >
+                    {t("gpuCustom")}
+                  </button>
+                </div>
+              </label>
+              {value.contextLength > 0 &&
+                (() => {
+                  // Slider ceiling = the loaded model's trained context (fallback
+                  // 32768 when nothing is loaded) — no point offering more.
+                  const ctxMax = Math.max(4096, ctxTrainLimit ?? 32768);
+                  return (
+                    <label className="field">
+                      <span>
+                        {t("ctxTokens")} <b>{Math.min(value.contextLength, ctxMax)}</b>
+                      </span>
+                      <input
+                        type="range"
+                        min={2048}
+                        max={ctxMax}
+                        step={2048}
+                        value={Math.min(value.contextLength, ctxMax)}
+                        onChange={(e) => set("contextLength", Number(e.target.value))}
+                      />
+                    </label>
+                  );
+                })()}
+              <div className="settings-hint">{t("ctxHint")}</div>
+              <SetRow
+                label={`${t("specDecode")} · ${t("experimental")}`}
+                hint={specSupported ? t("specDecodeHint") : t("specDecodeUnsupported")}
+              >
+                <Switch
+                  on={value.speculative && !!specSupported}
+                  disabled={!specSupported}
+                  onToggle={() => set("speculative", !value.speculative)}
+                />
+              </SetRow>
+              {onReloadModel && (
+                <button className="settings-reload" onClick={onReloadModel} disabled={reloading}>
+                  {reloading ? "…" : t("reloadApply")}
+                </button>
+              )}
+              <div className="settings-section">{t("secLibrary")}</div>
+              {modelLibraryRows}
+            </>
+          )}
+
+          {cat === "sampling" && (
+            <>
+              <div className="settings-hint">{t("samplingScopeHint")}</div>
+              <label className="field">
+                <span>
+                  <em className="has-tip" data-tip={t("tipTemperature")}>{t("temperature")}</em> <b>{value.temperature.toFixed(2)}</b>
+                </span>
+                <input type="range" min={0} max={1.5} step={0.05} value={value.temperature} onChange={(e) => set("temperature", Number(e.target.value))} />
+              </label>
+              <label className="field">
+                <span>
+                  <em className="has-tip" data-tip={t("tipTopP")}>Top-P</em> <b>{value.topP.toFixed(2)}</b>
+                </span>
+                <input type="range" min={0.1} max={1} step={0.01} value={value.topP} onChange={(e) => set("topP", Number(e.target.value))} />
+              </label>
+              <label className="field">
+                <span>
+                  <em className="has-tip" data-tip={t("tipTopK")}>Top-K</em> <b>{value.topK === 0 ? t("off") : value.topK}</b>
+                </span>
+                <input type="range" min={0} max={100} step={1} value={value.topK} onChange={(e) => set("topK", Number(e.target.value))} />
+              </label>
+              <label className="field">
+                <span>
+                  <em className="has-tip" data-tip={t("tipMinP")}>Min-P</em> <b>{value.minP.toFixed(2)}</b>
+                </span>
+                <input type="range" min={0} max={0.5} step={0.01} value={value.minP} onChange={(e) => set("minP", Number(e.target.value))} />
+              </label>
+              <label className="field">
+                <span>
+                  <em className="has-tip" data-tip={t("tipRepeatPenalty")}>{t("repeatPenalty")}</em> <b>{value.repeatPenalty.toFixed(2)}</b>
+                </span>
+                <input type="range" min={1} max={1.5} step={0.01} value={value.repeatPenalty} onChange={(e) => set("repeatPenalty", Number(e.target.value))} />
+              </label>
+              <LimitField
+                label={t("maxTokens")}
+                tip={t("tipMaxTokens")}
+                offLabel={t("noLimit")}
+                onLabel={t("gpuCustom")}
+                off={!value.limitTokens}
+                onOff={(o) => set("limitTokens", !o)}
+                value={Math.min(value.maxTokens, maxTokensLimit)}
+              >
+                <input
+                  type="range"
+                  min={128}
+                  max={maxTokensLimit}
+                  step={128}
+                  value={Math.min(value.maxTokens, maxTokensLimit)}
+                  onChange={(e) => set("maxTokens", Number(e.target.value))}
+                />
+              </LimitField>
+              <label className="field">
+                <span><em className="has-tip" data-tip={t("tipStopSeqs")}>{t("stopSeqs")}</em></span>
+                <textarea rows={2} placeholder={t("stopSeqsPh")} value={value.stop} onChange={(e) => set("stop", e.target.value)} />
+              </label>
+              <button
+                className="settings-reset"
+                onClick={() =>
+                  onChange({
+                    ...value,
+                    temperature: defaultSettings.temperature,
+                    topP: defaultSettings.topP,
+                    limitTokens: defaultSettings.limitTokens,
+                    maxTokens: defaultSettings.maxTokens,
+                    topK: defaultSettings.topK,
+                    minP: defaultSettings.minP,
+                    repeatPenalty: defaultSettings.repeatPenalty,
+                    stop: defaultSettings.stop,
+                  })
+                }
+              >
+                {t("resetDefaults")}
+              </button>
+            </>
+          )}
+
+          {cat === "code" && (
+            <>
+              <div className="settings-section">{t("secGeneration")}</div>
+              <label className="field">
+                <span>
+                  {t("cmTemp")} <b>{value.codeTemperature.toFixed(2)}</b>
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={value.codeTemperature}
+                  onChange={(e) => set("codeTemperature", Number(e.target.value))}
+                />
+              </label>
+              <div className="settings-hint">{t("cmTempHint")}</div>
+              <label className="field">
+                <span>
+                  {t("cmThinkBudget")}{" "}
+                  <b>{value.codeThinkBudget > 0 ? value.codeThinkBudget : t("cmThinkBudgetOff")}</b>
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={maxTokensLimit}
+                  step={250}
+                  value={value.codeThinkBudget}
+                  onChange={(e) => set("codeThinkBudget", Number(e.target.value))}
+                />
+              </label>
+              <div className="settings-hint">{t("cmThinkBudgetHint")}</div>
+              {/* Eight formats and counting: a menu, not a row of buttons
+                  that squeezes the label into a column. */}
+              <SetRow label={t("cmToolFormat")} hint={t("cmToolFormatHint")}>
+                <Select
+                  className="field-select"
+                  value={value.codeToolFormat}
+                  ariaLabel={t("cmToolFormat")}
+                  onChange={(v) => set("codeToolFormat", String(v) as GenSettings["codeToolFormat"])}
+                  options={(["auto", "xml", "json", "gemma", "lfm", "ifm", "glm", "minicpm"] as const).map((f) => ({
+                    value: f,
+                    label: f === "auto" ? t("cmToolFormatAuto") : TOOL_FORMAT_LABEL[f],
+                  }))}
+                />
+              </SetRow>
+              {value.codeToolFormat === "auto" && (
+                <SetRow label={t("cmToolFallback")} hint={t("cmToolFallbackHint")}>
+                  <div className="lang-switch">
+                    {(["xml", "json"] as const).map((f) => (
+                      <button
+                        key={f}
+                        type="button"
+                        className={value.codeToolFallback === f ? "active" : ""}
+                        onClick={() => set("codeToolFallback", f)}
+                      >
+                        {TOOL_FORMAT_LABEL[f]}
+                      </button>
+                    ))}
+                  </div>
+                </SetRow>
+              )}
+              <div className="settings-section">{t("secRunning")}</div>
+              <LimitField
+                label={t("cmMaxSteps")}
+                offLabel={t("noLimit")}
+                onLabel={t("gpuCustom")}
+                off={value.codeMaxSteps <= 0}
+                onOff={(o) => set("codeMaxSteps", o ? 0 : 64)}
+                value={value.codeMaxSteps}
+              >
+                <input
+                  type="range"
+                  min={8}
+                  max={256}
+                  step={4}
+                  value={value.codeMaxSteps}
+                  onChange={(e) => set("codeMaxSteps", Number(e.target.value))}
+                />
+              </LimitField>
+              <div className="settings-hint">{t("cmMaxStepsHint")}</div>
+              <LimitField
+                label={t("cmBashTimeout")}
+                offLabel={t("noLimit")}
+                onLabel={t("gpuCustom")}
+                off={value.codeBashTimeout <= 0}
+                onOff={(o) => set("codeBashTimeout", o ? 0 : 60)}
+                value={`${value.codeBashTimeout}s`}
+              >
+                <input
+                  type="range"
+                  min={10}
+                  max={1800}
+                  step={10}
+                  value={value.codeBashTimeout}
+                  onChange={(e) => set("codeBashTimeout", Number(e.target.value))}
+                />
+              </LimitField>
+              <div className="settings-hint">{t("cmBashTimeoutHint")}</div>
+              {shells.length > 1 && (
+                <SetRow label={t("cmShell")} hint={t("cmShellHint")}>
+                  <Select
+                    className="field-select"
+                    value={shells.some((sh) => sh.id === value.codeShell) ? value.codeShell : ""}
+                    ariaLabel={t("cmShell")}
+                    onChange={(v) => {
+                      const id = String(v);
+                      set("codeShell", id);
+                      void agentSetShell(id || null).catch(() => {});
+                    }}
+                    options={[
+                      {
+                        value: "",
+                        label: `${t("cmShellDefault")} · ${shells.find((sh) => sh.default)?.name ?? ""}`,
+                      },
+                      ...shells.map((sh) => ({ value: sh.id, label: sh.name })),
+                    ]}
+                  />
+                </SetRow>
+              )}
+              <SetRow label={t("cmHeadless")} hint={t("cmHeadlessHint")}>
+                <Switch
+                  on={value.codeBrowserHeadless}
+                  onToggle={() => set("codeBrowserHeadless", !value.codeBrowserHeadless)}
+                />
+              </SetRow>
+              <SetRow label={t("cmMemory")} hint={t("cmMemoryHint")}>
+                <Switch
+                  on={value.codeMemory}
+                  onToggle={() => set("codeMemory", !value.codeMemory)}
+                />
+              </SetRow>
+              <div className="settings-section">{t("secPermissions")}</div>
+              <SetRow label={t("cmAutoEdits")} hint={t("cmAutoEditsHint")}>
+                <Switch
+                  on={value.codeAutoApproveEdits}
+                  onToggle={() => set("codeAutoApproveEdits", !value.codeAutoApproveEdits)}
+                />
+              </SetRow>
+              <SetRow label={t("cmAutoReadOnly")} hint={t("cmAutoReadOnlyHint")}>
+                <Switch
+                  on={value.codeAutoRunReadOnly}
+                  onToggle={() => set("codeAutoRunReadOnly", !value.codeAutoRunReadOnly)}
+                />
+              </SetRow>
+              <div className="field">
+                <span>{t("cmAllowlist")}</span>
+                {value.codeAllowedCommands.length > 0 && (
+                  <div className="preset-chips">
+                    {value.codeAllowedCommands.map((p) => (
+                      <span key={p} className="preset-chip">
+                        <span className="preset-apply allow-chip">{p}</span>
+                        <button
+                          type="button"
+                          className="preset-del"
+                          title={t("cancel")}
+                          onClick={() =>
+                            set("codeAllowedCommands", value.codeAllowedCommands.filter((x) => x !== p))
+                          }
+                        ><Icon name="x" size={11} strokeWidth={2.2} /></button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="preset-add">
+                  <input
+                    type="text"
+                    placeholder={t("cmAllowlistPh")}
+                    value={allowInput}
+                    onChange={(e) => setAllowInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addAllow();
+                      }
+                    }}
+                  />
+                  <button type="button" onClick={addAllow} disabled={!allowInput.trim()}>
+                    {t("presetSave")}
+                  </button>
+                </div>
+              </div>
+              <div className="settings-hint">{t("cmAllowlistHint")}</div>
+              <div className="settings-section">{t("secDisplay")}</div>
+              <SetRow label={t("cmLiveCardsOpen")} hint={t("cmLiveCardsOpenHint")}>
+                <Switch
+                  on={value.codeLiveCardsOpen}
+                  onToggle={() => set("codeLiveCardsOpen", !value.codeLiveCardsOpen)}
+                />
+              </SetRow>
+              <SetRow label={t("cmGroupByWs")} hint={t("cmGroupByWsHint")}>
+                <Switch
+                  on={value.codeGroupByWorkspace}
+                  onToggle={() => set("codeGroupByWorkspace", !value.codeGroupByWorkspace)}
+                />
+              </SetRow>
+            </>
+          )}
+
+          {cat === "extensions" && (
+            <>
+              <div className="settings-section">{t("secSkills")}</div>
+              <div className="field">
+                <span>{t("cmBuiltinSkills")}</span>
+                <div className="skill-rows">
+                  {BUILTIN_SKILLS.map((s) => {
+                    const enabled = !value.codeDisabledSkills.includes(s.name);
+                    return (
+                      <button
+                        key={s.name}
+                        type="button"
+                        className={`skill-row ${enabled ? "on" : ""}`}
+                        onClick={() =>
+                          set(
+                            "codeDisabledSkills",
+                            enabled
+                              ? [...value.codeDisabledSkills, s.name]
+                              : value.codeDisabledSkills.filter((n) => n !== s.name),
+                          )
+                        }
+                      >
+                        <span className="skill-row-name">/{s.name}</span>
+                        <span className="skill-row-desc">{lang === "zh" ? s.desc.zh : s.desc.en}</span>
+                        <span className="skill-row-toggle" aria-hidden="true">
+                          <span className="skill-row-knob" />
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="field">
+                <span>{t("cmSkillFiles")}</span>
+                <div className="skill-rows">
+                  {userSkills.map((sk) => {
+                    const on = !skillOff.includes(sk.name);
+                    return (
+                      // Laid out as the built-in rows are — the whole row
+                      // toggles, its switch in the same column — with a
+                      // remove button just before the switch. A div, since a
+                      // button cannot hold the remove button.
+                      <div
+                        key={sk.path}
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={on}
+                        className={`skill-row ${on ? "on" : ""}`}
+                        onClick={() => toggleSkill(sk.name)}
+                        onKeyDown={(e) => {
+                          if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+                          e.preventDefault();
+                          toggleSkill(sk.name);
+                        }}
+                      >
+                        <span className="skill-row-name">{sk.name}</span>
+                        <span className="skill-row-desc">{sk.description}</span>
+                        <button
+                          type="button"
+                          className="skill-row-del"
+                          title={t("cmSkillRemove")}
+                          aria-label={t("cmSkillRemove")}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void removeUserSkill(sk);
+                          }}
+                        >
+                          <Icon name="x" size={11} strokeWidth={2.2} />
+                        </button>
+                        <span className="skill-row-toggle" aria-hidden="true">
+                          <span className="skill-row-knob" />
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {officialSkills().map((sk) => {
+                    const on = !skillOff.includes(sk.name);
+                    return (
+                      <button
+                        key={sk.name}
+                        type="button"
+                        className={`skill-row ${on ? "on" : ""}`}
+                        onClick={() => toggleSkill(sk.name)}
+                      >
+                        <span className="skill-row-name">{sk.name}</span>
+                        <span className="skill-row-desc">{sk.description}</span>
+                        <span className="skill-row-toggle" aria-hidden="true">
+                          <span className="skill-row-knob" />
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="preset-add">
+                <button type="button" onClick={() => void importSkillFiles()}>
+                  {t("cmSkillImport")}
+                </button>
+              </div>
+              {skillImportNote && <div className="settings-hint skill-import-note">{skillImportNote}</div>}
+              <div className="settings-hint">{t("cmSkillFilesHint")}</div>
+              <div className="field">
+                <span>{t("cmSkills")}</span>
+                {value.codeSkills.length > 0 && (
+                  <div className="preset-chips">
+                    {value.codeSkills.map((s) => (
+                      <span key={s.name} className="preset-chip">
+                        <button
+                          type="button"
+                          className="preset-apply"
+                          title={s.prompt}
+                          onClick={() => {
+                            setSkillName(s.name);
+                            setSkillPrompt(s.prompt);
+                          }}
+                        >
+                          /{s.name}
+                        </button>
+                        <button type="button" className="preset-del" title={t("cancel")} onClick={() => deleteSkill(s.name)}><Icon name="x" size={11} strokeWidth={2.2} /></button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="preset-add">
+                  <input
+                    type="text"
+                    placeholder={t("cmSkillNamePh")}
+                    value={skillName}
+                    onChange={(e) => setSkillName(e.target.value)}
+                  />
+                  <button type="button" onClick={saveSkill} disabled={!skillName.trim() || !skillPrompt.trim()}>
+                    {t("presetSave")}
+                  </button>
+                </div>
+                <textarea
+                  rows={3}
+                  placeholder={t("cmSkillPromptPh")}
+                  value={skillPrompt}
+                  onChange={(e) => setSkillPrompt(e.target.value)}
+                />
+              </div>
+              <div className="settings-hint">{t("cmSkillsHint")}</div>
+              <div className="settings-section">{t("secMcp")}</div>
+              <div className="field">
+                <span>{t("cmMcp")}</span>
+                {mcpServers.length > 0 && (
+                  <div className="skill-rows">
+                    {mcpServers.map((sv) => (
+                      <div key={sv.name} className={`skill-row mcp-row ${sv.enabled ? "on" : ""}`}>
+                        <button
+                          type="button"
+                          className="skill-row-toggle"
+                          title={sv.enabled ? "on" : "off"}
+                          onClick={() =>
+                            applyMcp(mcpServers.map((x) => (x.name === sv.name ? { ...x, enabled: !x.enabled } : x)))
+                          }
+                        >
+                          <span className="skill-row-knob" />
+                        </button>
+                        <span className="skill-row-name">{sv.name}</span>
+                        <span className="skill-row-desc">
+                          {sv.transport === "http" ? sv.url : [sv.command, ...(sv.args ?? [])].join(" ")}
+                          {mcpStatus[sv.name] ? ` · ${mcpStatus[sv.name]}` : ""}
+                        </span>
+                        <label className="mcp-trust" title={t("cmMcpHint")}>
+                          <input
+                            type="checkbox"
+                            checked={sv.trusted === true}
+                            onChange={(e) =>
+                              applyMcp(mcpServers.map((x) => (x.name === sv.name ? { ...x, trusted: e.target.checked } : x)))
+                            }
+                          />
+                          {t("cmMcpTrusted")}
+                        </label>
+                        <button type="button" className="preset-del" title={t("cancel")} onClick={() => applyMcp(mcpServers.filter((x) => x.name !== sv.name))}>
+                          <Icon name="x" size={11} strokeWidth={2.2} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="preset-add">
+                  <input type="text" placeholder={t("cmMcpNamePh")} value={mcpName} onChange={(e) => setMcpName(e.target.value)} style={{ maxWidth: 120 }} />
+                  <input type="text" placeholder={t("cmMcpCmdPh")} value={mcpCmd} onChange={(e) => setMcpCmd(e.target.value)} />
+                  <button type="button" onClick={addMcp} disabled={!mcpName.trim() || !mcpCmd.trim()}>
+                    {t("presetSave")}
+                  </button>
+                </div>
+                {/^https?:\/\//.test(mcpCmd.trim()) && (
+                  <input type="password" placeholder={t("cmMcpTokenPh")} value={mcpToken} onChange={(e) => setMcpToken(e.target.value)} />
+                )}
+              </div>
+              <div className="settings-hint">{t("cmMcpHint")}</div>
+              <div className="field">
+                <span>{t("cmMcpStore")}</span>
+                <div className="skill-rows">
+                  {catalog.entries.map((en) => {
+                    const installed = mcpServers.some((x) => x.name === en.id);
+                    const needsInput =
+                      (en as { needsToken?: boolean }).needsToken === true ||
+                      ((en as { placeholders?: unknown[] }).placeholders?.length ?? 0) > 0;
+                    const open = storeOpen === en.id;
+                    return (
+                      <div key={en.id} className="skill-row mcp-row on">
+                        <span className="skill-row-name">{lang === "zh" ? en.title.zh : en.title.en}</span>
+                        <span className="skill-row-desc" title={lang === "zh" ? en.permNote.zh : en.permNote.en}>
+                          {lang === "zh" ? en.desc.zh : en.desc.en}
+                        </span>
+                        {en.probe != null && <span className="mcp-cert">✓ {t("cmMcpCertified")}</span>}
+                        <button
+                          type="button"
+                          className="preset-apply"
+                          disabled={installed}
+                          onClick={() => {
+                            if (installed) return;
+                            if (needsInput && !open) {
+                              setStoreOpen(en.id);
+                              setStoreInput({});
+                              return;
+                            }
+                            addFromStore(en);
+                          }}
+                        >
+                          {installed ? t("cmMcpAdded") : t("cmMcpAddBtn")}
+                        </button>
+                        {open && !installed && (
+                          <div className="mcp-store-inputs">
+                            {((en as { placeholders?: { key: string; label: { zh: string; en: string } }[] }).placeholders ?? []).map((ph) => (
+                              <input
+                                key={ph.key}
+                                type="text"
+                                placeholder={lang === "zh" ? ph.label.zh : ph.label.en}
+                                value={storeInput[ph.key] ?? ""}
+                                onChange={(ev) => setStoreInput((v) => ({ ...v, [ph.key]: ev.target.value }))}
+                              />
+                            ))}
+                            {(en as { needsToken?: boolean }).needsToken && (
+                              <input
+                                type="password"
+                                placeholder={t("cmMcpTokenPh")}
+                                value={storeInput.token ?? ""}
+                                onChange={(ev) => setStoreInput((v) => ({ ...v, token: ev.target.value }))}
+                              />
+                            )}
+                            <button type="button" className="preset-apply" onClick={() => addFromStore(en)}>
+                              {t("cmMcpAddBtn")}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="settings-hint">{t("cmMcpStoreHint")}</div>
+            </>
+          )}
 
           {cat === "imageGen" && (
             <>
               {!imgDefaults && <div className="settings-hint">{t("imgSetNoModel")}</div>}
+              <div className="settings-section">{t("secSize")}</div>
               <label className="field">
                 <span>{t("imgAspect")}</span>
                 <div className="lang-switch is-set-wrap">
@@ -1959,7 +1944,7 @@ export function SettingsPanel({
                     <button type="button" className={value.imgBase <= 0 ? "active" : ""} onClick={() => set("imgBase", 0)}>
                       {t("imgAuto")}{imgDefaults ? ` (${imgDefaults.baseSize})` : ""}
                     </button>
-                    {BASE_SIZES.map((b) => (
+                    {BASE_SIZES.filter((b) => b !== imgDefaults?.baseSize).map((b) => (
                       <button key={b} type="button" className={value.imgBase === b ? "active" : ""} onClick={() => set("imgBase", b)}>
                         {b}
                       </button>
@@ -1967,7 +1952,13 @@ export function SettingsPanel({
                   </div>
                 </label>
               )}
-
+              <label className="field">
+                <span>
+                  {t("imgBatch")} <b>{value.imgBatch}</b>
+                </span>
+                <input type="range" min={1} max={8} step={1} value={value.imgBatch} onChange={(e) => set("imgBatch", Number(e.target.value))} />
+              </label>
+              <div className="settings-section">{t("setCatSampling")}</div>
               <LimitField
                 label={t("imgSteps")}
                 tip={t("imgStepsTip")}
@@ -2036,12 +2027,26 @@ export function SettingsPanel({
                   onChange={(v) => set("imgScheduler", v)}
                 />
               </SetRow>
-              <label className="field">
-                <span>
-                  {t("imgBatch")} <b>{value.imgBatch}</b>
-                </span>
-                <input type="range" min={1} max={8} step={1} value={value.imgBatch} onChange={(e) => set("imgBatch", Number(e.target.value))} />
-              </label>
+              {(imgInfo?.family === "sd1" || imgInfo?.family === "sdxl") && (
+                <LimitField
+                  label="CLIP skip"
+                  tip={t("imgClipSkipTip")}
+                  offLabel={t("imgAuto")}
+                  onLabel={t("gpuCustom")}
+                  off={value.imgClipSkip <= 0}
+                  onOff={(o) => set("imgClipSkip", o ? -1 : 2)}
+                  value={value.imgClipSkip}
+                >
+                  <input type="range" min={1} max={12} step={1} value={value.imgClipSkip > 0 ? value.imgClipSkip : 2} onChange={(e) => set("imgClipSkip", Number(e.target.value))} />
+                </LimitField>
+              )}
+              <SetRow label={t("imgAccel")} hint={t("imgAccelHint")}>
+                <div className="lang-switch">
+                  <button type="button" className={value.imgAccel === "off" ? "active" : ""} onClick={() => set("imgAccel", "off")}>{t("off")}</button>
+                  <button type="button" className={value.imgAccel === "balanced" ? "active" : ""} onClick={() => set("imgAccel", "balanced")}>{t("imgAccelBalanced")}</button>
+                  <button type="button" className={value.imgAccel === "fast" ? "active" : ""} onClick={() => set("imgAccel", "fast")}>{t("imgAccelFast")}</button>
+                </div>
+              </SetRow>
               <SetRow label={t("imgSeed")} hint={t("imgSeedHint")}>
                 <div className="row-btns">
                   <div className="lang-switch">
@@ -2057,6 +2062,7 @@ export function SettingsPanel({
                   )}
                 </div>
               </SetRow>
+              <div className="settings-section">{t("secPromptRef")}</div>
               {(!imgDefaults || imgDefaults.negativePrompt) ? (
                 <label className="field">
                   <span><em className="has-tip" data-tip={t("imgNegativeTip")}>{t("imgNegativeDefault")}</em></span>
@@ -2065,35 +2071,16 @@ export function SettingsPanel({
               ) : (
                 <div className="settings-hint">{t("imgNegativeUnused")}</div>
               )}
-              {(imgInfo?.family === "sd1" || imgInfo?.family === "sdxl") && (
-                <LimitField
-                  label="CLIP skip"
-                  tip={t("imgClipSkipTip")}
-                  offLabel={t("imgAuto")}
-                  onLabel={t("gpuCustom")}
-                  off={value.imgClipSkip <= 0}
-                  onOff={(o) => set("imgClipSkip", o ? -1 : 2)}
-                  value={value.imgClipSkip}
-                >
-                  <input type="range" min={1} max={12} step={1} value={value.imgClipSkip > 0 ? value.imgClipSkip : 2} onChange={(e) => set("imgClipSkip", Number(e.target.value))} />
-                </LimitField>
-              )}
               <label className="field">
                 <span>
                   <em className="has-tip" data-tip={t("imgStrengthHint")}>{t("imgStrength")}</em> <b>{value.imgStrength.toFixed(2)}</b>
                 </span>
                 <input type="range" min={0.05} max={1} step={0.05} value={value.imgStrength} onChange={(e) => set("imgStrength", Number(e.target.value))} />
               </label>
-              <SetRow label={t("imgAccel")} hint={t("imgAccelHint")}>
-                <div className="lang-switch">
-                  <button type="button" className={value.imgAccel === "off" ? "active" : ""} onClick={() => set("imgAccel", "off")}>{t("off")}</button>
-                  <button type="button" className={value.imgAccel === "balanced" ? "active" : ""} onClick={() => set("imgAccel", "balanced")}>{t("imgAccelBalanced")}</button>
-                  <button type="button" className={value.imgAccel === "fast" ? "active" : ""} onClick={() => set("imgAccel", "fast")}>{t("imgAccelFast")}</button>
-                </div>
-              </SetRow>
               <SetRow label={t("imgAutoChain")} hint={t("imgAutoChainHint")}>
                 <Switch on={value.imgAutoChain} onToggle={() => set("imgAutoChain", !value.imgAutoChain)} />
               </SetRow>
+              <div className="settings-section">{t("secPreviewOutput")}</div>
               <SetRow label={t("imgPreview")} hint={t("imgPreviewHint")}>
                 <div className="lang-switch">
                   <button type="button" className={value.imgPreview === "proj" ? "active" : ""} onClick={() => set("imgPreview", "proj")}>{t("imgPreviewFast")}</button>
@@ -2197,6 +2184,7 @@ export function SettingsPanel({
                   )}
                 </div>
               )}
+              <div className="settings-section">{t("secDevice")}</div>
               <label className="field">
                 <span><em className="has-tip" data-tip={t("imgDeviceTip")}>{t("imgDevice")}</em></span>
                 <div className="lang-switch">
@@ -2246,6 +2234,7 @@ export function SettingsPanel({
                   {reloading ? "…" : t("reloadApply")}
                 </button>
               )}
+              <div className="settings-section">{t("secLibrary")}</div>
               {modelLibraryRows}
             </>
           )}
@@ -2286,13 +2275,42 @@ export function SettingsPanel({
                 </div>
               </div>
               <div className="settings-hint stats-db-line">
-                {t("statDbSize")}: {stats ? fmtBytes(stats.db) : "–"}
+                {t("statDbSize")}{lang === "zh" ? "：" : ": "}{stats ? fmtBytes(stats.db) : "–"}
               </div>
+              <div className="settings-section">{t("secStorage")}</div>
               <SetRow label={t("dataFolder")} hint={t("dataHint")}>
                 <button type="button" className="data-btn" onClick={() => void openDataDir().catch(console.error)}>
                   {t("openDataDir")}
                 </button>
               </SetRow>
+              <SetRow label={t("errorLog")} hint={t("errorLogHint")}>
+                {/* Open and clear act on the same file: one row, two buttons. */}
+                <div className="row-btns">
+                  <button type="button" className="data-btn" onClick={() => { void openErrorLog().catch(() => {}); }}>
+                    {t("errorLogOpen")}
+                  </button>
+                  <button
+                    type="button"
+                    className="data-btn danger"
+                    onClick={async () => {
+                      if (
+                        !(await confirm({
+                          message: t("confirmClearErrorLog"),
+                          title: t("errorLogClear"),
+                          confirmLabel: t("errorLogClear"),
+                          danger: true,
+                        }))
+                      ) {
+                        return;
+                      }
+                      void clearErrorLog().catch(console.error);
+                    }}
+                  >
+                    {t("errorLogClear")}
+                  </button>
+                </div>
+              </SetRow>
+              <div className="settings-section">{t("secClear")}</div>
               <SetRow label={t("clearAllChats")} hint={t("clearChatsHint")}>
                 <button
                   type="button"

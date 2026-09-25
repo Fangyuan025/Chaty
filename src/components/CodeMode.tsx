@@ -18,6 +18,7 @@ import { TurnChangesCard } from "./TurnChangesCard";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { copyToClipboard } from "../lib/clipboard";
 import { cleanTitle } from "../lib/voiceText";
+import { DiffView } from "./DiffView";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 import {
@@ -502,20 +503,22 @@ function StepCard({
       {open && hasBody && liveS && <LiveScanView scan={liveS} />}
       {open && hasBody && !liveS && (
         <div className="cm-step-body">
-          {d ? (
-            <pre className="cm-diff">
-              {d.rows.map((l, i) => (
-                <div key={i} className={`cm-dl ${l.kind}`}>
-                  <span className="cm-dl-mark">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}</span>
-                  {l.text}
-                </div>
-              ))}
-              {d.truncated && (
-                <div className="cm-dl ctx cm-dl-more">
-                  {t("cmDiffMore").replace("{n}", String(added + removed))}
-                </div>
-              )}
-            </pre>
+          {d && diff ? (
+            <DiffView
+              before={diff.before}
+              after={diff.after}
+              total={added + removed}
+              // A big file's card holds a capped copy; the whole of it was
+              // kept aside when the step ran.
+              loadFull={
+                step.fullDiff && sessionId
+                  ? () =>
+                      codeStepTextGet(sessionId, `${step.id}:diff`).then((text) =>
+                        text ? (JSON.parse(text) as { before: string; after: string }) : null,
+                      )
+                  : undefined
+              }
+            />
           ) : (
             <pre className="cm-out">{modelText ?? step.result ?? ""}</pre>
           )}
@@ -703,10 +706,10 @@ export function CodeMode({
   /** Sampling temperature for agent steps (Settings → Code). */
   temperature?: number;
   /** Top-p / top-k / min-p / repeat penalty from Settings → Sampling. */
-  sampling?: { topP: number; topK: number; minP: number; repeatPenalty: number };
+  sampling?: { topP: number; topK: number; minP: number; repeatPenalty: number; stop?: string[] };
   /** Hard per-round think-token ceiling, 0 = auto (Settings → Code). */
   thinkBudget?: number;
-  /** Per-round generation budget in tokens, 0 = auto (Settings → Code). */
+  /** Per-round generation budget in tokens, 0 = none of its own (Settings → Sampling → Max length). */
   maxGenTokens?: number;
   /** How the model writes tool calls: "auto" = its template's own format
    *  (Settings → Code). */
@@ -1893,6 +1896,11 @@ export function CodeMode({
         // not the whole transcript.
         persistSoon(turnSid);
       },
+      onStepDiff: (stepId, diff) => {
+        codeStepTextPut(turnSid, `${stepId}:diff`, JSON.stringify(diff)).catch((e) =>
+          console.error("step diff save failed", e),
+        );
+      },
       onStepText: (stepId, text) => {
         codeStepTextPut(turnSid, stepId, text).catch((e) => console.error("step text save failed", e));
         update((m) => ({
@@ -2335,28 +2343,30 @@ export function CodeMode({
         )}
         </div>
 
-        {running && (() => {
-          const cur = msgs[msgs.length - 1];
-          const curStep = cur?.steps?.[cur.steps.length - 1];
-          const label =
-            prefill != null
-              ? t("cmPrefill")
-              : curStep && curStep.status === "running"
-                ? stepSummary(curStep)
-                : t("cmRunning");
-          return (
-            <div className="cm-runbar">
-              {prefill != null ? <PrefillRing frac={prefill} /> : <span className="cm-spin" />}
-              <span className="cm-runbar-label">{label}</span>
-              {stats && (
-                <span className="cm-runbar-stats">
-                  {stats.tokens} tok{stats.tps > 0 ? ` · ${stats.tps.toFixed(1)} tok/s` : ""}
-                </span>
-              )}
-            </div>
-          );
-        })()}
         <div className="code-composer">
+          {/* What the agent is doing sits inside the composer, as chat's
+              status line does: above it, the transcript's fade covered it. */}
+          {running && (() => {
+            const cur = msgs[msgs.length - 1];
+            const curStep = cur?.steps?.[cur.steps.length - 1];
+            const label =
+              prefill != null
+                ? t("cmPrefill")
+                : curStep && curStep.status === "running"
+                  ? stepSummary(curStep)
+                  : t("cmRunning");
+            return (
+              <div className="cm-runbar">
+                {prefill != null ? <PrefillRing frac={prefill} /> : <span className="cm-spin" />}
+                <span className="cm-runbar-label">{label}</span>
+                {stats && (
+                  <span className="cm-runbar-stats">
+                    {stats.tokens} tok{stats.tps > 0 ? ` · ${stats.tps.toFixed(1)} tok/s` : ""}
+                  </span>
+                )}
+              </div>
+            );
+          })()}
           {queue.length > 0 && (
             <div className="cm-queue">
               {queue.map((q, i) => (
