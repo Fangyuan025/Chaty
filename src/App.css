@@ -3643,6 +3643,7 @@ a:focus-visible,
   background: var(--bg);
   padding: 8px 24px 18px;
   border-radius: 0 0 var(--inset-radius) var(--inset-radius);
+  container: composer / inline-size;
 }
 /* The transcript fades out as it passes under the composer rather than being
    cut off at a hard line. */
@@ -3855,12 +3856,89 @@ a:focus-visible,
   color: var(--accent);
 }
 
-.stats {
+/* The line over the composer: switches that are on for the next message on
+   the left, how the last reply ran on the right. Both speak in the same small
+   dim type — status, not controls fighting for attention. */
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   max-width: 768px;
+  min-height: 24px;
   margin: 0 auto 8px;
   padding: 0 6px;
+}
+.flags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px 0 6px;
+  font: inherit;
   font-size: 12px;
   color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.flag-ico,
+.flag-x {
+  display: inline-flex;
+  width: 13px;
+  height: 13px;
+  align-items: center;
+  justify-content: center;
+  color: var(--faint);
+}
+.flag-ico svg {
+  width: 13px;
+  height: 13px;
+}
+.flag-x {
+  display: none;
+}
+/* Hovered, the switch shows how to turn it off: its icon becomes a cross. */
+.flag:hover,
+.flag:focus-visible {
+  color: var(--text);
+  background: var(--ink-faint);
+  border-color: var(--border-strong);
+}
+.flag:hover .flag-ico,
+.flag:focus-visible .flag-ico {
+  display: none;
+}
+.flag:hover .flag-x,
+.flag:focus-visible .flag-x {
+  display: inline-flex;
+  color: var(--text-dim);
+}
+/* A narrow column keeps the icons and drops the words (each keeps its
+   tooltip). */
+@container composer (max-width: 560px) {
+  .flag-label {
+    display: none;
+  }
+  .flag {
+    padding: 0 6px;
+  }
+}
+.stats {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .attach-bar {
@@ -5025,8 +5103,9 @@ button.tool-parent {
 .ctx-ring-track {
   stroke: var(--surface-2);
 }
+/* Neutral while there is room; it takes colour only when the window fills. */
 .ctx-ring-fill {
-  stroke: var(--accent);
+  stroke: var(--text-dim);
   stroke-linecap: round;
   transition: stroke-dashoffset 0.3s ease;
 }
@@ -5126,49 +5205,6 @@ button.tool-parent {
 }
 
 /* Web-design mode chip in the composer */
-/* Switches that are on for the next message: quiet, neutral chips — a fact
-   about the message, not a call to action. */
-.mode-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  max-width: 768px;
-  margin: 0 auto;
-  padding: 0 6px 8px;
-}
-.mode-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 4px 3px 9px;
-  font-size: 12px;
-  color: var(--text-dim);
-  background: var(--ink-faint);
-  border: 1px solid var(--border);
-  border-radius: var(--r-full);
-}
-.mode-chip > svg {
-  color: var(--faint);
-}
-.mode-chip-x {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  line-height: 1;
-  color: var(--faint);
-  background: transparent;
-  border: none;
-  border-radius: 50%;
-  cursor: pointer;
-  transition: background var(--t-fast), color var(--t-fast);
-}
-.mode-chip-x:hover {
-  color: var(--text);
-  background: var(--ink-soft);
-}
-
 /* ---------- Deep Research (docked into the chat area) ---------- */
 .dr-view {
   position: absolute;
@@ -7186,7 +7222,7 @@ button.tool-parent {
   display: flex;
   align-items: center;
   gap: 5px;
-  color: var(--accent);
+  color: var(--text-dim);
   margin-right: 2px;
 }
 .cm-ctx.warn {

@@ -3379,6 +3379,76 @@ export default function App() {
           </div>
 
           <footer className="composer">
+            {/* One quiet line over the composer: what the next message will
+                use on the left (issue #18 — before, only the + menu said),
+                how the last one ran on the right. Each switch is turned off
+                from here; thinking shows only for a model that can think. */}
+            {(() => {
+              const flags: { key: string; icon: React.ReactNode; label: string; off: () => void }[] = [];
+              const ico = (d: React.ReactNode) => (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>
+              );
+              if (thinkEnabled && model?.supportsThinking) {
+                const rung = (model.effortLevels?.length ?? 0) > 0 ? ` · ${effortLabel(effortRung, t)}` : "";
+                flags.push({
+                  key: "think",
+                  icon: ico(<><path d="M9.5 18h5M10.5 21h3" /><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8v.3h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3z" /></>),
+                  label: t("flagThink") + rung,
+                  off: () => setThinkEnabled(false),
+                });
+              }
+              if (webEnabled)
+                flags.push({
+                  key: "web",
+                  icon: ico(<><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3c2.6 2.7 2.6 15.3 0 18M12 3c-2.6 2.7-2.6 15.3 0 18" /></>),
+                  label: t("toolWeb"),
+                  off: () => setWebEnabled(false),
+                });
+              if (ragEnabled)
+                flags.push({
+                  key: "kb",
+                  icon: ico(<><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></>),
+                  label: t("flagKb"),
+                  off: () => setRagEnabled(false),
+                });
+              if (webDesign)
+                flags.push({
+                  key: "design",
+                  icon: ico(<><rect x="3" y="4.5" width="18" height="15" rx="2" /><path d="M3 9h18" /></>),
+                  label: t("flagDesign"),
+                  off: () => setWebDesign(false),
+                });
+              if (speakReplies)
+                flags.push({
+                  key: "speak",
+                  icon: ico(<><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z" /><path d="M15.5 8.5a4.2 4.2 0 0 1 0 7" /></>),
+                  label: t("flagSpeak"),
+                  off: () => {
+                    stopSpeaking();
+                    setSpeakReplies(false);
+                  },
+                });
+              if (flags.length === 0 && !stats) return null;
+              return (
+                <div className="status-line">
+                  {flags.length > 0 && (
+                    <div className="flags">
+                      {flags.map((f) => (
+                        <button
+                          key={f.key}
+                          type="button"
+                          className="flag"
+                          onClick={f.off}
+                          title={`${t("chipOff")} · ${f.label}`}
+                          aria-label={`${t("chipOff")} ${f.label}`}
+                        >
+                          <span className="flag-ico">{f.icon}</span>
+                          <span className="flag-x"><Icon name="x" size={10} strokeWidth={2.4} /></span>
+                          <span className="flag-label">{f.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
             {stats && (
               <div className="stats">
                 {stats.completionTokens} tokens · {stats.tokensPerSecond.toFixed(1)} tok/s
@@ -3434,6 +3504,9 @@ export default function App() {
                   : null}
               </div>
             )}
+                </div>
+              );
+            })()}
             {(attachment || attachError) && (
               <div className="attach-bar">
                 {attachment && (
@@ -3475,56 +3548,6 @@ export default function App() {
                   </div>
                 )}
                 {attachError && <span className="attach-error">{attachError}</span>}
-              </div>
-            )}
-            {/* What this message will use, in view without opening the +
-                menu (issue #18): one quiet chip per switch that is on, each
-                with its own way off. Thinking is left out — it is on for
-                most models most of the time, and a chip that never leaves
-                says nothing. */}
-            {(webDesign || webEnabled || ragEnabled) && (
-              <div className="mode-bar">
-                {webDesign && (
-                  <span className="mode-chip">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                      <rect x="3" y="4.5" width="18" height="15" rx="2" />
-                      <path d="M3 9h18" strokeLinecap="round" />
-                    </svg>
-                    {t("webDesignChip")}
-                    <button
-                      className="mode-chip-x"
-                      onClick={() => setWebDesign(false)}
-                      title={t("webDesignOff")}
-                    >
-                      <Icon name="x" size={11} strokeWidth={2.2} />
-                    </button>
-                  </span>
-                )}
-                {webEnabled && (
-                  <span className="mode-chip">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
-                      <circle cx="12" cy="12" r="9" />
-                      <path d="M3 12h18" />
-                      <path d="M12 3c2.6 2.7 2.6 15.3 0 18M12 3c-2.6 2.7-2.6 15.3 0 18" />
-                    </svg>
-                    {t("toolWeb")}
-                    <button className="mode-chip-x" onClick={() => setWebEnabled(false)} title={t("chipOff")}>
-                      <Icon name="x" size={11} strokeWidth={2.2} />
-                    </button>
-                  </span>
-                )}
-                {ragEnabled && (
-                  <span className="mode-chip">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
-                      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" strokeLinecap="round" />
-                      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" strokeLinejoin="round" />
-                    </svg>
-                    {t("toolKb")}
-                    <button className="mode-chip-x" onClick={() => setRagEnabled(false)} title={t("chipOff")}>
-                      <Icon name="x" size={11} strokeWidth={2.2} />
-                    </button>
-                  </span>
-                )}
               </div>
             )}
             <div className="input-row">
