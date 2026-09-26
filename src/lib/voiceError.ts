@@ -46,6 +46,12 @@ export function voiceDownloadMessage(f: VoiceDownloadFailure, lang: Lang): strin
   return lines.join("\n");
 }
 
+/** The download was stopped from its progress bar — nothing to report. */
+export function isVoiceDownloadCancelled(e: unknown): boolean {
+  const s = typeof e === "string" ? e : e instanceof Error ? e.message : "";
+  return s.includes("VOICE_DOWNLOAD_CANCELLED");
+}
+
 /** A voice IPC error, with a download failure rewritten for the reader. */
 export function voiceError(e: unknown): unknown {
   const f = parseVoiceDownloadFailure(e);

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LANGS, useI18n } from "../lib/i18n";
 import { useExitTransition } from "../lib/useExit";
@@ -340,13 +340,19 @@ interface StatsView {
 
 /** LM-Studio-style row: label (+hint) left, control right. */
 function SetRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  // A switch takes its row's label as its name: a bare toggle announced as
+  // just "switch, on".
+  const id = useId();
+  const control = isValidElement(children) && children.type === Switch
+    ? cloneElement(children as React.ReactElement<{ labelledBy?: string }>, { labelledBy: id })
+    : children;
   return (
     <div className="field field-row">
       <div className="field-row-text">
-        <span>{label}</span>
+        <span id={id}>{label}</span>
         {hint && <span className="field-row-hint">{hint}</span>}
       </div>
-      {children}
+      {control}
     </div>
   );
 }
@@ -411,16 +417,19 @@ function Switch({
   on,
   onToggle,
   disabled,
+  labelledBy,
 }: {
   on: boolean;
   onToggle: () => void;
   disabled?: boolean;
+  labelledBy?: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={on}
+      aria-labelledby={labelledBy}
       disabled={disabled}
       className={`set-switch ${on ? "on" : ""}`}
       onClick={onToggle}

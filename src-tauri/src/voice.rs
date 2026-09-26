@@ -116,6 +116,10 @@ const DOWNLOAD_UA: &str = "Chaty model downloader";
 #[serde(rename_all = "camelCase")]
 pub struct VoiceDownload {
     pub model: &'static str,
+    /// Which model: its folder name (`kokoro-en-v0_19`, `sherpa-onnx-vits-zh-ll`, …),
+    /// so the bar can say which voice is coming — issue #20 read a first
+    /// download of the English voice as the Chinese one downloading again.
+    pub voice: &'static str,
     pub downloaded: u64,
     pub total: u64,
     pub done: bool,
@@ -129,14 +133,15 @@ pub type Progress<'a> = &'a (dyn Fn(VoiceDownload) + Send + Sync);
 struct Meter<'a> {
     report: Progress<'a>,
     model: &'static str,
+    voice: &'static str,
     downloaded: u64,
     total: u64,
     last: Option<std::time::Instant>,
 }
 
 impl<'a> Meter<'a> {
-    fn new(report: Progress<'a>, model: &'static str) -> Self {
-        Meter { report, model, downloaded: 0, total: 0, last: None }
+    fn new(report: Progress<'a>, model: &'static str, voice: &'static str) -> Self {
+        Meter { report, model, voice, downloaded: 0, total: 0, last: None }
     }
 
     /// A new source: its whole size, and how much of it is already here.
@@ -157,6 +162,7 @@ impl<'a> Meter<'a> {
         self.last = Some(std::time::Instant::now());
         (self.report)(VoiceDownload {
             model: self.model,
+            voice: self.voice,
             downloaded: self.downloaded,
             total: self.total,
             done: false,
@@ -166,6 +172,7 @@ impl<'a> Meter<'a> {
     fn finish(&self) {
         (self.report)(VoiceDownload {
             model: self.model,
+            voice: self.voice,
             downloaded: self.downloaded,
             total: self.total,
             done: true,
@@ -370,13 +377,30 @@ async fn fetch_snapshot(dir: &Path, hf: &HfSnapshot, base: &str, meter: &mut Met
 /// A ready model's folder, downloading it first if need be: the Hugging Face
 /// snapshot through `base` (the user's HF endpoint), then the release archive.
 /// A download reports its progress to `report`, and always its end.
+/// Wakes a voice model download to stop it (the × on its progress bar). A
+/// stalled connection never returns another chunk, so the download is raced
+/// against this rather than checking a flag between chunks.
+static CANCEL: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// What a cancelled download fails with; the UI says nothing about it.
+pub const DOWNLOAD_CANCELLED: &str = "VOICE_DOWNLOAD_CANCELLED";
+
+/// Stop the voice model download in progress, if any. What already arrived
+/// stays: the next attempt picks up the files that are complete.
+pub fn cancel_download() {
+    CANCEL.notify_waiters();
+}
+
 async fn ensure_model(models_dir: &Path, m: &VoiceModel, base: &str, report: Progress<'_>) -> Result<PathBuf> {
     let dir = models_dir.join(m.dir);
     if (m.ready)(&dir) {
         return Ok(dir);
     }
-    let mut meter = Meter::new(report, m.what);
-    let got = download_model(models_dir, m, base, &mut meter).await;
+    let mut meter = Meter::new(report, m.what, m.dir);
+    let got = tokio::select! {
+        got = download_model(models_dir, m, base, &mut meter) => got,
+        _ = CANCEL.notified() => Err(anyhow!(DOWNLOAD_CANCELLED)),
+    };
     meter.finish();
     got
 }
@@ -629,8 +653,13 @@ fn contains_cjk(text: &str) -> bool {
     })
 }
 
-fn use_chinese_tts(text: &str, chinese_enabled: bool) -> bool {
-    chinese_enabled && contains_cjk(text)
+/// Which voice speaks `text`. With Chinese enabled, a Han character sends it
+/// to VITS. A stretch without one inside a Chinese reply (a model name, a
+/// line of code, "OK") stays with VITS too while the English voice has never
+/// been downloaded: fetching a 300 MB model from GitHub mid-reply, for a few
+/// words, is what issue #20 took for the Chinese voice downloading again.
+fn use_chinese_tts(text: &str, chinese_enabled: bool, reply_is_chinese: bool, english_ready: bool) -> bool {
+    chinese_enabled && (contains_cjk(text) || (reply_is_chinese && !english_ready))
 }
 
 /// Strip Whisper's non-speech annotations for noise — `(buzzing)`, `[BLANK_AUDIO]`,
@@ -718,6 +747,7 @@ pub async fn synthesize(
     sid: i32,
     sid_zh: i32,
     chinese_enabled: bool,
+    reply_is_chinese: bool,
     endpoint: &str,
     report: Progress<'_>,
 ) -> Result<(Vec<f32>, u32)> {
@@ -725,19 +755,26 @@ pub async fn synthesize(
     // character routes the whole utterance to VITS. This avoids splitting and
     // stitching mixed-language audio, at the cost of English quality in a
     // mostly-English sentence containing one Chinese word.
-    if use_chinese_tts(&text, chinese_enabled) {
+    let english_ready = kokoro_model_ready(&models_dir.join(KOKORO.dir));
+    if use_chinese_tts(&text, chinese_enabled, reply_is_chinese, english_ready) {
         let dir = ensure_model(&models_dir, &CHINESE_TTS, endpoint, report).await?;
+        let latin_only = !contains_cjk(&text);
         tokio::task::spawn_blocking(move || -> Result<(Vec<f32>, u32)> {
             let engine = chinese_tts_engine(&dir)?;
             let mut tts = engine_lock(engine, "中文 TTS");
-            let audio = tts
-                // The Chinese voice is chosen from its OWN list — the two
-                // models share nothing but a slider, and folding the Kokoro
-                // index onto five VITS speakers meant picking an English
-                // voice silently moved the Chinese one.
-                .create(&text, sid_zh.rem_euclid(CHINESE_TTS_SPEAKER_COUNT), speed)
-                .map_err(|e| anyhow!("中文语音合成失败: {e}"))?;
-            Ok((audio.samples, audio.sample_rate))
+            // The Chinese voice is chosen from its OWN list — the two models
+            // share nothing but a slider, and folding the Kokoro index onto
+            // five VITS speakers meant picking an English voice silently
+            // moved the Chinese one.
+            match tts.create(&text, sid_zh.rem_euclid(CHINESE_TTS_SPEAKER_COUNT), speed) {
+                Ok(audio) => Ok((audio.samples, audio.sample_rate)),
+                // A stretch without Chinese in a Chinese reply: the Chinese
+                // voice has nothing to say for it ("OK" comes back as no
+                // audio at all). A beat of silence, not an error in the
+                // middle of a reply.
+                Err(_) if latin_only => Ok((vec![0.0; 1600], 16000)),
+                Err(e) => Err(anyhow!("中文语音合成失败: {e}")),
+            }
         })
         .await?
     } else {
@@ -817,9 +854,53 @@ mod tests {
         assert!(contains_cjk("你好，世界"));
         assert!(contains_cjk("Hello 世界"));
         assert!(!contains_cjk("Hello, world."));
-        assert!(use_chinese_tts("Hello 世界", true));
-        assert!(!use_chinese_tts("Hello 世界", false));
-        assert!(!use_chinese_tts("Hello, world.", true));
+        assert!(use_chinese_tts("Hello 世界", true, false, true));
+        assert!(!use_chinese_tts("Hello 世界", false, true, false));
+        assert!(!use_chinese_tts("Hello, world.", true, false, true));
+        // Issue #20: a stretch without Han inside a Chinese reply stays with
+        // the Chinese voice while the English one was never downloaded…
+        assert!(use_chinese_tts("Qwythos 9B.", true, true, false));
+        // …and goes to the English voice once it is there, or when the
+        // reply is English.
+        assert!(!use_chinese_tts("Qwythos 9B.", true, true, true));
+        assert!(!use_chinese_tts("Hello, world.", true, false, false));
+    }
+
+    /// Issue #20: a download stuck on a connection that never sends another
+    /// byte stops when its × is pressed, and closes its progress bar.
+    #[test]
+    fn a_stalled_download_stops_when_cancelled() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Accept and say nothing, ever.
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for c in listener.incoming().flatten() {
+                held.push(c);
+            }
+        });
+        let url: &'static str = Box::leak(format!("http://127.0.0.1:{port}/model.tar.bz2").into_boxed_str());
+        let m = VoiceModel { dir: "stalled-model", what: "tts", ready: |_| false, hf: None, archive: url };
+        let root = std::env::temp_dir().join(format!("chaty-voice-cancel-{}", std::process::id()));
+        let reports = std::sync::Mutex::new(Vec::<VoiceDownload>::new());
+        let report = |d: VoiceDownload| reports.lock().unwrap().push(d);
+        let started = std::time::Instant::now();
+        let got = rt.block_on(async {
+            let canceller = tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                cancel_download();
+            });
+            let got = ensure_model(&root, &m, OFFICIAL, &report).await;
+            canceller.await.unwrap();
+            got
+        });
+        let err = got.expect_err("a cancelled download fails").to_string();
+        assert!(err.contains(DOWNLOAD_CANCELLED), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+        let r = reports.lock().unwrap();
+        assert!(r.last().is_some_and(|d| d.done && d.voice == "stalled-model"), "{r:?}");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     const OFFICIAL: &str = crate::download::HF_OFFICIAL;
@@ -972,13 +1053,13 @@ mod tests {
         for m in [&CHINESE_TTS, &WHISPER_MULTILINGUAL] {
             let t = std::time::Instant::now();
             let target = dir.join(m.dir);
-            rt.block_on(fetch_snapshot(&target, m.hf.as_ref().unwrap(), &endpoint, &mut Meter::new(&quiet, m.what)))
+            rt.block_on(fetch_snapshot(&target, m.hf.as_ref().unwrap(), &endpoint, &mut Meter::new(&quiet, m.what, m.dir)))
                 .unwrap_or_else(|e| panic!("{} through {endpoint}: {e:#}", m.dir));
             assert!((m.ready)(&target), "{} incomplete", m.dir);
             println!("{} via {endpoint} in {:.0?}", m.dir, t.elapsed());
         }
         let (samples, rate) = rt
-            .block_on(synthesize(dir.clone(), "你好，这是一个中文语音测试。".into(), 1.0, 0, 0, true, &endpoint, &quiet))
+            .block_on(synthesize(dir.clone(), "你好，这是一个中文语音测试。".into(), 1.0, 0, 0, true, true, &endpoint, &quiet))
             .expect("Chinese TTS");
         let text = rt
             .block_on(transcribe(dir.clone(), samples, rate, true, &endpoint, &quiet))
@@ -1006,6 +1087,7 @@ mod tests {
                 1.0,
                 0,
                 0,
+                false,
                 false,
                 OFFICIAL,
                 &quiet,
@@ -1046,6 +1128,7 @@ mod tests {
                 // The Chinese speaker comes from its own list now — 0 is
                 // suyingxue, the first of the model's five.
                 0,
+                true,
                 true,
                 OFFICIAL,
                 &quiet,

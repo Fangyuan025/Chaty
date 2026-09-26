@@ -456,6 +456,16 @@ export const T = {
   deleteConv: { zh: "删除会话", en: "Delete conversation", pt: "Excluir conversa" },
   confirm: { zh: "确认", en: "Confirm", pt: "Confirmar" },
   confirmDelete: { zh: "删除", en: "Delete", pt: "Excluir" },
+  selectConvs: { zh: "多选", en: "Select", pt: "Selecionar" },
+  selectedN: { zh: "已选 {n} 个", en: "{n} selected", pt: "{n} selecionadas" },
+  selectAll: { zh: "全选", en: "All", pt: "Todas" },
+  selectNone: { zh: "全不选", en: "None", pt: "Nenhuma" },
+  deleteConvs: { zh: "删除对话", en: "Delete conversations", pt: "Excluir conversas" },
+  confirmDeleteConvs: {
+    zh: "删除选中的 {n} 个对话？此操作无法撤销。",
+    en: "Delete the {n} selected conversations? This can't be undone.",
+    pt: "Excluir as {n} conversas selecionadas? Não dá para desfazer.",
+  },
   confirmDeleteConv: {
     zh: "确定要删除这个对话吗？",
     en: "Delete this conversation?", pt: "Excluir esta conversa?"
@@ -508,8 +518,20 @@ export const T = {
     en: "Downloading the speech synthesis model (first use only)… {progress}",
     pt: "Baixando o modelo de síntese de fala (só no primeiro uso)… {progress}",
   },
+  voiceDlTtsEn: {
+    zh: "正在下载英文朗读模型 Kokoro（首次朗读英文时需要）… {progress}",
+    en: "Downloading the English voice, Kokoro (first English read-aloud only)… {progress}",
+    pt: "Baixando a voz em inglês, Kokoro (só na primeira leitura em inglês)… {progress}",
+  },
+  voiceDlTtsZh: {
+    zh: "正在下载中文朗读模型（首次朗读中文时需要）… {progress}",
+    en: "Downloading the Chinese voice (first Chinese read-aloud only)… {progress}",
+    pt: "Baixando a voz em chinês (só na primeira leitura em chinês)… {progress}",
+  },
+  voiceDlCancel: { zh: "取消下载", en: "Cancel download", pt: "Cancelar download" },
   liveStart: { zh: "实时语音对话", en: "Live voice chat", pt: "Chat de voz ao vivo" },
   liveExit: { zh: "退出实时模式", en: "Exit live mode", pt: "Sair do modo ao vivo" },
+  liveEnd: { zh: "结束", en: "End", pt: "Encerrar" },
   liveListening: { zh: "聆听中…", en: "Listening…", pt: "Ouvindo…" },
   liveThinking: { zh: "思考中…", en: "Thinking…", pt: "Pensando…" },
   liveSpeaking: { zh: "回答中…", en: "Speaking…", pt: "Falando…" },
@@ -657,10 +679,12 @@ export const T = {
   specDecodeHint: {
     zh: "用模型自带的预测头先猜出接下来的几个词，再让模型一次性校验，回答内容不变、只是更快。加速幅度随模型和内容而定，更改将在下次加载模型时生效。",
     en: "The model's own prediction head guesses the next few tokens and the model checks them in one pass — same reply, fewer passes. How much it helps depends on the model and on what is being written. Changes apply on the next model load.",
+    pt: "A própria cabeça de previsão do modelo adivinha os próximos tokens e o modelo os confere de uma vez — a mesma resposta, em menos passos. Quanto ajuda depende do modelo e do que está sendo escrito. As mudanças valem no próximo carregamento do modelo.",
   },
   specDecodeUnsupported: {
     zh: "当前模型不带预测头，无法使用。",
     en: "The loaded model carries no prediction head, so there is nothing to speculate with.",
+    pt: "O modelo carregado não tem cabeça de previsão, então não há com o que especular.",
   },
   gpuHint: {
     zh: "自动模式会按显存把尽量多的层放到 GPU。更改将在下次加载模型时生效。",
@@ -960,31 +984,44 @@ export const T = {
   ejectingModel: { zh: "正在卸载旧模型…", en: "Ejecting old model…", pt: "Descarregando o modelo antigo…" },
   noLimit: { zh: "不限制", en: "No limit", pt: "Sem limite" },
   openModelsDir: { zh: "打开模型文件夹", en: "Open models folder", pt: "Abrir pasta de modelos" },
-  voiceModelsDir: { zh: "语音模型文件夹", en: "Voice models folder" },
+  voiceModelsDir: { zh: "语音模型文件夹", en: "Voice models folder", pt: "Pasta dos modelos de voz" },
   voiceModelsDirHint: {
     zh: "离线语音模型存放在这里。自动下载失败时，可以按报错里的说明把文件手动放进来。",
     en: "Where the offline voice models are kept. If a download fails, you can put the files here by hand, as the error explains.",
+    pt: "Onde ficam os modelos de voz offline. Se um download falhar, você pode colocar os arquivos aqui à mão, como o erro explica.",
   },
-  voiceModelsDirOpen: { zh: "打开", en: "Open" },
-  voiceDlFailed: { zh: "语音模型下载失败（{reason}）。", en: "Couldn't download the voice model ({reason})." },
+  voiceModelsDirOpen: { zh: "打开", en: "Open", pt: "Abrir" },
+  voiceDlFailed: {
+    zh: "语音模型下载失败（{reason}）。",
+    en: "Couldn't download the voice model ({reason}).",
+    pt: "Não foi possível baixar o modelo de voz ({reason}).",
+  },
   voiceDlMirror: {
     zh: "可以到「设置 → 模型 → HuggingFace 端点」换一个源（中国大陆推荐 hf-mirror.com）后再试。",
     en: "You can switch Settings → Model → HuggingFace endpoint to another source (hf-mirror.com in mainland China) and try again.",
+    pt: "Você pode trocar Configurações → Modelo → Endpoint HuggingFace para outra fonte (hf-mirror.com na China continental) e tentar de novo.",
   },
   voiceDlManual: {
     zh: "也可以手动下载：打开 {url}，下载 {files}，放进文件夹 {dir}，然后再试一次。",
     en: "Or fetch it by hand: from {url} download {files} into the folder {dir}, then try again.",
+    pt: "Ou baixe à mão: em {url}, baixe {files} para a pasta {dir} e tente de novo.",
   },
-  voiceDlAllFiles: { zh: "页面里的全部文件（dict 子文件夹保持原样）", en: "every file on that page (keep the dict subfolder)" },
+  voiceDlAllFiles: {
+    zh: "页面里的全部文件（dict 子文件夹保持原样）",
+    en: "every file on that page (keep the dict subfolder)",
+    pt: "todos os arquivos daquela página (mantenha a subpasta dict)",
+  },
   voiceDlArchive: {
     zh: "可以手动下载 {url}，解压到文件夹 {dir}（解压出的文件夹不要改名），然后再试一次。",
     en: "You can download {url} by hand and unpack it into the folder {dir} (keep the unpacked folder's name), then try again.",
+    pt: "Você pode baixar {url} à mão e descompactá-lo na pasta {dir} (mantenha o nome da pasta descompactada) e tentar de novo.",
   },
   // Model-facing: names the question after a turn's retrieved passages.
   questionLabel: { zh: "用户的问题：", en: "The user's question: ", pt: "Pergunta do usuário: " },
   webNoResults: {
     zh: "联网搜索没有找到与问题相关的网页，这次回答没有用到网络资料。",
     en: "Web search found nothing relevant to this question, so the answer doesn't use web sources.",
+    pt: "A busca na web não encontrou nada relevante para esta pergunta, então a resposta não usa fontes da web.",
   },
   changeModelsDir: { zh: "更改位置", en: "Change location", pt: "Alterar local" },
   resetModelsDir: { zh: "恢复默认", en: "Reset to default", pt: "Restaurar padrão" },

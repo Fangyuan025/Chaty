@@ -301,6 +301,8 @@ export function DownloadModal({
   return (
     <>
       <div className="popover-backdrop" onClick={active ? undefined : onClose} style={{ zIndex: 90 }} />
+      {/* A download takes minutes: the window stays movable meanwhile. */}
+      <div className="modal-drag-strip" data-tauri-drag-region />
       <div className="dl-modal store-modal">
         <div className="dl-head">
           <span className="dl-title">{t("dlTitle")}</span>

@@ -1685,6 +1685,9 @@ export async function transcribe(
  *  read-aloud fetches its model. `done` ends it, however it went. */
 export interface VoiceDownload {
   model: "stt" | "tts";
+  /** Which model: its folder name — `kokoro-en-v0_19` is the English voice,
+   *  `sherpa-onnx-vits-zh-ll` the Chinese one. */
+  voice: string;
   downloaded: number;
   /** 0 when the source did not say. */
   total: number;
@@ -1714,6 +1717,10 @@ export async function synthesize(
   /** Speaker for the Chinese voice, chosen from its own list. The engine
    *  decides per utterance which of the two speaks, so both travel. */
   sidZh?: number,
+  /** The reply this is part of is Chinese: a stretch of it without a Han
+   *  character stays with the Chinese voice rather than fetching the English
+   *  one (issue #20). */
+  replyIsChinese = false,
 ): Promise<SynthAudio> {
   try {
     return await invoke<SynthAudio>("synthesize", {
@@ -1722,12 +1729,24 @@ export async function synthesize(
       sid,
       sidZh,
       chineseEnabled,
+      replyIsChinese,
       endpoint: hfEndpoint,
       onProgress: voiceProgressChannel(),
     });
   } catch (e) {
     throw voiceError(e);
   }
+}
+
+/** Stop the voice model download in progress (the × on its bar). The call
+ *  waiting on it fails with a cancellation, which says nothing. */
+export async function cancelVoiceDownload(): Promise<void> {
+  await invoke("cancel_voice_download");
+}
+
+/** Has a Han character — a Chinese reply, for choosing its voice. */
+export function hasHan(s: string): boolean {
+  return /\p{Script=Han}/u.test(s);
 }
 
 /** Reveal the folder the offline voice models live in (created if absent) —

@@ -1883,6 +1883,12 @@ fn voice_models_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .join("voice-models"))
 }
 
+/// Stop a voice model download (the × on its progress bar).
+#[tauri::command]
+pub fn cancel_voice_download() {
+    crate::voice::cancel_download();
+}
+
 /// Reveal the voice-models folder — where a model goes by hand when its
 /// download can't get through.
 #[tauri::command]
@@ -1932,6 +1938,8 @@ pub async fn synthesize(
     sid: Option<i32>,
     sid_zh: Option<i32>,
     chinese_enabled: Option<bool>,
+    // The reply this utterance belongs to is Chinese (a Han character in it).
+    reply_is_chinese: Option<bool>,
     endpoint: Option<String>,
     on_progress: Channel<crate::voice::VoiceDownload>,
 ) -> Result<SynthAudio, String> {
@@ -1947,6 +1955,7 @@ pub async fn synthesize(
         sid.unwrap_or(0),
         sid_zh.unwrap_or(0),
         chinese_enabled.unwrap_or(false),
+        reply_is_chinese.unwrap_or(false),
         &base,
         &report,
     )

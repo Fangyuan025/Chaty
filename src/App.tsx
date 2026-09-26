@@ -41,6 +41,7 @@ import { SetupModal } from "./components/SetupModal";
 import { KnowledgePanel } from "./components/KnowledgePanel";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import { Icon } from "./components/Icon";
+import { isVoiceDownloadCancelled } from "./lib/voiceError";
 import { CanvasPanel, type CanvasVersion } from "./components/CanvasPanel";
 import { fixInstruction } from "./lib/canvasSource";
 import { CanvasOpenContext, CodeCollapseContext } from "./components/Markdown";
@@ -105,6 +106,8 @@ import {
   saveMessage,
   setTrayLanguage,
   synthesize,
+  cancelVoiceDownload,
+  hasHan,
   transcribe,
   setVoiceDownloadListener,
   type VoiceDownload,
@@ -573,6 +576,12 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [convQuery, setConvQuery] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  /** Selection mode for deleting several conversations at once. */
+  const [selectingConvs, setSelectingConvs] = useState(false);
+  const [selectedConvs, setSelectedConvs] = useState<Set<string>>(() => new Set());
+  const lastPickedConv = useRef<string | null>(null);
+  /** The list as shown (search / recency order), for Shift-ranges. */
+  const visibleConvsRef = useRef<Conversation[]>([]);
   const [renameDraft, setRenameDraft] = useState("");
   const [contentMatches, setContentMatches] = useState<Set<string>>(new Set());
   const [recorder, setRecorder] = useState<Recorder | null>(null);
@@ -597,6 +606,10 @@ export default function App() {
   const prevMsgCount = useRef(0);
   const prevConvId = useRef<string | null>(null);
   const followRef = useRef(true);
+  /** When the last wheel-up released following, and until when a smooth
+   *  follow-scroll may still be moving the view. */
+  const releasedAt = useRef(0);
+  const pinAnimUntil = useRef(0);
   /** The running chat turn's stop state — see handleStop. */
   const turnStopRef = useRef<{ stopped: boolean; wake: () => void } | null>(null);
   const showJumpRef = useRef(false);
@@ -738,6 +751,21 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Esc leaves conversation selection; so does leaving the chat mode.
+  useEffect(() => {
+    if (!selectingConvs) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") exitConvSelect();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectingConvs]);
+  useEffect(() => {
+    if (appMode !== "chat" || imageMode) exitConvSelect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appMode, imageMode]);
+
   // Handle chaty:// deep links (HuggingFace "Use this model" → open the
   // downloader pre-filled with the repo). Covers cold start + while running.
   useEffect(() => {
@@ -847,15 +875,25 @@ export default function App() {
     if (!el) return;
     const dist = () => el.scrollHeight - el.scrollTop - el.clientHeight;
     const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) followRef.current = false;
-      else if (dist() < 40) followRef.current = true;
+      if (e.deltaY < 0) {
+        followRef.current = false;
+        releasedAt.current = performance.now();
+        // A smooth pin still on its way down would carry the view back to
+        // the bottom under the user's wheel: stop it where it is.
+        if (performance.now() < pinAnimUntil.current) {
+          pinAnimUntil.current = 0;
+          el.scrollTo({ top: el.scrollTop, behavior: "instant" });
+        }
+      } else if (dist() < 40) followRef.current = true;
     };
     const onScroll = () => {
       // Covers scrollbar drags and keyboard scrolling; programmatic pins land
-      // at the bottom, so they only ever re-arm.
+      // at the bottom, so they only ever re-arm — but not in the moment after
+      // a wheel-up, when the bottom is where an animation left the view.
       const d = dist();
-      if (d < 4) followRef.current = true;
-      else if (d > 240) followRef.current = false;
+      if (d < 4) {
+        if (performance.now() - releasedAt.current > 800) followRef.current = true;
+      } else if (d > 240) followRef.current = false;
       const jump = d > 320;
       if (jump !== showJumpRef.current) {
         showJumpRef.current = jump;
@@ -891,7 +929,13 @@ export default function App() {
     // Another conversation opens at its end. The transcript scrolls smoothly
     // (CSS), which turned opening a long one into a ride from its first message
     // to its last every time (issue #18).
-    if (followRef.current) el.scrollTo({ top: el.scrollHeight, behavior: switched ? "instant" : undefined });
+    // A new message glides into view; a reply growing under it is pinned
+    // instantly, so there is never an animation for a wheel-up to fight.
+    if (followRef.current) {
+      const smooth = structural && !switched;
+      if (smooth) pinAnimUntil.current = performance.now() + 600;
+      el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "instant" });
+    }
   }, [messages, conversationId]);
 
   useEffect(() => {
@@ -1671,6 +1715,71 @@ export default function App() {
       return;
     }
     try {
+      await removeConversation(id);
+      await refreshConversations();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  /** Delete the conversations ticked in the sidebar, after one confirmation
+   *  (issue #20: they went one × and one dialog at a time). */
+  async function handleDeleteSelected() {
+    const ids = conversations.map((c) => c.id).filter((id) => selectedConvs.has(id));
+    if (ids.length === 0) return;
+    if (
+      !(await confirm({
+        message: t("confirmDeleteConvs", { n: ids.length }),
+        title: t("deleteConvs"),
+        confirmLabel: t("confirmDelete"),
+        danger: true,
+      }))
+    ) {
+      return;
+    }
+    for (const id of ids) {
+      try {
+        await removeConversation(id);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    exitConvSelect();
+    await refreshConversations();
+  }
+
+  function exitConvSelect() {
+    setSelectingConvs(false);
+    setSelectedConvs(new Set());
+    lastPickedConv.current = null;
+  }
+
+  /** Tick a conversation in selection mode: a plain click toggles it, Shift
+   *  extends from the last one ticked across the list as shown. */
+  function pickConversation(id: string, range: boolean) {
+    // Read before the update runs: by then the ref already names this click.
+    const from = lastPickedConv.current;
+    setSelectedConvs((cur) => {
+      const next = new Set(cur);
+      if (range && from && from !== id) {
+        const order = visibleConvsRef.current.map((c) => c.id);
+        const a = order.indexOf(from), b = order.indexOf(id);
+        if (a >= 0 && b >= 0) {
+          for (const x of order.slice(Math.min(a, b), Math.max(a, b) + 1)) next.add(x);
+          return next;
+        }
+      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    lastPickedConv.current = id;
+  }
+
+  /** Delete one conversation, and reset the chat area when it is the one on
+   *  screen. No confirmation: the callers ask. */
+  async function removeConversation(id: string) {
+    {
       // Deleting the conversation you're viewing must also clear the chat area —
       // even mid-generation. handleNewChat's busy-guard exists for the "+ New
       // chat" button (don't silently abandon a running reply via the button); a
@@ -1708,9 +1817,6 @@ export default function App() {
           setBusy(false);
         }
       }
-      await refreshConversations();
-    } catch (e) {
-      console.error(e);
     }
   }
 
@@ -2205,6 +2311,7 @@ export default function App() {
             settings.voiceSid,
             settings.chineseVoice,
             settings.voiceSidZh,
+            hasHan(answerOnly(acc.text)),
           );
           if (!q.isStopped) q.enqueue(decodeAudio(audio), sampleRate);
         } catch (e) {
@@ -2500,11 +2607,12 @@ export default function App() {
       }
     } catch (e) {
       console.error(e);
-      setAttachError(
-        typeof e === "string"
-          ? e
-          : ((e as Error)?.message ?? "语音识别失败 / Speech recognition failed"),
-      );
+      if (!isVoiceDownloadCancelled(e))
+        setAttachError(
+          typeof e === "string"
+            ? e
+            : ((e as Error)?.message ?? "语音识别失败 / Speech recognition failed"),
+        );
     } finally {
       setTranscribing(false);
     }
@@ -2543,6 +2651,7 @@ export default function App() {
         settings.voiceSid,
         settings.chineseVoice,
         settings.voiceSidZh,
+        hasHan(clean),
       );
       const pb = playAudio(decodeAudio(audio), sampleRate);
       playbackRef.current = pb;
@@ -2551,7 +2660,7 @@ export default function App() {
       console.error(e);
       // Read-aloud failed silently before — a voice model that could not
       // download looked like a button that does nothing.
-      showNotice("error", e instanceof Error ? e.message : String(e));
+      if (!isVoiceDownloadCancelled(e)) showNotice("error", e instanceof Error ? e.message : String(e));
     } finally {
       if (playbackRef.current) playbackRef.current = null;
       setSpeaking(false);
@@ -2587,6 +2696,7 @@ export default function App() {
         (c) => c.title.toLowerCase().includes(q) || contentMatches.has(c.id),
       )
     : conversations;
+  visibleConvsRef.current = q ? visibleConvs : recencyGroups(visibleConvs).flatMap((g) => g.items);
 
   // Command-palette actions: static commands + load-model + jump-to-conversation.
   // The image studio keeps only what applies to it (no chat/code mode, no
@@ -2735,7 +2845,7 @@ export default function App() {
           <div className="mode-switch" role="tablist" aria-label="Mode">
             <button className="mode-tab active" title={t("imgModeTip")}>
               <Icon name="image" size={13} strokeWidth={1.8} />
-              {t("modeImage")}
+              <span className="mode-tab-label">{t("modeImage")}</span>
             </button>
           </div>
         ) : (
@@ -2743,16 +2853,18 @@ export default function App() {
             <button
               className={`mode-tab ${appMode === "chat" ? "active" : ""}`}
               onClick={() => setAppMode("chat")}
+              title={t("modeChat")}
             >
               <Icon name="chat" size={13} strokeWidth={1.8} />
-              {t("modeChat")}
+              <span className="mode-tab-label">{t("modeChat")}</span>
             </button>
             <button
               className={`mode-tab ${appMode === "code" ? "active" : ""}`}
               onClick={() => setAppMode("code")}
+              title={t("modeCode")}
             >
               <Icon name="code" size={13} strokeWidth={1.8} />
-              {t("modeCode")}
+              <span className="mode-tab-label">{t("modeCode")}</span>
             </button>
           </div>
         )}
@@ -3103,6 +3215,18 @@ export default function App() {
                   <Icon name="x" size={11} strokeWidth={2.2} />
                 </button>
               )}
+              <button
+                className={`conv-select-toggle ${selectingConvs ? "on" : ""}`}
+                title={selectingConvs ? t("cancel") : t("selectConvs")}
+                aria-pressed={selectingConvs}
+                onClick={() => (selectingConvs ? exitConvSelect() : setSelectingConvs(true))}
+              >
+                {/* A ticked box: selection, not "confirm" as a bare tick read. */}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="3.5" y="3.5" width="17" height="17" rx="4" />
+                  <path d="M8 12.2l2.7 2.7L16 9.6" />
+                </svg>
+              </button>
             </div>
           )}
           <div className="conv-list">
@@ -3120,11 +3244,25 @@ export default function App() {
               {g.items.map((c) => (
                 <div
                   key={c.id}
-                  className={`conv-item ${c.id === conversationId ? "active" : ""} ${
+                  className={`conv-item ${c.id === conversationId && !selectingConvs ? "active" : ""} ${
                     c.pinned ? "pinned" : ""
-                  }`}
-                  onClick={() => renamingId !== c.id && openConversation(c.id)}
+                  } ${selectingConvs ? "selecting" : ""} ${selectedConvs.has(c.id) ? "picked" : ""}`}
+                  onClick={(e) => {
+                    if (renamingId === c.id) return;
+                    // Ctrl / ⌘-click starts a selection, like a file list.
+                    if (selectingConvs || e.metaKey || e.ctrlKey) {
+                      if (!selectingConvs) setSelectingConvs(true);
+                      pickConversation(c.id, e.shiftKey);
+                      return;
+                    }
+                    openConversation(c.id);
+                  }}
                 >
+                  {selectingConvs && (
+                    <span className="conv-check" aria-hidden="true">
+                      {selectedConvs.has(c.id) && <Icon name="check" size={10} strokeWidth={2.6} />}
+                    </span>
+                  )}
                   {renamingId === c.id ? (
                     <input
                       className="conv-rename"
@@ -3146,7 +3284,7 @@ export default function App() {
                   ) : (
                     <>
                       <span className="conv-title">{c.title}</span>
-                      <div className="conv-actions">
+                      {!selectingConvs && <div className="conv-actions">
                         <button
                           className={`conv-act ${c.pinned ? "on" : ""}`}
                           title={c.pinned ? t("unpinConv") : t("pinConv")}
@@ -3177,7 +3315,7 @@ export default function App() {
                         >
                           <Icon name="x" size={11} strokeWidth={2.2} />
                         </button>
-                      </div>
+                      </div>}
                     </>
                   )}
                 </div>
@@ -3187,6 +3325,32 @@ export default function App() {
             )}
           </div>
           </>
+          )}
+          {!imageMode && selectingConvs && (
+            <div className="conv-select-bar">
+              <span className="csb-count">{t("selectedN", { n: selectedConvs.size })}</span>
+              <button
+                className="csb-btn"
+                onClick={() => {
+                  const all = visibleConvsRef.current.map((c) => c.id);
+                  setSelectedConvs((cur) => (all.every((id) => cur.has(id)) ? new Set() : new Set(all)));
+                }}
+              >
+                {visibleConvsRef.current.length > 0 && visibleConvsRef.current.every((c) => selectedConvs.has(c.id))
+                  ? t("selectNone")
+                  : t("selectAll")}
+              </button>
+              <button
+                className="csb-btn danger"
+                disabled={selectedConvs.size === 0 || busy}
+                onClick={() => void handleDeleteSelected()}
+              >
+                {t("confirmDelete")}
+              </button>
+              <button className="csb-btn" onClick={exitConvSelect}>
+                {t("cancel")}
+              </button>
+            </div>
           )}
           <div className="side-status" title={model ? model.name : ""}>
             <span className="ss-meta">v{__APP_VERSION__}</span>
@@ -3934,9 +4098,31 @@ export default function App() {
       )}
       {voiceDl && (
         <div className="toast voice-dl" role="status">
-          {t(voiceDl.model === "stt" ? "voiceDlStt" : "voiceDlTts", {
-            progress: voiceDlProgress(voiceDl),
-          })}
+          <span>
+            {t(
+              voiceDl.model === "stt"
+                ? "voiceDlStt"
+                : voiceDl.voice.startsWith("kokoro")
+                  ? "voiceDlTtsEn"
+                  : voiceDl.voice.includes("zh")
+                    ? "voiceDlTtsZh"
+                    : "voiceDlTts",
+              { progress: voiceDlProgress(voiceDl) },
+            )}
+          </span>
+          {/* A download on a slow line could only be waited out or quit
+              (issue #20). */}
+          <button
+            className="voice-dl-cancel"
+            title={t("voiceDlCancel")}
+            aria-label={t("voiceDlCancel")}
+            onClick={() => {
+              setVoiceDl(null);
+              void cancelVoiceDownload().catch(() => {});
+            }}
+          >
+            <Icon name="x" size={12} strokeWidth={2.2} />
+          </button>
         </div>
       )}
       {showLive && (

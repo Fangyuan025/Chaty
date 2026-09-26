@@ -47,8 +47,11 @@
 
   /* ---- radius scale ---- */
   --r-sm: 6px; /* chips, small controls */
-  --r-md: 10px; /* buttons, inputs, list rows */
-  --r-lg: 16px; /* cards, panels, modals */
+  --r-md: 8px; /* buttons, inputs, list rows */
+  /* Cards, panels, modals. Smaller than it was: a big radius on every box,
+     boxes inside boxes, read as rounded-in-rounded (issue #20) — the round
+     shapes are the composer and the pills, the containers are near-square. */
+  --r-lg: 10px; /* cards, panels, modals */
   --r-full: 999px;
 
   /* ---- motion ---- */
@@ -64,7 +67,7 @@
      and the working area sits inside it as an inset panel. The frame takes
      each palette's recessed tone, so every palette gets it for free. */
   --frame: var(--bg-elev);
-  --inset-radius: 12px;
+  --inset-radius: 8px;
   --inset-gap: 8px;
   --inset-shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(0, 0, 0, 0.12), 0 8px 28px rgba(0, 0, 0, 0.18);
   /* The composer floats over the transcript: one step above the cards, a
@@ -150,7 +153,7 @@
   --composer-focus: 0 0 0 1px rgba(53, 117, 87, 0.5), 0 0 0 5px rgba(53, 117, 87, 0.1),
     0 8px 26px rgba(35, 30, 20, 0.09);
   --shadow-2: 0 4px 16px rgba(35, 30, 20, 0.08);
-  --shadow-3: 0 12px 32px rgba(35, 30, 20, 0.12);
+  --shadow-3: 0 12px 32px rgba(35, 30, 20, 0.15), 0 2px 6px rgba(35, 30, 20, 0.06);
   --shadow-4: 0 24px 56px rgba(35, 30, 20, 0.16);
   color-scheme: light;
 }
@@ -187,7 +190,7 @@
   --composer-focus: 0 0 0 1px rgba(53, 117, 87, 0.5), 0 0 0 5px rgba(53, 117, 87, 0.1),
     0 8px 26px rgba(35, 30, 20, 0.09);
     --shadow-2: 0 4px 16px rgba(35, 30, 20, 0.08);
-    --shadow-3: 0 12px 32px rgba(35, 30, 20, 0.12);
+    --shadow-3: 0 12px 32px rgba(35, 30, 20, 0.15), 0 2px 6px rgba(35, 30, 20, 0.06);
     --shadow-4: 0 24px 56px rgba(35, 30, 20, 0.16);
     color-scheme: light;
   }
@@ -262,7 +265,9 @@
 :root[data-theme="light"][data-light="cream"] {
   --bg: #f3eee4;
   --bg-elev: #eae4d7;
-  --panel: #fbf7ee;
+  /* Menus and popovers a step off the page (issue #20: the model menu was
+     the page's own colour). */
+  --panel: #fffcf6;
   --surface: #ede7da;
   --surface-2: #e3dbcb;
   --border: rgba(62, 50, 26, 0.12);
@@ -278,7 +283,7 @@
   :root[data-theme="system"][data-light="cream"] {
     --bg: #f3eee4;
     --bg-elev: #eae4d7;
-    --panel: #fbf7ee;
+    --panel: #fffcf6;
     --surface: #ede7da;
     --surface-2: #e3dbcb;
     --border: rgba(62, 50, 26, 0.12);
@@ -424,6 +429,37 @@ body {
 .model-wrap {
   position: relative;
   margin-left: auto;
+  /* The one thing in the title bar that gives way when the window narrows:
+     its name shortens, everything else keeps its size — the window buttons
+     were pushed out of a narrow window (issue #20). */
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.titlebar > :not(.model-wrap) {
+  flex-shrink: 0;
+}
+.model-chip {
+  max-width: 100%;
+}
+.model-chip .chip-name {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.model-chip .chip-meta {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.mode-tab {
+  white-space: nowrap;
+}
+@media (max-width: 900px) {
+  .mode-tab-label,
+  .model-chip .chip-meta {
+    display: none;
+  }
+  .mode-tab {
+    padding: 4px 9px;
+  }
 }
 
 .model-chip {
@@ -433,7 +469,7 @@ body {
   padding: 5px 10px;
   font-size: 12px;
   color: var(--text-dim);
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   cursor: pointer;
@@ -471,7 +507,7 @@ body {
   padding: 5px;
   background: var(--panel);
   border: 1px solid var(--border-strong);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-3);
   animation: ctxin 0.1s ease-out;
 }
@@ -761,6 +797,22 @@ body {
   display: flex;
   align-self: stretch;
   margin-left: 2px;
+  /* Minimize, maximize and close work whatever is open over the window —
+     a modal's backdrop covered them (issue #20). */
+  position: relative;
+  z-index: 2700;
+  flex-shrink: 0;
+}
+
+/* The title bar's drag region, over a modal's backdrop: the window can still
+   be moved while a model downloads (issue #20). Below the window controls. */
+.modal-drag-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 44px;
+  z-index: 95;
 }
 
 .win-btn {
@@ -834,12 +886,16 @@ body.resizing-x {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 10px 10px 4px;
+  /* Its top on the inset panel's top line. */
+  margin: var(--inset-gap) 10px 4px;
   padding: 9px 12px;
   font-size: 13.5px;
   font-weight: 500;
   color: var(--text);
-  background: var(--surface);
+  /* Controls on the frame take the panel's tone: --surface is within a
+     shade or two of the frame in the light palettes, and left them an
+     outline on nothing (issue #20). */
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
@@ -883,7 +939,6 @@ body.resizing-x {
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  border-top: 1px solid var(--border);
   font-size: 11.5px;
   color: var(--faint);
 }
@@ -1036,9 +1091,11 @@ body.resizing-x {
   flex-direction: column;
   min-width: 0;
   background: var(--bg);
-  /* The inset panel (see --frame). No overflow clip: menus that open from
-     inside it must be free to spill past its edge. */
-  margin: 0 var(--inset-gap) var(--inset-gap) 0;
+  /* The inset panel (see --frame), the same gap above it as right of and
+     below it: it hung from the title bar, and nothing in the sidebar lined up
+     with its top (issue #20). No overflow clip: menus that open from inside
+     it must be free to spill past its edge. */
+  margin: var(--inset-gap) var(--inset-gap) var(--inset-gap) 0;
   border-radius: var(--inset-radius);
   box-shadow: var(--inset-shadow);
 }
@@ -1062,7 +1119,9 @@ body.resizing-x {
   /* The bottom padding clears the composer's fade (28px): at the end of the
      transcript the last reply's actions sit above it, not dimmed under it. */
   padding: 28px 0 32px;
-  scroll-behavior: smooth;
+  /* No CSS scroll-behavior: it animated every follow-the-stream write, and a
+     wheel-up then lost to the animation still heading for the bottom (issue
+     #20). The follow effect asks for smooth scrolling where it wants it. */
 }
 
 .empty {
@@ -1969,9 +2028,90 @@ body.resizing-x {
   margin: 4px 10px 6px;
   padding: 7px 10px;
   color: var(--text-dim);
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
+}
+
+/* Selection mode (deleting several at once): a toggle at the end of the
+   search field, a tick box per row, and an action bar at the foot. */
+.conv-select-toggle {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: -4px;
+  padding: 0;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.conv-select-toggle:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.conv-select-toggle.on {
+  color: var(--accent);
+  background: var(--accent-soft, var(--surface-2));
+}
+.conv-item.selecting {
+  gap: 9px;
+}
+.conv-check {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 4px;
+  color: #fff;
+}
+.conv-item.picked .conv-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.conv-select-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 8px 6px;
+  padding: 6px 6px 6px 10px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.csb-count {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.csb-btn {
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.csb-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.csb-btn.danger {
+  color: var(--danger);
+}
+.csb-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .conv-search input {
@@ -2815,7 +2955,7 @@ body.resizing-x {
   max-width: calc(100vw - 32px);
   background: var(--panel);
   border: 1px solid var(--border-strong);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-4);
   overflow: hidden;
 }
@@ -4383,10 +4523,10 @@ button.tool-parent {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  /* keep the centered stage clear of the close (top) and exit (bottom) buttons */
-  padding: 72px 16px 116px;
+  padding: 88px 24px 190px;
   box-sizing: border-box;
-  background: radial-gradient(circle at 50% 38%, #1b1b1b, #0c0c0c 72%);
+  overflow: hidden;
+  background: #07080a;
   animation: ctxin 0.18s ease-out;
   /* This surface is dark in BOTH themes, so it cannot borrow the theme's
      foreground: in the light theme `--text` is near-black, which is how the
@@ -4395,46 +4535,82 @@ button.tool-parent {
   --live-fg: rgba(255, 255, 255, 0.92);
   --live-fg-dim: rgba(255, 255, 255, 0.55);
 }
-.live-close {
+/* The light along the bottom edge (LiveMode draws it): drawn small, blown
+   up and blurred into one soft band. */
+.live-glow {
   position: absolute;
-  top: 18px;
-  right: 20px;
-  width: 40px;
-  height: 40px;
-  font-size: 26px;
-  line-height: 1;
-  color: var(--live-fg-dim);
-  background: transparent;
-  border: none;
-  border-radius: var(--r-md);
-  cursor: pointer;
+  left: -6%;
+  right: -6%;
+  bottom: -4%;
+  width: 112%;
+  height: 64%;
+  pointer-events: none;
+  filter: blur(34px) saturate(135%);
 }
-.live-close:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--live-fg);
-}
-.live-stage {
+.live-top {
+  position: absolute;
+  top: 26px;
+  left: 0;
+  right: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 26px;
+  gap: 6px;
+  pointer-events: none;
 }
-.live-orb {
-  display: block;
+.live-label {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--live-fg);
 }
 .live-status {
-  font-size: 15px;
-  letter-spacing: 0.04em;
+  font-size: 12px;
+  color: var(--live-fg-dim);
+  transition: color 0.3s;
+}
+.live-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+}
+.live-idle {
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
   color: var(--live-fg-dim);
 }
+.live-thinking .live-idle {
+  /* A light passing through the words while it thinks. */
+  background: linear-gradient(100deg, var(--live-fg-dim) 30%, var(--live-fg) 50%, var(--live-fg-dim) 70%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: live-shimmer 2.4s linear infinite;
+}
+@keyframes live-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
 .live-caption {
-  width: min(760px, 90vw);
-  max-height: 34vh;
+  width: min(780px, 90vw);
+  max-height: 40vh;
   overflow-y: auto;
   padding: 0 24px;
   text-align: center;
-  font-size: 26px;
-  line-height: 1.45;
+  font-size: 30px;
+  font-weight: 400;
+  line-height: 1.42;
+  letter-spacing: -0.01em;
   color: var(--live-fg);
   font-family: var(--font-display);
   scrollbar-width: thin;
@@ -4450,23 +4626,42 @@ button.tool-parent {
   max-width: 560px;
   padding: 0 24px;
   font-size: 12.5px;
-  color: var(--danger);
+  color: #ff8a80;
   text-align: center;
 }
-.live-end {
+.live-controls {
   position: absolute;
-  bottom: 48px;
-  padding: 10px 22px;
-  font-size: 14px;
+  bottom: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.live-end {
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
   color: var(--live-fg);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: var(--r-lg);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: var(--r-full);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.18s, border-color 0.18s, transform 0.18s var(--ease-out);
 }
 .live-end:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(239, 68, 68, 0.78);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.live-end:active {
+  transform: scale(0.96);
+}
+.live-end-label {
+  font-size: 12px;
+  color: var(--live-fg-dim);
 }
 
 /* Settings hint + hardware panel */
@@ -4593,7 +4788,7 @@ button.tool-parent {
   color: var(--danger);
 }
 /* A voice model download: above the composer, where the mic was pressed,
-   and clear of the notices at the top. Not dismissable — it ends itself. */
+   and clear of the notices at the top. Its × stops the download. */
 .img-thumb-open {
   cursor: zoom-in;
 }
@@ -4602,6 +4797,27 @@ button.tool-parent {
   bottom: 96px;
   cursor: default;
   font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.voice-dl-cancel {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  margin-right: -4px;
+  border: none;
+  border-radius: var(--r-full);
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+.voice-dl-cancel:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 12%, transparent);
 }
 
 /* Update banner */
@@ -5487,7 +5703,7 @@ button.tool-parent {
   gap: 2px;
   padding: 2px;
   margin-left: 14px;
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
 }
@@ -5631,7 +5847,7 @@ button.tool-parent {
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  margin: 0 var(--inset-gap) var(--inset-gap) 0;
+  margin: var(--inset-gap) var(--inset-gap) var(--inset-gap) 0;
   border-radius: var(--inset-radius);
   box-shadow: var(--inset-shadow);
   container: code-main / inline-size;
@@ -6509,7 +6725,7 @@ button.tool-parent {
   color: var(--text-dim);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
   cursor: pointer;
   transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
 }
@@ -6604,7 +6820,7 @@ button.tool-parent {
   max-height: min(72vh, calc(100vh - 120px));
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
   overflow: hidden;
 }
@@ -6756,7 +6972,7 @@ button.tool-parent {
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-lg);
 }
 .cm-changes-head {
   display: flex;
@@ -7862,7 +8078,7 @@ body,
   max-height: 90vh;
   background: var(--surface);
   border: 1px solid var(--border-strong, var(--border-2));
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   overflow: hidden;
   box-shadow: 0 40px 90px -30px var(--shadow);
 }

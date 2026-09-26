@@ -6,6 +6,7 @@ import {
   cancelGeneration,
   generate,
   synthesize,
+  hasHan,
   transcribe,
   type ChatMessage,
 } from "../lib/ipc";
@@ -18,13 +19,37 @@ import {
   type Recorder,
 } from "../lib/audio";
 import { answerOnly, cutSentences, forSpeech } from "../lib/voiceText";
+import { isVoiceDownloadCancelled } from "../lib/voiceError";
 
 type Status = "listening" | "thinking" | "speaking";
 
-const COLORS: Record<Status, [number, number, number]> = {
-  listening: [25, 195, 125],
-  thinking: [240, 178, 50],
-  speaking: [74, 163, 255],
+type Rgb = [number, number, number];
+
+/** The glow's hues per state, one per light: cool and quiet while it listens,
+ *  indigo while it thinks, bright blue-violet while it speaks. The juniper in
+ *  the listening set is the app's accent. */
+const PALETTES: Record<Status, Rgb[]> = {
+  listening: [
+    [43, 179, 160],
+    [59, 130, 246],
+    [63, 138, 101],
+    [56, 189, 248],
+    [45, 212, 191],
+  ],
+  thinking: [
+    [99, 102, 241],
+    [139, 92, 246],
+    [59, 130, 246],
+    [20, 184, 166],
+    [124, 58, 237],
+  ],
+  speaking: [
+    [59, 130, 246],
+    [34, 211, 238],
+    [167, 139, 250],
+    [99, 102, 241],
+    [56, 189, 248],
+  ],
 };
 
 /**
@@ -88,20 +113,31 @@ export function LiveMode({
     setStatus(s);
   };
 
-  // ---- the orb animation ----
+  // ---- the glow ----
+  // A band of soft light along the bottom edge, in the manner of Gemini
+  // Live: a handful of coloured lights drifting under a heavy blur, rising
+  // and brightening with the voice (the microphone while it listens, the
+  // reply while it speaks). The canvas is drawn at a quarter of the screen's
+  // resolution — the blur hides it, and a frame costs next to nothing.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
-    const size = 260;
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
-    ctx.scale(dpr, dpr);
+    const calm = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const fit = () => {
+      canvas.width = Math.max(64, Math.round(canvas.clientWidth / 4));
+      canvas.height = Math.max(32, Math.round(canvas.clientHeight / 4));
+    };
+    fit();
+    window.addEventListener("resize", fit);
 
+    const seeds = [0.3, 1.7, 3.1, 4.4, 5.6];
+    const colors: Rgb[] = PALETTES.listening.map((c) => [...c] as Rgb);
     let raf = 0;
     let smooth = 0;
+    let lift = 0.35;
+    let shown = 0;
     const render = () => {
       let raw = 0;
       try {
@@ -109,42 +145,58 @@ export function LiveMode({
       } catch {
         raw = 0; // the source may have just closed between turns
       }
-      smooth += (raw - smooth) * 0.2;
-      const tNow = performance.now() / 1000;
+      smooth += (raw - smooth) * 0.18;
       const st = statusRef.current;
-      const [r, g, b] = COLORS[st];
-      const breathe = st === "thinking" ? 0.06 + 0.05 * Math.sin(tNow * 3) : 0;
-      const level = Math.min(0.6, smooth * 2.2) + breathe;
-
-      ctx.clearRect(0, 0, size, size);
-      const cx = size / 2;
-      const cy = size / 2;
-      const baseR = 64;
-      const radius = baseR * (1 + level);
-
-      // outer glow rings
-      for (let i = 3; i >= 1; i--) {
-        ctx.beginPath();
-        ctx.arc(cx, cy, radius + i * 14 * (0.6 + level), 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${r},${g},${b},${0.05 + level * 0.05})`;
-        ctx.fill();
+      const t = (performance.now() / 1000) * (calm ? 0.25 : 1);
+      const level = Math.min(1, smooth * 3);
+      // Colours ease towards the state's set rather than jumping.
+      const target = PALETTES[st];
+      for (let i = 0; i < colors.length; i++) {
+        for (let k = 0; k < 3; k++) colors[i][k] += (target[i][k] - colors[i][k]) * 0.04;
       }
-      // main orb
-      const grad = ctx.createRadialGradient(cx, cy - radius * 0.3, radius * 0.2, cx, cy, radius);
-      grad.addColorStop(0, `rgba(${Math.min(r + 60, 255)},${Math.min(g + 60, 255)},${Math.min(b + 60, 255)},1)`);
-      grad.addColorStop(1, `rgba(${r},${g},${b},0.92)`);
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.shadowBlur = 40 + level * 60;
-      ctx.shadowColor = `rgba(${r},${g},${b},0.7)`;
-      ctx.fillStyle = grad;
-      ctx.fill();
-      ctx.shadowBlur = 0;
+      // How far up the band reaches: it swells with the voice but stays
+      // below the words in the middle of the screen.
+      const wantLift =
+        st === "speaking" ? 0.42 + level * 0.3 : st === "thinking" ? 0.36 + 0.05 * Math.sin(t * 2.2) : 0.28 + level * 0.28;
+      lift += (wantLift - lift) * 0.08;
+      shown = Math.min(1, shown + 0.03); // fade in on open
+
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.globalCompositeOperation = "source-over";
+      ctx.clearRect(0, 0, w, h);
+      ctx.globalCompositeOperation = "lighter";
+      const n = colors.length;
+      for (let i = 0; i < n; i++) {
+        const p = seeds[i];
+        const sweep = st === "thinking" ? Math.sin(t * 0.9 + p) * w * 0.12 : 0;
+        const x = w * (0.06 + (0.88 * i) / (n - 1)) + Math.sin(t * (0.23 + 0.07 * i) + p) * w * 0.08 + sweep;
+        const y = h * (1.08 - lift * 0.55) + Math.sin(t * 0.5 + p * 2) * h * 0.05;
+        const r = h * (0.62 + 0.16 * Math.sin(t * 0.37 + p * 3)) * (0.8 + lift * 0.7);
+        const a = shown * (st === "listening" ? 0.4 + level * 0.3 : st === "thinking" ? 0.46 : 0.52 + level * 0.28);
+        const [R, G, B] = colors[i].map(Math.round);
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, `rgba(${R},${G},${B},${a})`);
+        g.addColorStop(0.45, `rgba(${R},${G},${B},${a * 0.45})`);
+        g.addColorStop(1, `rgba(${R},${G},${B},0)`);
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, w, h);
+      }
+      // A faint pale core along the very bottom, strongest while it speaks.
+      const core = ctx.createLinearGradient(0, h, 0, h * (1 - lift * 0.5));
+      const ca = shown * (0.1 + (st === "speaking" ? 0.12 + level * 0.18 : level * 0.1));
+      core.addColorStop(0, `rgba(220,235,255,${ca})`);
+      core.addColorStop(1, "rgba(220,235,255,0)");
+      ctx.fillStyle = core;
+      ctx.fillRect(0, 0, w, h);
 
       raf = requestAnimationFrame(render);
     };
     render();
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", fit);
+    };
   }, []);
 
   // ---- the conversation loop ----
@@ -270,10 +322,11 @@ export function LiveMode({
             voiceSid,
             chineseVoice,
             voiceSidZh,
+            hasHan(answerOnly(acc)),
           );
           if (!speech.isStopped) speech.enqueue(decodeAudio(audio), sampleRate, clean);
         } catch (e) {
-          setError(String(e));
+          if (!isVoiceDownloadCancelled(e)) setError(String(e));
         }
       });
     };
@@ -348,23 +401,28 @@ export function LiveMode({
     status === "listening" ? t("liveListening") : status === "thinking" ? t("liveThinking") : t("liveSpeaking");
 
   return createPortal(
-    <div className="live-overlay">
-      <button className="live-close" onClick={onClose} title={t("liveExit")}>
-        <Icon name="x" size={12} strokeWidth={2.2} />
-      </button>
+    <div className={`live-overlay live-${status}`}>
+      <canvas ref={canvasRef} className="live-glow" aria-hidden="true" />
+      <div className="live-top">
+        <span className="live-label">{t("liveStart")}</span>
+        <span className="live-status">{statusText}</span>
+      </div>
       <div className="live-stage">
-        <canvas ref={canvasRef} className="live-orb" style={{ width: 260, height: 260 }} />
-        <div className="live-status">{statusText}</div>
-        {caption && (
+        {caption ? (
           <div className="live-caption" ref={captionRef}>
             {caption}
           </div>
+        ) : (
+          <div className="live-idle">{statusText}</div>
         )}
         {error && <div className="live-error">{error}</div>}
       </div>
-      <button className="live-end" onClick={onClose}>
-        {t("liveExit")}
-      </button>
+      <div className="live-controls">
+        <button className="live-end" onClick={onClose} title={t("liveExit")} aria-label={t("liveExit")}>
+          <Icon name="x" size={20} strokeWidth={2} />
+        </button>
+        <span className="live-end-label">{t("liveEnd")}</span>
+      </div>
     </div>,
     document.body,
   );

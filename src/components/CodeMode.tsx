@@ -2540,7 +2540,7 @@ export function CodeMode({
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
               </button>
             ) : (
-              <button className="cm-send" onClick={() => void send()} disabled={!input.trim() || !model || !workspace}>
+              <button className="cm-send" onClick={() => void send()} disabled={!input.trim() || !model || !workspace} title={t("sendTitle")}>
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
               </button>
             )}

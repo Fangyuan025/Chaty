@@ -560,6 +560,7 @@ pub fn run() {
             commands::set_models_root,
             commands::open_data_dir,
             commands::open_voice_models_dir,
+            commands::cancel_voice_download,
             commands::open_html_report,
             commands::canvas_session_save,
             commands::canvas_session_load,
