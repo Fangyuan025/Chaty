@@ -104,7 +104,7 @@
 - **从一张图接着画**——下一轮可以从任何一张图开始；支持改图的模型会把它当参考，只改你说的地方。
 - **连同配方一起保存**——PNG 里写着提示词和参数，按日期存放。
 
-底层是 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)，运行在一个辅助进程里——Mac 上用 Metal，Windows 和 Linux 上用 Vulkan——显卡驱动崩溃只会结束辅助进程，不会带走整个应用。
+底层是 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)，运行在一个辅助进程里——Mac 上用 Metal，Windows 和 Linux 上用 Vulkan——显卡驱动崩溃只会结束辅助进程，不会带走整个应用。Mac 上的 MLX 文生图模型（[mflux](https://github.com/filipstrand/mflux) 保存的 Z-Image、Qwen-Image、FLUX.1 文件夹）则走 MLX 引擎，还要更快：同样的提示词，Z-Image Turbo 只要 1 分 45 秒，Qwen-Image 2.1 只要 9 分 0 秒。
 
 ## 文档与研究
 
@@ -209,7 +209,7 @@ MLX 与文生图引擎是单独的辅助程序——`scripts/build-mlx-sidecar.s
 | 外壳 | Tauri 2——托盘、全局快捷键、单实例 |
 | 界面 | React 19 · Vite · react-markdown · KaTeX · Mermaid |
 | 语言模型 | Rust · `llama-cpp-2`（llama.cpp——Metal / Vulkan）· Apple Silicon 上通过 `mlx-swift-lm` 辅助进程跑 MLX · 模型自带模板与内置渲染不一致时用 minijinja 渲染 |
-| 文生图 | `chaty-sd` 辅助进程中的 stable-diffusion.cpp |
+| 文生图 | `chaty-sd` 辅助进程中的 stable-diffusion.cpp · Apple Silicon 上 MLX 文生图模型（mflux 存档）跑在 `chaty-mlx` 辅助进程中 |
 | 语音 | `sherpa-rs`（ONNX Runtime，CPU）——Whisper、Kokoro-82M，以及一个 VITS 中文音色 |
 | 知识库 | bge-m3 向量 + BM25 · RRF / MMR 混合检索 · SQLite 向量库 |
 | 存储 | SQLite——对话、会话、全文搜索 |

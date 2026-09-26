@@ -104,7 +104,7 @@ Carregue um modelo de texto para imagem e o app inteiro vira um estúdio: sessõ
 - **Continue a partir de uma imagem** — comece a próxima rodada de qualquer imagem; modelos que editam a usam como referência e mudam só o que você pedir.
 - **Salva com a receita** — PNGs levam o prompt e as configurações dentro, organizados por data.
 
-Roda no [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) num processo auxiliar — Metal no Mac, Vulkan no Windows e no Linux — então uma falha de driver encerra o auxiliar, não o app.
+Roda no [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) num processo auxiliar — Metal no Mac, Vulkan no Windows e no Linux — então uma falha de driver encerra o auxiliar, não o app. No Mac, modelos de imagem MLX (as pastas do [mflux](https://github.com/filipstrand/mflux) de Z-Image, Qwen-Image e FLUX.1) rodam no motor MLX, ainda mais rápido: o Z-Image Turbo desenha o mesmo prompt em 1 min 45 s, o Qwen-Image 2.1 em 9 min 0 s.
 
 ## Documentos e pesquisa
 
@@ -209,7 +209,7 @@ Os motores MLX e de imagem são auxiliares separados — `scripts/build-mlx-side
 | Shell | Tauri 2 — bandeja, atalho global, instância única |
 | Interface | React 19 · Vite · react-markdown · KaTeX · Mermaid |
 | Modelos de linguagem | Rust · `llama-cpp-2` (llama.cpp — Metal / Vulkan) · MLX por um auxiliar `mlx-swift-lm` no Apple Silicon · templates de chat renderizados com minijinja quando o do modelo difere |
-| Modelos de imagem | stable-diffusion.cpp no auxiliar `chaty-sd` |
+| Modelos de imagem | stable-diffusion.cpp no auxiliar `chaty-sd` · modelos de imagem MLX (pastas do mflux) no auxiliar `chaty-mlx` no Apple Silicon |
 | Voz | `sherpa-rs` (ONNX Runtime, CPU) — Whisper, Kokoro-82M e uma voz chinesa VITS |
 | Base de conhecimento | Embeddings bge-m3 + BM25 · busca híbrida RRF / MMR · armazenamento vetorial em SQLite |
 | Armazenamento | SQLite — conversas, sessões, busca em texto completo |

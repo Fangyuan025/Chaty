@@ -276,7 +276,9 @@ jobs:
             finds its VAE and text encoder, or downloads the missing ones in one
             click. It runs on stable-diffusion.cpp in a helper of its own — Metal
             on a Mac, Vulkan on Windows and Linux. On an M4 Pro, Z-Image Turbo
-            draws 1024 × 1024 in under three minutes.
+            draws 1024 × 1024 in under three minutes — and in under two as an
+            MLX model: on a Mac, mflux's MLX saves of Z-Image, Qwen-Image and
+            FLUX.1 run on the MLX engine, with the same studio.
 
             ## Each model in its own dialect
 

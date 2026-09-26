@@ -15,6 +15,20 @@
   Turbo draws in 2 min 51 s (8 steps), Qwen-Image 2.1 in 16 min 10 s
   (20 steps at CFG 6) — Chinese signage as legible as English.
 
+- **MLX image models, on the MLX engine.** On a Mac, the image models
+  published as MLX folders — mflux's saves of Qwen-Image 2.1, Qwen-Image
+  (2512 included), Z-Image and Z-Image Turbo, FLUX.1 [dev] (Krea included)
+  and [schnell], early saves included — load like any other model and run
+  on `chaty-mlx`, the helper that already runs MLX chat models, with the
+  studio unchanged: every sampler and scheduler, batches, redrawing from a
+  picture, the step cache, the live preview, stop now or after this
+  picture. On the same M4 Pro at 1024 × 1024: Z-Image Turbo in 1 min 45 s
+  (8 steps; 2 min 51 s as a GGUF), Qwen-Image 2.1 in 9 min 0 s (20 steps
+  at CFG 6; 16 min 10 s), FLUX.1 [schnell] in 1 min 10 s (4 steps),
+  FLUX.1 Krea [dev] in 5 min 58 s (20 steps). The store's MLX shelf for
+  text-to-image lists these saves, and one of a kind the engine does not
+  run (FLUX.2, for one) says so before it is downloaded.
+
 - **Sessions like the chat's.** The sidebar lists image sessions — pinned
   first, renameable, searchable by the prompts inside them — and each reads as
   a thread of rounds: the prompt as your bubble, the pictures as the reply,
