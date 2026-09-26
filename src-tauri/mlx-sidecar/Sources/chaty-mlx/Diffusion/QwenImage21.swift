@@ -230,7 +230,8 @@ final class QwenImage21VAE {
             let xf = x.asType(.float32)
             let n = sqrt((xf * xf).sum(axis: -1, keepDims: true))
             let c = Float(x.dim(-1))
-            return (xf / maximum(n, 1e-12) * c.squareRoot() * w.asType(.float32)).asType(x.dtype)
+            let y: MLXArray = xf / maximum(n, MLXArray(Float(1e-12))) * c.squareRoot()
+            return (y * w.asType(.float32)).asType(x.dtype)
         }
     }
 

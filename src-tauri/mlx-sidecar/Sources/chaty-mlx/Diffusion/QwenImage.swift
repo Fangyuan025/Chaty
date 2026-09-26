@@ -186,7 +186,8 @@ final class QwenImageVAE {
         let w: MLXArray
         func callAsFunction(_ x: MLXArray) -> MLXArray {
             let n = sqrt((x * x).sum(axis: -1, keepDims: true))
-            return x / maximum(n, 1e-12) * Float(x.dim(-1)).squareRoot() * w.reshaped([-1])
+            let scale = Float(x.dim(-1)).squareRoot()
+            return x / maximum(n, MLXArray(Float(1e-12))) * scale * w.reshaped([-1])
         }
     }
     struct Res {

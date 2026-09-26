@@ -480,16 +480,31 @@ enum Sampler {
                 case 1:
                     x = x + d * hn
                 case 2:
+                    let h1: MLXArray = hist[hist.count - 1]
                     if name == "ipndm" {
-                        x = x + ((3 * d - hist.last!) / 2) * hn
+                        let acc: MLXArray = d * Float(3) - h1
+                        x = x + acc * (hn / 2)
                     } else {
-                        let hn1 = i > 0 ? s - sigmas[i - 1] : hn
-                        x = x + (((2 + hn / hn1) * d - (hn / hn1) * hist.last!) / 2) * hn
+                        let hn1: Float = i > 0 ? s - sigmas[i - 1] : hn
+                        let r: Float = hn / hn1
+                        let acc: MLXArray = d * (2 + r) - h1 * r
+                        x = x + acc * (hn / 2)
                     }
                 case 3:
-                    x = x + ((23 * d - 16 * hist[hist.count - 1] + 5 * hist[hist.count - 2]) / 12) * hn
+                    // Spelled out term by term: older compilers give up on
+                    // the one-line form.
+                    let h1 = hist[hist.count - 1], h2 = hist[hist.count - 2]
+                    var acc: MLXArray = d * Float(23)
+                    acc = acc - h1 * Float(16)
+                    acc = acc + h2 * Float(5)
+                    x = x + acc * (hn / 12)
                 default:
-                    x = x + ((55 * d - 59 * hist[hist.count - 1] + 37 * hist[hist.count - 2] - 9 * hist[hist.count - 3]) / 24) * hn
+                    let h1 = hist[hist.count - 1], h2 = hist[hist.count - 2], h3 = hist[hist.count - 3]
+                    var acc: MLXArray = d * Float(55)
+                    acc = acc - h1 * Float(59)
+                    acc = acc + h2 * Float(37)
+                    acc = acc - h3 * Float(9)
+                    x = x + acc * (hn / 24)
                 }
                 if hist.count == 3 { hist.removeFirst() }
                 hist.append(d)
