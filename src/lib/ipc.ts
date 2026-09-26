@@ -175,6 +175,12 @@ export interface ImageModelInfo {
   /** The GPU the engine runs on, "" on the CPU. */
   device: string;
   onCpu: boolean;
+  /** "sd.cpp" (GGUF and safetensors denoisers) or "mlx" (MLX image models). */
+  engine?: string;
+  /** The engine's own samplers and schedulers; absent or empty =
+   *  stable-diffusion.cpp's full lists. */
+  samplers?: string[];
+  schedulers?: string[];
 }
 
 /** How the image engine is loaded (Settings → Image model). Everything on
@@ -1145,6 +1151,8 @@ export interface HfModelDetail {
   image?: boolean;
   /** Its VAE / text encoder, fetched into the same folder with the quant. */
   companions?: ImageSuggestion[];
+  /** Why Chaty could not run it once downloaded; absent = no known obstacle. */
+  unsupported?: string | null;
 }
 
 /** Search/browse HF models. Empty query = trending storefront. */

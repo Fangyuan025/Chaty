@@ -179,9 +179,15 @@ pub struct Loaded {
     pub device: String,
     /// Non-fatal warnings the engine logged while loading.
     pub warnings: Vec<String>,
+    /// The samplers and schedulers this engine offers, when it says —
+    /// stable-diffusion.cpp's full lists otherwise.
+    pub samplers: Vec<String>,
+    pub schedulers: Vec<String>,
 }
 
 pub struct SdEngine {
+    /// "sd.cpp", or "mlx" for the MLX sidecar in its image mode.
+    engine: &'static str,
     child: Arc<Mutex<Option<Child>>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     lines: Mutex<Receiver<String>>,
@@ -205,7 +211,20 @@ impl SdEngine {
     /// command (paths and options); `progress` receives the weight-loading
     /// fraction.
     pub fn load(sidecar: &Path, cmd: Value, progress: impl Fn(f32)) -> Result<(Self, Loaded)> {
+        Self::load_with(sidecar, &[], "sd.cpp", cmd, progress)
+    }
+
+    /// `load` for any sidecar that speaks this protocol: the MLX sidecar
+    /// does too, started with `--image`.
+    pub fn load_with(
+        sidecar: &Path,
+        args: &[&str],
+        engine: &'static str,
+        cmd: Value,
+        progress: impl Fn(f32),
+    ) -> Result<(Self, Loaded)> {
         let mut command = Command::new(sidecar);
+        command.args(args);
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         crate::agent::hide_console(&mut command);
         let mut child = command
@@ -242,6 +261,7 @@ impl SdEngine {
         });
 
         let engine = Self {
+            engine,
             child: Arc::new(Mutex::new(Some(child))),
             stdin: Arc::new(Mutex::new(Some(stdin))),
             lines: Mutex::new(rx),
@@ -348,12 +368,19 @@ impl SdEngine {
                             "this is a video model; Chaty generates still images only"
                         ));
                     }
+                    let list = |k: &str| -> Vec<String> {
+                        ev[k].as_array()
+                            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                            .unwrap_or_default()
+                    };
                     return Ok(Loaded {
                         version: ev["version"].as_str().unwrap_or_default().to_string(),
                         default_sampler: ev["default_sampler"].as_str().unwrap_or_default().to_string(),
                         default_scheduler: ev["default_scheduler"].as_str().unwrap_or_default().to_string(),
                         device: if cmd["backend"] == "cpu" { String::new() } else { device },
                         warnings,
+                        samplers: list("samplers"),
+                        schedulers: list("schedulers"),
                     });
                 }
                 Some("error") if ev["scope"] == "load" => {
@@ -577,7 +604,7 @@ impl Drop for SdEngine {
 #[async_trait]
 impl InferenceBackend for SdEngine {
     fn name(&self) -> &str {
-        "sd.cpp"
+        self.engine
     }
 
     fn unload(&self) {

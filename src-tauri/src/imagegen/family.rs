@@ -532,12 +532,20 @@ pub fn detect(t: &Tensors, arch: Option<&str>, file_name: &str) -> &'static Fami
 
     // Qwen-Image 2.1: one fused MLP per block and a single top-level
     // modulation — the first version had separate image/text modulations.
+    // (mflux's MLX saves split the MLP into proj and gate_layer and nest the
+    // modulation's linear as `modulation.layers.1`.)
     if t.any_prefix("transformer_blocks.")
-        && (t.any_prefix("transformer_blocks.0.img_mlp.gate_up") || t.has("modulation.1.weight"))
+        && (t.any_prefix("transformer_blocks.0.img_mlp.gate_up")
+            || t.any_prefix("transformer_blocks.0.img_mlp.gate_layer")
+            || t.has("modulation.1.weight")
+            || t.has("modulation.layers.1.weight"))
     {
         return &QWEN_IMAGE_21;
     }
-    if arch == Some("qwen_image") || t.any_prefix("transformer_blocks.0.img_mod.") {
+    if arch == Some("qwen_image")
+        || t.any_prefix("transformer_blocks.0.img_mod.")
+        || t.any_prefix("transformer_blocks.0.img_mod_linear.")
+    {
         return &QWEN_IMAGE;
     }
     // Z-Image is a Lumina-2 style network (the converters even call it
@@ -561,6 +569,16 @@ pub fn detect(t: &Tensors, arch: Option<&str>, file_name: &str) -> &'static Fami
             return &GENERIC;
         }
         return if t.any_prefix("guidance_in.") { &FLUX_DEV } else { &FLUX_SCHNELL };
+    }
+    // FLUX.1 in diffusers' names, as mflux saves it: double-stream blocks
+    // under `transformer_blocks`, single-stream ones after them. FLUX.2 and
+    // FIBO share those names; FLUX.1 alone projects CLIP's pooled vector
+    // (`time_text_embed.text_embedder`).
+    if t.any_prefix("single_transformer_blocks.")
+        && t.any_prefix("x_embedder.")
+        && t.any_prefix("time_text_embed.text_embedder.")
+    {
+        return if t.any_prefix("time_text_embed.guidance_embedder.") { &FLUX_DEV } else { &FLUX_SCHNELL };
     }
     if t.any_prefix("joint_blocks.") {
         return &SD3;
@@ -656,9 +674,19 @@ mod tests {
         // leejet/Qwen-Image-2.1-GGUF: same, without the prefix.
         let q21b = t(&[("modulation.1.weight", &[4096, 16384]), ("transformer_blocks.0.attn.to_q.weight", &[4096, 4096])]);
         assert_eq!(detect(&q21b, None, "qwen_image_2.1-Q4_K.gguf").id, "qwen-image-2.1");
+        // mflux's MLX save: the MLP split in two, the modulation nested.
+        let q21m = t(&[
+            ("modulation.layers.1.weight", &[16384, 512]),
+            ("transformer_blocks.0.img_mlp.gate_layer.weight", &[12288, 512]),
+            ("transformer_blocks.0.attn.to_q.weight", &[4096, 512]),
+        ]);
+        assert_eq!(detect(&q21m, None, "qwen-image-2.1-mlx-4bit").id, "qwen-image-2.1");
 
         let q1 = t(&[("transformer_blocks.0.img_mod.1.weight", &[3072, 18432]), ("txt_norm.weight", &[3584])]);
         assert_eq!(detect(&q1, Some("qwen_image"), "Qwen_Image-Q4_K_M.gguf").id, "qwen-image");
+        // mflux's MLX save of 2512 names the modulation `img_mod_linear`.
+        let q1m = t(&[("transformer_blocks.0.img_mod_linear.weight", &[18432, 384]), ("txt_norm.weight", &[3584])]);
+        assert_eq!(detect(&q1m, None, "Qwen-Image-2512-4bit").id, "qwen-image");
 
         let z = t(&[
             ("cap_embedder.1.weight", &[2560, 3840]),
@@ -672,6 +700,15 @@ mod tests {
 
         let dev = t(&[("double_blocks.0.x", &[1]), ("single_blocks.0.x", &[1]), ("guidance_in.in_layer.weight", &[1])]);
         assert_eq!(detect(&dev, Some("flux"), "flux1-dev-Q4_K_S.gguf").id, "flux-dev");
+        // mflux's MLX saves use diffusers' names.
+        let dev_m = t(&[("single_transformer_blocks.0.proj_mlp.weight", &[1]), ("x_embedder.weight", &[1]), ("context_embedder.weight", &[1]), ("time_text_embed.text_embedder.linear_1.weight", &[1]), ("time_text_embed.guidance_embedder.linear_1.weight", &[1])]);
+        assert_eq!(detect(&dev_m, None, "FLUX.1-Krea-dev-mflux-4bit").id, "flux-dev");
+        let schnell_m = t(&[("single_transformer_blocks.0.proj_mlp.weight", &[1]), ("x_embedder.weight", &[1]), ("context_embedder.weight", &[1]), ("time_text_embed.text_embedder.linear_1.weight", &[1])]);
+        assert_eq!(detect(&schnell_m, None, "FLUX1-schnell-mlx-4bit").id, "flux-schnell");
+        // FLUX.2 [klein] in the same names is not FLUX.1: no pooled-text
+        // projection, a modulation shared by all blocks.
+        let klein_m = t(&[("single_transformer_blocks.0.attn.to_qkv_mlp_proj.weight", &[1]), ("x_embedder.weight", &[1]), ("context_embedder.weight", &[1]), ("time_guidance_embed.linear_1.weight", &[1]), ("double_stream_modulation_img.linear.weight", &[1])]);
+        assert_eq!(detect(&klein_m, None, "FLUX.2-klein-4B-mflux-4bit").id, "generic");
         let schnell = t(&[("double_blocks.0.x", &[1]), ("single_blocks.0.x", &[1])]);
         assert_eq!(detect(&schnell, Some("flux"), "flux1-schnell-Q4_K_S.gguf").id, "flux-schnell");
         let chroma = t(&[("double_blocks.0.x", &[1]), ("single_blocks.0.x", &[1]), ("distilled_guidance_layer.in_proj.weight", &[1])]);

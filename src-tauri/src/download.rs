@@ -390,6 +390,9 @@ pub struct HfModelDetail {
     /// For an image model of a known family: the VAE / text encoder it needs,
     /// fetched into the same folder with the chosen quant.
     pub companions: Vec<crate::imagegen::probe::Suggestion>,
+    /// Why Chaty could not run it once downloaded (an MLX image model of an
+    /// architecture its engine does not run); None = no known obstacle.
+    pub unsupported: Option<String>,
 }
 
 /// The repo is a text-to-image model, by its pipeline tag or its tags.
@@ -600,7 +603,17 @@ pub async fn hf_search(
     task: Option<String>,
 ) -> Result<Vec<HfModelHit>, String> {
     let base = hf_base(endpoint.as_deref());
-    let filter = if format == "mlx" { "mlx" } else { "gguf" };
+    // MLX image models are mflux's saves. The "mlx" tag on text-to-image
+    // repos mostly marks layouts Chaty cannot read (DiffusionKit, mlx-serve,
+    // diffusers folders), and some mflux saves carry no pipeline tag at all.
+    let mflux = format == "mlx" && task.as_deref() == Some("image");
+    let filter = if mflux {
+        "mflux"
+    } else if format == "mlx" {
+        "mlx"
+    } else {
+        "gguf"
+    };
     let sort = match sort.as_str() {
         "downloads" => "downloads",
         "likes" => "likes",
@@ -615,7 +628,7 @@ pub async fn hf_search(
     if !q.is_empty() {
         url.push_str(&format!("&search={}", percent_encoding::utf8_percent_encode(q, percent_encoding::NON_ALPHANUMERIC)));
     }
-    if task.as_deref() == Some("image") {
+    if task.as_deref() == Some("image") && !mflux {
         url.push_str("&pipeline_tag=text-to-image");
     }
     let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
@@ -648,7 +661,7 @@ pub async fn hf_search(
                     .unwrap_or("")
                     .to_string(),
                 vision: tag_vision(&tags),
-                image: is_image_repo(&tags, it.get("pipeline_tag").and_then(|v| v.as_str())),
+                image: mflux || is_image_repo(&tags, it.get("pipeline_tag").and_then(|v| v.as_str())),
                 params_b: params_from_name(&id),
                 id,
             });
@@ -690,7 +703,19 @@ pub async fn hf_model_detail(
     let tree = repo_tree(&repo, &base).await?;
     let (format, quants, mmproj) = if format == "mlx" || (!tree.iter().any(|(p, _)| p.to_lowercase().ends_with(".gguf")) && mlx_repo_check(&mlx_files(&tree)).is_ok()) {
         let files = mlx_files(&tree);
-        mlx_repo_check(&files)?;
+        mlx_repo_check(&files).map_err(|e| {
+            // An mflux repo in a layout other than a single save (weights at
+            // the top, one save per quantization in subfolders) is not a chat
+            // model missing its config: say what it is.
+            if tags.iter().any(|t| t == "mflux") {
+                trf!(
+                    "这个 MLX 生图模型的目录结构 Chaty 读不了（不是单个 mflux 存档）。",
+                    "Chaty cannot read this MLX image model's layout (it is not a single mflux save)."
+                )
+            } else {
+                e
+            }
+        })?;
         let size: u64 = files.iter().map(|(_, s)| *s).sum();
         let label = ["8bit", "6bit", "5bit", "4bit", "3bit", "2bit", "bf16"]
             .iter()
@@ -728,8 +753,9 @@ pub async fn hf_model_detail(
     let (mmproj, mmproj_size) = mmproj.map_or((None, 0), |(p, s)| (Some(p), s));
     // Any GGUF in the repo is a diffusion model when the repo says it is one;
     // its family names the VAE and encoder to fetch alongside.
-    let image = format == "gguf" && is_image_repo(&tags, pipeline.as_deref());
-    let companions = if image {
+    // An mflux save is an image model whatever its tags say.
+    let image = is_mflux_tree(&tree) || (format == "gguf" && is_image_repo(&tags, pipeline.as_deref()));
+    let companions = if image && format == "gguf" {
         crate::imagegen::family::guess_by_name(&repo)
             .map(|f| {
                 f.companions
@@ -746,9 +772,11 @@ pub async fn hf_model_detail(
     } else {
         Vec::new()
     };
+    let unsupported = if is_mflux_tree(&tree) { mflux_unsupported(&client, &base, &repo).await } else { None };
     Ok(HfModelDetail {
         image,
         companions,
+        unsupported,
         vision: tag_vision(&tags) || mmproj.is_some(),
         params_b: params_from_name(&repo),
         arch: arch_from_tags(&tags),
@@ -781,9 +809,55 @@ fn mlx_aux_file(name: &str) -> bool {
     name.ends_with(".json") || matches!(name, "chat_template.jinja" | "merges.txt")
 }
 
-/// The subset of a repo tree that makes up an MLX folder model (all
-/// top-level: mlx-community repos are flat).
+/// Why the MLX engine would refuse an mflux repo, read from its transformer's
+/// index before anything is downloaded. None when the engine runs it, or when
+/// the index cannot be read (the load will say).
+async fn mflux_unsupported(client: &reqwest::Client, base: &str, repo: &str) -> Option<String> {
+    let url = format!("{base}/{repo}/resolve/main/transformer/model.safetensors.index.json");
+    let resp = client.get(&url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    let keys: Vec<&str> = v.get("weight_map")?.as_object()?.keys().map(String::as_str).collect();
+    if keys.is_empty() {
+        return None;
+    }
+    let name = repo.rsplit('/').next().unwrap_or(repo);
+    match crate::imagegen::probe::mlx_engine_family(&keys, name) {
+        Some(_) => None,
+        None => Some(trf!(
+            "Chaty 的 MLX 生图引擎还不支持这个模型的结构，下载后无法加载。",
+            "Chaty's MLX image engine does not run this model's architecture yet — it would not load."
+        )),
+    }
+}
+
+/// The folders of an MLX image model (mflux's save): the denoiser, the VAE,
+/// the text encoders and what reads the prompt.
+const MFLUX_DIRS: &[&str] =
+    &["transformer", "vae", "text_encoder", "text_encoder_2", "tokenizer", "tokenizer_2", "processor"];
+
+/// An MLX image model repo: mflux's layout, one folder per component.
+fn is_mflux_tree(tree: &[(String, u64)]) -> bool {
+    let has = |d: &str| tree.iter().any(|(p, _)| p.starts_with(&format!("{d}/")) && p.to_lowercase().ends_with(".safetensors"));
+    has("transformer") && has("vae") && (has("text_encoder") || has("text_encoder_2"))
+}
+
+/// The subset of a repo tree that makes up an MLX folder model: a chat
+/// model's files are all top-level (mlx-community repos are flat); an image
+/// model's sit in its component folders.
 fn mlx_files(tree: &[(String, u64)]) -> Vec<(String, u64)> {
+    if is_mflux_tree(tree) {
+        return tree
+            .iter()
+            .filter(|(p, _)| match p.split_once('/') {
+                Some((d, rest)) => MFLUX_DIRS.contains(&d) && !rest.contains('/'),
+                None => mlx_aux_file(p),
+            })
+            .cloned()
+            .collect();
+    }
     tree.iter()
         .filter(|(p, _)| {
             !p.contains('/') && (p.to_lowercase().ends_with(".safetensors") || mlx_aux_file(p))
@@ -793,6 +867,9 @@ fn mlx_files(tree: &[(String, u64)]) -> Vec<(String, u64)> {
 }
 
 fn mlx_repo_check(files: &[(String, u64)]) -> Result<(), String> {
+    if is_mflux_tree(files) {
+        return Ok(());
+    }
     let has_cfg = files.iter().any(|(p, _)| p == "config.json");
     let has_st = files.iter().any(|(p, _)| p.to_lowercase().ends_with(".safetensors"));
     if has_cfg && has_st {
@@ -886,6 +963,10 @@ async fn download_mlx_repo_inner(
             let url = format!("{base}/{repo}/resolve/main/{path}?download=true");
             let dest = dir.join(path);
             let tmp = dir.join(format!("{path}.part"));
+            // An image model's files sit in component folders.
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
             let mut resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
             if resp.status() == reqwest::StatusCode::FORBIDDEN {
                 // Mirrors don't speak the xet protocol — no fallback there,
@@ -1140,6 +1221,36 @@ async fn download_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An mflux repo keeps each component in its own folder: those are
+    /// taken whole, and nothing else from deeper down.
+    #[test]
+    fn mflux_repos_download_their_component_folders() {
+        let tree: Vec<(String, u64)> = [
+            ("README.md", 1),
+            (".gitattributes", 1),
+            ("transformer/0.safetensors", 100),
+            ("transformer/model.safetensors.index.json", 1),
+            ("text_encoder/0.safetensors", 50),
+            ("text_encoder/model.safetensors.index.json", 1),
+            ("vae/0.safetensors", 10),
+            ("vae/model.safetensors.index.json", 1),
+            ("tokenizer/tokenizer.json", 2),
+            ("tokenizer/chat_template.jinja", 1),
+            ("samples/example.png", 5),
+        ]
+        .iter()
+        .map(|(p, s)| (p.to_string(), *s))
+        .collect();
+        assert!(is_mflux_tree(&tree));
+        let files = mlx_files(&tree);
+        let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(names.contains(&"transformer/0.safetensors"));
+        assert!(names.contains(&"tokenizer/chat_template.jinja"));
+        assert!(!names.contains(&"samples/example.png"));
+        assert!(!names.contains(&"README.md"));
+        assert!(mlx_repo_check(&files).is_ok());
+    }
 
     #[test]
     fn mlx_file_selection_and_check() {
@@ -1510,6 +1621,36 @@ mod tests {
 #[cfg(test)]
 mod store_e2e {
     use super::*;
+
+    /// The MLX image shelf lists mflux saves, and the detail pane knows
+    /// before a download whether the engine runs one.
+    #[tokio::test]
+    #[ignore]
+    async fn mlx_image_shelf_and_precheck() {
+        let hits = hf_search("".into(), "mlx".into(), "downloads".into(), Some(30), None, Some("image".into()))
+            .await
+            .expect("mlx image search");
+        assert!(!hits.is_empty(), "empty mlx image shelf");
+        assert!(hits.iter().all(|h| h.image));
+        eprintln!("shelf: {:?}", hits.iter().map(|h| h.id.clone()).collect::<Vec<_>>());
+        let q = hf_search("qwen-image".into(), "mlx".into(), "downloads".into(), Some(30), None, Some("image".into()))
+            .await
+            .expect("mlx image query");
+        assert!(q.iter().any(|h| h.id == "mlx-community/Qwen-Image-2512-4bit"), "{:?}", q.iter().map(|h| &h.id).collect::<Vec<_>>());
+
+        let z = hf_model_detail("deepsweet/Z-Image-Turbo-6B-MLX-Q4".into(), "mlx".into(), None).await.expect("z detail");
+        assert_eq!(z.format, "mlx");
+        assert!(z.image && z.unsupported.is_none(), "{:?}", z.unsupported);
+        let f = hf_model_detail("AITRADER/FLUX1-schnell-mlx-4bit".into(), "mlx".into(), None).await.expect("flux detail");
+        assert!(f.image && f.unsupported.is_none(), "{:?}", f.unsupported);
+        let old = hf_model_detail("filipstrand/FLUX.1-Krea-dev-mflux-4bit".into(), "mlx".into(), None).await.expect("early save");
+        assert!(old.image && old.unsupported.is_none(), "{:?}", old.unsupported);
+        let e = hf_model_detail("fcreait/Qwen-Image-Edit-mflux".into(), "mlx".into(), None).await.err().expect("per-quant subfolders");
+        assert!(e.contains("mflux"), "{e}");
+        let k = hf_model_detail("Runpod/FLUX.2-klein-4B-mflux-4bit".into(), "mlx".into(), None).await.expect("klein detail");
+        assert!(k.image && k.unsupported.is_some(), "FLUX.2 klein passed the precheck");
+        eprintln!("klein: {}", k.unsupported.unwrap());
+    }
 
     #[tokio::test]
     #[ignore]

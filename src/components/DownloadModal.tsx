@@ -446,7 +446,7 @@ export function DownloadModal({
                       <button
                         className="dl-get store-get"
                         onClick={() => void startDownload(detail, quantIdx)}
-                        disabled={detail.format === "mlx" && !IS_MACOS}
+                        disabled={(detail.format === "mlx" && !IS_MACOS) || !!detail.unsupported}
                       >
                         {t("dlGet")} {quant ? fmtSize(needBytes) : ""}
                       </button>
@@ -474,13 +474,15 @@ export function DownloadModal({
                       </span>
                     </div>
                   )}
-                  <div className={`store-fit ${fitsRam ? "ok" : "warn"}`}>
+                  <div className={`store-fit ${fitsRam && !detail.unsupported ? "ok" : "warn"}`}>
                     {detail.format === "mlx" && !IS_MACOS
                       ? t("storeMlxMacOnly")
+                      : detail.unsupported
+                      ? detail.unsupported
                       : (fitsRam ? t("storeFitsRam") : t("storeOverRam")) +
                         (detail.format === "gguf" && detail.mmproj ? ` · ${t("storeVisionIncluded")}` : "") +
                         (detail.image
-                          ? ` · ${(detail.companions?.length ?? 0) > 0 ? t("storeImageIncluded") : t("storeImageManual")}`
+                          ? ` · ${detail.format === "mlx" || (detail.companions?.length ?? 0) > 0 ? t("storeImageIncluded") : t("storeImageManual")}`
                           : "")}
                   </div>
                 </div>

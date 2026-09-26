@@ -41,8 +41,7 @@ import {
   ASPECTS,
   BASE_SIZES,
   IMAGE_SETTINGS_DEFAULTS,
-  SAMPLERS,
-  SCHEDULERS,
+  engineLists,
   type ImageSettings,
 } from "../lib/imageGen";
 import { imageHistoryClear, imageOutputDir, type ModelInfo } from "../lib/ipc";
@@ -2011,7 +2010,7 @@ export function SettingsPanel({
                   ariaLabel={t("imgSampler")}
                   options={[
                     { value: "", label: `${t("imgAuto")} (${imgDefaults?.sampler || imgInfo?.defaultSampler || "—"})` },
-                    ...SAMPLERS.map((x) => ({ value: x, label: x })),
+                    ...engineLists(imgInfo).samplers.map((x) => ({ value: x, label: x })),
                   ]}
                   onChange={(v) => set("imgSampler", v)}
                 />
@@ -2022,7 +2021,7 @@ export function SettingsPanel({
                   ariaLabel={t("imgScheduler")}
                   options={[
                     { value: "", label: `${t("imgAuto")} (${imgDefaults?.scheduler || imgInfo?.defaultScheduler || "—"})` },
-                    ...SCHEDULERS.map((x) => ({ value: x, label: x })),
+                    ...engineLists(imgInfo).schedulers.map((x) => ({ value: x, label: x })),
                   ]}
                   onChange={(v) => set("imgScheduler", v)}
                 />
@@ -2185,54 +2184,63 @@ export function SettingsPanel({
                 </div>
               )}
               <div className="settings-section">{t("secDevice")}</div>
-              <label className="field">
-                <span><em className="has-tip" data-tip={t("imgDeviceTip")}>{t("imgDevice")}</em></span>
-                <div className="lang-switch">
-                  <button type="button" className={value.imgDevice === "gpu" ? "active" : ""} onClick={() => set("imgDevice", "gpu")}>{t("imgDeviceGpu")}</button>
-                  <button type="button" className={value.imgDevice === "cpu" ? "active" : ""} onClick={() => set("imgDevice", "cpu")}>{t("imgDeviceCpu")}</button>
-                </div>
-              </label>
-              <div className="settings-hint">{t("imgDeviceHint")}</div>
-              <SetRow label={t("imgOffload")} hint={t("imgOffloadHint")}>
-                <Switch on={value.imgOffload && value.imgDevice === "gpu"} disabled={value.imgDevice === "cpu"} onToggle={() => set("imgOffload", !value.imgOffload)} />
-              </SetRow>
-              <SetRow label={t("imgTeCpu")} hint={t("imgTeCpuHint")}>
-                <Switch on={value.imgTeCpu} disabled={value.imgDevice === "cpu"} onToggle={() => set("imgTeCpu", !value.imgTeCpu)} />
-              </SetRow>
-              <SetRow label={t("imgVaeCpu")} hint={t("imgVaeCpuHint")}>
-                <Switch on={value.imgVaeCpu} disabled={value.imgDevice === "cpu"} onToggle={() => set("imgVaeCpu", !value.imgVaeCpu)} />
-              </SetRow>
-              <SetRow label={t("imgFlashAttn")} hint={t("imgFlashAttnHint")}>
-                <Switch on={value.imgFlashAttn} onToggle={() => set("imgFlashAttn", !value.imgFlashAttn)} />
-              </SetRow>
-              <LimitField
-                label={t("imgMaxVram")}
-                tip={t("imgMaxVramTip")}
-                offLabel={t("noLimit")}
-                onLabel={t("gpuCustom")}
-                off={value.imgMaxVram <= 0}
-                onOff={(o) => set("imgMaxVram", o ? 0 : 8)}
-                value={`${value.imgMaxVram} GB`}
-              >
-                <input type="range" min={1} max={96} step={1} value={value.imgMaxVram > 0 ? value.imgMaxVram : 8} onChange={(e) => set("imgMaxVram", Number(e.target.value))} />
-              </LimitField>
-              <LimitField
-                label={t("imgThreads")}
-                offLabel={t("imgAuto")}
-                onLabel={t("gpuCustom")}
-                off={value.imgThreads <= 0}
-                onOff={(o) => set("imgThreads", o ? 0 : 4)}
-                value={value.imgThreads}
-              >
-                <input type="range" min={1} max={64} step={1} value={value.imgThreads > 0 ? value.imgThreads : 4} onChange={(e) => set("imgThreads", Number(e.target.value))} />
-              </LimitField>
-              <SetRow label={t("imgMmap")} hint={t("imgMmapHint")}>
-                <Switch on={value.imgMmap} onToggle={() => set("imgMmap", !value.imgMmap)} />
-              </SetRow>
-              {onReloadModel && (
-                <button className="settings-reload" onClick={onReloadModel} disabled={reloading}>
-                  {reloading ? "…" : t("reloadApply")}
-                </button>
+              {/* An MLX image model runs whole on the GPU, from unified
+                  memory; the device and placement options are
+                  stable-diffusion.cpp's. */}
+              {imgInfo?.engine === "mlx" ? (
+                <div className="settings-hint">{t("imgMlxEngineHint")}</div>
+              ) : (
+                <>
+                  <label className="field">
+                    <span><em className="has-tip" data-tip={t("imgDeviceTip")}>{t("imgDevice")}</em></span>
+                    <div className="lang-switch">
+                      <button type="button" className={value.imgDevice === "gpu" ? "active" : ""} onClick={() => set("imgDevice", "gpu")}>{t("imgDeviceGpu")}</button>
+                      <button type="button" className={value.imgDevice === "cpu" ? "active" : ""} onClick={() => set("imgDevice", "cpu")}>{t("imgDeviceCpu")}</button>
+                    </div>
+                  </label>
+                  <div className="settings-hint">{t("imgDeviceHint")}</div>
+                  <SetRow label={t("imgOffload")} hint={t("imgOffloadHint")}>
+                    <Switch on={value.imgOffload && value.imgDevice === "gpu"} disabled={value.imgDevice === "cpu"} onToggle={() => set("imgOffload", !value.imgOffload)} />
+                  </SetRow>
+                  <SetRow label={t("imgTeCpu")} hint={t("imgTeCpuHint")}>
+                    <Switch on={value.imgTeCpu} disabled={value.imgDevice === "cpu"} onToggle={() => set("imgTeCpu", !value.imgTeCpu)} />
+                  </SetRow>
+                  <SetRow label={t("imgVaeCpu")} hint={t("imgVaeCpuHint")}>
+                    <Switch on={value.imgVaeCpu} disabled={value.imgDevice === "cpu"} onToggle={() => set("imgVaeCpu", !value.imgVaeCpu)} />
+                  </SetRow>
+                  <SetRow label={t("imgFlashAttn")} hint={t("imgFlashAttnHint")}>
+                    <Switch on={value.imgFlashAttn} onToggle={() => set("imgFlashAttn", !value.imgFlashAttn)} />
+                  </SetRow>
+                  <LimitField
+                    label={t("imgMaxVram")}
+                    tip={t("imgMaxVramTip")}
+                    offLabel={t("noLimit")}
+                    onLabel={t("gpuCustom")}
+                    off={value.imgMaxVram <= 0}
+                    onOff={(o) => set("imgMaxVram", o ? 0 : 8)}
+                    value={`${value.imgMaxVram} GB`}
+                  >
+                    <input type="range" min={1} max={96} step={1} value={value.imgMaxVram > 0 ? value.imgMaxVram : 8} onChange={(e) => set("imgMaxVram", Number(e.target.value))} />
+                  </LimitField>
+                  <LimitField
+                    label={t("imgThreads")}
+                    offLabel={t("imgAuto")}
+                    onLabel={t("gpuCustom")}
+                    off={value.imgThreads <= 0}
+                    onOff={(o) => set("imgThreads", o ? 0 : 4)}
+                    value={value.imgThreads}
+                  >
+                    <input type="range" min={1} max={64} step={1} value={value.imgThreads > 0 ? value.imgThreads : 4} onChange={(e) => set("imgThreads", Number(e.target.value))} />
+                  </LimitField>
+                  <SetRow label={t("imgMmap")} hint={t("imgMmapHint")}>
+                    <Switch on={value.imgMmap} onToggle={() => set("imgMmap", !value.imgMmap)} />
+                  </SetRow>
+                  {onReloadModel && (
+                    <button className="settings-reload" onClick={onReloadModel} disabled={reloading}>
+                      {reloading ? "…" : t("reloadApply")}
+                    </button>
+                  )}
+                </>
               )}
               <div className="settings-section">{t("secLibrary")}</div>
               {modelLibraryRows}

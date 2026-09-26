@@ -1062,6 +1062,11 @@ export const T = {
     en: "Raise it for a large library or questions that span files; lower it on a small context window.", pt: "Aumente para bibliotecas grandes ou perguntas que perpassam vários arquivos; diminua em janelas de contexto restritas."
   },
   errorLog: { zh: "错误日志", en: "Error log", pt: "Log de erro" },
+  imgMlxEngineHint: {
+    zh: "当前是 MLX 生图模型：整个模型放在统一内存里、在 GPU 上运行。运行设备与分配选项（部分放 CPU、显存上限、mmap 等）只作用于 GGUF 生图模型。",
+    en: "This is an MLX image model: it runs whole on the GPU, from unified memory. The device and placement options (parts on the CPU, VRAM limits, mmap) apply to GGUF image models.",
+    pt: "Este é um modelo de imagem MLX: roda inteiro na GPU, a partir da memória unificada. As opções de dispositivo e alocação (partes na CPU, limites de VRAM, mmap) valem para modelos de imagem GGUF.",
+  },
   errorLogHint: {
     zh: "应用异常会自动记录到 chaty-error.log。提 issue 时请附上这个文件，能大幅加快定位。",
     en: "App errors are recorded to chaty-error.log automatically. Please attach it when filing an issue — it speeds up diagnosis a lot.", pt: "Os erros da aplicação são registrados no chaty-error.log automaticamente. Anexe-o quando for abrir uma issue — acelera bastante o diagnóstico."

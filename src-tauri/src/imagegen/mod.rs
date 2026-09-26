@@ -41,6 +41,11 @@ pub struct ImageModelInfo {
     /// The GPU the engine runs on, "" on the CPU.
     pub device: String,
     pub on_cpu: bool,
+    /// "sd.cpp" or "mlx" — what the studio can offer depends on it.
+    pub engine: String,
+    /// The engine's samplers and schedulers; empty = stable-diffusion.cpp's.
+    pub samplers: Vec<String>,
+    pub schedulers: Vec<String>,
 }
 
 fn sidecar_key(role: Role) -> &'static str {
@@ -109,6 +114,9 @@ pub fn load(
 ) -> anyhow::Result<(Arc<dyn InferenceBackend>, ModelInfo)> {
     let probe = probe::probe_image_model(path, &opts.components, roots)
         .ok_or_else(|| anyhow::anyhow!(trf!("这不是文生图模型", "not an image generation model")))?;
+    if probe.engine == "mlx" {
+        return load_mlx(path, &probe, progress);
+    }
     if !probe.missing.is_empty() {
         anyhow::bail!(trf!(
             "{} 还缺少配套文件:{}。请在模型菜单里下载配套文件,或在 设置 → 生图模型 中手动指定。",
@@ -154,6 +162,9 @@ pub fn load(
         default_scheduler: loaded.default_scheduler.clone(),
         device: device.clone(),
         on_cpu,
+        engine: "sd.cpp".into(),
+        samplers: loaded.samplers.clone(),
+        schedulers: loaded.schedulers.clone(),
     };
     let info = ModelInfo {
         name: name.clone(),
@@ -186,6 +197,97 @@ pub fn load(
         speculative: false,
         speculative_on: false,
         warning,
+        kind: "image".into(),
+        image: Some(image),
+    };
+    Ok((Arc::new(engine), info))
+}
+
+/// Load an MLX image model folder into the MLX sidecar's image mode.
+fn load_mlx(
+    path: &Path,
+    probe: &ImageProbe,
+    progress: impl Fn(f32),
+) -> anyhow::Result<(Arc<dyn InferenceBackend>, ModelInfo)> {
+    if !cfg!(target_os = "macos") {
+        anyhow::bail!(trf!(
+            "MLX 模型仅支持 macOS (Apple Silicon),请改用 GGUF 版本",
+            "MLX models run on macOS (Apple Silicon) only — use a GGUF build of this model"
+        ));
+    }
+    if !probe::MLX_FAMILIES.contains(&probe.family.as_str()) {
+        if probe.family == "generic" {
+            anyhow::bail!(trf!(
+                "Chaty 的 MLX 生图引擎还不支持这个模型的结构",
+                "Chaty's MLX image engine does not run this model's architecture yet"
+            ));
+        }
+        anyhow::bail!(trf!(
+            "{} 的 MLX 版本 Chaty 还不支持,请改用它的 GGUF 版本",
+            "Chaty cannot run the MLX build of {} yet — use its GGUF build",
+            probe.family_name
+        ));
+    }
+    let sidecar = crate::inference::mlx::find_sidecar().ok_or_else(|| {
+        anyhow::anyhow!(trf!(
+            "未找到 MLX 引擎组件 chaty-mlx,请重新安装应用",
+            "the MLX engine (chaty-mlx) is missing; please reinstall"
+        ))
+    })?;
+    // Always the GPU, whatever the image engine's device setting says: MLX's
+    // CPU backend runs a quantized model on one core, and a picture that
+    // takes seconds per step on the GPU did not finish two steps in twelve
+    // minutes there.
+    let cmd = json!({ "cmd": "load", "model": path });
+    let (engine, loaded) = SdEngine::load_with(&sidecar, &["--image"], "mlx", cmd, &progress)?;
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("image model").to_string();
+    let device = loaded.device.clone();
+    let image = ImageModelInfo {
+        family: probe.family.clone(),
+        family_name: probe.family_name.clone(),
+        engine_version: loaded.version.clone(),
+        components: Vec::new(),
+        defaults: probe.defaults.clone(),
+        edits: probe.edits,
+        default_sampler: loaded.default_sampler.clone(),
+        default_scheduler: loaded.default_scheduler.clone(),
+        device: device.clone(),
+        on_cpu: false,
+        engine: "mlx".into(),
+        samplers: loaded.samplers.clone(),
+        schedulers: loaded.schedulers.clone(),
+    };
+    let info = ModelInfo {
+        name: name.clone(),
+        path: path.to_string_lossy().to_string(),
+        backend: "mlx".into(),
+        loaded: true,
+        arch: Some(probe.family_name.clone()),
+        size_mb: Some(probe.size_mb),
+        params_b: probe.params_b,
+        n_ctx_train: None,
+        n_ctx: None,
+        n_layer: None,
+        gpu_layers: -1,
+        gpu_name: (!device.is_empty()).then_some(device),
+        model_name: Some(name),
+        quant: probe.quant.clone(),
+        n_embd: None,
+        has_chat_template: false,
+        supports_thinking: false,
+        think_switch: false,
+        effort_levels: Vec::new(),
+        tool_role: false,
+        reasoning_field: false,
+        tool_format: None,
+        supports_tools: false,
+        multimodal: false,
+        vision_ready: false,
+        multi_image: false,
+        mmproj: None,
+        speculative: false,
+        speculative_on: false,
+        warning: None,
         kind: "image".into(),
         image: Some(image),
     };
@@ -611,6 +713,7 @@ mod tests {
             optional: vec![],
             defaults: family::QWEN_IMAGE_21.defaults.clone(),
             edits: false,
+            engine: "sd.cpp",
         };
         // Default: everything on the GPU.
         let c = load_cmd(&probe, &LoadOptions::default(), false);

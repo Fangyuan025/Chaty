@@ -2697,6 +2697,22 @@ final class Engine: @unchecked Sendable {
 @main
 struct ChatyMLX {
     static func main() async {
+        // The same binary runs image models: `--image` speaks chaty-sd's
+        // protocol instead of the chat one (see Diffusion/ImageServer.swift).
+        if CommandLine.arguments.contains("--image") {
+            await ImageServer.main()
+            return
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--image-selftest"), CommandLine.arguments.count > i + 3 {
+            let a = CommandLine.arguments
+            await ImageSelfTest.run(model: a[i + 1], ref: a[i + 2], out: a[i + 3])
+            _exit(0)
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--image-tokens"), CommandLine.arguments.count > i + 2 {
+            let a = CommandLine.arguments
+            await ImageSelfTest.tokens(model: a[i + 1], prompts: a[i + 2])
+            _exit(0)
+        }
         // Keep MLX's buffer cache modest so an idle sidecar doesn't sit on
         // gigabytes of recycled GPU buffers.
         Memory.cacheLimit = 256 * 1024 * 1024

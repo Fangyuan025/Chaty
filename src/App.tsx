@@ -3012,7 +3012,8 @@ export default function App() {
             imageModel={imageMode ? model : null}
             focusCat={settingsFocus}
             onManageComponents={
-              imageMode && model
+              // An MLX image model's folder holds all of its parts.
+              imageMode && model && model.image?.engine !== "mlx"
                 ? () => {
                     setShowSettings(false);
                     setCompFor({ path: model.path, loadAfter: false });

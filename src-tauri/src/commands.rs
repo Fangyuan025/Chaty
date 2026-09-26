@@ -907,7 +907,7 @@ fn dir_has_models(dir: &std::path::Path) -> bool {
             continue;
         }
         #[cfg(target_os = "macos")]
-        if crate::inference::mlx::is_mlx_dir(&path) {
+        if crate::inference::mlx::is_mlx_dir(&path) || crate::imagegen::probe::is_mlx_image_dir(&path) {
             return true;
         }
         if let Ok(sub) = std::fs::read_dir(&path) {
@@ -1344,12 +1344,22 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
             return;
         }
         let probe = crate::imagegen::probe::probe_image_model(&path, &Default::default(), &roots);
+        let mlx = probe.as_ref().is_some_and(|p| p.engine == "mlx");
         out.push(ModelEntry {
-            name: path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            // An MLX image model is a folder: its name is the folder's.
+            name: if mlx { path.file_name() } else { path.file_stem() }
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default(),
             path: path.to_string_lossy().to_string(),
             size_mb: probe.as_ref().map(|p| p.size_mb),
             mmproj: None,
-            format: if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("gguf")) { "gguf" } else { "safetensors" },
+            format: if mlx {
+                "mlx"
+            } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("gguf")) {
+                "gguf"
+            } else {
+                "safetensors"
+            },
             vision: false,
             kind: "image",
             family: probe.as_ref().map(|p| p.family_name.clone()),
@@ -1374,6 +1384,11 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
             #[cfg(target_os = "macos")]
             push_mlx(&path, &mut out, &mut seen);
             if crate::inference::mlx::is_mlx_dir(&path) {
+                continue;
+            }
+            // An MLX image model: the folder is the model.
+            if crate::imagegen::probe::is_mlx_image_dir(&path) {
+                push_image(path.clone(), &mut out, &mut seen);
                 continue;
             }
             if let Ok(sub) = std::fs::read_dir(&path) {
@@ -1410,7 +1425,7 @@ pub async fn delete_model_file(
     // MLX models are folders — remove the whole folder, behind the same
     // guards (must be a real MLX model, inside a models dir, not loaded).
     if target.is_dir() {
-        if !crate::inference::mlx::is_mlx_dir(&target) {
+        if !crate::inference::mlx::is_mlx_dir(&target) && !crate::imagegen::probe::is_mlx_image_dir(&target) {
             return Err(
                 "只能删除模型文件夹 (only model folders can be deleted this way)".into()
             );

@@ -140,9 +140,162 @@ fn read_probe(path: &Path) -> Probe {
     other
 }
 
-/// Is this file a diffusion model — the thing the image engine loads?
+/// Is this file a diffusion model — the thing the image engine loads? (An
+/// MLX image model is a folder, and counts too.)
 pub fn is_image_model(path: &Path) -> bool {
-    is_weights_file(path) && probe(path).kind == Kind::Denoiser
+    is_mlx_image_dir(path) || (is_weights_file(path) && probe(path).kind == Kind::Denoiser)
+}
+
+// ---------------------------------------------------------------------------
+// MLX image models
+// ---------------------------------------------------------------------------
+
+/// An MLX image model as it is published: mflux's save — `transformer/`,
+/// `vae/` and a text encoder folder, each a set of safetensors behind an
+/// index. It runs on the MLX sidecar, on Apple Silicon only.
+pub fn is_mlx_image_dir(dir: &Path) -> bool {
+    if !cfg!(target_os = "macos") || !dir.is_dir() {
+        return false;
+    }
+    let has_st = |sub: &str| {
+        std::fs::read_dir(dir.join(sub)).is_ok_and(|rd| {
+            rd.flatten().any(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("safetensors")))
+        })
+    };
+    has_st("transformer") && has_st("vae") && (has_st("text_encoder") || has_st("text_encoder_2"))
+}
+
+/// Tensor names, shapes and dtypes of an MLX image model's transformer, read
+/// from the shards' headers.
+fn mlx_transformer_tensors(dir: &Path) -> Vec<(String, Vec<u64>, String)> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir.join("transformer")) else { return out };
+    let mut shards: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("safetensors")))
+        .collect();
+    shards.sort();
+    for shard in shards {
+        let Ok((_, header)) = crate::inference::mlx::read_st_header(&shard) else { continue };
+        let Some(obj) = header.as_object() else { continue };
+        for (k, v) in obj.iter().filter(|(k, _)| k.as_str() != "__metadata__") {
+            let dims = v
+                .get("shape")
+                .and_then(|s| s.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_u64()).collect())
+                .unwrap_or_default();
+            let dtype = v.get("dtype").and_then(|d| d.as_str()).unwrap_or_default().to_string();
+            out.push((k.clone(), dims, dtype));
+        }
+    }
+    out
+}
+
+/// The quantization an mflux save declares ("4-bit"), if any: in its
+/// index, or — early saves have none — in its shards' own metadata.
+fn mlx_image_quant(dir: &Path) -> Option<String> {
+    let bits = |q: &serde_json::Value| q.as_str().map(str::to_string).or_else(|| q.as_u64().map(|n| n.to_string()));
+    let t = dir.join("transformer");
+    if let Some(v) = std::fs::read_to_string(t.join("model.safetensors.index.json"))
+        .ok()
+        .and_then(|idx| serde_json::from_str::<serde_json::Value>(&idx).ok())
+    {
+        if let Some(b) = v.get("metadata").and_then(|m| m.get("quantization_level")).and_then(bits) {
+            return Some(format!("{b}-bit"));
+        }
+    }
+    let shard = std::fs::read_dir(&t)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("safetensors")))?;
+    let (_, header) = crate::inference::mlx::read_st_header(&shard).ok()?;
+    let b = header.get("__metadata__")?.get("quantization_level").and_then(bits)?;
+    Some(format!("{b}-bit"))
+}
+
+/// The families the MLX engine runs. Anything else in an MLX save is listed
+/// (the user has it) but refused at load with a reason.
+pub const MLX_FAMILIES: &[&str] = &["z-image-turbo", "z-image", "qwen-image-2.1", "qwen-image", "flux-dev", "flux-schnell"];
+
+/// The family chaty-mlx runs an mflux transformer as — the sidecar's own
+/// dispatch (`FamilyProbe`), by weight names alone, so the store can ask
+/// before a download — or `None` when it runs none of them.
+pub fn mlx_engine_family(keys: &[&str], name: &str) -> Option<&'static family::Family> {
+    let prefix = |p: &str| keys.iter().any(|k| k.starts_with(p));
+    let part = |p: &str| keys.iter().any(|k| k.contains(p));
+    if prefix("all_x_embedder.") && prefix("context_refiner.") {
+        // Turbo and base share the architecture; the name is the only tell.
+        return Some(if name.to_lowercase().contains("turbo") { &family::Z_IMAGE_TURBO } else { &family::Z_IMAGE });
+    }
+    // FLUX.2 and FIBO share FLUX.1's block names; only FLUX.1 projects
+    // CLIP's pooled vector.
+    if prefix("single_transformer_blocks.") && prefix("x_embedder.") && prefix("time_text_embed.text_embedder.") {
+        return Some(if prefix("time_text_embed.guidance_embedder.") { &family::FLUX_DEV } else { &family::FLUX_SCHNELL });
+    }
+    if part("img_mod_linear") && part("add_q_proj") {
+        return Some(&family::QWEN_IMAGE);
+    }
+    if prefix("modulation.layers.") && part("img_mlp.gate_layer") {
+        return Some(&family::QWEN_IMAGE_21);
+    }
+    None
+}
+
+fn probe_mlx_image_dir(dir: &Path) -> ImageProbe {
+    let tensors = mlx_transformer_tensors(dir);
+    let names: Vec<(&str, &[u64])> = tensors.iter().map(|(n, d, _)| (n.as_str(), d.as_slice())).collect();
+    let name = lower_name(dir);
+    let keys: Vec<&str> = names.iter().map(|(n, _)| *n).collect();
+    // What the engine will run it as; failing that, what it is, for the
+    // refusal to name.
+    let fam = mlx_engine_family(&keys, &name).unwrap_or_else(|| family::detect(&Tensors::new(names), None, &name));
+    let quant = mlx_image_quant(dir);
+    let bits: u64 = quant.as_deref().and_then(|q| q.trim_end_matches("-bit").parse().ok()).unwrap_or(0);
+    // Packed weights hold 32/bits values per element; their scales and
+    // biases are bookkeeping, not parameters.
+    let params: u64 = tensors
+        .iter()
+        .filter(|(n, _, _)| !n.ends_with(".scales") && !n.ends_with(".biases"))
+        .map(|(_, d, dt)| {
+            let n = d.iter().product::<u64>();
+            if dt == "U32" && bits > 0 { n * 32 / bits } else { n }
+        })
+        .sum();
+    ImageProbe {
+        path: dir.to_string_lossy().to_string(),
+        family: fam.id.into(),
+        family_name: fam.name.into(),
+        all_in_one: true,
+        params_b: (params > 0).then(|| (params as f64 / 1e8).round() / 10.0),
+        quant,
+        size_mb: dir_size_mb(dir),
+        components: Vec::new(),
+        missing: Vec::new(),
+        suggestions: Vec::new(),
+        requires: Vec::new(),
+        optional: Vec::new(),
+        defaults: family::defaults_for(fam, &name),
+        edits: false,
+        engine: "mlx",
+    }
+}
+
+fn dir_size_mb(dir: &Path) -> u64 {
+    fn walk(p: &Path) -> u64 {
+        std::fs::read_dir(p)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| {
+                        let p = e.path();
+                        if p.is_dir() { walk(&p) } else { e.metadata().map(|m| m.len()).unwrap_or(0) }
+                    })
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+    walk(dir) / (1024 * 1024)
 }
 
 /// The kind of a weights file (cached).
@@ -201,6 +354,9 @@ pub struct ImageProbe {
     /// Reference-picture editing is possible: the family edits and the
     /// encoder's vision tower is present.
     pub edits: bool,
+    /// What runs it: "sd.cpp" (a GGUF or safetensors denoiser) or "mlx" (an
+    /// MLX image model folder).
+    pub engine: &'static str,
 }
 
 fn size_mb(p: &Path) -> u64 {
@@ -334,6 +490,9 @@ pub fn find_components(model: &Path, fam: &Family, overrides: &Overrides, roots:
 
 /// Everything about the image model at `path`. `None` when it is not one.
 pub fn probe_image_model(path: &Path, overrides: &Overrides, roots: &[PathBuf]) -> Option<ImageProbe> {
+    if is_mlx_image_dir(path) {
+        return Some(probe_mlx_image_dir(path));
+    }
     let p = probe(path);
     if p.kind != Kind::Denoiser {
         return None;
@@ -368,12 +527,16 @@ pub fn probe_image_model(path: &Path, overrides: &Overrides, roots: &[PathBuf]) 
         components,
         missing,
         suggestions,
+        engine: "sd.cpp",
     })
 }
 
 /// The denoiser in a model folder, when the folder holds one — it is the
 /// model, whatever else (a larger text encoder, a VAE) sits beside it.
 pub fn image_model_in_dir(dir: &Path) -> Option<PathBuf> {
+    if is_mlx_image_dir(dir) {
+        return Some(dir.to_path_buf());
+    }
     let mut found: Vec<PathBuf> = files_in(dir).into_iter().filter(|p| is_image_model(p)).collect();
     // Several quantizations side by side: the largest is the best one.
     found.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0));
@@ -510,6 +673,92 @@ mod tests {
         let probe = probe_image_model(&model, &ov, std::slice::from_ref(&root)).unwrap();
         assert!(probe.missing.contains(&Role::Llm));
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// An MLX image model as mflux saves it — component folders of
+    /// safetensors — is recognised as one model, of the family its
+    /// transformer names, to run on the MLX engine.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_mflux_folder_is_an_mlx_image_model() {
+        let root = tmpdir("mflux");
+        let dir = root.join("Z-Image-Turbo-6B-MLX-Q4");
+        for sub in ["transformer", "vae", "text_encoder", "tokenizer"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        let mut hdr = serde_json::Map::new();
+        hdr.insert("noise_refiner.0.attention.to_q.weight".into(), serde_json::json!({"dtype": "U32", "shape": [3840, 480], "data_offsets": [0, 4]}));
+        hdr.insert("cap_embedder.0.weight".into(), serde_json::json!({"dtype": "BF16", "shape": [2560], "data_offsets": [0, 4]}));
+        hdr.insert("context_refiner.0.ffn_norm1.weight".into(), serde_json::json!({"dtype": "BF16", "shape": [3840], "data_offsets": [0, 4]}));
+        let h = serde_json::to_vec(&serde_json::Value::Object(hdr)).unwrap();
+        let mut b = (h.len() as u64).to_le_bytes().to_vec();
+        b.extend_from_slice(&h);
+        b.extend_from_slice(&[0, 0, 0, 0]);
+        std::fs::write(dir.join("transformer/0.safetensors"), b).unwrap();
+        std::fs::write(
+            dir.join("transformer/model.safetensors.index.json"),
+            r#"{"metadata": {"quantization_level": "4", "mflux_version": "0.17.5"}, "weight_map": {}}"#,
+        )
+        .unwrap();
+        write_st(&dir.join("vae/0.safetensors"), &["decoder.conv_in.conv.weight"]);
+        write_st(&dir.join("text_encoder/0.safetensors"), &["embed_tokens.weight"]);
+
+        assert!(is_mlx_image_dir(&dir));
+        assert!(is_image_model(&dir));
+        assert_eq!(image_model_in_dir(&dir).as_deref(), Some(dir.as_path()));
+        let p = probe_image_model(&dir, &Overrides::new(), &[]).unwrap();
+        assert_eq!(p.engine, "mlx");
+        assert_eq!(p.family, "z-image-turbo");
+        assert_eq!(p.quant.as_deref(), Some("4-bit"));
+        assert!(p.missing.is_empty() && p.components.is_empty());
+        assert_eq!(p.defaults.steps, 8);
+        // mflux's early saves have no index; the shards say how they were
+        // quantized.
+        std::fs::remove_file(dir.join("transformer/model.safetensors.index.json")).unwrap();
+        let mut hdr = serde_json::Map::new();
+        hdr.insert("__metadata__".into(), serde_json::json!({"quantization_level": "8", "mflux_version": "0.6.2"}));
+        hdr.insert("all_x_embedder.2-1.weight".into(), serde_json::json!({"dtype": "U32", "shape": [3840, 16], "data_offsets": [0, 4]}));
+        hdr.insert("context_refiner.0.attention.to_q.weight".into(), serde_json::json!({"dtype": "U32", "shape": [3840, 960], "data_offsets": [0, 4]}));
+        let h = serde_json::to_vec(&serde_json::Value::Object(hdr)).unwrap();
+        let mut b = (h.len() as u64).to_le_bytes().to_vec();
+        b.extend_from_slice(&h);
+        b.extend_from_slice(&[0, 0, 0, 0]);
+        std::fs::write(dir.join("transformer/0.safetensors"), b).unwrap();
+        let p = probe_image_model(&dir, &Overrides::new(), &[]).unwrap();
+        assert_eq!(p.family, "z-image-turbo");
+        assert_eq!(p.quant.as_deref(), Some("8-bit"));
+        // A chat model's MLX folder is not one.
+        let chat = root.join("Qwen3-4B-4bit");
+        std::fs::create_dir_all(&chat).unwrap();
+        std::fs::write(chat.join("config.json"), "{}").unwrap();
+        write_st(&chat.join("model.safetensors"), &["model.embed_tokens.weight"]);
+        assert!(!is_mlx_image_dir(&chat));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The MLX engine's dispatch, by weight names: the four families it
+    /// runs, and nothing that merely shares FLUX.1's block names.
+    #[test]
+    fn the_mlx_engine_runs_what_its_dispatch_names() {
+        let id = |keys: &[&str], name: &str| mlx_engine_family(keys, name).map(|f| f.id);
+        let z = ["all_x_embedder.2-1.weight", "context_refiner.0.attention.to_q.weight", "noise_refiner.0.attention.to_q.weight"];
+        assert_eq!(id(&z, "z-image-turbo-6b-mlx-q4"), Some("z-image-turbo"));
+        assert_eq!(id(&z, "z-image-6b-mlx-q4"), Some("z-image"));
+        let schnell = ["x_embedder.weight", "single_transformer_blocks.0.proj_mlp.weight", "time_text_embed.text_embedder.linear_1.weight"];
+        assert_eq!(id(&schnell, "flux1-schnell-mlx-4bit"), Some("flux-schnell"));
+        let dev = [&schnell[..], &["time_text_embed.guidance_embedder.linear_1.weight"]].concat();
+        assert_eq!(id(&dev, "flux.1-krea-dev-mflux-4bit"), Some("flux-dev"));
+        let q1 = ["transformer_blocks.0.img_mod_linear.weight", "transformer_blocks.0.attn.add_q_proj.weight"];
+        assert_eq!(id(&q1, "qwen-image-2512-4bit"), Some("qwen-image"));
+        let q21 = ["modulation.layers.1.weight", "transformer_blocks.0.img_mlp.gate_layer.weight"];
+        assert_eq!(id(&q21, "qwen-image-2.1-mlx-4bit"), Some("qwen-image-2.1"));
+        let klein = ["x_embedder.weight", "context_embedder.weight", "single_transformer_blocks.0.attn.to_qkv_mlp_proj.weight", "double_stream_modulation_img.linear.weight"];
+        assert_eq!(id(&klein, "flux.2-klein-4b-mflux-4bit"), None);
+        let fibo = ["x_embedder.weight", "context_embedder.weight", "single_transformer_blocks.0.attn.to_q.weight", "time_embed.timestep_embedder.linear_1.weight"];
+        assert_eq!(id(&fibo, "fibo-mflux"), None);
+        for f in [&z[..], &schnell, &dev, &q1, &q21] {
+            assert!(MLX_FAMILIES.contains(&mlx_engine_family(f, "turbo").unwrap().id));
+        }
     }
 
     #[test]

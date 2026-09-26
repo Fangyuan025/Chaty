@@ -44,6 +44,17 @@ export const SCHEDULERS = [
   "beta",
 ];
 
+/** The samplers and schedulers the loaded engine offers. */
+export function engineLists(info: { samplers?: string[]; schedulers?: string[] } | null | undefined): {
+  samplers: string[];
+  schedulers: string[];
+} {
+  return {
+    samplers: info?.samplers?.length ? info.samplers : SAMPLERS,
+    schedulers: info?.schedulers?.length ? info.schedulers : SCHEDULERS,
+  };
+}
+
 /** Base resolutions offered (the side of the equivalent square). */
 export const BASE_SIZES = [512, 768, 1024, 1280, 1536, 2048];
 

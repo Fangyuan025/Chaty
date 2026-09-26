@@ -14,8 +14,7 @@ import {
 import {
   ASPECTS,
   BASE_SIZES,
-  SAMPLERS,
-  SCHEDULERS,
+  engineLists,
   buildRequest,
   effective,
   etaSeconds,
@@ -810,7 +809,7 @@ export function ImageStudio({
                   onChange={(v) => onSettings({ imgSampler: v })}
                   options={[
                     { value: "", label: `${t("imgAuto")} (${d.sampler || info.defaultSampler || "—"})` },
-                    ...SAMPLERS.map((s) => ({ value: s, label: s })),
+                    ...engineLists(info).samplers.map((s) => ({ value: s, label: s })),
                   ]}
                 />
               </div>
@@ -822,7 +821,7 @@ export function ImageStudio({
                   onChange={(v) => onSettings({ imgScheduler: v })}
                   options={[
                     { value: "", label: `${t("imgAuto")} (${d.scheduler || info.defaultScheduler || "—"})` },
-                    ...SCHEDULERS.map((s) => ({ value: s, label: s })),
+                    ...engineLists(info).schedulers.map((s) => ({ value: s, label: s })),
                   ]}
                 />
               </div>
