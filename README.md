@@ -118,7 +118,7 @@ Drop in PDFs, Word files, slides, spreadsheets, Markdown or code. Chaty indexes 
 
 Live mode is a hands-free conversation: Whisper listens, the model answers, and a local voice reads the reply back sentence by sentence — in English or Chinese. Speech runs on the CPU, so it never competes with the model for GPU memory. Silence sends your turn; any answer can be read aloud.
 
-<img src="docs/screenshots/shot-live.jpg" width="860" alt="Chaty's Live mode: a glowing orb listening, with a button to leave live mode" />
+<img src="docs/screenshots/shot-live.jpg" width="860" alt="Chaty's Live mode: the reply as a caption over a soft band of light, with the button to end" />
 
 ## Built around what small models get wrong
 

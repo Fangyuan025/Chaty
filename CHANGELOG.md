@@ -183,6 +183,16 @@
 - Knowledge-base keyword search indexes every script — kana, Cyrillic,
   accented Latin, Indic marks, full-width letters.
 
+- **Several conversations deleted at once.** The tick box at the end of the
+  sidebar's search (or a Ctrl/⌘-click) starts a selection, Shift-click ticks
+  a run, and one confirmation deletes them all (#20).
+
+- **Scrolling up while a reply is written stops following at once.** The
+  transcript was pinned to the bottom with a smooth scroll on every frame, and
+  a wheel-up lost to the glide still heading down — it took several turns of
+  the wheel to get away (#20). The reply is pinned instantly now, and a
+  wheel-up stops any glide in flight.
+
 ### Settings
 
 - **Regrouped.** General and Appearance; Chat, Knowledge base and Voice;
@@ -207,6 +217,23 @@
   image studio's pickers were the OS's — and open upward when there is no
   room below.
 
+- **Edges that line up.** The working area stands the same distance from the
+  frame on every side, its top level with the sidebar's first control, and the
+  sidebar's footer rule that stopped at its edge is gone. Corners are smaller
+  — cards and menus 10 px, panels and fields 8 px — with the composer and the
+  pills left round. The title bar's model chip and mode switch and the
+  sidebar's fields take the panel's tone instead of fading into the frame, and
+  menus stand off the page, the cream palette's by a step more (#20).
+
+- **A narrow window keeps its buttons.** The title bar gives way at the
+  model's name, and below 900 px the mode switch keeps only its icons; on
+  Windows, minimize, maximize and close were pushed out of the window (#20).
+
+- **Live mode, redrawn.** In place of the green orb, a band of soft light
+  along the bottom follows the conversation — rising with your voice while it
+  listens, drifting while it thinks, brightening with its own voice as it
+  answers — under the reply as a large caption, with one round button to end.
+
 ### Reliability
 
 - Two models could load at once: one load at a time now, front and back.
@@ -228,6 +255,13 @@
   thread and froze the window.
 - Windows: console output that is not UTF-8 is read with the machine's own
   code page.
+- A voice model downloading on a slow line could only be waited out: its bar
+  now says which model is coming and its × stops it. A stretch without Chinese
+  inside a Chinese reply no longer fetches the English voice (300 MB from
+  GitHub) to read a few words, which read as the Chinese voice downloading
+  again (#20).
+- The window could not be moved while a model downloaded, and a dialog's
+  backdrop covered the window buttons on Windows (#20).
 
 ## v2.2.2 — While it runs (2026-09-17)
 

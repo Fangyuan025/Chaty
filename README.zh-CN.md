@@ -118,7 +118,7 @@
 
 实时对话模式完全不用动手：Whisper 听你说，模型回答，本地语音一句一句读出来——中文英文都行。语音在 CPU 上运行，不和模型抢显存。你一停下这一句就发出去；任何回答都能朗读。
 
-<img src="docs/screenshots/shot-live-zh.jpg" width="860" alt="Chaty 实时对话模式：发光的圆球正在聆听，下方是退出按钮" />
+<img src="docs/screenshots/shot-live-zh.jpg" width="860" alt="Chaty 实时对话模式：回答以字幕显示，底部是一片随声音起伏的柔光，下方是结束按钮" />
 
 ## 专门对付小模型会犯的错
 

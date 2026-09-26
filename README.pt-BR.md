@@ -118,7 +118,7 @@ Arraste PDFs, arquivos do Word, apresentações, planilhas, Markdown ou código.
 
 O modo Live é uma conversa sem as mãos: o Whisper escuta, o modelo responde e uma voz local lê a resposta frase por frase — em inglês ou chinês. A fala roda na CPU, então nunca disputa a memória da GPU com o modelo. O silêncio envia sua vez; qualquer resposta pode ser lida em voz alta.
 
-<img src="docs/screenshots/shot-live.jpg" width="860" alt="Modo Live do Chaty: uma esfera luminosa ouvindo, com um botão para sair do modo Live" />
+<img src="docs/screenshots/shot-live.jpg" width="860" alt="Modo Live do Chaty: a resposta como legenda sobre uma faixa suave de luz, com o botão para encerrar" />
 
 ## Feito para o que modelos pequenos erram
 
