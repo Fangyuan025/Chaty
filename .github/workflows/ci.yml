@@ -158,3 +158,29 @@ jobs:
           echo "$OUT"
           echo "$OUT" | head -1 | grep -q '"event":"ready"'
           echo "$OUT" | grep -q '"event":"pong"'
+
+  mlx-sidecar:
+    name: MLX sidecar (build + protocol smoke)
+    # chaty-mlx is Swift, and nothing else compiles it before a release tag:
+    # a release once failed on code the newer local compiler accepted. This
+    # builds it with the release job's Xcode 16.x and answers both of its
+    # protocols — the chat handshake, and the image mode's handshake and ping.
+    runs-on: macos-15 # Apple Silicon
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build chaty-mlx (the release job's Xcode)
+        run: |
+          SIDE_XCODE=$(ls -d /Applications/Xcode_1[6-9]*.app 2>/dev/null | sort -V | tail -1 || true)
+          [ -n "$SIDE_XCODE" ] || SIDE_XCODE=$(dirname "$(dirname "$(xcode-select -p)")")
+          echo "sidecar Xcode: $SIDE_XCODE"
+          DEVELOPER_DIR="$SIDE_XCODE/Contents/Developer" ./scripts/build-mlx-sidecar.sh
+      - name: Protocol smoke
+        run: |
+          BIN=src-tauri/binaries/chaty-mlx-aarch64-apple-darwin
+          OUT=$(printf '{"cmd":"quit"}\n' | "$BIN")
+          echo "chat: $OUT"
+          echo "$OUT" | head -1 | grep -q '"event":"ready"'
+          OUT=$(printf '{"cmd":"ping"}\n{"cmd":"quit"}\n' | "$BIN" --image)
+          echo "image: $OUT"
+          echo "$OUT" | head -1 | grep -q '"event":"ready"'
+          echo "$OUT" | grep -q '"event":"pong"'
