@@ -268,6 +268,9 @@ export function DownloadModal({
     void (async () => {
       const d = await openDetail(initialRepo, "gguf"); // backend auto-detects MLX
       if (!d) return;
+      // A repo Chaty could not run once downloaded opens without starting:
+      // the detail says why.
+      if (d.unsupported) return;
       if (d.format === "mlx" && IS_MACOS) {
         void startDownload(d, 0);
       } else if (initialFile) {
