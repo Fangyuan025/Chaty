@@ -346,8 +346,9 @@ export const T = {
   secStorage: { zh: "存储", en: "Storage", pt: "Armazenamento" },
   secClear: { zh: "清除", en: "Clear", pt: "Limpar" },
   aboutTagline: {
-    zh: "本地、私密的 GGUF / MLX 模型桌面聊天应用",
-    en: "Local, private desktop chat for GGUF & MLX models", pt: "App desktop offline e privado para chat com modelos GGUF & MLX",
+    zh: "硬盘里的模型，真正干起活来。\n对话、编程、生图、作曲，全在你自己的电脑上。",
+    en: "The models on your disk, put to work.\nChat, code, images and music, all on your own machine.",
+    pt: "Os modelos no seu disco, trabalhando de verdade.\nChat, código, imagens e música, tudo na sua máquina.",
   },
   aboutCheckUpdate: { zh: "检查更新", en: "Check for updates", pt: "Procurar atualizações" },
   aboutUpdateNow: { zh: "立即更新", en: "Update now", pt: "Atualizar agora" },

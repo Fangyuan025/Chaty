@@ -2571,10 +2571,13 @@ body.resizing-x {
   font-variant-numeric: tabular-nums;
   color: var(--text-dim);
 }
+/* Two lines: what Chaty is, then what it does. */
 .about-tagline {
-  font-size: 13.5px;
-  color: var(--text-dim);
   margin-top: 6px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  white-space: pre-line;
 }
 .about-actions {
   display: flex;
