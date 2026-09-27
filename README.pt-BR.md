@@ -38,7 +38,7 @@ com modelos abertos rodando inteiramente no seu Mac ou PC. Sem conta, sem nuvem,
 - **Um app, seis trabalhos.** Chat, um agente de programação, um estúdio de imagens, um estúdio de música, respostas a partir dos seus próprios documentos e uma voz para conversar — com os mesmos modelos locais, numa só janela. Sem servidor para rodar, sem porta, sem chave de API.
 - **Feito para o modelo que cabe no seu notebook.** Chamadas de ferramenta no formato em que cada modelo foi treinado, edições conferidas com o arquivo enquanto ainda estão sendo escritas, deslizes pegos no passo em que acontecem — para que um modelo pequeno termine trabalho de verdade. [Como →](#feito-para-o-que-modelos-pequenos-erram)
 - **GGUF e MLX, ambos nativos.** llama.cpp em Metal ou Vulkan em todas as plataformas, MLX no Apple Silicon, e uma loja de modelos que busca no Hugging Face e diz quais arquivos cabem na sua memória.
-- **Totalmente seu.** Modelos, conversas, documentos e imagens ficam numa pasta no seu disco. Sem conta, sem telemetria — apague a pasta e não sobra nada.
+- **Totalmente seu.** Modelos, conversas, documentos, imagens e músicas ficam numa pasta no seu disco. Sem conta, sem telemetria — apague a pasta e não sobra nada.
 
 ## Conteúdo
 
@@ -110,6 +110,13 @@ Roda no [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) n
 
 Carregue um modelo de texto para música e o app inteiro vira um estúdio de música, como um modelo de imagem o transforma num estúdio de imagens: sessões que se leem como conversas, as configurações recomendadas de cada família já preenchidas e uma porcentagem que acompanha a peça por cada etapa — escrever a partitura, compor, renderizar, decodificar.
 
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-music-light.jpg" />
+  <img src="docs/screenshots/shot-music.jpg" width="860" alt="Estúdio de música do Chaty: uma canção do YuE2 rearranjada em outro estilo, a letra como pedido e a peça como uma forma de onda para tocar" />
+</picture>
+
+<sub>Uma canção do YuE2 rearranjada sobre a própria melodia num estilo novo — a letra como a sua vez, a peça como uma forma de onda para tocar, avançar e selecionar.</sub>
+
 - **As famílias que o audio.cpp roda** — YuE2 (letra virando uma música inteira, voz e banda juntas), MiniMax Music 3, ACE-Step 1.5, HeartMuLa, Stable Audio 3 e MiDashengLM-Gen, como pacotes GGUF do [audio.cpp](https://github.com/0xShug0/audio.cpp). O Chaty encontra os outros arquivos do pacote ao lado do modelo — um VAE, configurações, um tokenizador, as partes de um modelo de vários arquivos — ou baixa os que faltam num clique.
 - **Sua letra, ou nenhuma** — escreva a letra com marcações de seção, deixe-a para o modelo ou peça uma instrumental; o estilo é uma descrição em poucas palavras.
 - **Continue a partir de uma peça** — as edições de cada família sobre uma rodada anterior: o YuE2 rearranja uma peça sobre a própria melodia ou a continua de qualquer segundo, o ACE-Step repinta um trecho ou faz um cover em outro estilo, o Stable Audio faz uma variação ou preenche um trecho de novo.
@@ -127,9 +134,9 @@ Arraste PDFs, arquivos do Word, apresentações, planilhas, Markdown ou código.
 
 ## Voz
 
-O modo Live é uma conversa sem as mãos: o Whisper escuta, o modelo responde e uma voz local lê a resposta frase por frase — em inglês ou chinês. A fala roda na CPU, então nunca disputa a memória da GPU com o modelo. O silêncio envia sua vez; qualquer resposta pode ser lida em voz alta.
+O modo Live é uma conversa sem as mãos: o Whisper escuta, o modelo responde e uma voz local lê a resposta frase por frase — em inglês ou chinês. A fala roda na CPU, então nunca disputa a memória da GPU com o modelo. O silêncio envia sua vez; interrompa uma resposta e a vez é sua na hora, com o modelo lembrando até onde falou. Qualquer resposta pode ser lida em voz alta.
 
-<img src="docs/screenshots/shot-live.jpg" width="860" alt="Modo Live do Chaty: a resposta como legenda sobre uma faixa suave de luz, com o botão para encerrar" />
+<img src="docs/screenshots/shot-live.jpg" width="860" alt="Modo Live do Chaty: a resposta como legenda sobre uma faixa suave de luz, com os botões para interromper e encerrar" />
 
 ## Feito para o que modelos pequenos erram
 
@@ -158,11 +165,11 @@ Qualquer GGUF roda no llama.cpp (Metal, ou Vulkan em NVIDIA, AMD e Intel); no Ap
 | MiniCPM5 · LFM 2.5 | O formato de chamada de cada família |
 | [Chaty · Qwen3.5-4B design](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF) | Nosso próprio ajuste fino para páginas web de um arquivo — um clique na primeira execução |
 
-Um ajuste fino da comunidade cujo template de chat difere do palpite embutido do llama.cpp roda com o próprio template, como o transformers o rodaria.
+Um ajuste fino da comunidade cujo template de chat difere do palpite embutido do llama.cpp roda com o próprio template, como o transformers o rodaria. Modelos de texto para imagem e para música carregam do mesmo lugar; as famílias estão em [Imagem](#imagem) e [Música](#música).
 
 ## Privacidade
 
-Modelos, conversas, documentos e imagens ficam numa pasta no seu disco. Não há conta nem servidor nosso em que confiar — apague a pasta e não sobra nada.
+Modelos, conversas, documentos, imagens e músicas ficam numa pasta no seu disco. Não há conta nem servidor nosso em que confiar — apague a pasta e não sobra nada.
 
 A rede é usada só para: **busca na web e Deep Research**, quando você as liga; **downloads que você inicia** (modelos, vozes, arquivos de embedding); e **uma verificação de atualização** — um pedido ao GitHub pela versão mais recente, alguns segundos após abrir. Detalhes em [Privacidade e dados](https://chaty.ca/docs.html#privacy).
 

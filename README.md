@@ -38,7 +38,7 @@ on open models running entirely on your own Mac or PC. No account, no cloud, no 
 - **One app, six jobs.** Chat, a coding agent, an image studio, a music studio, answers from your own documents, and a voice to talk to — on the same local models, in one window. No server to run, no port, no API key.
 - **Built for the model that fits on your laptop.** Tool calls in the format each model was trained on, edits checked against the file while they're still being written, slips caught at the step they happen — so a small model finishes real work. [How it's done →](#built-around-what-small-models-get-wrong)
 - **GGUF and MLX, both native.** llama.cpp on Metal or Vulkan on every platform, MLX on Apple Silicon, and a model store that searches Hugging Face and tells you which files fit in your memory.
-- **Yours, completely.** Models, chats, documents and pictures live in a folder on your disk. No account, no telemetry — delete the folder and it's gone.
+- **Yours, completely.** Models, chats, documents, pictures and music live in a folder on your disk. No account, no telemetry — delete the folder and it's gone.
 
 ## Contents
 
@@ -110,6 +110,13 @@ It runs on [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp
 
 Load a text-to-music model and the whole app becomes a music studio, the way an image model makes it an image studio: sessions that read like conversations, each family's recommended settings filled in, and a percentage that follows the piece through its stages — writing the score, composing, rendering, decoding.
 
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-music-light.jpg" />
+  <img src="docs/screenshots/shot-music.jpg" width="860" alt="Chaty's music studio: a YuE2 song rearranged in a new style, its lyrics as the request and the piece as a waveform to play" />
+</picture>
+
+<sub>A YuE2 song rearranged on its own melody in a new style — the lyrics as your turn, the piece as a waveform to play, seek and select.</sub>
+
 - **The families audio.cpp runs** — YuE2 (lyrics to a whole song, voice and band together), MiniMax Music 3, ACE-Step 1.5, HeartMuLa, Stable Audio 3 and MiDashengLM-Gen, as [audio.cpp](https://github.com/0xShug0/audio.cpp)'s GGUF packages. Chaty finds a package's other files beside the model — a VAE, configs, a tokenizer, the parts of a multi-file model — or downloads the missing ones in one click.
 - **Your lyrics, or none** — write lyrics with section tags, leave them to the model, or ask for an instrumental; the style is a few words of description.
 - **Keep going from a piece** — each family's own edits of an earlier round: YuE2 rearranges a piece on its own melody or continues it from any second, ACE-Step repaints a stretch or covers it in a new style, Stable Audio makes a variation or fills a stretch in again.
@@ -127,9 +134,9 @@ Drop in PDFs, Word files, slides, spreadsheets, Markdown or code. Chaty indexes 
 
 ## Voice
 
-Live mode is a hands-free conversation: Whisper listens, the model answers, and a local voice reads the reply back sentence by sentence — in English or Chinese. Speech runs on the CPU, so it never competes with the model for GPU memory. Silence sends your turn; any answer can be read aloud.
+Live mode is a hands-free conversation: Whisper listens, the model answers, and a local voice reads the reply back sentence by sentence — in English or Chinese. Speech runs on the CPU, so it never competes with the model for GPU memory. Silence sends your turn; interrupt a reply and it's your turn at once, the model remembering what it said up to there. Any answer can be read aloud.
 
-<img src="docs/screenshots/shot-live.jpg" width="860" alt="Chaty's Live mode: the reply as a caption over a soft band of light, with the button to end" />
+<img src="docs/screenshots/shot-live.jpg" width="860" alt="Chaty's Live mode: the reply as a caption over a soft band of light, with the buttons to interrupt it and to end" />
 
 ## Built around what small models get wrong
 
@@ -158,11 +165,11 @@ Any GGUF runs on llama.cpp (Metal, or Vulkan on NVIDIA, AMD and Intel); on Apple
 | MiniCPM5 · LFM 2.5 | Each family's own tool-call format |
 | [Chaty · Qwen3.5-4B design](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF) | Our own fine-tune for single-file web pages — one click at first launch |
 
-A community fine-tune whose chat template differs from llama.cpp's built-in guess is run with its own template, as transformers would run it.
+A community fine-tune whose chat template differs from llama.cpp's built-in guess is run with its own template, as transformers would run it. Text-to-image and text-to-music models load from the same place; their families are listed under [Image](#image) and [Music](#music).
 
 ## Privacy
 
-Models, conversations, documents and pictures live in a folder on your disk. There's no account and no server of ours to trust — delete the folder, and it's gone.
+Models, conversations, documents, pictures and music live in a folder on your disk. There's no account and no server of ours to trust — delete the folder, and it's gone.
 
 The network is used only for: **web search and Deep Research** when you turn them on; **downloads you start** (models, voices, embedding files); and **one update check** — a request to GitHub for the latest release, a few seconds after launch. Details in [Privacy & data](https://chaty.ca/docs.html#privacy).
 

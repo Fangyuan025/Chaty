@@ -278,49 +278,36 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## Pictures, drawn on your own GPU
+            ## Songs, made on your own machine
 
-            Load a text-to-image model — Z-Image Turbo, Qwen-Image 2.1, FLUX.1,
-            Chroma, Stable Diffusion — and the whole app becomes an image studio:
-            sessions that read like conversations, a live preview while it draws,
-            each model's recommended settings filled in, and editing that starts
-            the next round from any picture. A GGUF is only the denoiser; Chaty
-            finds its VAE and text encoder, or downloads the missing ones in one
-            click. It runs on stable-diffusion.cpp in a helper of its own — Metal
-            on a Mac, Vulkan on Windows and Linux. On an M4 Pro, Z-Image Turbo
-            draws 1024 × 1024 in under three minutes — and in under two as an
-            MLX model: on a Mac, mflux's MLX saves of Z-Image, Qwen-Image and
-            FLUX.1 run on the MLX engine, with the same studio.
+            Load a text-to-music model — YuE2, ACE-Step 1.5, MiniMax Music 3,
+            HeartMuLa, Stable Audio 3, MiDashengLM-Gen — and the whole app
+            becomes a music studio: your style and lyrics as a bubble, the piece
+            as a waveform to play and seek, and each family's own edits of an
+            earlier round — rearrange or continue a song, repaint a stretch,
+            cover it in a new style. It runs on audio.cpp in a helper of its own
+            — Metal on a Mac, Vulkan on Windows and Linux. On an M4 Pro, YuE2
+            writes and sings a 30-second verse and chorus in 33 s, and Stable
+            Audio 3 Small makes 20 s in 1.2 s.
 
-            ## Each model in its own dialect
+            ## A lighter frame
 
-            K2 Horizon loads on both engines, MoVA-36B included, with its own
-            reasoning tags and effort ladder. GLM-4.5/4.6/4.7 and MiniCPM5 tool
-            calls are read and written in their own formats — GLM's had been no
-            call at all. A GGUF whose own chat template says more than
-            llama.cpp's built-in guess is rendered from the template, as
-            transformers would (MiniCPM5 answered in fragments without it), and
-            a refused model says why in llama.cpp's own words.
+            No title bar across the window: the window's controls and a mode
+            switch of icons sit over the sidebar, the working area runs to the
+            window's edges, and the transcript passes under the top row instead
+            of stopping at a bar. Chaty draws its own scrollbars everywhere, and
+            Code's thinking and bypass switches sit under its input.
 
-            ## Edits that land
+            ## Live mode, interrupted
 
-            An edit is checked against the file while the model is still writing
-            it, and stopped the moment it cannot land. A retyped line with the
-            wrong spaces, escapes or line numbers lands where exactly one place
-            fits; calls written in every shape small models actually use are
-            read; and a long diff now opens in full.
+            Cut a spoken reply short and it is your turn at once — the model
+            remembers what it said up to there, not the rest. The light no
+            longer ends at a line across the screen, and the window moves from
+            its top edge even with Live mode or a dialog open.
 
-            ## A quieter, more finished look
-
-            The window is redesigned: one frame, a floating composer, the app's
-            own menus throughout, and the accent kept for what matters. Settings
-            are regrouped, and a line above the composer shows what the next
-            message will use. All of Settings → Sampling but temperature now
-            applies to Code as well.
-
-            Also: MLX models stop cleanly (the repetition penalty had been
-            counting the prompt's own markup), and a round of fixes to races,
-            recovery paths and a window that froze on slow commands.
+            Also: K2 Horizon's MLX quants load, Code's sessions can be searched,
+            and several sessions at once can be deleted in Code and the image
+            studio.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

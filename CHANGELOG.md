@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.3.5 — Make it sing (2026-09-27)
 
 ### Music generation
 
@@ -60,6 +60,74 @@
   back to it; any option the engine reports beyond those is offered too.
   Settings → Music model holds the device, threads and the engine's own
   session options (weight types, attention, memory saving).
+
+### A lighter frame
+
+- **No title bar across the window.** The window is two columns: the
+  sidebar on the frame, and the working area — chat, Code and the studios
+  alike — running from the window's top, set off by one hairline. Over the
+  sidebar sit the window's controls and a mode switch of icons, at the
+  sidebar's edge and moving with it; over the working area, what is open
+  (the conversation, the session, Code's workspace) and the model and the
+  app's buttons, floating on the panel. The transcript passes under them and
+  fades out, with no bar where the row ends. The sidebar is one width in
+  every mode, and on a Mac the window buttons sit centred in the row.
+
+- **Code's thinking and bypass switches sit under its input**, as the image
+  studio's settings do; its workspace and background jobs are in the top
+  row.
+
+- **The working area runs to the window's edges** instead of stopping 8 px
+  short of its right and bottom ones (#20).
+
+- **Chaty draws its own scrollbars, everywhere** — lists, panels, menus, text
+  fields, code blocks, the canvas preview: a thin rounded thumb that firms up
+  under the pointer, in place of the system's in all but four places. The
+  composer's fade no longer washes out the transcript's scrollbar. Tick
+  boxes, number fields and a text field's resize grip are drawn by the app
+  too, and the model store's dialog dims the window like every other dialog.
+
+- **A narrow window keeps its buttons.** The top row gives way at the
+  model's name, its size figures first, and Code's workspace keeps a few
+  letters of its own.
+
+- Settings → About says what Chaty is now.
+
+### Live mode
+
+- **Interrupt a spoken reply.** While Live mode answers, an Interrupt button
+  joins End, fading in as End slides over. The reply stops, it is your turn
+  at once, and the model remembers what it had said up to there — not the
+  rest it had written, which nobody heard.
+
+- **The light has no edge.** Swelling with a voice, it ran past the top of
+  the canvas it is drawn on and ended at a straight line across the middle
+  of the screen; it now fades out long before any edge.
+
+### Sidebars
+
+- **Several sessions deleted at once in Code and the image studio,** as the
+  chat's conversations are (#20); the confirmation says their files go too.
+
+- **Code's sessions can be searched,** as the chat's conversations are: by
+  title as you type, and by what was said and done in them.
+
+### Models
+
+- **K2 Horizon's MLX quants load.** The ones on the Hub (mlx-community's
+  oQ4e, the MLX-4/6/8bit ones) are mlx-lm conversions that store the experts
+  stacked under mlx-lm's own name for them, and failed to load with a missing
+  `experts` weight; they load now, with the low / medium / high rungs (oQ4e:
+  30–36 tok/s on an M4 Pro).
+
+### Reliability
+
+- The window moves from its top edge whatever is over it — Live mode, a
+  dialog, a menu's click-catcher — and a plain click still reaches what is
+  there. On Windows, minimize, maximize and close stay above Live mode.
+- The microphone opens while the audio device is changing mode — a Bluetooth
+  headset going from playback to its headset mode — instead of failing with
+  "The requested stream configuration is not supported by the device".
 
 ## v2.3.0 — Put to work (2026-09-25)
 
@@ -134,10 +202,6 @@
   tags of its own, which the effort ladder picks through the template, and
   with thinking off both engines close the thought the way its own template
   does. On the edit stress set: MoVA-36B-A4B (MLX 4-bit) 5/5, 3.7B MLX 5/5.
-  The MLX quants on the Hub (mlx-community's oQ4e, the MLX-4/6/8bit ones) are
-  mlx-lm conversions that store the experts stacked under mlx-lm's own name
-  for them, and failed to load with a missing `experts` weight; they load now,
-  with the low / medium / high rungs (oQ4e: 30–36 tok/s on an M4 Pro).
 
 - **GLM-4.5 / 4.6 / 4.7 and MiniCPM5 tool calls.** GLM writes
   `<tool_call>name<arg_key>…`; read as JSON, the fallback for a template Chaty
@@ -248,13 +312,9 @@
 - Knowledge-base keyword search indexes every script — kana, Cyrillic,
   accented Latin, Indic marks, full-width letters.
 
-- **Several conversations deleted at once** — and Code's sessions and the
-  image studio's too. The tick box at the end of the sidebar's search (or a
-  Ctrl/⌘-click) starts a selection, Shift-click ticks a run, and one
-  confirmation deletes them all (#20).
-
-- **Code's sessions can be searched,** as the chat's conversations are: by
-  title as you type, and by what was said and done in them.
+- **Several conversations deleted at once.** The tick box at the end of the
+  sidebar's search (or a Ctrl/⌘-click) starts a selection, Shift-click ticks
+  a run, and one confirmation deletes them all (#20).
 
 - **Scrolling up while a reply is written stops following at once.** The
   transcript was pinned to the bottom with a smooth scroll on every frame, and
@@ -272,57 +332,36 @@
 
 ### Look and feel
 
-- **A quieter, more finished look.** The window is two columns: the sidebar
-  on the frame, and the working area — chat, Code and the image studio alike
-  — running from the window's top, set off by one hairline. There is no title
-  bar across it: over the sidebar, the window's controls and a mode switch of
-  icons that sits at the sidebar's edge and moves with it; over the working
-  area, what is open (the conversation, the image session, Code's workspace)
-  on the left and the model and the app's buttons on the right, the transcript
-  fading out beneath them. Instrument Sans and JetBrains Mono, bundled; the
-  composer floats; conversations are grouped by recency, their titles no
-  longer cut short by hidden row actions; code blocks get a header; step cards
-  join into one list, success ticks go quiet and only failures take colour.
-  The status dots, the breathing pulse and the green spinners are gone, and
-  the accent is kept for the primary action and real states. Code mode's
-  thinking and bypass switches sit under its input, as the image studio's
-  settings do, and its running status inside the composer, clear of the
+- **A quieter, more finished look.** The window is one frame with the working
+  area inset in it; Instrument Sans and JetBrains Mono, bundled; the composer
+  floats; conversations are grouped by recency, their titles no longer cut
+  short by hidden row actions; code blocks get a header; step cards join into
+  one list, success ticks go quiet and only failures take colour. The status
+  dots, the breathing pulse and the green spinners are gone, and the accent is
+  kept for the primary action and real states. Code mode's top bar belongs to
+  its panel, and its running status sits inside the composer, clear of the
   transcript's fade.
 
 - Menus are the app's own throughout — the model store's filters and the
   image studio's pickers were the OS's — and open upward when there is no
   room below.
 
-- **Edges that line up.** The working area runs to the window's edges
-  instead of stopping 8 px short of them, and the sidebar is one width in
-  every mode; the sidebar's footer rule that stopped at its edge is gone.
-  Corners are smaller — cards and menus 10 px, panels and fields 8 px — with
-  the composer and the pills left round. The model chip, the mode switch and
-  the sidebar's fields take the panel's tone instead of fading into the
-  frame, and menus stand off the page, the cream palette's by a step more
-  (#20).
+- **Edges that line up.** The working area stands the same distance from the
+  frame on every side, its top level with the sidebar's first control, and the
+  sidebar's footer rule that stopped at its edge is gone. Corners are smaller
+  — cards and menus 10 px, panels and fields 8 px — with the composer and the
+  pills left round. The title bar's model chip and mode switch and the
+  sidebar's fields take the panel's tone instead of fading into the frame, and
+  menus stand off the page, the cream palette's by a step more (#20).
 
-- **Chaty draws its own scrollbars, everywhere** — lists, panels, menus, text
-  fields, code blocks, the canvas preview: a thin rounded thumb that firms up
-  under the pointer, in place of the system's in all but four places. The
-  composer's fade no longer washes out the transcript's scrollbar. Tick boxes,
-  number fields and a text field's resize grip are drawn by the app too, and
-  the model store's dialog dims the window like every other dialog.
-
-- **A narrow window keeps its buttons.** The top row gives way at the
-  model's name, its size figures first, and Code's workspace keeps a few
-  letters of its own; on Windows, minimize, maximize and close were pushed
-  out of the window (#20).
+- **A narrow window keeps its buttons.** The title bar gives way at the
+  model's name, and below 900 px the mode switch keeps only its icons; on
+  Windows, minimize, maximize and close were pushed out of the window (#20).
 
 - **Live mode, redrawn.** In place of the green orb, a band of soft light
   along the bottom follows the conversation — rising with your voice while it
   listens, drifting while it thinks, brightening with its own voice as it
-  answers — under the reply as a large caption, with a round button to end.
-
-- **Interrupt a spoken reply.** While Live mode answers, an Interrupt button
-  joins End. The reply stops, it is your turn at once, and the model
-  remembers what it had said up to there — not the rest it had written,
-  which nobody heard.
+  answers — under the reply as a large caption, with one round button to end.
 
 ### Reliability
 
@@ -350,9 +389,8 @@
   inside a Chinese reply no longer fetches the English voice (300 MB from
   GitHub) to read a few words, which read as the Chinese voice downloading
   again (#20).
-- The window could not be moved while a model downloaded, or with Live mode
-  or a dialog open: its top edge moves it whatever is over it now. A
-  dialog's backdrop covered the window buttons on Windows (#20).
+- The window could not be moved while a model downloaded, and a dialog's
+  backdrop covered the window buttons on Windows (#20).
 
 ## v2.2.2 — While it runs (2026-09-17)
 
