@@ -397,11 +397,6 @@ function RunView({ run, spec, keptSeconds, onStop }: { run: MusicRun; spec: Musi
           <span className="ms-run-num">{Math.round(pct)}</span>
           <span className="ms-run-sign">%</span>
         </div>
-        <div className="ms-eq" aria-hidden="true">
-          {Array.from({ length: 5 }, (_, i) => (
-            <span key={i} style={{ animationDelay: `${i * 0.13}s` }} />
-          ))}
-        </div>
       </div>
       <ol className="ms-stages">
         {stages.map((s, i) => {
@@ -541,6 +536,12 @@ export function MusicStudio({
     if (!el || !row) return;
     return watchContentHeight(el, row, 120);
   }, [d.prompt]);
+  // The lyrics grow with what is written, up to about a verse and a chorus.
+  useLayoutEffect(() => {
+    const el = lyricsRef.current;
+    if (!el) return;
+    return watchContentHeight(el, el.parentElement ?? el, Math.round(window.innerHeight * 0.26));
+  }, [d.lyrics, song]);
 
   // An empty studio (the greeting and ideas) rests at its top: in a short
   // window following the end would hide the greeting under the composer.
@@ -897,15 +898,39 @@ export function MusicStudio({
           </div>
         )}
 
-        <div className="input-row is-input ms-input">
-          <textarea
-            ref={promptRef}
-            value={d.prompt}
-            onChange={(e) => studio.patchDraft({ prompt: e.target.value })}
-            onKeyDown={onKeyDown}
-            placeholder={spec.promptTemplate ? t("musPromptPhTagged") : sings ? t("musStylePh") : t("musPromptPh")}
-            rows={1}
-          />
+        {/* One card: the style on its first line, the lyrics under a hairline
+            when the piece is sung, the button at its foot. */}
+        <div className={`input-row is-input ms-input ${song ? "with-lyrics" : ""}`}>
+          <div className="ms-fields">
+            <textarea
+              ref={promptRef}
+              value={d.prompt}
+              onChange={(e) => studio.patchDraft({ prompt: e.target.value })}
+              onKeyDown={onKeyDown}
+              placeholder={spec.promptTemplate ? t("musPromptPhTagged") : sings ? t("musStylePh") : t("musPromptPh")}
+              rows={1}
+            />
+            {song && (
+              <div className="ms-lyrics">
+                <textarea
+                  ref={lyricsRef}
+                  value={d.lyrics}
+                  onChange={(e) => studio.patchDraft({ lyrics: e.target.value })}
+                  onKeyDown={onKeyDown}
+                  placeholder={spec.lyricsRequired ? t("musLyricsPhRequired") : t("musLyricsPh")}
+                  rows={4}
+                  spellCheck={false}
+                />
+                <div className="ms-tags">
+                  {SECTION_TAGS.map((tag) => (
+                    <button key={tag} onClick={() => insertTag(tag)} title={t("musTagInsert")}>
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
           {busy ? (
             <button className="send-btn stop" onClick={() => void studio.cancel()} title={t("musStop")}>
               <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
@@ -922,27 +947,6 @@ export function MusicStudio({
             </button>
           )}
         </div>
-
-        {song && (
-          <div className="ms-lyrics">
-            <textarea
-              ref={lyricsRef}
-              value={d.lyrics}
-              onChange={(e) => studio.patchDraft({ lyrics: e.target.value })}
-              onKeyDown={onKeyDown}
-              placeholder={spec.lyricsRequired ? t("musLyricsPhRequired") : t("musLyricsPh")}
-              rows={4}
-              spellCheck={false}
-            />
-            <div className="ms-tags">
-              {SECTION_TAGS.map((tag) => (
-                <button key={tag} onClick={() => insertTag(tag)} title={t("musTagInsert")}>
-                  {tag}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
 
         <div className="is-bar">
           {spec.planning && (
