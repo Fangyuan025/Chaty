@@ -6,6 +6,7 @@ import { Icon } from "./Icon";
 import { Select } from "./Select";
 import { Markdown } from "./Markdown";
 import { fmtBytes, fmtCount } from "../lib/fmt";
+import { downloadMusicParts } from "../lib/musicDownload";
 import { OrgAvatar } from "./VendorIcon";
 import {
   hfSearch,
@@ -16,6 +17,7 @@ import {
   downloadMlxRepo,
   cancelDownload,
   imageModelProbe,
+  musicModelProbe,
   modelFolderFor,
   DOWNLOAD_CANCELLED,
   type HfModelHit,
@@ -97,8 +99,9 @@ export function DownloadModal({
   const [query, setQuery] = useState("");
   const [format, setFormat] = useState<"gguf" | "mlx">("gguf");
   const [sort, setSort] = useState<"trending" | "downloads" | "likes" | "updated">("trending");
-  /** "image" narrows the store to text-to-image models. */
-  const [task, setTask] = useState<"all" | "image">("all");
+  /** "image" narrows the store to text-to-image models, "music" to
+   *  text-to-music ones. */
+  const [task, setTask] = useState<"all" | "image" | "music">("all");
   const [hits, setHits] = useState<HfModelHit[]>([]);
   const [listLoading, setListLoading] = useState(false);
   // -- detail state --
@@ -115,7 +118,7 @@ export function DownloadModal({
   const seq = useRef(0);
 
   const runSearch = useCallback(
-    async (q: string, f: "gguf" | "mlx", s: typeof sort, k: "all" | "image") => {
+    async (q: string, f: "gguf" | "mlx", s: typeof sort, k: "all" | "image" | "music") => {
       const my = ++seq.current;
       setListLoading(true);
       setError("");
@@ -175,9 +178,14 @@ export function DownloadModal({
       setActive(true);
       setError("");
       etaStore.current = [];
-      // An image model's VAE and text encoder come with it (estimated here;
-      // ones already on disk are skipped below).
-      const companionBytes = d.image ? (d.companions ?? []).reduce((a, c) => a + c.size, 0) : 0;
+      // An image model's VAE and text encoder come with it, and so do a
+      // music model's VAE, configs and package parts (estimated here; ones
+      // already on disk are skipped below).
+      const companionBytes = d.image
+        ? (d.companions ?? []).reduce((a, c) => a + c.size, 0)
+        : d.music
+          ? (quant.extra ?? 0)
+          : 0;
       let grandTotal =
         d.format === "mlx" ? quant.size : quant.size + (d.mmproj ? d.mmprojSize : 0) + companionBytes;
       setProgress({ done: 0, total: grandTotal });
@@ -195,6 +203,8 @@ export function DownloadModal({
           });
         } else {
           const subdir = modelFolderFor(d.id);
+          // A package kept in a folder of a larger repo names the repo apart.
+          const repo = d.repo || d.id;
           const files = [...quant.files, ...(d.mmproj ? [d.mmproj] : [])];
           let doneBase = 0;
           let mainPath = "";
@@ -203,7 +213,7 @@ export function DownloadModal({
             cancelKey.current = name;
             let thisFile = 0;
             await downloadModel(
-              hfResolveUrl(d.id, path),
+              hfResolveUrl(repo, path),
               name,
               (p) => {
                 if (p.type === "progress") {
@@ -218,6 +228,23 @@ export function DownloadModal({
               subdir,
             );
             doneBase += thisFile;
+          }
+          // A music model: its VAE, configs and package parts, into its own
+          // folder — asking the model itself, so parts already there (from
+          // another quantization) are not fetched again.
+          if (d.music && mainPath) {
+            const probe = await musicModelProbe(mainPath).catch(() => null);
+            const todo = probe?.suggestions ?? [];
+            grandTotal = doneBase + todo.reduce((a, c) => a + c.size, 0);
+            if (probe && todo.length) {
+              doneBase += await downloadMusicParts(
+                probe.path,
+                todo,
+                (done) => tick(doneBase + done),
+                (name) => (cancelKey.current = name),
+                (msg) => msg !== DOWNLOAD_CANCELLED && setError(msg),
+              );
+            }
           }
           // An image model: fetch what it still lacks into its own folder —
           // asking the model itself, so an encoder another model already
@@ -293,7 +320,7 @@ export function DownloadModal({
   const needBytes = quant
     ? quant.size +
       (detail?.format === "gguf" && detail.mmproj ? detail.mmprojSize : 0) +
-      (detail?.image ? (detail.companions ?? []).reduce((a, c) => a + c.size, 0) : 0)
+      (detail?.image ? (detail.companions ?? []).reduce((a, c) => a + c.size, 0) : detail?.music ? (quant.extra ?? 0) : 0)
     : 0;
   const fitsRam = detail ? needBytes * 1.15 < detail.totalRamMb * 1024 * 1024 : false;
   const pct = progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : 0;
@@ -348,6 +375,7 @@ export function DownloadModal({
                 options={[
                   { value: "all" as const, label: t("storeTaskAll") },
                   { value: "image" as const, label: t("storeTaskImage") },
+                  { value: "music" as const, label: t("storeTaskMusic") },
                 ]}
               />
               <Select
@@ -393,11 +421,20 @@ export function DownloadModal({
                         {h.name}
                         {h.vision && <span className="mm-vision">{t("visionBadge")}</span>}
                         {h.image && <span className="mm-img">{t("imageBadge")}</span>}
+                        {h.music && <span className="mm-img mm-music">{t("musicBadge")}</span>}
                       </span>
                       <span className="store-hit-sub">
                         {h.author}
-                        {h.paramsB ? ` · ${h.paramsB}B` : ""} · ↓{fmtCount(h.downloads)} ·{" "}
-                        {daysAgo(h.updatedAt, t)}
+                        {h.paramsB ? ` · ${h.paramsB}B` : ""}
+                        {/* A folder of a multi-model repo (audio.cpp's music
+                            packages) has no stats of its own: name its repo. */}
+                        {h.id.split("/").length > 2 ? (
+                          ` · ${h.id.split("/")[1]}`
+                        ) : (
+                          <>
+                            {" "}· ↓{fmtCount(h.downloads)} · {daysAgo(h.updatedAt, t)}
+                          </>
+                        )}
                       </span>
                     </span>
                   </button>
@@ -434,6 +471,12 @@ export function DownloadModal({
                     <span className="store-badge store-badge-vision">{t("visionBadge")}</span>
                   )}
                   {detail.image && <span className="store-badge store-badge-image">{t("imageBadge")}</span>}
+                  {detail.music && (
+                    <span className="store-badge store-badge-image store-badge-music">
+                      {t("musicBadge")}
+                      {detail.musicFamily ? ` · ${detail.musicFamily}` : ""}
+                    </span>
+                  )}
                 </div>
 
                 <div className="store-dl-box">
@@ -486,7 +529,8 @@ export function DownloadModal({
                         (detail.format === "gguf" && detail.mmproj ? ` · ${t("storeVisionIncluded")}` : "") +
                         (detail.image
                           ? ` · ${detail.format === "mlx" || (detail.companions?.length ?? 0) > 0 ? t("storeImageIncluded") : t("storeImageManual")}`
-                          : "")}
+                          : "") +
+                        (detail.music && (quant?.extra ?? 0) > 0 ? ` · ${t("storeMusicIncluded")}` : "")}
                   </div>
                 </div>
 
@@ -501,7 +545,7 @@ export function DownloadModal({
                   }}
                 >
                   {detail.readme ? (
-                    <Markdown>{cleanReadme(detail.readme, detail.id)}</Markdown>
+                    <Markdown>{cleanReadme(detail.readme, detail.repo || detail.id)}</Markdown>
                   ) : (
                     <div className="store-empty">{t("storeReadmeEmpty")}</div>
                   )}
