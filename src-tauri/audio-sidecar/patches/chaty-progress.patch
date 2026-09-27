@@ -1,6 +1,6 @@
 diff --git a/include/engine/framework/debug/chaty_progress.h b/include/engine/framework/debug/chaty_progress.h
 new file mode 100644
-index 0000000..5590066
+index 00000000..55900665
 --- /dev/null
 +++ b/include/engine/framework/debug/chaty_progress.h
 @@ -0,0 +1,18 @@
@@ -23,7 +23,7 @@ index 0000000..5590066
 +#define CHATY_INFO(key, value) \
 +    ::engine::debug::timing_log_scalar("chaty.info", std::string(key) + " " + std::to_string(value))
 diff --git a/src/community_models/minimax_music3/ar_runtime.cpp b/src/community_models/minimax_music3/ar_runtime.cpp
-index 1b09aaa..2ca34d9 100644
+index 1b09aaab..2ca34d90 100644
 --- a/src/community_models/minimax_music3/ar_runtime.cpp
 +++ b/src/community_models/minimax_music3/ar_runtime.cpp
 @@ -1,4 +1,5 @@
@@ -52,8 +52,34 @@ index 1b09aaa..2ca34d9 100644
              for (int64_t take = 0; take < takes; ++take) {
                  auto & ts = take_states[static_cast<size_t>(take)];
                  assign_batch_row(batch_hidden, 2 * take, hidden_size, ts.cond_hidden);
+diff --git a/src/community_models/minimax_music3/pipeline.cpp b/src/community_models/minimax_music3/pipeline.cpp
+index 259ebd13..bad6d2eb 100644
+--- a/src/community_models/minimax_music3/pipeline.cpp
++++ b/src/community_models/minimax_music3/pipeline.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/community_models/minimax_music3/pipeline.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -286,6 +287,7 @@ struct MiniMaxMusic3PipelineRuntime::Impl {
+             auto & condition_runtime = ensure_condition();
+             auto & flow_runtime = ensure_flow();
+             for (size_t chunk_index = 0; chunk_index < starts.size(); ++chunk_index) {
++                CHATY_PROGRESS("render", chunk_index, starts.size());
+                 const int64_t start = starts[chunk_index];
+                 const int64_t end = std::min(start + assets->config.chunk_frames, generated_frames);
+                 const int64_t frame_count = end - start;
+@@ -347,6 +349,7 @@ struct MiniMaxMusic3PipelineRuntime::Impl {
+         {
+             auto & vocoder_runtime = ensure_vocoder();
+             for (size_t chunk_index = 0; chunk_index < denoised.size(); ++chunk_index) {
++                CHATY_PROGRESS("decode", chunk_index, denoised.size());
+                 auto chunk = std::move(denoised[chunk_index]);
+                 const auto vocoder_start = Clock::now();
+                 const auto audio = vocoder_runtime.decode(chunk.latents, chunk.latent_frames);
 diff --git a/src/models/ace_step/diffusion.cpp b/src/models/ace_step/diffusion.cpp
-index 103ab91..374e16b 100644
+index 103ab916..374e16b6 100644
 --- a/src/models/ace_step/diffusion.cpp
 +++ b/src/models/ace_step/diffusion.cpp
 @@ -1,4 +1,5 @@
@@ -71,7 +97,7 @@ index 103ab91..374e16b 100644
                  options.audio_cover_strength < 1.0F &&
                  static_cast<int64_t>(i) >= cover_steps) {
 diff --git a/src/models/ace_step/planner.cpp b/src/models/ace_step/planner.cpp
-index 74f400c..b33bb07 100644
+index 74f400c4..b33bb078 100644
 --- a/src/models/ace_step/planner.cpp
 +++ b/src/models/ace_step/planner.cpp
 @@ -1,4 +1,5 @@
@@ -91,7 +117,7 @@ index 74f400c..b33bb07 100644
              if (use_cfg) {
                  phase2_sampler.write_cfg_logits(
 diff --git a/src/models/heartmula/generator.cpp b/src/models/heartmula/generator.cpp
-index e272c7c..696a95e 100644
+index e272c7c1..696a95e7 100644
 --- a/src/models/heartmula/generator.cpp
 +++ b/src/models/heartmula/generator.cpp
 @@ -1,4 +1,5 @@
@@ -111,7 +137,7 @@ index e272c7c..696a95e 100644
          auto next_backbone = mula.backbone_cached_step(
              next_embeddings.values,
 diff --git a/src/models/midashenglm_gen/ar_runtime.cpp b/src/models/midashenglm_gen/ar_runtime.cpp
-index a61bb7e..58842cd 100644
+index a61bb7ed..58842cdf 100644
 --- a/src/models/midashenglm_gen/ar_runtime.cpp
 +++ b/src/models/midashenglm_gen/ar_runtime.cpp
 @@ -1,4 +1,5 @@
@@ -129,7 +155,7 @@ index a61bb7e..58842cd 100644
              flow_input.x.clear();
              flow_input.latent_history = latent_history;
 diff --git a/src/models/stable_audio/foundation/rf_dit.cpp b/src/models/stable_audio/foundation/rf_dit.cpp
-index 594d515..e622c26 100644
+index 594d515d..e622c266 100644
 --- a/src/models/stable_audio/foundation/rf_dit.cpp
 +++ b/src/models/stable_audio/foundation/rf_dit.cpp
 @@ -1,4 +1,5 @@
@@ -163,7 +189,7 @@ index 594d515..e622c26 100644
              const float sigma_next = sigmas[static_cast<size_t>(step + 1)];
              const float c_in = 1.0F / std::sqrt(sigma * sigma + 1.0F);
 diff --git a/src/models/stable_audio/rf_dit.cpp b/src/models/stable_audio/rf_dit.cpp
-index 1903a07..8cd046b 100644
+index 1903a074..8cd046b6 100644
 --- a/src/models/stable_audio/rf_dit.cpp
 +++ b/src/models/stable_audio/rf_dit.cpp
 @@ -1,4 +1,5 @@
@@ -181,7 +207,7 @@ index 1903a07..8cd046b 100644
              for (int64_t b = 0; b < batch_; ++b) {
                  const size_t base = static_cast<size_t>(b * sampling.schedule_points);
 diff --git a/src/models/yue2/ar_runtime.cpp b/src/models/yue2/ar_runtime.cpp
-index d21f381..b876352 100644
+index d21f381b..b876352f 100644
 --- a/src/models/yue2/ar_runtime.cpp
 +++ b/src/models/yue2/ar_runtime.cpp
 @@ -1,4 +1,5 @@
@@ -211,7 +237,7 @@ index d21f381..b876352 100644
                  break;
              }
 diff --git a/src/models/yue2/nar_runtime.cpp b/src/models/yue2/nar_runtime.cpp
-index 1acbeb8..cb25315 100644
+index 1acbeb80..cb25315f 100644
 --- a/src/models/yue2/nar_runtime.cpp
 +++ b/src/models/yue2/nar_runtime.cpp
 @@ -1,4 +1,5 @@
@@ -250,7 +276,7 @@ index 1acbeb8..cb25315 100644
      bool allow_flash_attention = true;
      int64_t attention_tile_rows = 0;
 diff --git a/src/models/yue2/pipeline.cpp b/src/models/yue2/pipeline.cpp
-index bc49fdd..65356d8 100644
+index bc49fdd3..65356d84 100644
 --- a/src/models/yue2/pipeline.cpp
 +++ b/src/models/yue2/pipeline.cpp
 @@ -1,4 +1,5 @@

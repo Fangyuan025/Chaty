@@ -246,7 +246,9 @@ pub const MINIMAX_MUSIC3: Family = Family {
     planning: false,
     fixed: &[],
     edits: &[],
-    stages: &[("tokens", 0.65), ("render", 0.30), ("decode", 0.05)],
+    // Measured on Metal (M4 Pro, Q4_0, 10 s): the codes 29 s, the flow
+    // transformer 82 s, the vocoder 7 s.
+    stages: &[("tokens", 0.25), ("render", 0.69), ("decode", 0.06)],
     token_rate: 0.0,
     prompt_template: None,
 };
