@@ -554,7 +554,9 @@ export interface MusicProgress {
 
 /** The stages this piece goes through: the family's, minus those the request
  *  skips (YuE2 writes no score of its own when it follows one, or plans
- *  nothing). */
+ *  nothing; ACE-Step's repaint and cover start from the piece's audio, and
+ *  its language model writes nothing — measured with the engine: prepare,
+ *  render, save). */
 export function runStages(spec: MusicFamilySpec, req: MusicRequest): [string, number][] {
   let stages = spec.stages;
   if (spec.planning) {
@@ -562,6 +564,7 @@ export function runStages(spec: MusicFamilySpec, req: MusicRequest): [string, nu
     const follows = !!req.scorePath || req.edit?.kind === "rearrange" || req.edit?.kind === "continue";
     if (cot === "off" || follows) stages = stages.filter(([s]) => s !== "score");
   }
+  if (req.edit?.kind === "repaint" || req.edit?.kind === "cover") stages = stages.filter(([s]) => s !== "tokens");
   const total = stages.reduce((a, [, w]) => a + w, 0) || 1;
   return stages.map(([s, w]) => [s, w / total]);
 }

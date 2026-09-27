@@ -197,6 +197,13 @@ describe("progress", () => {
     );
     const total = runStages(YUE2, req({ options: { cot: "off" } })).reduce((a, [, w]) => a + w, 0);
     expect(total).toBeCloseTo(1);
+    // ACE-Step's language model writes a fresh piece's codes; a repaint or a
+    // cover starts from the audio and goes straight to rendering.
+    const ACE: MusicFamilySpec = { ...YUE2, id: "ace_step", planning: false, edits: ["repaint", "cover"], stages: [["tokens", 0.3], ["render", 0.65], ["decode", 0.05]] };
+    expect(runStages(ACE, req()).map(([s]) => s)).toEqual(["tokens", "render", "decode"]);
+    const cover = runStages(ACE, req({ edit: { kind: "cover", parentId: "p", start: 0, end: 0, strength: 0 } }));
+    expect(cover.map(([s]) => s)).toEqual(["render", "decode"]);
+    expect(cover.reduce((a, [, w]) => a + w, 0)).toBeCloseTo(1);
   });
 
   test("the percentage runs through the stages and never goes back", () => {
