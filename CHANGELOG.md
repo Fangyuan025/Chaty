@@ -1,5 +1,61 @@
 # Changelog
 
+## Unreleased
+
+### Music generation
+
+- **Text-to-music models load, and the whole app becomes a music studio.**
+  An audio.cpp GGUF is recognised by its own metadata when it is loaded —
+  YuE2 (the Yue2-3B package: lyrics to a whole song, voice and band
+  together), MiniMax Music 3, ACE-Step 1.5, HeartMuLa, Stable Audio 3 and
+  MiDashengLM-Gen — and runs on [audio.cpp](https://github.com/0xShug0/audio.cpp)
+  in a helper process of its own, `chaty-audio`: Metal on a Mac, Vulkan on
+  Windows and Linux, with only these families compiled in. A GPU load that
+  dies retries on the CPU by itself, and stopping a piece ends the helper,
+  which hands back every byte of the model at once.
+
+- **A package is found whole.** audio.cpp publishes most models as more than
+  one file — YuE2's main model beside its VAE and a `sidecars/` folder of
+  configs and tokenizer, MiniMax Music 3 as a language model, depth decoder,
+  flow transformer, condition encoder and vocoder with `config/` and
+  `tokenizer/` folders. Pick the quantization you want; the rest is found
+  beside it, and whatever is missing downloads in one click. The store has a
+  text-to-music shelf: the official packages first, including those kept as
+  folders of audio-cpp's multi-model repo, each download bringing its parts.
+
+- **Sessions like the image studio's.** Music sessions in the sidebar —
+  pinned, renamed, searched by the words inside them — each a thread of
+  rounds: the style and lyrics as your bubble, the piece as the reply, with a
+  waveform to play and seek, its length, seed and settings, and the same
+  actions (again with a new seed, reuse everything, delete, save a copy).
+
+- **Several rounds on one piece.** Each family's own edits of an earlier
+  round: YuE2 rearranges a piece on its own melody (the score it wrote for
+  it) with a new style or new lyrics, or continues it — from the playhead,
+  remaking the rest, or from its end, making it longer; ACE-Step repaints a
+  selected stretch or covers the piece in a new style; Stable Audio makes a
+  variation at a chosen strength or fills a selected stretch in again. A
+  score of your own (ABC) can be dropped in for YuE2 to follow.
+
+- **Song, instrumental, or from a score.** Lyrics with one-click section
+  tags, left empty for the model to write, or no singing at all, where the
+  family can leave it out; the length is automatic or set, as a limit where
+  the model decides when to end.
+
+- **Watched as it is made.** A percentage made from the stages the piece
+  actually goes through — writing the score, composing, rendering the sound,
+  decoding — weighted by each family's share of the work, with how much music
+  is composed so far, elapsed time and an estimate of what is left. It never
+  runs backwards. audio.cpp says nothing while it works, so a small patch
+  adds the progress lines the helper turns into these numbers.
+
+- **Every setting, the recommended one first.** The common ones sit on the
+  composer (planning, length, seed, steps and guidance), the rest in Settings
+  → Music generation, grouped, each showing its recommended value and a way
+  back to it; any option the engine reports beyond those is offered too.
+  Settings → Music model holds the device, threads and the engine's own
+  session options (weight types, attention, memory saving).
+
 ## v2.3.0 — Put to work (2026-09-25)
 
 ### Image generation

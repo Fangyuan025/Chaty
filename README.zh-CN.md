@@ -8,7 +8,7 @@
 
 **硬盘里的模型，真正干起活来。**
 
-对话、编程智能体、文生图、从你自己的文档里找答案，还有能开口说话的语音——<br />
+对话、编程智能体、文生图、文生音乐、从你自己的文档里找答案，还有能开口说话的语音——<br />
 全部跑在你自己 Mac 或 PC 上的开源模型里。无需账号，不上云，零遥测。
 
 [![Release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=3a3a3a)](../../releases/latest)
@@ -18,7 +18,7 @@
 
 [**下载**](../../releases/latest) · [**官网**](https://chaty.ca) · [**文档**](https://chaty.ca/docs.html) · [**更新日志**](CHANGELOG.md)
 
-<sub>macOS（Apple Silicon）· Windows 10/11 · Linux（AppImage）—— GGUF 跑在 llama.cpp 上，Apple Silicon 原生跑 MLX，文生图跑在 stable-diffusion.cpp 上</sub>
+<sub>macOS（Apple Silicon）· Windows 10/11 · Linux（AppImage）—— GGUF 跑在 llama.cpp 上，Apple Silicon 原生跑 MLX，文生图跑在 stable-diffusion.cpp 上，文生音乐跑在 audio.cpp 上</sub>
 
 <br />
 
@@ -35,14 +35,14 @@
 
 ## 为什么选 Chaty
 
-- **一个应用，五种用途。** 对话、编程智能体、文生图工作室、基于你自己文档的问答，还有能直接说话的语音——同一批本地模型，同一个窗口。不用跑服务，不占端口，不要 API key。
+- **一个应用，六种用途。** 对话、编程智能体、文生图工作室、文生音乐工作室、基于你自己文档的问答，还有能直接说话的语音——同一批本地模型，同一个窗口。不用跑服务，不占端口，不要 API key。
 - **为装得进笔记本的模型而设计。** 工具调用用每个模型训练时的格式，编辑在写出的过程中就和文件逐行比对，失误在出现的那一步就被纠正——让小模型也能把真活干完。[怎么做到的 →](#专门对付小模型会犯的错)
 - **GGUF 和 MLX 都是原生支持。** llama.cpp 在各个平台上跑 Metal 或 Vulkan，Apple Silicon 上原生跑 MLX；内置模型商店直接搜 Hugging Face，并告诉你哪些文件放得进你的内存。
 - **完全属于你。** 模型、对话、文档和图片都在你硬盘上的一个文件夹里。没有账号，没有遥测——删掉文件夹，就什么都不剩。
 
 ## 目录
 
-[对话](#对话) · [编程](#编程) · [文生图](#文生图) · [文档与研究](#文档与研究) · [语音](#语音) · [为小模型而做](#专门对付小模型会犯的错) · [模型](#模型) · [隐私](#隐私) · [安装](#安装) · [构建](#构建) · [架构](#架构)
+[对话](#对话) · [编程](#编程) · [文生图](#文生图) · [文生音乐](#文生音乐) · [文档与研究](#文档与研究) · [语音](#语音) · [为小模型而做](#专门对付小模型会犯的错) · [模型](#模型) · [隐私](#隐私) · [安装](#安装) · [构建](#构建) · [架构](#架构)
 
 ## 对话
 
@@ -105,6 +105,17 @@
 - **连同配方一起保存**——PNG 里写着提示词和参数，按日期存放。
 
 底层是 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)，运行在一个辅助进程里——Mac 上用 Metal，Windows 和 Linux 上用 Vulkan——显卡驱动崩溃只会结束辅助进程，不会带走整个应用。Mac 上的 MLX 文生图模型（[mflux](https://github.com/filipstrand/mflux) 保存的 Z-Image、Qwen-Image、FLUX.1 文件夹）则走 MLX 引擎，还要更快：同样的提示词，Z-Image Turbo 只要 1 分 45 秒，Qwen-Image 2.1 只要 9 分 0 秒。
+
+## 文生音乐
+
+加载一个文生音乐模型，整个应用就变成音乐工作室——和加载文生图模型进入图像工作室一样：会话读起来像对话，每个模型家族的推荐参数都已填好，百分比跟着作品走过每个阶段——写乐谱、作曲、渲染、解码。
+
+- **audio.cpp 支持的家族** —— YuE2（歌词直接变成整首歌，人声和伴奏一起生成）、MiniMax Music 3、ACE-Step 1.5、HeartMuLa、Stable Audio 3 和 MiDashengLM-Gen，使用 [audio.cpp](https://github.com/0xShug0/audio.cpp) 的 GGUF 包。Chaty 会在模型旁边找到包里的其他文件——VAE、配置、分词器、多文件模型的其余部分——缺的一键下载。
+- **自己写词，或者不写** —— 用段落标签写歌词，交给模型自由发挥，或者直接要纯音乐；曲风用几句话描述即可。
+- **从一首接着改** —— 每个家族有自己的多轮修改：YuE2 可以沿用原旋律改编，或从任意一秒开始续写；ACE-Step 可以重绘某一段，或换风格翻唱；Stable Audio 可以做变奏，或重新填充某一段。
+- **所有参数都能调，默认走推荐值** —— 常用的在输入框下方，其余在设置里，每一项都能单独恢复推荐值。
+
+它运行在自己的辅助进程 `chaty-audio` 中——Mac 上用 Metal，Windows 和 Linux 上用 Vulkan——停止生成就结束这个进程，模型占用的内存一次全部归还。
 
 ## 文档与研究
 
@@ -200,7 +211,7 @@ npm run tauri dev
 npm run tauri build -- --bundles appimage
 ```
 
-MLX 与文生图引擎是单独的辅助程序——`scripts/build-mlx-sidecar.sh` 和 `scripts/build-sd-sidecar.{sh,ps1}`。发行版由 CI 构建：用 `scripts/bump-version.sh x.y.z` 改版本号，推送 `vx.y.z` 标签，GitHub Actions 会把三个平台的安装包构建到同一个 release 上。
+MLX、文生图与文生音乐引擎是单独的辅助程序——`scripts/build-mlx-sidecar.sh`、`scripts/build-sd-sidecar.{sh,ps1}` 和 `scripts/build-audio-sidecar.{sh,ps1}`。发行版由 CI 构建：用 `scripts/bump-version.sh x.y.z` 改版本号，推送 `vx.y.z` 标签，GitHub Actions 会把三个平台的安装包构建到同一个 release 上。
 
 ## 架构
 
@@ -210,6 +221,7 @@ MLX 与文生图引擎是单独的辅助程序——`scripts/build-mlx-sidecar.s
 | 界面 | React 19 · Vite · react-markdown · KaTeX · Mermaid |
 | 语言模型 | Rust · `llama-cpp-2`（llama.cpp——Metal / Vulkan）· Apple Silicon 上通过 `mlx-swift-lm` 辅助进程跑 MLX · 模型自带模板与内置渲染不一致时用 minijinja 渲染 |
 | 文生图 | `chaty-sd` 辅助进程中的 stable-diffusion.cpp · Apple Silicon 上 MLX 文生图模型（mflux 存档）跑在 `chaty-mlx` 辅助进程中 |
+| 文生音乐 | `chaty-audio` 辅助进程中的 audio.cpp —— YuE2、MiniMax Music 3、ACE-Step 1.5、HeartMuLa、Stable Audio 3、MiDashengLM-Gen |
 | 语音 | `sherpa-rs`（ONNX Runtime，CPU）——Whisper、Kokoro-82M，以及一个 VITS 中文音色 |
 | 知识库 | bge-m3 向量 + BM25 · RRF / MMR 混合检索 · SQLite 向量库 |
 | 存储 | SQLite——对话、会话、全文搜索 |
@@ -222,4 +234,4 @@ MLX 与文生图引擎是单独的辅助程序——`scripts/build-mlx-sidecar.s
 
 ## 许可
 
-MIT——见 [LICENSE](LICENSE)。构建于 [llama.cpp](https://github.com/ggml-org/llama.cpp)、[MLX](https://github.com/ml-explore/mlx-swift)、[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)、[Tauri](https://tauri.app) 和 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)。
+MIT——见 [LICENSE](LICENSE)。构建于 [llama.cpp](https://github.com/ggml-org/llama.cpp)、[MLX](https://github.com/ml-explore/mlx-swift)、[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)、[audio.cpp](https://github.com/0xShug0/audio.cpp)、[Tauri](https://tauri.app) 和 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)。
