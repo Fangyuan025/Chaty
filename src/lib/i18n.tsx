@@ -1374,6 +1374,11 @@ export const T = {
   musSearch: { zh: "搜索音乐会话…", en: "Search music sessions…", pt: "Buscar sessões de música…" },
   musNoHistory: { zh: "还没有作品", en: "No pieces yet", pt: "Nenhuma música ainda" },
   musDeleteSession: { zh: "删除会话", en: "Delete session", pt: "Excluir sessão" },
+  musDeleteSessionsConfirm: {
+    zh: "删除选中的 {n} 个会话，以及其中所有音频文件？无法撤销。",
+    en: "Delete the {n} selected sessions and every audio file in them? This can't be undone.",
+    pt: "Excluir as {n} sessões selecionadas e todos os áudios delas? Não pode ser desfeito.",
+  },
   musDeleteSessionConfirm: { zh: "删除这个会话及其中所有音频文件?无法撤销。", en: "Delete this session and every audio file in it? This can't be undone.", pt: "Excluir esta sessão e todos os áudios dela? Não pode ser desfeito." },
   musCmdkHint: { zh: "音乐会话", en: "Music session", pt: "Sessão de música" },
   musHero: { zh: "写一首歌", en: "Make a song", pt: "Crie uma música" },

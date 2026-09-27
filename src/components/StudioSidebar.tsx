@@ -39,7 +39,15 @@ export function StudioSidebar<S extends StudioSessionItem>({
   notify: (kind: "warn" | "error", text: string) => void;
   /** Sessions whose contents match (titles are matched here). */
   search: (query: string) => Promise<string[]>;
-  labels: { newSession: string; search: string; empty: string; deleteTitle: string; deleteConfirm: string };
+  labels: {
+    newSession: string;
+    search: string;
+    empty: string;
+    deleteTitle: string;
+    deleteConfirm: string;
+    /** For several sessions at once; `{n}` is how many. */
+    deleteManyConfirm: (n: number) => string;
+  };
 }) {
   const { t } = useI18n();
   const confirm = useConfirm();
@@ -94,7 +102,7 @@ export function StudioSidebar<S extends StudioSessionItem>({
     if (ids.length === 0) return;
     const ok = await confirm({
       title: labels.deleteTitle,
-      message: t("confirmDeleteSessions", { n: ids.length }),
+      message: labels.deleteManyConfirm(ids.length),
       confirmLabel: t("confirmDelete"),
       danger: true,
     });

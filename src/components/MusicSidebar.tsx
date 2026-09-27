@@ -27,6 +27,8 @@ export function MusicSidebar({
         empty: t("musNoHistory"),
         deleteTitle: t("musDeleteSession"),
         deleteConfirm: t("musDeleteSessionConfirm"),
+
+        deleteManyConfirm: (n) => t("musDeleteSessionsConfirm", { n }),
       }}
     />
   );

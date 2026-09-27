@@ -27,6 +27,8 @@ export function ImageSidebar({
         empty: t("imgNoHistory"),
         deleteTitle: t("imgDeleteSession"),
         deleteConfirm: t("imgDeleteSessionConfirm"),
+
+        deleteManyConfirm: (n) => t("imgDeleteSessionsConfirm", { n }),
       }}
     />
   );
