@@ -12,7 +12,12 @@
   in a helper process of its own, `chaty-audio`: Metal on a Mac, Vulkan on
   Windows and Linux, with only these families compiled in. A GPU load that
   dies retries on the CPU by itself, and stopping a piece ends the helper,
-  which hands back every byte of the model at once.
+  which hands back every byte of the model at once. Measured on an M4 Pro
+  with 48 GB: YuE2 (Q4_0) writes and sings a 30-second verse and chorus in
+  33 s — Whisper hears the lyrics back — ACE-Step 1.5 turbo (Q8_0) makes
+  10 s in 13 s, Stable Audio 3 Small (Q8_0) 20 s in 1.2 s, MiniMax Music 3
+  (Q4_0) 10 s in 2 min, HeartMuLa (Q8_0) 20 s in 34 s, MiDashengLM-Gen
+  (Q8_0) a clip in 10 s.
 
 - **A package is found whole.** audio.cpp publishes most models as more than
   one file — YuE2's main model beside its VAE and a `sidecars/` folder of

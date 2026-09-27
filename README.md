@@ -115,7 +115,7 @@ Load a text-to-music model and the whole app becomes a music studio, the way an 
 - **Keep going from a piece** — each family's own edits of an earlier round: YuE2 rearranges a piece on its own melody or continues it from any second, ACE-Step repaints a stretch or covers it in a new style, Stable Audio makes a variation or fills a stretch in again.
 - **Every setting, the recommended one first** — the common ones on the composer, the rest in Settings, each with its way back to the recommendation.
 
-It runs in a helper process of its own, `chaty-audio` — Metal on a Mac, Vulkan on Windows and Linux — and stopping a piece ends the helper, which hands back every byte of the model at once.
+It runs in a helper process of its own, `chaty-audio` — Metal on a Mac, Vulkan on Windows and Linux — and stopping a piece ends the helper, which hands back every byte of the model at once. On an M4 Pro, YuE2 writes and sings a 30-second verse and chorus in 33 s, ACE-Step 1.5 turbo makes 10 s in 13 s, and Stable Audio 3 Small makes 20 s in 1.2 s.
 
 ## Documents and research
 
