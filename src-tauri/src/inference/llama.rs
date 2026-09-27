@@ -866,6 +866,7 @@ impl LlamaEngine {
             warning,
             kind: "chat".into(),
             image: None,
+            music: None,
         };
 
         // `tx` + the worker came from the load/back-off loop above.

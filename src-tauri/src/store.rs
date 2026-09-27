@@ -94,6 +94,29 @@ CREATE TABLE IF NOT EXISTS image_generations (
     parent_id       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_image_generations_created ON image_generations(created_at);
+CREATE TABLE IF NOT EXISTS music_sessions (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    pinned      INTEGER NOT NULL DEFAULT 0,
+    draft       TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS music_tracks (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    parent_id   TEXT,
+    prompt      TEXT NOT NULL DEFAULT '',
+    lyrics      TEXT NOT NULL DEFAULT '',
+    params      TEXT NOT NULL DEFAULT '{}',
+    audio       TEXT NOT NULL DEFAULT '{}',
+    peaks       TEXT NOT NULL DEFAULT '[]',
+    model       TEXT NOT NULL DEFAULT '',
+    family      TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    elapsed_ms  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_music_tracks_session ON music_tracks(session_id, created_at);
 ";
 
 pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
@@ -1301,6 +1324,306 @@ pub fn image_history_clear(db: State<'_, Db>, delete_files: bool) -> Result<(), 
     Ok(())
 }
 
+// ---- Music sessions (the music studio's conversations) ----
+//
+// The image studio's shape, for music: a session is a conversation, each
+// round in it — a description, lyrics, and the piece they made — is a track.
+// A round may start from an earlier one (a rearrangement, a continuation, a
+// repainted stretch); `parent_id` says which.
+
+/// One round of a music session.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicRecord {
+    pub id: String,
+    pub session_id: String,
+    /// The round this one was made from (multi-turn editing).
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// The description: style, genre, instruments, mood.
+    pub prompt: String,
+    pub lyrics: String,
+    /// The request as it was sent (mode, length, options, the edit), so a
+    /// piece can be made again or varied.
+    pub params: serde_json::Value,
+    pub audio: crate::inference::audio::MusicAudio,
+    /// The waveform's outline, for the player (0..1 per bar).
+    pub peaks: Vec<f32>,
+    pub model: String,
+    pub family: String,
+    pub created_at: i64,
+    pub elapsed_ms: i64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicSession {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub pinned: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicSessionData {
+    pub session: MusicSession,
+    pub draft: String,
+    pub records: Vec<MusicRecord>,
+}
+
+const MUSIC_COLS: &str =
+    "id, session_id, parent_id, prompt, lyrics, params, audio, peaks, model, family, created_at, elapsed_ms";
+
+fn music_row(r: &rusqlite::Row) -> rusqlite::Result<MusicRecord> {
+    Ok(MusicRecord {
+        id: r.get(0)?,
+        session_id: r.get(1)?,
+        parent_id: r.get(2)?,
+        prompt: r.get(3)?,
+        lyrics: r.get(4)?,
+        params: serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or(serde_json::Value::Null),
+        audio: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default(),
+        peaks: serde_json::from_str(&r.get::<_, String>(7)?).unwrap_or_default(),
+        model: r.get(8)?,
+        family: r.get(9)?,
+        created_at: r.get(10)?,
+        elapsed_ms: r.get(11)?,
+    })
+}
+
+fn music_records(conn: &Connection, filter: Option<(&str, &str)>) -> rusqlite::Result<Vec<MusicRecord>> {
+    let sql = format!(
+        "SELECT {MUSIC_COLS} FROM music_tracks {} ORDER BY created_at ASC",
+        filter.map(|(w, _)| format!("WHERE {w}")).unwrap_or_default()
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = match filter {
+        Some((_, v)) => stmt.query_map(params![v], music_row)?.collect(),
+        None => stmt.query_map([], music_row)?.collect(),
+    };
+    rows
+}
+
+/// One round by id.
+pub(crate) fn music_record(db: &Db, id: &str) -> Result<Option<MusicRecord>, String> {
+    let conn = lock_connection(&db.0);
+    music_records(&conn, Some(("id = ?1", id))).map(|v| v.into_iter().next()).map_err(|e| e.to_string())
+}
+
+/// Keep a finished round — only in a session that still exists (one deleted
+/// while its piece was being made must not come back). Returns whether it
+/// was kept.
+fn music_record_insert_conn(conn: &Connection, r: &MusicRecord) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        &format!(
+            "INSERT OR REPLACE INTO music_tracks ({MUSIC_COLS})
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+             WHERE EXISTS (SELECT 1 FROM music_sessions WHERE id = ?2)"
+        ),
+        params![
+            r.id,
+            r.session_id,
+            r.parent_id,
+            r.prompt,
+            r.lyrics,
+            r.params.to_string(),
+            serde_json::to_string(&r.audio).unwrap_or_else(|_| "{}".into()),
+            serde_json::to_string(&r.peaks).unwrap_or_else(|_| "[]".into()),
+            r.model,
+            r.family,
+            r.created_at,
+            r.elapsed_ms,
+        ],
+    )?;
+    if n > 0 {
+        conn.execute("UPDATE music_sessions SET updated_at = ?1 WHERE id = ?2", params![now_ms(), r.session_id])?;
+    }
+    Ok(n > 0)
+}
+
+pub(crate) fn music_record_insert(db: &Db, r: &MusicRecord) -> Result<bool, String> {
+    music_record_insert_conn(&lock_connection(&db.0), r).map_err(|e| e.to_string())
+}
+
+/// A session for a round that came without one: named after its prompt.
+pub(crate) fn music_session_ensure(db: &Db, id: &str, title: &str) -> Result<(), String> {
+    let conn = lock_connection(&db.0);
+    conn.execute(
+        "INSERT OR IGNORE INTO music_sessions (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+        params![id, title, now_ms()],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Is `path` a file of the music history (a piece, its score)? The player
+/// may read only those.
+pub(crate) fn music_file_known(db: &Db, path: &str) -> bool {
+    let conn = lock_connection(&db.0);
+    conn.prepare("SELECT audio FROM music_tracks")
+        .and_then(|mut st| {
+            st.query_map([], |r| r.get::<_, String>(0)).map(|rows| {
+                rows.flatten().any(|j| {
+                    serde_json::from_str::<crate::inference::audio::MusicAudio>(&j).is_ok_and(|a| {
+                        a.path == path || a.score_path.as_deref() == Some(path)
+                    })
+                })
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn music_sessions(conn: &Connection, id: Option<&str>) -> rusqlite::Result<Vec<MusicSession>> {
+    let sql = format!(
+        "SELECT id, title, created_at, updated_at, pinned FROM music_sessions {}
+         ORDER BY pinned DESC, updated_at DESC",
+        if id.is_some() { "WHERE id = ?1" } else { "" }
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let map = |r: &rusqlite::Row| {
+        Ok(MusicSession { id: r.get(0)?, title: r.get(1)?, created_at: r.get(2)?, updated_at: r.get(3)?, pinned: r.get(4)? })
+    };
+    let rows = match id {
+        Some(id) => stmt.query_map(params![id], map)?.collect(),
+        None => stmt.query_map([], map)?.collect(),
+    };
+    rows
+}
+
+/// A piece's files: the audio, and the score and tokens made with it.
+fn remove_music_files(records: &[MusicRecord]) {
+    for r in records {
+        for p in [Some(&r.audio.path), r.audio.score_path.as_ref(), r.audio.tokens_path.as_ref()].into_iter().flatten() {
+            if !p.is_empty() {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn music_session_save(db: State<'_, Db>, id: String, title: String) -> Result<(), String> {
+    let conn = lock(&db)?;
+    conn.execute(
+        "INSERT INTO music_sessions (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(id) DO UPDATE SET title = ?2, updated_at = ?3",
+        params![id, title, now_ms()],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn music_session_list(db: State<'_, Db>) -> Result<Vec<MusicSession>, String> {
+    let conn = lock(&db)?;
+    music_sessions(&conn, None).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn music_session_get(db: State<'_, Db>, id: String) -> Result<Option<MusicSessionData>, String> {
+    let conn = lock(&db)?;
+    let Some(session) = music_sessions(&conn, Some(&id)).map_err(|e| e.to_string())?.into_iter().next() else {
+        return Ok(None);
+    };
+    let draft: String = conn
+        .query_row("SELECT draft FROM music_sessions WHERE id = ?1", params![id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let records = music_records(&conn, Some(("session_id = ?1", &id))).map_err(|e| e.to_string())?;
+    Ok(Some(MusicSessionData { session, draft, records }))
+}
+
+#[tauri::command]
+pub fn music_session_draft(db: State<'_, Db>, id: String, draft: String) -> Result<(), String> {
+    let conn = lock(&db)?;
+    conn.execute("UPDATE music_sessions SET draft = ?1 WHERE id = ?2", params![draft, id])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn music_session_rename(db: State<'_, Db>, id: String, title: String) -> Result<(), String> {
+    let conn = lock(&db)?;
+    conn.execute("UPDATE music_sessions SET title = ?1 WHERE id = ?2", params![title, id])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn music_session_set_pinned(db: State<'_, Db>, id: String, pinned: bool) -> Result<(), String> {
+    let conn = lock(&db)?;
+    conn.execute("UPDATE music_sessions SET pinned = ?1 WHERE id = ?2", params![pinned as i64, id])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Delete a session and its rounds; `delete_files` also removes the pieces
+/// (never a file brought in from elsewhere).
+#[tauri::command]
+pub fn music_session_delete(db: State<'_, Db>, id: String, delete_files: bool) -> Result<(), String> {
+    let conn = lock(&db)?;
+    let recs = music_records(&conn, Some(("session_id = ?1", &id))).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM music_tracks WHERE session_id = ?1", params![id]).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM music_sessions WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    drop(conn);
+    if delete_files {
+        remove_music_files(&recs);
+    }
+    Ok(())
+}
+
+/// Sessions a search finds by their descriptions and lyrics (titles are
+/// matched in the sidebar), most recent first.
+#[tauri::command]
+pub fn music_session_search(db: State<'_, Db>, query: String) -> Result<Vec<String>, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let conn = lock(&db)?;
+    let pattern = format!("%{}%", q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT t.session_id FROM music_tracks t
+             JOIN music_sessions s ON s.id = t.session_id
+             WHERE t.prompt LIKE ?1 ESCAPE '\\' OR t.lyrics LIKE ?1 ESCAPE '\\'
+             ORDER BY s.updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let ids = stmt
+        .query_map(params![pattern], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .collect();
+    Ok(ids)
+}
+
+/// Delete one round; `delete_files` also removes its piece.
+#[tauri::command]
+pub fn music_track_delete(db: State<'_, Db>, id: String, delete_files: bool) -> Result<(), String> {
+    let conn = lock(&db)?;
+    let recs = music_records(&conn, Some(("id = ?1", &id))).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM music_tracks WHERE id = ?1", params![id]).map_err(|e| e.to_string())?;
+    drop(conn);
+    if delete_files {
+        remove_music_files(&recs);
+    }
+    Ok(())
+}
+
+/// Delete every music session and round; `delete_files` also the pieces.
+#[tauri::command]
+pub fn music_history_clear(db: State<'_, Db>, delete_files: bool) -> Result<(), String> {
+    let conn = lock(&db)?;
+    let recs = if delete_files { music_records(&conn, None).map_err(|e| e.to_string())? } else { Vec::new() };
+    conn.execute("DELETE FROM music_tracks", []).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM music_sessions", []).map_err(|e| e.to_string())?;
+    drop(conn);
+    remove_music_files(&recs);
+    Ok(())
+}
+
 /// Aggregate counters for the Settings → Data statistics panel.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1310,6 +1633,8 @@ pub struct DataStats {
     pub code_sessions: i64,
     /// Pictures made in the image studio.
     pub images: i64,
+    /// Pieces made in the music studio.
+    pub music: i64,
     pub db_bytes: u64,
 }
 
@@ -1334,6 +1659,7 @@ pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats,
                 .map(|rows| rows.flatten().map(|j| serde_json::from_str::<Vec<ImageItem>>(&j).map(|v| v.len() as i64).unwrap_or(0)).sum())
         })
         .unwrap_or(0);
+    let music = count("SELECT COUNT(*) FROM music_tracks").unwrap_or(0);
     drop(conn);
     // The database is three files in WAL mode, and the log routinely outgrows
     // the main one — reporting only `chaty.db` understated what it occupies.
@@ -1348,7 +1674,7 @@ pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats,
                 .sum()
         })
         .unwrap_or(0);
-    Ok(DataStats { conversations, messages, code_sessions, images, db_bytes })
+    Ok(DataStats { conversations, messages, code_sessions, images, music, db_bytes })
 }
 
 #[cfg(test)]

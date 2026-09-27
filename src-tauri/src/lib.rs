@@ -15,6 +15,7 @@ pub mod gpu;
 pub mod http;
 pub mod imagegen;
 pub mod inference;
+pub mod musicgen;
 pub mod errlog;
 pub mod mcp;
 pub mod ocr;
@@ -374,6 +375,18 @@ pub fn run() {
                 .build(),
         )
         .manage(AppState::default())
+        // The music studio's player reads pieces through this scheme — only
+        // files of the music history, with byte ranges so it can seek.
+        .register_asynchronous_uri_scheme_protocol(musicgen::MEDIA_SCHEME, |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let path = request.uri().path().to_string();
+            let range = request
+                .headers()
+                .get(tauri::http::header::RANGE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            std::thread::spawn(move || responder.respond(musicgen::serve_media(&app, &path, range.as_deref())));
+        })
         .setup(|app| {
             // A development build started with CHATY_MOCK_REPLY answers from
             // the mock engine, already loaded — the page takes a model the
@@ -585,6 +598,21 @@ pub fn run() {
             store::image_session_search,
             store::image_generation_delete,
             store::image_history_clear,
+            musicgen::music_model_probe,
+            musicgen::music_generate,
+            musicgen::music_cancel,
+            musicgen::music_attach,
+            musicgen::music_output_dir,
+            store::music_session_save,
+            store::music_session_list,
+            store::music_session_get,
+            store::music_session_draft,
+            store::music_session_rename,
+            store::music_session_set_pinned,
+            store::music_session_delete,
+            store::music_session_search,
+            store::music_track_delete,
+            store::music_history_clear,
             commands::vision_query,
             commands::image_thumb,
             commands::save_file,

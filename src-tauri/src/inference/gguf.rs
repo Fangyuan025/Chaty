@@ -1,13 +1,13 @@
 //! Reading a GGUF's header — its metadata keys and its tensor table — without
 //! loading the model.
 //!
-//! Two callers need to look inside a file before (or instead of) handing it to
-//! llama.cpp: the load-failure diagnosis, which explains a file the loader
-//! refused, and the image-model probe, which recognises a diffusion model that
-//! llama.cpp was never going to load. Diffusion GGUFs are the reason the tensor
-//! table is read at all: the ones in circulation often carry no metadata keys
-//! whatsoever, and their tensor names are the only thing that says what they
-//! are.
+//! Three callers need to look inside a file before (or instead of) handing it
+//! to llama.cpp: the load-failure diagnosis, which explains a file the loader
+//! refused, and the image- and music-model probes, which recognise a diffusion
+//! model or an audio.cpp model that llama.cpp was never going to load.
+//! Diffusion GGUFs are the reason the tensor table is read at all: the ones in
+//! circulation often carry no metadata keys whatsoever, and their tensor names
+//! are the only thing that says what they are.
 
 use std::io::Read;
 
@@ -72,6 +72,12 @@ pub struct Header {
     pub tensors: Vec<Tensor>,
     /// The file carries `tokenizer.*` metadata: a language model's GGUF.
     pub has_tokenizer: bool,
+    /// audio.cpp's GGUFs (`general.architecture = audiocpp`) name the model
+    /// family they belong to (`audiocpp.model_spec.family`, e.g. "yue2") —
+    /// absent from a component file such as a VAE — and their weight type
+    /// (`audiocpp.weight_type`, e.g. "q4_0").
+    pub audiocpp_family: Option<String>,
+    pub audiocpp_weight_type: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -118,6 +124,10 @@ pub fn read_header<R: Read>(
         }
         if key == "general.architecture" && t == 8 {
             h.arch = string(&mut r);
+        } else if key == "audiocpp.model_spec.family" && t == 8 {
+            h.audiocpp_family = string(&mut r);
+        } else if key == "audiocpp.weight_type" && t == 8 {
+            h.audiocpp_weight_type = string(&mut r);
         } else {
             skip_value(&mut r, t).ok_or(Malformed)?;
         }
@@ -213,6 +223,25 @@ pub(crate) mod tests {
         assert!(h.has_tokenizer);
         assert!(h.tensors.is_empty());
         assert_eq!(h.keys, vec!["general.architecture", "tokenizer.ggml.model"]);
+    }
+
+    /// audio.cpp's own metadata: the family of a model file, the weight type
+    /// of every file.
+    #[test]
+    fn reads_the_audiocpp_family_and_weight_type() {
+        let bytes = gguf_bytes(
+            &[
+                ("general.architecture", "audiocpp"),
+                ("audiocpp.weight_type", "q4_0"),
+                ("audiocpp.model_spec.family", "yue2"),
+            ],
+            &[("model_weights/lm_head.weight", &[2048, 184704])],
+        );
+        let h = read_header(Cursor::new(bytes), true, true).unwrap();
+        assert_eq!(h.arch.as_deref(), Some("audiocpp"));
+        assert_eq!(h.audiocpp_family.as_deref(), Some("yue2"));
+        assert_eq!(h.audiocpp_weight_type.as_deref(), Some("q4_0"));
+        assert_eq!(h.tensors.len(), 1);
     }
 
     #[test]
