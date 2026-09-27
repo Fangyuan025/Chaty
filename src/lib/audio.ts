@@ -354,6 +354,7 @@ export class SpeechQueue {
   private lastEnded: Promise<void> = Promise.resolve();
   private resumed: Promise<boolean> | null = null;
   private stopped = false;
+  private closed: Promise<void> = Promise.resolve();
   private onClipStart?: (label: string) => void;
 
   /** `onClipStart(label)` fires the moment each queued clip begins playing —
@@ -441,8 +442,11 @@ export class SpeechQueue {
     return this.stopped;
   }
 
-  stop() {
-    if (this.stopped) return;
+  /** Stop everything and close the output. Resolves once the audio device is
+   *  let go of — opening the microphone before that, on a Bluetooth headset
+   *  still switching away from playback, is refused. */
+  stop(): Promise<void> {
+    if (this.stopped) return this.closed;
     this.stopped = true;
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
@@ -457,7 +461,8 @@ export class SpeechQueue {
     }
     this.live.clear();
     for (const end of [...this.ends]) end();
-    this.ctx.close().catch(() => {});
+    this.closed = this.ctx.close().catch(() => {});
+    return this.closed;
   }
 }
 

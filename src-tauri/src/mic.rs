@@ -127,107 +127,13 @@ mod imp {
             .name("chaty-mic".into())
             .spawn(move || {
                 let host = cpal::default_host();
-                // The default device can be a phantom (Continuity iPhone mic,
-                // monitor mic that's powered off, aggregate devices) whose
-                // config query fails — e.g. on a Mac mini with no built-in
-                // microphone. Scan until one actually works.
-                let (device, config) = match pick_input(&host) {
-                    Ok(dc) => dc,
+                let (stream, sample_rate) = match open_input(&host, &sh) {
+                    Ok(opened) => opened,
                     Err(e) => {
                         let _ = init_tx.send(Err(e));
                         return;
                     }
                 };
-                eprintln!(
-                    "mic: using '{}' ({:?} @ {} Hz, {} ch)",
-                    device.name().unwrap_or_default(),
-                    config.sample_format(),
-                    config.sample_rate().0,
-                    config.channels()
-                );
-                let sample_rate = config.sample_rate().0;
-                let channels = (config.channels() as usize).max(1);
-                let sh_cb = sh.clone();
-
-                let on_err = |e| eprintln!("mic stream error: {e}");
-                let push = move |mono: &mut dyn Iterator<Item = f32>, n: usize| {
-                    let mut sum = 0.0f32;
-                    {
-                        let mut buf = sh_cb.samples.lock().unwrap();
-                        for s in mono {
-                            buf.push(s);
-                            sum += s * s;
-                        }
-                    }
-                    *sh_cb.level.lock().unwrap() = (sum / n.max(1) as f32).sqrt();
-                };
-                use cpal::SampleFormat;
-                let fmt = config.sample_format();
-                let cfg: cpal::StreamConfig = config.into();
-                let stream = match fmt {
-                    SampleFormat::F32 => device.build_input_stream(
-                        &cfg,
-                        {
-                            let push = push.clone();
-                            move |data: &[f32], _| {
-                                let n = data.len() / channels;
-                                push(&mut data.chunks(channels).map(|f| f[0]), n)
-                            }
-                        },
-                        on_err,
-                        None,
-                    ),
-                    SampleFormat::I16 => device.build_input_stream(
-                        &cfg,
-                        {
-                            let push = push.clone();
-                            move |data: &[i16], _| {
-                                let n = data.len() / channels;
-                                push(&mut data.chunks(channels).map(|f| f[0] as f32 / 32768.0), n)
-                            }
-                        },
-                        on_err,
-                        None,
-                    ),
-                    SampleFormat::U16 => device.build_input_stream(
-                        &cfg,
-                        {
-                            let push = push.clone();
-                            move |data: &[u16], _| {
-                                let n = data.len() / channels;
-                                push(
-                                    &mut data
-                                        .chunks(channels)
-                                        .map(|f| (f[0] as f32 - 32768.0) / 32768.0),
-                                    n,
-                                )
-                            }
-                        },
-                        on_err,
-                        None,
-                    ),
-                    other => {
-                        let _ = init_tx.send(Err(format!(
-                            "不支持的采样格式 (unsupported sample format): {other:?}"
-                        )));
-                        return;
-                    }
-                };
-                let stream = match stream {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let _ = init_tx.send(Err(format!(
-                            "无法打开麦克风输入流 (failed to open input stream): {e}"
-                        )));
-                        return;
-                    }
-                };
-                if let Err(e) = stream.play() {
-                    let _ = init_tx.send(Err(format!(
-                        "无法启动麦克风输入流 (failed to start input stream): {e}"
-                    )));
-                    return;
-                }
                 sh.sample_rate.store(sample_rate, Ordering::Relaxed);
                 let _ = init_tx.send(Ok(sample_rate));
                 // Hold the stream until asked to stop (or the sender is dropped).
@@ -272,6 +178,119 @@ mod imp {
         signal_stop()?;
         shared().samples.lock().unwrap().clear();
         Ok(())
+    }
+
+    /// Open the input, riding out a device that is changing under us.
+    ///
+    /// A Bluetooth headset switches profile when its microphone opens while
+    /// it is still playing — stereo playback to the two-way headset mode — and
+    /// the format queried a moment before stops being one it takes: "The
+    /// requested stream configuration is not supported by the device". Live
+    /// mode's interrupt reopened the microphone while the reply was still
+    /// sounding and hit exactly that. So: query and open again for a moment
+    /// (the default device, its current format), and from the fourth try on
+    /// also every format the device lists.
+    fn open_input(host: &cpal::Host, sh: &Arc<Shared>) -> Result<(cpal::Stream, u32), String> {
+        let mut last = String::new();
+        for attempt in 0..6u64 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(120 * attempt));
+            }
+            let (device, config) = match pick_input(host) {
+                Ok(dc) => dc,
+                Err(e) => {
+                    last = e;
+                    continue;
+                }
+            };
+            let mut candidates = vec![config];
+            if attempt >= 3 {
+                if let Ok(ranges) = device.supported_input_configs() {
+                    candidates.extend(ranges.map(|r| r.with_max_sample_rate()));
+                }
+            }
+            for config in candidates {
+                let rate = config.sample_rate().0;
+                let described = format!("{:?} @ {} Hz, {} ch", config.sample_format(), rate, config.channels());
+                match build_stream(&device, config, sh).and_then(|s| s.play().map(|_| s).map_err(|e| e.to_string())) {
+                    Ok(stream) => {
+                        eprintln!("mic: using '{}' ({described}), try {}", device.name().unwrap_or_default(), attempt + 1);
+                        return Ok((stream, rate));
+                    }
+                    Err(e) => {
+                        eprintln!("mic: '{}' ({described}) would not open: {e}", device.name().unwrap_or_default());
+                        last = e;
+                    }
+                }
+            }
+        }
+        Err(format!("无法打开麦克风输入流 (failed to open input stream): {last}"))
+    }
+
+    /// An input stream on `device` in `config`, feeding mono samples and the
+    /// level into `sh`. Not yet playing.
+    fn build_stream(
+        device: &cpal::Device,
+        config: cpal::SupportedStreamConfig,
+        sh: &Arc<Shared>,
+    ) -> Result<cpal::Stream, String> {
+        let channels = (config.channels() as usize).max(1);
+        let sh_cb = sh.clone();
+        let on_err = |e| eprintln!("mic stream error: {e}");
+        let push = move |mono: &mut dyn Iterator<Item = f32>, n: usize| {
+            let mut sum = 0.0f32;
+            {
+                let mut buf = sh_cb.samples.lock().unwrap();
+                for s in mono {
+                    buf.push(s);
+                    sum += s * s;
+                }
+            }
+            *sh_cb.level.lock().unwrap() = (sum / n.max(1) as f32).sqrt();
+        };
+        use cpal::SampleFormat;
+        let fmt = config.sample_format();
+        let cfg: cpal::StreamConfig = config.into();
+        let built = match fmt {
+            SampleFormat::F32 => device.build_input_stream(
+                &cfg,
+                {
+                    let push = push.clone();
+                    move |data: &[f32], _| {
+                        let n = data.len() / channels;
+                        push(&mut data.chunks(channels).map(|f| f[0]), n)
+                    }
+                },
+                on_err,
+                None,
+            ),
+            SampleFormat::I16 => device.build_input_stream(
+                &cfg,
+                {
+                    let push = push.clone();
+                    move |data: &[i16], _| {
+                        let n = data.len() / channels;
+                        push(&mut data.chunks(channels).map(|f| f[0] as f32 / 32768.0), n)
+                    }
+                },
+                on_err,
+                None,
+            ),
+            SampleFormat::U16 => device.build_input_stream(
+                &cfg,
+                {
+                    let push = push.clone();
+                    move |data: &[u16], _| {
+                        let n = data.len() / channels;
+                        push(&mut data.chunks(channels).map(|f| (f[0] as f32 - 32768.0) / 32768.0), n)
+                    }
+                },
+                on_err,
+                None,
+            ),
+            other => return Err(format!("不支持的采样格式 (unsupported sample format): {other:?}")),
+        };
+        built.map_err(|e| e.to_string())
     }
 
     /// First input device whose configuration is actually readable.

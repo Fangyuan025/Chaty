@@ -266,7 +266,15 @@ export function LiveMode({
         recorderRef.current = null;
         resolve(null);
       };
-      startRecording({ onAutoStop: () => void finish(), silenceMs: 1000 })
+      // One more try before giving up: the microphone can be refused for a
+      // moment while the audio device changes mode (see respond()).
+      const open = () => startRecording({ onAutoStop: () => void finish(), silenceMs: 1000 });
+      open()
+        .catch(async () => {
+          await new Promise((r) => setTimeout(r, 600));
+          if (!activeRef.current) throw new Error("closed");
+          return open();
+        })
         .then(async (rec) => {
           if (!activeRef.current) {
             await rec.cancel().catch(() => {});
@@ -437,6 +445,14 @@ export function LiveMode({
       })(),
       cut,
     ]);
+    // Cut off mid-sentence, the speaker is still sounding: let the output
+    // close and the device settle before the microphone opens again (a
+    // Bluetooth headset changes mode between the two, and refused the
+    // microphone asked for in the middle of it).
+    if (interrupted) {
+      await speech.stop();
+      await new Promise((r) => setTimeout(r, 250));
+    }
 
     // Cut off, the model remembers what it got to say — not the rest it had
     // written, which nobody heard.
