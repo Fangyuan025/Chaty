@@ -73,6 +73,10 @@
   tags of its own, which the effort ladder picks through the template, and
   with thinking off both engines close the thought the way its own template
   does. On the edit stress set: MoVA-36B-A4B (MLX 4-bit) 5/5, 3.7B MLX 5/5.
+  The MLX quants on the Hub (mlx-community's oQ4e, the MLX-4/6/8bit ones) are
+  mlx-lm conversions that store the experts stacked under mlx-lm's own name
+  for them, and failed to load with a missing `experts` weight; they load now,
+  with the low / medium / high rungs (oQ4e: 30–36 tok/s on an M4 Pro).
 
 - **GLM-4.5 / 4.6 / 4.7 and MiniCPM5 tool calls.** GLM writes
   `<tool_call>name<arg_key>…`; read as JSON, the fallback for a template Chaty
@@ -183,9 +187,13 @@
 - Knowledge-base keyword search indexes every script — kana, Cyrillic,
   accented Latin, Indic marks, full-width letters.
 
-- **Several conversations deleted at once.** The tick box at the end of the
-  sidebar's search (or a Ctrl/⌘-click) starts a selection, Shift-click ticks
-  a run, and one confirmation deletes them all (#20).
+- **Several conversations deleted at once** — and Code's sessions and the
+  image studio's too. The tick box at the end of the sidebar's search (or a
+  Ctrl/⌘-click) starts a selection, Shift-click ticks a run, and one
+  confirmation deletes them all (#20).
+
+- **Code's sessions can be searched,** as the chat's conversations are: by
+  title as you type, and by what was said and done in them.
 
 - **Scrolling up while a reply is written stops following at once.** The
   transcript was pinned to the bottom with a smooth scroll on every frame, and
@@ -217,13 +225,21 @@
   image studio's pickers were the OS's — and open upward when there is no
   room below.
 
-- **Edges that line up.** The working area stands the same distance from the
-  frame on every side, its top level with the sidebar's first control, and the
-  sidebar's footer rule that stopped at its edge is gone. Corners are smaller
+- **Edges that line up.** The working area's top is level with the sidebar's
+  first control, and it runs to the window's right and bottom edges instead
+  of stopping 8 px short of them; the sidebar's footer rule that stopped at
+  its edge is gone. Corners are smaller
   — cards and menus 10 px, panels and fields 8 px — with the composer and the
   pills left round. The title bar's model chip and mode switch and the
   sidebar's fields take the panel's tone instead of fading into the frame, and
   menus stand off the page, the cream palette's by a step more (#20).
+
+- **Chaty draws its own scrollbars, everywhere** — lists, panels, menus, text
+  fields, code blocks, the canvas preview: a thin rounded thumb that firms up
+  under the pointer, in place of the system's in all but four places. The
+  composer's fade no longer washes out the transcript's scrollbar. Tick boxes,
+  number fields and a text field's resize grip are drawn by the app too, and
+  the model store's dialog dims the window like every other dialog.
 
 - **A narrow window keeps its buttons.** The title bar gives way at the
   model's name, and below 900 px the mode switch keeps only its icons; on
