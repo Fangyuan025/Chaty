@@ -1,0 +1,286 @@
+diff --git a/include/engine/framework/debug/chaty_progress.h b/include/engine/framework/debug/chaty_progress.h
+new file mode 100644
+index 0000000..5590066
+--- /dev/null
++++ b/include/engine/framework/debug/chaty_progress.h
+@@ -0,0 +1,18 @@
++#pragma once
++
++// Chaty's progress lines (added by chaty-audio's patch). audio.cpp reports
++// nothing while a song is made; these log lines are how Chaty's sidecar knows
++// how far along one is. Log lines only: nothing else changes.
++
++#include "engine/framework/debug/trace.h"
++
++#include <string>
++
++#define CHATY_PROGRESS(stage, done, total)                                                          \
++    ::engine::debug::timing_log_scalar(                                                              \
++        "chaty.progress",                                                                            \
++        std::string(stage) + " " + std::to_string(static_cast<long long>(done)) + "/" +              \
++            std::to_string(static_cast<long long>(total)))
++
++#define CHATY_INFO(key, value) \
++    ::engine::debug::timing_log_scalar("chaty.info", std::string(key) + " " + std::to_string(value))
+diff --git a/src/community_models/minimax_music3/ar_runtime.cpp b/src/community_models/minimax_music3/ar_runtime.cpp
+index 1b09aaa..2ca34d9 100644
+--- a/src/community_models/minimax_music3/ar_runtime.cpp
++++ b/src/community_models/minimax_music3/ar_runtime.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/community_models/minimax_music3/ar_runtime.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/debug/profiler.h"
+ #include "engine/framework/modules/transformers/qwen_causal_decode_runtime.h"
+@@ -390,6 +391,9 @@ struct MiniMaxMusic3ArRuntime::Impl {
+         double feedback_ms = 0.0;
+         double lm_ms = 0.0;
+         for (int64_t frame = 0; frame <= target_frames; ++frame) {
++            if (frame % 10 == 0) {
++                CHATY_PROGRESS("tokens", frame, target_frames + 1);
++            }
+             const auto t_sem = Clock::now();
+             const int32_t token = sample_semantic_token(
+                 prompt,
+@@ -632,6 +636,9 @@ struct MiniMaxMusic3ArRuntime::Impl {
+         std::vector<uint64_t> depth_offsets(static_cast<size_t>(takes));
+ 
+         for (int64_t frame = forked_at; frame <= target_frames; ++frame) {
++            if (frame % 10 == 0) {
++                CHATY_PROGRESS("tokens", frame, target_frames + 1);
++            }
+             for (int64_t take = 0; take < takes; ++take) {
+                 auto & ts = take_states[static_cast<size_t>(take)];
+                 assign_batch_row(batch_hidden, 2 * take, hidden_size, ts.cond_hidden);
+diff --git a/src/models/ace_step/diffusion.cpp b/src/models/ace_step/diffusion.cpp
+index 103ab91..374e16b 100644
+--- a/src/models/ace_step/diffusion.cpp
++++ b/src/models/ace_step/diffusion.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/ace_step/diffusion.h"
++#include "engine/framework/debug/chaty_progress.h"
+ #include "engine/framework/core/backend.h"
+ #include "engine/framework/io/binary.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -1728,6 +1729,7 @@ public:
+         bool switched_to_non_cover = false;
+         const auto sampling_loop_start = Clock::now();
+         for (size_t i = 0; i < schedule.size(); ++i) {
++            CHATY_PROGRESS("render", i, schedule.size());
+             if (!switched_to_non_cover &&
+                 options.audio_cover_strength < 1.0F &&
+                 static_cast<int64_t>(i) >= cover_steps) {
+diff --git a/src/models/ace_step/planner.cpp b/src/models/ace_step/planner.cpp
+index 74f400c..b33bb07 100644
+--- a/src/models/ace_step/planner.cpp
++++ b/src/models/ace_step/planner.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/ace_step/planner.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/assets/tensor_source.h"
+ #include "engine/framework/core/backend.h"
+@@ -2973,6 +2974,9 @@ AceStepPlan AceStepPlannerRuntime::generate(const AceStepRequest & request, bool
+             decode_graph_->import_state(conditional_prefill.kv_state);
+         }
+         for (int64_t step = 0; step < max_new_tokens; ++step) {
++            if (step % 10 == 0) {
++                CHATY_PROGRESS("tokens", step, max_new_tokens);
++            }
+             const auto sampling_start = Clock::now();
+             if (use_cfg) {
+                 phase2_sampler.write_cfg_logits(
+diff --git a/src/models/heartmula/generator.cpp b/src/models/heartmula/generator.cpp
+index e272c7c..696a95e 100644
+--- a/src/models/heartmula/generator.cpp
++++ b/src/models/heartmula/generator.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/heartmula/generator.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/sampling/torch_random.h"
+ 
+@@ -399,6 +400,9 @@ HeartMuLaGeneratedFrames generate_heartmula_frames(
+ 
+     const int64_t max_audio_frames = static_cast<int64_t>(request.options.duration_seconds * 1000.0F) / 80;
+     for (int64_t frame_index = 0; frame_index < max_audio_frames; ++frame_index) {
++        if (frame_index % 10 == 0) {
++            CHATY_PROGRESS("tokens", frame_index, max_audio_frames);
++        }
+         auto next_embeddings = mula.merge_frame_embeddings(next_frame_embedding_inputs(current_frame, encoding.batch_size, config));
+         auto next_backbone = mula.backbone_cached_step(
+             next_embeddings.values,
+diff --git a/src/models/midashenglm_gen/ar_runtime.cpp b/src/models/midashenglm_gen/ar_runtime.cpp
+index a61bb7e..58842cd 100644
+--- a/src/models/midashenglm_gen/ar_runtime.cpp
++++ b/src/models/midashenglm_gen/ar_runtime.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/midashenglm_gen/ar_runtime.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -444,6 +445,7 @@ MiDashengLmGenAROutput MiDashengLmGenARRuntime::generate(
+         auto hidden = last_hidden_row(prefill.hidden, valid_tokens, config.hidden_size);
+         std::vector<float> latent_history(static_cast<size_t>(config.patch_size * config.target_embedding_size), 0.0F);
+         for (int64_t step = 0; step < num_iter; ++step) {
++            CHATY_PROGRESS("tokens", step, num_iter);
+             MiDashengLmGenFlowInput flow_input;
+             flow_input.x.clear();
+             flow_input.latent_history = latent_history;
+diff --git a/src/models/stable_audio/foundation/rf_dit.cpp b/src/models/stable_audio/foundation/rf_dit.cpp
+index 594d515..e622c26 100644
+--- a/src/models/stable_audio/foundation/rf_dit.cpp
++++ b/src/models/stable_audio/foundation/rf_dit.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/stable_audio/foundation/rf_dit.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend_weight_store.h"
+ #include "engine/framework/core/execution_context.h"
+@@ -544,6 +545,7 @@ private:
+         std::vector<float> next_sigma_values(static_cast<size_t>(batch_));
+         std::vector<float> timestep_features(static_cast<size_t>(graph_batch() * kTimestepFeaturesDim));
+         for (int step = 0; step < static_cast<int>(sampling.schedule_points) - 1; ++step) {
++            CHATY_PROGRESS("render", step, sampling.schedule_points - 1);
+             write_latent_input(latent, graph_x);
+             for (int64_t b = 0; b < batch_; ++b) {
+                 const size_t base = static_cast<size_t>(b * sampling.schedule_points);
+@@ -707,6 +709,7 @@ private:
+         bool has_h_2 = false;
+         core::set_backend_threads(backend_, threads_);
+         for (int step = 0; step < static_cast<int>(steps); ++step) {
++            CHATY_PROGRESS("render", step, steps);
+             const float sigma = sigmas[static_cast<size_t>(step)];
+             const float sigma_next = sigmas[static_cast<size_t>(step + 1)];
+             const float c_in = 1.0F / std::sqrt(sigma * sigma + 1.0F);
+@@ -818,6 +821,7 @@ private:
+         bool has_old_denoised = false;
+         core::set_backend_threads(backend_, threads_);
+         for (int step = 0; step < static_cast<int>(steps); ++step) {
++            CHATY_PROGRESS("render", step, steps);
+             const float sigma = sigmas[static_cast<size_t>(step)];
+             const float sigma_next = sigmas[static_cast<size_t>(step + 1)];
+             const float c_in = 1.0F / std::sqrt(sigma * sigma + 1.0F);
+diff --git a/src/models/stable_audio/rf_dit.cpp b/src/models/stable_audio/rf_dit.cpp
+index 1903a07..8cd046b 100644
+--- a/src/models/stable_audio/rf_dit.cpp
++++ b/src/models/stable_audio/rf_dit.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/stable_audio/rf_dit.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend_weight_store.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -624,6 +625,7 @@ public:
+         std::vector<float> dt_values(static_cast<size_t>(batch_));
+         std::vector<float> timestep_features(static_cast<size_t>(graph_batch() * kTimestepFeaturesDim));
+         for (int step = 0; step < static_cast<int>(sampling.schedule_points) - 1; ++step) {
++            CHATY_PROGRESS("render", step, sampling.schedule_points - 1);
+             write_latent_input(latent, graph_x);
+             for (int64_t b = 0; b < batch_; ++b) {
+                 const size_t base = static_cast<size_t>(b * sampling.schedule_points);
+diff --git a/src/models/yue2/ar_runtime.cpp b/src/models/yue2/ar_runtime.cpp
+index d21f381..b876352 100644
+--- a/src/models/yue2/ar_runtime.cpp
++++ b/src/models/yue2/ar_runtime.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/yue2/ar_runtime.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -721,6 +722,9 @@ struct Yue2ArRuntime::Impl {
+                 return emitted;
+             }
+             emitted.push_back(token);
++            if (emitted.size() % 10 == 0) {
++                CHATY_PROGRESS(compact_semantic ? "tokens" : "score", emitted.size(), window.max_tokens);
++            }
+             if (static_cast<int64_t>(emitted.size()) >= window.max_tokens) {
+                 break;
+             }
+@@ -829,6 +833,9 @@ struct Yue2ArRuntime::Impl {
+                 return emitted;
+             }
+             emitted.push_back(token);
++            if (emitted.size() % 10 == 0) {
++                CHATY_PROGRESS("tokens", emitted.size(), window.max_tokens);
++            }
+             if (static_cast<int64_t>(emitted.size()) >= window.max_tokens) {
+                 break;
+             }
+diff --git a/src/models/yue2/nar_runtime.cpp b/src/models/yue2/nar_runtime.cpp
+index 1acbeb8..cb25315 100644
+--- a/src/models/yue2/nar_runtime.cpp
++++ b/src/models/yue2/nar_runtime.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/yue2/nar_runtime.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -693,6 +694,7 @@ struct Yue2NarRuntime::Impl {
+             for (size_t i = 0; i < state.size(); ++i) {
+                 state[i] -= second[i] * dt;
+             }
++            CHATY_PROGRESS("render", chaty_done * ode_steps + frames * (step + 1), chaty_total * ode_steps);
+         }
+         return state;
+     }
+@@ -728,7 +730,10 @@ struct Yue2NarRuntime::Impl {
+         out.reserve(full_noise.size());
+         double prefill_ms = 0.0;
+         double solve_ms = 0.0;
++        chaty_total = static_cast<int64_t>(codec.size());
++        chaty_done = 0;
+         for (const auto & [begin, end] : ranges) {
++            chaty_done = begin;
+             std::vector<int32_t> ar_tokens = prefix;
+             ar_tokens.reserve(prefix.size() + static_cast<size_t>(end - begin) + 1);
+             for (int64_t i = begin; i < end; ++i) {
+@@ -757,6 +762,9 @@ struct Yue2NarRuntime::Impl {
+ 
+     core::ExecutionContext & execution;
+     std::shared_ptr<const Yue2Assets> assets;
++    // Chaty's progress: frames of the song, and those before the chunk.
++    int64_t chaty_total = 0;
++    int64_t chaty_done = 0;
+     size_t graph_arena_bytes = 0;
+     bool allow_flash_attention = true;
+     int64_t attention_tile_rows = 0;
+diff --git a/src/models/yue2/pipeline.cpp b/src/models/yue2/pipeline.cpp
+index bc49fdd..65356d8 100644
+--- a/src/models/yue2/pipeline.cpp
++++ b/src/models/yue2/pipeline.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/yue2/pipeline.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/debug/profiler.h"
+ #include "engine/framework/debug/trace.h"
+@@ -295,6 +296,7 @@ public:
+                 }
+             }
+             ++tiles;
++            CHATY_PROGRESS("decode", end, frames);
+         }
+         engine::debug::timing_log_scalar("yue2.vae_decode.tiles", tiles);
+         engine::debug::timing_log_scalar("yue2.vae_decode.tile_decode_ms", tile_decode_ms);
+@@ -345,6 +347,8 @@ public:
+         const auto semantic_start = Clock::now();
+         auto semantic = generate_semantic(request, std::move(planned));
+         engine::debug::timing_log_scalar("yue2.semantic_ms", engine::debug::elapsed_ms(semantic_start, Clock::now()));
++        CHATY_INFO("seconds", static_cast<double>(semantic.tokens.size()) / 25.0);
++        CHATY_PROGRESS("render", 0, 1);
+         if (request.export_semantic) {
+             out.semantic_codes = codec_from_semantic_tokens(semantic.tokens);
+             out.semantic_truncated = semantic.truncated;
+@@ -364,6 +368,7 @@ public:
+         ar.reset();
+         nar.reset();
+         const auto vae_start = Clock::now();
++        CHATY_PROGRESS("decode", 0, frames);
+         auto audio = decode_audio(latents, frames);
+         engine::debug::timing_log_scalar("yue2.vae_decode_ms", engine::debug::elapsed_ms(vae_start, Clock::now()));
+         if (vae) {
