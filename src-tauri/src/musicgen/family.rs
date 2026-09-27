@@ -193,7 +193,9 @@ pub const HEARTMULA: Family = Family {
     planning: false,
     fixed: &[],
     edits: &[],
-    stages: &[("tokens", 0.80), ("render", 0.20)],
+    // Measured on Metal (M4 Pro, Q8_0, 20 s): the codes 15 s, the codec's
+    // flow 10 s, its decoder 9 s.
+    stages: &[("tokens", 0.45), ("render", 0.30), ("decode", 0.25)],
     token_rate: 0.0,
     prompt_template: None,
 };
