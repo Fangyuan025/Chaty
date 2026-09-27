@@ -30,17 +30,43 @@ fn string<R: Read>(r: &mut R) -> Option<String> {
     }
     String::from_utf8(take(r, n as usize)?).ok()
 }
-/// Read past a value without keeping it.
-fn skip_value<R: Read>(r: &mut R, t: u32) -> Option<()> {
+/// Read past `n` bytes without keeping them. False at the end of the input:
+/// a length no file backs is a malformed header, found without allocating it.
+fn skip_bytes<R: Read>(r: &mut R, n: u64) -> Option<()> {
+    let skipped = std::io::copy(&mut r.by_ref().take(n), &mut std::io::sink()).ok()?;
+    (skipped == n).then_some(())
+}
+/// The size of one element of a fixed-size metadata type.
+fn fixed_size(t: u32) -> Option<u64> {
     match t {
-        0 | 1 | 7 => take(r, 1).map(|_| ()),
-        2 | 3 => take(r, 2).map(|_| ()),
-        4..=6 => take(r, 4).map(|_| ()),
-        10..=12 => take(r, 8).map(|_| ()),
-        8 => string(r).map(|_| ()),
+        0 | 1 | 7 => Some(1),
+        2 | 3 => Some(2),
+        4..=6 => Some(4),
+        10..=12 => Some(8),
+        _ => None,
+    }
+}
+/// Read past a value without keeping it.
+///
+/// Arrays of numbers are skipped as one run of bytes, however long: audio.cpp
+/// packs a model's config and license files into a byte array in its header
+/// (Stable Audio 3's is 40 MB), and one element at a time — or a cap on the
+/// count — made a good file read as a broken one.
+fn skip_value<R: Read>(r: &mut R, t: u32) -> Option<()> {
+    if let Some(size) = fixed_size(t) {
+        return skip_bytes(r, size);
+    }
+    match t {
+        8 => {
+            let n = u64le(r)?;
+            skip_bytes(r, n)
+        }
         9 => {
             let et = u32le(r)?;
             let n = u64le(r)?;
+            if let Some(size) = fixed_size(et) {
+                return skip_bytes(r, n.checked_mul(size)?);
+            }
             if n > 8_000_000 {
                 return None;
             }
@@ -242,6 +268,35 @@ pub(crate) mod tests {
         assert_eq!(h.audiocpp_family.as_deref(), Some("yue2"));
         assert_eq!(h.audiocpp_weight_type.as_deref(), Some("q4_0"));
         assert_eq!(h.tensors.len(), 1);
+    }
+
+    /// audio.cpp embeds files in a byte array far longer than any vocabulary
+    /// (Stable Audio 3: 40 MB); what follows it must still be read.
+    #[test]
+    fn a_huge_byte_array_is_skipped_whole() {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"GGUF");
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(&2u64.to_le_bytes());
+        let s = |b: &mut Vec<u8>, v: &str| {
+            b.extend_from_slice(&(v.len() as u64).to_le_bytes());
+            b.extend_from_slice(v.as_bytes());
+        };
+        s(&mut b, "audiocpp.embedded_files.data");
+        b.extend_from_slice(&9u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        let n = 9_000_000u64;
+        b.extend_from_slice(&n.to_le_bytes());
+        b.resize(b.len() + n as usize, 7);
+        s(&mut b, "general.architecture");
+        b.extend_from_slice(&8u32.to_le_bytes());
+        s(&mut b, "audiocpp");
+        let h = read_header(Cursor::new(b.clone()), false, false).unwrap();
+        assert_eq!(h.arch.as_deref(), Some("audiocpp"));
+        // Cut short inside the array: malformed, not a hang or an allocation.
+        b.truncate(1000);
+        assert_eq!(read_header(Cursor::new(b), false, false).unwrap_err(), HeaderError::Malformed);
     }
 
     #[test]
