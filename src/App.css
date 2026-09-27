@@ -1152,9 +1152,16 @@ body.resizing-x {
   top: 0;
   left: 0;
   right: var(--sb-size);
-  height: 26px;
+  /* Short and soft, eased out: a band 26 px deep from full ground read as a
+     second bar under the title, and the window as shorter than it is. */
+  height: 14px;
   z-index: 2;
-  background: linear-gradient(to bottom, var(--bg), color-mix(in srgb, var(--bg) 0%, transparent));
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--bg) 88%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 45%, transparent) 45%,
+    color-mix(in srgb, var(--bg) 0%, transparent) 100%
+  );
   pointer-events: none;
 }
 .chat {
@@ -1167,7 +1174,7 @@ body.resizing-x {
   overflow-x: hidden;
   /* The bottom padding clears the composer's fade (28px): at the end of the
      transcript the last reply's actions sit above it, not dimmed under it. */
-  padding: 28px 0 32px;
+  padding: 20px 0 32px;
   /* No CSS scroll-behavior: it animated every follow-the-stream write, and a
      wheel-up then lost to the animation still heading for the bottom (issue
      #20). The follow effect asks for smooth scrolling where it wants it. */
@@ -6157,7 +6164,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   min-height: 0;
   overflow-y: auto;
   /* Bottom padding clears the composer's fade, as the chat's does. */
-  padding: 22px clamp(16px, 6%, 64px) 32px;
+  padding: 16px clamp(16px, 6%, 64px) 32px;
   display: flex;
   flex-direction: column;
   gap: 16px;
