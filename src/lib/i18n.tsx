@@ -538,6 +538,8 @@ export const T = {
   liveStart: { zh: "实时语音对话", en: "Live voice chat", pt: "Chat de voz ao vivo" },
   liveExit: { zh: "退出实时模式", en: "Exit live mode", pt: "Sair do modo ao vivo" },
   liveEnd: { zh: "结束", en: "End", pt: "Encerrar" },
+  liveInterrupt: { zh: "打断", en: "Interrupt", pt: "Interromper" },
+  liveInterruptTip: { zh: "打断回答，轮到你说", en: "Cut the reply short and speak", pt: "Interromper a resposta e falar" },
   liveListening: { zh: "聆听中…", en: "Listening…", pt: "Ouvindo…" },
   liveThinking: { zh: "思考中…", en: "Thinking…", pt: "Pensando…" },
   liveSpeaking: { zh: "回答中…", en: "Speaking…", pt: "Falando…" },

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { RECENCY_LABEL, recencyGroups } from "../lib/recency";
 import { ImagePreview } from "./ImagePreview";
 import { resolveToolFormat, type CallFormat } from "../lib/callFormat";
@@ -126,9 +127,6 @@ const EFFORT_OF: Partial<Record<ThinkMode, string>> = {
   deep: "xhigh",
 };
 
-const RAIL_DEFAULT = 240;
-const RAIL_MIN = 180;
-const RAIL_MAX = 420;
 
 const uid = () => Math.random().toString(36).slice(2);
 
@@ -675,6 +673,10 @@ function PrefillRing({ frac, size = 16 }: { frac: number; size?: number }) {
 export function CodeMode({
   model,
   active,
+  headSlot,
+  railW,
+  onRailResize,
+  onRailReset,
   maxSteps,
   bashTimeout,
   ragTopK,
@@ -697,6 +699,13 @@ export function CodeMode({
 }: {
   model: ModelInfo | null;
   active: boolean;
+  /** The window's top row, over this panel: the header renders there. */
+  headSlot: HTMLElement | null;
+  /** The sidebar's width, shared with chat and the image studio so the
+   *  top row's mode switch stays put when the mode changes. */
+  railW: number;
+  onRailResize: (e: React.PointerEvent) => void;
+  onRailReset: () => void;
   /** Generate a session title with the model after the first turn (Settings → General). */
   autoTitle?: boolean;
   /** Max agent steps per turn (Settings → Code). */
@@ -812,15 +821,6 @@ export function CodeMode({
   const [atFiles, setAtFiles] = useState<string[]>([]);
   const [atSel, setAtSel] = useState(0);
   const [atHidden, setAtHidden] = useState(false);
-  const [railW, setRailW] = useState(() => {
-    try {
-      const v = Number(localStorage.getItem("chaty.code.railW"));
-      if (Number.isFinite(v) && v >= RAIL_MIN && v <= RAIL_MAX) return v;
-    } catch {
-      /* ignore */
-    }
-    return RAIL_DEFAULT;
-  });
   const [stats, setStats] = useState<{ tokens: number; tps: number } | null>(null);
   const [ctxUsed, setCtxUsed] = useState(0);
   /** Messages typed while the agent was running — auto-sent one by one after. */
@@ -1174,47 +1174,6 @@ export function CodeMode({
     }
   }
 
-  // Drag the rail's right edge to resize (rAF-throttled, persisted on release,
-  // double-click resets) — mirrors the chat sidebar.
-  function startRailResize(e: React.PointerEvent) {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = railW;
-    let frame: number | null = null;
-    let latest = startW;
-    document.body.classList.add("resizing-x");
-    const onMove = (ev: PointerEvent) => {
-      latest = Math.min(RAIL_MAX, Math.max(RAIL_MIN, startW + (ev.clientX - startX)));
-      if (frame == null)
-        frame = requestAnimationFrame(() => {
-          frame = null;
-          setRailW(latest);
-        });
-    };
-    const onUp = () => {
-      document.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerup", onUp);
-      if (frame != null) cancelAnimationFrame(frame);
-      document.body.classList.remove("resizing-x");
-      setRailW(latest);
-      try {
-        localSave("chaty.code.railW", String(latest));
-      } catch {
-        /* ignore */
-      }
-    };
-    document.addEventListener("pointermove", onMove);
-    document.addEventListener("pointerup", onUp);
-  }
-
-  function resetRailW() {
-    setRailW(RAIL_DEFAULT);
-    try {
-      localSave("chaty.code.railW", String(RAIL_DEFAULT));
-    } catch {
-      /* ignore */
-    }
-  }
 
   async function pickWorkspace() {
     if (running) return;
@@ -2166,145 +2125,84 @@ export function CodeMode({
           role="separator"
           aria-orientation="vertical"
           title={t("resizeSidebar")}
-          onPointerDown={startRailResize}
-          onDoubleClick={resetRailW}
+          onPointerDown={onRailResize}
+          onDoubleClick={onRailReset}
         />
       </aside>
 
       <main className="code-main">
-        <div className="code-head">
-          <button className="cm-ws" onClick={() => void pickWorkspace()} disabled={running} title={workspace ?? ""}>
-            <Icon name="folder" size={14} />
-            {wsName ? <span className="cm-ws-name">{wsName}</span> : <span className="cm-ws-pick">{t("cmOpenFolder")}</span>}
-            <Icon name="chevron-down" size={11} strokeWidth={2} className="cm-ws-caret" />
-          </button>
-          {(dirGrants.length > 0 || workspace) && (
-            <div className="cm-grants">
-              {dirGrants.map((d) => (
-                <span key={d} className="cm-grant-chip" title={d}>
-                  <Icon name="folder" size={11} />
-                  <span className="cm-grant-name">{workspaceName(d)}</span>
-                  <button className="cm-grant-del" title={t("cmGrantRevoke")} onClick={() => void revokeDir(d)}>
-                    <Icon name="x" size={10} strokeWidth={2.2} />
-                  </button>
-                </span>
-              ))}
-              {workspace && (
-                <button className="cm-grant-add" title={t("cmGrantAddTip")} aria-label={t("cmGrantAddTip")} onClick={() => void addGrantDir()}>
-                  <Icon name="plus" size={13} strokeWidth={2} />
-                </button>
-              )}
-            </div>
-          )}
-          <span className="cm-head-spacer" />
-          {downloads.length > 0 && (
-            <span
-              className="cm-bgjobs cm-dl-badge"
-              title={downloads.map((d) => `#${d.id} ${d.url} → ${d.path}`).join("\n")}
-            >
-              <span className="cm-spin" /> ⬇ {downloads.length}
-              {downloads[0].total
-                ? ` · ${Math.min(100, Math.round((downloads[0].downloaded / downloads[0].total) * 100))}%`
-                : ` · ${fmtBytes(downloads[0].downloaded)}`}
-            </span>
-          )}
-          {bgJobs.length > 0 &&
-            (() => {
-              const live = bgJobs.filter((j) => j.running).length;
-              return (
-                <button
-                  ref={bgPillRef}
-                  className={`cm-bgjobs ${showBg ? "active" : ""}`}
-                  title={t("bgOpenHint")}
-                  onClick={() => setShowBg((v) => !v)}
-                >
-                  {live > 0 ? <span className="cm-spin" /> : <Icon name="check" size={12} strokeWidth={2.4} />}
-                  {live > 0 ? (
-                    <>
-                      <span className="cm-bg-n">{live}</span>
-                      <span className="cm-head-label">{t("cmBgCount", { n: String(live) })}</span>
-                    </>
-                  ) : (
-                    <span className="cm-head-label">{t("bgTitle")}</span>
+        {active &&
+          headSlot &&
+          createPortal(
+            <div className="code-head" data-tauri-drag-region>
+              <button className="cm-ws" onClick={() => void pickWorkspace()} disabled={running} title={workspace ?? ""}>
+                <Icon name="folder" size={14} />
+                {wsName ? <span className="cm-ws-name">{wsName}</span> : <span className="cm-ws-pick">{t("cmOpenFolder")}</span>}
+                <Icon name="chevron-down" size={11} strokeWidth={2} className="cm-ws-caret" />
+              </button>
+              {(dirGrants.length > 0 || workspace) && (
+                <div className="cm-grants">
+                  {dirGrants.map((d) => (
+                    <span key={d} className="cm-grant-chip" title={d}>
+                      <Icon name="folder" size={11} />
+                      <span className="cm-grant-name">{workspaceName(d)}</span>
+                      <button className="cm-grant-del" title={t("cmGrantRevoke")} onClick={() => void revokeDir(d)}>
+                        <Icon name="x" size={10} strokeWidth={2.2} />
+                      </button>
+                    </span>
+                  ))}
+                  {workspace && (
+                    <button className="cm-grant-add" title={t("cmGrantAddTip")} aria-label={t("cmGrantAddTip")} onClick={() => void addGrantDir()}>
+                      <Icon name="plus" size={13} strokeWidth={2} />
+                    </button>
                   )}
-                </button>
-              );
-            })()}
-          {showBg && (
-            <BgTasksPanel
-              anchorRef={bgPillRef}
-              jobs={bgJobs}
-              onClose={() => setShowBg(false)}
-              onChanged={() => agentBgAll().then(setBgJobs).catch(() => {})}
-            />
-          )}
-          {ctxUsed > 0 && (model?.nCtx ?? 0) > 0 && (() => {
-            const nCtx = model!.nCtx!;
-            const pct = Math.min(100, Math.round((ctxUsed / nCtx) * 100));
-            const r = 7;
-            const circ = 2 * Math.PI * r;
-            const tone = pct >= 90 ? "hot" : pct >= 70 ? "warn" : "";
-            return (
-              <div className={`cm-ctx ${tone}`} title={`${ctxUsed.toLocaleString()} / ${nCtx.toLocaleString()} tokens · ${t("cmContext")}`}>
-                <svg width="18" height="18" viewBox="0 0 18 18">
-                  <circle cx="9" cy="9" r={r} fill="none" stroke="var(--border-strong)" strokeWidth="2.2" />
-                  <circle
-                    cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"
-                    strokeDasharray={circ} strokeDashoffset={circ * (1 - pct / 100)}
-                    transform="rotate(-90 9 9)"
-                  />
-                </svg>
-                <span className="cm-ctx-pct">{pct}%</span>
-              </div>
-            );
-          })()}
-          <div className="cm-think-switch" title={t(nativeEffort ? "effortHint" : "cmThinkHint")}>
-            {/* A model with its own ladder shows that ladder, whatever its
-                length; `off` is Chaty's, because a ladder has no rung for
-                not thinking at all. */}
-            {(nativeEffort ? ["off", ...effortLevels] : THINK_MODES).map((tab) => {
-              const active = thinkTabActive(tab, { nativeEffort, thinkMode, rung });
-              return (
-                <button
-                  key={tab}
-                  className={`cm-think-tab ${active ? "active" : ""}`}
-                  onClick={() => {
-                    if (tab === "off") {
-                      setThinkMode("off");
-                      localSave("chaty.code.think", "off");
-                      return;
-                    }
-                    if (!nativeEffort) {
-                      setThinkMode(tab as ThinkMode);
-                      localSave("chaty.code.think", tab);
-                      return;
-                    }
-                    const mode = intensityOf(effortLevels, tab);
-                    setCodeEffort(tab);
-                    setThinkMode(mode);
-                    localSave("chaty.code.effort", tab);
-                    localSave("chaty.code.think", mode);
-                  }}
-                  disabled={running}
+                </div>
+              )}
+              <span className="cm-head-spacer" data-tauri-drag-region />
+              {downloads.length > 0 && (
+                <span
+                  className="cm-bgjobs cm-dl-badge"
+                  title={downloads.map((d) => `#${d.id} ${d.url} → ${d.path}`).join("\n")}
                 >
-                  {tab === "off"
-                    ? t("cmThinkOff")
-                    : nativeEffort
-                      ? effortLabel(tab, t)
-                      : t(tab === "normal" ? "cmThinkNormal" : "cmThinkDeep")}
-                </button>
-              );
-            })}
-          </div>
-          <button
-            className={`cm-bypass ${bypass ? "on" : ""}`}
-            onClick={toggleBypass}
-            title={t("cmBypassHint")}
-          >
-            <Icon name="bolt" size={12} strokeWidth={1.9} />
-            <span className="cm-head-label">{t("cmBypass")}</span>
-          </button>
-        </div>
+                  <span className="cm-spin" /> ⬇ {downloads.length}
+                  {downloads[0].total
+                    ? ` · ${Math.min(100, Math.round((downloads[0].downloaded / downloads[0].total) * 100))}%`
+                    : ` · ${fmtBytes(downloads[0].downloaded)}`}
+                </span>
+              )}
+              {bgJobs.length > 0 &&
+                (() => {
+                  const live = bgJobs.filter((j) => j.running).length;
+                  return (
+                    <button
+                      ref={bgPillRef}
+                      className={`cm-bgjobs ${showBg ? "active" : ""}`}
+                      title={t("bgOpenHint")}
+                      onClick={() => setShowBg((v) => !v)}
+                    >
+                      {live > 0 ? <span className="cm-spin" /> : <Icon name="check" size={12} strokeWidth={2.4} />}
+                      {live > 0 ? (
+                        <>
+                          <span className="cm-bg-n">{live}</span>
+                          <span className="cm-head-label">{t("cmBgCount", { n: String(live) })}</span>
+                        </>
+                      ) : (
+                        <span className="cm-head-label">{t("bgTitle")}</span>
+                      )}
+                    </button>
+                  );
+                })()}
+              {showBg && (
+                <BgTasksPanel
+                  anchorRef={bgPillRef}
+                  jobs={bgJobs}
+                  onClose={() => setShowBg(false)}
+                  onChanged={() => agentBgAll().then(setBgJobs).catch(() => {})}
+                />
+              )}
+            </div>,
+            headSlot,
+          )}
 
         <div className="code-wrap">
         <div className="code-scroll" ref={scrollRef}>
@@ -2652,6 +2550,79 @@ export function CodeMode({
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
               </button>
             )}
+          </div>
+          {/* How the next message runs, under the input as the image
+              studio's settings are: thinking and bypass on the left, the
+              context in use on the right. They lived in a header bar that
+              is gone now. */}
+          <div className="cm-status">
+            <div className="cm-think-switch" title={t(nativeEffort ? "effortHint" : "cmThinkHint")}>
+              {/* A model with its own ladder shows that ladder, whatever its
+                  length; `off` is Chaty's, because a ladder has no rung for
+                  not thinking at all. */}
+              {(nativeEffort ? ["off", ...effortLevels] : THINK_MODES).map((tab) => {
+                const active = thinkTabActive(tab, { nativeEffort, thinkMode, rung });
+                return (
+                  <button
+                    key={tab}
+                    className={`cm-think-tab ${active ? "active" : ""}`}
+                    onClick={() => {
+                      if (tab === "off") {
+                        setThinkMode("off");
+                        localSave("chaty.code.think", "off");
+                        return;
+                      }
+                      if (!nativeEffort) {
+                        setThinkMode(tab as ThinkMode);
+                        localSave("chaty.code.think", tab);
+                        return;
+                      }
+                      const mode = intensityOf(effortLevels, tab);
+                      setCodeEffort(tab);
+                      setThinkMode(mode);
+                      localSave("chaty.code.effort", tab);
+                      localSave("chaty.code.think", mode);
+                    }}
+                    disabled={running}
+                  >
+                    {tab === "off"
+                      ? t("cmThinkOff")
+                      : nativeEffort
+                        ? effortLabel(tab, t)
+                        : t(tab === "normal" ? "cmThinkNormal" : "cmThinkDeep")}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              className={`cm-bypass ${bypass ? "on" : ""}`}
+              onClick={toggleBypass}
+              title={t("cmBypassHint")}
+            >
+              <Icon name="bolt" size={12} strokeWidth={1.9} />
+              <span className="cm-head-label">{t("cmBypass")}</span>
+            </button>
+            <span className="cm-status-spacer" />
+            {ctxUsed > 0 && (model?.nCtx ?? 0) > 0 && (() => {
+              const nCtx = model!.nCtx!;
+              const pct = Math.min(100, Math.round((ctxUsed / nCtx) * 100));
+              const r = 7;
+              const circ = 2 * Math.PI * r;
+              const tone = pct >= 90 ? "hot" : pct >= 70 ? "warn" : "";
+              return (
+                <div className={`cm-ctx ${tone}`} title={`${ctxUsed.toLocaleString()} / ${nCtx.toLocaleString()} tokens · ${t("cmContext")}`}>
+                  <svg width="18" height="18" viewBox="0 0 18 18">
+                    <circle cx="9" cy="9" r={r} fill="none" stroke="var(--border-strong)" strokeWidth="2.2" />
+                    <circle
+                      cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"
+                      strokeDasharray={circ} strokeDashoffset={circ * (1 - pct / 100)}
+                      transform="rotate(-90 9 9)"
+                    />
+                  </svg>
+                  <span className="cm-ctx-pct">{pct}%</span>
+                </div>
+              );
+            })()}
           </div>
         </div>
       </main>

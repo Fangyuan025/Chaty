@@ -342,6 +342,11 @@ export class SpeechQueue {
   /** Context time the next clip begins — the end of everything queued. */
   private nextAt = 0;
   private live = new Set<AudioBufferSourceNode>();
+  /** Settles each scheduled clip's end. stop() runs them all: a clip that
+   *  was scheduled but had not started never fires `onended` once the
+   *  context is closed, and whenIdle() waited on it forever — Live mode's
+   *  interrupt hung there. */
+  private ends = new Set<() => void>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   /** Resolves once every clip so far has been SCHEDULED (not played). */
   private tail: Promise<void> = Promise.resolve();
@@ -396,10 +401,13 @@ export class SpeechQueue {
       const startAt = Math.max(this.ctx.currentTime + SCHEDULE_LEAD, this.nextAt);
       this.live.add(src);
       this.lastEnded = new Promise<void>((resolve) => {
-        src.onended = () => {
+        const end = () => {
           this.live.delete(src);
+          this.ends.delete(end);
           resolve();
         };
+        this.ends.add(end);
+        src.onended = end;
       });
       src.start(startAt);
       this.nextAt = startAt + buffer.duration;
@@ -448,6 +456,7 @@ export class SpeechQueue {
       }
     }
     this.live.clear();
+    for (const end of [...this.ends]) end();
     this.ctx.close().catch(() => {});
   }
 }

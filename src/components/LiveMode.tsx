@@ -18,7 +18,7 @@ import {
   startRecording,
   type Recorder,
 } from "../lib/audio";
-import { answerOnly, cutSentences, forSpeech } from "../lib/voiceText";
+import { answerOnly, cutOffReply, cutSentences, forSpeech } from "../lib/voiceText";
 import { isVoiceDownloadCancelled } from "../lib/voiceError";
 
 type Status = "listening" | "thinking" | "speaking";
@@ -51,6 +51,12 @@ const PALETTES: Record<Status, Rgb[]> = {
     [56, 189, 248],
   ],
 };
+
+/** How far the glow's canvas runs past each edge of the screen, as a
+ *  fraction of it: far enough that where it is cut is out of sight, blur
+ *  and all. Matches `.live-glow` in App.css. */
+const GLOW_PAD = 0.14;
+const GLOW_SPAN = 1 + 2 * GLOW_PAD;
 
 /**
  * Gemini-style hands-free voice conversation: an animated orb reacting to the
@@ -95,6 +101,9 @@ export function LiveMode({
   const cancelCaptureRef = useRef<(() => void) | null>(null);
   const messagesRef = useRef<ChatMessage[]>([...initialHistory]);
   const onTurnRef = useRef(onTurn);
+  /** Cuts the reply being spoken short and hands the turn back (set while
+   *  a reply is under way). */
+  const interruptRef = useRef<(() => void) | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const captionRef = useRef<HTMLDivElement>(null);
 
@@ -119,6 +128,11 @@ export function LiveMode({
   // and brightening with the voice (the microphone while it listens, the
   // reply while it speaks). The canvas is drawn at a quarter of the screen's
   // resolution — the blur hides it, and a frame costs next to nothing.
+  //
+  // It covers the whole screen and a margin past every edge. It used to
+  // cover only the bottom band, and a light swelling with the voice ran
+  // past the canvas's top and was cut there: a straight line across the
+  // middle of the screen. Now every light fades to nothing inside it.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -163,27 +177,35 @@ export function LiveMode({
 
       const w = canvas.width;
       const h = canvas.height;
+      // Screen fractions to canvas pixels (the canvas runs GLOW_PAD past each
+      // edge of the screen); radii are in screen heights.
+      const X = (fx: number) => ((fx + GLOW_PAD) / GLOW_SPAN) * w;
+      const Y = (fy: number) => ((fy + GLOW_PAD) / GLOW_SPAN) * h;
+      const R = (rh: number) => (rh / GLOW_SPAN) * h;
       ctx.globalCompositeOperation = "source-over";
       ctx.clearRect(0, 0, w, h);
       ctx.globalCompositeOperation = "lighter";
       const n = colors.length;
       for (let i = 0; i < n; i++) {
         const p = seeds[i];
-        const sweep = st === "thinking" ? Math.sin(t * 0.9 + p) * w * 0.12 : 0;
-        const x = w * (0.06 + (0.88 * i) / (n - 1)) + Math.sin(t * (0.23 + 0.07 * i) + p) * w * 0.08 + sweep;
-        const y = h * (1.08 - lift * 0.55) + Math.sin(t * 0.5 + p * 2) * h * 0.05;
-        const r = h * (0.62 + 0.16 * Math.sin(t * 0.37 + p * 3)) * (0.8 + lift * 0.7);
+        const sweep = st === "thinking" ? Math.sin(t * 0.9 + p) * 0.12 : 0;
+        const fx = -0.06 + 1.12 * (0.06 + (0.88 * i) / (n - 1) + Math.sin(t * (0.23 + 0.07 * i) + p) * 0.08 + sweep);
+        const fy = 0.4 + 0.64 * (1.08 - lift * 0.55 + Math.sin(t * 0.5 + p * 2) * 0.05);
+        const rh = 0.64 * (0.62 + 0.16 * Math.sin(t * 0.37 + p * 3)) * (0.8 + lift * 0.7);
+        const x = X(fx);
+        const y = Y(fy);
+        const r = R(rh);
         const a = shown * (st === "listening" ? 0.4 + level * 0.3 : st === "thinking" ? 0.46 : 0.52 + level * 0.28);
-        const [R, G, B] = colors[i].map(Math.round);
+        const [Rr, G, B] = colors[i].map(Math.round);
         const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-        g.addColorStop(0, `rgba(${R},${G},${B},${a})`);
-        g.addColorStop(0.45, `rgba(${R},${G},${B},${a * 0.45})`);
-        g.addColorStop(1, `rgba(${R},${G},${B},0)`);
+        g.addColorStop(0, `rgba(${Rr},${G},${B},${a})`);
+        g.addColorStop(0.45, `rgba(${Rr},${G},${B},${a * 0.45})`);
+        g.addColorStop(1, `rgba(${Rr},${G},${B},0)`);
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, w, h);
       }
       // A faint pale core along the very bottom, strongest while it speaks.
-      const core = ctx.createLinearGradient(0, h, 0, h * (1 - lift * 0.5));
+      const core = ctx.createLinearGradient(0, Y(1), 0, Y(1 - lift * 0.32));
       const ca = shown * (0.1 + (st === "speaking" ? 0.12 + level * 0.18 : level * 0.1));
       core.addColorStop(0, `rgba(220,235,255,${ca})`);
       core.addColorStop(1, "rgba(220,235,255,0)");
@@ -295,11 +317,18 @@ export function LiveMode({
     let spokenLen = 0;
     let synthChain: Promise<void> = Promise.resolve();
     let started = false;
+    let interrupted = false;
+    // The reply's text in the pieces it is spoken in: `queued` as each clip
+    // goes into the speaker's queue, `heard` as each one starts to sound. A
+    // reply that is interrupted is remembered as what was heard.
+    const queued: string[] = [];
+    const heard: string[] = [];
 
     // Show only the sentence currently being spoken (big and centered); the
     // full transcript is saved to the conversation for later review.
     const speech = new SpeechQueue((label) => {
-      if (!activeRef.current) return;
+      if (!activeRef.current || interrupted) return;
+      if (heard.length < queued.length) heard.push(queued[heard.length]);
       if (!started) {
         started = true;
         setBoth("speaking");
@@ -309,6 +338,21 @@ export function LiveMode({
     speechRef.current = speech;
     const speechBuf = new Uint8Array(1024);
     levelRef.current = () => readLevel(speech.analyser, speechBuf);
+    let wake = () => {};
+    const cut = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    interruptRef.current = () => {
+      if (interrupted) return;
+      interrupted = true;
+      wake();
+      speech.stop();
+      cancelGeneration().catch(() => {});
+      // The turn is the user's again at once; the loop starts listening as
+      // soon as this reply is put away.
+      setBoth("listening");
+      setCaption("");
+    };
 
     const enqueue = (raw: string) => {
       const clean = forSpeech(raw);
@@ -324,7 +368,11 @@ export function LiveMode({
             voiceSidZh,
             hasHan(answerOnly(acc)),
           );
-          if (!speech.isStopped) speech.enqueue(decodeAudio(audio), sampleRate, clean);
+          const samples = decodeAudio(audio);
+          if (!speech.isStopped && samples.length > 0) {
+            queued.push(raw);
+            speech.enqueue(samples, sampleRate, clean);
+          }
         } catch (e) {
           if (!isVoiceDownloadCancelled(e)) setError(String(e));
         }
@@ -369,24 +417,35 @@ export function LiveMode({
           },
         },
         (ev) => {
-          if (ev.type === "token") {
+          if (ev.type === "token" && !interrupted) {
             acc += ev.text;
             pump(false); // synthesize as sentences complete; transcript shows on playback
           }
         },
       );
     } catch (e) {
-      setError(String(e));
+      if (!interrupted) setError(String(e));
     }
-    pump(true);
+    if (!interrupted) pump(true);
 
-    const answer = answerOnly(acc).trim();
+    // Let it finish speaking — or be cut off, which ends the wait at once
+    // (a sentence still being synthesized is dropped when it arrives).
+    await Promise.race([
+      (async () => {
+        await synthChain;
+        await speech.whenIdle();
+      })(),
+      cut,
+    ]);
+
+    // Cut off, the model remembers what it got to say — not the rest it had
+    // written, which nobody heard.
+    const answer = interrupted ? cutOffReply(heard.join("")) : answerOnly(acc).trim();
     messagesRef.current.push({ role: "assistant", content: answer });
     // Record the live turn into the conversation history.
     if (userText && answer) onTurnRef.current(userText, answer);
 
-    await synthChain;
-    await speech.whenIdle();
+    if (interruptRef.current && speechRef.current === speech) interruptRef.current = null;
     // Free the AudioContext (browsers cap concurrent contexts ~6, so a long
     // live session would otherwise throw after a handful of turns).
     speech.stop();
@@ -417,11 +476,30 @@ export function LiveMode({
         )}
         {error && <div className="live-error">{error}</div>}
       </div>
-      <div className="live-controls">
-        <button className="live-end" onClick={onClose} title={t("liveExit")} aria-label={t("liveExit")}>
-          <Icon name="x" size={20} strokeWidth={2} />
-        </button>
-        <span className="live-end-label">{t("liveEnd")}</span>
+      {/* Interrupt joins End while a reply is spoken: it fades in at End's
+          left and End slides over to keep the pair centred, and back. */}
+      <div className={`live-controls ${status === "speaking" ? "two" : ""}`}>
+        <div className="live-ctl live-ctl-cut" aria-hidden={status !== "speaking"}>
+          <button
+            className="live-btn"
+            onClick={() => interruptRef.current?.()}
+            disabled={status !== "speaking"}
+            tabIndex={status === "speaking" ? 0 : -1}
+            title={t("liveInterruptTip")}
+            aria-label={t("liveInterruptTip")}
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="6.5" y="6.5" width="11" height="11" rx="2.5" fill="currentColor" />
+            </svg>
+          </button>
+          <span className="live-btn-label">{t("liveInterrupt")}</span>
+        </div>
+        <div className="live-ctl live-ctl-end">
+          <button className="live-btn live-end" onClick={onClose} title={t("liveExit")} aria-label={t("liveExit")}>
+            <Icon name="x" size={20} strokeWidth={2} />
+          </button>
+          <span className="live-btn-label">{t("liveEnd")}</span>
+        </div>
       </div>
     </div>,
     document.body,

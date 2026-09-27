@@ -71,6 +71,8 @@
   /* Scrollbar thickness (drawn by the app, see Scrollbars). */
   --sb-size: 10px;
   --inset-gap: 8px;
+  /* The hairline between the sidebar and the working area. */
+  --edge: var(--border);
   --inset-shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(0, 0, 0, 0.12), 0 8px 28px rgba(0, 0, 0, 0.18);
   /* The composer floats over the transcript: one step above the cards, a
      hairline of light along its top edge, and a shadow with some reach. */
@@ -399,21 +401,47 @@ body {
   100% { margin-left: 100%; }
 }
 
-/* ---------- Titlebar ---------- */
+/* ---------- Titlebar ----------
+   Not a bar across the window: the top row belongs to the two columns under
+   it. Over the sidebar it is the frame (the window's controls, the mode
+   switch, as wide as the sidebar); over the working area it is the panel
+   itself — its title, the model and the app's buttons on the panel's own
+   ground, the transcript fading out beneath it. */
 .titlebar {
+  display: flex;
+  flex-shrink: 0;
+  height: 44px;
+  user-select: none;
+}
+.tb-side {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 44px;
-  padding: 0 14px 0 16px;
+  padding: 0 10px 0 16px;
   background: var(--frame);
-  user-select: none;
+}
+.tb-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 14px;
+  background: var(--bg);
+  /* The panel's one edge: the line between it and the sidebar, running from
+     the window's top to its bottom. */
+  border-left: 1px solid var(--edge);
+}
+/* The window buttons sit flush in the corner. */
+:root:not([data-os="macos"]) .tb-main {
+  padding-right: 0;
 }
 
 /* macOS: leave room on the left for the native traffic-light buttons
    (titleBarStyle: Overlay draws them over our title bar), and drop the
    wordmark — redundant chrome next to the traffic lights. */
-:root[data-os="macos"] .titlebar {
+:root[data-os="macos"] .tb-side {
   padding-left: 84px;
 }
 :root[data-os="macos"] .brand {
@@ -428,6 +456,29 @@ body {
   font-size: 14.5px;
 }
 
+/* What's open, as the panel's title. Text only: a press on it moves the
+   window, as the rest of the row does. */
+.tb-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text);
+}
+/* Where Code mode puts its header; empty, it is the gap that pushes the
+   buttons to the right. */
+.tb-slot {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+}
+
 .model-wrap {
   position: relative;
   margin-left: auto;
@@ -437,7 +488,7 @@ body {
   min-width: 0;
   flex: 0 1 auto;
 }
-.titlebar > :not(.model-wrap) {
+.tb-main > :not(.model-wrap):not(.tb-slot):not(.tb-title) {
   flex-shrink: 0;
 }
 .model-chip {
@@ -451,17 +502,11 @@ body {
   flex-shrink: 0;
   white-space: nowrap;
 }
-.mode-tab {
-  white-space: nowrap;
-}
-@media (max-width: 900px) {
-  .mode-tab-label,
-  .model-chip .chip-meta {
-    display: none;
-  }
-  .mode-tab {
-    padding: 4px 9px;
-  }
+/* A narrow row (App measures it: .narrow / .tight) keeps the model's name
+   and drops its size figures. */
+.tb-main.narrow .model-chip .chip-meta,
+.tb-main.tight .model-chip .chip-meta {
+  display: none;
 }
 
 .model-chip {
@@ -800,21 +845,10 @@ body {
   align-self: stretch;
   margin-left: 2px;
   /* Minimize, maximize and close work whatever is open over the window —
-     a modal's backdrop covered them (issue #20). */
+     a modal's backdrop covered them (issue #20), Live mode too. */
   position: relative;
-  z-index: 2700;
+  z-index: 3500;
   flex-shrink: 0;
-}
-
-/* The title bar's drag region, over a modal's backdrop: the window can still
-   be moved while a model downloads (issue #20). Below the window controls. */
-.modal-drag-strip {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 44px;
-  z-index: 95;
 }
 
 .win-btn {
@@ -853,7 +887,8 @@ body {
 /* Drag-to-resize handle straddling the sidebar's right edge. */
 .sidebar-resizer {
   position: absolute;
-  top: 0;
+  /* Up through the top row: the sidebar's edge is one line to the top. */
+  top: -44px;
   right: -3px;
   width: 7px;
   height: 100%;
@@ -888,8 +923,7 @@ body.resizing-x {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* Its top on the inset panel's top line. */
-  margin: var(--inset-gap) 10px 4px;
+  margin: 4px 10px 4px;
   padding: 9px 12px;
   font-size: 13.5px;
   font-weight: 500;
@@ -1093,15 +1127,11 @@ body.resizing-x {
   flex-direction: column;
   min-width: 0;
   background: var(--bg);
-  /* The inset panel (see --frame): a gap above it, level with the sidebar's
-     first control (issue #20), and none to its right or below — an 8 px
-     strip of frame along the window's edge only looked like a mistake. It
-     runs to the window's edge, round only where it meets the frame. No
+  /* The working panel (see --frame) runs from the top row to the window's
+     edges; of the inset card it was, only its left edge is left. No
      overflow clip: menus that open from inside it must be free to spill
      past its edge. */
-  margin: var(--inset-gap) 0 0 0;
-  border-radius: var(--inset-radius) 0 0 0;
-  box-shadow: var(--inset-shadow);
+  border-left: 1px solid var(--edge);
 }
 
 /* Positioning shell for the chat scroller + its floating jump pill. */
@@ -1111,6 +1141,21 @@ body.resizing-x {
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+/* The transcript fades out under the top row as it does under the
+   composer: no bar, no line — the words thin out as they reach the title.
+   Clear of the scrollbar, which runs its full height. */
+.chat-wrap::before,
+.code-wrap::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: var(--sb-size);
+  height: 26px;
+  z-index: 2;
+  background: linear-gradient(to bottom, var(--bg), color-mix(in srgb, var(--bg) 0%, transparent));
+  pointer-events: none;
 }
 .chat {
   flex: 1;
@@ -4636,12 +4681,13 @@ button.tool-parent {
 /* The light along the bottom edge (LiveMode draws it): drawn small, blown
    up and blurred into one soft band. */
 .live-glow {
+  /* The whole screen and 14% past every edge (GLOW_PAD in LiveMode): where
+     the canvas ends must be out of sight, blur included. */
   position: absolute;
-  left: -6%;
-  right: -6%;
-  bottom: -4%;
-  width: 112%;
-  height: 64%;
+  left: -14%;
+  top: -14%;
+  width: 128%;
+  height: 128%;
   pointer-events: none;
   filter: blur(34px) saturate(135%);
 }
@@ -4722,15 +4768,42 @@ button.tool-parent {
   color: #ff8a80;
   text-align: center;
 }
+/* End, and Interrupt beside it while a reply is spoken. Both hang from one
+   point at the bottom centre; showing Interrupt moves End right and brings
+   Interrupt in at the left, so the pair is centred and End never jumps —
+   transforms and opacity only, so it glides. */
 .live-controls {
   position: absolute;
   bottom: 52px;
+  left: 50%;
+  width: 0;
+  height: 88px;
+}
+.live-ctl {
+  position: absolute;
+  bottom: 0;
+  left: -44px;
+  width: 88px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
+  transition: transform 0.42s var(--ease-out), opacity 0.28s var(--ease);
 }
-.live-end {
+.live-controls.two .live-ctl-end {
+  transform: translateX(50px);
+}
+.live-ctl-cut {
+  opacity: 0;
+  transform: translateX(-50px) scale(0.82);
+  pointer-events: none;
+}
+.live-controls.two .live-ctl-cut {
+  opacity: 1;
+  transform: translateX(-50px);
+  pointer-events: auto;
+}
+.live-btn {
   display: grid;
   place-items: center;
   width: 60px;
@@ -4745,16 +4818,41 @@ button.tool-parent {
   cursor: pointer;
   transition: background 0.18s, border-color 0.18s, transform 0.18s var(--ease-out);
 }
+.live-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.24);
+}
 .live-end:hover {
   background: rgba(239, 68, 68, 0.78);
   border-color: rgba(255, 255, 255, 0.22);
 }
-.live-end:active {
+.live-btn:active {
   transform: scale(0.96);
 }
-.live-end-label {
+.live-btn:disabled {
+  cursor: default;
+}
+.live-btn-label {
   font-size: 12px;
   color: var(--live-fg-dim);
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-ctl {
+    transition: opacity 0.2s var(--ease);
+  }
+}
+/* The window's buttons (Windows, Linux) stay over Live mode; on its dark
+   ground they take its light ink whatever the theme. */
+body:has(.live-overlay) .win-btn {
+  color: rgba(255, 255, 255, 0.6);
+}
+body:has(.live-overlay) .win-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+body:has(.live-overlay) .win-btn.close:hover {
+  background: var(--danger);
 }
 
 /* Settings hint + hardware panel */
@@ -5789,43 +5887,36 @@ button.tool-parent {
 }
 
 /* ======================= Code mode (agentic coding) ======================= */
-/* Titlebar Chat|Code segmented switch */
+/* The mode switch: icons only, at the sidebar's top right, its end on the
+   sidebar's own margin — it moves with the sidebar's edge. */
 .mode-switch {
   display: inline-flex;
   gap: 2px;
-  padding: 2px;
-  margin-left: 14px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  margin-left: auto;
 }
 .mode-tab {
   position: relative;
   z-index: 0;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 13px 4px 11px;
-  font-size: 12.5px;
-  font-weight: 500;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  padding: 0;
   color: var(--text-dim);
   background: transparent;
   border: none;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   cursor: pointer;
-  transition: color 0.14s;
+  transition: color var(--t-fast), background var(--t-fast);
 }
 .mode-tab:hover {
   color: var(--text);
+  background: var(--ink-faint);
 }
 .mode-tab.active {
   color: var(--text);
-}
-.mode-tab svg {
-  opacity: 0.75;
-}
-.mode-tab.active svg {
-  opacity: 1;
+  background: transparent;
 }
 .mode-tab.active::before {
   content: "";
@@ -5833,8 +5924,8 @@ button.tool-parent {
   inset: 0;
   z-index: -1;
   border-radius: inherit;
-  background: var(--surface-2);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), var(--shadow-1);
+  background: var(--bg);
+  box-shadow: 0 0 0 1px var(--border), inset 0 1px 0 rgba(255, 255, 255, 0.04), var(--shadow-1);
   animation: seg-pop var(--t-med) var(--ease-out);
 }
 
@@ -5939,49 +6030,54 @@ button.tool-parent {
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  margin: var(--inset-gap) 0 0 0;
-  border-radius: var(--inset-radius) 0 0 0;
-  box-shadow: var(--inset-shadow);
+  border-left: 1px solid var(--edge);
   container: code-main / inline-size;
 }
-/* A narrow column (the window goes down to 720px, the session rail takes its
-   share): the header keeps every control on one line by dropping the words
-   that repeat what the icon says. It used to wrap each button onto two. */
-@container code-main (max-width: 700px) {
-  .code-head .cm-head-label {
+/* A narrow column (the window goes down to 720px, the sidebar takes its
+   share): the header and the line over the input keep every control on one
+   line by dropping the words that repeat what the icon says. */
+.tb-main.tight .code-head .cm-head-label {
+  display: none;
+}
+.tb-main.tight .code-head .cm-bg-n {
+  display: inline;
+}
+.tb-main.tight .code-head .cm-bgjobs {
+  padding-left: 9px;
+  padding-right: 9px;
+}
+@container code-main (max-width: 520px) {
+  .cm-status .cm-head-label {
     display: none;
   }
-  .code-head .cm-bg-n {
-    display: inline;
+  .cm-status .cm-bypass {
+    padding-left: 8px;
+    padding-right: 8px;
   }
-  .code-head .cm-bypass,
-  .code-head .cm-bgjobs {
-    padding-left: 9px;
-    padding-right: 9px;
-  }
-  .code-head .cm-think-tab {
-    padding: 4px 7px;
+  .cm-status .cm-think-tab {
+    padding: 0 7px;
   }
 }
-/* Code mode's top bar. It belongs to the rounded panel it heads: no fill of
-   its own, the panel's corners, a hairline under it. Every control in it is
-   one height (28px) and one radius (8px) — a set, not a collection. */
+/* Code mode's header, in the window's top row over the panel: the workspace
+   as the panel's title, the jobs badge at its end. */
 .code-head {
-  flex: none;
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 48px;
-  padding: 0 10px;
-  border-bottom: 1px solid var(--border);
-  border-radius: var(--inset-radius) 0 0 0;
+  align-self: stretch;
 }
 .code-head .cm-ws,
-.code-head .cm-bgjobs,
-.code-head .cm-bypass,
-.code-head .cm-think-switch {
+.code-head .cm-bgjobs {
   height: 28px;
   border-radius: 8px;
+}
+/* The workspace name gives way last: past a few letters it is the model's
+   name that shortens. */
+.code-head .cm-ws {
+  flex: 0 1 auto;
+  min-width: 92px;
 }
 /* The workspace reads as the panel's title: a ghost button, the folder name
    in weight, a small caret that says it opens a picker. */
@@ -6240,6 +6336,32 @@ button.tool-parent {
   padding: 0 17px 8px;
   font-size: 12.5px;
   color: var(--text-dim);
+}
+/* The line under the code input — the image studio's settings row, for
+   code: how the next message thinks and whether it asks before changing
+   files on the left, the context in use on the right. Pills of one height,
+   as the studio's are. */
+.cm-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 860px;
+  width: 100%;
+  margin: 8px auto 0;
+}
+.cm-status-spacer {
+  flex: 1;
+}
+.cm-status .cm-think-switch,
+.cm-status .cm-bypass {
+  height: 28px;
+  border-radius: var(--r-full);
+}
+.cm-status .cm-think-tab {
+  border-radius: var(--r-full);
+}
+.cm-status .cm-bypass {
+  font-size: 12px;
 }
 .cm-runbar-label {
   color: var(--text);
@@ -6902,7 +7024,7 @@ button.tool-parent {
 /* ---- background tasks panel ---- */
 .bg-panel {
   position: fixed;
-  top: 92px;
+  top: 52px;
   right: 32px;
   z-index: 50;
   display: flex;
@@ -7980,7 +8102,8 @@ html[data-motion="reduce"] *::after {
 
 /* Theme / palette switches cross-fade the big surfaces instead of snapping. */
 body,
-.titlebar,
+.tb-side,
+.tb-main,
 .sidebar,
 .chat,
 .composer,

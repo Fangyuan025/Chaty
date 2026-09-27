@@ -238,3 +238,11 @@ export function cleanTitle(raw: string): string {
     .trim()
     .slice(0, 24);
 }
+
+/** What Live mode records a reply as when the user cut it off: the words
+ *  that were heard, and a mark that the rest was not — so the next turn
+ *  knows where it was stopped, not what it would have gone on to say. */
+export function cutOffReply(spoken: string): string {
+  const s = spoken.trim();
+  return s ? `${s}…` : "";
+}

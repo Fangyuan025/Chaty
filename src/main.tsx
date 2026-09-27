@@ -14,11 +14,15 @@ import { LangProvider } from "./lib/i18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ConfirmProvider } from "./components/ConfirmModal";
 import { noteFrontendReady } from "./lib/ipc";
+import { installTopBandDrag } from "./lib/windowDrag";
 
 // One call per page load. The backend counts them: a second one without the app
 // restarting is the webview having been reloaded under us, which is how an
 // unattended code run disappears without leaving an error anywhere.
 void noteFrontendReady().catch(() => {});
+
+// The window moves from its top edge even under Live mode or a dialog.
+installTopBandDrag();
 
 // Don't let async failures vanish silently — at least surface them in the
 // console/devtools. (Nothing leaves the machine.)

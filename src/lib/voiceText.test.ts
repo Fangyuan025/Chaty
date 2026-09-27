@@ -4,7 +4,7 @@
 // routinely sail past their turn end and re-open the channel, and streaming
 // buffers end mid-marker. Each case is a leak we shipped at least once.
 import { describe, expect, it } from "vitest";
-import { answerOnly, normalizeChannels, stripThink } from "./voiceText";
+import { answerOnly, cutOffReply, normalizeChannels, stripThink } from "./voiceText";
 
 describe("normalizeChannels", () => {
   it("leaves marker-free text untouched", () => {
@@ -145,5 +145,14 @@ describe("stripThink / answerOnly on channel input", () => {
     expect(
       answerOnly("<|channel>thought\na<channel|>speak this<|channel>thought\nnot this"),
     ).toBe("speak this");
+  });
+});
+
+describe("cutOffReply", () => {
+  it("keeps what was heard and marks the cut", () => {
+    expect(cutOffReply("The first reason is speed. The second ")).toBe("The first reason is speed. The second…");
+  });
+  it("records nothing when nothing was heard", () => {
+    expect(cutOffReply("  ")).toBe("");
   });
 });

@@ -612,6 +612,23 @@ export default function App() {
   const showJumpRef = useRef(false);
   const [showJump, setShowJump] = useState(false);
   const asideRef = useRef<HTMLElement>(null);
+  /** Where Code mode puts its header (workspace, jobs): the top row. */
+  const [headSlot, setHeadSlot] = useState<HTMLDivElement | null>(null);
+  /** How much room the top row has over the panel. Measured, not a
+   *  container query: containment would make the row the containing block
+   *  of the menus and panels that open from it. */
+  const tbMainRef = useRef<HTMLDivElement>(null);
+  const [tbFit, setTbFit] = useState<"" | "narrow" | "tight">("");
+  useLayoutEffect(() => {
+    const el = tbMainRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      const w = el.clientWidth;
+      setTbFit(w < 560 ? "tight" : w < 640 ? "narrow" : "");
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const [sidebarW, setSidebarW] = useState(() => {
     try {
       const v = Number(localStorage.getItem("chaty.sidebarW"));
@@ -630,7 +647,7 @@ export default function App() {
   function startSidebarResize(e: React.PointerEvent) {
     e.preventDefault();
     const startX = e.clientX;
-    const startW = asideRef.current?.offsetWidth ?? sidebarW;
+    const startW = sidebarW;
     let frame: number | null = null;
     let latest = startW;
     document.body.classList.add("resizing-x");
@@ -2796,38 +2813,56 @@ export default function App() {
           </div>
         </div>
       )}
-      <header className="titlebar" data-tauri-drag-region>
-        <div className="brand">Chaty</div>
+      {/* The top row belongs to the columns under it: over the sidebar, the
+          window's own controls and the mode switch, sized with the sidebar;
+          over the working area, its title and the app's buttons on the
+          panel's own ground — no bar of frame across the window. */}
+      <header className="titlebar">
+        <div className="tb-side" data-tauri-drag-region style={{ width: sidebarW }}>
+          <div className="brand" data-tauri-drag-region>Chaty</div>
+          {imageMode ? (
+            // Loading an image model IS the mode switch: chat and Code need a
+            // language model, so the studio is the one mode there is.
+            <div className="mode-switch" role="tablist" aria-label="Mode">
+              <button className="mode-tab active" role="tab" aria-selected title={t("imgModeTip")} aria-label={t("modeImage")}>
+                <Icon name="image" size={15} strokeWidth={1.7} />
+              </button>
+            </div>
+          ) : (
+            <div className="mode-switch" role="tablist" aria-label="Mode">
+              <button
+                className={`mode-tab ${appMode === "chat" ? "active" : ""}`}
+                role="tab"
+                aria-selected={appMode === "chat"}
+                onClick={() => setAppMode("chat")}
+                title={t("modeChat")}
+                aria-label={t("modeChat")}
+              >
+                <Icon name="chat" size={15} strokeWidth={1.7} />
+              </button>
+              <button
+                className={`mode-tab ${appMode === "code" ? "active" : ""}`}
+                role="tab"
+                aria-selected={appMode === "code"}
+                onClick={() => setAppMode("code")}
+                title={t("modeCode")}
+                aria-label={t("modeCode")}
+              >
+                <Icon name="code" size={15} strokeWidth={1.7} />
+              </button>
+            </div>
+          )}
+        </div>
 
-        {imageMode ? (
-          // Loading an image model IS the mode switch: chat and Code need a
-          // language model, so the studio is the one mode there is.
-          <div className="mode-switch" role="tablist" aria-label="Mode">
-            <button className="mode-tab active" title={t("imgModeTip")}>
-              <Icon name="image" size={13} strokeWidth={1.8} />
-              <span className="mode-tab-label">{t("modeImage")}</span>
-            </button>
-          </div>
-        ) : (
-          <div className="mode-switch" role="tablist" aria-label="Mode">
-            <button
-              className={`mode-tab ${appMode === "chat" ? "active" : ""}`}
-              onClick={() => setAppMode("chat")}
-              title={t("modeChat")}
-            >
-              <Icon name="chat" size={13} strokeWidth={1.8} />
-              <span className="mode-tab-label">{t("modeChat")}</span>
-            </button>
-            <button
-              className={`mode-tab ${appMode === "code" ? "active" : ""}`}
-              onClick={() => setAppMode("code")}
-              title={t("modeCode")}
-            >
-              <Icon name="code" size={13} strokeWidth={1.8} />
-              <span className="mode-tab-label">{t("modeCode")}</span>
-            </button>
+        <div className={`tb-main ${tbFit}`} ref={tbMainRef} data-tauri-drag-region>
+        {/* What's open, as the panel's title: the conversation, the image
+            session. Code puts its workspace here instead (headSlot). */}
+        {!(appMode === "code" && !imageMode) && (
+          <div className="tb-title" data-tauri-drag-region>
+            {imageMode ? studio.session?.title ?? "" : conversations.find((c) => c.id === conversationId)?.title ?? ""}
           </div>
         )}
+        <div className="tb-slot" ref={setHeadSlot} data-tauri-drag-region />
 
         <div className="model-wrap">
           <button
@@ -3110,6 +3145,7 @@ export default function App() {
         {/* macOS uses native traffic lights (titleBarStyle: Overlay); our
             custom controls are only for Windows/Linux. */}
         {!IS_MACOS && <WindowControls />}
+        </div>
       </header>
       {loadingModel && (
         <div className="load-bar">
@@ -3127,6 +3163,10 @@ export default function App() {
       <CodeMode
         model={model}
         active={appMode === "code" && !imageMode}
+        headSlot={headSlot}
+        railW={sidebarW}
+        onRailResize={startSidebarResize}
+        onRailReset={resetSidebarW}
         maxSteps={settings.codeMaxSteps}
         bashTimeout={settings.codeBashTimeout}
         ragTopK={settings.ragTopK}
