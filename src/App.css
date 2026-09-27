@@ -9866,6 +9866,11 @@ body,
   flex-direction: column;
   padding-left: 5px;
 }
+/* In this column, the composer textarea's `flex: 1` would set its height and
+   undo the auto-grow: a wrapped placeholder showed as one clipped line. */
+.ms-fields textarea {
+  flex: none;
+}
 .ms-lyrics {
   margin-top: 4px;
   border-top: 1px solid var(--border);
