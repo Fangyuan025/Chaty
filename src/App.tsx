@@ -2813,353 +2813,6 @@ export default function App() {
           </div>
         </div>
       )}
-      {/* The top row belongs to the columns under it: over the sidebar, the
-          window's own controls and the mode switch, sized with the sidebar;
-          over the working area, its title and the app's buttons on the
-          panel's own ground — no bar of frame across the window. */}
-      <header className="titlebar">
-        <div className="tb-side" data-tauri-drag-region style={{ width: sidebarW }}>
-          <div className="brand" data-tauri-drag-region>Chaty</div>
-          {imageMode ? (
-            // Loading an image model IS the mode switch: chat and Code need a
-            // language model, so the studio is the one mode there is.
-            <div className="mode-switch" role="tablist" aria-label="Mode">
-              <button className="mode-tab active" role="tab" aria-selected title={t("imgModeTip")} aria-label={t("modeImage")}>
-                <Icon name="image" size={15} strokeWidth={1.7} />
-              </button>
-            </div>
-          ) : (
-            <div className="mode-switch" role="tablist" aria-label="Mode">
-              <button
-                className={`mode-tab ${appMode === "chat" ? "active" : ""}`}
-                role="tab"
-                aria-selected={appMode === "chat"}
-                onClick={() => setAppMode("chat")}
-                title={t("modeChat")}
-                aria-label={t("modeChat")}
-              >
-                <Icon name="chat" size={15} strokeWidth={1.7} />
-              </button>
-              <button
-                className={`mode-tab ${appMode === "code" ? "active" : ""}`}
-                role="tab"
-                aria-selected={appMode === "code"}
-                onClick={() => setAppMode("code")}
-                title={t("modeCode")}
-                aria-label={t("modeCode")}
-              >
-                <Icon name="code" size={15} strokeWidth={1.7} />
-              </button>
-            </div>
-          )}
-        </div>
-
-        <div className={`tb-main ${tbFit}`} ref={tbMainRef} data-tauri-drag-region>
-        {/* What's open, as the panel's title: the conversation, the image
-            session. Code puts its workspace here instead (headSlot). */}
-        {!(appMode === "code" && !imageMode) && (
-          <div className="tb-title" data-tauri-drag-region>
-            {imageMode ? studio.session?.title ?? "" : conversations.find((c) => c.id === conversationId)?.title ?? ""}
-          </div>
-        )}
-        <div className="tb-slot" ref={setHeadSlot} data-tauri-drag-region />
-
-        <div className="model-wrap">
-          <button
-            className={`model-chip ${model ? "loaded" : ""}`}
-            onClick={() => {
-              if (!showModelMenu) void refreshModels();
-              setShowModelMenu((v) => !v);
-            }}
-            title={t("changeModel")}
-          >
-            {model ? (
-              <>
-                <span className="chip-name">{model.name.replace(/\.gguf$/i, "")}</span>
-                {model.kind === "image" ? <span className="chip-meta chip-img">{t("imageBadge")}</span> : null}
-                {model.paramsB ? (
-                  <span className="chip-meta">{model.paramsB.toFixed(1)}B</span>
-                ) : null}
-                {model.sizeMb ? (
-                  <span className="chip-meta">{fmtGbFromMb(model.sizeMb)}</span>
-                ) : null}
-              </>
-            ) : loadingModel ? (
-              loadProgress?.phase === "weights"
-                ? `${t("loadingModel")} ${Math.round(loadProgress.frac * 100)}%`
-                : loadProgress?.phase === "eject"
-                  ? t("ejectingModel")
-                  : t("loadingModel")
-            ) : (
-              t("noModel")
-            )}
-            <span className={`chip-caret ${showModelMenu ? "open" : ""}`}><Icon name="chevron-down" size={11} strokeWidth={2} /></span>
-          </button>
-          {showModelMenu && (
-            <div className="model-menu">
-              <div className="model-menu-head">
-                <span>{t("modelsHeader")}</span>
-                <button
-                  className="model-menu-refresh"
-                  onClick={() => void refreshModels()}
-                  title={t("refreshModels")}
-                  aria-label={t("refreshModels")}
-                >
-                  <Icon name="refresh" size={13} strokeWidth={1.9} />
-                </button>
-              </div>
-              <div className="model-menu-list">
-                {availableModels.length === 0 ? (
-                  <div className="model-menu-empty">{t("noModelsFound")}</div>
-                ) : (
-                  availableModels.map((m) => {
-                    const active = model?.path === m.path;
-                    return (
-                      <div
-                        key={m.path}
-                        className={`model-menu-item ${active ? "active" : ""}`}
-                      >
-                        <button
-                          className="mm-pick"
-                          onClick={() => switchModel(m.path)}
-                          disabled={busy || loadingModel}
-                          title={m.path}
-                        >
-                          <span className="mm-name">{m.name}</span>
-                          {m.format === "mlx" ? (
-                            <span className="mm-fmt" title={t("mlxBadgeTip")}>
-                              MLX
-                            </span>
-                          ) : null}
-                          {m.mmproj || m.vision ? (
-                            <span className="mm-vision" title={t("visionBadgeTip")}>
-                              {t("visionBadge")}
-                            </span>
-                          ) : null}
-                          {m.kind === "image" ? (
-                            <span className="mm-img" title={m.family ? `${t("imageBadgeTip")} · ${m.family}` : t("imageBadgeTip")}>
-                              {t("imageBadge")}
-                            </span>
-                          ) : null}
-                          {m.kind === "image" && (m.missing ?? []).some((role) => !settings.imgComponents[m.path]?.[role]) ? (
-                            <span className="mm-warn" title={t("imgMissingBadgeTip")}>!</span>
-                          ) : null}
-                          {m.sizeMb ? (
-                            <span className="mm-size">{fmtGbFromMb(m.sizeMb)}</span>
-                          ) : null}
-                        </button>
-                        <span className="mm-trail">
-                          {active ? (
-                            <Icon name="check" size={13} strokeWidth={2.1} className="mm-check" />
-                          ) : (
-                            <button
-                              className="mm-del"
-                              onClick={() => void handleDeleteModel(m)}
-                              disabled={busy}
-                              title={t("deleteModelFile")}
-                              aria-label={t("deleteModelFile")}
-                            >
-                              <Icon name="x" size={11} strokeWidth={2.2} />
-                            </button>
-                          )}
-                        </span>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-              <div className="model-menu-actions">
-                <button className="model-menu-file" onClick={handleLoadFolder}>
-                  <Icon name="plus" size={14} />
-                  {t("loadFromFolder")}
-                </button>
-                <button
-                  className="model-menu-file"
-                  onClick={() => {
-                    setShowModelMenu(false);
-                    setShowDownload(true);
-                  }}
-                >
-                  <Icon name="download" size={14} />
-                  {t("dlTitle")}
-                </button>
-                <button
-                  className="model-menu-file"
-                  onClick={() => {
-                    setShowModelMenu(false);
-                    openModelsFolder();
-                  }}
-                >
-                  <Icon name="folder" size={14} />
-                  {t("openModelsDir")}
-                </button>
-                {model && (
-                  <button
-                    className="model-menu-file model-menu-eject"
-                    onClick={handleEject}
-                    disabled={busy || loadingModel}
-                    title={t("ejectModel")}
-                  >
-                    <Icon name="eject" size={14} />
-                    {t("ejectModel")}
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="settings-wrap">
-          <button
-            className={`icon-btn ${showModelInfo ? "active" : ""}`}
-            onClick={() => setShowModelInfo((v) => !v)}
-            title={t("miTitleBtn")}
-            disabled={!model}
-          >
-            <svg
-              width="17"
-              height="17"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 11v5" strokeLinecap="round" />
-              <circle cx="12" cy="7.6" r="0.7" fill="currentColor" stroke="none" />
-            </svg>
-          </button>
-          {showModelInfo && (
-            <ModelInfoPanel model={model} onClose={() => setShowModelInfo(false)} />
-          )}
-        </div>
-
-        {messages.length > 0 && !imageMode && (
-          <div className="settings-wrap">
-            <button
-              className={`icon-btn ${showExport ? "active" : ""}`}
-              onClick={() => setShowExport((v) => !v)}
-              title={t("exportTitle")}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
-                <path d="M12 3v12M12 15l-4-4M12 15l4-4" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" strokeLinecap="round" />
-              </svg>
-            </button>
-            {showExport && (
-              <>
-                <div className="popover-backdrop" onClick={() => setShowExport(false)} />
-                <div className="export-menu">
-                  <button onClick={() => exportConversation("md")}>{t("exportMd")}</button>
-                  <button onClick={() => exportConversation("json")}>{t("exportJson")}</button>
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        <div className="settings-wrap">
-          <button
-            className={`icon-btn ${showHardware ? "active" : ""}`}
-            onClick={() => setShowHardware((v) => !v)}
-            title={t("hwTitleBtn")}
-          >
-            <svg
-              width="17"
-              height="17"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              aria-hidden="true"
-            >
-              <rect x="7" y="7" width="10" height="10" rx="1.5" />
-              <path
-                d="M10 4v2M14 4v2M10 18v2M14 18v2M4 10h2M4 14h2M18 10h2M18 14h2"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-          {showHardware && (
-            <HardwarePanel model={model} onClose={() => setShowHardware(false)} />
-          )}
-        </div>
-
-        <div className="settings-wrap">
-          <button
-            className={`icon-btn ${showSettings ? "active" : ""}`}
-            onClick={() => setShowSettings((v) => !v)}
-            title={t("settingsTitle")}
-          >
-            <svg
-              width="17"
-              height="17"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
-          </button>
-          <SettingsPanel
-            open={showSettings}
-            value={settings}
-            onChange={setSettings}
-            onClose={() => {
-              setShowSettings(false);
-              setSettingsFocus(null);
-            }}
-            mode={imageMode ? "image" : "chat"}
-            imageModel={imageMode ? model : null}
-            focusCat={settingsFocus}
-            onManageComponents={
-              // An MLX image model's folder holds all of its parts.
-              imageMode && model && model.image?.engine !== "mlx"
-                ? () => {
-                    setShowSettings(false);
-                    setCompFor({ path: model.path, loadAfter: false });
-                  }
-                : undefined
-            }
-            onImageHistoryCleared={studio.cleared}
-            maxTokensLimit={Math.max(1024, model?.nCtx ?? 4096)}
-            ctxTrainLimit={model?.nCtxTrain}
-            layersLimit={model?.nLayer}
-            specSupported={model?.speculative}
-            onReloadModel={model ? () => void reloadModel() : undefined}
-            onModelsChanged={() => void refreshModels()}
-            reloading={loadingModel}
-            onDataCleared={() => {
-              handleNewChat();
-              void refreshConversations();
-            }}
-          />
-        </div>
-
-        {/* macOS uses native traffic lights (titleBarStyle: Overlay); our
-            custom controls are only for Windows/Linux. */}
-        {!IS_MACOS && <WindowControls />}
-        </div>
-      </header>
-      {loadingModel && (
-        <div className="load-bar">
-          <div
-            className={`load-bar-fill ${loadProgress?.phase === "weights" ? "" : "indeterminate"}`}
-            style={
-              loadProgress?.phase === "weights"
-                ? { width: `${Math.max(2, Math.round(loadProgress.frac * 100))}%` }
-                : undefined
-            }
-          />
-        </div>
-      )}
-
       <CodeMode
         model={model}
         active={appMode === "code" && !imageMode}
@@ -4023,6 +3676,355 @@ export default function App() {
           )}
         </div>
       </div>
+      {/* The top row belongs to the columns under it: over the sidebar, the
+          window's own controls and the mode switch, sized with the sidebar;
+          over the working area, its title and the app's buttons, floating on
+          the panel with the transcript passing under them — no bar across
+          the window. After the panels in the page so it paints over them
+          without a stacking context of its own (the window buttons must
+          stay above Live mode and every dialog). */}
+      <header className="titlebar">
+        <div className="tb-side" data-tauri-drag-region style={{ width: sidebarW }}>
+          <div className="brand" data-tauri-drag-region>Chaty</div>
+          {imageMode ? (
+            // Loading an image model IS the mode switch: chat and Code need a
+            // language model, so the studio is the one mode there is.
+            <div className="mode-switch" role="tablist" aria-label="Mode">
+              <button className="mode-tab active" role="tab" aria-selected title={t("imgModeTip")} aria-label={t("modeImage")}>
+                <Icon name="image" size={15} strokeWidth={1.7} />
+              </button>
+            </div>
+          ) : (
+            <div className="mode-switch" role="tablist" aria-label="Mode">
+              <button
+                className={`mode-tab ${appMode === "chat" ? "active" : ""}`}
+                role="tab"
+                aria-selected={appMode === "chat"}
+                onClick={() => setAppMode("chat")}
+                title={t("modeChat")}
+                aria-label={t("modeChat")}
+              >
+                <Icon name="chat" size={15} strokeWidth={1.7} />
+              </button>
+              <button
+                className={`mode-tab ${appMode === "code" ? "active" : ""}`}
+                role="tab"
+                aria-selected={appMode === "code"}
+                onClick={() => setAppMode("code")}
+                title={t("modeCode")}
+                aria-label={t("modeCode")}
+              >
+                <Icon name="code" size={15} strokeWidth={1.7} />
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className={`tb-main ${tbFit}`} ref={tbMainRef} data-tauri-drag-region>
+        {/* What's open, as the panel's title: the conversation, the image
+            session. Code puts its workspace here instead (headSlot). */}
+        {!(appMode === "code" && !imageMode) && (
+          <div className="tb-title" data-tauri-drag-region>
+            {imageMode ? studio.session?.title ?? "" : conversations.find((c) => c.id === conversationId)?.title ?? ""}
+          </div>
+        )}
+        <div className="tb-slot" ref={setHeadSlot} data-tauri-drag-region />
+
+        <div className="model-wrap">
+          <button
+            className={`model-chip ${model ? "loaded" : ""}`}
+            onClick={() => {
+              if (!showModelMenu) void refreshModels();
+              setShowModelMenu((v) => !v);
+            }}
+            title={t("changeModel")}
+          >
+            {model ? (
+              <>
+                <span className="chip-name">{model.name.replace(/\.gguf$/i, "")}</span>
+                {model.kind === "image" ? <span className="chip-meta chip-img">{t("imageBadge")}</span> : null}
+                {model.paramsB ? (
+                  <span className="chip-meta">{model.paramsB.toFixed(1)}B</span>
+                ) : null}
+                {model.sizeMb ? (
+                  <span className="chip-meta">{fmtGbFromMb(model.sizeMb)}</span>
+                ) : null}
+              </>
+            ) : loadingModel ? (
+              loadProgress?.phase === "weights"
+                ? `${t("loadingModel")} ${Math.round(loadProgress.frac * 100)}%`
+                : loadProgress?.phase === "eject"
+                  ? t("ejectingModel")
+                  : t("loadingModel")
+            ) : (
+              t("noModel")
+            )}
+            <span className={`chip-caret ${showModelMenu ? "open" : ""}`}><Icon name="chevron-down" size={11} strokeWidth={2} /></span>
+          </button>
+          {showModelMenu && (
+            <div className="model-menu">
+              <div className="model-menu-head">
+                <span>{t("modelsHeader")}</span>
+                <button
+                  className="model-menu-refresh"
+                  onClick={() => void refreshModels()}
+                  title={t("refreshModels")}
+                  aria-label={t("refreshModels")}
+                >
+                  <Icon name="refresh" size={13} strokeWidth={1.9} />
+                </button>
+              </div>
+              <div className="model-menu-list">
+                {availableModels.length === 0 ? (
+                  <div className="model-menu-empty">{t("noModelsFound")}</div>
+                ) : (
+                  availableModels.map((m) => {
+                    const active = model?.path === m.path;
+                    return (
+                      <div
+                        key={m.path}
+                        className={`model-menu-item ${active ? "active" : ""}`}
+                      >
+                        <button
+                          className="mm-pick"
+                          onClick={() => switchModel(m.path)}
+                          disabled={busy || loadingModel}
+                          title={m.path}
+                        >
+                          <span className="mm-name">{m.name}</span>
+                          {m.format === "mlx" ? (
+                            <span className="mm-fmt" title={t("mlxBadgeTip")}>
+                              MLX
+                            </span>
+                          ) : null}
+                          {m.mmproj || m.vision ? (
+                            <span className="mm-vision" title={t("visionBadgeTip")}>
+                              {t("visionBadge")}
+                            </span>
+                          ) : null}
+                          {m.kind === "image" ? (
+                            <span className="mm-img" title={m.family ? `${t("imageBadgeTip")} · ${m.family}` : t("imageBadgeTip")}>
+                              {t("imageBadge")}
+                            </span>
+                          ) : null}
+                          {m.kind === "image" && (m.missing ?? []).some((role) => !settings.imgComponents[m.path]?.[role]) ? (
+                            <span className="mm-warn" title={t("imgMissingBadgeTip")}>!</span>
+                          ) : null}
+                          {m.sizeMb ? (
+                            <span className="mm-size">{fmtGbFromMb(m.sizeMb)}</span>
+                          ) : null}
+                        </button>
+                        <span className="mm-trail">
+                          {active ? (
+                            <Icon name="check" size={13} strokeWidth={2.1} className="mm-check" />
+                          ) : (
+                            <button
+                              className="mm-del"
+                              onClick={() => void handleDeleteModel(m)}
+                              disabled={busy}
+                              title={t("deleteModelFile")}
+                              aria-label={t("deleteModelFile")}
+                            >
+                              <Icon name="x" size={11} strokeWidth={2.2} />
+                            </button>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+              <div className="model-menu-actions">
+                <button className="model-menu-file" onClick={handleLoadFolder}>
+                  <Icon name="plus" size={14} />
+                  {t("loadFromFolder")}
+                </button>
+                <button
+                  className="model-menu-file"
+                  onClick={() => {
+                    setShowModelMenu(false);
+                    setShowDownload(true);
+                  }}
+                >
+                  <Icon name="download" size={14} />
+                  {t("dlTitle")}
+                </button>
+                <button
+                  className="model-menu-file"
+                  onClick={() => {
+                    setShowModelMenu(false);
+                    openModelsFolder();
+                  }}
+                >
+                  <Icon name="folder" size={14} />
+                  {t("openModelsDir")}
+                </button>
+                {model && (
+                  <button
+                    className="model-menu-file model-menu-eject"
+                    onClick={handleEject}
+                    disabled={busy || loadingModel}
+                    title={t("ejectModel")}
+                  >
+                    <Icon name="eject" size={14} />
+                    {t("ejectModel")}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="settings-wrap">
+          <button
+            className={`icon-btn ${showModelInfo ? "active" : ""}`}
+            onClick={() => setShowModelInfo((v) => !v)}
+            title={t("miTitleBtn")}
+            disabled={!model}
+          >
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5" strokeLinecap="round" />
+              <circle cx="12" cy="7.6" r="0.7" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+          {showModelInfo && (
+            <ModelInfoPanel model={model} onClose={() => setShowModelInfo(false)} />
+          )}
+        </div>
+
+        {messages.length > 0 && !imageMode && (
+          <div className="settings-wrap">
+            <button
+              className={`icon-btn ${showExport ? "active" : ""}`}
+              onClick={() => setShowExport((v) => !v)}
+              title={t("exportTitle")}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                <path d="M12 3v12M12 15l-4-4M12 15l4-4" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" strokeLinecap="round" />
+              </svg>
+            </button>
+            {showExport && (
+              <>
+                <div className="popover-backdrop" onClick={() => setShowExport(false)} />
+                <div className="export-menu">
+                  <button onClick={() => exportConversation("md")}>{t("exportMd")}</button>
+                  <button onClick={() => exportConversation("json")}>{t("exportJson")}</button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        <div className="settings-wrap">
+          <button
+            className={`icon-btn ${showHardware ? "active" : ""}`}
+            onClick={() => setShowHardware((v) => !v)}
+            title={t("hwTitleBtn")}
+          >
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              aria-hidden="true"
+            >
+              <rect x="7" y="7" width="10" height="10" rx="1.5" />
+              <path
+                d="M10 4v2M14 4v2M10 18v2M14 18v2M4 10h2M4 14h2M18 10h2M18 14h2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          {showHardware && (
+            <HardwarePanel model={model} onClose={() => setShowHardware(false)} />
+          )}
+        </div>
+
+        <div className="settings-wrap">
+          <button
+            className={`icon-btn ${showSettings ? "active" : ""}`}
+            onClick={() => setShowSettings((v) => !v)}
+            title={t("settingsTitle")}
+          >
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+          <SettingsPanel
+            open={showSettings}
+            value={settings}
+            onChange={setSettings}
+            onClose={() => {
+              setShowSettings(false);
+              setSettingsFocus(null);
+            }}
+            mode={imageMode ? "image" : "chat"}
+            imageModel={imageMode ? model : null}
+            focusCat={settingsFocus}
+            onManageComponents={
+              // An MLX image model's folder holds all of its parts.
+              imageMode && model && model.image?.engine !== "mlx"
+                ? () => {
+                    setShowSettings(false);
+                    setCompFor({ path: model.path, loadAfter: false });
+                  }
+                : undefined
+            }
+            onImageHistoryCleared={studio.cleared}
+            maxTokensLimit={Math.max(1024, model?.nCtx ?? 4096)}
+            ctxTrainLimit={model?.nCtxTrain}
+            layersLimit={model?.nLayer}
+            specSupported={model?.speculative}
+            onReloadModel={model ? () => void reloadModel() : undefined}
+            onModelsChanged={() => void refreshModels()}
+            reloading={loadingModel}
+            onDataCleared={() => {
+              handleNewChat();
+              void refreshConversations();
+            }}
+          />
+        </div>
+
+        {/* macOS uses native traffic lights (titleBarStyle: Overlay); our
+            custom controls are only for Windows/Linux. */}
+        {!IS_MACOS && <WindowControls />}
+        </div>
+      </header>
+      {loadingModel && (
+        <div className="load-bar">
+          <div
+            className={`load-bar-fill ${loadProgress?.phase === "weights" ? "" : "indeterminate"}`}
+            style={
+              loadProgress?.phase === "weights"
+                ? { width: `${Math.max(2, Math.round(loadProgress.frac * 100))}%` }
+                : undefined
+            }
+          />
+        </div>
+      )}
       <ContextMenu />
       {update?.available && (
         <div className="update-banner">

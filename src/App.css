@@ -366,6 +366,7 @@ body {
 }
 
 .app {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -381,7 +382,10 @@ body {
 
 /* Thin model-load progress bar pinned under the titlebar. */
 .load-bar {
-  position: relative;
+  position: absolute;
+  top: 44px;
+  left: 0;
+  right: 0;
   height: 3px;
   background: var(--surface-2);
   overflow: hidden;
@@ -408,8 +412,15 @@ body {
    itself — its title, the model and the app's buttons on the panel's own
    ground, the transcript fading out beneath it. */
 .titlebar {
+  /* Over the columns, not above them: the panels run to the window's top
+     and the transcript passes under the row (the sidebars keep 44 px clear
+     for it). No z-index: that would make the row a stacking context and
+     put its window buttons under Live mode and the dialogs. */
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   display: flex;
-  flex-shrink: 0;
   height: 44px;
   user-select: none;
 }
@@ -422,16 +433,41 @@ body {
   background: var(--frame);
 }
 .tb-main {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0 12px 0 14px;
-  background: var(--bg);
+  /* The panel's ground behind the controls, thinning out below them, and
+     on past the row's edge (::after): what scrolls up fades away in one
+     ramp, with no line where the row ends. A solid row with a short fade
+     under it read as a bar. */
+  background: linear-gradient(
+    to bottom,
+    var(--bg) 0%,
+    var(--bg) 66%,
+    color-mix(in srgb, var(--bg) 72%, transparent) 100%
+  );
   /* The panel's one edge: the line between it and the sidebar, running from
      the window's top to its bottom. */
   border-left: 1px solid var(--edge);
+}
+.tb-main::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: var(--sb-size);
+  height: 20px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--bg) 72%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 28%, transparent) 45%,
+    color-mix(in srgb, var(--bg) 0%, transparent) 100%
+  );
+  pointer-events: none;
 }
 /* The window buttons sit flush in the corner. */
 :root:not([data-os="macos"]) .tb-main {
@@ -881,14 +917,16 @@ body {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  /* The top row's sidebar half sits over this. */
+  padding-top: 44px;
   background: var(--frame);
 }
 
 /* Drag-to-resize handle straddling the sidebar's right edge. */
 .sidebar-resizer {
   position: absolute;
-  /* Up through the top row: the sidebar's edge is one line to the top. */
-  top: -44px;
+  /* The sidebar runs to the window's top: its edge is one line. */
+  top: 0;
   right: -3px;
   width: 7px;
   height: 100%;
@@ -1134,6 +1172,12 @@ body.resizing-x {
   border-left: 1px solid var(--edge);
 }
 
+/* The scrollbars start below the top row, so it never hides the thumb. */
+.chat::-webkit-scrollbar-track,
+.code-scroll::-webkit-scrollbar-track {
+  margin-top: 44px;
+}
+
 /* Positioning shell for the chat scroller + its floating jump pill. */
 .chat-wrap {
   position: relative;
@@ -1141,28 +1185,6 @@ body.resizing-x {
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-/* The transcript fades out under the top row as it does under the
-   composer: no bar, no line — the words thin out as they reach the title.
-   Clear of the scrollbar, which runs its full height. */
-.chat-wrap::before,
-.code-wrap::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: var(--sb-size);
-  /* Short and soft, eased out: a band 26 px deep from full ground read as a
-     second bar under the title, and the window as shorter than it is. */
-  height: 14px;
-  z-index: 2;
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--bg) 88%, transparent) 0%,
-    color-mix(in srgb, var(--bg) 45%, transparent) 45%,
-    color-mix(in srgb, var(--bg) 0%, transparent) 100%
-  );
-  pointer-events: none;
 }
 .chat {
   flex: 1;
@@ -1174,7 +1196,9 @@ body.resizing-x {
   overflow-x: hidden;
   /* The bottom padding clears the composer's fade (28px): at the end of the
      transcript the last reply's actions sit above it, not dimmed under it. */
-  padding: 20px 0 32px;
+  /* The top row floats over the first 44 px (the transcript passes under
+     it); a transcript starts below it. */
+  padding: 64px 0 32px;
   /* No CSS scroll-behavior: it animated every follow-the-stream write, and a
      wheel-up then lost to the animation still heading for the bottom (issue
      #20). The follow effect asks for smooth scrolling where it wants it. */
@@ -5639,7 +5663,7 @@ body:has(.live-overlay) .win-btn.close:hover {
 /* ---------- Deep Research (docked into the chat area) ---------- */
 .dr-view {
   position: absolute;
-  inset: 0;
+  inset: 44px 0 0 0;
   z-index: 6;
   display: flex;
   flex-direction: column;
@@ -5951,6 +5975,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  padding-top: 44px;
   background: var(--frame);
 }
 
@@ -6164,7 +6189,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   min-height: 0;
   overflow-y: auto;
   /* Bottom padding clears the composer's fade, as the chat's does. */
-  padding: 16px clamp(16px, 6%, 64px) 32px;
+  padding: 60px clamp(16px, 6%, 64px) 32px;
   display: flex;
   flex-direction: column;
   gap: 16px;
