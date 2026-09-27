@@ -1188,6 +1188,11 @@ export const T = {
     en: "Every round in this session and the picture files it made will be deleted. This can't be undone.",
     pt: "Todas as rodadas desta sessão e os arquivos de imagem gerados serão excluídos. Não pode ser desfeito.",
   },
+  imgDeleteSessionsConfirm: {
+    zh: "删除选中的 {n} 个会话，以及它们生成的图片文件？无法撤销。",
+    en: "Delete the {n} selected sessions and the picture files they made? This can't be undone.",
+    pt: "Excluir as {n} sessões selecionadas e os arquivos de imagem gerados? Não pode ser desfeito.",
+  },
   imgAccel: { zh: "采样加速", en: "Sampling speed-up", pt: "Aceleração da amostragem" },
   imgAccelHint: {
     zh: "复用相邻步骤里几乎没变的计算，出图更快，细节略有损失；步数很少的 Turbo 类模型收益有限",

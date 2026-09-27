@@ -72,7 +72,8 @@ export function ImageSidebar({
     if (ids.length === 0) return;
     const ok = await confirm({
       title: t("imgDeleteSession"),
-      message: t("confirmDeleteSessions", { n: ids.length }),
+      // The pictures go with them, as with one session.
+      message: t("imgDeleteSessionsConfirm", { n: ids.length }),
       confirmLabel: t("confirmDelete"),
       danger: true,
     });
