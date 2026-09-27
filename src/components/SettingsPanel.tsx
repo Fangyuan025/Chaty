@@ -1,4 +1,4 @@
-import { cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LANGS, useI18n } from "../lib/i18n";
 import { useExitTransition } from "../lib/useExit";
@@ -44,7 +44,17 @@ import {
   engineLists,
   type ImageSettings,
 } from "../lib/imageGen";
-import { imageHistoryClear, imageOutputDir, type ModelInfo } from "../lib/ipc";
+import { imageHistoryClear, imageOutputDir, musicHistoryClear, musicOutputDir, type ModelInfo } from "../lib/ipc";
+import {
+  MUSIC_SETTINGS_DEFAULTS,
+  familyParams,
+  isCustom,
+  paramValue,
+  sessionParams,
+  withParam,
+  type MusicSettings,
+} from "../lib/musicGen";
+import { MusicParamField } from "./MusicParamField";
 import logoUrl from "../assets/logo.png";
 
 export interface PromptPreset {
@@ -55,9 +65,10 @@ export interface PromptPreset {
 export type Theme = "dark" | "light" | "system";
 
 /** Everything Settings stores. The image studio's part (ImageSettings, all
- *  `img…`) lives beside the chat settings: which of them the panel shows
- *  follows the loaded model, but a setting outlives a model switch. */
-export interface GenSettings extends ImageSettings {
+ *  `img…`) and the music studio's (MusicSettings, all `mus…`) live beside the
+ *  chat settings: which of them the panel shows follows the loaded model, but
+ *  a setting outlives a model switch. */
+export interface GenSettings extends ImageSettings, MusicSettings {
   theme: Theme;
   systemPrompt: string;
   temperature: number;
@@ -164,6 +175,7 @@ export interface GenSettings extends ImageSettings {
 
 export const defaultSettings: GenSettings = {
   ...IMAGE_SETTINGS_DEFAULTS,
+  ...MUSIC_SETTINGS_DEFAULTS,
   theme: "dark",
   systemPrompt: "",
   temperature: 0.7,
@@ -275,6 +287,8 @@ type CatId =
   | "extensions"
   | "imageGen"
   | "imageModel"
+  | "musicGen"
+  | "musicModel"
   | "data"
   | "about";
 
@@ -301,6 +315,8 @@ const CAT_ICONS: Record<CatId, string> = {
   voice: "M12 3a3 3 0 013 3v6a3 3 0 11-6 0V6a3 3 0 013-3zM19 11a7 7 0 11-14 0M12 18v3",
   imageGen: "M4 5h16v14H4zM4 15l4.5-4.5 4 4 2.5-2.5L20 17M15.5 9.5h.01",
   imageModel: "M12 2.5l2.2 6.3L20.5 11l-6.3 2.2L12 19.5l-2.2-6.3L3.5 11l6.3-2.2z",
+  musicGen: "M9 18V5.5l11-2V16M9 18a3 3 0 11-6 0 3 3 0 016 0zM20 16a3 3 0 11-6 0 3 3 0 016 0z",
+  musicModel: "M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2",
   data: "M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3",
   about: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 8h.01M12 12v5",
 };
@@ -308,7 +324,8 @@ const CAT_ICONS: Record<CatId, string> = {
 /** The nav, group by group. An image model loaded makes the app the image
  *  studio, and the panel shows the studio's categories in place of those
  *  only a language model reads. */
-function catGroupsFor(mode: "chat" | "image"): CatId[][] {
+function catGroupsFor(mode: "chat" | "image" | "music"): CatId[][] {
+  if (mode === "music") return [["general", "appearance"], ["musicGen", "musicModel"], ["data", "about"]];
   return mode === "image"
     ? [["general", "appearance"], ["imageGen", "imageModel"], ["data", "about"]]
     : [
@@ -331,6 +348,7 @@ interface StatsView {
   msgs: number;
   code: number;
   images: number;
+  music: number;
   db: number;
   models: number;
   modelBytes: number;
@@ -457,6 +475,9 @@ export function SettingsPanel({
   focusCat,
   onManageComponents,
   onImageHistoryCleared,
+  musicModel,
+  onManageMusicComponents,
+  onMusicHistoryCleared,
 }: {
   open: boolean;
   value: GenSettings;
@@ -483,16 +504,23 @@ export function SettingsPanel({
   onDataCleared?: () => void;
   /** "image" when an image model is loaded: the panel offers the image
    *  studio's settings and hides the ones only a language model uses. */
-  mode?: "chat" | "image";
+  mode?: "chat" | "image" | "music";
   /** The loaded image model — its recommended values label the "auto"
    *  choices, and its companion files are listed. */
   imageModel?: ModelInfo | null;
   /** Open on this category (the studio's "more settings" link). */
-  focusCat?: "imageGen" | "imageModel" | null;
+  focusCat?: "imageGen" | "imageModel" | "musicGen" | "musicModel" | null;
   /** Show the loaded image model's companion files dialog. */
   onManageComponents?: () => void;
   /** The image history was cleared here. */
   onImageHistoryCleared?: () => void;
+  /** The loaded music model: its family's parameters and engine options,
+   *  and the files it runs from. */
+  musicModel?: ModelInfo | null;
+  /** Show the loaded music model's companion files dialog. */
+  onManageMusicComponents?: () => void;
+  /** The music history was cleared here. */
+  onMusicHistoryCleared?: () => void;
 }) {
   const { t, lang, setLang } = useI18n();
   const confirm = useConfirm();
@@ -615,6 +643,7 @@ export function SettingsPanel({
           msgs: ds.messages,
           code: ds.codeSessions,
           images: ds.images ?? 0,
+          music: ds.music ?? 0,
           db: ds.dbBytes,
           models: models.length,
           // sizeMb is mebibytes (bytes / 1024²) — scaling it by 1e6 quietly
@@ -637,7 +666,7 @@ export function SettingsPanel({
       .catch((e) => console.error("models root:", e));
   };
   useEffect(() => {
-    if (open && (cat === "model" || cat === "imageModel")) refreshModelsRoot();
+    if (open && (cat === "model" || cat === "imageModel" || cat === "musicModel")) refreshModelsRoot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, cat]);
 
@@ -662,6 +691,21 @@ export function SettingsPanel({
     const dir = await openDialog({ directory: true });
     if (typeof dir === "string") set("imgOutputDir", dir);
   }
+
+  // Where pieces are saved when no folder is chosen, for the hint.
+  const [defaultMusicDir, setDefaultMusicDir] = useState("");
+  useEffect(() => {
+    if (open && cat === "musicGen" && !defaultMusicDir) {
+      void musicOutputDir().then((d) => setDefaultMusicDir(d ?? "")).catch(() => {});
+    }
+  }, [open, cat, defaultMusicDir]);
+
+  async function chooseMusicDir() {
+    const dir = await openDialog({ directory: true });
+    if (typeof dir === "string") set("musOutputDir", dir);
+  }
+
+  const patchMusic = (patch: Partial<MusicSettings>) => onChange({ ...value, ...patch });
 
   /** Pick a folder for models. The backend refuses one it cannot write to, and
    *  that refusal is shown here rather than surfacing on a later download. */
@@ -890,10 +934,15 @@ export function SettingsPanel({
     extensions: t("setCatExtensions"),
     imageGen: t("setCatImageGen"),
     imageModel: t("setCatImageModel"),
+    musicGen: t("setCatMusicGen"),
+    musicModel: t("setCatMusicModel"),
     data: t("setCatData"),
     about: t("setCatAbout"),
   };
   const catGroups = catGroupsFor(mode);
+  const musInfo = musicModel?.music ?? null;
+  const musParams = useMemo(() => (musInfo ? familyParams(musInfo.family, musInfo.requestOptions) : []), [musInfo]);
+  const musSession = useMemo(() => sessionParams(musInfo?.sessionOptions), [musInfo]);
 
   if (!mounted) return null;
 
@@ -2256,6 +2305,165 @@ export function SettingsPanel({
             </>
           )}
 
+          {cat === "musicGen" && (
+            <>
+              {!musInfo && <div className="settings-hint">{t("musSetNoModel")}</div>}
+              {musInfo && (
+                <>
+                  <div className="settings-hint">{t("musSetIntro", { family: musInfo.familyName })}</div>
+                  {([
+                    ["main", t("musSecMain")],
+                    ["sampling", t("musSecSampling")],
+                    ["score", t("musSecScore")],
+                    ["more", t("musSecMore")],
+                  ] as const).map(([group, title]) => {
+                    const ps = musParams.filter((p) => p.group === group);
+                    if (ps.length === 0) return null;
+                    return (
+                      <div key={group} className="ms-set-group">
+                        <div className="settings-section">{title}</div>
+                        {group === "score" && <div className="settings-hint">{t("musSecScoreHint")}</div>}
+                        {group === "more" && musParams.some((p) => p.label.en === p.key) && (
+                          <div className="settings-hint">{t("musSecMoreHint")}</div>
+                        )}
+                        {ps.map((p) => (
+                          <MusicParamField
+                            key={p.key}
+                            p={p}
+                            value={paramValue(value, musInfo.family, p)}
+                            custom={isCustom(value, musInfo.family, p.key)}
+                            onChange={(v) => patchMusic(withParam(value, musInfo.family, p.key, v))}
+                          />
+                        ))}
+                      </div>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    className="data-btn"
+                    onClick={() =>
+                      patchMusic({
+                        musParams: { ...value.musParams, [musInfo.family]: {} },
+                        musLength: { ...value.musLength, [musInfo.family]: 0 },
+                        musPlanning: "full",
+                      })
+                    }
+                  >
+                    {t("musResetRecommended")}
+                  </button>
+                </>
+              )}
+              <div className="settings-section">{t("musSecOutput")}</div>
+              <SetRow label={t("musAutoPlay")} hint={t("musAutoPlayHint")}>
+                <Switch on={value.musAutoPlay} onToggle={() => set("musAutoPlay", !value.musAutoPlay)} />
+              </SetRow>
+              <SetRow label={t("musOutputDir")} hint={t("musOutputDirHint")}>
+                <div className="row-btns">
+                  <button type="button" className="data-btn" onClick={() => void openExternal(value.musOutputDir.trim() || defaultMusicDir).catch(console.error)}>
+                    {t("imgOpenFolder")}
+                  </button>
+                  <button type="button" className="data-btn" onClick={() => void chooseMusicDir()}>
+                    {t("changeModelsDir")}
+                  </button>
+                  {value.musOutputDir.trim() && (
+                    <button type="button" className="data-btn" onClick={() => set("musOutputDir", "")}>
+                      {t("resetModelsDir")}
+                    </button>
+                  )}
+                </div>
+              </SetRow>
+              <div className="settings-hint">
+                <code>{value.musOutputDir.trim() || defaultMusicDir}</code>
+              </div>
+            </>
+          )}
+
+          {cat === "musicModel" && (
+            <>
+              {musicModel && musInfo && (
+                <div className="is-set-model">
+                  <div className="is-set-model-name">{musicModel.name}</div>
+                  <div className="is-set-model-meta">
+                    {[
+                      musInfo.familyName,
+                      musicModel.quant,
+                      musicModel.sizeMb ? fmtGbFromMb(musicModel.sizeMb) : null,
+                      musInfo.onCpu ? "CPU" : musInfo.device || "GPU",
+                      musInfo.engineVersion ? `audio.cpp ${musInfo.engineVersion.slice(0, 7)}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </div>
+                  {musInfo.components.length > 0 && (
+                    <div className="is-set-comps">
+                      {musInfo.components.map((c) => (
+                        <div key={c.file} className="is-set-comp" title={c.file}>
+                          <span>{t(c.role === "vae" ? "musRoleVae" : c.role === "weights" ? "musRoleWeights" : c.role === "tokenizer" ? "musRoleTokenizer" : "musRoleConfig")}</span>
+                          <code>{c.file}</code>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {onManageMusicComponents && (
+                    <button type="button" className="data-btn" onClick={onManageMusicComponents}>
+                      {t("musManageComponents")}
+                    </button>
+                  )}
+                </div>
+              )}
+              <div className="settings-section">{t("secDevice")}</div>
+              <label className="field">
+                <span><em className="has-tip" data-tip={t("musDeviceTip")}>{t("imgDevice")}</em></span>
+                <div className="lang-switch">
+                  <button type="button" className={value.musDevice === "gpu" ? "active" : ""} onClick={() => set("musDevice", "gpu")}>{t("imgDeviceGpu")}</button>
+                  <button type="button" className={value.musDevice === "cpu" ? "active" : ""} onClick={() => set("musDevice", "cpu")}>{t("imgDeviceCpu")}</button>
+                </div>
+              </label>
+              <div className="settings-hint">{t("musDeviceHint")}</div>
+              <LimitField
+                label={t("imgThreads")}
+                offLabel={t("imgAuto")}
+                onLabel={t("gpuCustom")}
+                off={value.musThreads <= 0}
+                onOff={(o) => set("musThreads", o ? 0 : 4)}
+                value={value.musThreads}
+              >
+                <input type="range" min={1} max={64} step={1} value={value.musThreads > 0 ? value.musThreads : 4} onChange={(e) => set("musThreads", Number(e.target.value))} />
+              </LimitField>
+              {musInfo && musSession.length > 0 && (
+                <>
+                  <div className="settings-section">{t("musSecEngine")}</div>
+                  <div className="settings-hint">{t("musSecEngineHint")}</div>
+                  {musSession.map((p) => {
+                    const cur = value.musSession[musInfo.family]?.[p.key];
+                    const custom = cur != null && cur !== "";
+                    return (
+                      <MusicParamField
+                        key={p.key}
+                        p={p}
+                        value={custom ? cur : p.def}
+                        custom={custom}
+                        onChange={(v) => {
+                          const next = { ...(value.musSession[musInfo.family] ?? {}) };
+                          if (v == null) delete next[p.key];
+                          else next[p.key] = v;
+                          patchMusic({ musSession: { ...value.musSession, [musInfo.family]: next } });
+                        }}
+                      />
+                    );
+                  })}
+                </>
+              )}
+              {onReloadModel && (
+                <button className="settings-reload" onClick={onReloadModel} disabled={reloading}>
+                  {reloading ? "…" : t("reloadApply")}
+                </button>
+              )}
+              <div className="settings-section">{t("secLibrary")}</div>
+              {modelLibraryRows}
+            </>
+          )}
+
           {cat === "data" && (
             <>
               <div className="stats-grid">
@@ -2274,6 +2482,10 @@ export function SettingsPanel({
                 <div className="stat-tile">
                   <span className="stat-num">{stats ? stats.images : "–"}</span>
                   <span className="stat-label">{t("statImages")}</span>
+                </div>
+                <div className="stat-tile">
+                  <span className="stat-num">{stats ? stats.music : "–"}</span>
+                  <span className="stat-label">{t("statMusic")}</span>
                 </div>
                 <div className="stat-tile">
                   <span className="stat-num">
@@ -2378,6 +2590,32 @@ export function SettingsPanel({
                   }}
                 >
                   {t("imgClearHistory")}
+                </button>
+              </SetRow>
+              <SetRow label={t("musClearHistory")} hint={t("musClearHistoryHint")}>
+                <button
+                  type="button"
+                  className="data-btn danger"
+                  onClick={async () => {
+                    if (
+                      !(await confirm({
+                        message: t("musClearHistoryConfirm"),
+                        title: t("musClearHistory"),
+                        confirmLabel: t("musClearHistory"),
+                        danger: true,
+                      }))
+                    ) {
+                      return;
+                    }
+                    musicHistoryClear(true)
+                      .then(() => {
+                        onMusicHistoryCleared?.();
+                        refreshStats();
+                      })
+                      .catch(console.error);
+                  }}
+                >
+                  {t("musClearHistory")}
                 </button>
               </SetRow>
               <SetRow label={t("clearKb")} hint={t("clearKbHint")}>

@@ -24,6 +24,9 @@ const PATHS: Record<string, string> = {
   bolt: "M13.5 3L5.5 13.5h6L10.5 21l8-10.5h-6L13.5 3z",
   refresh: "M20 12a8 8 0 11-2.34-5.66L20 8.5M20 3.5v5h-5",
   eject: "M12 5l7 8H5l7-8zM5 18.5h14",
+  // The music studio: a note, and a voice.
+  music: "M9 18V5.5l11-2V16M9 18a3 3 0 11-6 0 3 3 0 016 0zM20 16a3 3 0 11-6 0 3 3 0 016 0z",
+  mic: "M12 3.5a2.75 2.75 0 012.75 2.75v5.5a2.75 2.75 0 01-5.5 0v-5.5A2.75 2.75 0 0112 3.5zM18 11.5a6 6 0 01-12 0M12 17.5v3",
 };
 
 export function Icon({

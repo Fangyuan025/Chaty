@@ -69,6 +69,9 @@ pub async fn load_model(
     // placement). Ignored for chat models; absent = the defaults, which put
     // everything on the GPU.
     image: Option<crate::imagegen::probe::LoadOptions>,
+    // How to load a music model (GPU/CPU, the engine's session options).
+    // Ignored for every other kind.
+    music: Option<crate::musicgen::MusicLoadOptions>,
     on_progress: Channel<LoadProgress>,
 ) -> Result<ModelInfo, String> {
     let _loading = LOADING.try_lock().map_err(|_| {
@@ -109,7 +112,13 @@ pub async fn load_model(
             // An image model's folder also holds its text encoder — often
             // the largest GGUF there, and a chat model in its own right. The
             // denoiser is the model.
-            match crate::imagegen::probe::image_model_in_dir(p).or_else(|| main_gguf_in_dir(p)) {
+            // So does a music model's: its VAE, its package parts. The model
+            // is the file that was picked — the smallest quantization, when
+            // the folder has several.
+            match crate::imagegen::probe::image_model_in_dir(p)
+                .or_else(|| crate::musicgen::probe::music_model_in_dir(p))
+                .or_else(|| main_gguf_in_dir(p))
+            {
                 Some(main) => main.to_string_lossy().to_string(),
                 None => {
                     return Err(
@@ -125,12 +134,19 @@ pub async fn load_model(
     };
 
     // MLX models are folders (config.json + safetensors) driven by the
-    // Swift sidecar; diffusion models go to the image sidecar; every other
-    // GGUF stays on the in-process llama.cpp engine.
+    // Swift sidecar; diffusion models go to the image sidecar, audio.cpp
+    // models to the music sidecar; every other GGUF stays on the in-process
+    // llama.cpp engine.
     let is_mlx = crate::inference::mlx::is_mlx_dir(std::path::Path::new(&path));
     let is_image = !is_mlx && {
         let p = std::path::PathBuf::from(&path);
         tokio::task::spawn_blocking(move || crate::imagegen::probe::is_image_model(&p))
+            .await
+            .unwrap_or(false)
+    };
+    let is_music = !is_mlx && !is_image && {
+        let p = std::path::PathBuf::from(&path);
+        tokio::task::spawn_blocking(move || crate::musicgen::probe::is_audiocpp_file(&p))
             .await
             .unwrap_or(false)
     };
@@ -162,7 +178,7 @@ pub async fn load_model(
         let guard = state.model.read().await;
         (
             guard.as_ref().and_then(|m| m.size_mb).unwrap_or(0),
-            guard.as_ref().is_some_and(|m| m.backend == "mlx" || m.backend == "sd.cpp"),
+            guard.as_ref().is_some_and(|m| m.backend == "mlx" || m.backend == "sd.cpp" || m.backend == "audio.cpp"),
         )
     };
     let old = state.engine.write().await.take();
@@ -239,7 +255,7 @@ pub async fn load_model(
     // Shared across the GGUF poller and the MLX callback so the bar the
     // user sees never moves backwards (see MonotonicProgress).
     let gate = Arc::new(MonotonicProgress::new());
-    if !is_mlx && !is_image {
+    if !is_mlx && !is_image && !is_music {
         let expected = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0).max(1);
         let done = done_flag.clone();
         let chan = on_progress.clone();
@@ -262,7 +278,19 @@ pub async fn load_model(
     }
 
     let path_for_log = path.clone();
-    let result = if is_image {
+    let result = if is_music {
+        let chan = on_progress.clone();
+        let gate = gate.clone();
+        let opts = music.unwrap_or_default();
+        tokio::task::spawn_blocking(move || {
+            crate::musicgen::load(std::path::Path::new(&path), &opts, move |frac| {
+                if gate.permit(frac) {
+                    let _ = chan.send(LoadProgress { phase: "weights", frac });
+                }
+            })
+        })
+        .await
+    } else if is_image {
         let chan = on_progress.clone();
         let gate = gate.clone();
         let roots = model_dirs(&app);
@@ -528,13 +556,14 @@ pub struct ModelEntry {
     pub format: &'static str,
     /// Vision-capable once loaded (GGUF: paired mmproj; MLX: built-in tower).
     pub vision: bool,
-    /// "chat" or "image" (a diffusion model — loading it opens the image
-    /// studio).
+    /// "chat", "image" (a diffusion model — loading it opens the image
+    /// studio) or "music" (loading it opens the music studio).
     pub kind: &'static str,
-    /// An image model's family ("Qwen-Image 2.1"), for the picker's badge.
+    /// An image or music model's family ("Qwen-Image 2.1", "YuE2"), for the
+    /// picker's badge.
     pub family: Option<String>,
-    /// Role keys of the companions an image model still lacks (before any
-    /// hand-picked ones from Settings are counted).
+    /// What an image model still lacks (role keys, before any hand-picked
+    /// ones from Settings are counted), or a music model (its files).
     pub missing: Vec<String>,
 }
 
@@ -1266,6 +1295,9 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
             .extension()
             .is_some_and(|x| x.eq_ignore_ascii_case("gguf"))
             || is_mmproj(&path)
+            // A part of a music model (a VAE, a package component) is no
+            // chat model; the music model itself is listed by push_music.
+            || crate::musicgen::probe::is_audiocpp_file(&path)
         {
             return;
         }
@@ -1368,6 +1400,34 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
                 .unwrap_or_default(),
         });
     };
+    // A music model's folder holds its parts too (a VAE, configs, the other
+    // components of a package): each quantization that can be picked is
+    // listed, nothing else.
+    let push_music = |path: PathBuf, out: &mut Vec<ModelEntry>, seen: &mut HashSet<PathBuf>| {
+        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if !seen.insert(canon) {
+            return;
+        }
+        let probe = crate::musicgen::probe::probe_music_model(&path);
+        let name = match (&probe, path.parent().and_then(|d| d.file_name()).and_then(|n| n.to_str())) {
+            // A package pick is a generically named part: its folder names it.
+            (Some(p), Some(folder)) if p.layout == Some(crate::musicgen::family::Layout::MiniMax) => {
+                format!("{folder} ({})", p.quant.clone().unwrap_or_default())
+            }
+            _ => path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+        };
+        out.push(ModelEntry {
+            name,
+            path: path.to_string_lossy().to_string(),
+            size_mb: probe.as_ref().map(|p| p.size_mb),
+            mmproj: None,
+            format: "gguf",
+            vision: false,
+            kind: "music",
+            family: probe.as_ref().map(|p| p.family_name.clone()),
+            missing: probe.map(|p| p.missing).unwrap_or_default(),
+        });
+    };
     // Folder layout ONLY: models/<Name>/{model.gguf[, mmproj-*.gguf]} — one
     // folder per model. Loose GGUFs directly in a models root are migrated
     // into folders at startup (`migrate_models_layout`) and are deliberately
@@ -1395,7 +1455,13 @@ pub fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelEntry>, String> {
                 let files: Vec<PathBuf> = sub.flatten().map(|e| e.path()).collect();
                 let denoisers: Vec<PathBuf> =
                     files.iter().filter(|p| crate::imagegen::probe::is_image_model(p)).cloned().collect();
-                if denoisers.is_empty() {
+                let music: Vec<PathBuf> =
+                    files.iter().filter(|p| crate::musicgen::probe::is_music_model(p)).cloned().collect();
+                if !music.is_empty() {
+                    for m in music {
+                        push_music(m, &mut out, &mut seen);
+                    }
+                } else if denoisers.is_empty() {
                     for f in files {
                         push(f, &mut out, &mut seen);
                     }

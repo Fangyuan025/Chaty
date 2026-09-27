@@ -137,14 +137,16 @@ MLX sidecar. CMake fetches the pinned sd.cpp revision on the first build.
 
 ```bash
 scripts/build-sd-sidecar.sh [cpu|vulkan|metal|cuda]     # → src-tauri/binaries/chaty-sd-<triple>
-npm run tauri build -- --config src-tauri/tauri.sd.conf.json       # bundle it
-# macOS, bundling both sidecars (Tauri replaces arrays when merging layers):
+scripts/build-audio-sidecar.sh [cpu|vulkan|metal|cuda]  # → chaty-audio-<triple> (see below)
+npm run tauri build -- --config src-tauri/tauri.sd.conf.json       # bundle both engines
+# macOS, bundling all three sidecars (Tauri replaces arrays when merging layers):
 npm run tauri build -- --config src-tauri/tauri.mlx-sd.conf.json
 ```
 
 ```powershell
 # Windows, inside a VS dev shell (or after dev.ps1's env setup):
 .\scripts\build-sd-sidecar.ps1 -Backend vulkan           # build dir C:\ct-sd (MAX_PATH)
+.\scripts\build-audio-sidecar.ps1 -Backend vulkan        # build dir C:\ct-au
 npm run tauri build -- --no-bundle --config src-tauri/tauri.sd.conf.json
 ```
 
@@ -170,6 +172,49 @@ CHATY_TEST_SD_MODEL=/path/to/z_image_turbo-Q4_K_M.gguf \
   cargo test --lib a_real_image_model_loads_and_draws -- --ignored --nocapture
 ```
 
+## Music engine sidecar (chaty-audio)
+
+Text-to-music models (YuE2, MiniMax Music 3, ACE-Step 1.5, HeartMuLa, Stable
+Audio 3, MiDashengLM-Gen — audio.cpp's GGUF packages) run on
+[audio.cpp](https://github.com/0xShug0/audio.cpp) in a sidecar process,
+`chaty-audio` (`src-tauri/audio-sidecar/`), for the same reason as chaty-sd:
+audio.cpp vendors its own ggml. It speaks JSON lines over stdin/stdout (`load`,
+`generate`, `ping`, `quit`), and a piece is stopped by ending the process.
+
+CMake fetches the pinned audio.cpp revision, compiles only the families Chaty
+drives (`CHATY_AUDIO_MODELS`, with their model specs embedded, so the binary
+ships alone) and applies `patches/*.patch` to the checkout once. The patch only
+adds progress log lines — a music token counted, a rendering step, a decoded
+tile — which the sidecar turns into the studio's percentage; bumping the
+revision means checking that it still applies (the configure step fails
+loudly if not).
+
+```bash
+scripts/build-audio-sidecar.sh [cpu|vulkan|metal|cuda]  # → src-tauri/binaries/chaty-audio-<triple>
+```
+
+- Same defaults as chaty-sd: `metal` on macOS (deployment target 13.3, the
+  Metal library embedded), `vulkan` when `glslc` / `VULKAN_SDK` is present,
+  `cpu` otherwise; x86 builds target an AVX2 baseline, checked at startup.
+- `AUDIOCPP_SOURCE_DIR=/path/to/audio.cpp` builds from a local checkout.
+- OpenMP stays off on macOS and Windows (no runtime to ship there); ggml's own
+  thread pool does the work.
+- `tauri.sd.conf.json` and `tauri.mlx-sd.conf.json` bundle it next to chaty-sd,
+  so a release build with either layer needs both sidecars staged. In
+  `tauri dev` the app also finds it in `src-tauri/binaries/`,
+  `src-tauri/audio-sidecar/build/bin/`, or wherever `CHATY_AUDIO_SIDECAR`
+  points; without it, music models fail to load with "the music engine
+  (chaty-audio) is missing".
+
+Tests: `cargo test --lib -- musicgen inference::audio` covers package
+detection, the requests each family gets and the protocol against a scripted
+sidecar. The real end-to-end test is ignored by default:
+
+```bash
+CHATY_TEST_MUSIC_MODEL=/path/to/Yue2-3B-GGUF/yue2-3b-q4_0.gguf \
+  cargo test --lib a_real_music_model_loads_and_plays -- --ignored --nocapture
+```
+
 ## Headless engine smoke test
 
 Verifies real inference without the GUI (load GGUF → chat template → stream):
@@ -188,13 +233,16 @@ src-tauri/src/
   inference/             InferenceBackend trait + types
     llama.rs             real llama.cpp engine (GGUF load, decode loop)
     sd.rs                chaty-sd sidecar client (text-to-image)
+    audio.rs             chaty-audio sidecar client (text-to-music)
     gguf.rs              GGUF header reader shared by the loaders
     mock.rs              fake streaming engine (test double)
   imagegen/              image models: family detection, companion files, generate
+  musicgen/              music models: families, package probe, requests, generate
   commands.rs            load_model / get_model / generate
   state.rs               shared app state
   examples/smoke.rs      headless inference test
 src-tauri/sd-sidecar/    chaty-sd (stable-diffusion.cpp, C++) — see above
+src-tauri/audio-sidecar/ chaty-audio (audio.cpp, C++) — see above
 ```
 
 ## Notes

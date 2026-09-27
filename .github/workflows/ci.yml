@@ -159,6 +159,34 @@ jobs:
           echo "$OUT" | head -1 | grep -q '"event":"ready"'
           echo "$OUT" | grep -q '"event":"pong"'
 
+  audio-sidecar:
+    name: Music engine sidecar (build + protocol smoke)
+    # chaty-audio is C++ around audio.cpp, with Chaty's progress patch on top
+    # of the pinned revision; nothing else compiles it before a release tag.
+    # A CPU build here catches a patch that no longer applies, a broken
+    # main.cpp or a C ABI change, and the binary answers its handshake and a
+    # ping, the same first exchange the app has with it.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable # the staged name carries the target triple
+      - name: System deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Build chaty-audio (CPU)
+        run: ./scripts/build-audio-sidecar.sh cpu
+      - name: Protocol smoke
+        run: |
+          BIN=$(ls src-tauri/binaries/chaty-audio-*)
+          OUT=$(printf '{"cmd":"ping"}\n{"cmd":"quit"}\n' | "$BIN")
+          echo "$OUT"
+          echo "$OUT" | head -1 | grep -q '"event":"ready"'
+          echo "$OUT" | grep -q '"event":"pong"'
+          # A model that is not there is an error line, not a crash. (A load
+          # runs on the sidecar's worker, so the quit waits for its answer.)
+          OUT=$({ printf '{"cmd":"load","model_path":"/nonexistent.gguf","family":"yue2"}\n'; sleep 5; printf '{"cmd":"quit"}\n'; } | "$BIN")
+          echo "$OUT"
+          echo "$OUT" | grep -q '"event":"error"'
+
   mlx-sidecar:
     name: MLX sidecar (build + protocol smoke)
     # chaty-mlx is Swift, and nothing else compiles it before a release tag:

@@ -352,6 +352,10 @@ pub struct HfModelHit {
     /// A text-to-image model (a diffusion GGUF) — loading it opens the image
     /// studio.
     pub image: bool,
+    /// A text-to-music model (an audio.cpp GGUF) — loading it opens the
+    /// music studio.
+    #[serde(default)]
+    pub music: bool,
     /// Parameter count guessed from the name ("Qwen3-4B…" → 4.0).
     pub params_b: Option<f64>,
 }
@@ -366,6 +370,9 @@ pub struct QuantOption {
     /// Repo-relative file paths, in download order. Empty for MLX (the whole
     /// repo downloads as one unit).
     pub files: Vec<String>,
+    /// What comes along with it, estimated: a music model's VAE, configs and
+    /// the other parts of its package.
+    pub extra: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -393,6 +400,13 @@ pub struct HfModelDetail {
     /// Why Chaty could not run it once downloaded (an MLX image model of an
     /// architecture its engine does not run); None = no known obstacle.
     pub unsupported: Option<String>,
+    /// A text-to-music model (audio.cpp GGUFs).
+    pub music: bool,
+    /// The music family it belongs to ("YuE2"), when known.
+    pub music_family: Option<String>,
+    /// The repository files are fetched from — `id` may name a package
+    /// folder inside it (`audio-cpp/audio.cpp-gguf/HeartMuLa-GGUF`).
+    pub repo: String,
 }
 
 /// The repo is a text-to-image model, by its pipeline tag or its tags.
@@ -496,6 +510,89 @@ pub(crate) fn quant_label_of(stem: &str) -> String {
     "DEFAULT".into()
 }
 
+/// The repo is audio.cpp's (its GGUFs are audio.cpp's own format).
+fn is_audiocpp_repo(tags: &[String]) -> bool {
+    tags.iter().any(|t| t == "audio.cpp")
+}
+
+/// The family packages inside audio-cpp/audio.cpp-gguf that make music — one
+/// folder each, offered on the music shelf as models of their own.
+const AUDIOCPP_MUSIC_PACKAGES: &[(&str, &str)] = &[
+    ("ACE-Step1.5-GGUF", "ace_step"),
+    ("HeartMuLa-GGUF", "heartmula"),
+    ("Stable-Audio-3-Small-Music-GGUF", "stable_audio"),
+    ("Stable-Audio-3-Medium-GGUF", "stable_audio"),
+    ("MiDashengLM-Gen-GGUF", "midashenglm_gen"),
+];
+const AUDIOCPP_MULTI_REPO: &str = "audio-cpp/audio.cpp-gguf";
+
+/// A music package's download options: one per model file (music packages
+/// are one file per quantization, never split), named by its quantization —
+/// and by its folder where a package holds variants (ACE-Step's base and
+/// turbo). Parts that come with the pick are not options: a YuE2 VAE, the
+/// iOS build, a MiniMax component other than its language model. `extra`
+/// estimates what comes along.
+fn music_quants(tree: &[(String, u64)], root: &str, fam: Option<&crate::musicgen::family::Family>) -> Vec<QuantOption> {
+    use crate::musicgen::family::Layout;
+    let layout = fam.map(|f| f.layout);
+    let size_of = |name: &str| tree.iter().find(|(p, _)| p.rsplit('/').next() == Some(name)).map(|(_, s)| *s);
+    let mut out: Vec<QuantOption> = Vec::new();
+    for (path, size) in tree {
+        let rel = if root.is_empty() { path.as_str() } else { path.strip_prefix(&format!("{root}/")).unwrap_or(path) };
+        let lower = rel.to_lowercase();
+        if !lower.ends_with(".gguf") {
+            continue;
+        }
+        let name = lower.rsplit('/').next().unwrap_or(&lower);
+        match layout {
+            Some(Layout::Yue2) if name.contains("vae") || name.contains("-ios-") => continue,
+            Some(Layout::MiniMax) if !name.starts_with("language_model") => continue,
+            _ => {}
+        }
+        let stem = &name[..name.len() - 5];
+        let quant = match layout {
+            Some(Layout::MiniMax) => stem.trim_start_matches("language_model_").to_ascii_uppercase(),
+            _ => quant_label_of(stem),
+        };
+        let label = match rel.rsplit_once('/') {
+            Some((folder, _)) => format!("{} · {quant}", folder.rsplit('/').next().unwrap_or(folder)),
+            None => quant.clone(),
+        };
+        let extra = match layout {
+            Some(Layout::Yue2) => {
+                size_of("yue2-vae-f16.gguf").unwrap_or(265_218_656)
+                    + ["yue2-model-config.json", "yue2-vae-config.json", "yue2-qwen.tiktoken", "yue2-generation-config.json"]
+                        .iter()
+                        .filter_map(|f| size_of(f))
+                        .sum::<u64>()
+            }
+            Some(Layout::MiniMax) => {
+                let q = quant.to_lowercase();
+                let fixed: u64 = tree
+                    .iter()
+                    .filter(|(p, _)| {
+                        let n = p.rsplit('/').next().unwrap_or(p);
+                        n == "condition_encoder.gguf"
+                            || n == "vocoder.gguf"
+                            || p.contains("config/")
+                            || p.contains("tokenizer/")
+                            || n == "config.json"
+                    })
+                    .map(|(_, s)| *s)
+                    .sum();
+                let part = |prefix: &str, fallback: &str| {
+                    size_of(&format!("{prefix}_{q}.gguf")).or_else(|| size_of(&format!("{prefix}_{fallback}.gguf"))).unwrap_or(0)
+                };
+                fixed + part("transformer", "q4_0") + part("rvq_depth_decoder", "q8_0")
+            }
+            _ => 0,
+        };
+        out.push(QuantOption { label, size: *size, files: vec![path.clone()], extra });
+    }
+    out.sort_by_key(|q| q.size);
+    out
+}
+
 /// Group a GGUF repo's tree into quant options (multi-part shards summed,
 /// mmproj excluded), sorted smallest → largest.
 fn gguf_quants(tree: &[(String, u64)]) -> Vec<QuantOption> {
@@ -514,6 +611,7 @@ fn gguf_quants(tree: &[(String, u64)]) -> Vec<QuantOption> {
             label,
             size: 0,
             files: Vec::new(),
+            extra: 0,
         });
         e.size += size;
         e.files.push(path.clone());
@@ -599,10 +697,14 @@ pub async fn hf_search(
     sort: String,
     limit: Option<u32>,
     endpoint: Option<String>,
-    // "image" narrows to text-to-image models; anything else is everything.
+    // "image" narrows to text-to-image models, "music" to text-to-music
+    // ones; anything else is everything.
     task: Option<String>,
 ) -> Result<Vec<HfModelHit>, String> {
     let base = hf_base(endpoint.as_deref());
+    if task.as_deref() == Some("music") {
+        return music_search(&base, &query, &sort, limit).await;
+    }
     // MLX image models are mflux's saves. The "mlx" tag on text-to-image
     // repos mostly marks layouts Chaty cannot read (DiffusionKit, mlx-serve,
     // diffusers folders), and some mflux saves carry no pipeline tag at all.
@@ -662,10 +764,80 @@ pub async fn hf_search(
                     .to_string(),
                 vision: tag_vision(&tags),
                 image: mflux || is_image_repo(&tags, it.get("pipeline_tag").and_then(|v| v.as_str())),
+                music: is_audiocpp_repo(&tags)
+                    && crate::musicgen::family::guess_by_repo(&id).is_some(),
                 params_b: params_from_name(&id),
                 id,
             });
         }
+    }
+    Ok(out)
+}
+
+/// The music shelf: audio.cpp's text-to-audio repos of the families the
+/// engine runs, and the music packages kept as folders of audio-cpp's
+/// multi-model repo — first, as the official builds.
+async fn music_search(base: &str, query: &str, sort: &str, limit: Option<u32>) -> Result<Vec<HfModelHit>, String> {
+    let q = query.trim().to_lowercase();
+    let mut out: Vec<HfModelHit> = AUDIOCPP_MUSIC_PACKAGES
+        .iter()
+        .filter(|(dir, fam)| {
+            q.is_empty()
+                || dir.to_lowercase().contains(&q)
+                || crate::musicgen::family::by_id(fam).is_some_and(|f| f.name.to_lowercase().contains(&q))
+        })
+        .map(|(dir, _)| HfModelHit {
+            id: format!("{AUDIOCPP_MULTI_REPO}/{dir}"),
+            name: dir.to_string(),
+            author: "audio-cpp".into(),
+            downloads: 0,
+            likes: 0,
+            updated_at: String::new(),
+            vision: false,
+            image: false,
+            music: true,
+            params_b: params_from_name(dir),
+        })
+        .collect();
+    let sort = match sort {
+        "likes" => "likes",
+        "updated" => "lastModified",
+        "trending" => "trendingScore",
+        _ => "downloads",
+    };
+    let mut url = format!(
+        "{base}/api/models?filter=audio.cpp&pipeline_tag=text-to-audio&sort={sort}&direction=-1&limit={}",
+        limit.unwrap_or(30).min(50)
+    );
+    if !q.is_empty() {
+        url.push_str(&format!("&search={}", percent_encoding::utf8_percent_encode(query.trim(), percent_encoding::NON_ALPHANUMERIC)));
+    }
+    let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("搜索失败 (search failed): HTTP {}", resp.status()));
+    }
+    let items: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    for it in items.as_array().into_iter().flatten() {
+        let id = it.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // Only what the engine runs: a repo of another family (a TTS model
+        // tagged text-to-audio) would download and then not load.
+        if id.is_empty() || crate::musicgen::family::guess_by_repo(&id).is_none() {
+            continue;
+        }
+        let (author, name) = id.split_once('/').unwrap_or(("", id.as_str()));
+        out.push(HfModelHit {
+            name: name.to_string(),
+            author: author.to_string(),
+            downloads: it.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0),
+            likes: it.get("likes").and_then(|v| v.as_u64()).unwrap_or(0),
+            updated_at: it.get("lastModified").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            vision: false,
+            image: false,
+            music: true,
+            params_b: params_from_name(&id),
+            id,
+        });
     }
     Ok(out)
 }
@@ -678,10 +850,16 @@ pub async fn hf_model_detail(
     endpoint: Option<String>,
 ) -> Result<HfModelDetail, String> {
     let base = hf_base(endpoint.as_deref());
-    let repo = normalize_repo(&repo);
-    if repo.is_empty() || !repo.contains('/') {
+    let id = normalize_repo(&repo);
+    if id.is_empty() || !id.contains('/') {
         return Err("请输入有效的 HuggingFace 仓库（owner/name）".into());
     }
+    // `owner/name/folder`: a package kept in a folder of a larger repo.
+    let (repo, subdir) = {
+        let mut parts = id.splitn(3, '/');
+        let (o, n, rest) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next());
+        (format!("{o}/{n}"), rest.map(|r| r.trim_matches('/').to_string()).filter(|r| !r.is_empty()))
+    };
     let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
 
     // tags (vision/arch/task) — tolerate failure, the tree is the critical part
@@ -700,8 +878,29 @@ pub async fn hf_model_detail(
         .unwrap_or_default();
     let pipeline = info.get("pipeline_tag").and_then(|v| v.as_str()).map(str::to_string);
 
-    let tree = repo_tree(&repo, &base).await?;
-    let (format, quants, mmproj) = if format == "mlx" || (!tree.iter().any(|(p, _)| p.to_lowercase().ends_with(".gguf")) && mlx_repo_check(&mlx_files(&tree)).is_ok()) {
+    let mut tree = repo_tree(&repo, &base).await?;
+    if let Some(sub) = &subdir {
+        let prefix = format!("{sub}/");
+        tree.retain(|(p, _)| p.starts_with(&prefix));
+        if tree.is_empty() {
+            return Err(format!("该仓库没有这个文件夹 (no such folder): {id}"));
+        }
+    }
+    // An audio.cpp repo of a music family: its GGUFs are packages of parts,
+    // offered file by file (see music_quants).
+    let music_fam = if is_audiocpp_repo(&tags) || subdir.is_some() {
+        crate::musicgen::family::guess_by_repo(subdir.as_deref().unwrap_or(&repo))
+    } else {
+        None
+    };
+    let music = music_fam.is_some();
+    let (format, quants, mmproj) = if music {
+        let quants = music_quants(&tree, subdir.as_deref().unwrap_or(""), music_fam);
+        if quants.is_empty() {
+            return Err(format!("该仓库没有可下载的模型文件 (no model files): {id}"));
+        }
+        ("gguf".to_string(), quants, None)
+    } else if format == "mlx" || (!tree.iter().any(|(p, _)| p.to_lowercase().ends_with(".gguf")) && mlx_repo_check(&mlx_files(&tree)).is_ok()) {
         let files = mlx_files(&tree);
         mlx_repo_check(&files).map_err(|e| {
             // An mflux repo in a layout other than a single save (weights at
@@ -722,7 +921,7 @@ pub async fn hf_model_detail(
             .find(|b| repo.to_lowercase().contains(**b))
             .map(|b| b.to_uppercase())
             .unwrap_or_else(|| "MLX".into());
-        ("mlx".to_string(), vec![QuantOption { label, size, files: Vec::new() }], None)
+        ("mlx".to_string(), vec![QuantOption { label, size, files: Vec::new(), extra: 0 }], None)
     } else {
         let quants = gguf_quants(&tree);
         if quants.is_empty() {
@@ -731,9 +930,14 @@ pub async fn hf_model_detail(
         ("gguf".to_string(), quants, best_mmproj(&tree))
     };
 
-    // README (best-effort, capped)
+    // README (best-effort, capped) — the package folder's own, when it has
+    // one.
+    let readme_path = match &subdir {
+        Some(sub) if tree.iter().any(|(p, _)| *p == format!("{sub}/README.md")) => format!("{sub}/README.md"),
+        _ => "README.md".to_string(),
+    };
     let readme = match client
-        .get(format!("{base}/{repo}/raw/main/README.md"))
+        .get(format!("{base}/{repo}/raw/main/{readme_path}"))
         .send()
         .await
     {
@@ -754,7 +958,7 @@ pub async fn hf_model_detail(
     // Any GGUF in the repo is a diffusion model when the repo says it is one;
     // its family names the VAE and encoder to fetch alongside.
     // An mflux save is an image model whatever its tags say.
-    let image = is_mflux_tree(&tree) || (format == "gguf" && is_image_repo(&tags, pipeline.as_deref()));
+    let image = !music && (is_mflux_tree(&tree) || (format == "gguf" && is_image_repo(&tags, pipeline.as_deref())));
     let companions = if image && format == "gguf" {
         crate::imagegen::family::guess_by_name(&repo)
             .map(|f| {
@@ -777,8 +981,11 @@ pub async fn hf_model_detail(
         image,
         companions,
         unsupported,
+        music,
+        music_family: music_fam.map(|f| f.name.to_string()),
+        repo: repo.clone(),
         vision: tag_vision(&tags) || mmproj.is_some(),
-        params_b: params_from_name(&repo),
+        params_b: params_from_name(&id),
         arch: arch_from_tags(&tags),
         quants,
         mmproj,
@@ -789,7 +996,7 @@ pub async fn hf_model_detail(
             sys.refresh_memory();
             sys.total_memory() / (1024 * 1024)
         },
-        id: repo,
+        id,
         format,
     })
 }
@@ -1103,7 +1310,8 @@ pub async fn download_model(
             if !inside {
                 return Err("目标文件夹不在模型文件夹内 (folder is outside the models folder)".into());
             }
-            (canon, None)
+            // A subfolder of it — where a music package keeps its configs.
+            (canon, subdir)
         }
         None => (crate::commands::models_write_dir(&app)?, subdir),
     };
@@ -1142,11 +1350,17 @@ async fn download_inner(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let safe: String = sanitize(filename);
-    // GGUF weights, and the safetensors an image model's VAE (and some text
-    // encoders) are only published as.
+    // GGUF weights, the safetensors an image model's VAE (and some text
+    // encoders) are only published as, and the configs and tokenizers a music
+    // model's package keeps beside its GGUFs.
     let lower = safe.to_lowercase();
-    if !(lower.ends_with(".gguf") || lower.ends_with(".safetensors") || lower.ends_with(".sft")) {
-        return Err("文件名必须以 .gguf 或 .safetensors 结尾 (only .gguf / .safetensors files)".into());
+    if !(lower.ends_with(".gguf")
+        || lower.ends_with(".safetensors")
+        || lower.ends_with(".sft")
+        || lower.ends_with(".json")
+        || lower.ends_with(".tiktoken"))
+    {
+        return Err("只能下载模型文件和它的配置 (only model files and their configs: .gguf / .safetensors / .json / .tiktoken)".into());
     }
     let dest = dir.join(&safe);
     let tmp = dir.join(format!("{safe}.part"));
@@ -1329,6 +1543,57 @@ mod tests {
             normalize_repo("https://hf-mirror.com/Qwen/Qwen3-4B-GGUF/tree/main"),
             "Qwen/Qwen3-4B-GGUF"
         );
+    }
+
+    /// A music package's options are its model files, one each; the parts
+    /// that come with a pick are not options, and what they add is counted.
+    #[test]
+    fn music_packages_offer_their_model_files() {
+        use crate::musicgen::family;
+        let t = |v: &[(&str, u64)]| v.iter().map(|(p, s)| (p.to_string(), *s)).collect::<Vec<_>>();
+        let yue = t(&[
+            ("yue2-3b-bf16.gguf", 7000),
+            ("yue2-3b-ios-q4_0.gguf", 2300),
+            ("yue2-3b-q4_0.gguf", 2600),
+            ("yue2-3b-q8_0.gguf", 4200),
+            ("yue2-vae-f16.gguf", 265),
+            ("yue2-vae-f32.gguf", 530),
+            ("sidecars/yue2-model-config.json", 1),
+            ("sidecars/yue2-vae-config.json", 1),
+            ("sidecars/yue2-qwen.tiktoken", 2),
+            ("sidecars/yue2-generation-config.json", 1),
+            ("examples/demo1.wav", 9999),
+        ]);
+        let q = music_quants(&yue, "", Some(&family::YUE2));
+        assert_eq!(q.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(), vec!["Q4_0", "Q8_0", "BF16"]);
+        assert_eq!(q[0].files, vec!["yue2-3b-q4_0.gguf"]);
+        assert_eq!(q[0].extra, 265 + 5, "the F16 VAE and the sidecars");
+
+        let mm = t(&[
+            ("language_model_q4_0.gguf", 6000),
+            ("language_model_q8_0.gguf", 9800),
+            ("transformer_q4_0.gguf", 1400),
+            ("transformer_q8_0.gguf", 2600),
+            ("rvq_depth_decoder_q8_0.gguf", 714),
+            ("condition_encoder.gguf", 100),
+            ("vocoder.gguf", 216),
+            ("config.json", 1),
+            ("config/transformer.json", 1),
+            ("tokenizer/tokenizer.json", 11),
+        ]);
+        let q = music_quants(&mm, "", Some(&family::MINIMAX_MUSIC3));
+        assert_eq!(q.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(), vec!["Q4_0", "Q8_0"]);
+        assert_eq!(q[0].extra, 100 + 216 + 1 + 1 + 11 + 1400 + 714);
+        assert_eq!(q[1].extra, 100 + 216 + 1 + 1 + 11 + 2600 + 714, "the depth decoder falls back to Q8_0");
+
+        let ace = t(&[
+            ("ACE-Step1.5-GGUF/base/ace-step-1.5-base-q8_0.gguf", 6185),
+            ("ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-q8_0.gguf", 6186),
+            ("ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-bf16.gguf", 10090),
+        ]);
+        let q = music_quants(&ace, "ACE-Step1.5-GGUF", Some(&family::ACE_STEP));
+        assert_eq!(q.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(), vec!["base · Q8_0", "turbo · Q8_0", "turbo · BF16"]);
+        assert_eq!(q[1].files, vec!["ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-q8_0.gguf"]);
     }
 
     #[test]

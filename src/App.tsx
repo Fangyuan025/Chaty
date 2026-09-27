@@ -56,6 +56,11 @@ import { ImageSidebar } from "./components/ImageSidebar";
 import { ImageComponentsModal } from "./components/ImageComponentsModal";
 import { useImageStudio } from "./lib/useImageStudio";
 import { loadOptions as imageLoadOptions } from "./lib/imageGen";
+import { MusicStudio } from "./components/MusicStudio";
+import { MusicSidebar } from "./components/MusicSidebar";
+import { MusicComponentsModal } from "./components/MusicComponentsModal";
+import { useMusicStudio } from "./lib/useMusicStudio";
+import { musicLoadOptions } from "./lib/musicGen";
 import { answerOnly, cleanTitle, cutSentences, forSpeech, stripThink } from "./lib/voiceText";
 // The reasoning/answer split the agent loop uses. Its stripThink leaves source
 // markers alone, which matters here: the content has to rejoin with the
@@ -73,6 +78,7 @@ import {
   getMessages,
   getModel,
   imageModelProbe,
+  musicModelProbe,
   listConversations,
   listModels,
   loadModel,
@@ -321,13 +327,20 @@ export default function App() {
     [settings.topP, settings.topK, settings.minP, settings.repeatPenalty, settings.stop],
   );
   // An image model turns the whole app into the image studio: its own
-  // canvas, history and settings, and none of the chat-only tools.
+  // canvas, history and settings, and none of the chat-only tools. A music
+  // model does the same with the music studio.
   const imageMode = model?.kind === "image";
+  const musicMode = model?.kind === "music";
+  /** One of the studios is the app: chat and Code need a language model. */
+  const studioMode = imageMode || musicMode;
+  /** The music-model parts dialog: for which model, and whether to load it
+   *  once nothing is missing. */
+  const [musicCompFor, setMusicCompFor] = useState<{ path: string; loadAfter: boolean } | null>(null);
   /** The companion-files dialog: for which model, and whether to load it
    *  once nothing is missing. */
   const [compFor, setCompFor] = useState<{ path: string; loadAfter: boolean } | null>(null);
   /** Open Settings on one of the image categories. */
-  const [settingsFocus, setSettingsFocus] = useState<"imageGen" | "imageModel" | null>(null);
+  const [settingsFocus, setSettingsFocus] = useState<"imageGen" | "imageModel" | "musicGen" | "musicModel" | null>(null);
   /** Where a dropped file goes in the studio (a reference picture). */
   const imageDropRef = useRef<((path: string) => void) | null>(null);
   const studio = useImageStudio({
@@ -337,13 +350,25 @@ export default function App() {
     stoppedText: t("imgStopped"),
     autoChain: !!model?.image?.edits && settings.imgAutoChain,
   });
+  const music = useMusicStudio({
+    active: musicMode,
+    onBusy: setBusy,
+    notify: (kind, text) => showNotice(kind, text),
+    stoppedText: t("musStopped"),
+  });
   useEffect(() => {
     imageDropRef.current = imageMode
       ? (path: string) => {
           if (/\.(png|jpe?g|webp|bmp)$/i.test(path)) studio.setReference({ path });
           else showNotice("warn", t("imgDropNotImage"));
         }
-      : null;
+      : musicMode
+        ? (path: string) => {
+            // A score (ABC) to follow, for the family that plans from one.
+            if (/\.abc$/i.test(path) && model?.music?.spec.planning) music.patchDraft({ scorePath: path });
+            else showNotice("warn", t("musDropNotScore"));
+          }
+        : null;
   });
 
   // Uncaught front-end errors land in the user-attachable error log
@@ -715,7 +740,7 @@ export default function App() {
         if (!target) return;
         setLoadingModel(true);
         try {
-          const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, target));
+          const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, target), musicLoadOptions(settings));
           // A different tokenizer charges differently — start the ratio over.
           resetCalibration();
           setModel(info);
@@ -1446,6 +1471,8 @@ export default function App() {
       showNotice("warn", t("visionConfigMissing"));
     } else if (info.warning === "image-gpu-crash-cpu") {
       showNotice("warn", t("imgGpuCrashCpu"));
+    } else if (info.warning === "music-gpu-crash-cpu") {
+      showNotice("warn", t("musGpuCrashCpu"));
     }
   }
 
@@ -1489,10 +1516,20 @@ export default function App() {
     // stayed open to a second pick, and the backend releases the engine lock
     // the moment it takes the old model, so both loads went resident at once.
     if (busy || loadingModel || model?.path === path) return;
-    if (availableModels.find((m) => m.path === path)?.kind === "image") {
+    const kind = availableModels.find((m) => m.path === path)?.kind;
+    if (kind === "image") {
       const probe = await imageModelProbe(path, settings.imgComponents[path]).catch(() => null);
       if (probe && probe.missing.length > 0) {
         setCompFor({ path: probe.path, loadAfter: true });
+        return;
+      }
+    }
+    if (kind === "music") {
+      // A music model lacking a part (its VAE, a config) offers to fetch it
+      // rather than failing to load.
+      const probe = await musicModelProbe(path).catch(() => null);
+      if (probe && (probe.missing.length > 0 || !probe.supported)) {
+        setMusicCompFor({ path: probe.path, loadAfter: true });
         return;
       }
     }
@@ -1503,7 +1540,7 @@ export default function App() {
   async function loadPath(path: string) {
     setLoadingModel(true);
     try {
-      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, path));
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, path), musicLoadOptions(settings));
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -1523,7 +1560,7 @@ export default function App() {
     if (!model || busy || loadingModel) return;
     setLoadingModel(true);
     try {
-      const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, model.path));
+      const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, model.path), musicLoadOptions(settings));
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -1597,8 +1634,14 @@ export default function App() {
         void refreshModels();
         return;
       }
+      const musicProbe = probe ? null : await musicModelProbe(path).catch(() => null);
+      if (musicProbe && (musicProbe.missing.length > 0 || !musicProbe.supported)) {
+        setMusicCompFor({ path: musicProbe.path, loadAfter: true });
+        void refreshModels();
+        return;
+      }
       setLoadingModel(true);
-      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, probe?.path ?? path));
+      const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, probe?.path ?? path), musicLoadOptions(settings));
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -1618,6 +1661,10 @@ export default function App() {
     if (busy) return;
     if (imageMode) {
       studio.startNew();
+      return;
+    }
+    if (musicMode) {
+      music.startNew();
       return;
     }
     setConversationId(null);
@@ -2680,7 +2727,7 @@ export default function App() {
   // knowledge base, web search or voice), and jumps to generations instead.
   const chatOnly = new Set(["mode", "live", "kb", "web"]);
   const commands: Command[] = [
-    { id: "new", label: imageMode ? t("imgNew") : t("newChat"), keywords: "new chat 新对话 新建", run: handleNewChat },
+    { id: "new", label: imageMode ? t("imgNew") : musicMode ? t("musNew") : t("newChat"), keywords: "new chat 新对话 新建", run: handleNewChat },
     {
       id: "mode",
       label: appMode === "code" ? t("cmdkGoChat") : t("cmdkGoCode"),
@@ -2762,6 +2809,25 @@ export default function App() {
             run: () => void studio.openSession(s.id),
           })),
         ]
+      : musicMode
+      ? [
+          {
+            id: "music-settings",
+            label: t("setCatMusicGen"),
+            keywords: "music settings 音乐 参数",
+            run: () => {
+              setSettingsFocus("musicGen");
+              setShowSettings(true);
+            },
+          },
+          ...music.sessions.map((s) => ({
+            id: `mus:${s.id}`,
+            label: s.title,
+            hint: t("musCmdkHint"),
+            keywords: `music session 音乐 会话 ${s.title}`,
+            run: () => void music.openSession(s.id),
+          })),
+        ]
       : conversations.map((c) => ({
           id: `conv:${c.id}`,
           label: c.title,
@@ -2769,7 +2835,7 @@ export default function App() {
           keywords: `chat conversation 对话 ${c.title}`,
           run: () => void openConversation(c.id),
         }))),
-  ].filter((c) => !(imageMode && chatOnly.has(c.id)));
+  ].filter((c) => !(studioMode && chatOnly.has(c.id)));
 
   return (
     <CanvasOpenContext.Provider value={openInCanvas}>
@@ -2809,13 +2875,13 @@ export default function App() {
               <path d="M12 16V4M12 4l-4 4M12 4l4 4" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" strokeLinecap="round" />
             </svg>
-            <span>{imageMode ? t("imgDropRef") : t("dropToAttach")}</span>
+            <span>{imageMode ? t("imgDropRef") : musicMode ? t("musDropScore") : t("dropToAttach")}</span>
           </div>
         </div>
       )}
       <CodeMode
         model={model}
-        active={appMode === "code" && !imageMode}
+        active={appMode === "code" && !studioMode}
         headSlot={headSlot}
         railW={sidebarW}
         onRailResize={startSidebarResize}
@@ -2842,10 +2908,12 @@ export default function App() {
         autoTitle={settings.autoTitle}
       />
 
-      <div className="body" style={appMode === "code" && !imageMode ? { display: "none" } : undefined}>
+      <div className="body" style={appMode === "code" && !studioMode ? { display: "none" } : undefined}>
         <aside className="sidebar" ref={asideRef} style={{ width: sidebarW }}>
           {imageMode ? (
             <ImageSidebar studio={studio} busy={busy} notify={showNotice} />
+          ) : musicMode ? (
+            <MusicSidebar studio={music} busy={busy} notify={showNotice} />
           ) : (
           <>
           <button className="new-chat" onClick={handleNewChat} disabled={busy}>
@@ -2985,6 +3053,19 @@ export default function App() {
                 setShowSettings(true);
               }}
               onPreview={setPreviewImg}
+              notify={showNotice}
+              sendKey={settings.sendKey}
+            />
+          ) : musicMode && model?.music ? (
+            <MusicStudio
+              model={model}
+              studio={music}
+              settings={settings}
+              onSettings={(patch) => setSettings((cur) => ({ ...cur, ...patch }))}
+              onOpenSettings={() => {
+                setSettingsFocus("musicGen");
+                setShowSettings(true);
+              }}
               notify={showNotice}
               sendKey={settings.sendKey}
             />
@@ -3694,6 +3775,13 @@ export default function App() {
                 <Icon name="image" size={15} strokeWidth={1.7} />
               </button>
             </div>
+          ) : musicMode ? (
+            // So is loading a music model: the music studio is the mode.
+            <div className="mode-switch" role="tablist" aria-label="Mode">
+              <button className="mode-tab active" role="tab" aria-selected title={t("musModeTip")} aria-label={t("modeMusic")}>
+                <Icon name="music" size={15} strokeWidth={1.7} />
+              </button>
+            </div>
           ) : (
             <div className="mode-switch" role="tablist" aria-label="Mode">
               <button
@@ -3721,11 +3809,15 @@ export default function App() {
         </div>
 
         <div className={`tb-main ${tbFit}`} ref={tbMainRef} data-tauri-drag-region>
-        {/* What's open, as the panel's title: the conversation, the image
-            session. Code puts its workspace here instead (headSlot). */}
-        {!(appMode === "code" && !imageMode) && (
+        {/* What's open, as the panel's title: the conversation, the image or
+            music session. Code puts its workspace here instead (headSlot). */}
+        {!(appMode === "code" && !studioMode) && (
           <div className="tb-title" data-tauri-drag-region>
-            {imageMode ? studio.session?.title ?? "" : conversations.find((c) => c.id === conversationId)?.title ?? ""}
+            {imageMode
+              ? studio.session?.title ?? ""
+              : musicMode
+                ? music.session?.title ?? ""
+                : conversations.find((c) => c.id === conversationId)?.title ?? ""}
           </div>
         )}
         <div className="tb-slot" ref={setHeadSlot} data-tauri-drag-region />
@@ -3743,6 +3835,7 @@ export default function App() {
               <>
                 <span className="chip-name">{model.name.replace(/\.gguf$/i, "")}</span>
                 {model.kind === "image" ? <span className="chip-meta chip-img">{t("imageBadge")}</span> : null}
+                {model.kind === "music" ? <span className="chip-meta chip-img chip-music">{t("musicBadge")}</span> : null}
                 {model.paramsB ? (
                   <span className="chip-meta">{model.paramsB.toFixed(1)}B</span>
                 ) : null}
@@ -3809,6 +3902,14 @@ export default function App() {
                           ) : null}
                           {m.kind === "image" && (m.missing ?? []).some((role) => !settings.imgComponents[m.path]?.[role]) ? (
                             <span className="mm-warn" title={t("imgMissingBadgeTip")}>!</span>
+                          ) : null}
+                          {m.kind === "music" ? (
+                            <span className="mm-img mm-music" title={m.family ? `${t("musicBadgeTip")} · ${m.family}` : t("musicBadgeTip")}>
+                              {t("musicBadge")}
+                            </span>
+                          ) : null}
+                          {m.kind === "music" && (m.missing ?? []).length > 0 ? (
+                            <span className="mm-warn" title={t("musMissingBadgeTip")}>!</span>
                           ) : null}
                           {m.sizeMb ? (
                             <span className="mm-size">{fmtGbFromMb(m.sizeMb)}</span>
@@ -3901,7 +4002,7 @@ export default function App() {
           )}
         </div>
 
-        {messages.length > 0 && !imageMode && (
+        {messages.length > 0 && !studioMode && (
           <div className="settings-wrap">
             <button
               className={`icon-btn ${showExport ? "active" : ""}`}
@@ -3981,8 +4082,18 @@ export default function App() {
               setShowSettings(false);
               setSettingsFocus(null);
             }}
-            mode={imageMode ? "image" : "chat"}
+            mode={imageMode ? "image" : musicMode ? "music" : "chat"}
             imageModel={imageMode ? model : null}
+            musicModel={musicMode ? model : null}
+            onManageMusicComponents={
+              musicMode && model
+                ? () => {
+                    setShowSettings(false);
+                    setMusicCompFor({ path: model.path, loadAfter: false });
+                  }
+                : undefined
+            }
+            onMusicHistoryCleared={music.cleared}
             focusCat={settingsFocus}
             onManageComponents={
               // An MLX image model's folder holds all of its parts.
@@ -4155,6 +4266,25 @@ export default function App() {
           }}
           onClose={() => {
             setCompFor(null);
+            void refreshModels();
+          }}
+        />
+      )}
+      {musicCompFor && (
+        <MusicComponentsModal
+          path={musicCompFor.path}
+          onLoad={
+            musicCompFor.loadAfter || model?.path === musicCompFor.path
+              ? () => {
+                  const target = musicCompFor;
+                  setMusicCompFor(null);
+                  if (model?.path === target.path) void reloadModel();
+                  else void loadPath(target.path);
+                }
+              : undefined
+          }
+          onClose={() => {
+            setMusicCompFor(null);
             void refreshModels();
           }}
         />

@@ -199,6 +199,7 @@ pub fn load(
         warning,
         kind: "image".into(),
         image: Some(image),
+        music: None,
     };
     Ok((Arc::new(engine), info))
 }
@@ -290,6 +291,7 @@ fn load_mlx(
         warning: None,
         kind: "image".into(),
         image: Some(image),
+        music: None,
     };
     Ok((Arc::new(engine), info))
 }

@@ -54,7 +54,44 @@ export function ModelInfoPanel({
                 <span className="hw-v">{fmtGbFromMb(model.sizeMb)}</span>
               </div>
             )}
-            {model.kind === "image" && model.image ? (
+            {model.kind === "music" && model.music ? (
+              <>
+                <div className="hw-row">
+                  <span className="hw-k">{t("miMusicFamily")}</span>
+                  <span className="hw-v">{model.music.familyName}</span>
+                </div>
+                <div className="hw-row">
+                  <span className="hw-k">{t("miEngine")}</span>
+                  <span className="hw-v">
+                    {model.backend}
+                    <small> · {model.music.onCpu ? "CPU" : model.music.device || "GPU"}</small>
+                  </span>
+                </div>
+                <div className="hw-row">
+                  <span className="hw-k">{t("miMusicCan")}</span>
+                  <span className="hw-v">
+                    {[
+                      model.music.spec.lyrics ? t("musModeSong") : null,
+                      model.music.spec.instrumentalLyrics != null || !model.music.spec.lyrics ? t("musModeInstrumental") : null,
+                      model.music.spec.planning ? t("musModeScore") : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                </div>
+                {model.music.components.length > 0 && <div className="hw-divider" />}
+                {model.music.components
+                  .filter((c) => c.role !== "config")
+                  .map((c) => (
+                    <div key={c.file} className="hw-row">
+                      <span className="hw-k">{t(c.role === "vae" ? "musRoleVae" : c.role === "tokenizer" ? "musRoleTokenizer" : "musRoleWeights")}</span>
+                      <span className="hw-v mi-file" title={c.file}>
+                        {c.file}
+                      </span>
+                    </div>
+                  ))}
+              </>
+            ) : model.kind === "image" && model.image ? (
               <>
                 {model.image.engineVersion &&
                   model.image.engineVersion.toLowerCase().replace(/[^a-z0-9]/g, "") !==

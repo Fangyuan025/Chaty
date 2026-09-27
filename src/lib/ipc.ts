@@ -1,6 +1,6 @@
 // Typed bridge to the Rust backend. Keep this the single source of truth for
 // the IPC contract so the UI never touches `invoke` string names directly.
-import { invoke, Channel } from "@tauri-apps/api/core";
+import { invoke, Channel, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { voiceError } from "./voiceError";
 
@@ -96,11 +96,275 @@ export interface ModelInfo {
   mmproj?: string | null;
   /** Non-fatal load warning code (e.g. "gpu-oom"), or null. */
   warning?: string | null;
-  /** "chat" for a language model, "image" for a diffusion model — an image
-   *  model turns the whole app into the image studio. */
-  kind?: "chat" | "image";
+  /** "chat" for a language model, "image" for a diffusion model, "music" for
+   *  a text-to-music model — an image or music model turns the whole app into
+   *  its studio. */
+  kind?: "chat" | "image" | "music";
   /** What the image engine loaded, when `kind` is "image". */
   image?: ImageModelInfo | null;
+  /** What the music engine loaded, when `kind` is "music". */
+  music?: MusicModelInfo | null;
+}
+
+// ---- Text-to-music ----
+
+/** An edit of an earlier piece of the session. */
+export type MusicEditKind = "rearrange" | "continue" | "repaint" | "cover" | "variation" | "inpaint";
+
+/** One of a family's options, as the engine describes it. */
+export interface EngineOption {
+  name: string;
+  /** "int", "float", "bool", "string", "path", or the choices "a|b|c". */
+  kind: string;
+  description: string;
+  default: string;
+  min: string;
+  max: string;
+  required: boolean;
+}
+
+/** How the studio drives a music family (from the backend's descriptor). */
+export interface MusicFamilySpec {
+  id: string;
+  name: string;
+  repo: string;
+  repoDir: string;
+  layout: "single" | "yue2" | "miniMax";
+  /** The description goes into the request text… */
+  promptText: boolean;
+  /** …and/or this request option. */
+  promptOption: string | null;
+  /** The option lyrics go into; null = the family sings nothing. */
+  lyrics: string | null;
+  lyricsRequired: boolean;
+  /** Lyrics asking for an instrumental; null = it cannot make one. */
+  instrumentalLyrics: string | null;
+  length: {
+    option: string;
+    perSecond: number;
+    /** 0 = the model decides. */
+    defaultS: number;
+    minS: number;
+    maxS: number;
+    autoValue: string | null;
+    /** A budget the model may stop short of. */
+    isLimit: boolean;
+  } | null;
+  /** Plans a score before the music (YuE2). */
+  planning: boolean;
+  fixed: [string, string][];
+  edits: MusicEditKind[];
+  /** Stages in order with their share of the work. */
+  stages: [string, number][];
+  /** Music tokens a second, where the tokens stage ends under a far larger
+   *  budget; 0 = the stage total is exact. */
+  tokenRate: number;
+  promptTemplate: string | null;
+}
+
+export interface MusicModelInfo {
+  family: string;
+  familyName: string;
+  engineVersion: string;
+  device: string;
+  onCpu: boolean;
+  components: MusicComponent[];
+  /** Package files the engine was told to use (session option → file). */
+  files: Record<string, string>;
+  spec: MusicFamilySpec;
+  requestOptions: EngineOption[];
+  sessionOptions: EngineOption[];
+}
+
+export interface MusicComponent {
+  role: "vae" | "config" | "tokenizer" | "weights";
+  file: string;
+  size: number;
+}
+
+export interface MusicSuggestion {
+  role: MusicComponent["role"];
+  repo: string;
+  /** Repo-relative path. */
+  file: string;
+  /** Where it goes, relative to the model's folder. */
+  dest: string;
+  size: number;
+}
+
+/** A music model before it is loaded. */
+export interface MusicProbe {
+  path: string;
+  family: string;
+  familyName: string;
+  supported: boolean;
+  quant?: string | null;
+  paramsB?: number | null;
+  sizeMb: number;
+  components: MusicComponent[];
+  missing: string[];
+  suggestions: MusicSuggestion[];
+  modelPath: string;
+  files: Record<string, string>;
+}
+
+/** How a music model is loaded (Settings → Music model). */
+export interface MusicLoadOptions {
+  device: "gpu" | "cpu";
+  threads: number;
+  /** The engine's session options, by family then by name; the loaded
+   *  model's family's are used, empty values are not sent. */
+  sessionOptions: Record<string, Record<string, string>>;
+}
+
+export interface MusicEdit {
+  kind: MusicEditKind;
+  parentId: string;
+  /** Seconds: a stretch's start, or how much a continuation keeps (0 = all). */
+  start: number;
+  /** A stretch's end; 0 = the end. */
+  end: number;
+  /** A variation's strength (0..1); 0 = recommended. */
+  strength: number;
+}
+
+/** A piece asked for by the studio. */
+export interface MusicRequest {
+  prompt: string;
+  lyrics: string;
+  instrumental: boolean;
+  /** 0 = recommended (or the model decides). */
+  seconds: number;
+  /** Negative = random. */
+  seed: number;
+  /** The family's request options moved off their recommended values. */
+  options: Record<string, string>;
+  /** A score (ABC) to follow (YuE2). */
+  scorePath?: string | null;
+  edit?: MusicEdit | null;
+  outDir?: string | null;
+  sessionId?: string | null;
+}
+
+export interface MusicAudio {
+  path: string;
+  seconds: number;
+  sampleRate: number;
+  channels: number;
+  seed: number;
+  scorePath?: string | null;
+  tokensPath?: string | null;
+}
+
+/** One round of a music session. */
+export interface MusicRecord {
+  id: string;
+  sessionId: string;
+  parentId?: string | null;
+  prompt: string;
+  lyrics: string;
+  params: Partial<MusicRequest>;
+  audio: MusicAudio;
+  /** Waveform outline, 0..1 per bar. */
+  peaks: number[];
+  model: string;
+  family: string;
+  createdAt: number;
+  elapsedMs: number;
+}
+
+export interface MusicSession {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  pinned: boolean;
+}
+
+export interface MusicSessionData {
+  session: MusicSession;
+  draft: string;
+  records: MusicRecord[];
+}
+
+export type MusicEngineEvent =
+  | { type: "stage"; stage: string; seed?: number | null }
+  | { type: "progress"; stage: string; done: number; total: number }
+  | { type: "info"; key: string; value: number }
+  | { type: "audio"; audio: MusicAudio };
+
+export type MusicEvent =
+  | { type: "started"; id: string; request: MusicRequest; startedAt: number }
+  | { type: "engine"; event: MusicEngineEvent }
+  | { type: "done"; record: MusicRecord | null; cancelled: boolean }
+  | { type: "error"; message: string };
+
+export interface LiveMusicInfo {
+  id: string;
+  request: MusicRequest;
+  startedAt: number;
+  events: MusicEngineEvent[];
+}
+
+export async function musicModelProbe(path: string): Promise<MusicProbe | null> {
+  return await invoke<MusicProbe | null>("music_model_probe", { path });
+}
+
+export async function musicGenerate(request: MusicRequest, onEvent: (ev: MusicEvent) => void): Promise<MusicRecord | null> {
+  const channel = new Channel<MusicEvent>();
+  channel.onmessage = onEvent;
+  return await invoke<MusicRecord | null>("music_generate", { request, onEvent: channel });
+}
+
+export async function musicCancel(): Promise<void> {
+  await invoke("music_cancel");
+}
+
+/** Take over a piece already being made (after a page reload). */
+export async function musicAttach(onEvent: (ev: MusicEvent) => void): Promise<LiveMusicInfo | null> {
+  const channel = new Channel<MusicEvent>();
+  channel.onmessage = onEvent;
+  return await invoke<LiveMusicInfo | null>("music_attach", { onEvent: channel });
+}
+
+export async function musicOutputDir(): Promise<string> {
+  return await invoke<string>("music_output_dir");
+}
+
+export async function musicSessionSave(id: string, title: string): Promise<void> {
+  await invoke("music_session_save", { id, title });
+}
+export async function musicSessionList(): Promise<MusicSession[]> {
+  return (await invoke<MusicSession[]>("music_session_list")) ?? [];
+}
+export async function musicSessionGet(id: string): Promise<MusicSessionData | null> {
+  return await invoke<MusicSessionData | null>("music_session_get", { id });
+}
+export async function musicSessionDraft(id: string, draft: string): Promise<void> {
+  await invoke("music_session_draft", { id, draft });
+}
+export async function musicSessionRename(id: string, title: string): Promise<void> {
+  await invoke("music_session_rename", { id, title });
+}
+export async function musicSessionSetPinned(id: string, pinned: boolean): Promise<void> {
+  await invoke("music_session_set_pinned", { id, pinned });
+}
+export async function musicSessionDelete(id: string, deleteFiles: boolean): Promise<void> {
+  await invoke("music_session_delete", { id, deleteFiles });
+}
+export async function musicSessionSearch(query: string): Promise<string[]> {
+  return (await invoke<string[]>("music_session_search", { query })) ?? [];
+}
+export async function musicTrackDelete(id: string, deleteFiles: boolean): Promise<void> {
+  await invoke("music_track_delete", { id, deleteFiles });
+}
+export async function musicHistoryClear(deleteFiles: boolean): Promise<void> {
+  await invoke("music_history_clear", { deleteFiles });
+}
+
+/** The URL the player reads a piece through (the backend's media scheme). */
+export function musicMediaUrl(path: string): string {
+  return convertFileSrc(path, "chatymedia");
 }
 
 // ---- Text-to-image ----
@@ -1021,6 +1285,8 @@ export async function loadModel(
   onProgress?: (p: LoadProgress) => void,
   /** How an image model is loaded; ignored for chat models. */
   image?: ImageLoadOptions,
+  /** How a music model is loaded; ignored for every other kind. */
+  music?: MusicLoadOptions,
 ): Promise<ModelInfo> {
   const channel = new Channel<LoadProgress>();
   if (onProgress) channel.onmessage = onProgress;
@@ -1030,6 +1296,7 @@ export async function loadModel(
     nCtx,
     speculative,
     image: image ?? null,
+    music: music ?? null,
     onProgress: channel,
   });
 }
@@ -1054,11 +1321,13 @@ export interface ModelEntry {
   format?: "gguf" | "mlx" | "safetensors";
   /** Vision-capable once loaded (GGUF: paired mmproj; MLX: built-in tower). */
   vision?: boolean;
-  /** "image" = a text-to-image model (opens the image studio). */
-  kind?: "chat" | "image";
-  /** An image model's family, for the badge. */
+  /** "image" = a text-to-image model (opens the image studio), "music" = a
+   *  text-to-music model (opens the music studio). */
+  kind?: "chat" | "image" | "music";
+  /** An image or music model's family, for the badge. */
   family?: string | null;
-  /** Companions an image model still lacks (before hand-picked ones). */
+  /** What an image model still lacks (before hand-picked ones), or a music
+   *  model's missing files. */
   missing?: string[];
 }
 
@@ -1130,6 +1399,8 @@ export interface HfModelHit {
   vision: boolean;
   /** A text-to-image model. */
   image?: boolean;
+  /** A text-to-music model. */
+  music?: boolean;
   paramsB?: number | null;
 }
 
@@ -1139,6 +1410,8 @@ export interface QuantOption {
   size: number;
   /** Repo-relative paths in download order; empty for MLX (whole-repo unit). */
   files: string[];
+  /** What comes along, estimated (a music model's VAE, configs, parts). */
+  extra?: number;
 }
 
 export interface HfModelDetail {
@@ -1158,6 +1431,12 @@ export interface HfModelDetail {
   companions?: ImageSuggestion[];
   /** Why Chaty could not run it once downloaded; absent = no known obstacle. */
   unsupported?: string | null;
+  /** A text-to-music model. */
+  music?: boolean;
+  /** Its music family's name ("YuE2"). */
+  musicFamily?: string | null;
+  /** The repo files are fetched from (`id` may name a folder inside it). */
+  repo?: string;
 }
 
 /** Search/browse HF models. Empty query = trending storefront. */
@@ -1165,8 +1444,8 @@ export async function hfSearch(
   query: string,
   format: "gguf" | "mlx",
   sort: "trending" | "downloads" | "likes" | "updated",
-  /** "image" = text-to-image models only. */
-  task: "all" | "image" = "all",
+  /** "image" = text-to-image models only, "music" = text-to-music ones. */
+  task: "all" | "image" | "music" = "all",
 ): Promise<HfModelHit[]> {
   return await invoke<HfModelHit[]>("hf_search", {
     query,
@@ -1377,6 +1656,8 @@ export interface DataStats {
   codeSessions: number;
   /** Pictures made in the image studio. */
   images?: number;
+  /** Pieces made in the music studio. */
+  music?: number;
   dbBytes: number;
 }
 /** Aggregate counters for the Settings → Data statistics panel. */
@@ -1819,6 +2100,19 @@ export async function saveImageAs(src: string, suggestedName = "screenshot.png")
   const dest = await save({
     defaultPath: suggestedName,
     filters: [jpeg ? { name: "JPEG", extensions: ["jpg", "jpeg"] } : { name: "PNG", extensions: ["png"] }],
+  });
+  if (!dest) return null;
+  await saveFile(src, dest);
+  return dest;
+}
+
+/** Save a copy of a file where the user chooses (a piece from the music
+ *  studio). The filter follows the file's extension. */
+export async function saveFileCopy(src: string, suggestedName: string): Promise<string | null> {
+  const ext = (suggestedName.split(".").pop() || "").toLowerCase();
+  const dest = await save({
+    defaultPath: suggestedName,
+    filters: ext ? [{ name: ext.toUpperCase(), extensions: [ext] }] : [],
   });
   if (!dest) return null;
   await saveFile(src, dest);

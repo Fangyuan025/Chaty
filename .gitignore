@@ -21,6 +21,7 @@ dist-ssr
 src-tauri/binaries/
 src-tauri/mlx-sidecar/.build/
 src-tauri/sd-sidecar/build/
+src-tauri/audio-sidecar/build/
 
 # Editor directories and files
 .vscode/*

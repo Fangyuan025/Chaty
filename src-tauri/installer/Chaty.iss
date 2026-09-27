@@ -70,6 +70,8 @@ Source: "{#SrcDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 ; The image engine (stable-diffusion.cpp sidecar) — text-to-image models run
 ; in it. tauri-build copies it next to the exe from src-tauri/binaries.
 Source: "{#SrcDir}\chaty-sd.exe"; DestDir: "{app}"; Flags: ignoreversion
+; The music engine (audio.cpp sidecar) — text-to-music models run in it.
+Source: "{#SrcDir}\chaty-audio.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\onnxruntime.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\onnxruntime_providers_shared.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\sherpa-onnx-c-api.dll"; DestDir: "{app}"; Flags: ignoreversion

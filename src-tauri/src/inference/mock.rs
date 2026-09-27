@@ -124,6 +124,7 @@ pub fn mock_info(n_ctx: Option<u32>) -> super::ModelInfo {
         warning: None,
         kind: "chat".into(),
         image: None,
+        music: None,
     }
 }
 

@@ -8,7 +8,7 @@
 
 **Os modelos no seu disco, trabalhando de verdade.**
 
-Chat, um agente de programação, um estúdio de imagens, respostas a partir dos seus próprios documentos e uma voz para conversar —<br />
+Chat, um agente de programação, estúdios de imagem e de música, respostas a partir dos seus próprios documentos e uma voz para conversar —<br />
 com modelos abertos rodando inteiramente no seu Mac ou PC. Sem conta, sem nuvem, sem telemetria.
 
 [![Release](https://img.shields.io/github/v/release/Fangyuan025/Chaty?label=release&color=3a3a3a)](../../releases/latest)
@@ -18,7 +18,7 @@ com modelos abertos rodando inteiramente no seu Mac ou PC. Sem conta, sem nuvem,
 
 [**Baixar**](../../releases/latest) · [**Site**](https://chaty.ca) · [**Documentação**](https://chaty.ca/docs.html) · [**Changelog**](CHANGELOG.md)
 
-<sub>macOS (Apple Silicon) · Windows 10/11 · Linux (AppImage) — GGUF no llama.cpp, MLX nativo no Apple Silicon, texto para imagem no stable-diffusion.cpp</sub>
+<sub>macOS (Apple Silicon) · Windows 10/11 · Linux (AppImage) — GGUF no llama.cpp, MLX nativo no Apple Silicon, texto para imagem no stable-diffusion.cpp, texto para música no audio.cpp</sub>
 
 <br />
 
@@ -35,14 +35,14 @@ com modelos abertos rodando inteiramente no seu Mac ou PC. Sem conta, sem nuvem,
 
 ## Por que o Chaty
 
-- **Um app, cinco trabalhos.** Chat, um agente de programação, um estúdio de imagens, respostas a partir dos seus próprios documentos e uma voz para conversar — com os mesmos modelos locais, numa só janela. Sem servidor para rodar, sem porta, sem chave de API.
+- **Um app, seis trabalhos.** Chat, um agente de programação, um estúdio de imagens, um estúdio de música, respostas a partir dos seus próprios documentos e uma voz para conversar — com os mesmos modelos locais, numa só janela. Sem servidor para rodar, sem porta, sem chave de API.
 - **Feito para o modelo que cabe no seu notebook.** Chamadas de ferramenta no formato em que cada modelo foi treinado, edições conferidas com o arquivo enquanto ainda estão sendo escritas, deslizes pegos no passo em que acontecem — para que um modelo pequeno termine trabalho de verdade. [Como →](#feito-para-o-que-modelos-pequenos-erram)
 - **GGUF e MLX, ambos nativos.** llama.cpp em Metal ou Vulkan em todas as plataformas, MLX no Apple Silicon, e uma loja de modelos que busca no Hugging Face e diz quais arquivos cabem na sua memória.
 - **Totalmente seu.** Modelos, conversas, documentos e imagens ficam numa pasta no seu disco. Sem conta, sem telemetria — apague a pasta e não sobra nada.
 
 ## Conteúdo
 
-[Chat](#chat) · [Code](#code) · [Imagem](#imagem) · [Documentos e pesquisa](#documentos-e-pesquisa) · [Voz](#voz) · [Feito para modelos pequenos](#feito-para-o-que-modelos-pequenos-erram) · [Modelos](#modelos) · [Privacidade](#privacidade) · [Instalação](#instalação) · [Compilação](#compilação) · [Arquitetura](#arquitetura)
+[Chat](#chat) · [Code](#code) · [Imagem](#imagem) · [Música](#música) · [Documentos e pesquisa](#documentos-e-pesquisa) · [Voz](#voz) · [Feito para modelos pequenos](#feito-para-o-que-modelos-pequenos-erram) · [Modelos](#modelos) · [Privacidade](#privacidade) · [Instalação](#instalação) · [Compilação](#compilação) · [Arquitetura](#arquitetura)
 
 ## Chat
 
@@ -105,6 +105,17 @@ Carregue um modelo de texto para imagem e o app inteiro vira um estúdio: sessõ
 - **Salva com a receita** — PNGs levam o prompt e as configurações dentro, organizados por data.
 
 Roda no [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) num processo auxiliar — Metal no Mac, Vulkan no Windows e no Linux — então uma falha de driver encerra o auxiliar, não o app. No Mac, modelos de imagem MLX (as pastas do [mflux](https://github.com/filipstrand/mflux) de Z-Image, Qwen-Image e FLUX.1) rodam no motor MLX, ainda mais rápido: o Z-Image Turbo desenha o mesmo prompt em 1 min 45 s, o Qwen-Image 2.1 em 9 min 0 s.
+
+## Música
+
+Carregue um modelo de texto para música e o app inteiro vira um estúdio de música, como um modelo de imagem o transforma num estúdio de imagens: sessões que se leem como conversas, as configurações recomendadas de cada família já preenchidas e uma porcentagem que acompanha a peça por cada etapa — escrever a partitura, compor, renderizar, decodificar.
+
+- **As famílias que o audio.cpp roda** — YuE2 (letra virando uma música inteira, voz e banda juntas), MiniMax Music 3, ACE-Step 1.5, HeartMuLa, Stable Audio 3 e MiDashengLM-Gen, como pacotes GGUF do [audio.cpp](https://github.com/0xShug0/audio.cpp). O Chaty encontra os outros arquivos do pacote ao lado do modelo — um VAE, configurações, um tokenizador, as partes de um modelo de vários arquivos — ou baixa os que faltam num clique.
+- **Sua letra, ou nenhuma** — escreva a letra com marcações de seção, deixe-a para o modelo ou peça uma instrumental; o estilo é uma descrição em poucas palavras.
+- **Continue a partir de uma peça** — as edições de cada família sobre uma rodada anterior: o YuE2 rearranja uma peça sobre a própria melodia ou a continua de qualquer segundo, o ACE-Step repinta um trecho ou faz um cover em outro estilo, o Stable Audio faz uma variação ou preenche um trecho de novo.
+- **Todas as configurações, a recomendada primeiro** — as comuns no compositor, o resto nas Configurações, cada uma com seu caminho de volta à recomendação.
+
+Roda num processo auxiliar próprio, `chaty-audio` — Metal no Mac, Vulkan no Windows e no Linux — e parar uma peça encerra o auxiliar, devolvendo de uma vez toda a memória do modelo. Num M4 Pro, o YuE2 compõe e canta 30 segundos de verso e refrão em 33 s, o ACE-Step 1.5 turbo faz 10 s em 13 s e o Stable Audio 3 Small, 20 s em 1,2 s.
 
 ## Documentos e pesquisa
 
@@ -200,7 +211,7 @@ npm run tauri dev
 npm run tauri build -- --bundles appimage
 ```
 
-Os motores MLX e de imagem são auxiliares separados — `scripts/build-mlx-sidecar.sh` e `scripts/build-sd-sidecar.{sh,ps1}`. As versões saem do CI: ajuste a versão com `scripts/bump-version.sh x.y.z`, envie uma tag `vx.y.z` e o GitHub Actions compila as três plataformas numa só release.
+Os motores MLX, de imagem e de música são auxiliares separados — `scripts/build-mlx-sidecar.sh`, `scripts/build-sd-sidecar.{sh,ps1}` e `scripts/build-audio-sidecar.{sh,ps1}`. As versões saem do CI: ajuste a versão com `scripts/bump-version.sh x.y.z`, envie uma tag `vx.y.z` e o GitHub Actions compila as três plataformas numa só release.
 
 ## Arquitetura
 
@@ -210,6 +221,7 @@ Os motores MLX e de imagem são auxiliares separados — `scripts/build-mlx-side
 | Interface | React 19 · Vite · react-markdown · KaTeX · Mermaid |
 | Modelos de linguagem | Rust · `llama-cpp-2` (llama.cpp — Metal / Vulkan) · MLX por um auxiliar `mlx-swift-lm` no Apple Silicon · templates de chat renderizados com minijinja quando o do modelo difere |
 | Modelos de imagem | stable-diffusion.cpp no auxiliar `chaty-sd` · modelos de imagem MLX (pastas do mflux) no auxiliar `chaty-mlx` no Apple Silicon |
+| Modelos de música | audio.cpp no auxiliar `chaty-audio` — YuE2, MiniMax Music 3, ACE-Step 1.5, HeartMuLa, Stable Audio 3, MiDashengLM-Gen |
 | Voz | `sherpa-rs` (ONNX Runtime, CPU) — Whisper, Kokoro-82M e uma voz chinesa VITS |
 | Base de conhecimento | Embeddings bge-m3 + BM25 · busca híbrida RRF / MMR · armazenamento vetorial em SQLite |
 | Armazenamento | SQLite — conversas, sessões, busca em texto completo |
@@ -222,4 +234,4 @@ Se o Chaty for útil para você, uma estrela ajuda outras pessoas a encontrá-lo
 
 ## Licença
 
-MIT — veja [LICENSE](LICENSE). Construído sobre [llama.cpp](https://github.com/ggml-org/llama.cpp), [MLX](https://github.com/ml-explore/mlx-swift), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [Tauri](https://tauri.app) e [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
+MIT — veja [LICENSE](LICENSE). Construído sobre [llama.cpp](https://github.com/ggml-org/llama.cpp), [MLX](https://github.com/ml-explore/mlx-swift), [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp), [audio.cpp](https://github.com/0xShug0/audio.cpp), [Tauri](https://tauri.app) e [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).

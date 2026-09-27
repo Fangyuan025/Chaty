@@ -325,8 +325,200 @@ function mockSessionList() {
     .map(({ draft: _d, ...s }) => s);
 }
 
-// Which model the preview has "loaded": ?model=image starts in the studio.
-let CURRENT: unknown = new URLSearchParams(window.location.search).get("model") === "image" ? IMAGE_MODEL : MODEL;
+// ---- Music studio fixtures ----
+const YUE2_SPEC = {
+  id: "yue2",
+  name: "YuE2",
+  repo: "audio-cpp/Yue2-3B-GGUF",
+  repoDir: "",
+  layout: "yue2",
+  promptText: false,
+  promptOption: "style",
+  lyrics: "lyrics",
+  lyricsRequired: false,
+  instrumentalLyrics: "",
+  length: { option: "semantic_max_tokens", perSecond: 25, defaultS: 0, minS: 10, maxS: 360, autoValue: null, isLimit: true },
+  planning: true,
+  fixed: [],
+  edits: ["rearrange", "continue"],
+  stages: [
+    ["score", 0.18],
+    ["tokens", 0.26],
+    ["render", 0.37],
+    ["decode", 0.19],
+  ],
+  tokenRate: 25,
+  promptTemplate: null,
+};
+const MUSIC_MODEL = {
+  ...IMAGE_MODEL,
+  name: "yue2-3b-q4_0",
+  path: "/models/Yue2-3B-GGUF/yue2-3b-q4_0.gguf",
+  backend: "audio.cpp",
+  arch: "YuE2",
+  sizeMb: 2130,
+  paramsB: 3.4,
+  modelName: "yue2-3b-q4_0",
+  quant: "Q4_0",
+  kind: "music",
+  image: null,
+  music: {
+    family: "yue2",
+    familyName: "YuE2",
+    engineVersion: "955c8725c611d511774e6be132aff6609163b2d2",
+    device: "Apple M4 Pro",
+    onCpu: false,
+    components: [
+      { role: "vae", file: "yue2-vae-f16.gguf", size: 265_218_656 },
+      { role: "config", file: "sidecars/yue2-model-config.json", size: 959 },
+      { role: "config", file: "sidecars/yue2-vae-config.json", size: 1378 },
+      { role: "tokenizer", file: "sidecars/yue2-qwen.tiktoken", size: 2_561_218 },
+    ],
+    files: { "yue2.model_gguf": "yue2-3b-q4_0.gguf", "yue2.vae_gguf": "yue2-vae-f16.gguf" },
+    spec: YUE2_SPEC,
+    requestOptions: [
+      { name: "guidance_scale", kind: "float", description: "Classifier-free guidance while composing", default: "1.5", min: "1", max: "5", required: false },
+    ],
+    sessionOptions: [
+      { name: "yue2.attention", kind: "auto|flash|eager", description: "Attention kernel", default: "auto", min: "", max: "", required: false },
+      { name: "yue2.vae_weight_type", kind: "string", description: "VAE weight type override", default: "", min: "", max: "", required: false },
+    ],
+  },
+};
+
+/** A waveform outline for a mock piece: verses, a louder chorus, a fade. */
+function mockPeaks(seed: number, bars = 240): number[] {
+  let x = seed || 1;
+  const rnd = () => ((x = (x * 1103515245 + 12345) % 2147483648) / 2147483648);
+  return Array.from({ length: bars }, (_, i) => {
+    const t = i / bars;
+    const shape = t < 0.04 ? t / 0.04 : t > 0.93 ? (1 - t) / 0.07 : t > 0.35 && t < 0.6 ? 0.95 : 0.7;
+    return Math.max(0.04, Math.min(1, shape * (0.72 + 0.28 * rnd())));
+  });
+}
+
+type MockTrack = {
+  id: string;
+  sessionId: string;
+  parentId: string | null;
+  prompt: string;
+  lyrics: string;
+  params: Record<string, unknown>;
+  audio: { path: string; seconds: number; sampleRate: number; channels: number; seed: number; scorePath?: string | null; tokensPath?: string | null };
+  peaks: number[];
+  model: string;
+  family: string;
+  createdAt: number;
+  elapsedMs: number;
+};
+
+// Music sessions: a song with a rearrangement of it, and an instrumental.
+const MUSIC_SESSIONS: MockSession[] = [
+  { id: "ms1", title: "夏夜城市流行", createdAt: now - 40 * 60e3, updatedAt: now - 30 * 60e3, pinned: false, draft: "" },
+  { id: "ms2", title: "Lo-fi rain, piano and vinyl crackle", createdAt: now - 28 * 3600e3, updatedAt: now - 28 * 3600e3, pinned: false, draft: "" },
+];
+const MUSIC_LYRICS = "[verse]\n霓虹灯下的晚风 吹过空荡的街\n耳机里是你 没说完的那一页\n\n[chorus]\n夏夜的城市 慢慢亮起来\n我们在人海里 把心事摊开";
+const MUSIC_TRACKS: MockTrack[] = [
+  {
+    id: "mt1",
+    sessionId: "ms1",
+    parentId: null,
+    prompt: "city pop, female vocal, bright synth, 110 bpm, nostalgic",
+    lyrics: MUSIC_LYRICS,
+    params: { instrumental: false, seconds: 0, seed: -1, options: {} },
+    audio: { path: "/mock/music/city-pop.wav", seconds: 94.2, sampleRate: 48000, channels: 2, seed: 20240611, scorePath: "/mock/music/city-pop.abc", tokensPath: "/mock/music/city-pop.tokens.json" },
+    peaks: mockPeaks(7),
+    model: "yue2-3b-q4_0",
+    family: "yue2",
+    createdAt: now - 40 * 60e3,
+    elapsedMs: 612000,
+  },
+  {
+    id: "mt2",
+    sessionId: "ms1",
+    parentId: "mt1",
+    prompt: "city pop, male vocal, warm electric piano, slower groove",
+    lyrics: MUSIC_LYRICS,
+    params: {
+      instrumental: false,
+      seconds: 0,
+      seed: -1,
+      options: { cot: "melody" },
+      edit: { kind: "rearrange", parentId: "mt1", start: 0, end: 0, strength: 0 },
+    },
+    audio: { path: "/mock/music/city-pop-2.wav", seconds: 97.8, sampleRate: 48000, channels: 2, seed: 88, scorePath: "/mock/music/city-pop-2.abc", tokensPath: "/mock/music/city-pop-2.tokens.json" },
+    peaks: mockPeaks(21),
+    model: "yue2-3b-q4_0",
+    family: "yue2",
+    createdAt: now - 30 * 60e3,
+    elapsedMs: 540000,
+  },
+  {
+    id: "mt3",
+    sessionId: "ms2",
+    parentId: null,
+    prompt: "lo-fi hip hop, rain, soft piano, vinyl crackle, 72 bpm",
+    lyrics: "",
+    params: { instrumental: true, seconds: 60, seed: -1, options: {} },
+    audio: { path: "/mock/music/lofi.wav", seconds: 60, sampleRate: 48000, channels: 2, seed: 4242, scorePath: null, tokensPath: "/mock/music/lofi.tokens.json" },
+    peaks: mockPeaks(99),
+    model: "yue2-3b-q4_0",
+    family: "yue2",
+    createdAt: now - 28 * 3600e3,
+    elapsedMs: 391000,
+  },
+];
+
+function mockMusicSessionList() {
+  return [...MUSIC_SESSIONS]
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt)
+    .map(({ draft: _d, ...s }) => s);
+}
+
+/** A playable stand-in for a mock piece: a few seconds of a soft chord
+ *  arpeggio (a WAV blob), so the player has something to play. */
+const MOCK_WAVS = new Map<string, string>();
+function mockWavUrl(path: string): string {
+  const hit = MOCK_WAVS.get(path);
+  if (hit) return hit;
+  const rate = 16000;
+  const secs = 8;
+  const n = rate * secs;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const str = (o: number, t: string) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF");
+  v.setUint32(4, 36 + n * 2, true);
+  str(8, "WAVEfmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  str(36, "data");
+  v.setUint32(40, n * 2, true);
+  const root = 196 * (1 + ([...path].reduce((a, c) => a + c.charCodeAt(0), 0) % 5) / 12);
+  const notes = [1, 5 / 4, 3 / 2, 2, 3 / 2, 5 / 4];
+  for (let i = 0; i < n; i++) {
+    const t = i / rate;
+    const k = Math.floor(t * 4);
+    const local = t * 4 - k;
+    const f = root * notes[k % notes.length];
+    const env = Math.exp(-local * 3) * Math.min(1, (secs - t) * 2);
+    const s = Math.sin(2 * Math.PI * f * t) * 0.5 + Math.sin(2 * Math.PI * root * 0.5 * t) * 0.15;
+    v.setInt16(44 + i * 2, Math.round(s * env * 0.6 * 32767), true);
+  }
+  const url = URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+  MOCK_WAVS.set(path, url);
+  return url;
+}
+
+// Which model the preview has "loaded": ?model=image starts in the image
+// studio, ?model=music in the music studio.
+const START_MODEL = new URLSearchParams(window.location.search).get("model");
+let CURRENT: unknown = START_MODEL === "image" ? IMAGE_MODEL : START_MODEL === "music" ? MUSIC_MODEL : MODEL;
 
 /** Command → canned response. Anything unlisted returns a benign default. */
 // Session dir grants (out-of-workspace access) — lets the grant pipeline be
@@ -340,7 +532,11 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "get_model":
       return CURRENT;
     case "load_model":
-      CURRENT = String(args?.path ?? "").includes("Qwen-Image") ? IMAGE_MODEL : MODEL;
+      CURRENT = String(args?.path ?? "").includes("Qwen-Image")
+        ? IMAGE_MODEL
+        : /yue2/i.test(String(args?.path ?? ""))
+          ? MUSIC_MODEL
+          : MODEL;
       return CURRENT;
     case "eject_model":
       CURRENT = null;
@@ -492,6 +688,172 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         return record;
       })();
     }
+
+    // ---- music studio ----
+    case "music_model_probe": {
+      const p = String(args?.path ?? "");
+      if (!/yue2/i.test(p)) return null;
+      return {
+        path: MUSIC_MODEL.path,
+        family: "yue2",
+        familyName: "YuE2",
+        supported: true,
+        quant: "Q4_0",
+        paramsB: 3.4,
+        sizeMb: 2130,
+        components: MUSIC_MODEL.music.components,
+        missing: [],
+        suggestions: [],
+        modelPath: "/models/Yue2-3B-GGUF",
+        files: MUSIC_MODEL.music.files,
+      };
+    }
+    case "music_session_list":
+      return mockMusicSessionList();
+    case "music_session_get": {
+      const s = MUSIC_SESSIONS.find((x) => x.id === args?.id);
+      if (!s) return null;
+      const { draft, ...session } = s;
+      return { session, draft, records: MUSIC_TRACKS.filter((r) => r.sessionId === s.id).sort((a, b) => a.createdAt - b.createdAt) };
+    }
+    case "music_session_save": {
+      const id = String(args?.id);
+      if (!MUSIC_SESSIONS.some((x) => x.id === id)) {
+        MUSIC_SESSIONS.push({ id, title: String(args?.title ?? ""), createdAt: Date.now(), updatedAt: Date.now(), pinned: false, draft: "" });
+      }
+      return null;
+    }
+    case "music_session_draft": {
+      const s = MUSIC_SESSIONS.find((x) => x.id === args?.id);
+      if (s) s.draft = String(args?.draft ?? "");
+      return null;
+    }
+    case "music_session_rename": {
+      const s = MUSIC_SESSIONS.find((x) => x.id === args?.id);
+      if (s) s.title = String(args?.title ?? "");
+      return null;
+    }
+    case "music_session_set_pinned": {
+      const s = MUSIC_SESSIONS.find((x) => x.id === args?.id);
+      if (s) s.pinned = Boolean(args?.pinned);
+      return null;
+    }
+    case "music_session_delete": {
+      const i = MUSIC_SESSIONS.findIndex((x) => x.id === args?.id);
+      if (i >= 0) MUSIC_SESSIONS.splice(i, 1);
+      for (let j = MUSIC_TRACKS.length - 1; j >= 0; j--) if (MUSIC_TRACKS[j].sessionId === args?.id) MUSIC_TRACKS.splice(j, 1);
+      return null;
+    }
+    case "music_session_search": {
+      const q = String(args?.query ?? "").toLowerCase();
+      return MUSIC_SESSIONS.filter(
+        (s) => s.title.toLowerCase().includes(q) || MUSIC_TRACKS.some((r) => r.sessionId === s.id && (r.prompt + r.lyrics).toLowerCase().includes(q)),
+      ).map((s) => s.id);
+    }
+    case "music_track_delete": {
+      const i = MUSIC_TRACKS.findIndex((r) => r.id === args?.id);
+      if (i >= 0) MUSIC_TRACKS.splice(i, 1);
+      return null;
+    }
+    case "music_history_clear":
+      MUSIC_SESSIONS.splice(0);
+      MUSIC_TRACKS.splice(0);
+      return null;
+    case "music_attach":
+    case "music_cancel":
+      return null;
+    case "music_output_dir":
+      return "/Users/dev/Library/Application Support/com.chaty.desktop/music";
+    // A piece: YuE2's stages — a score, the music tokens counted against the
+    // budget, the rendering steps, the decode — then the audio. About twenty
+    // seconds, so the whole progress display can be watched in the browser.
+    case "music_generate": {
+      const ch = args?.onEvent as { onmessage?: (ev: unknown) => void } | undefined;
+      const emit = (ev: unknown) => ch?.onmessage?.(ev);
+      const req = args?.request as {
+        prompt: string;
+        lyrics: string;
+        instrumental: boolean;
+        seconds: number;
+        seed: number;
+        options: Record<string, string>;
+        scorePath?: string | null;
+        edit?: { kind: string; parentId: string } | null;
+        sessionId?: string | null;
+      };
+      const id = `mock-${Date.now()}`;
+      const startedAt = Date.now();
+      const seed = req.seed >= 0 ? req.seed : Math.floor(Math.random() * 4e9);
+      const secs = req.seconds > 0 ? req.seconds : 90 + Math.round(Math.random() * 20);
+      const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const planning = req.options?.cot !== "off" && !req.scorePath && !req.edit;
+      return (async () => {
+        emit({ type: "started", id, request: req, startedAt });
+        emit({ type: "engine", event: { type: "stage", stage: "prepare", seed } });
+        await wait(600);
+        if (planning) {
+          emit({ type: "engine", event: { type: "stage", stage: "score" } });
+          for (let d = 0; d <= 600; d += 60) {
+            emit({ type: "engine", event: { type: "progress", stage: "score", done: d, total: 4096 } });
+            await wait(200);
+          }
+        }
+        emit({ type: "engine", event: { type: "stage", stage: "tokens" } });
+        const budget = req.seconds > 0 ? req.seconds * 25 : 9000;
+        const tokens = secs * 25;
+        for (let d = 0; d <= tokens; d += Math.ceil(tokens / 24)) {
+          emit({ type: "engine", event: { type: "progress", stage: "tokens", done: d, total: budget } });
+          await wait(300);
+        }
+        emit({ type: "engine", event: { type: "info", key: "seconds", value: secs } });
+        emit({ type: "engine", event: { type: "stage", stage: "render" } });
+        for (let st = 1; st <= 8; st++) {
+          emit({ type: "engine", event: { type: "progress", stage: "render", done: st, total: 8 } });
+          await wait(450);
+        }
+        emit({ type: "engine", event: { type: "stage", stage: "decode" } });
+        for (let t = 1; t <= 4; t++) {
+          emit({ type: "engine", event: { type: "progress", stage: "decode", done: t, total: 4 } });
+          await wait(200);
+        }
+        emit({ type: "engine", event: { type: "stage", stage: "save" } });
+        await wait(200);
+        const audio = {
+          path: `/mock/music/${id}.wav`,
+          seconds: secs,
+          sampleRate: 48000,
+          channels: 2,
+          seed,
+          scorePath: `/mock/music/${id}.abc`,
+          tokensPath: `/mock/music/${id}.tokens.json`,
+        };
+        emit({ type: "engine", event: { type: "audio", audio } });
+        const sessionId = req.sessionId || id;
+        let sess = MUSIC_SESSIONS.find((x) => x.id === sessionId);
+        if (!sess) {
+          sess = { id: sessionId, title: (req.prompt || req.lyrics).slice(0, 40), createdAt: startedAt, updatedAt: startedAt, pinned: false, draft: "" };
+          MUSIC_SESSIONS.push(sess);
+        }
+        sess.updatedAt = Date.now();
+        const record: MockTrack = {
+          id,
+          sessionId,
+          parentId: req.edit?.parentId ?? null,
+          prompt: req.prompt,
+          lyrics: req.instrumental ? "" : req.lyrics,
+          params: req,
+          audio,
+          peaks: mockPeaks(seed % 1000),
+          model: MUSIC_MODEL.name,
+          family: "yue2",
+          createdAt: startedAt,
+          elapsedMs: Date.now() - startedAt,
+        };
+        MUSIC_TRACKS.push(record);
+        emit({ type: "done", record, cancelled: false });
+        return record;
+      })();
+    }
     case "list_models":
       return [
         { name: MODEL.name, path: MODEL.path, sizeMb: MODEL.sizeMb, format: "gguf" },
@@ -501,6 +863,8 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         { name: "Qwen3-4B-4bit-MLX", path: "/models/Qwen3-4B-4bit-MLX", sizeMb: 2200, format: "mlx" },
         { name: "qwen-image-2.1-Q4_K_M", path: IMAGE_MODEL.path, sizeMb: 10900, format: "gguf", kind: "image", family: "Qwen-Image 2.1", missing: [] },
         { name: "z_image_turbo-Q4_K", path: "/models/Z-Image-Turbo/z_image_turbo-Q4_K.gguf", sizeMb: 4200, format: "gguf", kind: "image", family: "Z-Image Turbo", missing: ["llm"] },
+        { name: "yue2-3b-q4_0", path: MUSIC_MODEL.path, sizeMb: 2130, format: "gguf", kind: "music", family: "YuE2", missing: [] },
+        { name: "ace-step-1.5-q8_0", path: "/models/ACE-Step1.5-GGUF/ace-step-1.5-q8_0.gguf", sizeMb: 4400, format: "gguf", kind: "music", family: "ACE-Step 1.5", missing: [] },
       ];
     case "image_thumb":
       if (String(args?.path ?? "").startsWith("/mock/")) return mockPicture(String(args?.path));
@@ -529,7 +893,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return null;
 
     case "data_stats":
-      return { conversations: 5, messages: 48, codeSessions: 2, images: 5, dbBytes: 2_400_000 };
+      return { conversations: 5, messages: 48, codeSessions: 2, images: 5, music: MUSIC_TRACKS.length, dbBytes: 2_400_000 };
 
     // ---- extended web tools (Code mode) ----
     case "site_search": {
@@ -861,12 +1225,43 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return av[(args?.author as string) ?? ""] ?? null;
     }
     case "hf_search":
+      if (args?.task === "music") {
+        const day = 864e5;
+        return [
+          { id: "audio-cpp/Yue2-3B-GGUF", name: "Yue2-3B-GGUF", author: "audio-cpp", downloads: 18420, likes: 212, updatedAt: new Date(Date.now() - 6 * day).toISOString(), vision: false, music: true, paramsB: 3 },
+          { id: "audio-cpp/MiniMax-Music3-GGUF", name: "MiniMax-Music3-GGUF", author: "audio-cpp", downloads: 9310, likes: 164, updatedAt: new Date(Date.now() - 3 * day).toISOString(), vision: false, music: true, paramsB: null },
+          { id: "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF", name: "ACE-Step1.5-GGUF", author: "audio-cpp", downloads: 0, likes: 0, updatedAt: "", vision: false, music: true, paramsB: null },
+          { id: "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF", name: "Stable-Audio-3-Small-Music-GGUF", author: "audio-cpp", downloads: 0, likes: 0, updatedAt: "", vision: false, music: true, paramsB: null },
+        ];
+      }
       return [
         { id: "Qwen/Qwen3-4B-GGUF", name: "Qwen3-4B-GGUF", author: "Qwen", downloads: 2512124, likes: 2710, updatedAt: new Date(Date.now() - 38 * 864e5).toISOString(), vision: false, paramsB: 4 },
         { id: "google/gemma-4-12b-qat-GGUF", name: "gemma-4-12b-qat-GGUF", author: "google", downloads: 901906, likes: 1074, updatedAt: new Date(Date.now() - 40 * 864e5).toISOString(), vision: true, paramsB: 12 },
         { id: "mlx-community/Qwen3.5-2B-4bit", name: "Qwen3.5-2B-4bit", author: "mlx-community", downloads: 315434, likes: 101, updatedAt: new Date(Date.now() - 5 * 864e5).toISOString(), vision: true, paramsB: 2 },
       ];
     case "hf_model_detail":
+      if (/yue2|minimax-music|audio\.cpp-gguf/i.test(String(args?.repo ?? ""))) {
+        const repo = String(args?.repo);
+        return {
+          id: repo,
+          format: "gguf",
+          vision: false,
+          paramsB: 3.4,
+          arch: "yue2",
+          quants: [
+            { label: "Q4_0", size: 2.03 * 2 ** 30, files: ["yue2-3b-q4_0.gguf"], extra: 270 * 2 ** 20 },
+            { label: "Q8_0", size: 3.62 * 2 ** 30, files: ["yue2-3b-q8_0.gguf"], extra: 270 * 2 ** 20 },
+            { label: "F16", size: 6.81 * 2 ** 30, files: ["yue2-3b-f16.gguf"], extra: 270 * 2 ** 20 },
+          ],
+          mmproj: null,
+          mmprojSize: 0,
+          readme: "# YuE2 3B — GGUF\n\nYuE2 for audio.cpp: lyrics to a full song, vocals and accompaniment together. The main model, its VAE and the `sidecars/` folder go side by side.",
+          totalRamMb: 49152,
+          music: true,
+          musicFamily: "YuE2",
+          repo: "audio-cpp/Yue2-3B-GGUF",
+        };
+      }
       return {
         id: (args?.repo as string) ?? "Qwen/Qwen3-4B-GGUF",
         format: "gguf",
@@ -918,6 +1313,12 @@ export function installDevMock() {
   if (internals?.metadata) {
     internals.metadata.currentWebview ??= { label: "main" };
     internals.metadata.webviews ??= [{ label: "main" }];
+  }
+  // The music player reads pieces through convertFileSrc; a mock piece plays
+  // a generated stand-in.
+  if (internals) {
+    internals.convertFileSrc = (path: string, protocol = "asset") =>
+      path.startsWith("/mock/music/") ? mockWavUrl(path) : `${protocol}://localhost${encodeURI(path)}`;
   }
   console.info("[devMock] Tauri IPC mocked — browser preview mode");
 }

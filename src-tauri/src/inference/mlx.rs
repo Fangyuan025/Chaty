@@ -556,6 +556,7 @@ impl MlxEngine {
             warning: loaded["warning"].as_str().map(str::to_string),
             kind: "chat".into(),
             image: None,
+            music: None,
         };
 
         let child = Arc::new(Mutex::new(Some(child)));

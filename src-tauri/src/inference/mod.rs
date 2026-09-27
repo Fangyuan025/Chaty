@@ -4,6 +4,7 @@
 //! [`InferenceBackend`]. The rest of the app only ever talks to this trait, so
 //! swapping or adding engines never touches the command/UI layer.
 
+pub mod audio;
 pub mod gguf;
 pub mod jinja;
 pub mod llama;
@@ -20,8 +21,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
-/// Live sidecar PIDs — the MLX engine and the image engine both run as child
-/// processes. The app's quit path exits via `libc::_exit` (dodging a ggml
+/// Live sidecar PIDs — the MLX engine, the image engine and the music engine
+/// all run as child processes. The app's quit path exits via `libc::_exit` (dodging a ggml
 /// teardown SIGABRT), which skips every destructor — without an explicit reap,
 /// quitting while a model is loaded orphans a sidecar that keeps the entire
 /// model resident. lib.rs calls `kill_sidecars_now` on exit. (On Windows the
@@ -45,7 +46,7 @@ pub fn kill_sidecars_now() {
             .process(sysinfo::Pid::from_u32(pid))
             .map(|p| {
                 let name = p.name().to_string_lossy();
-                name.contains("chaty-mlx") || name.contains("chaty-sd")
+                name.contains("chaty-mlx") || name.contains("chaty-sd") || name.contains("chaty-audio")
             })
             .unwrap_or(false);
         if !ours {
@@ -279,13 +280,17 @@ pub struct ModelInfo {
     /// Non-fatal load warning code for the UI (e.g. "gpu-oom" when the GPU
     /// offload had to be reduced to fit memory). `None` on a clean load.
     pub warning: Option<String>,
-    /// "chat" for a language model, "image" for a diffusion model. The whole
-    /// interface follows this: an image model turns the app into an image
-    /// studio, with only the settings and tools that apply to one.
+    /// "chat" for a language model, "image" for a diffusion model, "music"
+    /// for a text-to-music model. The whole interface follows this: an image
+    /// model turns the app into an image studio and a music model into a music
+    /// studio, each with only the settings and tools that apply to it.
     pub kind: String,
     /// What the image engine loaded, when `kind` is "image".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<crate::imagegen::ImageModelInfo>,
+    /// What the music engine loaded, when `kind` is "music".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub music: Option<crate::musicgen::MusicModelInfo>,
 }
 
 
@@ -379,6 +384,11 @@ pub trait InferenceBackend: Send + Sync {
     /// The image engine behind this backend, when it is one. Image generation
     /// reaches the loaded engine through this; every chat backend says `None`.
     fn as_image(&self) -> Option<&sd::SdEngine> {
+        None
+    }
+
+    /// The music engine behind this backend, when it is one.
+    fn as_music(&self) -> Option<&audio::AudioEngine> {
         None
     }
 
