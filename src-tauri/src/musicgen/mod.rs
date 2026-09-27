@@ -886,20 +886,38 @@ mod tests {
         let seconds = std::env::var("CHATY_TEST_MUSIC_SECONDS").ok().and_then(|v| v.parse().ok()).unwrap_or(10.0);
         let request = MusicRequest {
             prompt: "indie pop, bright acoustic guitar, warm female vocal".into(),
-            lyrics: if fam.lyrics.is_some() { "[verse]\nMorning light is on the window\n".into() } else { String::new() },
+            // `CHATY_TEST_MUSIC_LYRICS` for a whole song (\n for new lines).
+            lyrics: if fam.lyrics.is_some() {
+                std::env::var("CHATY_TEST_MUSIC_LYRICS")
+                    .map(|l| l.replace("\\n", "\n"))
+                    .unwrap_or_else(|_| "[verse]\nMorning light is on the window\n".into())
+            } else {
+                String::new()
+            },
             seconds,
             seed: 7,
             ..Default::default()
         };
         let job = build_job(fam, &request, None).expect("job");
         let mut stages = Vec::new();
+        let mut began = Vec::new();
+        let t0 = std::time::Instant::now();
         let outcome = engine
             .generate(&job, &out.join("e2e.wav"), |e| {
                 if let MusicEvent::Stage { stage, .. } = &e {
                     stages.push(stage.clone());
+                    began.push(t0.elapsed().as_secs_f32());
                 }
             })
             .expect("generate");
+        // How long each stage took: what the family's stage weights are.
+        let total = t0.elapsed().as_secs_f32();
+        let took: Vec<String> = stages
+            .iter()
+            .zip(began.iter().zip(began.iter().skip(1).chain([total].iter())))
+            .map(|(s, (a, b))| format!("{s} {:.1}s", b - a))
+            .collect();
+        eprintln!("stages: {}", took.join(", "));
         let audio = outcome.audio.expect("a piece");
         assert!(Path::new(&audio.path).is_file());
         assert!(audio.seconds > 1.0, "{audio:?}");

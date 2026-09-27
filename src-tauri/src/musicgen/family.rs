@@ -132,7 +132,10 @@ pub const YUE2: Family = Family {
     planning: true,
     fixed: &[],
     edits: &[EditKind::Rearrange, EditKind::Continue],
-    stages: &[("score", 0.10), ("tokens", 0.45), ("render", 0.40), ("decode", 0.05)],
+    // Measured on Metal (M4 Pro, Q4_0, a verse and a chorus, 30 s and 60 s):
+    // the score 14-25%, the tokens 24-27%, the render 33-38%, the decode
+    // 18-20% of the time.
+    stages: &[("score", 0.18), ("tokens", 0.26), ("render", 0.37), ("decode", 0.19)],
     token_rate: 25.0,
     prompt_template: None,
 };
