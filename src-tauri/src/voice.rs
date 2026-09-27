@@ -866,10 +866,16 @@ mod tests {
         assert!(!use_chinese_tts("Hello, world.", true, false, false));
     }
 
+    /// Cancelling wakes every voice download in the process, so the tests
+    /// that download take turns: on Windows a refused connection to 127.0.0.1
+    /// takes about two seconds, long enough for another test's × to land on it.
+    static DOWNLOADS: Mutex<()> = Mutex::new(());
+
     /// Issue #20: a download stuck on a connection that never sends another
     /// byte stops when its × is pressed, and closes its progress bar.
     #[test]
     fn a_stalled_download_stops_when_cancelled() {
+        let _turn = DOWNLOADS.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -920,6 +926,7 @@ mod tests {
             }),
             archive: "http://127.0.0.1:9/dead-model.tar.bz2",
         };
+        let _turn = DOWNLOADS.lock().unwrap_or_else(|e| e.into_inner());
         let root = std::env::temp_dir().join(format!("chaty-voice-dead-{}", std::process::id()));
         let rt = tokio::runtime::Runtime::new().unwrap();
         let events = Mutex::new(Vec::new());
@@ -1009,6 +1016,7 @@ mod tests {
             }),
             archive: "http://127.0.0.1:9/small-model.tar.bz2",
         };
+        let _turn = DOWNLOADS.lock().unwrap_or_else(|e| e.into_inner());
         let port = serve(vec![7u8; 300_000]);
         let base = format!("http://127.0.0.1:{port}");
         let root = std::env::temp_dir().join(format!("chaty-voice-progress-{}", std::process::id()));
