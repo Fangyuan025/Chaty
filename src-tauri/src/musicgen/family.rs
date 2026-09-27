@@ -276,8 +276,12 @@ pub const MIDASHENGLM_GEN: Family = Family {
     edits: &[],
     stages: &[("tokens", 0.95), ("decode", 0.05)],
     token_rate: 0.0,
-    // Its prompt is tagged by layer; words without tags describe the music.
-    prompt_template: Some("<|caption|> {} <|music|> {}"),
+    // Its prompt is tagged by layer, all six in the order it was trained on
+    // (audio.cpp's own cases fill the ones a request leaves out with
+    // <|unknown|>); words without tags describe the music.
+    prompt_template: Some(
+        "<|caption|> {} <|asr|> <|unknown|> <|speech|> <|unknown|> <|music|> {} <|sfx|> <|unknown|> <|env|> <|unknown|>",
+    ),
 };
 
 /// Every family the engine is built with (audio-sidecar/CMakeLists.txt,

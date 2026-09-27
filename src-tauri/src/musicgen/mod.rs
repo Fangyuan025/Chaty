@@ -1036,7 +1036,11 @@ mod tests {
         assert_eq!(j.options["duration_seconds"], "30");
 
         let j = build_job(&family::MIDASHENGLM_GEN, &req(), None).unwrap();
-        assert_eq!(j.text, "<|caption|> indie pop, acoustic guitar <|music|> indie pop, acoustic guitar");
+        assert_eq!(
+            j.text,
+            "<|caption|> indie pop, acoustic guitar <|asr|> <|unknown|> <|speech|> <|unknown|> \
+             <|music|> indie pop, acoustic guitar <|sfx|> <|unknown|> <|env|> <|unknown|>"
+        );
         let tagged = MusicRequest { prompt: "<|music|> jazz".into(), ..req() };
         assert_eq!(build_job(&family::MIDASHENGLM_GEN, &tagged, None).unwrap().text, "<|music|> jazz");
 
