@@ -422,6 +422,13 @@ public class K2HorizonModel: Module, LLMModel, KVCacheDimensionProvider {
             if let b = w.removeValue(forKey: "\(base).self_attn.v_router.bias") {
                 w["\(base).self_attn.v_router_bias"] = b
             }
+            // mlx-lm's conversions (every MLX quant on the Hub: mlx-community's
+            // oQ4e, the MLX-4/6/8bit ones) store the experts already stacked,
+            // under mlx-lm's name for the module, `switch_mlp`.
+            for key in w.keys where key.hasPrefix("\(base).mlp.switch_mlp.") {
+                let renamed = "\(base).mlp.experts." + key.dropFirst("\(base).mlp.switch_mlp.".count)
+                w[renamed] = w.removeValue(forKey: key)
+            }
             for proj in ["gate_proj", "up_proj", "down_proj"] {
                 for part in ["weight", "scales", "biases"] {
                     let first = "\(base).mlp.experts.0.\(proj).\(part)"
