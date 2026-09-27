@@ -456,11 +456,17 @@ export const T = {
   deleteConv: { zh: "删除会话", en: "Delete conversation", pt: "Excluir conversa" },
   confirm: { zh: "确认", en: "Confirm", pt: "Confirmar" },
   confirmDelete: { zh: "删除", en: "Delete", pt: "Excluir" },
+  cmSearchSessions: { zh: "搜索会话…", en: "Search sessions…", pt: "Buscar sessões…" },
   selectConvs: { zh: "多选", en: "Select", pt: "Selecionar" },
   selectedN: { zh: "已选 {n} 个", en: "{n} selected", pt: "{n} selecionadas" },
   selectAll: { zh: "全选", en: "All", pt: "Todas" },
   selectNone: { zh: "全不选", en: "None", pt: "Nenhuma" },
   deleteConvs: { zh: "删除对话", en: "Delete conversations", pt: "Excluir conversas" },
+  confirmDeleteSessions: {
+    zh: "删除选中的 {n} 个会话？此操作无法撤销。",
+    en: "Delete the {n} selected sessions? This can't be undone.",
+    pt: "Excluir as {n} sessões selecionadas? Não dá para desfazer.",
+  },
   confirmDeleteConvs: {
     zh: "删除选中的 {n} 个对话？此操作无法撤销。",
     en: "Delete the {n} selected conversations? This can't be undone.",

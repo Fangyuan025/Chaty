@@ -20,6 +20,7 @@ import { copyToClipboard } from "../lib/clipboard";
 import { cleanTitle } from "../lib/voiceText";
 import { DiffView } from "./DiffView";
 import { Icon } from "./Icon";
+import { SelectBar, SelectCheck, SelectToggle, selectClick, useMultiSelect } from "./MultiSelect";
 import { Markdown } from "./Markdown";
 import {
   agentBgAll,
@@ -48,6 +49,7 @@ import {
   type Attachment,
   type AgentBgInfo,
   codeSessionDelete,
+  codeSessionFind,
   codeStepTextGet,
   codeStepTextPut,
   codeSessionList,
@@ -832,6 +834,31 @@ export function CodeMode({
   const bgPillRef = useRef<HTMLButtonElement | null>(null);
   /** Workspace groups folded shut in the session rail (by path; "" = none). */
   const [collapsedWs, setCollapsedWs] = useState<Set<string>>(() => new Set());
+  /** Selecting several sessions to delete them together. */
+  const sessSel = useMultiSelect();
+  /** The sidebar's search: titles as typed, the sessions' words from the
+   *  database (debounced), as the chat's sidebar does. */
+  const [sessQuery, setSessQuery] = useState("");
+  const [sessMatches, setSessMatches] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    const q = sessQuery.trim();
+    if (q.length < 2) {
+      setSessMatches(new Set());
+      return;
+    }
+    let cancelled = false;
+    const id = window.setTimeout(() => {
+      codeSessionFind(q)
+        .then((ids) => {
+          if (!cancelled) setSessMatches(new Set(ids));
+        })
+        .catch(() => {});
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(id);
+    };
+  }, [sessQuery]);
   /** Active background downloads (header progress badge). */
   const [downloads, setDownloads] = useState<AgentDlInfo[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -1290,7 +1317,7 @@ export function CodeMode({
     });
     if (!ok) return;
     try {
-      await codeSessionDelete(id);
+      await removeSession(id);
     } catch (e) {
       // The row is still on disk, so the view must not act as though it had
       // gone: it used to clear itself either way, and the session came back
@@ -1300,9 +1327,43 @@ export function CodeMode({
         confirmLabel: t("close"),
         hideCancel: true,
       });
-      refreshSessions();
-      return;
     }
+    refreshSessions();
+  }
+
+  /** Delete the ticked sessions after one confirmation. */
+  async function deleteSelectedSessions() {
+    const ids = sessSel.picked();
+    if (ids.length === 0) return;
+    const ok = await confirm({
+      message: t("confirmDeleteSessions", { n: ids.length }),
+      confirmLabel: t("confirmDelete"),
+      danger: true,
+    });
+    if (!ok) return;
+    const failed: string[] = [];
+    for (const id of ids) {
+      try {
+        await removeSession(id);
+      } catch (e) {
+        failed.push(e instanceof Error ? e.message : String(e));
+      }
+    }
+    sessSel.exit();
+    refreshSessions();
+    if (failed.length) {
+      await confirm({
+        message: `${t("cmDeleteSessionFailed")}\n${failed[0]}`,
+        confirmLabel: t("close"),
+        hideCancel: true,
+      });
+    }
+  }
+
+  /** Delete one session, and reset the view when it is the one open. Throws
+   *  when the row could not be removed; the callers confirm and refresh. */
+  async function removeSession(id: string) {
+    await codeSessionDelete(id);
     if (id === sid) {
       // Deleting the session you're viewing must reset the view even
       // mid-run: newSession()'s running-guard is for the "+" button (don't
@@ -1336,7 +1397,6 @@ export function CodeMode({
       void agentClearGrants().catch(() => {});
       setDirGrants([]);
     }
-    refreshSessions();
   }
 
   /** Rewind to before `m`: restore journaled files and drop later messages.
@@ -1988,18 +2048,39 @@ export function CodeMode({
   const sessionRow = (s: (typeof sessions)[number]) => (
     <div
       key={s.id}
-      className={`cm-session ${s.id === sid ? "active" : ""}`}
-      onClick={() => void openSession(s.id)}
+      className={`cm-session ${s.id === sid && !sessSel.selecting ? "active" : ""} ${
+        sessSel.selecting ? "selecting" : ""
+      } ${sessSel.selected.has(s.id) ? "picked" : ""}`}
+      onClick={(e) => {
+        if (selectClick(sessSel, s.id, e)) return;
+        void openSession(s.id);
+      }}
     >
+      {sessSel.selecting && <SelectCheck on={sessSel.selected.has(s.id)} />}
       <span className="cm-session-title">{s.title}</span>
-      <button
-        className="cm-session-del"
-        title={t("deleteConv")}
-        onClick={(e) => { e.stopPropagation(); void deleteSession(s.id); }}
-      >
-        <Icon name="x" size={11} strokeWidth={2.4} />
-      </button>
+      {!sessSel.selecting && (
+        <button
+          className="cm-session-del"
+          title={t("deleteConv")}
+          onClick={(e) => { e.stopPropagation(); void deleteSession(s.id); }}
+        >
+          <Icon name="x" size={11} strokeWidth={2.4} />
+        </button>
+      )}
     </div>
+  );
+  const sq = sessQuery.trim().toLowerCase();
+  const shownSessions = sq
+    ? sessions.filter((x) => x.title.toLowerCase().includes(sq) || sessMatches.has(x.id))
+    : sessions;
+  // The order the rows are shown in, for Shift-ranges and "all".
+  sessSel.order(
+    (sq
+      ? shownSessions
+      : groupByWorkspace
+        ? groupSessionsByWorkspace(sessions).flatMap((g) => (collapsedWs.has(g.path ?? "") ? [] : g.sessions))
+        : recencyGroups(sessions).flatMap((g) => g.items)
+    ).map((x) => x.id),
   );
 
   const toggleWsGroup = (key: string) =>
@@ -2016,9 +2097,35 @@ export function CodeMode({
         <button className="cm-new" onClick={newSession} disabled={running}>
           <Icon name="plus" size={13} strokeWidth={2} /> {t("cmNewSession")}
         </button>
+        {sessions.length > 0 && (
+          <div className="conv-search">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.3-4.3" strokeLinecap="round" />
+            </svg>
+            <input
+              type="text"
+              placeholder={t("cmSearchSessions")}
+              value={sessQuery}
+              onChange={(e) => setSessQuery(e.target.value)}
+            />
+            {sessQuery && (
+              <button className="conv-search-clear" onClick={() => setSessQuery("")} title={t("cancel")}>
+                <Icon name="x" size={11} strokeWidth={2.2} />
+              </button>
+            )}
+            <SelectToggle ms={sessSel} />
+          </div>
+        )}
         <div className="cm-sessions">
           {sessions.length === 0 ? (
             <div className="cm-empty-list">{t("cmNoSessions")}</div>
+          ) : sq ? (
+            shownSessions.length === 0 ? (
+              <div className="cm-empty-list">{t("noMatches")}</div>
+            ) : (
+              shownSessions.map(sessionRow)
+            )
           ) : groupByWorkspace ? (
             groupSessionsByWorkspace(sessions).map((g) => {
               const key = g.path ?? "";
@@ -2050,6 +2157,7 @@ export function CodeMode({
             ))
           )}
         </div>
+        <SelectBar ms={sessSel} onDelete={() => void deleteSelectedSessions()} />
         <div className="side-status" title={model ? model.name : ""}>
           <span className="ss-meta">v{__APP_VERSION__}</span>
         </div>

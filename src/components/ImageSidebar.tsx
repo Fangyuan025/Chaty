@@ -6,6 +6,7 @@ import type { ImageStudioState } from "../lib/useImageStudio";
 import { Icon } from "./Icon";
 import { IconEdit, IconPin, IconPinFilled } from "./icons";
 import { useConfirm } from "./ConfirmModal";
+import { SelectBar, SelectCheck, SelectToggle, selectClick, useMultiSelect } from "./MultiSelect";
 
 /** The sidebar in the image studio: its sessions, the way the chat lists its
  *  conversations — pinned first, then most recent, searchable, renameable. */
@@ -24,6 +25,8 @@ export function ImageSidebar({
   const [contentMatches, setContentMatches] = useState<Set<string>>(new Set());
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  /** Selecting several sessions to delete them together. */
+  const sel = useMultiSelect();
 
   // Titles match here at once; prompts inside the sessions are searched in
   // the database, debounced — the chat sidebar's search, for images.
@@ -51,6 +54,7 @@ export function ImageSidebar({
   const visible = q
     ? studio.sessions.filter((s) => s.title.toLowerCase().includes(q) || contentMatches.has(s.id))
     : studio.sessions;
+  sel.order(visible.map((s) => s.id));
 
   const del = async (s: ImageSession) => {
     const ok = await confirm({
@@ -60,6 +64,21 @@ export function ImageSidebar({
       danger: true,
     });
     if (ok) await studio.deleteSession(s.id).catch((e) => notify("error", String(e)));
+  };
+
+  /** Delete the ticked sessions after one confirmation. */
+  const delSelected = async () => {
+    const ids = sel.picked();
+    if (ids.length === 0) return;
+    const ok = await confirm({
+      title: t("imgDeleteSession"),
+      message: t("confirmDeleteSessions", { n: ids.length }),
+      confirmLabel: t("confirmDelete"),
+      danger: true,
+    });
+    if (!ok) return;
+    for (const id of ids) await studio.deleteSession(id).catch((e) => notify("error", String(e)));
+    sel.exit();
   };
 
   const commitRename = async () => {
@@ -87,6 +106,7 @@ export function ImageSidebar({
               <Icon name="x" size={11} strokeWidth={2.2} />
             </button>
           )}
+          <SelectToggle ms={sel} />
         </div>
       )}
       <div className="conv-list">
@@ -96,9 +116,16 @@ export function ImageSidebar({
           visible.map((s) => (
             <div
               key={s.id}
-              className={`conv-item ${s.id === studio.sessionId ? "active" : ""} ${s.pinned ? "pinned" : ""}`}
-              onClick={() => renamingId !== s.id && !busy && void studio.openSession(s.id)}
+              className={`conv-item ${s.id === studio.sessionId && !sel.selecting ? "active" : ""} ${
+                s.pinned ? "pinned" : ""
+              } ${sel.selecting ? "selecting" : ""} ${sel.selected.has(s.id) ? "picked" : ""}`}
+              onClick={(e) => {
+                if (renamingId === s.id) return;
+                if (selectClick(sel, s.id, e)) return;
+                if (!busy) void studio.openSession(s.id);
+              }}
             >
+              {sel.selecting && <SelectCheck on={sel.selected.has(s.id)} />}
               {renamingId === s.id ? (
                 <input
                   className="conv-rename"
@@ -120,7 +147,7 @@ export function ImageSidebar({
               ) : (
                 <>
                   <span className="conv-title">{s.title}</span>
-                  <div className="conv-actions">
+                  {!sel.selecting && <div className="conv-actions">
                     <button
                       className={`conv-act ${s.pinned ? "on" : ""}`}
                       title={s.pinned ? t("unpinConv") : t("pinConv")}
@@ -152,13 +179,14 @@ export function ImageSidebar({
                     >
                       <Icon name="x" size={11} strokeWidth={2.2} />
                     </button>
-                  </div>
+                  </div>}
                 </>
               )}
             </div>
           ))
         )}
       </div>
+      <SelectBar ms={sel} onDelete={() => void delSelected()} busy={busy} />
     </>
   );
 }

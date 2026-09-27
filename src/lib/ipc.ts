@@ -825,6 +825,11 @@ export async function codeSessionList(): Promise<CodeSessionMeta[]> {
 export async function codeSessionLoad(id: string): Promise<string | null> {
   return invoke<string | null>("code_session_load", { id });
 }
+/** Code sessions whose words contain `query`, most recent first — the
+ *  sidebar's search (titles are matched as the user types). */
+export async function codeSessionFind(query: string): Promise<string[]> {
+  return (await invoke<string[]>("code_session_find", { query })) ?? [];
+}
 export async function codeSessionDelete(id: string): Promise<void> {
   await invoke("code_session_delete", { id });
 }

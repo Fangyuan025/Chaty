@@ -68,6 +68,8 @@
      each palette's recessed tone, so every palette gets it for free. */
   --frame: var(--bg-elev);
   --inset-radius: 8px;
+  /* Scrollbar thickness (drawn by the app, see Scrollbars). */
+  --sb-size: 10px;
   --inset-gap: 8px;
   --inset-shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(0, 0, 0, 0.12), 0 8px 28px rgba(0, 0, 0, 0.18);
   /* The composer floats over the transcript: one step above the cards, a
@@ -1091,12 +1093,14 @@ body.resizing-x {
   flex-direction: column;
   min-width: 0;
   background: var(--bg);
-  /* The inset panel (see --frame), the same gap above it as right of and
-     below it: it hung from the title bar, and nothing in the sidebar lined up
-     with its top (issue #20). No overflow clip: menus that open from inside
-     it must be free to spill past its edge. */
-  margin: var(--inset-gap) var(--inset-gap) var(--inset-gap) 0;
-  border-radius: var(--inset-radius);
+  /* The inset panel (see --frame): a gap above it, level with the sidebar's
+     first control (issue #20), and none to its right or below — an 8 px
+     strip of frame along the window's edge only looked like a mistake. It
+     runs to the window's edge, round only where it meets the frame. No
+     overflow clip: menus that open from inside it must be free to spill
+     past its edge. */
+  margin: var(--inset-gap) 0 0 0;
+  border-radius: var(--inset-radius) 0 0 0;
   box-shadow: var(--inset-shadow);
 }
 
@@ -2033,14 +2037,14 @@ body.resizing-x {
   border-radius: var(--r-md);
 }
 
-/* Selection mode (deleting several at once): a toggle at the end of the
-   search field, a tick box per row, and an action bar at the foot. */
-.conv-select-toggle {
+/* Selecting rows to delete several at once (MultiSelect.tsx): a toggle, a
+   tick box per row, an action bar at the foot of the list. The same in the
+   chat's, Code's and the image studio's sidebars. */
+.select-toggle {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
-  margin-right: -4px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   flex-shrink: 0;
   color: var(--text-dim);
@@ -2049,18 +2053,23 @@ body.resizing-x {
   border-radius: var(--r-sm);
   cursor: pointer;
 }
-.conv-select-toggle:hover {
+.conv-search .select-toggle {
+  margin-right: -5px;
+}
+.select-toggle:hover {
   color: var(--text);
   background: var(--surface-2);
 }
-.conv-select-toggle.on {
+.select-toggle.on {
   color: var(--accent);
   background: var(--accent-soft, var(--surface-2));
 }
-.conv-item.selecting {
+.conv-item.selecting,
+.cm-session.selecting,
+.img-session.selecting {
   gap: 9px;
 }
-.conv-check {
+.select-check {
   display: grid;
   place-items: center;
   width: 15px;
@@ -2070,11 +2079,11 @@ body.resizing-x {
   border-radius: 4px;
   color: #fff;
 }
-.conv-item.picked .conv-check {
+.select-check.on {
   background: var(--accent);
   border-color: var(--accent);
 }
-.conv-select-bar {
+.select-bar {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -2086,13 +2095,13 @@ body.resizing-x {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
 }
-.csb-count {
+.sb-count {
   flex: 1;
   min-width: 0;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.csb-btn {
+.sb-btn {
   padding: 4px 8px;
   font: inherit;
   font-size: 12.5px;
@@ -2103,13 +2112,13 @@ body.resizing-x {
   border-radius: var(--r-sm);
   cursor: pointer;
 }
-.csb-btn:hover:not(:disabled) {
+.sb-btn:hover:not(:disabled) {
   background: var(--surface-2);
 }
-.csb-btn.danger {
+.sb-btn.danger {
   color: var(--danger);
 }
-.csb-btn:disabled {
+.sb-btn:disabled {
   opacity: 0.45;
   cursor: default;
 }
@@ -3800,21 +3809,32 @@ a:focus-visible,
   position: relative;
   background: var(--bg);
   padding: 8px 24px 18px;
-  border-radius: 0 0 var(--inset-radius) var(--inset-radius);
   container: composer / inline-size;
 }
 /* The transcript fades out as it passes under the composer rather than being
-   cut off at a hard line. */
+   cut off at a hard line — the text, not the scrollbar beside it, which the
+   fade used to wash out too. */
 .composer::before,
 .code-composer::before {
   content: "";
   position: absolute;
   left: 0;
-  right: 0;
+  right: var(--sb-size);
   bottom: 100%;
   height: 28px;
   background: linear-gradient(to bottom, transparent, var(--bg));
   pointer-events: none;
+}
+
+/* The download dialog's backdrop dims the window like every other
+   dialog's; it was clear, and the dialog floated over the app unanchored. */
+.dl-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.38);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  animation: ui-fade-in var(--t-fast) var(--ease) both;
 }
 
 /* ---------- Model download modal ---------- */
@@ -4335,29 +4355,107 @@ a:focus-visible,
   box-shadow: none;
 }
 
-/* ---------- Scrollbars ---------- */
-.chat::-webkit-scrollbar,
-.conv-list::-webkit-scrollbar,
-.settings-pane-body::-webkit-scrollbar,
-.think-body::-webkit-scrollbar {
+/* ---------- Native controls, drawn by the app ----------
+   Tick boxes, number fields and a text field's resize grip were the
+   system's own among everything else Chaty draws. */
+input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex-shrink: 0;
+  background: var(--bg);
+  border: 1.5px solid var(--border-strong);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+input[type="checkbox"]::before {
+  content: "";
   width: 9px;
+  height: 9px;
+  background: #fff;
+  clip-path: polygon(14% 44%, 0 65%, 43% 100%, 100% 22%, 84% 7%, 42% 68%);
+  transform: scale(0);
+  transition: transform var(--t-fast) var(--ease);
+}
+input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+input[type="checkbox"]:checked::before {
+  transform: scale(1);
+}
+input[type="checkbox"]:hover:not(:checked):not(:disabled) {
+  border-color: var(--text-dim);
+}
+input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* Number fields are typed into; the system's stepper arrows go. */
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+/* A resizable text field's grip: two short strokes in the corner. */
+textarea::-webkit-resizer {
+  background: linear-gradient(
+    135deg,
+    transparent 0 52%,
+    var(--border-strong) 52% 60%,
+    transparent 60% 70%,
+    var(--border-strong) 70% 78%,
+    transparent 78%
+  );
 }
 
-.chat::-webkit-scrollbar-thumb,
-.conv-list::-webkit-scrollbar-thumb,
-.settings-pane-body::-webkit-scrollbar-thumb,
-.think-body::-webkit-scrollbar-thumb {
+/* ---------- Scrollbars ----------
+   Chaty draws every scrollbar itself — lists, panels, menus, text fields,
+   code blocks, both directions — rather than four of them and the system's
+   everywhere else. A thin rounded thumb on no track: faint at rest, firmer
+   while the pointer is over what it scrolls, firmest under the pointer. No
+   arrow buttons, and the corner where two bars meet is left clear.
+   `scrollbar-width` / `scrollbar-color` appear only as `none`, to hide a bar
+   outright: in Chromium (Windows' WebView2) either one on an element
+   switches these styles off for it. */
+::-webkit-scrollbar {
+  width: var(--sb-size);
+  height: var(--sb-size);
+  background: transparent;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+::-webkit-scrollbar-thumb {
+  min-height: 36px;
+  min-width: 36px;
   background: var(--scroll-thumb);
+  background-clip: padding-box;
+  border: 3px solid transparent;
   border-radius: var(--r-full);
-  border: 2px solid transparent;
-  background-clip: padding-box;
 }
-
-.chat::-webkit-scrollbar-thumb:hover,
-.conv-list::-webkit-scrollbar-thumb:hover,
-.settings-pane-body::-webkit-scrollbar-thumb:hover {
-  background: var(--scroll-thumb-hover);
-  background-clip: padding-box;
+*:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scroll-thumb-hover);
+}
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--scroll-thumb-active, var(--scroll-thumb-hover));
+  border-width: 2px;
 }
 
 /* Custom right-click context menu (replaces the WebView native menu) */
@@ -4613,14 +4711,9 @@ button.tool-parent {
   letter-spacing: -0.01em;
   color: var(--live-fg);
   font-family: var(--font-display);
-  scrollbar-width: thin;
-}
-.live-caption::-webkit-scrollbar {
-  width: 6px;
-}
-.live-caption::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
-  border-radius: var(--r-sm);
+  --scroll-thumb: rgba(255, 255, 255, 0.14);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.24);
+  --scroll-thumb-active: rgba(255, 255, 255, 0.34);
 }
 .live-error {
   max-width: 560px;
@@ -5153,7 +5246,6 @@ button.tool-parent {
 }
 .kb-doc-scope input {
   flex-shrink: 0;
-  accent-color: var(--accent);
   cursor: pointer;
 }
 .kb-scope-hint {
@@ -5847,8 +5939,8 @@ button.tool-parent {
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  margin: var(--inset-gap) var(--inset-gap) var(--inset-gap) 0;
-  border-radius: var(--inset-radius);
+  margin: var(--inset-gap) 0 0 0;
+  border-radius: var(--inset-radius) 0 0 0;
   box-shadow: var(--inset-shadow);
   container: code-main / inline-size;
 }
@@ -5882,7 +5974,7 @@ button.tool-parent {
   height: 48px;
   padding: 0 10px;
   border-bottom: 1px solid var(--border);
-  border-radius: var(--inset-radius) var(--inset-radius) 0 0;
+  border-radius: var(--inset-radius) 0 0 0;
 }
 .code-head .cm-ws,
 .code-head .cm-bgjobs,
@@ -6420,7 +6512,6 @@ button.tool-parent {
   position: relative;
   background: var(--bg);
   padding: 8px clamp(16px, 6%, 64px) 18px;
-  border-radius: 0 0 var(--inset-radius) var(--inset-radius);
 }
 .cm-input-row {
   display: flex;

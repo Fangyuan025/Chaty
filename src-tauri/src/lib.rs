@@ -683,6 +683,7 @@ pub fn run() {
             store::code_session_load,
             store::code_session_delete,
             store::code_session_search,
+            store::code_session_find,
             store::code_session_read,
             store::code_step_text_put,
             store::code_step_text_get,

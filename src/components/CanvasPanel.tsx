@@ -368,9 +368,10 @@ const NAV_GUARD = `<script>(function(){
  *  translucent ink picked by the page's brightness. Injected FIRST, so a page
  *  that styles its own scrollbars still wins. */
 const SCROLLBAR_PAINT_SHIM = `<style id="__cv_sb">
-::-webkit-scrollbar{width:12px;height:12px}
+::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-track{background:var(--cv-sb-track,transparent)}
-::-webkit-scrollbar-thumb{background:var(--cv-sb-thumb,rgba(128,128,128,.45));border-radius:6px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb{background:var(--cv-sb-thumb,rgba(128,128,128,.45));border-radius:999px;border:3px solid transparent;background-clip:padding-box;min-height:36px}
+::-webkit-scrollbar-button{display:none;width:0;height:0}
 ::-webkit-scrollbar-corner{background:var(--cv-sb-track,transparent)}
 </style>`;
 
@@ -1264,7 +1265,7 @@ export function CanvasPanel({
                 onClick={() => setSelected((prev) => prev.filter((x) => x !== id))}
               >
                 {"<" + (annotated.tagOf[id] ?? "?") + ">"} · L{(annotated.lineOf[id] ?? 0) + 1}
-                <span className="canvas-selx">×</span>
+                <span className="canvas-selx"><Icon name="x" size={9} strokeWidth={2.4} /></span>
               </button>
             ))}
             <button className="canvas-selclear" onClick={() => setSelected([])}>

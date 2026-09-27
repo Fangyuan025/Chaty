@@ -13,6 +13,7 @@ import {
   type DRSource,
   type KBReportOptions,
 } from "../lib/deepResearch";
+import { Icon } from "./Icon";
 
 const PHASE_KEY = {
   planning: "drPhasePlanning",
@@ -197,7 +198,7 @@ export function DeepResearchPanel({
           <div className="setup-head dr-head">
             <div className="setup-title"><IconResearch size={18} /> {kb ? t("kbReportTitle") : t("drTitle")}</div>
             <button className="preview-close" onClick={onClose} disabled={running} title={t("drBackToChat")}>
-              ×
+              <Icon name="x" size={12} strokeWidth={2.2} />
             </button>
           </div>
 

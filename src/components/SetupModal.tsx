@@ -14,6 +14,7 @@ import {
   type DownloadProgress,
   type HfFile,
 } from "../lib/ipc";
+import { Icon } from "./Icon";
 
 /** One hardware-fitted recommendation (a model family at a size + quant). */
 interface Pick {
@@ -316,8 +317,8 @@ export function SetupModal({
             <div className="setup-title">{t("setupTitle")}</div>
             <div className="setup-hw">{hwLine || "…"}</div>
           </div>
-          <button className="preview-close" onClick={onClose}>
-            ×
+          <button className="preview-close" onClick={onClose} title={t("close")} aria-label={t("close")}>
+            <Icon name="x" size={12} strokeWidth={2.2} />
           </button>
         </div>
         <div className="setup-cards">
@@ -362,7 +363,7 @@ export function SetupModal({
                       title={t("cancel")}
                       onClick={() => void cancelDownload(st.file).catch(() => {})}
                     >
-                      ×
+                      <Icon name="x" size={12} strokeWidth={2.2} />
                     </button>
                   </div>
                 ) : (

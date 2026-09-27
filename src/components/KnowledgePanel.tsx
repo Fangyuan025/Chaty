@@ -19,6 +19,7 @@ import {
   type RagDoc,
   type RagStatus,
 } from "../lib/ipc";
+import { Icon } from "./Icon";
 
 // Mirrors SUPPORTED_EXTS in src-tauri/src/rag.rs — documents, images, and a
 // broad set of text/code/markup/config files.
@@ -189,8 +190,8 @@ export function KnowledgePanel({
                 : "…"}
             </div>
           </div>
-          <button className="preview-close" onClick={onClose}>
-            ×
+          <button className="preview-close" onClick={onClose} title={t("close")} aria-label={t("close")}>
+            <Icon name="x" size={12} strokeWidth={2.2} />
           </button>
         </div>
 
@@ -210,7 +211,7 @@ export function KnowledgePanel({
                   title={t("cancel")}
                   onClick={() => void ragCancelDownload().catch(() => {})}
                 >
-                  ×
+                  <Icon name="x" size={12} strokeWidth={2.2} />
                 </button>
               </div>
             ) : (
@@ -254,7 +255,7 @@ export function KnowledgePanel({
                         void ragRemoveDocument(d.id).then(refresh);
                       }}
                     >
-                      ×
+                      <Icon name="x" size={12} strokeWidth={2.2} />
                     </button>
                   </div>
                 ))

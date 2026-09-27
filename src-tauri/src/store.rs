@@ -875,6 +875,42 @@ pub fn code_session_search(
     Ok(out)
 }
 
+/// Whether a session's words — its messages, and its steps' calls and
+/// results — contain `needle` (lower-cased), and not merely its JSON: a
+/// search for "role" or "content" must not find every session.
+fn session_mentions(data: &str, needle: &str) -> bool {
+    // Cheap rejection first: the words are in the blob somewhere, or nowhere
+    // (unless the needle holds what JSON escapes).
+    if !needle.contains(['"', '\\']) && !needle.chars().any(char::is_control) && !data.to_lowercase().contains(needle) {
+        return false;
+    }
+    session_pieces(data).iter().any(|(_, _, text, _, _)| text.to_lowercase().contains(needle))
+}
+
+fn code_session_find_conn(conn: &Connection, query: &str) -> Result<Vec<String>, String> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare("SELECT id, data FROM code_sessions ORDER BY updated_at DESC")
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .and_then(|it| it.collect())
+        .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().filter(|(_, data)| session_mentions(data, &needle)).map(|(id, _)| id).collect())
+}
+
+/// Code sessions whose words contain `query` (case-insensitive), most recent
+/// first — the Code sidebar's search, as the chat's and the image studio's
+/// (titles are matched there as the user types).
+#[tauri::command(async)]
+pub fn code_session_find(db: State<'_, Db>, query: String) -> Result<Vec<String>, String> {
+    let conn = lock(&db)?;
+    code_session_find_conn(&conn, &query)
+}
+
 #[tauri::command]
 pub fn code_session_delete(db: State<'_, Db>, id: String) -> Result<(), String> {
     // Its background jobs go with it: the running ones stopped, the history dropped.
@@ -1318,7 +1354,7 @@ pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats,
 #[cfg(test)]
 mod tests {
     use rusqlite::{params, Connection};
-    use super::{search_terms, session_hits};
+    use super::{search_terms, session_hits, session_mentions};
 
     /// A session as the frontend stores one: messages, and the tool steps
     /// under them.
@@ -1351,6 +1387,19 @@ mod tests {
 
     fn hits(query: &str, cap: usize) -> Vec<(usize, super::SessionHit)> {
         session_hits("s1", "登录页", 10, &transcript(), &search_terms(query), cap)
+    }
+
+    /// The sidebar's search finds a session by its words — messages, step
+    /// calls and results — and not by the JSON they are stored in.
+    #[test]
+    fn the_sidebar_finds_a_session_by_its_words() {
+        let data = transcript();
+        assert!(session_mentions(&data, "粘贴"));
+        assert!(session_mentions(&data, "npm test"));
+        assert!(session_mentions(&data, "12 passed"));
+        assert!(!session_mentions(&data, "role"));
+        assert!(!session_mentions(&data, "status"));
+        assert!(!session_mentions(&data, "cargo clippy"));
     }
 
     #[test]

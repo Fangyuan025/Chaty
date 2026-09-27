@@ -41,6 +41,7 @@ import { SetupModal } from "./components/SetupModal";
 import { KnowledgePanel } from "./components/KnowledgePanel";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import { Icon } from "./components/Icon";
+import { SelectBar, SelectCheck, SelectToggle, selectClick, useMultiSelect } from "./components/MultiSelect";
 import { isVoiceDownloadCancelled } from "./lib/voiceError";
 import { CanvasPanel, type CanvasVersion } from "./components/CanvasPanel";
 import { fixInstruction } from "./lib/canvasSource";
@@ -576,12 +577,8 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [convQuery, setConvQuery] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  /** Selection mode for deleting several conversations at once. */
-  const [selectingConvs, setSelectingConvs] = useState(false);
-  const [selectedConvs, setSelectedConvs] = useState<Set<string>>(() => new Set());
-  const lastPickedConv = useRef<string | null>(null);
-  /** The list as shown (search / recency order), for Shift-ranges. */
-  const visibleConvsRef = useRef<Conversation[]>([]);
+  /** Selecting several conversations to delete them together. */
+  const convSel = useMultiSelect();
   const [renameDraft, setRenameDraft] = useState("");
   const [contentMatches, setContentMatches] = useState<Set<string>>(new Set());
   const [recorder, setRecorder] = useState<Recorder | null>(null);
@@ -751,18 +748,9 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Esc leaves conversation selection; so does leaving the chat mode.
+  // Leaving the chat mode leaves conversation selection (Esc does too).
   useEffect(() => {
-    if (!selectingConvs) return;
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") exitConvSelect();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectingConvs]);
-  useEffect(() => {
-    if (appMode !== "chat" || imageMode) exitConvSelect();
+    if (appMode !== "chat" || imageMode) convSel.exit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appMode, imageMode]);
 
@@ -1725,7 +1713,7 @@ export default function App() {
   /** Delete the conversations ticked in the sidebar, after one confirmation
    *  (issue #20: they went one × and one dialog at a time). */
   async function handleDeleteSelected() {
-    const ids = conversations.map((c) => c.id).filter((id) => selectedConvs.has(id));
+    const ids = convSel.picked();
     if (ids.length === 0) return;
     if (
       !(await confirm({
@@ -1744,36 +1732,8 @@ export default function App() {
         console.error(e);
       }
     }
-    exitConvSelect();
+    convSel.exit();
     await refreshConversations();
-  }
-
-  function exitConvSelect() {
-    setSelectingConvs(false);
-    setSelectedConvs(new Set());
-    lastPickedConv.current = null;
-  }
-
-  /** Tick a conversation in selection mode: a plain click toggles it, Shift
-   *  extends from the last one ticked across the list as shown. */
-  function pickConversation(id: string, range: boolean) {
-    // Read before the update runs: by then the ref already names this click.
-    const from = lastPickedConv.current;
-    setSelectedConvs((cur) => {
-      const next = new Set(cur);
-      if (range && from && from !== id) {
-        const order = visibleConvsRef.current.map((c) => c.id);
-        const a = order.indexOf(from), b = order.indexOf(id);
-        if (a >= 0 && b >= 0) {
-          for (const x of order.slice(Math.min(a, b), Math.max(a, b) + 1)) next.add(x);
-          return next;
-        }
-      }
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-    lastPickedConv.current = id;
   }
 
   /** Delete one conversation, and reset the chat area when it is the one on
@@ -2696,7 +2656,7 @@ export default function App() {
         (c) => c.title.toLowerCase().includes(q) || contentMatches.has(c.id),
       )
     : conversations;
-  visibleConvsRef.current = q ? visibleConvs : recencyGroups(visibleConvs).flatMap((g) => g.items);
+  convSel.order((q ? visibleConvs : recencyGroups(visibleConvs).flatMap((g) => g.items)).map((c) => c.id));
 
   // Command-palette actions: static commands + load-model + jump-to-conversation.
   // The image studio keeps only what applies to it (no chat/code mode, no
@@ -3215,18 +3175,7 @@ export default function App() {
                   <Icon name="x" size={11} strokeWidth={2.2} />
                 </button>
               )}
-              <button
-                className={`conv-select-toggle ${selectingConvs ? "on" : ""}`}
-                title={selectingConvs ? t("cancel") : t("selectConvs")}
-                aria-pressed={selectingConvs}
-                onClick={() => (selectingConvs ? exitConvSelect() : setSelectingConvs(true))}
-              >
-                {/* A ticked box: selection, not "confirm" as a bare tick read. */}
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <rect x="3.5" y="3.5" width="17" height="17" rx="4" />
-                  <path d="M8 12.2l2.7 2.7L16 9.6" />
-                </svg>
-              </button>
+              <SelectToggle ms={convSel} />
             </div>
           )}
           <div className="conv-list">
@@ -3244,25 +3193,16 @@ export default function App() {
               {g.items.map((c) => (
                 <div
                   key={c.id}
-                  className={`conv-item ${c.id === conversationId && !selectingConvs ? "active" : ""} ${
+                  className={`conv-item ${c.id === conversationId && !convSel.selecting ? "active" : ""} ${
                     c.pinned ? "pinned" : ""
-                  } ${selectingConvs ? "selecting" : ""} ${selectedConvs.has(c.id) ? "picked" : ""}`}
+                  } ${convSel.selecting ? "selecting" : ""} ${convSel.selected.has(c.id) ? "picked" : ""}`}
                   onClick={(e) => {
                     if (renamingId === c.id) return;
-                    // Ctrl / ⌘-click starts a selection, like a file list.
-                    if (selectingConvs || e.metaKey || e.ctrlKey) {
-                      if (!selectingConvs) setSelectingConvs(true);
-                      pickConversation(c.id, e.shiftKey);
-                      return;
-                    }
+                    if (selectClick(convSel, c.id, e)) return;
                     openConversation(c.id);
                   }}
                 >
-                  {selectingConvs && (
-                    <span className="conv-check" aria-hidden="true">
-                      {selectedConvs.has(c.id) && <Icon name="check" size={10} strokeWidth={2.6} />}
-                    </span>
-                  )}
+                  {convSel.selecting && <SelectCheck on={convSel.selected.has(c.id)} />}
                   {renamingId === c.id ? (
                     <input
                       className="conv-rename"
@@ -3284,7 +3224,7 @@ export default function App() {
                   ) : (
                     <>
                       <span className="conv-title">{c.title}</span>
-                      {!selectingConvs && <div className="conv-actions">
+                      {!convSel.selecting && <div className="conv-actions">
                         <button
                           className={`conv-act ${c.pinned ? "on" : ""}`}
                           title={c.pinned ? t("unpinConv") : t("pinConv")}
@@ -3326,32 +3266,7 @@ export default function App() {
           </div>
           </>
           )}
-          {!imageMode && selectingConvs && (
-            <div className="conv-select-bar">
-              <span className="csb-count">{t("selectedN", { n: selectedConvs.size })}</span>
-              <button
-                className="csb-btn"
-                onClick={() => {
-                  const all = visibleConvsRef.current.map((c) => c.id);
-                  setSelectedConvs((cur) => (all.every((id) => cur.has(id)) ? new Set() : new Set(all)));
-                }}
-              >
-                {visibleConvsRef.current.length > 0 && visibleConvsRef.current.every((c) => selectedConvs.has(c.id))
-                  ? t("selectNone")
-                  : t("selectAll")}
-              </button>
-              <button
-                className="csb-btn danger"
-                disabled={selectedConvs.size === 0 || busy}
-                onClick={() => void handleDeleteSelected()}
-              >
-                {t("confirmDelete")}
-              </button>
-              <button className="csb-btn" onClick={exitConvSelect}>
-                {t("cancel")}
-              </button>
-            </div>
-          )}
+          {!imageMode && <SelectBar ms={convSel} onDelete={() => void handleDeleteSelected()} busy={busy} />}
           <div className="side-status" title={model ? model.name : ""}>
             <span className="ss-meta">v{__APP_VERSION__}</span>
           </div>
