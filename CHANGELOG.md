@@ -211,28 +211,35 @@
 
 ### Look and feel
 
-- **A quieter, more finished look.** The window is one frame with the working
-  area inset in it; Instrument Sans and JetBrains Mono, bundled; the composer
-  floats; conversations are grouped by recency, their titles no longer cut
-  short by hidden row actions; code blocks get a header; step cards join into
-  one list, success ticks go quiet and only failures take colour. The status
-  dots, the breathing pulse and the green spinners are gone, and the accent is
-  kept for the primary action and real states. Code mode's top bar belongs to
-  its panel, and its running status sits inside the composer, clear of the
+- **A quieter, more finished look.** The window is two columns: the sidebar
+  on the frame, and the working area — chat, Code and the image studio alike
+  — running from the window's top, set off by one hairline. There is no title
+  bar across it: over the sidebar, the window's controls and a mode switch of
+  icons that sits at the sidebar's edge and moves with it; over the working
+  area, what is open (the conversation, the image session, Code's workspace)
+  on the left and the model and the app's buttons on the right, the transcript
+  fading out beneath them. Instrument Sans and JetBrains Mono, bundled; the
+  composer floats; conversations are grouped by recency, their titles no
+  longer cut short by hidden row actions; code blocks get a header; step cards
+  join into one list, success ticks go quiet and only failures take colour.
+  The status dots, the breathing pulse and the green spinners are gone, and
+  the accent is kept for the primary action and real states. Code mode's
+  thinking and bypass switches sit under its input, as the image studio's
+  settings do, and its running status inside the composer, clear of the
   transcript's fade.
 
 - Menus are the app's own throughout — the model store's filters and the
   image studio's pickers were the OS's — and open upward when there is no
   room below.
 
-- **Edges that line up.** The working area's top is level with the sidebar's
-  first control, and it runs to the window's right and bottom edges instead
-  of stopping 8 px short of them; the sidebar's footer rule that stopped at
-  its edge is gone. Corners are smaller
-  — cards and menus 10 px, panels and fields 8 px — with the composer and the
-  pills left round. The title bar's model chip and mode switch and the
-  sidebar's fields take the panel's tone instead of fading into the frame, and
-  menus stand off the page, the cream palette's by a step more (#20).
+- **Edges that line up.** The working area runs to the window's edges
+  instead of stopping 8 px short of them, and the sidebar is one width in
+  every mode; the sidebar's footer rule that stopped at its edge is gone.
+  Corners are smaller — cards and menus 10 px, panels and fields 8 px — with
+  the composer and the pills left round. The model chip, the mode switch and
+  the sidebar's fields take the panel's tone instead of fading into the
+  frame, and menus stand off the page, the cream palette's by a step more
+  (#20).
 
 - **Chaty draws its own scrollbars, everywhere** — lists, panels, menus, text
   fields, code blocks, the canvas preview: a thin rounded thumb that firms up
@@ -241,14 +248,20 @@
   number fields and a text field's resize grip are drawn by the app too, and
   the model store's dialog dims the window like every other dialog.
 
-- **A narrow window keeps its buttons.** The title bar gives way at the
-  model's name, and below 900 px the mode switch keeps only its icons; on
-  Windows, minimize, maximize and close were pushed out of the window (#20).
+- **A narrow window keeps its buttons.** The top row gives way at the
+  model's name, its size figures first, and Code's workspace keeps a few
+  letters of its own; on Windows, minimize, maximize and close were pushed
+  out of the window (#20).
 
 - **Live mode, redrawn.** In place of the green orb, a band of soft light
   along the bottom follows the conversation — rising with your voice while it
   listens, drifting while it thinks, brightening with its own voice as it
-  answers — under the reply as a large caption, with one round button to end.
+  answers — under the reply as a large caption, with a round button to end.
+
+- **Interrupt a spoken reply.** While Live mode answers, an Interrupt button
+  joins End. The reply stops, it is your turn at once, and the model
+  remembers what it had said up to there — not the rest it had written,
+  which nobody heard.
 
 ### Reliability
 
@@ -276,8 +289,9 @@
   inside a Chinese reply no longer fetches the English voice (300 MB from
   GitHub) to read a few words, which read as the Chinese voice downloading
   again (#20).
-- The window could not be moved while a model downloaded, and a dialog's
-  backdrop covered the window buttons on Windows (#20).
+- The window could not be moved while a model downloaded, or with Live mode
+  or a dialog open: its top edge moves it whatever is over it now. A
+  dialog's backdrop covered the window buttons on Windows (#20).
 
 ## v2.2.2 — While it runs (2026-09-17)
 
