@@ -915,6 +915,79 @@ mod tests {
         }
     }
 
+    /// Every edit the family offers, on a piece it just made, with the real
+    /// engine: `CHATY_TEST_MUSIC_MODEL=… cargo test --lib
+    /// a_real_music_model_edits_its_pieces -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "needs a music model on disk and the chaty-audio sidecar"]
+    fn a_real_music_model_edits_its_pieces() {
+        let model = PathBuf::from(std::env::var("CHATY_TEST_MUSIC_MODEL").expect("set CHATY_TEST_MUSIC_MODEL"));
+        let (backend, info) = load(&model, &MusicLoadOptions::default(), |_| {}).expect("load");
+        let music = info.music.clone().expect("what the engine loaded");
+        let fam = family::by_id(&music.family).expect("a family the studio drives");
+        let engine = backend.as_music().expect("a music engine");
+        let out = std::env::temp_dir().join(format!("chaty-audio-edits-{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        let base = MusicRequest {
+            prompt: "indie pop, bright acoustic guitar, warm female vocal".into(),
+            lyrics: if fam.lyrics.is_some() { "[verse]\nMorning light is on the window\n".into() } else { String::new() },
+            seconds: 10.0,
+            seed: 7,
+            ..Default::default()
+        };
+        let first = engine
+            .generate(&build_job(fam, &base, None).expect("job"), &out.join("base.wav"), |_| {})
+            .expect("generate")
+            .audio
+            .expect("a piece");
+        let parent = crate::store::MusicRecord {
+            id: "base".into(),
+            session_id: "s".into(),
+            parent_id: None,
+            prompt: base.prompt.clone(),
+            lyrics: base.lyrics.clone(),
+            params: serde_json::json!({}),
+            audio: first.clone(),
+            peaks: Vec::new(),
+            model: info.name.clone(),
+            family: fam.id.into(),
+            created_at: 0,
+            elapsed_ms: 0,
+        };
+        for kind in fam.edits {
+            let edit = MusicEdit {
+                kind: *kind,
+                parent_id: "base".into(),
+                start: if matches!(kind, EditKind::Rearrange | EditKind::Cover | EditKind::Variation) { 0.0 } else { 3.0 },
+                end: if matches!(kind, EditKind::Repaint | EditKind::Inpaint) { 6.0 } else { 0.0 },
+                strength: 0.0,
+            };
+            let req = MusicRequest {
+                prompt: "slow jazz ballad, brushed drums, upright bass".into(),
+                edit: Some(edit),
+                seed: 11,
+                ..base.clone()
+            };
+            let job = build_job(fam, &req, Some(&parent)).expect("edit job");
+            let mut stages = Vec::new();
+            let outcome = engine
+                .generate(&job, &out.join(format!("{kind:?}.wav")), |e| {
+                    if let MusicEvent::Stage { stage, .. } = &e {
+                        stages.push(stage.clone());
+                    }
+                })
+                .unwrap_or_else(|e| panic!("{kind:?}: {e:#}"));
+            let audio = outcome.audio.unwrap_or_else(|| panic!("{kind:?}: no piece"));
+            assert!(audio.seconds > 1.0, "{kind:?}: {audio:?}");
+            assert!(wav_peaks(Path::new(&audio.path), 32).iter().any(|&p| p > 0.01), "{kind:?}: silence");
+            eprintln!("{kind:?}: {:.1}s in {} ms, stages {stages:?} -> {}", audio.seconds, outcome.elapsed_ms, audio.path);
+        }
+        backend.unload();
+        if std::env::var_os("CHATY_TEST_MUSIC_KEEP").is_none() {
+            std::fs::remove_dir_all(&out).ok();
+        }
+    }
+
     #[test]
     fn yue2_takes_style_and_lyrics_as_options_and_keeps_its_tokens() {
         let j = build_job(&family::YUE2, &req(), None).unwrap();

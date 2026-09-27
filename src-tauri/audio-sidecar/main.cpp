@@ -549,6 +549,15 @@ static cJSON* option_list(audiocpp_option_scope scope) {
     return list;
 }
 
+/// A job's last word. The app sends its next command the moment it reads
+/// this, so the job must already count as finished: cleared after the event,
+/// that command found the worker still "busy" and was refused — a piece asked
+/// for again straight after one ended failed with "busy".
+static void emit_final(Json& e) {
+    g_busy = false;
+    emit(e);
+}
+
 static void do_load(const cJSON* cmd) {
     free_engine();
     const std::string path   = jstr(cmd, "model_path");
@@ -595,7 +604,7 @@ static void do_load(const cJSON* cmd) {
         .num("threads", threads)
         .put("request_options", option_list(AUDIOCPP_OPTION_SCOPE_REQUEST))
         .put("session_options", option_list(AUDIOCPP_OPTION_SCOPE_SESSION));
-    emit(e);
+    emit_final(e);
 }
 
 static void do_generate(const cJSON* cmd) {
@@ -732,7 +741,7 @@ static void do_generate(const cJSON* cmd) {
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     Json d;
     d.str("event", "done").str("id", id).num("elapsed_ms", (double)ms);
-    emit(d);
+    emit_final(d);
 }
 
 static void run_job(void (*fn)(const cJSON*), cJSON* cmd) {
@@ -745,8 +754,10 @@ static void run_job(void (*fn)(const cJSON*), cJSON* cmd) {
         try {
             fn(cmd);
         } catch (const std::exception& e) {
+            g_busy = false;
             emit_error(id, c, e.what());
         } catch (...) {
+            g_busy = false;
             emit_error(id, c, "unknown error");
         }
         cJSON_Delete(cmd);
