@@ -529,6 +529,8 @@ export function MusicStudio({
   const sings = !!spec.lyrics;
   const song = sings && d.mode === "song";
   const len = shownLength(settings, spec);
+  // What planning a piece gets: an instrumental is never "straight to music".
+  const planShown = d.mode === "instrumental" && settings.musPlanning === "off" ? "full" : settings.musPlanning;
 
   useLayoutEffect(() => {
     const el = promptRef.current;
@@ -955,19 +957,30 @@ export function MusicStudio({
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
                   <path d="M4 7h16M4 12h10M4 17h6" />
                 </svg>
-                {settings.musPlanning === "off" ? t("musPlanOff") : settings.musPlanning === "melody" ? t("musPlanMelody") : t("musPlanFull")}
+                {planShown === "off" ? t("musPlanOff") : planShown === "melody" ? t("musPlanMelody") : t("musPlanFull")}
               </button>
               <Pop open={pop === "plan"} onClose={() => setPop("")} className="ms-pop-plan">
                 <div className="is-pop-title">{t("musPlanning")}</div>
-                {(["full", "melody", "off"] as const).map((m) => (
-                  <button key={m} className={`ms-pop-opt ${settings.musPlanning === m ? "on" : ""}`} onClick={() => onSettings({ musPlanning: m })}>
-                    <b>
-                      {m === "full" ? t("musPlanFull") : m === "melody" ? t("musPlanMelody") : t("musPlanOff")}
-                      {m === "full" && <em> · {t("musRecommended")}</em>}
-                    </b>
-                    <small>{m === "full" ? t("musPlanFullTip") : m === "melody" ? t("musPlanMelodyTip") : t("musPlanOffTip")}</small>
-                  </button>
-                ))}
+                {(["full", "melody", "off"] as const).map((m) => {
+                  // An instrumental is made from a score: its voice moves to an instrument.
+                  const barred = m === "off" && d.mode === "instrumental";
+                  return (
+                    <button
+                      key={m}
+                      className={`ms-pop-opt ${planShown === m ? "on" : ""}`}
+                      disabled={barred}
+                      onClick={() => onSettings({ musPlanning: m })}
+                    >
+                      <b>
+                        {m === "full" ? t("musPlanFull") : m === "melody" ? t("musPlanMelody") : t("musPlanOff")}
+                        {m === "full" && <em> · {t("musRecommended")}</em>}
+                      </b>
+                      <small>
+                        {barred ? t("musPlanOffInstrumental") : m === "full" ? t("musPlanFullTip") : m === "melody" ? t("musPlanMelodyTip") : t("musPlanOffTip")}
+                      </small>
+                    </button>
+                  );
+                })}
               </Pop>
             </div>
           )}

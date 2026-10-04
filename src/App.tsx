@@ -176,6 +176,8 @@ const LAST_MODEL_KEY = "chaty.lastModel";
 /** Boot auto-load must run once per page load, not once per (Strict)mount. */
 let bootLoadStarted = false;
 const SIDEBAR_DEFAULT = 248;
+/** The narrowest the panel beside the sidebar gets before the sidebar yields. */
+const MAIN_MIN = 480;
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 440;
 
@@ -521,6 +523,11 @@ export default function App() {
   const [showHardware, setShowHardware] = useState(false);
   const [showModelInfo, setShowModelInfo] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  /** Code mode's export of the session it shows (a JSONL trace), while it
+   *  shows one with turns. */
+  const [codeExport, setCodeExport] = useState<(() => Promise<boolean>) | null>(null);
+  const onCodeExportable = useCallback((fn: (() => Promise<boolean>) | null) => setCodeExport(() => fn), []);
+  const codeActions = useRef<{ newSession: () => void } | null>(null);
   const [showDownload, setShowDownload] = useState(false);
   const [deepLink, setDeepLink] = useState<{ repo: string; file?: string } | null>(null);
 
@@ -648,11 +655,20 @@ export default function App() {
     const el = tbMainRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      const w = el.clientWidth;
+      // What the controls have, past Windows' and Linux's window buttons.
+      const w = el.clientWidth - (el.querySelector<HTMLElement>(".win-controls")?.offsetWidth ?? 0);
       setTbFit(w < 560 ? "tight" : w < 640 ? "narrow" : "");
     });
     ro.observe(el);
     return () => ro.disconnect();
+  }, []);
+  // The sidebar gives way in a narrow window, so the panel keeps room for its
+  // header: a wide sidebar in a small window left the model menu a sliver.
+  const [winW, setWinW] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const onResize = () => setWinW(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
   const [sidebarW, setSidebarW] = useState(() => {
     try {
@@ -663,6 +679,7 @@ export default function App() {
     }
     return SIDEBAR_DEFAULT;
   });
+  const shownSidebarW = Math.max(SIDEBAR_MIN, Math.min(sidebarW, winW - MAIN_MIN));
 
   // Drag the sidebar's right edge to resize. The width is driven through state
   // (rAF-throttled to one update per frame) so a concurrent re-render — e.g. a
@@ -672,12 +689,13 @@ export default function App() {
   function startSidebarResize(e: React.PointerEvent) {
     e.preventDefault();
     const startX = e.clientX;
-    const startW = sidebarW;
+    const startW = shownSidebarW;
     let frame: number | null = null;
     let latest = startW;
     document.body.classList.add("resizing-x");
     const onMove = (ev: PointerEvent) => {
-      latest = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + (ev.clientX - startX)));
+      const most = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, window.innerWidth - MAIN_MIN));
+      latest = Math.min(most, Math.max(SIDEBAR_MIN, startW + (ev.clientX - startX)));
       if (frame == null)
         frame = requestAnimationFrame(() => {
           frame = null;
@@ -2727,7 +2745,11 @@ export default function App() {
   // knowledge base, web search or voice), and jumps to generations instead.
   const chatOnly = new Set(["mode", "live", "kb", "web"]);
   const commands: Command[] = [
-    { id: "new", label: imageMode ? t("imgNew") : musicMode ? t("musNew") : t("newChat"), keywords: "new chat 新对话 新建", run: handleNewChat },
+    // Code mode's "New" is a new Code session: a new chat behind it changed
+    // nothing that could be seen.
+    appMode === "code" && !studioMode
+      ? { id: "new", label: t("cmNewSession"), keywords: "new session 新会话 新建", run: () => codeActions.current?.newSession() }
+      : { id: "new", label: imageMode ? t("imgNew") : musicMode ? t("musNew") : t("newChat"), keywords: "new chat 新对话 新建", run: handleNewChat },
     {
       id: "mode",
       label: appMode === "code" ? t("cmdkGoChat") : t("cmdkGoCode"),
@@ -2833,7 +2855,11 @@ export default function App() {
           label: c.title,
           hint: t("cmdkChatHint"),
           keywords: `chat conversation 对话 ${c.title}`,
-          run: () => void openConversation(c.id),
+          // From Code mode the conversation is opened where it can be seen.
+          run: () => {
+            setAppMode("chat");
+            void openConversation(c.id);
+          },
         }))),
   ].filter((c) => !(studioMode && chatOnly.has(c.id)));
 
@@ -2882,8 +2908,10 @@ export default function App() {
       <CodeMode
         model={model}
         active={appMode === "code" && !studioMode}
+        onExportable={onCodeExportable}
+        actionsRef={codeActions}
         headSlot={headSlot}
-        railW={sidebarW}
+        railW={shownSidebarW}
         onRailResize={startSidebarResize}
         onRailReset={resetSidebarW}
         maxSteps={settings.codeMaxSteps}
@@ -2909,7 +2937,7 @@ export default function App() {
       />
 
       <div className="body" style={appMode === "code" && !studioMode ? { display: "none" } : undefined}>
-        <aside className="sidebar" ref={asideRef} style={{ width: sidebarW }}>
+        <aside className="sidebar" ref={asideRef} style={{ width: shownSidebarW }}>
           {imageMode ? (
             <ImageSidebar studio={studio} busy={busy} notify={showNotice} />
           ) : musicMode ? (
@@ -3765,7 +3793,7 @@ export default function App() {
           without a stacking context of its own (the window buttons must
           stay above Live mode and every dialog). */}
       <header className="titlebar">
-        <div className="tb-side" data-tauri-drag-region style={{ width: sidebarW }}>
+        <div className="tb-side" data-tauri-drag-region style={{ width: shownSidebarW }}>
           <div className="brand" data-tauri-drag-region>Chaty</div>
           {imageMode ? (
             // Loading an image model IS the mode switch: chat and Code need a
@@ -4002,12 +4030,12 @@ export default function App() {
           )}
         </div>
 
-        {messages.length > 0 && !studioMode && (
+        {!studioMode && (appMode === "code" ? codeExport !== null : messages.length > 0) && (
           <div className="settings-wrap">
             <button
               className={`icon-btn ${showExport ? "active" : ""}`}
               onClick={() => setShowExport((v) => !v)}
-              title={t("exportTitle")}
+              title={appMode === "code" ? t("exportSessionTitle") : t("exportTitle")}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
                 <path d="M12 3v12M12 15l-4-4M12 15l4-4" strokeLinecap="round" strokeLinejoin="round" />
@@ -4018,8 +4046,24 @@ export default function App() {
               <>
                 <div className="popover-backdrop" onClick={() => setShowExport(false)} />
                 <div className="export-menu">
-                  <button onClick={() => exportConversation("md")}>{t("exportMd")}</button>
-                  <button onClick={() => exportConversation("json")}>{t("exportJson")}</button>
+                  {appMode === "code" ? (
+                    <button
+                      onClick={() => {
+                        setShowExport(false);
+                        void codeExport?.().catch((e) => {
+                          console.error(e);
+                          showNotice("error", t("exportFailed"));
+                        });
+                      }}
+                    >
+                      {t("exportTrace")}
+                    </button>
+                  ) : (
+                    <>
+                      <button onClick={() => exportConversation("md")}>{t("exportMd")}</button>
+                      <button onClick={() => exportConversation("json")}>{t("exportJson")}</button>
+                    </>
+                  )}
                 </div>
               </>
             )}

@@ -121,16 +121,22 @@ export function SelectBar({ ms, onDelete, busy }: { ms: MultiSelect; onDelete: (
   if (!ms.selecting) return null;
   return (
     <div className="select-bar">
-      <span className="sb-count">{t("selectedN", { n: ms.selected.size })}</span>
-      <button className="sb-btn" onClick={ms.toggleAll}>
-        {ms.allPicked() ? t("selectNone") : t("selectAll")}
-      </button>
-      <button className="sb-btn danger" disabled={ms.selected.size === 0 || busy} onClick={onDelete}>
-        {t("confirmDelete")}
-      </button>
-      <button className="sb-btn" onClick={ms.exit}>
-        {t("cancel")}
-      </button>
+      {/* Two groups, so a narrow sidebar puts the actions on a line of their
+          own instead of over the count. */}
+      <span className="sb-pick">
+        <span className="sb-count">{t("selectedN", { n: ms.selected.size })}</span>
+        <button className="sb-btn" onClick={ms.toggleAll}>
+          {ms.allPicked() ? t("selectNone") : t("selectAll")}
+        </button>
+      </span>
+      <span className="sb-acts">
+        <button className="sb-btn danger" disabled={ms.selected.size === 0 || busy} onClick={onDelete}>
+          {t("confirmDelete")}
+        </button>
+        <button className="sb-btn" onClick={ms.exit}>
+          {t("cancel")}
+        </button>
+      </span>
     </div>
   );
 }

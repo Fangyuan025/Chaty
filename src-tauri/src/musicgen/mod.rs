@@ -7,6 +7,7 @@
 //! into the engine, making pieces with live progress — new ones, or edits of
 //! an earlier round — and keeping what they made.
 
+pub mod abc;
 pub mod family;
 pub mod probe;
 
@@ -19,7 +20,7 @@ use serde_json::{json, Value};
 use tauri::ipc::Channel;
 use tauri::{Manager, State};
 
-use crate::inference::audio::{AudioEngine, EngineOption, Job, MusicAudio, MusicEvent};
+use crate::inference::audio::{AudioEngine, EngineOption, Job, MusicAudio, MusicEvent, MusicOutcome};
 use crate::inference::{InferenceBackend, ModelInfo};
 use crate::state::AppState;
 use crate::store::{Db, MusicRecord};
@@ -371,6 +372,16 @@ pub fn build_job(fam: &Family, req: &MusicRequest, parent: Option<&MusicRecord>)
                 other => return Err(format!("{other:?} is not an edit {} makes", fam.name)),
             }
         }
+        // No voice: a style that asks for none, and — following a score whose
+        // voice was moved to an instrument (`make_piece`) — that score's
+        // sections for lyrics, planned the way the score is written.
+        if req.instrumental {
+            o.insert("style".into(), abc::instrumental_style(prompt));
+            if let Some(text) = o.get("abc_file").and_then(|f| std::fs::read_to_string(f).ok()) {
+                o.insert("lyrics".into(), abc::section_lyrics(&text));
+                o.insert("cot".into(), if abc::has_chords(&text) { "full" } else { "melody" }.into());
+            }
+        }
         // The shortest piece may not be longer than the longest.
         if let (Some(max), Some(min)) = (
             o.get("semantic_max_tokens").and_then(|v| v.parse::<i64>().ok()),
@@ -436,6 +447,206 @@ pub fn build_job(fam: &Family, req: &MusicRequest, parent: Option<&MusicRecord>)
         }
     }
     Ok(Job { text, audio_path, options: o, seed: req.seed })
+}
+
+/// Set by the stop button, read between the runs of a piece made in two
+/// (an instrumental's score, then its music): a stop that lands in between
+/// finds no run to end.
+static STOPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn stopped() -> bool {
+    STOPPED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// `<stem>.<ext>` beside a piece's audio file.
+fn beside(path: &Path, ext: &str) -> PathBuf {
+    path.with_extension(ext)
+}
+
+/// Make a piece: one run of the engine — or, for a YuE2 instrumental, the
+/// way its makers do it: the model writes a score (unless there is one to
+/// follow), every note of its Vocal part moves to its Ins part, and the
+/// music is rendered from that score with section tags for lyrics. Empty
+/// lyrics alone still get sung.
+pub fn make_piece(
+    engine: &AudioEngine,
+    fam: &Family,
+    req: &MusicRequest,
+    parent: Option<&MusicRecord>,
+    out_path: &Path,
+    on_event: &mut dyn FnMut(MusicEvent),
+) -> anyhow::Result<MusicOutcome> {
+    let continues = req.edit.as_ref().is_some_and(|e| e.kind == EditKind::Continue);
+    if fam.id != family::YUE2.id || !req.instrumental || continues {
+        let job = build_job(fam, req, parent).map_err(anyhow::Error::msg)?;
+        let mut out = engine.generate(&job, out_path, &mut *on_event)?;
+        keep_followed_score(&job, out_path, &mut out);
+        return Ok(out);
+    }
+    let started = std::time::Instant::now();
+    // The score to make instrumental: the parent's (rearranging it), the
+    // one given, or one the model writes now.
+    let given = match req.edit.as_ref() {
+        Some(e) if e.kind == EditKind::Rearrange => Some(
+            parent
+                .and_then(|p| p.audio.score_path.clone())
+                .filter(|p| Path::new(p).is_file())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(trf!(
+                        "那一首没有乐谱可循(生成它时关闭了「先写乐谱」)",
+                        "that piece has no score to follow (it was made without planning)"
+                    ))
+                })?,
+        ),
+        _ => req.score_path.clone().filter(|s| !s.trim().is_empty()),
+    };
+    let converted = match given {
+        Some(path) => {
+            let path = path.trim().to_string();
+            let text = std::fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+            match abc::instrumental_score(&text) {
+                Ok(c) => c,
+                // Not written the way YuE2 writes its scores (a score of your
+                // own, say): its voice cannot be told apart, so it is followed
+                // as it is, with the instrumental's style and sections.
+                Err(e) => {
+                    crate::errlog::append_error("music-instrumental", &format!("{path}: {e}"));
+                    let render = MusicRequest { score_path: Some(path), edit: None, lyrics: String::new(), ..req.clone() };
+                    let job = build_job(fam, &render, None).map_err(anyhow::Error::msg)?;
+                    let mut out = engine.generate(&job, out_path, &mut *on_event)?;
+                    keep_followed_score(&job, out_path, &mut out);
+                    return Ok(out);
+                }
+            }
+        }
+        None => {
+            // A score the model writes may not convert — cut short at the
+            // planner's token limit (a dense, fast style can fill it), or
+            // outside the notation it is read in: one more try, as its makers
+            // do. Cut short twice, the whole groups of the longer one are
+            // used rather than nothing.
+            let mut last = String::new();
+            let mut got = None;
+            let mut whole_part: Option<abc::Converted> = None;
+            for attempt in 0..2 {
+                let seed = if req.seed >= 0 { req.seed + attempt } else { -1 };
+                let Some(plan) = plan_score(engine, fam, req, seed, out_path, &mut *on_event)? else {
+                    return Ok(MusicOutcome { cancelled: true, elapsed_ms: started.elapsed().as_millis() as u64, ..Default::default() });
+                };
+                let tried = match plan {
+                    Ok((text, false)) => abc::instrumental_score(&text),
+                    Ok((text, true)) => {
+                        if let Some(c) = abc::salvage(&text) {
+                            if whole_part.as_ref().is_none_or(|w| c.ins_notes > w.ins_notes) {
+                                whole_part = Some(c);
+                            }
+                        }
+                        Err("the score was cut short".into())
+                    }
+                    Err(e) => Err(e),
+                };
+                match tried {
+                    Ok(c) => {
+                        got = Some(c);
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("music: instrumental score attempt {} unusable: {e}", attempt + 1);
+                        crate::errlog::append_error("music-instrumental", &format!("attempt {}: {e}", attempt + 1));
+                        last = e;
+                    }
+                }
+                if stopped() {
+                    return Ok(MusicOutcome { cancelled: true, elapsed_ms: started.elapsed().as_millis() as u64, ..Default::default() });
+                }
+            }
+            got.or(whole_part).ok_or_else(|| {
+                anyhow::anyhow!(trf!(
+                    "YuE2 写的乐谱无法转成纯音乐({}),请再试一次",
+                    "the score YuE2 wrote cannot be made instrumental ({}) — try again",
+                    last
+                ))
+            })?
+        }
+    };
+    if stopped() {
+        return Ok(MusicOutcome { cancelled: true, elapsed_ms: started.elapsed().as_millis() as u64, ..Default::default() });
+    }
+    let score_path = beside(out_path, "abc");
+    std::fs::write(&score_path, &converted.abc)?;
+    let render = MusicRequest {
+        score_path: Some(score_path.to_string_lossy().into_owned()),
+        edit: None,
+        lyrics: String::new(),
+        ..req.clone()
+    };
+    let job = build_job(fam, &render, None).map_err(anyhow::Error::msg)?;
+    let mut out = engine.generate(&job, out_path, &mut *on_event)?;
+    if out.audio.is_none() {
+        let _ = std::fs::remove_file(&score_path);
+    }
+    keep_followed_score(&job, out_path, &mut out);
+    out.elapsed_ms = started.elapsed().as_millis() as u64;
+    Ok(out)
+}
+
+/// The score YuE2 writes for an instrumental: planned from the style and
+/// section tags alone, the run stopping once it is written. `None` when
+/// stopped; `Some(Ok((score, cut_short)))`, or `Some(Err)` when there is no
+/// score to read.
+fn plan_score(
+    engine: &AudioEngine,
+    fam: &Family,
+    req: &MusicRequest,
+    seed: i64,
+    out_path: &Path,
+    on_event: &mut dyn FnMut(MusicEvent),
+) -> anyhow::Result<Option<Result<(String, bool), String>>> {
+    let plan = MusicRequest {
+        lyrics: abc::PLANNING_LYRICS.into(),
+        instrumental: false,
+        score_path: None,
+        edit: None,
+        seed,
+        ..req.clone()
+    };
+    let mut job = build_job(fam, &plan, None).map_err(anyhow::Error::msg)?;
+    // An instrumental is planned however planning was set: without a score
+    // there is no voice to move.
+    if job.options.get("cot").is_none_or(|c| c == "off") {
+        job.options.insert("cot".into(), "full".into());
+    }
+    // As its makers write the planning prompt (build_job trims lyrics).
+    job.options.insert("lyrics".into(), abc::PLANNING_LYRICS.into());
+    job.options.insert("stop_after".into(), "abc".into());
+    job.options.remove("export_semantic");
+    job.options.remove("abc_file");
+    let plan_wav = beside(out_path, "plan.wav");
+    let out = engine.generate(&job, &plan_wav, &mut *on_event)?;
+    if out.cancelled || stopped() {
+        return Ok(None);
+    }
+    let Some((path, truncated)) = out.score else {
+        return Ok(Some(Err("no score".into())));
+    };
+    let text = std::fs::read_to_string(&path);
+    let _ = std::fs::remove_file(&path);
+    Ok(Some(text.map(|t| (t, truncated)).map_err(|e| e.to_string())))
+}
+
+/// A piece made from a score the engine was given has no score of its own
+/// in the result: keep a copy of the one it followed beside it, so it can be
+/// opened and rearranged again.
+fn keep_followed_score(job: &Job, out_path: &Path, out: &mut MusicOutcome) {
+    let Some(audio) = out.audio.as_mut() else { return };
+    if audio.score_path.is_some() {
+        return;
+    }
+    let Some(followed) = job.options.get("abc_file") else { return };
+    let mine = beside(out_path, "abc");
+    if Path::new(followed) == mine || std::fs::copy(followed, &mine).is_ok() {
+        audio.score_path = Some(mine.to_string_lossy().into_owned());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -615,10 +826,12 @@ pub async fn music_generate(
         },
         None => None,
     };
-    let job = match build_job(fam, &request, parent.as_ref()) {
-        Ok(j) => j,
-        Err(e) => return fail(e),
-    };
+    // The request is checked before anything starts (make_piece builds the
+    // jobs it runs).
+    if let Err(e) = build_job(fam, &request, parent.as_ref()) {
+        return fail(e);
+    }
+    STOPPED.store(false, std::sync::atomic::Ordering::SeqCst);
 
     let started_at = now_ms();
     let stamp = chrono::Local::now();
@@ -656,9 +869,11 @@ pub async fn music_generate(
 
     let l2 = listener.clone();
     let path2 = out_path.clone();
+    let req2 = request.clone();
+    let fam2: &'static Family = fam;
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let engine = backend.as_music().expect("checked above");
-        let result = engine.generate(&job, &path2, |ev| {
+        let result = make_piece(engine, fam2, &req2, parent.as_ref(), &path2, &mut |ev| {
             if let Ok(mut live) = LIVE.lock() {
                 if let Some(l) = live.as_mut() {
                     match &ev {
@@ -740,6 +955,7 @@ pub async fn music_generate(
 /// Stop the piece being made.
 #[tauri::command]
 pub async fn music_cancel(state: State<'_, AppState>) -> Result<(), String> {
+    STOPPED.store(true, std::sync::atomic::Ordering::SeqCst);
     if let Some(b) = state.backend().await {
         if let Some(engine) = b.as_music() {
             engine.cancel();
@@ -1006,6 +1222,98 @@ mod tests {
         }
     }
 
+    /// A YuE2 instrumental on the real model, beside the same request sent
+    /// the old way (empty lyrics, which still get sung): `CHATY_TEST_MUSIC_MODEL=…
+    /// CHATY_TEST_MUSIC_OUT=dir cargo test --lib a_real_yue2_instrumental --
+    /// --ignored --nocapture`. `CHATY_TEST_MUSIC_STYLES` (`|`-separated) and
+    /// `CHATY_TEST_MUSIC_SECONDS` change what is made; the pieces are kept in
+    /// the folder, to listen to or separate.
+    #[test]
+    #[ignore = "needs a YuE2 model on disk and the chaty-audio sidecar"]
+    fn a_real_yue2_instrumental_moves_the_voice_to_an_instrument() {
+        let model = PathBuf::from(std::env::var("CHATY_TEST_MUSIC_MODEL").expect("set CHATY_TEST_MUSIC_MODEL"));
+        let out = PathBuf::from(std::env::var("CHATY_TEST_MUSIC_OUT").expect("set CHATY_TEST_MUSIC_OUT"));
+        std::fs::create_dir_all(&out).unwrap();
+        // `CHATY_TEST_MUSIC_LORA=/path/to/ar_lora.safetensors` loads an AR
+        // adapter (yue2.ar_lora) — to compare its instrumentals.
+        let mut opts = MusicLoadOptions::default();
+        if let Ok(lora) = std::env::var("CHATY_TEST_MUSIC_LORA") {
+            opts.session_options.insert("yue2".into(), [("yue2.ar_lora".to_string(), lora), ("yue2.ar_lora_scale".to_string(), "1.0".to_string())].into());
+        }
+        let (backend, info) = load(&model, &opts, |_| {}).expect("load");
+        assert_eq!(info.music.as_ref().map(|m| m.family.as_str()), Some("yue2"));
+        let engine = backend.as_music().expect("a music engine");
+        let seconds = std::env::var("CHATY_TEST_MUSIC_SECONDS").ok().and_then(|v| v.parse().ok()).unwrap_or(30.0);
+        let styles = std::env::var("CHATY_TEST_MUSIC_STYLES")
+            .unwrap_or_else(|_| "lo-fi hip hop, mellow rhodes, vinyl crackle, rain|cinematic orchestral, swelling strings, epic brass".into());
+        for (i, style) in styles.split('|').enumerate() {
+            // `CHATY_TEST_MUSIC_ONLY=instrumental|old|lora`: one way only — the
+            // instrumental, empty lyrics (as instrumentals were sent before),
+            // or the adapter's own `[instrumental]` prompt.
+            let only = std::env::var("CHATY_TEST_MUSIC_ONLY").unwrap_or_default();
+            let modes: &[&str] = match only.as_str() {
+                "instrumental" => &["instrumental"],
+                "old" => &["empty-lyrics"],
+                "lora" => &["lora"],
+                _ => &["empty-lyrics", "instrumental"],
+            };
+            for &mode in modes {
+                let instrumental = mode == "instrumental";
+                let lyrics = if mode == "lora" { "[instrumental]".to_string() } else { String::new() };
+                let req = MusicRequest { prompt: style.into(), lyrics, instrumental, seconds, seed: 1234 + i as i64, ..Default::default() };
+                let name = format!("{i}-{mode}");
+                let mut stages = Vec::new();
+                let t0 = std::time::Instant::now();
+                let got = make_piece(engine, &family::YUE2, &req, None, &out.join(format!("{name}.wav")), &mut |e| {
+                    if let MusicEvent::Stage { stage, .. } = e {
+                        stages.push(format!("{stage}@{:.0}s", t0.elapsed().as_secs_f32()));
+                    }
+                })
+                .unwrap_or_else(|e| panic!("{name}: {e:#}"));
+                let audio = got.audio.unwrap_or_else(|| panic!("{name}: no piece"));
+                eprintln!("{name}: {:.1}s of music in {:.0}s; stages {}", audio.seconds, t0.elapsed().as_secs_f32(), stages.join(" "));
+                if instrumental {
+                    let score = std::fs::read_to_string(audio.score_path.as_deref().expect("the score it followed")).unwrap();
+                    let again = abc::instrumental_score(&score).expect("reads back");
+                    assert_eq!(again.vocal_notes, 0, "nothing left to sing in the score it followed");
+                    eprintln!("{name}: score {} Ins notes, sections {:?}", again.ins_notes, again.section_lyrics);
+                }
+            }
+        }
+        backend.unload();
+    }
+
+    /// One instrumental plan on the real model, kept with what reading it
+    /// says: `CHATY_TEST_MUSIC_MODEL=… CHATY_TEST_MUSIC_OUT=dir
+    /// CHATY_TEST_MUSIC_STYLES=… CHATY_TEST_MUSIC_SEED=… cargo test --lib
+    /// a_real_yue2_plan -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "needs a YuE2 model on disk and the chaty-audio sidecar"]
+    fn a_real_yue2_plan_is_kept_with_its_reading() {
+        let model = PathBuf::from(std::env::var("CHATY_TEST_MUSIC_MODEL").expect("set CHATY_TEST_MUSIC_MODEL"));
+        let out = PathBuf::from(std::env::var("CHATY_TEST_MUSIC_OUT").expect("set CHATY_TEST_MUSIC_OUT"));
+        std::fs::create_dir_all(&out).unwrap();
+        let (backend, _) = load(&model, &MusicLoadOptions::default(), |_| {}).expect("load");
+        let engine = backend.as_music().expect("a music engine");
+        let style = std::env::var("CHATY_TEST_MUSIC_STYLES").unwrap_or_else(|_| "gentle solo piano".into());
+        let seed = std::env::var("CHATY_TEST_MUSIC_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1234);
+        let req = MusicRequest { prompt: style, instrumental: true, seconds: 90.0, seed, ..Default::default() };
+        let text = plan_score(engine, &family::YUE2, &req, seed, &out.join("plan.wav"), &mut |_| {}).unwrap().expect("not stopped");
+        match text {
+            Ok((t, cut)) => {
+                std::fs::write(out.join(format!("plan-{seed}.abc")), &t).unwrap();
+                eprintln!(
+                    "plan {seed}: {} bytes, cut short {cut} -> {:?}; whole groups -> {:?}",
+                    t.len(),
+                    abc::instrumental_score(&t).map(|c| c.ins_notes),
+                    abc::salvage(&t).map(|c| c.ins_notes)
+                );
+            }
+            Err(e) => eprintln!("plan {seed}: no score: {e}"),
+        }
+        backend.unload();
+    }
+
     #[test]
     fn yue2_takes_style_and_lyrics_as_options_and_keeps_its_tokens() {
         let j = build_job(&family::YUE2, &req(), None).unwrap();
@@ -1020,11 +1328,123 @@ mod tests {
         assert!(!j.options.contains_key("semantic_min_tokens"), "the model's own minimum fits");
         let j = build_job(&family::YUE2, &MusicRequest { seconds: 60.0, ..req() }, None).unwrap();
         assert_eq!(j.options["semantic_max_tokens"], "1500");
-        // Instrumental: empty lyrics.
+        // Instrumental with no score yet: empty lyrics, a style that asks for
+        // no voice (make_piece plans and converts the score first).
         let j = build_job(&family::YUE2, &MusicRequest { instrumental: true, ..req() }, None).unwrap();
         assert_eq!(j.options["lyrics"], "");
+        assert_eq!(
+            j.options["style"],
+            "Instrumental, indie pop, acoustic guitar, no vocals, no singing, no choir, no spoken words."
+        );
         // No style: YuE2 needs one.
         assert!(build_job(&family::YUE2, &MusicRequest { prompt: " ".into(), ..req() }, None).is_err());
+    }
+
+    /// A YuE2 song with a voice, as the model writes its scores.
+    const SUNG: &str = "X:1\nT:\nM:4/4\nL:1/32\nQ:1/4=96\nV: Vocal clef=treble name=\"Vocal Melody\" snm=\"Vocal\"\nV: Ins clef=treble name=\"Ins Melody\" snm=\"Inst.\"\nK:G\n% intro\nV: Vocal\n\"G\"z32|\nV: Ins\nd16B16|\n% verse\nV: Vocal\n\"G\"B8d8\"Am7\"c8A8|\"D7\"^c16d16-|d16z16|\nV: Ins\nZ|z16g16|z24B8|\n";
+
+    #[test]
+    fn an_instrumental_follows_its_score_with_section_tags_for_lyrics() {
+        let dir = std::env::temp_dir().join(format!("chaty-inst-job-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let score = dir.join("x.abc");
+        std::fs::write(&score, abc::instrumental_score(SUNG).unwrap().abc).unwrap();
+        let r = MusicRequest { instrumental: true, score_path: Some(score.to_string_lossy().into()), ..req() };
+        let j = build_job(&family::YUE2, &r, None).unwrap();
+        assert_eq!(j.options["lyrics"], "[Intro]\n\n[Verse]\n", "the sections, no words");
+        assert_eq!(j.options["cot"], "full", "the score has chords");
+        assert!(j.options["style"].starts_with("Instrumental, indie pop"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The instrumental's two runs against a scripted sidecar: the score is
+    /// planned from section tags and stops there; its voice moves to Ins; the
+    /// music follows that score, which the piece keeps.
+    #[cfg(unix)]
+    #[test]
+    fn an_instrumental_is_planned_converted_and_rendered() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("chaty-inst-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("sung.abc"), SUNG).unwrap();
+        let script = dir.join("fake-audio.sh");
+        let body = format!(
+            r#"#!/bin/bash
+echo '{{"event":"ready","protocol":"1","version":"x","devices":[]}}'
+read load
+echo '{{"event":"loaded","family":"yue2","description":"YuE2","request_options":[],"session_options":[]}}'
+n=0
+while read -r gen; do
+  n=$((n+1))
+  echo "$gen" > "{dir}/gen$n.json"
+  id=$(echo "$gen" | sed 's/.*"id":"\([^"]*\)".*/\1/')
+  out=$(echo "$gen" | sed 's/.*"out_path":"\([^"]*\)".*/\1/')
+  echo '{{"event":"stage","id":"'$id'","stage":"prepare","seed":7}}'
+  if echo "$gen" | grep -q '"stop_after":"abc"'; then
+    cp "{dir}/sung.abc" "${{out%.wav}}.abc"
+    echo '{{"event":"stage","id":"'$id'","stage":"score"}}'
+    echo '{{"event":"score","id":"'$id'","score_path":"'${{out%.wav}}.abc'","truncated":false}}'
+  else
+    echo '{{"event":"stage","id":"'$id'","stage":"tokens"}}'
+    echo '{{"event":"audio","id":"'$id'","path":"'$out'","seconds":10,"sample_rate":44100,"channels":2,"seed":7}}'
+  fi
+  echo '{{"event":"done","id":"'$id'","elapsed_ms":5}}'
+done
+"#,
+            dir = dir.display()
+        );
+        std::fs::write(&script, body).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (engine, _) = AudioEngine::load(&script, json!({"cmd": "load"}), |_| {}).unwrap();
+        let out_path = dir.join("piece.wav");
+        let request = MusicRequest {
+            options: [("cot".to_string(), "off".to_string())].into(),
+            instrumental: true,
+            seed: 7,
+            ..req()
+        };
+        let mut stages = Vec::new();
+        let out = make_piece(&engine, &family::YUE2, &request, None, &out_path, &mut |e| {
+            if let MusicEvent::Stage { stage, .. } = e {
+                stages.push(stage);
+            }
+        })
+        .unwrap();
+        let read = |n: u32| -> Value { serde_json::from_str(&std::fs::read_to_string(dir.join(format!("gen{n}.json"))).unwrap()).unwrap() };
+        let plan = read(1);
+        assert_eq!(plan["options"]["stop_after"], "abc");
+        assert_eq!(plan["options"]["cot"], "full", "planned even with planning off: no score, no voice to move");
+        assert_eq!(plan["options"]["lyrics"], abc::PLANNING_LYRICS);
+        assert_eq!(plan["options"]["style"], "indie pop, acoustic guitar");
+        let render = read(2);
+        let score = out_path.with_extension("abc");
+        assert_eq!(render["options"]["abc_file"], score.to_string_lossy().as_ref());
+        assert_eq!(render["options"]["lyrics"], "[Intro]\n\n[Verse]\n");
+        assert_eq!(render["options"]["cot"], "full");
+        assert!(render["options"]["style"].as_str().unwrap().ends_with("no spoken words."));
+        assert!(render["options"].get("stop_after").is_none());
+        let kept = std::fs::read_to_string(&score).unwrap();
+        assert!(kept.contains("V: Ins\nB8d8c8A8|"), "the voice is in the instrument: {kept}");
+        assert_eq!(out.audio.unwrap().score_path.as_deref(), Some(score.to_string_lossy().as_ref()));
+        assert!(!out_path.with_extension("plan.abc").exists(), "the planned score is not left behind");
+        assert_eq!(stages, vec!["prepare", "score", "prepare", "tokens"]);
+
+        // A score of your own that is not in YuE2's notation is followed as it
+        // is: no plan, nothing converted, and the piece keeps a copy of it.
+        let mine = dir.join("mine.abc");
+        std::fs::write(&mine, "X:1\nT:Theme\nM:C\nL:1/8\nK:G\nV: Lead\nGBd2 e>d B2|\n").unwrap();
+        let second = dir.join("second.wav");
+        let request = MusicRequest { score_path: Some(mine.to_string_lossy().into()), ..request };
+        let out = make_piece(&engine, &family::YUE2, &request, None, &second, &mut |_| {}).unwrap();
+        let render = read(3);
+        assert_eq!(render["options"]["abc_file"], mine.to_string_lossy().as_ref());
+        assert!(render["options"].get("stop_after").is_none());
+        assert!(!dir.join("gen4.json").exists(), "one run");
+        assert_eq!(out.audio.unwrap().score_path.as_deref(), Some(second.with_extension("abc").to_string_lossy().as_ref()));
+        assert_eq!(std::fs::read_to_string(second.with_extension("abc")).unwrap(), std::fs::read_to_string(&mine).unwrap());
+        drop(engine);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -2161,8 +2161,9 @@ body.resizing-x {
 }
 .select-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 2px 4px;
   margin: 0 8px 6px;
   padding: 6px 6px 6px 10px;
   font-size: 12.5px;
@@ -2171,9 +2172,24 @@ body.resizing-x {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
 }
-.sb-count {
-  flex: 1;
+.sb-pick {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
+}
+.sb-acts {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.sb-count {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -6147,7 +6163,30 @@ body:has(.live-overlay) .win-btn.close:hover {
   white-space: nowrap;
 }
 .cm-ws-pick {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-dim);
+}
+/* Without a workspace the button is the thing to press: the model's name
+   gives way well before "Open workspace…" does. */
+.tb-main:not(.tight) .tb-slot:has(.cm-ws-pick) {
+  flex-shrink: 0;
+}
+.tb-main:not(.tight) .code-head .cm-ws:has(.cm-ws-pick) {
+  flex-shrink: 0;
+  max-width: none;
+}
+/* A tight row has no room for the words at all: the folder and its caret
+   say it, like the jobs badge's icon does (the label is the tooltip). */
+.tb-main.tight .code-head .cm-ws:has(.cm-ws-pick) {
+  min-width: 0;
+  max-width: none;
+  flex-shrink: 0;
+}
+.tb-main.tight .code-head .cm-ws-pick {
+  display: none;
 }
 .cm-head-spacer {
   flex: 1;
@@ -6585,6 +6624,15 @@ body:has(.live-overlay) .win-btn.close:hover {
 .cm-block:has(> .cm-step.error) {
   position: relative;
   z-index: 1;
+}
+/* Content scrolls under the window's floating top row, which has no z-index:
+   a raised piece of the thread (the errored row above) must be raised inside
+   the thread only, or it paints over the row's fade. The same holds for the
+   chat's empty state and the music studio's stages. */
+.cm-thread,
+.empty,
+.ms-stages {
+  isolation: isolate;
 }
 /* Ran, but the command itself exited non-zero — not a green check. */
 .cm-step.done.cmd-failed .cm-step-status {
@@ -9982,8 +10030,14 @@ body,
   font-size: 11.5px;
   color: var(--faint);
 }
-.ms-pop-opt:hover {
+.ms-pop-opt:hover:not(:disabled) {
   background: var(--surface);
+}
+.ms-pop-opt:disabled {
+  cursor: default;
+}
+.ms-pop-opt:disabled b {
+  color: var(--faint);
 }
 .ms-pop-opt.on {
   border-color: var(--border-strong);

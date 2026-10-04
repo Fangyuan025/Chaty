@@ -285,10 +285,13 @@ jobs:
             becomes a music studio: your style and lyrics as a bubble, the piece
             as a waveform to play and seek, and each family's own edits of an
             earlier round — rearrange or continue a song, repaint a stretch,
-            cover it in a new style. It runs on audio.cpp in a helper of its own
-            — Metal on a Mac, Vulkan on Windows and Linux. On an M4 Pro, YuE2
-            writes and sings a 30-second verse and chorus in 33 s, and Stable
-            Audio 3 Small makes 20 s in 1.2 s.
+            cover it in a new style. YuE2's instrumentals are made the way its
+            makers make them — a score, its vocal melody handed to an
+            instrument — which takes out most of the singing empty lyrics left in.
+            It runs on audio.cpp in a helper of its own — Metal on a Mac, Vulkan
+            on Windows and Linux. On an M4 Pro, YuE2 writes and sings a
+            30-second verse and chorus in 33 s, and Stable Audio 3 Small makes
+            20 s in 1.2 s.
 
             ## A lighter frame
 
@@ -305,9 +308,9 @@ jobs:
             longer ends at a line across the screen, and the window moves from
             its top edge even with Live mode or a dialog open.
 
-            Also: K2 Horizon's MLX quants load, Code's sessions can be searched,
-            and several sessions at once can be deleted in Code and the image
-            studio.
+            Also: a Code session exports as a full JSONL trace, K2 Horizon's MLX
+            quants load, Code's sessions can be searched, and several sessions
+            at once can be deleted in Code and the image studio.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

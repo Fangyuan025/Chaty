@@ -680,6 +680,46 @@ static void do_generate(const cJSON* cmd) {
     if (st != AUDIOCPP_OK)
         throw std::runtime_error(last_error(st));
 
+    // A run asked to stop once the score is written (YuE2 `stop_after=abc`,
+    // the first half of an instrumental) ends with the score alone: it goes
+    // beside `out_path` as .abc, and no audio is expected.
+    if (jstr(cJSON_GetObjectItemCaseSensitive(cmd, "options"), "stop_after") == "abc") {
+        std::string abc;
+        bool truncated = false;
+        for (size_t i = 0; i < audiocpp_result_artifact_count(result); ++i) {
+            audiocpp_artifact_kind kind;
+            const char* aid     = nullptr;
+            const void* payload = nullptr;
+            size_t bytes        = 0;
+            if (audiocpp_result_artifact(result, i, &kind, &aid, &payload, &bytes) != AUDIOCPP_OK || aid == nullptr ||
+                payload == nullptr || bytes == 0 || std::string(aid) != "score")
+                continue;
+            abc.assign(static_cast<const char*>(payload), bytes);
+            for (size_t m = 0; m < audiocpp_result_artifact_meta_count(result, i); ++m) {
+                const char* k = nullptr;
+                const char* v = nullptr;
+                if (audiocpp_result_artifact_meta(result, i, m, &k, &v) == AUDIOCPP_OK && k != nullptr &&
+                    v != nullptr && std::string(k) == "truncated")
+                    truncated = std::string(v) == "true";
+            }
+        }
+        if (abc.empty())
+            throw std::runtime_error("the engine wrote no score");
+        fs::path p = fs_path(out_path);
+        p.replace_extension(".abc");
+        const std::string abc_path = path_utf8(p);
+        if (!write_text(abc_path, abc.data(), abc.size()))
+            throw std::runtime_error("cannot write " + abc_path);
+        Json s;
+        s.str("event", "score").str("id", id).str("score_path", abc_path).boolean("truncated", truncated);
+        emit(s);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+        Json d;
+        d.str("event", "done").str("id", id).num("elapsed_ms", (double)ms);
+        emit_final(d);
+        return;
+    }
+
     const float* samples = nullptr;
     size_t frames        = 0;
     int rate = 0, channels = 0;

@@ -61,7 +61,9 @@ import {
   type CodeSessionMeta,
   type ModelInfo,
   generate,
+  exportTextFile,
 } from "../lib/ipc";
+import { buildCodeTrace } from "../lib/codeTrace";
 import {
   AgentSignal,
   argContent,
@@ -696,6 +698,8 @@ export function CodeMode({
   allowedCommands = [],
   sendKey = "enter",
   autoTitle = true,
+  onExportable,
+  actionsRef,
 }: {
   model: ModelInfo | null;
   active: boolean;
@@ -747,6 +751,11 @@ export function CodeMode({
   allowedCommands?: string[];
   /** Composer send shortcut (Settings → General). */
   sendKey?: "enter" | "modEnter";
+  /** The top row's export button: handed the open session's trace export
+   *  while this mode is showing a session with turns, null otherwise. */
+  onExportable?: (exportTrace: (() => Promise<boolean>) | null) => void;
+  /** What the command palette does here: "New" is a new Code session. */
+  actionsRef?: React.MutableRefObject<{ newSession: () => void } | null>;
 }) {
   const { t, lang } = useI18n();
   const confirm = useConfirm();
@@ -1230,6 +1239,8 @@ export function CodeMode({
     void agentClearGrants().catch(() => {});
     setDirGrants([]);
   }
+
+  if (actionsRef) actionsRef.current = { newSession };
 
   async function openSession(id: string) {
     if (running || id === sid) return;
@@ -2004,6 +2015,32 @@ export function CodeMode({
   // path where its folder name belongs.
   const wsName = workspace ? workspaceName(workspace) : null;
 
+  // The whole session as a JSONL trace (the top row's export button). It
+  // reads the session as it is when pressed, not as it was when handed over.
+  const traceOf = useRef({ sid, msgs, workspace, title: "", model: model?.name ?? null });
+  traceOf.current = {
+    sid,
+    msgs,
+    workspace,
+    title: sessions.find((s) => s.id === sid)?.title ?? msgs.find((m) => m.role === "user")?.text.slice(0, 60) ?? "session",
+    model: model?.name ?? null,
+  };
+  const exportTrace = useCallback(async () => {
+    const cur = traceOf.current;
+    if (cur.msgs.length === 0) return false;
+    const content = await buildCodeTrace(
+      { id: cur.sid, title: cur.title, workspace: cur.workspace, model: cur.model, app: `Chaty ${__APP_VERSION__}` },
+      cur.msgs,
+      (key) => codeStepTextGet(cur.sid, key),
+    );
+    const safe = cur.title.replace(/[\\/:*?"<>|\n]+/g, "_").slice(0, 60) || "session";
+    return exportTextFile(`${safe}.jsonl`, content, "jsonl");
+  }, []);
+  const hasTurns = msgs.length > 0;
+  useEffect(() => {
+    onExportable?.(active && hasTurns ? exportTrace : null);
+  }, [active, hasTurns, exportTrace, onExportable]);
+
   const sessionRow = (s: (typeof sessions)[number]) => (
     <div
       key={s.id}
@@ -2135,7 +2172,13 @@ export function CodeMode({
           headSlot &&
           createPortal(
             <div className="code-head" data-tauri-drag-region>
-              <button className="cm-ws" onClick={() => void pickWorkspace()} disabled={running} title={workspace ?? ""}>
+              <button
+                className="cm-ws"
+                onClick={() => void pickWorkspace()}
+                disabled={running}
+                title={workspace ?? t("cmOpenFolder")}
+                aria-label={workspace ? undefined : t("cmOpenFolder")}
+              >
                 <Icon name="folder" size={14} />
                 {wsName ? <span className="cm-ws-name">{wsName}</span> : <span className="cm-ws-pick">{t("cmOpenFolder")}</span>}
                 <Icon name="chevron-down" size={11} strokeWidth={2} className="cm-ws-caret" />

@@ -1678,11 +1678,11 @@ export async function searchConversations(query: string): Promise<string[]> {
 export async function exportTextFile(
   defaultName: string,
   content: string,
-  ext: "md" | "json",
+  ext: "md" | "json" | "jsonl",
 ): Promise<boolean> {
   const path = await save({
     defaultPath: defaultName,
-    filters: [{ name: ext === "md" ? "Markdown" : "JSON", extensions: [ext] }],
+    filters: [{ name: ext === "md" ? "Markdown" : ext === "jsonl" ? "JSON Lines" : "JSON", extensions: [ext] }],
   });
   if (!path) return false;
   await invoke("write_text_file", { path, content });

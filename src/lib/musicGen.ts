@@ -490,8 +490,10 @@ export const EMPTY_DRAFT: MusicDraft = { prompt: "", lyrics: "", mode: "song", s
 export function buildMusicRequest(d: MusicDraft, s: MusicSettings, spec: MusicFamilySpec): MusicRequest {
   const options: Record<string, string> = {};
   for (const [k, v] of Object.entries(s.musParams[spec.id] ?? {})) if (v !== "") options[k] = v;
-  if (spec.planning && s.musPlanning !== "full") options.cot = s.musPlanning;
   const instrumental = d.mode === "instrumental" || !spec.lyrics;
+  // An instrumental is always planned: its score's voice is what moves to an
+  // instrument (planning "off" means a full score for it).
+  if (spec.planning && s.musPlanning !== "full" && !(instrumental && s.musPlanning === "off")) options.cot = s.musPlanning;
   return {
     prompt: d.prompt.trim(),
     lyrics: instrumental ? "" : d.lyrics,
@@ -562,7 +564,9 @@ export function runStages(spec: MusicFamilySpec, req: MusicRequest): [string, nu
   if (spec.planning) {
     const cot = req.options?.cot ?? "full";
     const follows = !!req.scorePath || req.edit?.kind === "rearrange" || req.edit?.kind === "continue";
-    if (cot === "off" || follows) stages = stages.filter(([s]) => s !== "score");
+    // A YuE2 instrumental writes its score first even with planning off.
+    const plans = req.instrumental ? !follows : cot !== "off" && !follows;
+    if (!plans) stages = stages.filter(([s]) => s !== "score");
   }
   if (req.edit?.kind === "repaint" || req.edit?.kind === "cover") stages = stages.filter(([s]) => s !== "tokens");
   const total = stages.reduce((a, [, w]) => a + w, 0) || 1;

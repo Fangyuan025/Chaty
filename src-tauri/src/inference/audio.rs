@@ -135,6 +135,9 @@ pub struct MusicAudio {
 #[derive(Debug, Clone, Default)]
 pub struct MusicOutcome {
     pub audio: Option<MusicAudio>,
+    /// A run that stops once the score is written (YuE2 `stop_after=abc`):
+    /// the ABC file, and whether the model ran out of room writing it.
+    pub score: Option<(String, bool)>,
     pub cancelled: bool,
     pub elapsed_ms: u64,
 }
@@ -470,6 +473,7 @@ impl AudioEngine {
                     on_event(MusicEvent::Audio { audio: a.clone() });
                     out.audio = Some(a);
                 }
+                Some("score") => out.score = Some((text("score_path"), ev["truncated"].as_bool().unwrap_or(false))),
                 Some("done") => {
                     out.elapsed_ms = ev["elapsed_ms"].as_u64().unwrap_or_else(|| started.elapsed().as_millis() as u64);
                     return Ok(out);

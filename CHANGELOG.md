@@ -47,6 +47,20 @@
   family can leave it out; the length is automatic or set, as a limit where
   the model decides when to end.
 
+- **YuE2 instrumentals keep the voice out.** YuE2 sings even with empty
+  lyrics, so an instrumental is made the way its makers make one: the model
+  writes a score from the style and section tags alone, every note of the
+  score's vocal melody is moved to its instrument part (harmony, meter, keys
+  and sections kept, the result read back to prove it), and the music is
+  played from that score with a style that asks for no voice. A score the
+  planner cuts short at its limit is written again, and twice cut short, its
+  whole bars are used. Measured with a vocal separator on 60-second pieces in
+  eight styles, seed for seed: empty lyrics had a voice in 310 of 472
+  seconds, in every piece; the instrumental in 45, and in half of them none —
+  what is left is mostly wordless singing over a chorus. A piece made from a
+  score — yours, or the one a rearrangement follows — keeps a copy of it, to
+  open or rearrange again.
+
 - **Watched as it is made.** A percentage made from the stages the piece
   actually goes through — writing the score, composing, rendering the sound,
   decoding — weighted by each family's share of the work, with how much music
@@ -88,8 +102,14 @@
   too, and the model store's dialog dims the window like every other dialog.
 
 - **A narrow window keeps its buttons.** The top row gives way at the
-  model's name, its size figures first, and Code's workspace keeps a few
-  letters of its own.
+  model's name, its size figures first; Code's workspace keeps a few
+  letters of its own, and "Open workspace…" stays on one line, down to its
+  folder icon where there is no room for the words. In a small window the
+  sidebar gives way too, so the panel keeps room for its header.
+
+- **What scrolls under the top row fades under it** — Code's failed tool
+  steps, the music studio's progress and the empty chat's suggestions
+  painted over the row instead.
 
 - Settings → About says what Chaty is now.
 
@@ -104,10 +124,24 @@
   the canvas it is drawn on and ended at a straight line across the middle
   of the screen; it now fades out long before any edge.
 
+### Code
+
+- **A Code session exports as a trace.** The download arrow at the top
+  right exports the open session as JSON Lines, one record a line in the
+  order things happened: each request, every tool call with its arguments,
+  the whole of what it returned and its diff, the reasoning, the plan and the
+  answer. The arrow follows the mode — in Code it is the session's, not the
+  chat conversation open behind it.
+
+- In Code mode the command palette's New starts a new session, and a
+  conversation picked from it opens in chat.
+
 ### Sidebars
 
 - **Several sessions deleted at once in Code and the image studio,** as the
   chat's conversations are (#20); the confirmation says their files go too.
+  The selection bar fits the narrowest sidebar in every language, its
+  actions on a second line rather than over the count.
 
 - **Code's sessions can be searched,** as the chat's conversations are: by
   title as you type, and by what was said and done in them.

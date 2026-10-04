@@ -118,7 +118,8 @@ pub const YUE2: Family = Family {
     prompt_option: Some("style"),
     lyrics: Some("lyrics"),
     lyrics_required: false,
-    // An empty lyrics field is YuE2's instrumental.
+    // An empty lyrics field still gets sung: an instrumental is a score with
+    // its voice moved to an instrument (`make_piece`, abc.rs).
     instrumental_lyrics: Some(""),
     length: Some(Length {
         option: "semantic_max_tokens",

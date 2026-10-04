@@ -179,6 +179,12 @@ const CODE_SESSION_README = [
     text: "Written: what the project is, how to install it, and how to run the tests.",
     steps: [
       {
+        id: "s0",
+        call: { name: "read_file", args: { path: "README.md" } },
+        status: "error",
+        result: "ERROR: no such file: README.md",
+      },
+      {
         id: "s1",
         call: { name: "write_file", args: { path: "README.md" } },
         status: "done",
@@ -518,6 +524,10 @@ function mockWavUrl(path: string): string {
 // Which model the preview has "loaded": ?model=image starts in the image
 // studio, ?model=music in the music studio.
 const START_MODEL = new URLSearchParams(window.location.search).get("model");
+// ?ws=none starts Code mode without a workspace; ?os=windows draws the
+// Windows window controls.
+const NO_WORKSPACE = new URLSearchParams(window.location.search).get("ws") === "none";
+const OS = new URLSearchParams(window.location.search).get("os") === "windows" ? "windows" : "macos";
 let CURRENT: unknown = START_MODEL === "image" ? IMAGE_MODEL : START_MODEL === "music" ? MUSIC_MODEL : MODEL;
 
 /** Command → canned response. Anything unlisted returns a benign default. */
@@ -1077,7 +1087,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return "// mock file contents\nexport function tokenize(src: string) {}\n";
     }
     case "agent_get_workspace":
-      return "/Users/dev/projects/parser-kit";
+      return NO_WORKSPACE ? null : "/Users/dev/projects/parser-kit";
     case "agent_set_workspace":
       return String(args?.path ?? "");
     case "agent_bg_list":
@@ -1290,20 +1300,15 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
 
 export function installDevMock() {
   // plugin-os `platform()` reads an injected global; fake macOS.
-  (window as unknown as Record<string, unknown>).__TAURI_OS_PLUGIN_INTERNALS__ = {
-    platform: "macos",
-    os_type: "macos",
-    family: "unix",
-    version: "15.0",
-    arch: "aarch64",
-    exe_extension: "",
-    eol: "\n",
-  };
+  (window as unknown as Record<string, unknown>).__TAURI_OS_PLUGIN_INTERNALS__ =
+    OS === "windows"
+      ? { platform: "windows", os_type: "windows", family: "windows", version: "10.0.26100", arch: "x86_64", exe_extension: "exe", eol: "\r\n" }
+      : { platform: "macos", os_type: "macos", family: "unix", version: "15.0", arch: "aarch64", exe_extension: "", eol: "\n" };
   mockWindows("main");
   mockIPC((cmd, args) => {
     // Tauri plugins arrive as "plugin:name|method".
     if (cmd.startsWith("plugin:")) {
-      if (cmd === "plugin:os|platform") return "macos";
+      if (cmd === "plugin:os|platform") return OS;
       return null;
     }
     return handle(cmd, args as Record<string, unknown> | undefined);

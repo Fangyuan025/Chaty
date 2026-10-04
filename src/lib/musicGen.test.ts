@@ -137,6 +137,10 @@ describe("requests", () => {
 
   test("instrumental sends no lyrics; a family that sings nothing never does", () => {
     expect(buildMusicRequest({ ...draft, mode: "instrumental" }, S, YUE2)).toMatchObject({ lyrics: "", instrumental: true });
+    // An instrumental is planned even with planning off: its score's voice is
+    // what moves to an instrument.
+    expect(buildMusicRequest({ ...draft, mode: "instrumental" }, { ...S, musPlanning: "off" }, YUE2).options.cot).toBeUndefined();
+    expect(buildMusicRequest({ ...draft, mode: "instrumental" }, { ...S, musPlanning: "melody" }, YUE2).options.cot).toBe("melody");
     expect(buildMusicRequest(draft, S, STABLE)).toMatchObject({ lyrics: "", instrumental: false });
     // A score to follow is YuE2's alone; an edit the family does not make is dropped.
     const r = buildMusicRequest(
@@ -190,6 +194,9 @@ describe("progress", () => {
   test("the stages a piece goes through follow the request", () => {
     expect(runStages(YUE2, req()).map(([s]) => s)).toEqual(["score", "tokens", "render", "decode"]);
     expect(runStages(YUE2, req({ options: { cot: "off" } })).map(([s]) => s)).toEqual(["tokens", "render", "decode"]);
+    // An instrumental writes its score first, whatever planning says.
+    expect(runStages(YUE2, req({ instrumental: true, options: { cot: "off" } })).map(([s]) => s)).toEqual(["score", "tokens", "render", "decode"]);
+    expect(runStages(YUE2, req({ instrumental: true, scorePath: "/a.abc" })).map(([s]) => s)).not.toContain("score");
     // Following a score (its own or a parent's) writes none.
     expect(runStages(YUE2, req({ scorePath: "/a.abc" })).map(([s]) => s)).not.toContain("score");
     expect(runStages(YUE2, req({ edit: { kind: "continue", parentId: "p", start: 0, end: 0, strength: 0 } })).map(([s]) => s)).not.toContain(

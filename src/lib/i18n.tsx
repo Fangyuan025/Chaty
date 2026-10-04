@@ -647,6 +647,8 @@ export const T = {
   exportTitle: { zh: "导出对话", en: "Export chat", pt: "Exportar conversa" },
   exportMd: { zh: "导出为 Markdown", en: "Export as Markdown", pt: "Exportar como Markdown" },
   exportJson: { zh: "导出为 JSON", en: "Export as JSON", pt: "Exportar como JSON" },
+  exportSessionTitle: { zh: "导出会话", en: "Export session", pt: "Exportar sessão" },
+  exportTrace: { zh: "导出完整轨迹 (JSONL)", en: "Export full trace (JSONL)", pt: "Exportar rastro completo (JSONL)" },
   exportFailed: { zh: "导出失败", en: "Export failed", pt: "Falha na exportação" },
   dlTitle: { zh: "下载模型", en: "Download model", pt: "Baixar modelo" },
   dlHint: {
@@ -1464,6 +1466,11 @@ export const T = {
   musPlanMelody: { zh: "只写旋律", en: "Melody only", pt: "Só melodia" },
   musPlanMelodyTip: { zh: "只规划主旋律,更快", en: "Plan the melody only — quicker", pt: "Planeja só a melodia — mais rápido" },
   musPlanOff: { zh: "直接生成", en: "Straight to music", pt: "Direto para a música" },
+  musPlanOffInstrumental: {
+    zh: "纯音乐要先写乐谱,再把人声旋律交给乐器",
+    en: "An instrumental needs a score first: its vocal melody goes to an instrument",
+    pt: "Uma instrumental precisa de partitura: a melodia vocal passa para um instrumento",
+  },
   musPlanOffTip: { zh: "不写乐谱,最快;之后不能「改编」", en: "No score — quickest; it can't be rearranged later", pt: "Sem partitura — mais rápido; não pode ser rearranjada depois" },
   musLength: { zh: "时长", en: "Length", pt: "Duração" },
   musLengthLimit: { zh: "最长时长", en: "Longest", pt: "Duração máxima" },
