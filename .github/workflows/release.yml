@@ -161,13 +161,27 @@ jobs:
             Select-Object -First 1 -ExpandProperty FullName
           if (-not $dll) {
             # SDK archives may omit the runtime component — fetch LunarG's
-            # standalone runtime zip for the same version instead.
-            $ver = "1.3.290.0"
+            # standalone runtime zip instead. LunarG names it
+            # VulkanRT-X64-<ver>-Components.zip and drops old versions
+            # (1.3.290.0 went away), so a pinned one is tried first, then the
+            # latest: the loader is backward compatible.
+            $ver = "1.4.328.1"
             $zip = "$env:TEMP\VulkanRT.zip"
-            Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanRT-$ver-Components.zip" -OutFile $zip
+            $urls = @(
+              "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanRT-X64-$ver-Components.zip",
+              "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-runtime-components.zip"
+            )
+            $got = $false
+            foreach ($u in $urls) {
+              try { Invoke-WebRequest $u -OutFile $zip; $got = $true; break }
+              catch { Write-Host "Vulkan runtime: $u failed: $($_.Exception.Message)" }
+            }
+            if (-not $got) { throw "no Vulkan runtime download worked" }
             Expand-Archive $zip -DestinationPath "$env:TEMP\VulkanRT" -Force
+            # The zip holds x86\ and x64\ copies under a folder named …X64…:
+            # pick by the DLL's own folder, not by anything in its path.
             $dll = Get-ChildItem -Recurse "$env:TEMP\VulkanRT" -Filter vulkan-1.dll |
-              Where-Object { $_.FullName -match '(x64|X64)' } |
+              Where-Object { $_.Directory.Name -ieq 'x64' } |
               Select-Object -First 1 -ExpandProperty FullName
           }
           if (-not $dll) { throw "vulkan-1.dll not found (SDK + runtime zip)" }
