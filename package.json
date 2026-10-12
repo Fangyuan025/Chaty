@@ -21,7 +21,7 @@
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-os": "^2",
     "highlight.js": "^11.11.1",
-    "katex": "^0.17.0",
+    "katex": "^0.19.0",
     "mermaid": "^11.15.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -41,5 +41,8 @@
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "katex": "$katex"
   }
 }
