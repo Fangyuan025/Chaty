@@ -136,6 +136,22 @@
 - In Code mode the command palette's New starts a new session, and a
   conversation picked from it opens in chat.
 
+- **Answers set like the rest of Code mode.** A Code answer took the chat's
+  reading serif without the chat's markdown rules: headings at the
+  browser's size, tables without borders, quotes as a bare indent, inline
+  code without a ground. It is set in the app's sans now, with quiet
+  headings, hairline tables, rules and quotes, and a code block without the
+  highlight theme's own padding.
+
+- **No emoji in what the model writes** — not in answers, not in the files
+  it writes — unless you ask for them. The rule names "attractive" as no
+  reason, which is what Gemma-4 26B took a request for an attractive README
+  to be; and what the model is shown stops modelling emoji (the 📁/📄 of a
+  folder listing, which Qwen3.6 35B drew a project survey with, the ⚠ over
+  web results, the ⏱ of a timed-out check). On a README and a pros-and-cons
+  task, three runs each on Gemma-4 26B and Qwen3.6 35B: no emoji in the
+  answers; in the README files 0 and 0/0/6, against 12/7 and 12/13.
+
 ### Sidebars
 
 - **Several sessions deleted at once in Code and the image studio,** as the
@@ -162,6 +178,8 @@
 - The microphone opens while the audio device is changing mode — a Bluetooth
   headset going from playback to its headset mode — instead of failing with
   "The requested stream configuration is not supported by the device".
+- Formulas and their stylesheet come from the same KaTeX (0.19); DOMPurify,
+  Mermaid and the Rust networking and TLS crates carry their security fixes.
 
 ## v2.3.0 — Put to work (2026-09-25)
 

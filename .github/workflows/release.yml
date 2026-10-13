@@ -322,9 +322,10 @@ jobs:
             longer ends at a line across the screen, and the window moves from
             its top edge even with Live mode or a dialog open.
 
-            Also: a Code session exports as a full JSONL trace, K2 Horizon's MLX
-            quants load, Code's sessions can be searched, and several sessions
-            at once can be deleted in Code and the image studio.
+            Also: Code's answers are set cleanly and come without emoji, a Code
+            session exports as a full JSONL trace, K2 Horizon's MLX quants load,
+            Code's sessions can be searched, and several sessions at once can be
+            deleted in Code and the image studio.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
