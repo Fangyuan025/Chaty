@@ -330,8 +330,9 @@ jobs:
             No title bar across the window: the window's controls and a mode
             switch of icons sit over the sidebar, the working area runs to the
             window's edges, and the transcript passes under the top row instead
-            of stopping at a bar. Chaty draws its own scrollbars everywhere, and
-            Code's thinking and bypass switches sit under its input.
+            of stopping at a bar. Chaty draws its own scrollbars everywhere, a
+            mouse wheel glides on a Mac as it does in Chrome, and Code's
+            thinking and bypass switches sit under its input.
 
             ## Live mode, interrupted
 

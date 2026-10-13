@@ -101,6 +101,12 @@
   boxes, number fields and a text field's resize grip are drawn by the app
   too, and the model store's dialog dims the window like every other dialog.
 
+- **A mouse wheel glides on a Mac,** as it does in Chrome. Each notch eases
+  the page over a few frames instead of jumping it in one, and a wheel kept
+  turning carries the page in one movement rather than a pulse per notch;
+  the page stops when the wheel does, with nothing coasting on. Trackpads and
+  Magic Mice scroll as they did.
+
 - **A narrow window keeps its buttons.** The top row gives way at the
   model's name, its size figures first; Code's workspace keeps a few
   letters of its own, and "Open workspace…" stays on one line, down to its
