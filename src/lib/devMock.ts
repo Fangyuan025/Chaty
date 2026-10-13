@@ -198,9 +198,59 @@ const CODE_SESSION_README = [
 const SAVED_CODE_SESSIONS: { id: string; title: string; workspace: string }[] = [];
 const SAVED_CODE_BODIES = new Map<string, string>();
 
+/** A long summary the way models write them: headings, lists, a table, code,
+ *  a quote, a rule — what Code's answer typography has to carry. */
+const CODE_SESSION_SUMMARY = [
+  { id: "u1", role: "user", text: "Refactor the config loader so env vars override the file, and document it.", steps: [] },
+  {
+    id: "a1",
+    role: "assistant",
+    text: `## Summary
+
+The config loader now reads \`config.toml\` first and lets environment variables override any key. All **42 tests** pass.
+
+### What changed
+
+1. \`src/config.rs\` — \`load()\` merges three layers in order:
+   - built-in defaults
+   - the file, if present
+   - \`APP_*\` environment variables
+2. \`src/main.rs\` — the \`--config\` flag is optional now.
+3. \`README.md\` — a new *Configuration* section.
+
+| Key | File | Env var | Default |
+|---|---|---|---|
+| \`port\` | \`port = 8080\` | \`APP_PORT\` | 8080 |
+| \`log_level\` | \`log_level = "info"\` | \`APP_LOG_LEVEL\` | info |
+
+\`\`\`rust
+pub fn load(path: Option<&Path>) -> Result<Config> {
+    let mut cfg = Config::default();
+    if let Some(p) = path { cfg.merge(read_toml(p)?); }
+    cfg.merge(from_env("APP_")?);
+    Ok(cfg)
+}
+\`\`\`
+
+> A malformed value in an env var is an error, not a silent fallback.
+
+---
+
+#### Next steps
+
+- Consider a \`--print-config\` flag to show the merged result.
+- See the [TOML spec](https://toml.io) for nested tables.`,
+    steps: [
+      { id: "s1", call: { name: "read_file", args: { path: "src/config.rs" } }, status: "done", result: "pub fn load() -> Config { … }" },
+      { id: "s2", call: { name: "bash", args: { command: "cargo test" } }, status: "done", result: "test result: ok. 42 passed\n[exit 0]" },
+    ],
+  },
+];
+
 const CODE_SESSIONS = [
   { id: "cs1", title: "Match the upstream tokenizer fix", workspace: "/Users/dev/projects/parser-kit", updatedAt: now - 1800e3 },
   { id: "cs2", title: "Add a README to the project", workspace: "/Users/dev/projects/parser-kit", updatedAt: now - 86400e3 },
+  { id: "cs3", title: "Refactor the config loader", workspace: "/Users/dev/projects/parser-kit", updatedAt: now - 3 * 86400e3 },
 ];
 
 // ---- Image studio fixtures ----
@@ -960,7 +1010,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       const id = String(args?.id ?? "");
       const hit = SAVED_CODE_SESSIONS.find((s) => s.id === id);
       if (hit) return SAVED_CODE_BODIES.get(hit.id) ?? "[]";
-      return JSON.stringify(id === "cs2" ? CODE_SESSION_README : CODE_SESSION_MSGS);
+      return JSON.stringify(id === "cs2" ? CODE_SESSION_README : id === "cs3" ? CODE_SESSION_SUMMARY : CODE_SESSION_MSGS);
     }
     case "code_session_save": {
       // Real save/delete semantics so delete-while-running is drivable in

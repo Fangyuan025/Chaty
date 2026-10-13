@@ -880,7 +880,7 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
                     .take(14)
                     .collect();
                 if r.timed_out {
-                    out.push_str(&trf!("⏱ 超时({title})\n", "⏱ timed out ({title})\n"));
+                    out.push_str(&trf!("✗ 超时({title})\n", "✗ timed out ({title})\n"));
                 } else if r.code == 0 {
                     out.push_str(&tr("✓ 通过\n", "✓ passed\n"));
                 } else {
@@ -1249,10 +1249,10 @@ fn syntax_note(abs: &Path, was_clean: Option<bool>) -> String {
             let ctx = error_context(abs, &e);
             match was_clean {
                 Some(true) => trf!(
-                    "\n⚠️ 语法检查失败——本次编辑把一个原本可解析的文件改坏了:\n{e}{ctx}\n请立即修复;如需还原,该文件已有检查点可回退。",
-                    "\n⚠️ syntax check failed — this edit BROKE a previously-parsable file:\n{e}{ctx}\nfix now, or rewind the checkpoint."
+                    "\n语法检查失败——本次编辑把一个原本可解析的文件改坏了:\n{e}{ctx}\n请立即修复;如需还原,该文件已有检查点可回退。",
+                    "\nSyntax check failed — this edit BROKE a previously-parsable file:\n{e}{ctx}\nfix now, or rewind the checkpoint."
                 ),
-                _ => trf!("\n⚠️ 语法检查失败:\n{e}{ctx}", "\n⚠️ syntax check failed:\n{e}{ctx}"),
+                _ => trf!("\n语法检查失败:\n{e}{ctx}", "\nSyntax check failed:\n{e}{ctx}"),
             }
         }
         _ => {
@@ -1266,8 +1266,8 @@ fn syntax_note(abs: &Path, was_clean: Option<bool>) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             trf!(
-                "\nℹ️ 可能未定义的名字: {list} —— 若是笔误请一并修正;若在别处动态定义可忽略。",
-                "\nℹ️ Possibly undefined name(s): {list} — fix if these are typos; ignore if defined dynamically elsewhere."
+                "\n提示:可能未定义的名字: {list} —— 若是笔误请一并修正;若在别处动态定义可忽略。",
+                "\nNote: possibly undefined name(s): {list} — fix if these are typos; ignore if defined dynamically elsewhere."
             )
         }
     }
@@ -6359,13 +6359,13 @@ mod tests {
             "def f(x):\n    cothm = x + 1\n    return cotm\n".into(),
         )
         .unwrap();
-        assert!(out.contains("cotm") && (out.contains("可能未定义") || out.contains("Possibly undefined")), "{out}");
+        assert!(out.contains("cotm") && (out.contains("可能未定义") || out.contains("possibly undefined")), "{out}");
         // A clean file stays note-free.
         let ok = agent_write_file("ok.py".into(), "def f(x):\n    y = x\n    return y\n".into()).unwrap();
-        assert!(!ok.contains("可能未定义") && !ok.contains("Possibly undefined"), "{ok}");
+        assert!(!ok.contains("可能未定义") && !ok.contains("possibly undefined"), "{ok}");
         // A syntax break carries the offending region with line numbers.
         let broken = agent_write_file("b.py".into(), "def f(:\n    pass\n".into()).unwrap();
-        assert!(broken.contains("语法检查失败") || broken.contains("syntax check failed"), "{broken}");
+        assert!(broken.contains("语法检查失败") || broken.contains("Syntax check failed"), "{broken}");
         assert!(broken.contains("出错位置") || broken.contains("At the error site"), "{broken}");
         assert!(broken.contains("def f(:"), "{broken}");
         let _ = std::fs::remove_dir_all(&dir);

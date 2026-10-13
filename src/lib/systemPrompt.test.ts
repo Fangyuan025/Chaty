@@ -12,10 +12,10 @@ const { setHistoryToolEnabled } = await import("./toolRegistry");
 setHistoryToolEnabled(true);
 
 const variants = [
-  { zh: true, vision: false, label: "zh plain", maxChars: 4180 },
-  { zh: true, vision: true, label: "zh vision", maxChars: 5340 },
-  { zh: false, vision: false, label: "en plain", maxChars: 7240 },
-  { zh: false, vision: true, label: "en vision", maxChars: 9100 },
+  { zh: true, vision: false, label: "zh plain", maxChars: 4240 },
+  { zh: true, vision: true, label: "zh vision", maxChars: 5400 },
+  { zh: false, vision: false, label: "en plain", maxChars: 7370 },
+  { zh: false, vision: true, label: "en vision", maxChars: 9240 },
 ] as const;
 // Caps anchored to the post-slimming sizes (2026-07 WS1: 3545 / 4432 / 6031 /
 // 7516 JS chars at think=normal, no project doc; before slimming they were
@@ -64,6 +64,17 @@ const variants = [
 //   model had no way to ask for. Owner's design: the search names the step,
 //   the read lists the calls with ✓/✗, and the step id goes back to the same
 //   tool for the result itself.
+
+//   2026-10-12  all four +67 zh / +157 en — no emoji, no headings on a short
+//   answer. Code's answers came decorated with emoji, and so did files the
+//   agent wrote (owner: they read as cheap). A clause on the summary rule
+//   ("no emoji unless asked") did not hold: Gemma-4 26B read "make the README
+//   attractive" as asking, and listed the emoji it used in its answer. As a
+//   rule of its own that names "attractive" as no reason and wants an
+//   explicit request, on the README and pros/cons tasks (3 runs each):
+//   answers 0 emoji on Gemma-4 26B and Qwen3.6 35B, README files 0 and 0/0/6
+//   against 12/7 and 12/13 before. list_dir also stopped handing the model
+//   📁/📄 to imitate.
 
 describe("systemPrompt size gate", () => {
   for (const v of variants) {

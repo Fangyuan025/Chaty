@@ -1616,7 +1616,8 @@ body.resizing-x {
   padding: 1.5px 5px;
   border-radius: var(--r-sm);
 }
-.bubble pre code.hljs {
+.bubble pre code.hljs,
+.code-block pre code.hljs {
   background: transparent;
   padding: 0;
 }
@@ -6344,10 +6345,129 @@ body:has(.live-overlay) .win-btn.close:hover {
   flex-direction: column;
   gap: 7px;
 }
-.cm-asst-text {
-  font-size: 14px;
+/* Code's answers: the app's own sans at the size of the work around it, not
+   the chat's reading serif — next to monospace step cards the serif read as
+   a different document. The chat's markdown rules are scoped to its bubbles,
+   so everything a summary uses is set here, kept quiet: small headings,
+   hairline tables, rules and quotes. */
+.cm-asst-text.answer {
+  font-family: var(--font-body);
+  font-size: 14.5px;
   line-height: 1.65;
   color: var(--text);
+  overflow-wrap: anywhere;
+}
+/* Room between the steps and what they came to. */
+.cm-asst > .cm-asst-text {
+  margin-top: 6px;
+}
+.cm-asst-text > :first-child {
+  margin-top: 0;
+}
+.cm-asst-text > :last-child {
+  margin-bottom: 0;
+}
+.cm-asst-text p {
+  margin: 0 0 10px;
+}
+.cm-asst-text h1,
+.cm-asst-text h2,
+.cm-asst-text h3,
+.cm-asst-text h4,
+.cm-asst-text h5,
+.cm-asst-text h6 {
+  margin: 20px 0 8px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+}
+.cm-asst-text h1 {
+  font-size: 18px;
+}
+.cm-asst-text h2 {
+  font-size: 16px;
+}
+.cm-asst-text h3 {
+  font-size: 15px;
+}
+.cm-asst-text h4,
+.cm-asst-text h5,
+.cm-asst-text h6 {
+  font-size: 14.5px;
+}
+.cm-asst-text ul,
+.cm-asst-text ol {
+  margin: 6px 0 10px;
+  padding-left: 22px;
+}
+.cm-asst-text li {
+  margin: 3px 0;
+}
+.cm-asst-text li > ul,
+.cm-asst-text li > ol {
+  margin: 3px 0;
+}
+.cm-asst-text li::marker {
+  color: var(--text-dim);
+}
+.cm-asst-text strong {
+  font-weight: 600;
+}
+/* A link is underlined text — the accent marks it, too faint to read in. */
+.cm-asst-text a {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  text-underline-offset: 3px;
+}
+.cm-asst-text a:hover {
+  color: var(--accent);
+}
+.cm-asst-text code {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-size: 0.88em;
+}
+.cm-asst-text :not(pre) > code {
+  padding: 1px 5px;
+  background: var(--ink-soft);
+  border-radius: var(--r-sm);
+}
+.cm-asst-text blockquote {
+  margin: 10px 0;
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-dim);
+}
+.cm-asst-text hr {
+  height: 1px;
+  margin: 18px 0;
+  background: var(--border);
+  border: none;
+}
+.cm-asst-text table {
+  display: block;
+  max-width: 100%;
+  margin: 10px 0 12px;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.cm-asst-text th,
+.cm-asst-text td {
+  padding: 6px 10px;
+  text-align: left;
+  border: 1px solid var(--border);
+}
+.cm-asst-text th {
+  font-weight: 600;
+  background: var(--ink-faint);
+}
+.cm-asst-text .code-block {
+  margin: 12px 0;
+}
+.cm-asst-text img {
+  max-width: 100%;
 }
 
 /* Step result note (exit code / line count): plain small print at the end

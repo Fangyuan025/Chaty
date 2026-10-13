@@ -2207,7 +2207,7 @@ export function CodeMode({
                   className="cm-bgjobs cm-dl-badge"
                   title={downloads.map((d) => `#${d.id} ${d.url} → ${d.path}`).join("\n")}
                 >
-                  <span className="cm-spin" /> ⬇ {downloads.length}
+                  <span className="cm-spin" /> <Icon name="download" size={12} /> {downloads.length}
                   {downloads[0].total
                     ? ` · ${Math.min(100, Math.round((downloads[0].downloaded / downloads[0].total) * 100))}%`
                     : ` · ${fmtBytes(downloads[0].downloaded)}`}

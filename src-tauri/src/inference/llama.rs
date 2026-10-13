@@ -1873,7 +1873,7 @@ fn run_turn(
         // the truth is "this model file is a bad conversion".
         if n_decoded == 32 && out.trim().is_empty() {
             sink.emit(StreamEvent::Token {
-                text: "⚠️ 模型输出退化(连续空白),已中止。该模型文件很可能转换损坏(常见:预分词器或架构元数据声明错误,如 MiniCPM5 被标成 llama-bpe 预分词)。请改用该模型的官方 GGUF 或 MLX 版本。\n(Model output degenerated into pure whitespace — aborted. The file is likely a broken conversion — commonly a wrong tokenizer-pre or architecture declaration. Use the model's official GGUF or MLX build.)".to_string(),
+                text: "模型输出退化(连续空白),已中止。该模型文件很可能转换损坏(常见:预分词器或架构元数据声明错误,如 MiniCPM5 被标成 llama-bpe 预分词)。请改用该模型的官方 GGUF 或 MLX 版本。\n(Model output degenerated into pure whitespace — aborted. The file is likely a broken conversion — commonly a wrong tokenizer-pre or architecture declaration. Use the model's official GGUF or MLX build.)".to_string(),
             })?;
             stop_reason = "degenerate";
             break;
