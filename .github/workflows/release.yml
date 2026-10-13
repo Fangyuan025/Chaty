@@ -118,8 +118,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri }
       - name: Install Vulkan SDK
+        # LunarG keeps only its last ~16 SDKs downloadable: 1.3.290.0 went away
+        # once the runner cache of it expired. Keep this pin recent, and the
+        # runtime zip below on the same version.
         uses: humbletim/install-vulkan-sdk@v1.2
-        with: { version: 1.3.290.0, cache: true }
+        with: { version: 1.4.328.1, cache: true }
       - name: Install Ninja
         run: choco install ninja -y
       - uses: ilammy/msvc-dev-cmd@v1 # load MSVC env so CMake/Ninja can find cl.exe
