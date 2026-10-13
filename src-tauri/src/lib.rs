@@ -21,6 +21,8 @@ pub mod mcp;
 pub mod ocr;
 pub mod search;
 pub mod skillsync;
+#[cfg(target_os = "macos")]
+mod smooth_wheel;
 mod state;
 mod store;
 mod user_skills;
@@ -466,6 +468,10 @@ pub fn run() {
                 });
                 let _ = w.eval("location.reload()");
             }
+
+            // ---- macOS: a mouse wheel that glides (see smooth_wheel.rs) ----
+            #[cfg(target_os = "macos")]
+            smooth_wheel::install();
 
             // ---- system tray (labels default to English; the UI syncs the
             // language via `set_tray_language` on startup) ----
