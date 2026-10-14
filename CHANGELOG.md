@@ -117,6 +117,9 @@
   steps, the music studio's progress and the empty chat's suggestions
   painted over the row instead.
 
+- **The arrow back to the latest message fades** in and out, instead of
+  popping in and out of view, in chat, Code and both studios.
+
 - Settings → About says what Chaty is now.
 
 ### Live mode
@@ -175,6 +178,37 @@
   stacked under mlx-lm's own name for them, and failed to load with a missing
   `experts` weight; they load now, with the low / medium / high rungs (oQ4e:
   30–36 tok/s on an M4 Pro).
+
+### Web search and sources
+
+- **No cap of six sources.** A web search gives every result on topic a
+  number — its page's text where the page could be read, its snippet where
+  not — in the search engine's order, for as long as they fit a quarter of
+  the model's context window; before, it stopped at six however much room
+  there was, and each search engine's list stopped at eight.
+- **Sources sit under an answer as one line** — "wikipedia.org and 9 more
+  sources" — that opens into the list: each source's number (the 【n】 in the
+  answer), title, site and passage, a web page opening in the browser, a
+  knowledge-base passage opening to its whole text. The chip row and its
+  pop-up per source are gone.
+- **An answer keeps its sources.** They were only on screen: a conversation
+  opened again had answers citing 【n】 with nothing under them.
+
+### Model store
+
+- **When Hugging Face cannot list models, the store still shows them.** Each
+  list the store opens on — every format, task and order — is kept as it
+  last loaded and shown, with a line saying so, when Hugging Face's listing
+  fails; the music shelf keeps its official packages whatever happens. Where
+  nothing is kept, the list says what went wrong, and that a repo pasted in
+  still opens.
+- **A bad moment at Hugging Face is tried again.** A gateway timeout or server
+  error from its API is retried before the store gives up, and then it says
+  the trouble is Hugging Face's, not the connection; a Hugging Face that
+  cannot be reached at all points to the endpoint setting.
+- A Hugging Face server error no longer reads as "repo not found" when a
+  model is opened or downloaded, and an author's picture no longer stays
+  blank for the rest of the session after Hugging Face failed to answer.
 
 ### Reliability
 

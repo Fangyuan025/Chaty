@@ -343,8 +343,11 @@ jobs:
 
             Also: Code's answers are set cleanly and come without emoji, a Code
             session exports as a full JSONL trace, K2 Horizon's MLX quants load,
-            Code's sessions can be searched, and several sessions at once can be
-            deleted in Code and the image studio.
+            Code's sessions can be searched, several sessions at once can be
+            deleted in Code and the image studio, the model store keeps its
+            lists when Hugging Face cannot list models, and a web search is no
+            longer held to six sources — they fold into one line under the
+            answer, and stay with it.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
