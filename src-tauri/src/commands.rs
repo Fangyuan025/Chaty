@@ -1832,6 +1832,7 @@ pub async fn generate(
                 "assistant".into(),
                 text,
                 None,
+                None,
             );
         }
         // Let go of the slot only if it is still this turn's.

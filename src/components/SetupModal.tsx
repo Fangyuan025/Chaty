@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
+import { hfErrorText } from "../lib/hfError";
 import {
   cancelDownload,
   downloadModel,
@@ -256,7 +257,7 @@ export function SetupModal({
       if (!chosen) {
         setCard(p.label, {
           kind: "error",
-          message: lastErr || t("setupNotFound"),
+          message: hfErrorText(lastErr, t) || t("setupNotFound"),
         });
         return;
       }

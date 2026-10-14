@@ -31,10 +31,30 @@ pub struct StoredMessage {
     /// Image attachment paths (vision models), stored as a JSON array.
     #[serde(default)]
     pub images: Vec<String>,
+    /// The web pages and knowledge-base passages an answer was given — what
+    /// its 【n】 marks point at — stored as a JSON array.
+    #[serde(default)]
+    pub sources: Vec<MsgSource>,
+}
+
+/// One source of an answer: a web page (`url`) or a knowledge-base passage
+/// (no `url`, the document's name as `title`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MsgSource {
+    pub title: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub snippet: String,
 }
 
 /// JSON-decode the `images` column ('[]' default; tolerate legacy NULL/garbage).
 fn images_from_json(s: Option<String>) -> Vec<String> {
+    s.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+/// JSON-decode the `sources` column, as tolerant as `images_from_json`.
+fn sources_from_json(s: Option<String>) -> Vec<MsgSource> {
     s.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
@@ -55,7 +75,8 @@ CREATE TABLE IF NOT EXISTS messages (
     role            TEXT NOT NULL,
     content         TEXT NOT NULL,
     created_at      INTEGER NOT NULL,
-    images          TEXT NOT NULL DEFAULT '[]'
+    images          TEXT NOT NULL DEFAULT '[]',
+    sources         TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
 CREATE TABLE IF NOT EXISTS code_sessions (
@@ -131,6 +152,13 @@ pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
     // Migration for DBs created before v1.7: image attachments (vision models).
     let _ = conn.execute(
         "ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
+    // Migration for DBs created before v2.3.5: an answer's sources. Before it,
+    // they lived only on screen, and a conversation opened again had answers
+    // citing 【n】 with nothing under them.
+    let _ = conn.execute(
+        "ALTER TABLE messages ADD COLUMN sources TEXT NOT NULL DEFAULT '[]'",
         [],
     );
     migrate_image_sessions(&conn);
@@ -211,11 +239,38 @@ pub fn save_message(
     role: String,
     content: String,
     images: Option<Vec<String>>,
+    // None keeps the sources the message already has: the backend writes a
+    // finished reply down itself, without them, and must not wipe the ones
+    // the page saved.
+    sources: Option<Vec<MsgSource>>,
 ) -> Result<(), String> {
     let conn = lock(&db)?;
     let now = now_ms();
     let images_json =
         serde_json::to_string(&images.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+    let sources_json = sources.map(|s| serde_json::to_string(&s).unwrap_or_else(|_| "[]".into()));
+    put_message(&conn, &id, &conversation_id, &role, &content, now, &images_json, sources_json.as_deref())
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+        params![now, conversation_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The row `save_message` writes. `sources` None keeps the ones there.
+#[allow(clippy::too_many_arguments)]
+fn put_message(
+    conn: &Connection,
+    id: &str,
+    conversation_id: &str,
+    role: &str,
+    content: &str,
+    now: i64,
+    images_json: &str,
+    sources_json: Option<&str>,
+) -> rusqlite::Result<usize> {
     // Only for a conversation that still exists. Cancelling a stream and
     // deleting its conversation in the same breath used to land here *after*
     // the delete — the reply was written back under an id nothing pointed to
@@ -223,18 +278,18 @@ pub fn save_message(
     // count in Settings → Data. The guard makes that unreachable from any
     // caller, whatever the ordering.
     conn.execute(
-        "INSERT OR REPLACE INTO messages (id, conversation_id, role, content, created_at, images)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6
-         WHERE EXISTS (SELECT 1 FROM conversations WHERE id = ?2)",
-        params![id, conversation_id, role, content, now, images_json],
+        "INSERT INTO messages (id, conversation_id, role, content, created_at, images, sources)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, COALESCE(?7, '[]')
+         WHERE EXISTS (SELECT 1 FROM conversations WHERE id = ?2)
+         ON CONFLICT(id) DO UPDATE SET
+             conversation_id = excluded.conversation_id,
+             role = excluded.role,
+             content = excluded.content,
+             created_at = excluded.created_at,
+             images = excluded.images,
+             sources = COALESCE(?7, messages.sources)",
+        params![id, conversation_id, role, content, now, images_json, sources_json],
     )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
-        params![now, conversation_id],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 #[tauri::command]
@@ -267,7 +322,7 @@ pub fn get_messages(db: State<'_, Db>, conversation_id: String) -> Result<Vec<St
     let conn = lock(&db)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, role, content, created_at, images FROM messages
+            "SELECT id, role, content, created_at, images, sources FROM messages
              WHERE conversation_id = ?1 ORDER BY created_at ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -279,6 +334,7 @@ pub fn get_messages(db: State<'_, Db>, conversation_id: String) -> Result<Vec<St
                 content: r.get(2)?,
                 created_at: r.get(3)?,
                 images: images_from_json(r.get(4)?),
+                sources: sources_from_json(r.get(5)?),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -293,6 +349,8 @@ pub struct MsgIn {
     pub content: String,
     #[serde(default)]
     pub images: Vec<String>,
+    #[serde(default)]
+    pub sources: Vec<MsgSource>,
 }
 
 /// Replace ALL messages of a conversation with `messages` (in order). Used by
@@ -325,10 +383,11 @@ pub fn replace_messages(
     .map_err(|e| e.to_string())?;
     for (i, m) in messages.iter().enumerate() {
         let images_json = serde_json::to_string(&m.images).unwrap_or_else(|_| "[]".into());
+        let sources_json = serde_json::to_string(&m.sources).unwrap_or_else(|_| "[]".into());
         tx.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, created_at, images)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![m.id, conversation_id, m.role, m.content, base + i as i64, images_json],
+            "INSERT INTO messages (id, conversation_id, role, content, created_at, images, sources)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![m.id, conversation_id, m.role, m.content, base + i as i64, images_json, sources_json],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -1680,7 +1739,7 @@ pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats,
 #[cfg(test)]
 mod tests {
     use rusqlite::{params, Connection};
-    use super::{search_terms, session_hits, session_mentions};
+    use super::{put_message, search_terms, session_hits, session_mentions, sources_from_json, MsgSource};
 
     /// A session as the frontend stores one: messages, and the tool steps
     /// under them.
@@ -1927,13 +1986,33 @@ mod tests {
     /// conversation in the same breath used to save the reply afterwards,
     /// leaving a row no screen could reach.
     fn save(conn: &Connection, id: &str, conv_id: &str) -> usize {
-        conn.execute(
-            "INSERT OR REPLACE INTO messages (id, conversation_id, role, content, created_at, images)
-             SELECT ?1, ?2, 'assistant', 'hi', 0, '[]'
-             WHERE EXISTS (SELECT 1 FROM conversations WHERE id = ?2)",
-            params![id, conv_id],
-        )
-        .unwrap()
+        put_message(conn, id, conv_id, "assistant", "hi", 0, "[]", None).unwrap()
+    }
+
+    /// An answer keeps its sources: saved with them, written again without
+    /// them (the backend's own save of a finished reply), and read back.
+    #[test]
+    fn an_answer_keeps_its_sources() {
+        let conn = db();
+        conv(&conn, "c1");
+        let src = vec![
+            MsgSource { title: "Rust".into(), url: "https://www.rust-lang.org/".into(), snippet: "A language".into() },
+            MsgSource { title: "notes.pdf".into(), url: String::new(), snippet: "a passage".into() },
+        ];
+        let json = serde_json::to_string(&src).unwrap();
+        put_message(&conn, "m1", "c1", "assistant", "draft", 1, "[]", Some(&json)).unwrap();
+        put_message(&conn, "m1", "c1", "assistant", "final", 2, "[]", None).unwrap();
+        let (content, kept): (String, String) = conn
+            .query_row("SELECT content, sources FROM messages WHERE id = 'm1'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(content, "final");
+        assert_eq!(sources_from_json(Some(kept)), src);
+        // A message saved with none has none, and a broken column reads as none.
+        put_message(&conn, "m2", "c1", "user", "q", 3, "[]", None).unwrap();
+        let none: String = conn.query_row("SELECT sources FROM messages WHERE id = 'm2'", [], |r| r.get(0)).unwrap();
+        assert!(sources_from_json(Some(none)).is_empty());
+        assert!(sources_from_json(Some("not json".into())).is_empty());
+        assert!(sources_from_json(None).is_empty());
     }
 
     #[test]

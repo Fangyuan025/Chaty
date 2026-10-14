@@ -131,7 +131,6 @@ import {
   type StreamEvent,
   type UpdateInfo,
 } from "./lib/ipc";
-import { fitPop } from "./lib/popFit";
 import { turnMessage } from "./lib/turnPrompt";
 import "./App.css";
 import {
@@ -145,7 +144,10 @@ import {
   resetCalibration,
   standingTail,
 } from "./lib/ctxBudget";
+import { webSourceBudget, webSources } from "./lib/webSources";
 import { convTitle, fmtGbFromMb } from "./lib/fmt";
+import { JumpBottom } from "./components/JumpBottom";
+import { Sources } from "./components/Sources";
 
 interface UiMessage extends ChatMessage {
   id: string;
@@ -446,11 +448,12 @@ export default function App() {
           role: m.role,
           content: m.content,
           images: m.images,
+          sources: m.sources?.length ? m.sources : undefined,
         }));
         // The reply is still being written, so it is not in the conversation
         // yet — put the bubble back where it was.
         if (!rows.some((m) => m.id === turn.messageId)) {
-          rows.push({ id: turn.messageId, role: "assistant", content: acc, images: undefined });
+          rows.push({ id: turn.messageId, role: "assistant", content: acc, images: undefined, sources: undefined });
         }
         setMessages(rows);
         setConversationId(turn.conversationId);
@@ -1762,7 +1765,13 @@ export default function App() {
       const stored = await getMessages(id);
       if (mine !== openSeq.current) return;
       setMessages(
-        stored.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images })),
+        stored.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          images: m.images,
+          sources: m.sources?.length ? m.sources : undefined,
+        })),
       );
       setConversationId(id);
       setStats(null);
@@ -1904,8 +1913,8 @@ export default function App() {
       const copied: UiMessage[] = [];
       for (const m of slice) {
         const id = uid();
-        await saveMessage(id, newId, m.role, m.content, m.images);
-        copied.push({ id, role: m.role, content: m.content, images: m.images });
+        await saveMessage(id, newId, m.role, m.content, m.images, m.sources);
+        copied.push({ id, role: m.role, content: m.content, images: m.images, sources: m.sources });
       }
       setConversationId(newId);
       setMessages(copied);
@@ -2077,6 +2086,8 @@ export default function App() {
       ]);
 
     let webContext = "";
+    // This answer's sources, kept with it when it is saved.
+    let turnSources: SearchResult[] = [];
     const urls = (text.match(URL_RE) ?? []).slice(0, 3);
     if (webEnabled || ragEnabled || urls.length > 0) {
       const webish = webEnabled || urls.length > 0;
@@ -2134,35 +2145,24 @@ export default function App() {
         if (webEnabled) {
           const query = prior.length > 0 ? await untilStop(rewriteQuery(prior, text)) : text;
           const research = await untilStop(webResearch(query));
-          let budget = 5400;
-          let added = 0;
-          for (const p of research.pages) {
-            if (budget <= 0) break;
-            const txt = p.text.slice(0, budget);
-            if (txt.length < 40) continue;
-            blocks.push(`【${blocks.length + 1}】 ${p.title}\n${txt}`);
-            usedSources.push({ title: p.title, url: p.url, snippet: txt.slice(0, 360) });
-            budget -= txt.length;
-            added++;
-          }
-          // Results whose page could not be read still have their snippet.
-          // Offer those too, up to six sources in all, so each result worth
-          // citing has a number — and a chip under the answer.
-          const seen = new Set(usedSources.map((s) => s.url));
-          for (const r of research.results) {
-            if (added >= 6) break;
-            if (!r.snippet.trim() || seen.has(r.url)) continue;
-            seen.add(r.url);
-            blocks.push(`【${blocks.length + 1}】 ${r.title}\n${r.snippet}`);
-            usedSources.push({ title: r.title, url: r.url, snippet: r.snippet.slice(0, 360) });
-            added++;
-          }
+          // Every result on topic, as much as fits a quarter of the window —
+          // not a fixed six (see webSources).
+          const picked = webSources(
+            research,
+            webSourceBudget(model?.nCtx),
+            blocks.length + 1,
+            new Set(usedSources.map((s) => s.url)),
+          );
+          blocks.push(...picked.blocks);
+          usedSources.push(...picked.sources);
+          const added = picked.sources.length;
           // Nothing on topic — the backend drops results about something
           // else. Say so, rather than let the answer look researched.
           if (added === 0) showNotice("warn", t("webNoResults"));
         }
 
         if (usedSources.length) {
+          turnSources = usedSources;
           setMessages((cur) =>
             cur.map((m) => (m.id === asstId ? { ...m, sources: usedSources } : m)),
           );
@@ -2469,7 +2469,7 @@ export default function App() {
       setBusy(false);
       setStreamingId(null);
       try {
-        if (acc.text.trim()) await saveMessage(asstId, convId, "assistant", acc.text);
+        if (acc.text.trim()) await saveMessage(asstId, convId, "assistant", acc.text, undefined, turnSources);
         await refreshConversations();
       } catch (e) {
         reportChatSaveFailure(convId, e);
@@ -2570,7 +2570,7 @@ export default function App() {
     try {
       await replaceMessages(
         conversationId,
-        history.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images })),
+        history.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images, sources: m.sources })),
       );
       await refreshConversations();
     } catch (e) {
@@ -2593,7 +2593,7 @@ export default function App() {
     try {
       await replaceMessages(
         conversationId,
-        history.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images })),
+        history.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images, sources: m.sources })),
       );
       await refreshConversations();
     } catch (e) {
@@ -3170,33 +3170,7 @@ export default function App() {
                       hideThinking={!thinkEnabled}
                       sources={m.sources}
                     />
-                    {m.sources && m.sources.length > 0 && (
-                      <div className="sources">
-                        <span className="sources-label">{t("sources")}</span>
-                        <div className="sources-list">
-                          {m.sources.map((s, k) => (
-                            <button
-                              key={k}
-                              className="source-chip"
-                              title={s.url || undefined}
-                              onMouseEnter={(e) => fitPop(e.currentTarget)}
-                              onClick={() => {
-                                if (s.url) void openExternal(s.url).catch(() => {});
-                              }}
-                            >
-                              <span className="source-idx">{k + 1}</span>
-                              <span className="source-title">{s.title}</span>
-                              {s.snippet && (
-                                <span className="cite-pop">
-                                  <span className="cite-pop-title">{s.title}</span>
-                                  <span className="cite-pop-text">{s.snippet}</span>
-                                </span>
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    {m.sources && m.sources.length > 0 && <Sources sources={m.sources} />}
                     {streamingId !== m.id && m.content.trim() && (
                       <div className="msg-actions">
                         <button
@@ -3294,20 +3268,14 @@ export default function App() {
               )
             )}
           </main>
-          {showJump && messages.length > 0 && (
-            <button
-              className="jump-bottom"
-              title={t("jumpLatest")}
-              onClick={() => {
-                followRef.current = true;
-                scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-              }}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-          )}
+          <JumpBottom
+            shown={showJump && messages.length > 0}
+            title={t("jumpLatest")}
+            onClick={() => {
+              followRef.current = true;
+              scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+            }}
+          />
           </div>
 
           <footer className="composer">

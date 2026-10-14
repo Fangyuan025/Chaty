@@ -29,6 +29,7 @@ import { Select } from "./Select";
 import { ImageThumb } from "./ImageThumb";
 import { UserCopy, UserText } from "./UserText";
 import { useConfirm } from "./ConfirmModal";
+import { JumpBottom } from "./JumpBottom";
 
 /** Ideas for an empty canvas — written to show off what these models are
  *  good at (text in the picture, light, texture). */
@@ -594,20 +595,14 @@ export function ImageStudio({
             )}
           </div>
         </main>
-        {showJump && (rounds.length > 0 || shownRun) && (
-          <button
-            className="jump-bottom"
-            title={t("jumpLatest")}
-            onClick={() => {
-              followRef.current = true;
-              toBottom(true);
-            }}
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-        )}
+        <JumpBottom
+          shown={showJump && (rounds.length > 0 || !!shownRun)}
+          title={t("jumpLatest")}
+          onClick={() => {
+            followRef.current = true;
+            toBottom(true);
+          }}
+        />
       </div>
 
       <footer className="composer is-composer">

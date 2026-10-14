@@ -87,6 +87,7 @@ import { loadSkills } from "../lib/skillFiles";
 import { loadMemoryIndex, sessionMemoryIndex } from "../lib/memoryFiles";
 import { homeDir } from "@tauri-apps/api/path";
 import { fmtBytes } from "../lib/fmt";
+import { JumpBottom } from "./JumpBottom";
 
 interface CodeMsg {
   id: string;
@@ -2376,20 +2377,14 @@ export function CodeMode({
             </div>
           )}
         </div>
-        {showJump && msgs.length > 0 && (
-          <button
-            className="jump-bottom"
-            title={t("jumpLatest")}
-            onClick={() => {
-              followRef.current = true;
-              scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-            }}
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-        )}
+        <JumpBottom
+          shown={showJump && msgs.length > 0}
+          title={t("jumpLatest")}
+          onClick={() => {
+            followRef.current = true;
+            scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+          }}
+        />
         </div>
 
         <div className="code-composer">

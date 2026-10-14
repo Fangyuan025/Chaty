@@ -37,6 +37,7 @@ import { Icon } from "./Icon";
 import { MusicParamField, fill } from "./MusicParamField";
 import { UserCopy, UserText } from "./UserText";
 import { useConfirm } from "./ConfirmModal";
+import { JumpBottom } from "./JumpBottom";
 
 const STAGE_KEY: Record<string, TKey> = {
   prepare: "musStagePrepare",
@@ -798,20 +799,14 @@ export function MusicStudio({
             )}
           </div>
         </main>
-        {showJump && (rounds.length > 0 || shownRun) && (
-          <button
-            className="jump-bottom"
-            title={t("jumpLatest")}
-            onClick={() => {
-              followRef.current = true;
-              toBottom(true);
-            }}
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-        )}
+        <JumpBottom
+          shown={showJump && (rounds.length > 0 || !!shownRun)}
+          title={t("jumpLatest")}
+          onClick={() => {
+            followRef.current = true;
+            toBottom(true);
+          }}
+        />
       </div>
 
       <footer className="composer is-composer ms-composer">

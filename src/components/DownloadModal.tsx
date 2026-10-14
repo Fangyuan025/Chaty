@@ -23,6 +23,7 @@ import {
   type HfModelHit,
   type HfModelDetail,
 } from "../lib/ipc";
+import { hfErrorText } from "../lib/hfError";
 
 // MLX repos are only usable on macOS (Apple-Silicon sidecar).
 const IS_MACOS = (() => {
@@ -37,6 +38,16 @@ const IS_MACOS = (() => {
 // the same model read ~7% smaller in this screen. One shared decimal
 // formatter now (lib/fmt.ts); the k/M count style rides along with it.
 const fmtSize = fmtBytes;
+
+/** How long ago `ms` (epoch) was, roughly: just now, minutes, hours, days. */
+function agoFrom(ms: number, t: ReturnType<typeof useI18n>["t"]): string {
+  const min = Math.max(0, Math.floor((Date.now() - ms) / 60_000));
+  if (min < 1) return t("storeAgoNow");
+  if (min < 60) return t("storeAgoMin", { n: String(min) });
+  const h = Math.floor(min / 60);
+  if (h < 24) return t("storeAgoHour", { n: String(h) });
+  return t("storeAgoDay", { n: String(Math.floor(h / 24)) });
+}
 
 function daysAgo(iso: string, t: ReturnType<typeof useI18n>["t"]): string {
   const ms = Date.parse(iso);
@@ -104,6 +115,11 @@ export function DownloadModal({
   const [task, setTask] = useState<"all" | "image" | "music">("all");
   const [hits, setHits] = useState<HfModelHit[]>([]);
   const [listLoading, setListLoading] = useState(false);
+  /** Why the list could not be fetched, when nothing could be shown instead. */
+  const [listError, setListError] = useState("");
+  /** Hugging Face could not list models, and the list is a stand-in: the
+   *  storefront as last fetched, or only the official music packages. */
+  const [shelfNote, setShelfNote] = useState<{ error: string; cachedAt: number | null } | null>(null);
   // -- detail state --
   const [detail, setDetail] = useState<HfModelDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -124,11 +140,18 @@ export function DownloadModal({
       setError("");
       try {
         const found = await hfSearch(q, f, s, k);
-        if (my === seq.current) setHits(found);
+        if (my === seq.current) {
+          setHits(found.hits);
+          setListError("");
+          setShelfNote(found.error ? { error: found.error, cachedAt: found.cachedAt ?? null } : null);
+        }
       } catch (e) {
+        // Said in the list, where it happened: "no models found" there
+        // read as an answer when it was a failure.
         if (my === seq.current) {
           setHits([]);
-          setError(typeof e === "string" ? e : t("dlSearchFailed"));
+          setShelfNote(null);
+          setListError(typeof e === "string" ? e : t("dlSearchFailed"));
         }
       } finally {
         if (my === seq.current) setListLoading(false);
@@ -402,43 +425,58 @@ export function DownloadModal({
                     </span>
                   </div>
                 ))
+              ) : listError ? (
+                <div className="store-empty store-list-failed">
+                  <div>{hfErrorText(listError, t)}</div>
+                  <div className="store-list-failed-hint">{t("storePasteRepo")}</div>
+                </div>
               ) : hits.length === 0 ? (
                 <div className="store-empty">{t("storeNoResults")}</div>
               ) : (
-                hits.map((h) => (
-                  <button
-                    key={h.id}
-                    className={`store-hit ${detail?.id === h.id ? "active" : ""}`}
-                    disabled={active}
-                    onClick={() => void openDetail(h.id)}
-                    title={h.id}
-                  >
-                    <span className="store-avatar">
-                      <OrgAvatar author={h.author} size={22} />
-                    </span>
-                    <span className="store-hit-main">
-                      <span className="store-hit-name">
-                        {h.name}
-                        {h.vision && <span className="mm-vision">{t("visionBadge")}</span>}
-                        {h.image && <span className="mm-img">{t("imageBadge")}</span>}
-                        {h.music && <span className="mm-img mm-music">{t("musicBadge")}</span>}
+                <>
+                  {shelfNote && (
+                    <div className="store-stale" title={hfErrorText(shelfNote.error, t)}>
+                      {shelfNote.cachedAt != null
+                        ? t("storeStale", { when: agoFrom(shelfNote.cachedAt, t) })
+                        : t("storeStaleOfficial")}
+                    </div>
+                  )}
+                  {hits.map((h) => (
+                    <button
+                      key={h.id}
+                      className={`store-hit ${detail?.id === h.id ? "active" : ""}`}
+                      disabled={active}
+                      onClick={() => void openDetail(h.id)}
+                      title={h.id}
+                    >
+                      <span className="store-avatar">
+                        <OrgAvatar author={h.author} size={22} />
                       </span>
-                      <span className="store-hit-sub">
-                        {h.author}
-                        {h.paramsB ? ` · ${h.paramsB}B` : ""}
-                        {/* A folder of a multi-model repo (audio.cpp's music
-                            packages) has no stats of its own: name its repo. */}
-                        {h.id.split("/").length > 2 ? (
-                          ` · ${h.id.split("/")[1]}`
-                        ) : (
-                          <>
-                            {" "}· ↓{fmtCount(h.downloads)} · {daysAgo(h.updatedAt, t)}
-                          </>
-                        )}
+                      <span className="store-hit-main">
+                        <span className="store-hit-name">
+                          {h.name}
+                          {h.vision && <span className="mm-vision">{t("visionBadge")}</span>}
+                          {h.image && <span className="mm-img">{t("imageBadge")}</span>}
+                          {h.music && <span className="mm-img mm-music">{t("musicBadge")}</span>}
+                        </span>
+                        <span className="store-hit-sub">
+                          {h.author}
+                          {h.paramsB ? ` · ${h.paramsB}B` : ""}
+                          {/* A folder of a multi-model repo (audio.cpp's music
+                              packages) has no stats of its own: name its repo. */}
+                          {h.id.split("/").length > 2 ? (
+                            ` · ${h.id.split("/")[1]}`
+                          ) : (
+                            <>
+                              {" "}· ↓{fmtCount(h.downloads)}
+                              {h.updatedAt ? ` · ${daysAgo(h.updatedAt, t)}` : ""}
+                            </>
+                          )}
+                        </span>
                       </span>
-                    </span>
-                  </button>
-                ))
+                    </button>
+                  ))}
+                </>
               )}
             </div>
             <div className="dl-hint">{t("dlHint")}</div>
@@ -552,7 +590,7 @@ export function DownloadModal({
                 </div>
               </>
             )}
-            {error && <div className="dl-error">{error}</div>}
+            {error && <div className="dl-error">{hfErrorText(error, t)}</div>}
           </div>
         </div>
       </div>

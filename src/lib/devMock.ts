@@ -578,6 +578,26 @@ const START_MODEL = new URLSearchParams(window.location.search).get("model");
 // Windows window controls.
 const NO_WORKSPACE = new URLSearchParams(window.location.search).get("ws") === "none";
 const OS = new URLSearchParams(window.location.search).get("os") === "windows" ? "windows" : "macos";
+/** `?sources=web` / `?sources=kb`: the last answer of the showcase chat cites
+ *  web pages / knowledge-base passages, to look at the sources under it. */
+const DEMO_SOURCES = new URLSearchParams(window.location.search).get("sources");
+const WEB_SOURCES = [
+  ["The Rust Reference — Lifetime elision", "https://doc.rust-lang.org/reference/lifetime-elision.html", "Rust's lifetime elision rules allow lifetimes to be elided in function signatures when the compiler can infer them from the inputs."],
+  ["Validating References with Lifetimes — The Rust Book", "https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html", "Every reference in Rust has a lifetime, which is the scope for which that reference is valid."],
+  ["What does the 'static lifetime mean?", "https://stackoverflow.com/questions/52463103/what-does-static-mean", "'static as a trait bound means the type does not contain any non-static references; the receiver can hold on to it for as long as it wants."],
+  ["Common Rust Lifetime Misconceptions", "https://github.com/pretzelhammer/rust-blog/blob/master/posts/common-rust-lifetime-misconceptions.md", "T: 'static should be read as \"T is bounded by a 'static lifetime\", not \"T has a 'static lifetime\"."],
+  ["std::thread::spawn", "https://doc.rust-lang.org/std/thread/fn.spawn.html", "The 'static constraint means that the closure and its return value must have a lifetime of the whole program execution."],
+  ["Static — Rust By Example", "https://doc.rust-lang.org/rust-by-example/scope/lifetime/static_lifetime.html", "As a reference lifetime 'static indicates that the data pointed to by the reference lives for the remaining lifetime of the running program."],
+  ["Understanding 'static in trait bounds", "https://users.rust-lang.org/t/understanding-static-in-trait-bounds/71312", "A type with no borrowed data at all satisfies 'static — String, Vec<u8>, and i32 all do."],
+  ["Lifetimes — The Rustonomicon", "https://doc.rust-lang.org/nomicon/lifetimes.html", "Rust enforces these rules through lifetimes. Lifetimes are named regions of code that a reference must be valid for."],
+  ["Rust lifetimes explained with examples", "https://www.lurklurk.org/effective-rust/lifetimes.html", "The lifetime of an item on the stack is the period where it is guaranteed to stay at the same place."],
+  ["Lifetime (computer science) — Wikipedia", "https://en.wikipedia.org/wiki/Object_lifetime", "In object-oriented programming, the object lifetime of an object is the time between an object's creation and its destruction."],
+].map(([title, url, snippet]) => ({ title, url, snippet }));
+const KB_SOURCES = [
+  ["Rust 内存模型笔记.pdf", "借用检查器在编译期确认每个引用都不会比它指向的数据活得更久；生命周期标注只是给编译器看的名字，不改变任何值实际存活的时间。"],
+  ["团队 Rust 编码规范 v3.docx", "跨线程传递的数据一律要求 'static：要么完全拥有（String、Vec），要么用 Arc 共享；不允许把栈上数据的引用交给新线程。"],
+  ["异步运行时选型.md", "tokio::spawn 与 thread::spawn 一样要求 future 为 'static，这正是需要把数据 move 进 async 块的原因。"],
+].map(([title, snippet]) => ({ title, url: "", snippet }));
 let CURRENT: unknown = START_MODEL === "image" ? IMAGE_MODEL : START_MODEL === "music" ? MUSIC_MODEL : MODEL;
 
 /** Command → canned response. Anything unlisted returns a benign default. */
@@ -940,6 +960,10 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "list_conversations":
       return CONVERSATIONS;
     case "get_messages":
+      if (DEMO_SOURCES) {
+        const sources = DEMO_SOURCES === "kb" ? KB_SOURCES : WEB_SOURCES;
+        return SHOWCASE_MESSAGES.map((m) => (m.id === "m4" ? { ...m, sources } : m));
+      }
       return SHOWCASE_MESSAGES;
     case "search_conversations":
       return [];
@@ -1287,18 +1311,18 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "hf_search":
       if (args?.task === "music") {
         const day = 864e5;
-        return [
+        return { hits: [
           { id: "audio-cpp/Yue2-3B-GGUF", name: "Yue2-3B-GGUF", author: "audio-cpp", downloads: 18420, likes: 212, updatedAt: new Date(Date.now() - 6 * day).toISOString(), vision: false, music: true, paramsB: 3 },
           { id: "audio-cpp/MiniMax-Music3-GGUF", name: "MiniMax-Music3-GGUF", author: "audio-cpp", downloads: 9310, likes: 164, updatedAt: new Date(Date.now() - 3 * day).toISOString(), vision: false, music: true, paramsB: null },
           { id: "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF", name: "ACE-Step1.5-GGUF", author: "audio-cpp", downloads: 0, likes: 0, updatedAt: "", vision: false, music: true, paramsB: null },
           { id: "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF", name: "Stable-Audio-3-Small-Music-GGUF", author: "audio-cpp", downloads: 0, likes: 0, updatedAt: "", vision: false, music: true, paramsB: null },
-        ];
+        ] };
       }
-      return [
+      return { hits: [
         { id: "Qwen/Qwen3-4B-GGUF", name: "Qwen3-4B-GGUF", author: "Qwen", downloads: 2512124, likes: 2710, updatedAt: new Date(Date.now() - 38 * 864e5).toISOString(), vision: false, paramsB: 4 },
         { id: "google/gemma-4-12b-qat-GGUF", name: "gemma-4-12b-qat-GGUF", author: "google", downloads: 901906, likes: 1074, updatedAt: new Date(Date.now() - 40 * 864e5).toISOString(), vision: true, paramsB: 12 },
         { id: "mlx-community/Qwen3.5-2B-4bit", name: "Qwen3.5-2B-4bit", author: "mlx-community", downloads: 315434, likes: 101, updatedAt: new Date(Date.now() - 5 * 864e5).toISOString(), vision: true, paramsB: 2 },
-      ];
+      ] };
     case "hf_model_detail":
       if (/yue2|minimax-music|audio\.cpp-gguf/i.test(String(args?.repo ?? ""))) {
         const repo = String(args?.repo);

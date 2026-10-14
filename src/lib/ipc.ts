@@ -1439,6 +1439,16 @@ export interface HfModelDetail {
   repo?: string;
 }
 
+/** One of the store's lists. When Hugging Face could not list models just
+ *  now, `error` says why and `hits` are what could be shown instead: the
+ *  storefront as last fetched (`cachedAt`, ms), or only the official music
+ *  packages (no `cachedAt`). */
+export interface HfShelf {
+  hits: HfModelHit[];
+  error?: string | null;
+  cachedAt?: number | null;
+}
+
 /** Search/browse HF models. Empty query = trending storefront. */
 export async function hfSearch(
   query: string,
@@ -1446,8 +1456,8 @@ export async function hfSearch(
   sort: "trending" | "downloads" | "likes" | "updated",
   /** "image" = text-to-image models only, "music" = text-to-music ones. */
   task: "all" | "image" | "music" = "all",
-): Promise<HfModelHit[]> {
-  return await invoke<HfModelHit[]>("hf_search", {
+): Promise<HfShelf> {
+  return await invoke<HfShelf>("hf_search", {
     query,
     format,
     sort,
@@ -1609,6 +1619,8 @@ export interface StoredMessage {
   content: string;
   createdAt: number;
   images?: string[];
+  /** An answer's sources — what its 【n】 marks point at. */
+  sources?: SearchResult[];
 }
 
 export async function saveConversation(
@@ -1625,8 +1637,10 @@ export async function saveMessage(
   role: Role,
   content: string,
   images?: string[],
+  /** Left out: the message keeps the sources it already has. */
+  sources?: SearchResult[],
 ): Promise<void> {
-  await invoke("save_message", { id, conversationId, role, content, images: images ?? null });
+  await invoke("save_message", { id, conversationId, role, content, images: images ?? null, sources: sources ?? null });
 }
 
 export async function listConversations(): Promise<Conversation[]> {
@@ -1640,7 +1654,7 @@ export async function getMessages(conversationId: string): Promise<StoredMessage
 /** Replace all messages of a conversation (for edit / regenerate truncation). */
 export async function replaceMessages(
   conversationId: string,
-  messages: { id: string; role: Role; content: string; images?: string[] }[],
+  messages: { id: string; role: Role; content: string; images?: string[]; sources?: SearchResult[] }[],
 ): Promise<void> {
   await invoke("replace_messages", { conversationId, messages });
 }

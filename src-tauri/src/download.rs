@@ -292,9 +292,15 @@ async fn repo_tree(repo: &str, base: &str) -> Result<Vec<(String, u64)>, String>
     // Metadata call — a whole-request timeout is right here; without one a
     // hung connection kept the "preparing download" spinner up forever.
     let client = crate::http::client_secs(UA, 30)?;
-    let resp = client.get(&api).send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
+    let resp = hf_get(&client, &api).await?;
+    // Hugging Face answers 401 for a repo that is not there (or is private),
+    // as for one it cannot say; anything else is its own trouble, not the
+    // repo's — a 504 here used to say the repo did not exist.
+    if matches!(resp.status().as_u16(), 401 | 404) {
         return Err(format!("未找到仓库 (repo not found): {repo}"));
+    }
+    if !resp.status().is_success() {
+        return Err(hf_status_error(resp.status()));
     }
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
     let json: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
@@ -338,7 +344,7 @@ pub async fn list_hf_ggufs(repo: String, endpoint: Option<String>) -> Result<Vec
 // HF model store: search / browse / detail (quant-level, no raw file lists)
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct HfModelHit {
     /// Repo id, `owner/name`.
@@ -651,7 +657,9 @@ fn best_mmproj(tree: &[(String, u64)]) -> Option<(String, u64)> {
 static AVATAR_CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
 
 /// The author's official HF avatar (organizations first, then user accounts).
-/// Cached per author for the app's lifetime; `None` when there isn't one.
+/// Cached per author for the app's lifetime; `None` when there isn't one —
+/// known only when Hugging Face said so: when it failed to answer, an error,
+/// and the next look asks again.
 #[tauri::command]
 pub async fn hf_author_avatar(author: String) -> Result<Option<String>, String> {
     if let Some(hit) = AVATAR_CACHE
@@ -664,13 +672,14 @@ pub async fn hf_author_avatar(author: String) -> Result<Option<String>, String> 
     }
     let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
     let mut url: Option<String> = None;
+    let mut answered = true;
     for kind in ["organizations", "users"] {
         let resp = client
             .get(format!("https://huggingface.co/api/{kind}/{author}/avatar"))
             .send()
             .await;
-        if let Ok(r) = resp {
-            if r.status().is_success() {
+        match resp {
+            Ok(r) if r.status().is_success() => {
                 if let Ok(v) = r.json::<serde_json::Value>().await {
                     url = v.get("avatarUrl").and_then(|u| u.as_str()).map(str::to_string);
                     if url.is_some() {
@@ -678,7 +687,12 @@ pub async fn hf_author_avatar(author: String) -> Result<Option<String>, String> 
                     }
                 }
             }
+            Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {}
+            _ => answered = false,
         }
+    }
+    if url.is_none() && !answered {
+        return Err("Hugging Face did not answer".into());
     }
     AVATAR_CACHE
         .lock()
@@ -688,10 +702,25 @@ pub async fn hf_author_avatar(author: String) -> Result<Option<String>, String> 
     Ok(url)
 }
 
+/// One of the store's lists: the models, and — when Hugging Face could not
+/// list them just now — why, and when the list shown instead was fetched.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HfShelf {
+    pub hits: Vec<HfModelHit>,
+    pub error: Option<String>,
+    /// Milliseconds since the epoch; none when `hits` are fresh, or are only
+    /// the official music packages.
+    pub cached_at: Option<i64>,
+}
+
 /// Search / browse HF models by keyword, format and sort order. An empty
-/// query browses trending models — the "storefront" view.
+/// query browses trending models — the "storefront" view, kept on disk each
+/// time it loads, to show when Hugging Face cannot list models.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // the frontend's named arguments
 pub async fn hf_search(
+    app: tauri::AppHandle,
     query: String,
     format: String,
     sort: String,
@@ -700,86 +729,102 @@ pub async fn hf_search(
     // "image" narrows to text-to-image models, "music" to text-to-music
     // ones; anything else is everything.
     task: Option<String>,
-) -> Result<Vec<HfModelHit>, String> {
-    let base = hf_base(endpoint.as_deref());
-    if task.as_deref() == Some("music") {
-        return music_search(&base, &query, &sort, limit).await;
-    }
+) -> Result<HfShelf, String> {
+    let shelves = app.path().app_data_dir().ok().map(|d| d.join(SHELVES_FILE));
+    search_shelf(shelves.as_deref(), &query, &format, &sort, limit, endpoint.as_deref(), task.as_deref()).await
+}
+
+/// `hf_search`, with the storefront's lists kept in `shelves` (none: not kept).
+async fn search_shelf(
+    shelves: Option<&std::path::Path>,
+    query: &str,
+    format: &str,
+    sort: &str,
+    limit: Option<u32>,
+    endpoint: Option<&str>,
+    task: Option<&str>,
+) -> Result<HfShelf, String> {
+    let base = hf_base(endpoint);
+    let music = task == Some("music");
     // MLX image models are mflux's saves. The "mlx" tag on text-to-image
     // repos mostly marks layouts Chaty cannot read (DiffusionKit, mlx-serve,
     // diffusers folders), and some mflux saves carry no pipeline tag at all.
-    let mflux = format == "mlx" && task.as_deref() == Some("image");
-    let filter = if mflux {
-        "mflux"
-    } else if format == "mlx" {
-        "mlx"
-    } else {
-        "gguf"
-    };
-    let sort = match sort.as_str() {
-        "downloads" => "downloads",
-        "likes" => "likes",
-        "updated" => "lastModified",
-        _ => "trendingScore",
-    };
-    let mut url = format!(
-        "{base}/api/models?filter={filter}&sort={sort}&direction=-1&limit={}",
-        limit.unwrap_or(30).min(50)
-    );
+    let mflux = format == "mlx" && task == Some("image");
     let q = query.trim();
+    let mut list = if music {
+        let sort = match sort {
+            "likes" => "likes",
+            "updated" => "lastModified",
+            "trending" => "trendingScore",
+            _ => "downloads",
+        };
+        format!("api/models?filter=audio.cpp&pipeline_tag=text-to-audio&sort={sort}&direction=-1&limit={}", limit.unwrap_or(30).min(50))
+    } else {
+        let filter = if mflux {
+            "mflux"
+        } else if format == "mlx" {
+            "mlx"
+        } else {
+            "gguf"
+        };
+        let sort = match sort {
+            "downloads" => "downloads",
+            "likes" => "likes",
+            "updated" => "lastModified",
+            _ => "trendingScore",
+        };
+        let mut list = format!("api/models?filter={filter}&sort={sort}&direction=-1&limit={}", limit.unwrap_or(30).min(50));
+        if task == Some("image") && !mflux {
+            list.push_str("&pipeline_tag=text-to-image");
+        }
+        list
+    };
+    // The storefront's own lists are kept, by what they list; searches are not.
+    let shelf_key = q.is_empty().then(|| list.clone());
     if !q.is_empty() {
-        url.push_str(&format!("&search={}", percent_encoding::utf8_percent_encode(q, percent_encoding::NON_ALPHANUMERIC)));
+        list.push_str(&format!("&search={}", percent_encoding::utf8_percent_encode(q, percent_encoding::NON_ALPHANUMERIC)));
     }
-    if task.as_deref() == Some("image") && !mflux {
-        url.push_str("&pipeline_tag=text-to-image");
+    let official = if music { music_packages(q) } else { Vec::new() };
+    let fetched = async {
+        let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
+        let resp = hf_get(&client, &format!("{base}/{list}{LIST_FIELDS}")).await?;
+        if !resp.status().is_success() {
+            return Err(hf_status_error(resp.status()));
+        }
+        let items: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        Ok(hits_from(&items, mflux, music))
     }
-    let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
-    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("搜索失败 (search failed): HTTP {}", resp.status()));
-    }
-    let items: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    if let Some(arr) = items.as_array() {
-        for it in arr {
-            let id = it.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            if id.is_empty() {
-                continue;
+    .await;
+    match fetched {
+        Ok(found) => {
+            if let (Some(key), Some(path)) = (&shelf_key, shelves) {
+                shelf_put(path, key, &found);
             }
-            let tags: Vec<String> = it
-                .get("tags")
-                .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
-                .unwrap_or_default();
-            let (author, name) = id.split_once('/').unwrap_or(("", id.as_str()));
-            out.push(HfModelHit {
-                name: name.to_string(),
-                author: author.to_string(),
-                downloads: it.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0),
-                likes: it.get("likes").and_then(|v| v.as_u64()).unwrap_or(0),
-                updated_at: it
-                    .get("lastModified")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                vision: tag_vision(&tags),
-                image: mflux || is_image_repo(&tags, it.get("pipeline_tag").and_then(|v| v.as_str())),
-                music: is_audiocpp_repo(&tags)
-                    && crate::musicgen::family::guess_by_repo(&id).is_some(),
-                params_b: params_from_name(&id),
-                id,
-            });
+            Ok(HfShelf { hits: [official, found].concat(), error: None, cached_at: None })
+        }
+        Err(e) => {
+            let kept = shelf_key.zip(shelves).and_then(|(key, path)| shelf_get(path, &key));
+            let cached_at = kept.as_ref().map(|k| k.at);
+            let hits = [official, kept.map(|k| k.hits).unwrap_or_default()].concat();
+            if hits.is_empty() {
+                return Err(e);
+            }
+            Ok(HfShelf { hits, error: Some(e), cached_at })
         }
     }
-    Ok(out)
 }
 
-/// The music shelf: audio.cpp's text-to-audio repos of the families the
-/// engine runs, and the music packages kept as folders of audio-cpp's
-/// multi-model repo — first, as the official builds.
-async fn music_search(base: &str, query: &str, sort: &str, limit: Option<u32>) -> Result<Vec<HfModelHit>, String> {
-    let q = query.trim().to_lowercase();
-    let mut out: Vec<HfModelHit> = AUDIOCPP_MUSIC_PACKAGES
+/// The fields a store list shows. Asked for by name: the listing stopped
+/// sending `lastModified` unasked, and every model's date went blank.
+const LIST_FIELDS: &str =
+    "&expand[]=downloads&expand[]=likes&expand[]=lastModified&expand[]=tags&expand[]=pipeline_tag";
+
+/// The music shelf's official builds: the music packages kept as folders of
+/// audio-cpp's multi-model repo, first on the shelf, whether or not Hugging
+/// Face can list the rest.
+fn music_packages(query: &str) -> Vec<HfModelHit> {
+    let q = query.to_lowercase();
+    AUDIOCPP_MUSIC_PACKAGES
         .iter()
         .filter(|(dir, fam)| {
             q.is_empty()
@@ -798,33 +843,24 @@ async fn music_search(base: &str, query: &str, sort: &str, limit: Option<u32>) -
             music: true,
             params_b: params_from_name(dir),
         })
-        .collect();
-    let sort = match sort {
-        "likes" => "likes",
-        "updated" => "lastModified",
-        "trending" => "trendingScore",
-        _ => "downloads",
-    };
-    let mut url = format!(
-        "{base}/api/models?filter=audio.cpp&pipeline_tag=text-to-audio&sort={sort}&direction=-1&limit={}",
-        limit.unwrap_or(30).min(50)
-    );
-    if !q.is_empty() {
-        url.push_str(&format!("&search={}", percent_encoding::utf8_percent_encode(query.trim(), percent_encoding::NON_ALPHANUMERIC)));
-    }
-    let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
-    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("搜索失败 (search failed): HTTP {}", resp.status()));
-    }
-    let items: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        .collect()
+}
+
+/// The hits in an `api/models` listing. On the music shelf, only repos of the
+/// families the engine runs: a repo of another family (a TTS model tagged
+/// text-to-audio) would download and then not load.
+fn hits_from(items: &serde_json::Value, mflux: bool, music: bool) -> Vec<HfModelHit> {
+    let mut out = Vec::new();
     for it in items.as_array().into_iter().flatten() {
         let id = it.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        // Only what the engine runs: a repo of another family (a TTS model
-        // tagged text-to-audio) would download and then not load.
-        if id.is_empty() || crate::musicgen::family::guess_by_repo(&id).is_none() {
+        if id.is_empty() || (music && crate::musicgen::family::guess_by_repo(&id).is_none()) {
             continue;
         }
+        let tags: Vec<String> = it
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
         let (author, name) = id.split_once('/').unwrap_or(("", id.as_str()));
         out.push(HfModelHit {
             name: name.to_string(),
@@ -832,14 +868,119 @@ async fn music_search(base: &str, query: &str, sort: &str, limit: Option<u32>) -
             downloads: it.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0),
             likes: it.get("likes").and_then(|v| v.as_u64()).unwrap_or(0),
             updated_at: it.get("lastModified").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            vision: false,
-            image: false,
-            music: true,
+            vision: !music && tag_vision(&tags),
+            image: !music && (mflux || is_image_repo(&tags, it.get("pipeline_tag").and_then(|v| v.as_str()))),
+            music: music || (is_audiocpp_repo(&tags) && crate::musicgen::family::guess_by_repo(&id).is_some()),
             params_b: params_from_name(&id),
             id,
         });
     }
-    Ok(out)
+    out
+}
+
+// ---------------------------------------------------------------------------
+// HF API calls: tried again past a bad moment, and said plainly when they fail
+// ---------------------------------------------------------------------------
+
+/// Pauses before trying an HF API call again. Hugging Face answers a bad
+/// moment with a 5xx — a gateway timeout at about five seconds, an internal
+/// error at once — that a try a moment later often gets past (10-14: the
+/// model listing timed out on one call in twenty-six, before it went down).
+const HF_RETRY_MS: [u64; 2] = [500, 1500];
+/// No new try once this long has gone since the first: two gateway timeouts
+/// are ten seconds of an empty store already.
+const HF_RETRY_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn hf_transient(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 500 | 502 | 503 | 504)
+}
+
+/// GET an HF API URL, trying again after a 5xx, a timeout or a failed
+/// connection. Any other answer, error status or not, is the caller's.
+async fn hf_get(client: &reqwest::Client, url: &str) -> Result<reqwest::Response, String> {
+    let first = std::time::Instant::now();
+    let mut tries = 0;
+    loop {
+        let res = client.get(url).send().await;
+        let again = match &res {
+            Ok(r) => hf_transient(r.status()),
+            Err(e) => e.is_timeout() || e.is_connect(),
+        };
+        if !again || tries == HF_RETRY_MS.len() || first.elapsed() >= HF_RETRY_WITHIN {
+            return res.map_err(|e| hf_net_error(&e));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(HF_RETRY_MS[tries])).await;
+        tries += 1;
+    }
+}
+
+/// Hugging Face's errors reach the UI as a marker the frontend says in the
+/// UI's language (src/lib/hfError.ts): `HF_ERROR\t<kind>\t<status>`. The
+/// backend's own language is the model's, set per agent turn — not the UI's.
+const HF_ERROR: &str = "HF_ERROR";
+
+/// When Hugging Face answers with an error status.
+fn hf_status_error(status: reqwest::StatusCode) -> String {
+    let kind = if status.is_server_error() {
+        "server"
+    } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        "limited"
+    } else {
+        "status"
+    };
+    format!("{HF_ERROR}\t{kind}\t{}", status.as_u16())
+}
+
+/// When Hugging Face could not be reached.
+fn hf_net_error(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        format!("{HF_ERROR}\ttimeout\t")
+    } else if e.is_connect() {
+        format!("{HF_ERROR}\tunreachable\t")
+    } else {
+        e.to_string()
+    }
+}
+
+/// The store's lists as last fetched, in the app's data folder.
+const SHELVES_FILE: &str = "store-shelves.json";
+
+#[derive(Serialize, serde::Deserialize)]
+struct KeptShelf {
+    /// Milliseconds since the epoch.
+    at: i64,
+    hits: Vec<HfModelHit>,
+}
+
+/// One writer at a time: two lists can come back together.
+static SHELVES: Mutex<()> = Mutex::new(());
+
+fn shelf_get(path: &std::path::Path, key: &str) -> Option<KeptShelf> {
+    let _held = SHELVES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all: HashMap<String, KeptShelf> = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    all.remove(key).filter(|k| !k.hits.is_empty())
+}
+
+/// Keep a list. Best-effort: a list that cannot be kept is only not there
+/// the next time Hugging Face is down.
+fn shelf_put(path: &std::path::Path, key: &str, hits: &[HfModelHit]) {
+    if hits.is_empty() {
+        return;
+    }
+    let _held = SHELVES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut all: HashMap<String, KeptShelf> = std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    all.insert(key.to_string(), KeptShelf { at, hits: hits.to_vec() });
+    let Ok(bytes) = serde_json::to_vec(&all) else { return };
+    let tmp = path.with_extension("json.part");
+    if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 /// Everything the store's detail pane needs for one repo, quant-level.
@@ -863,11 +1004,7 @@ pub async fn hf_model_detail(
     let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
 
     // tags (vision/arch/task) — tolerate failure, the tree is the critical part
-    let info: serde_json::Value = match client
-        .get(format!("{base}/api/models/{repo}"))
-        .send()
-        .await
-    {
+    let info: serde_json::Value = match hf_get(&client, &format!("{base}/api/models/{repo}")).await {
         Ok(r) if r.status().is_success() => r.json::<serde_json::Value>().await.unwrap_or_default(),
         _ => serde_json::Value::Null,
     };
@@ -936,11 +1073,7 @@ pub async fn hf_model_detail(
         Some(sub) if tree.iter().any(|(p, _)| *p == format!("{sub}/README.md")) => format!("{sub}/README.md"),
         _ => "README.md".to_string(),
     };
-    let readme = match client
-        .get(format!("{base}/{repo}/raw/main/{readme_path}"))
-        .send()
-        .await
-    {
+    let readme = match hf_get(&client, &format!("{base}/{repo}/raw/main/{readme_path}")).await {
         Ok(r) if r.status().is_success() => {
             let mut t = r.text().await.unwrap_or_default();
             // strip YAML front-matter
@@ -1743,6 +1876,175 @@ mod tests {
         port
     }
 
+    /// HTTP server answering successive requests with `answers`, in order,
+    /// counting the requests it gets.
+    fn serve_seq(answers: Vec<(&'static str, &'static str)>) -> (u16, Arc<AtomicU64>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(AtomicU64::new(0));
+        let count = seen.clone();
+        std::thread::spawn(move || {
+            for (status, body) in answers {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                count.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let hdr = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(hdr.as_bytes());
+                let _ = sock.write_all(body.as_bytes());
+            }
+        });
+        (port, seen)
+    }
+
+    #[tokio::test]
+    async fn an_hf_call_gets_past_a_gateway_timeout() {
+        let (port, seen) = serve_seq(vec![("504 Gateway Timeout", ""), ("200 OK", "[]")]);
+        let client = crate::http::client_secs(UA, 5).unwrap();
+        let r = hf_get(&client, &format!("http://127.0.0.1:{port}/api/models")).await.unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn an_hf_call_gives_up_after_three_server_errors() {
+        let answers = vec![("500 Internal Server Error", ""); 4];
+        let (port, seen) = serve_seq(answers);
+        let client = crate::http::client_secs(UA, 5).unwrap();
+        let r = hf_get(&client, &format!("http://127.0.0.1:{port}/api/models")).await.unwrap();
+        assert_eq!(r.status(), 500);
+        assert_eq!(seen.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn an_hf_call_takes_a_missing_repo_at_its_word() {
+        let (port, seen) = serve_seq(vec![("404 Not Found", ""), ("200 OK", "[]")]);
+        let client = crate::http::client_secs(UA, 5).unwrap();
+        let r = hf_get(&client, &format!("http://127.0.0.1:{port}/api/models/a/b")).await.unwrap();
+        assert_eq!(r.status(), 404);
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_hf_is_said_so() {
+        // A port nothing listens on: refused, tried three times, then said.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let client = crate::http::client_secs(UA, 5).unwrap();
+        let err = hf_get(&client, &format!("http://127.0.0.1:{port}/api/models")).await.unwrap_err();
+        assert_eq!(err, "HF_ERROR\tunreachable\t");
+    }
+
+    #[tokio::test]
+    async fn a_failing_hf_is_not_a_missing_repo() {
+        let (port, _) = serve_seq(vec![("503 Service Unavailable", ""); 3]);
+        let err = repo_tree("a/b", &format!("http://127.0.0.1:{port}")).await.unwrap_err();
+        assert!(err.contains("503") && !err.contains("repo not found"), "{err}");
+        let (port, _) = serve_seq(vec![("401 Unauthorized", "")]);
+        let err = repo_tree("a/b", &format!("http://127.0.0.1:{port}")).await.unwrap_err();
+        assert!(err.contains("repo not found"), "{err}");
+    }
+
+    fn hit(id: &str) -> HfModelHit {
+        HfModelHit {
+            id: id.into(),
+            name: id.rsplit('/').next().unwrap().into(),
+            author: id.split('/').next().unwrap().into(),
+            downloads: 7,
+            likes: 1,
+            updated_at: "2026-10-01T00:00:00.000Z".into(),
+            vision: true,
+            image: false,
+            music: false,
+            params_b: Some(4.0),
+        }
+    }
+
+    #[test]
+    fn a_kept_shelf_comes_back_by_its_list() {
+        let root = fresh_root("shelf");
+        let path = root.join(SHELVES_FILE);
+        assert!(shelf_get(&path, "a").is_none());
+        shelf_put(&path, "a", &[hit("x/y")]);
+        shelf_put(&path, "b", &[hit("x/z")]);
+        shelf_put(&path, "c", &[]);
+        let a = shelf_get(&path, "a").unwrap();
+        assert_eq!(a.hits.len(), 1);
+        assert_eq!(a.hits[0].id, "x/y");
+        assert!(a.hits[0].vision);
+        assert_eq!(a.hits[0].params_b, Some(4.0));
+        assert!(a.at > 0);
+        assert_eq!(shelf_get(&path, "b").unwrap().hits[0].id, "x/z");
+        assert!(shelf_get(&path, "c").is_none(), "an empty list is not kept");
+        // A file that is not ours to read starts over rather than failing.
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(shelf_get(&path, "a").is_none());
+        shelf_put(&path, "a", &[hit("x/y")]);
+        assert!(shelf_get(&path, "a").is_some());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_music_shelf_keeps_to_the_engine_families() {
+        let items = serde_json::json!([
+            { "id": "audio-cpp/Yue2-3B-GGUF", "tags": ["audio.cpp", "text-to-audio"], "downloads": 5 },
+            { "id": "someone/Kokoro-82M-GGUF", "tags": ["audio.cpp", "text-to-audio"] },
+            { "id": "", "tags": [] },
+        ]);
+        let hits = hits_from(&items, false, true);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "audio-cpp/Yue2-3B-GGUF");
+        assert!(hits[0].music && !hits[0].image && !hits[0].vision);
+        assert_eq!(hits[0].downloads, 5);
+        let hits = hits_from(&items, false, false);
+        assert_eq!(hits.len(), 2, "every other shelf lists what Hugging Face lists");
+        assert!(hits[0].music && !hits[1].music);
+        assert!(music_packages("").iter().all(|h| h.music && h.id.starts_with(AUDIOCPP_MULTI_REPO)));
+        assert!(!music_packages("stable").is_empty());
+        assert!(music_packages("no such family").is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_storefront_shows_its_last_list_when_hf_cannot_list() {
+        let root = fresh_root("shelf-e2e");
+        let path = root.join(SHELVES_FILE);
+        let list = r#"[{"id":"Qwen/Qwen3-4B-GGUF","tags":["gguf"],"downloads":9,"lastModified":"2026-10-01T00:00:00.000Z"}]"#;
+        let (port, _) = serve_seq(vec![("200 OK", list)]);
+        let base = format!("http://127.0.0.1:{port}");
+        let fresh = search_shelf(Some(&path), "", "gguf", "trending", None, Some(&base), None).await.unwrap();
+        assert_eq!(fresh.hits.len(), 1);
+        assert!(fresh.error.is_none() && fresh.cached_at.is_none());
+
+        let (port, _) = serve_seq(vec![("504 Gateway Timeout", ""); 3]);
+        let base = format!("http://127.0.0.1:{port}");
+        let kept = search_shelf(Some(&path), "", "gguf", "trending", None, Some(&base), None).await.unwrap();
+        assert_eq!(kept.hits[0].id, "Qwen/Qwen3-4B-GGUF");
+        assert!(kept.error.as_deref().is_some_and(|e| e.contains("504")), "{:?}", kept.error);
+        assert!(kept.cached_at.is_some());
+
+        // Another list, or a search, has nothing kept: the failure is the answer.
+        let (port, _) = serve_seq(vec![("504 Gateway Timeout", ""); 3]);
+        let base = format!("http://127.0.0.1:{port}");
+        let err = search_shelf(Some(&path), "", "gguf", "downloads", None, Some(&base), None).await.err().unwrap();
+        assert!(err.contains("504"), "{err}");
+        let (port, _) = serve_seq(vec![("504 Gateway Timeout", ""); 3]);
+        let base = format!("http://127.0.0.1:{port}");
+        assert!(search_shelf(Some(&path), "qwen", "gguf", "trending", None, Some(&base), None).await.is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_music_shelf_keeps_its_official_packages_when_hf_cannot_list() {
+        let (port, _) = serve_seq(vec![("500 Internal Server Error", ""); 3]);
+        let base = format!("http://127.0.0.1:{port}");
+        let shelf = search_shelf(None, "", "gguf", "downloads", None, Some(&base), Some("music")).await.unwrap();
+        assert_eq!(shelf.hits.len(), AUDIOCPP_MUSIC_PACKAGES.len());
+        assert!(shelf.error.is_some() && shelf.cached_at.is_none());
+    }
+
     #[tokio::test]
     async fn normal_path_streams_plain_http() {
         let payload: Vec<u8> = b"GGUF"
@@ -1892,15 +2194,17 @@ mod store_e2e {
     #[tokio::test]
     #[ignore]
     async fn mlx_image_shelf_and_precheck() {
-        let hits = hf_search("".into(), "mlx".into(), "downloads".into(), Some(30), None, Some("image".into()))
+        let hits = search_shelf(None, "", "mlx", "downloads", Some(30), None, Some("image"))
             .await
-            .expect("mlx image search");
+            .expect("mlx image search")
+            .hits;
         assert!(!hits.is_empty(), "empty mlx image shelf");
         assert!(hits.iter().all(|h| h.image));
         eprintln!("shelf: {:?}", hits.iter().map(|h| h.id.clone()).collect::<Vec<_>>());
-        let q = hf_search("qwen-image".into(), "mlx".into(), "downloads".into(), Some(30), None, Some("image".into()))
+        let q = search_shelf(None, "qwen-image", "mlx", "downloads", Some(30), None, Some("image"))
             .await
-            .expect("mlx image query");
+            .expect("mlx image query")
+            .hits;
         assert!(q.iter().any(|h| h.id == "mlx-community/Qwen-Image-2512-4bit"), "{:?}", q.iter().map(|h| &h.id).collect::<Vec<_>>());
 
         let z = hf_model_detail("deepsweet/Z-Image-Turbo-6B-MLX-Q4".into(), "mlx".into(), None).await.expect("z detail");
@@ -1921,9 +2225,10 @@ mod store_e2e {
     #[ignore]
     async fn search_and_detail_both_formats() {
         // GGUF search
-        let hits = hf_search("qwen".into(), "gguf".into(), "downloads".into(), Some(10), None, None)
+        let hits = search_shelf(None, "qwen", "gguf", "downloads", Some(10), None, None)
             .await
-            .expect("gguf search");
+            .expect("gguf search")
+            .hits;
         assert!(!hits.is_empty(), "no gguf hits");
         assert!(hits.iter().all(|h| h.id.contains('/')));
         eprintln!("gguf top: {} (↓{})", hits[0].id, hits[0].downloads);
@@ -1941,9 +2246,10 @@ mod store_e2e {
         eprintln!("quants: {:?}", d.quants.iter().map(|q| (q.label.clone(), q.size / 1_000_000)).collect::<Vec<_>>());
 
         // MLX search + detail (auto-detected as single-quant repo)
-        let hits = hf_search("qwen".into(), "mlx".into(), "trending".into(), Some(10), None, None)
+        let hits = search_shelf(None, "qwen", "mlx", "trending", Some(10), None, None)
             .await
-            .expect("mlx search");
+            .expect("mlx search")
+            .hits;
         assert!(!hits.is_empty(), "no mlx hits");
         let d = hf_model_detail("mlx-community/Qwen3-0.6B-4bit".into(), "mlx".into(), None)
             .await

@@ -11,7 +11,11 @@ const cache = new Map<string, Promise<string | null>>();
 function avatarFor(author: string): Promise<string | null> {
   let p = cache.get(author);
   if (!p) {
-    p = hfAuthorAvatar(author).catch(() => null);
+    // A failed look is not an answer: the next one asks again.
+    p = hfAuthorAvatar(author).catch(() => {
+      cache.delete(author);
+      return null;
+    });
     cache.set(author, p);
   }
   return p;

@@ -59,7 +59,7 @@ pub(crate) async fn engine_search(query: &str) -> Result<Vec<SearchResult>, Stri
     ddg_search(&client, query).await
 }
 
-/// Result list **plus** the fetched main text of the top pages, for grounding.
+/// Result list **plus** the fetched main text of every result's page, for grounding.
 #[tauri::command]
 pub async fn web_research(query: String) -> Result<WebResearch, String> {
     let query = query.trim().to_string();
@@ -69,20 +69,24 @@ pub async fn web_research(query: String) -> Result<WebResearch, String> {
     let client = build_client()?;
     let results = ddg_search(&client, &query).await?;
 
-    // Fetch the top few pages concurrently; skip any that fail or time out.
+    // Every result's page, fetched concurrently; any that fail or time out
+    // are skipped. Kept in the engine's order, not the order they come back
+    // in: the first sources should be the best ones, not the fastest.
     let mut set = JoinSet::new();
-    for r in results.iter().take(6) {
+    for (rank, r) in results.iter().enumerate() {
         let client = client.clone();
         let url = r.url.clone();
         let title = r.title.clone();
-        set.spawn(async move { fetch_page(&client, &url, &title).await });
+        set.spawn(async move { (rank, fetch_page(&client, &url, &title).await) });
     }
     let mut pages = Vec::new();
     while let Some(joined) = set.join_next().await {
-        if let Ok(Some(page)) = joined {
-            pages.push(page);
+        if let Ok((rank, Some(page))) = joined {
+            pages.push((rank, page));
         }
     }
+    pages.sort_by_key(|(rank, _)| *rank);
+    let pages = pages.into_iter().map(|(_, page)| page).collect();
 
     Ok(WebResearch { results, pages })
 }
@@ -123,7 +127,9 @@ fn normalize_key(query: &str) -> String {
 }
 
 /// Keep only results a model can actually use: a real title, an external
-/// http(s) URL, no ad redirects, de-duplicated, capped.
+/// http(s) URL, no ad redirects, de-duplicated. Not capped: chat's web search
+/// gives every result on topic a number, and the tools that show a list to a
+/// model cap it themselves.
 fn sanitize(mut v: Vec<SearchResult>) -> Vec<SearchResult> {
     let mut seen = std::collections::HashSet::new();
     v.retain(|r| {
@@ -139,7 +145,6 @@ fn sanitize(mut v: Vec<SearchResult>) -> Vec<SearchResult> {
         let key = r.url.split(['?', '#']).next().unwrap_or(&r.url).to_string();
         seen.insert(key)
     });
-    v.truncate(8);
     v
 }
 
@@ -400,9 +405,6 @@ fn parse_brave(html: &str) -> Vec<SearchResult> {
             url,
             snippet,
         });
-        if out.len() >= 8 {
-            break;
-        }
     }
     out
 }
@@ -458,9 +460,6 @@ fn parse_bing(html: &str) -> Vec<SearchResult> {
             .map(|s| s.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "))
             .unwrap_or_default();
         out.push(SearchResult { title, url, snippet });
-        if out.len() >= 8 {
-            break;
-        }
     }
     out
 }
@@ -494,7 +493,7 @@ async fn wikipedia_search(client: &reqwest::Client, query: &str) -> Result<Vec<S
     let lang = if cjk { "zh" } else { "en" };
     let enc = utf8_percent_encode(query, NON_ALPHANUMERIC);
     let url = format!(
-        "https://{lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch={enc}&format=json&srlimit=6&srprop=snippet"
+        "https://{lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch={enc}&format=json&srlimit=10&srprop=snippet"
     );
     let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
     let body = resp.text().await.map_err(|e| e.to_string())?;
@@ -652,9 +651,6 @@ fn parse_ddg(html: &str) -> Vec<SearchResult> {
             .map(|s| s.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
         out.push(SearchResult { title, url, snippet });
-        if out.len() >= 8 {
-            break;
-        }
     }
     out
 }
@@ -683,9 +679,6 @@ fn parse_lite(html: &str) -> Vec<SearchResult> {
         }
         let snippet = snippets.get(i).cloned().unwrap_or_default();
         out.push(SearchResult { title, url, snippet });
-        if out.len() >= 8 {
-            break;
-        }
     }
     out
 }
@@ -837,6 +830,14 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].url, "https://x.com/p");
         assert_eq!(out[1].url, "https://y.com/q");
+    }
+
+    #[test]
+    fn sanitize_keeps_every_good_result() {
+        let raw: Vec<SearchResult> = (0..20)
+            .map(|i| SearchResult { title: format!("r{i}"), url: format!("https://site{i}.com/p"), snippet: "s".into() })
+            .collect();
+        assert_eq!(sanitize(raw).len(), 20, "no cap on how many results a search gives");
     }
 
     #[test]
