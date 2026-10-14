@@ -193,6 +193,11 @@
   pop-up per source are gone.
 - **An answer keeps its sources.** They were only on screen: a conversation
   opened again had answers citing 【n】 with nothing under them.
+- **Pages read in their own character set.** A page that declares it only in
+  its own markup, or not at all — many Chinese sites, in GBK — came through
+  as rows of replacement characters, in the sources and in what the model
+  was given; so did it in links pasted into a chat and in Code's web_fetch.
+  A script inside a paragraph no longer comes through as the page's text.
 
 ### Model store
 

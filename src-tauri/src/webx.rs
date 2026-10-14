@@ -872,7 +872,7 @@ pub async fn fetch_page_ex(url: String, raw: Option<bool>) -> Result<PageEx, Str
         });
     }
 
-    let body = resp.text().await.map_err(|e| e.to_string())?;
+    let body = crate::http::page_text(resp).await?;
 
     if !is_html {
         // Source / data files pass through untouched.

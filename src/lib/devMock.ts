@@ -592,6 +592,8 @@ const WEB_SOURCES = [
   ["Lifetimes — The Rustonomicon", "https://doc.rust-lang.org/nomicon/lifetimes.html", "Rust enforces these rules through lifetimes. Lifetimes are named regions of code that a reference must be valid for."],
   ["Rust lifetimes explained with examples", "https://www.lurklurk.org/effective-rust/lifetimes.html", "The lifetime of an item on the stack is the period where it is guaranteed to stay at the same place."],
   ["Lifetime (computer science) — Wikipedia", "https://en.wikipedia.org/wiki/Object_lifetime", "In object-oriented programming, the object lifetime of an object is the time between an object's creation and its destruction."],
+  // A real page's title and text run long and do not break: the list keeps to the answer's width.
+  ["日历万年历查询今天是农历几月几日,今天是什么日子,今天几月几号星期几_万年历_日历_今天是几月几日_农历查询_黄历查询_节气查询", "https://www.example-calendar.com.cn/wannianli/today/index_2026_10_14.html?from=search&utm_source=chaty", "日历万年历查询今天是农历几月几日、今天是什么日子、今天几月几号星期几。https://www.example-calendar.com.cn/wannianli/today/index_2026_10_14.html?from=search&utm_source=chaty&utm_medium=web&utm_campaign=calendar_lookup_long_unbroken_parameter_value"],
 ].map(([title, url, snippet]) => ({ title, url, snippet }));
 const KB_SOURCES = [
   ["Rust 内存模型笔记.pdf", "借用检查器在编译期确认每个引用都不会比它指向的数据活得更久；生命周期标注只是给编译器看的名字，不改变任何值实际存活的时间。"],

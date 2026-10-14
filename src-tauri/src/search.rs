@@ -698,10 +698,15 @@ async fn fetch_page(client: &reqwest::Client, url: &str, title: &str) -> Option<
     if !is_html {
         return None;
     }
-    let html = resp.text().await.ok()?;
+    let html = crate::http::page_text(resp).await.ok()?;
     let text = extract_main_text(&html, PER_PAGE_CHARS);
     if text.chars().count() < 80 {
         return None; // too little usable text (likely JS-rendered)
+    }
+    // Text that is still more than a little U+FFFD is a page in some
+    // encoding nothing declared: its snippet stands in for it.
+    if text.chars().filter(|&c| c == '\u{FFFD}').count() * 50 > text.chars().count() {
+        return None;
     }
     Some(PageContent {
         title: title.to_string(),
@@ -718,7 +723,7 @@ fn extract_main_text(html: &str, cap: usize) -> String {
     };
     let mut buf = String::new();
     for el in doc.select(&sel) {
-        let raw = el.text().collect::<String>();
+        let raw = visible_text(el);
         let t = raw.split_whitespace().collect::<Vec<_>>().join(" ");
         if t.chars().count() < 24 {
             continue;
@@ -730,6 +735,26 @@ fn extract_main_text(html: &str, cap: usize) -> String {
         }
     }
     buf.trim().chars().take(cap).collect()
+}
+
+/// An element's text without what a browser does not show: a `<script>` or
+/// `<style>` inside a paragraph (an analytics snippet) used to come through
+/// as part of the page's text.
+fn visible_text(el: scraper::ElementRef) -> String {
+    let mut out = String::new();
+    for node in el.descendants() {
+        if let Some(t) = node.value().as_text() {
+            let hidden = node.ancestors().any(|a| {
+                a.value()
+                    .as_element()
+                    .is_some_and(|e| matches!(e.name(), "script" | "style" | "noscript" | "template"))
+            });
+            if !hidden {
+                out.push_str(t);
+            }
+        }
+    }
+    out
 }
 
 fn extract_title(html: &str) -> Option<String> {
@@ -760,7 +785,7 @@ pub async fn fetch_url(url: String) -> Result<PageContent, String> {
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    let html = resp.text().await.map_err(|e| e.to_string())?;
+    let html = crate::http::page_text(resp).await?;
     let text = extract_main_text(&html, 6000);
     if text.chars().count() < 40 {
         return Err("该网页正文为空（可能是动态渲染页面）".into());
@@ -830,6 +855,32 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].url, "https://x.com/p");
         assert_eq!(out[1].url, "https://y.com/q");
+    }
+
+    /// Live: the pages a Chinese query finds — several of them GBK sites that
+    /// declare it only in a <meta> — come back readable, without scripts.
+    #[test]
+    #[ignore]
+    fn real_chinese_pages_read_cleanly() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let r = rt.block_on(web_research("今天几号".into())).unwrap();
+        eprintln!("{} results, {} pages", r.results.len(), r.pages.len());
+        for p in &r.pages {
+            let bad = p.text.chars().filter(|&c| c == '\u{FFFD}').count();
+            eprintln!("  {bad:>3} bad  {}  {}", p.url, p.text.chars().take(60).collect::<String>());
+            assert!(bad * 50 <= p.text.chars().count(), "garbled: {}", p.url);
+            assert!(!p.text.contains("document.createElement"), "script text: {}", p.url);
+        }
+    }
+
+    #[test]
+    fn page_text_leaves_out_scripts_and_styles() {
+        let html = "<html><body><p>今天是二零二六年九月初五，今年的第 42 周，距离下一个节气还有 9 天。\
+            <script>var _hmt = _hmt || []; (function() { var hm = document.createElement(\"script\"); })();</script>\
+            <style>.x { color: red }</style></p></body></html>";
+        let text = extract_main_text(html, 900);
+        assert!(text.contains("九月初五"), "{text}");
+        assert!(!text.contains("_hmt") && !text.contains("color"), "{text}");
     }
 
     #[test]
