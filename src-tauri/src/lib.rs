@@ -25,6 +25,7 @@ pub mod skillsync;
 mod smooth_wheel;
 mod state;
 mod store;
+pub mod textenc;
 mod user_skills;
 mod terminal;
 pub mod update;

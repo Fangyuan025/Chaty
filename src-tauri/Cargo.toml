@@ -114,6 +114,7 @@ toml = "0.8"
 # Windows), and a terminal screen to read what it shows (both MIT).
 portable-pty = "0.9"
 vt100 = "0.16"
+chardetng = "1"
 
 # GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers â€” cross-vendor on Windows.
 [target.'cfg(windows)'.dependencies]

@@ -599,6 +599,8 @@ const KB_SOURCES = [
   ["Rust 内存模型笔记.pdf", "借用检查器在编译期确认每个引用都不会比它指向的数据活得更久；生命周期标注只是给编译器看的名字，不改变任何值实际存活的时间。"],
   ["团队 Rust 编码规范 v3.docx", "跨线程传递的数据一律要求 'static：要么完全拥有（String、Vec），要么用 Arc 共享；不允许把栈上数据的引用交给新线程。"],
   ["异步运行时选型.md", "tokio::spawn 与 thread::spawn 一样要求 future 为 'static，这正是需要把数据 move 进 async 块的原因。"],
+  // A long name and a passage that does not break: the list keeps to the answer's width.
+  ["2026年第三季度后端服务架构评审会议纪要_最终修订版_含附录A至附录F_内部资料请勿外传_v12_final_final.pdf", "附录C：配置项 tokio_runtime_worker_threads_override_for_high_throughput_ingestion_pipeline_service_cluster_east_2 默认值为 0，表示按 CPU 核数自动设置；仅在压测环境里调大。"],
 ].map(([title, snippet]) => ({ title, url: "", snippet }));
 let CURRENT: unknown = START_MODEL === "image" ? IMAGE_MODEL : START_MODEL === "music" ? MUSIC_MODEL : MODEL;
 

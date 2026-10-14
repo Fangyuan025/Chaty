@@ -93,14 +93,9 @@ pub async fn read_attachment(app: tauri::AppHandle, path: String) -> Result<Atta
     })
 }
 
-/// Read a text file as UTF-8, falling back to GB18030 for legacy Chinese files.
+/// Read a text file in the encoding it is in (see `textenc`): UTF-16 from
+/// Notepad, Big5 and Shift_JIS were read as GB18030 before.
 fn read_text_file(path: &str) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    match std::str::from_utf8(&bytes) {
-        Ok(s) => Ok(s.to_string()),
-        Err(_) => {
-            let (cow, _, _) = encoding_rs::GB18030.decode(&bytes);
-            Ok(cow.into_owned())
-        }
-    }
+    Ok(crate::textenc::decode_unlabeled(&bytes))
 }

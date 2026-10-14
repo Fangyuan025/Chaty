@@ -193,11 +193,19 @@
   pop-up per source are gone.
 - **An answer keeps its sources.** They were only on screen: a conversation
   opened again had answers citing 【n】 with nothing under them.
-- **Pages read in their own character set.** A page that declares it only in
-  its own markup, or not at all — many Chinese sites, in GBK — came through
-  as rows of replacement characters, in the sources and in what the model
-  was given; so did it in links pasted into a chat and in Code's web_fetch.
-  A script inside a paragraph no longer comes through as the page's text.
+- **Pages and files read in their own character set.** A page that declares
+  it only in its own markup, or not at all — many Chinese sites, in GBK —
+  came through as rows of replacement characters, in the sources and in
+  what the model was given; so did it in links pasted into a chat and in
+  Code's web_fetch. Text files in a knowledge base or attached to a chat
+  were read as UTF-8 or else GBK, whatever they were: Notepad's "Unicode"
+  (UTF-16), Big5 and Shift_JIS files now read as written. A script inside a
+  paragraph no longer comes through as a page's text.
+- **A web page in a knowledge base is indexed as it reads** — its words, not
+  its markup, scripts and styles, which came back as passages of source.
+- **A PDF whose text layer is junk is read like a scan.** Text in a font with
+  no Unicode map extracts as replacement and private-use characters; it was
+  indexed as it came out, and is now read page by page instead.
 
 ### Model store
 

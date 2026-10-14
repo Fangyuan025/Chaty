@@ -405,17 +405,18 @@ fn extract_text(path: &str) -> Result<String, String> {
         "docx" => extract_docx(path),
         "xlsx" => extract_xlsx(path),
         "pptx" => extract_pptx(path),
-        _ => {
-            // Text-ish files (code, markup, config, …): decode as UTF-8 with a
-            // GBK fallback. Any text-based extension just works here.
+        // A web page is indexed as it reads: its markup, scripts and styles
+        // came through as passages of source before.
+        "html" | "htm" | "xhtml" => {
             let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-            Ok(match String::from_utf8(bytes) {
-                Ok(s) => s,
-                Err(e) => {
-                    let (s, _, _) = encoding_rs::GBK.decode(e.as_bytes());
-                    s.into_owned()
-                }
-            })
+            Ok(crate::textenc::html_text(&crate::textenc::decode_page(&bytes, None)))
+        }
+        _ => {
+            // Text-ish files (code, markup, config, …), in the encoding they
+            // are in: UTF-16 from Notepad, Big5 and Shift_JIS read as GBK
+            // before. Any text-based extension just works here.
+            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+            Ok(crate::textenc::decode_unlabeled(&bytes))
         }
     }
 }
@@ -523,7 +524,15 @@ pub(crate) fn extract_pdf_bytes(bytes: &[u8]) -> Result<String, String> {
 /// model staring at a blank document with no idea why — 199 of the 200 pages
 /// in the owner's grammar manual are exactly this.
 fn has_text(t: String) -> Result<String, String> {
-    if t.chars().filter(|c| !c.is_whitespace()).count() >= 16 {
+    // A text layer in a font with no Unicode map extracts as U+FFFD and
+    // private-use code points: as good as none — read like a scan instead
+    // of indexed as noise.
+    let seen = t.chars().filter(|c| !c.is_whitespace());
+    let (all, junk) = seen.fold((0usize, 0usize), |(all, junk), c| {
+        let bad = c == '\u{FFFD}' || ('\u{E000}'..='\u{F8FF}').contains(&c) || c as u32 >= 0xF0000 || c.is_control();
+        (all + 1, junk + usize::from(bad))
+    });
+    if all - junk >= 16 && junk * 10 < all * 3 {
         return Ok(t);
     }
     Err(no_text_layer())
@@ -1411,8 +1420,9 @@ pub async fn rag_add_document(
 }
 
 /// File extensions the knowledge base can ingest: documents (PDF/DOCX),
-/// OCR-able images, and a broad set of text/code/markup/config files (all read
-/// as UTF-8). Kept in sync with the file-picker filter in KnowledgePanel.tsx.
+/// OCR-able images, and a broad set of text/code/markup/config files (each
+/// read in its own encoding, see `textenc`). Kept in sync with the
+/// file-picker filter in KnowledgePanel.tsx.
 const SUPPORTED_EXTS: &[&str] = &[
     // documents + images
     "pdf", "docx", "xlsx", "png", "jpg", "jpeg", "webp", "bmp", "gif",
@@ -1817,6 +1827,51 @@ pub async fn rag_download_model(
 
 #[cfg(test)]
 mod tests {
+    fn temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("chaty-kb-text-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    /// A web page in the knowledge base is indexed as it reads — in the
+    /// charset its <meta> names, without markup, scripts or styles.
+    #[test]
+    fn an_html_file_is_indexed_as_it_reads() {
+        let html = "<html><head><meta charset=\"gbk\"><style>p{color:red}</style></head><body>\
+            <h1>农历</h1><p>今天是二零二六年九月初五。<script>var _hmt = _hmt || [];</script></p></body></html>";
+        let path = temp_file("page.html", &encoding_rs::GBK.encode(html).0);
+        let text = super::extract_text(path.to_str().unwrap()).unwrap();
+        assert_eq!(text, "农历\n今天是二零二六年九月初五。");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// A text file is read in its own encoding: Notepad's "Unicode" is UTF-16.
+    #[test]
+    fn a_utf16_text_file_is_read() {
+        let mut bytes = vec![0xFF, 0xFE];
+        for u in "知识库里的一份笔记".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        let path = temp_file("note.txt", &bytes);
+        assert_eq!(super::extract_text(path.to_str().unwrap()).unwrap(), "知识库里的一份笔记");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// A PDF text layer in a font with no Unicode map comes out as U+FFFD and
+    /// private-use code points: read as a scan, not indexed as noise. A few
+    /// icon glyphs in real text do not count against it.
+    #[test]
+    fn a_text_layer_of_junk_is_no_text_layer() {
+        assert!(super::has_text("\u{FFFD}".repeat(40)).is_err());
+        assert!(super::has_text("\u{E01A}\u{E0B3}\u{F012} ".repeat(20)).is_err());
+        assert!(super::has_text(format!("{}\u{FFFD}\u{FFFD}", "x".repeat(10))).is_err(), "too little that reads");
+        let real = format!("The borrow checker proves every reference valid. \u{F0E0} {}", "More text. ".repeat(5));
+        assert!(super::has_text(real).is_ok());
+    }
+
     /// A chunk may never exceed the micro-batch the encoder context was given:
     /// past it llama.cpp aborts the process instead of returning an error.
     #[test]
