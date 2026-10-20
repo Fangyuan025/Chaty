@@ -310,44 +310,40 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## Songs, made on your own machine
+            ## Long Code sessions keep their pace
 
-            Load a text-to-music model — YuE2, ACE-Step 1.5, MiniMax Music 3,
-            HeartMuLa, Stable Audio 3, MiDashengLM-Gen — and the whole app
-            becomes a music studio: your style and lyrics as a bubble, the piece
-            as a waveform to play and seek, and each family's own edits of an
-            earlier round — rearrange or continue a song, repaint a stretch,
-            cover it in a new style. YuE2's instrumentals are made the way its
-            makers make them — a score, its vocal melody handed to an
-            instrument — which takes out most of the singing empty lyrics left in.
-            It runs on audio.cpp in a helper of its own — Metal on a Mac, Vulkan
-            on Windows and Linux. On an M4 Pro, YuE2 writes and sings a
-            30-second verse and chorus in 33 s, and Stable Audio 3 Small makes
-            20 s in 1.2 s.
+            An MLX model was given its whole trained context, whatever the
+            machine. Qwen3.6 35B-A3B on a 48 GB Mac got 262k tokens, and past
+            100k a Code session's cache outgrew the GPU's memory: decoding fell
+            from 26 to 3 tok/s and stayed there. The engine now measures what
+            the loaded model's cache costs per token and holds the context to
+            what memory can carry — 90k for that 35B, which ran at 24 to 29
+            tok/s up to the session's compaction. A long prompt is read in
+            chunks that fit, a step left with its tool call open no longer
+            makes the next one re-read the whole conversation (302 s at 86k
+            tokens), and a forward pass that breaks stops the reply instead of
+            writing noise.
 
-            ## A lighter frame
+            ## Each conversation keeps its numbers
 
-            No title bar across the window: the window's controls and a mode
-            switch of icons sit over the sidebar, the working area runs to the
-            window's edges, and the transcript passes under the top row instead
-            of stopping at a bar. Chaty draws its own scrollbars everywhere, a
-            mouse wheel glides on a Mac as it does in Chrome, and Code's
-            thinking and bypass switches sit under its input.
+            The context ring stays with its chat conversation or Code session —
+            after a switch, after a restart, and through a model change until
+            the next reply counts again. Deleting a conversation clears its
+            numbers for good, and chat shows how far a long prompt has been read.
 
-            ## Live mode, interrupted
+            ## Every source, in its own script
 
-            Cut a spoken reply short and it is your turn at once — the model
-            remembers what it said up to there, not the rest. The light no
-            longer ends at a line across the screen, and the window moves from
-            its top edge even with Live mode or a dialog open.
+            A web search is no longer held to six sources: every result on topic
+            goes in while it fits, folded into one line under the answer and
+            kept with it. Pages and files are read in their own character set —
+            GBK sites, Notepad's UTF-16, Big5 and Shift_JIS — instead of rows of
+            replacement characters.
 
-            Also: Code's answers are set cleanly and come without emoji, a Code
-            session exports as a full JSONL trace, K2 Horizon's MLX quants load,
-            Code's sessions can be searched, several sessions at once can be
-            deleted in Code and the image studio, the model store keeps its
-            lists when Hugging Face cannot list models, and a web search is no
-            longer held to six sources — they fold into one line under the
-            answer, and stay with it.
+            Also: a model's README in the store reads as it does on Hugging
+            Face, and the store keeps its lists when Hugging Face cannot list
+            models; YuE2's instrumentals keep the voice out; a mouse wheel
+            glides on a Mac; a Code session exports as a full JSONL trace, and
+            Code's answers come set cleanly and without emoji.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

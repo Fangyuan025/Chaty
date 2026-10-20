@@ -1,5 +1,172 @@
 # Changelog
 
+## v2.3.6 — Go the distance (2026-10-19)
+
+### Long sessions on MLX
+
+- **The context is held to what memory can carry.** An MLX model was given
+  its whole trained context whatever the machine: Qwen3.6 35B-A3B (34 GB)
+  on a 48 GB Mac got 262k tokens, and a long Code session grew its cache
+  past the GPU's working set — past 100k tokens macOS paged GPU memory out,
+  and decoding fell from 26 to 3 tok/s and stayed there. The engine now
+  measures, on the model it has loaded, what its cache gains per token
+  (attention layers grow, linear-attention and sliding-window layers do not)
+  and holds the context to what the working set leaves beside the weights,
+  as the llama.cpp engine already did, saying so when the model loads; the
+  app compacts a session before it gets there. The same 35B now gets 90,112
+  tokens: over the same eight-turn Code session it averaged 24 to 29 tok/s
+  between 70k and the compaction at 86k, and 34 after it.
+- **A long prompt is read in chunks that fit.** Reading a prompt takes
+  scratch memory that grows with the context — 1.5 GB at 50k tokens for
+  Qwen3.6's attention — and it alone could tip a long session over. The
+  chunk size now follows the memory left: as before while there is room,
+  smaller when there is not.
+- **A step left unfinished no longer costs the whole conversation.** When
+  a step ends with its tool call still open — an edit stopped because its
+  old_string had stopped matching the file, a call the model never finished
+  — Code mode closes the call before keeping it, and on Qwen3.5 and 3.6 with
+  thinking on that turn no longer matched the tokens the engine held: the
+  next step re-read everything, 302 seconds at 86k tokens. The engine now
+  replays what the model wrote and reads only what was added.
+- **A broken step stops the reply.** A forward pass that comes back as NaN
+  (out of memory, an overflow) is caught before its token is shown: the
+  reply stops with an error saying so and the spoiled cache is dropped, so
+  the next turn starts clean instead of continuing from noise.
+- **A model in a linked folder loads.** An MLX model linked into the models
+  folder — kept on another drive, or shared with another app — was looked
+  for through the link, found no weights, and failed to load.
+
+### The context ring
+
+- **Each conversation and Code session keeps its ring** — the last reply's
+  share of the context window — after a switch and after a restart. It is
+  that reply's: a model or context-size change leaves it as it was until the
+  next reply counts again.
+- **Deleting the open conversation or session clears its numbers.** A reply
+  still running when it was deleted used to report after the reset and put
+  the old tok/s and ring back; so did a stopped Code run.
+- **Chat shows how far a long prompt has been read**, with the same ring Code
+  mode has, in place of the cursor while nothing has been written yet.
+
+### Web search and sources
+
+- **No cap of six sources.** A web search gives every result on topic a
+  number — its page's text where the page could be read, its snippet where
+  not — in the search engine's order, for as long as they fit a quarter of
+  the model's context window; before, it stopped at six however much room
+  there was, and each search engine's list stopped at eight.
+- **Sources sit under an answer as one line** — "wikipedia.org and 9 more
+  sources" — that opens into the list: each source's number (the 【n】 in the
+  answer), title, site and passage, a web page opening in the browser, a
+  knowledge-base passage opening to its whole text. The chip row and its
+  pop-up per source are gone.
+- **An answer keeps its sources.** They were only on screen: a conversation
+  opened again had answers citing 【n】 with nothing under them.
+- **Pages and files read in their own character set.** A page that declares
+  it only in its own markup, or not at all — many Chinese sites, in GBK —
+  came through as rows of replacement characters, in the sources and in
+  what the model was given; so did it in links pasted into a chat and in
+  Code's web_fetch. Text files in a knowledge base or attached to a chat
+  were read as UTF-8 or else GBK, whatever they were: Notepad's "Unicode"
+  (UTF-16), Big5 and Shift_JIS files now read as written. A script inside a
+  paragraph no longer comes through as a page's text.
+- **A web page in a knowledge base is indexed as it reads** — its words, not
+  its markup, scripts and styles, which came back as passages of source.
+- **A PDF whose text layer is junk is read like a scan.** Text in a font with
+  no Unicode map extracts as replacement and private-use characters; it was
+  indexed as it came out, and is now read page by page instead.
+
+### Model store
+
+- **A model's README reads as it does on Hugging Face.** Its HTML — badge
+  rows, centred banners, lists, tables, folded sections — is rendered, set in
+  the app's own type, instead of being stripped to loose lines with every
+  badge blown up to the full width, and a `[!NOTE]` or `[!WARNING]` is a
+  callout rather than a quote that opens with the marker. It is the repo
+  author's HTML, so it is cleaned to GitHub's allow-list first: no scripts,
+  event handlers, styles or frames.
+- **When Hugging Face cannot list models, the store still shows them.** Each
+  list the store opens on — every format, task and order — is kept as it
+  last loaded and shown, with a line saying so, when Hugging Face's listing
+  fails; the music shelf keeps its official packages whatever happens. Where
+  nothing is kept, the list says what went wrong, and that a repo pasted in
+  still opens.
+- **A bad moment at Hugging Face is tried again.** A gateway timeout or server
+  error from its API is retried before the store gives up, and then it says
+  the trouble is Hugging Face's, not the connection; a Hugging Face that
+  cannot be reached at all points to the endpoint setting.
+- Every model in a list shows when it was last updated again: Hugging Face
+  stopped sending the date unasked, and the store now asks for it.
+- A Hugging Face server error no longer reads as "repo not found" when a
+  model is opened or downloaded, and an author's picture no longer stays
+  blank for the rest of the session after Hugging Face failed to answer.
+- **Set up for me** recommends Qwen3.6 35B-A3B on machines with room for it,
+  in place of Qwen3.5 35B-A3B.
+
+### Code
+
+- **A Code session exports as a trace.** The download arrow at the top
+  right exports the open session as JSON Lines, one record a line in the
+  order things happened: each request, every tool call with its arguments,
+  the whole of what it returned and its diff, the reasoning, the plan and the
+  answer. The arrow follows the mode — in Code it is the session's, not the
+  chat conversation open behind it.
+- In Code mode the command palette's New starts a new session, and a
+  conversation picked from it opens in chat.
+- **Answers set like the rest of Code mode.** A Code answer took the chat's
+  reading serif without the chat's markdown rules: headings at the
+  browser's size, tables without borders, quotes as a bare indent, inline
+  code without a ground. It is set in the app's sans now, with quiet
+  headings, hairline tables, rules and quotes, and a code block without the
+  highlight theme's own padding.
+- **No emoji in what the model writes** — not in answers, not in the files
+  it writes — unless you ask for them. The rule names "attractive" as no
+  reason, which is what Gemma-4 26B took a request for an attractive README
+  to be; and what the model is shown stops modelling emoji (the 📁/📄 of a
+  folder listing, which Qwen3.6 35B drew a project survey with, the ⚠ over
+  web results, the ⏱ of a timed-out check). On a README and a pros-and-cons
+  task, three runs each on Gemma-4 26B and Qwen3.6 35B: no emoji in the
+  answers; in the README files 0 and 0/0/6, against 12/7 and 12/13.
+
+### Music generation
+
+- **YuE2 instrumentals keep the voice out.** YuE2 sings even with empty
+  lyrics, so an instrumental is made the way its makers make one: the model
+  writes a score from the style and section tags alone, every note of the
+  score's vocal melody is moved to its instrument part (harmony, meter, keys
+  and sections kept, the result read back to prove it), and the music is
+  played from that score with a style that asks for no voice. A score the
+  planner cuts short at its limit is written again, and twice cut short, its
+  whole bars are used. Measured with a vocal separator on 60-second pieces in
+  eight styles, seed for seed: empty lyrics had a voice in 310 of 472
+  seconds, in every piece; the instrumental in 45, and in half of them none —
+  what is left is mostly wordless singing over a chorus. A piece made from a
+  score — yours, or the one a rearrangement follows — keeps a copy of it, to
+  open or rearrange again.
+
+### The window
+
+- **A mouse wheel glides on a Mac,** as it does in Chrome. Each notch eases
+  the page over a few frames instead of jumping it in one, and a wheel kept
+  turning carries the page in one movement rather than a pulse per notch;
+  the page stops when the wheel does, with nothing coasting on. Trackpads and
+  Magic Mice scroll as they did.
+- **The arrow back to the latest message fades** in and out, instead of
+  popping in and out of view, in chat, Code and both studios.
+- **A narrow window keeps more of itself.** "Open workspace…" stays on one
+  line, down to its folder icon where there is no room for the words; in a
+  small window the sidebar gives way too, so the panel keeps room for its
+  header; and the selection bar fits the narrowest sidebar in every
+  language, its actions on a second line rather than over the count.
+- **What scrolls under the top row fades under it** — Code's failed tool
+  steps, the music studio's progress and the empty chat's suggestions
+  painted over the row instead.
+
+### Reliability
+
+- Formulas and their stylesheet come from the same KaTeX (0.19); DOMPurify,
+  Mermaid and the Rust networking and TLS crates carry their security fixes.
+
 ## v2.3.5 — Make it sing (2026-09-27)
 
 ### Music generation
@@ -47,20 +214,6 @@
   family can leave it out; the length is automatic or set, as a limit where
   the model decides when to end.
 
-- **YuE2 instrumentals keep the voice out.** YuE2 sings even with empty
-  lyrics, so an instrumental is made the way its makers make one: the model
-  writes a score from the style and section tags alone, every note of the
-  score's vocal melody is moved to its instrument part (harmony, meter, keys
-  and sections kept, the result read back to prove it), and the music is
-  played from that score with a style that asks for no voice. A score the
-  planner cuts short at its limit is written again, and twice cut short, its
-  whole bars are used. Measured with a vocal separator on 60-second pieces in
-  eight styles, seed for seed: empty lyrics had a voice in 310 of 472
-  seconds, in every piece; the instrumental in 45, and in half of them none —
-  what is left is mostly wordless singing over a chorus. A piece made from a
-  score — yours, or the one a rearrangement follows — keeps a copy of it, to
-  open or rearrange again.
-
 - **Watched as it is made.** A percentage made from the stages the piece
   actually goes through — writing the score, composing, rendering the sound,
   decoding — weighted by each family's share of the work, with how much music
@@ -101,24 +254,9 @@
   boxes, number fields and a text field's resize grip are drawn by the app
   too, and the model store's dialog dims the window like every other dialog.
 
-- **A mouse wheel glides on a Mac,** as it does in Chrome. Each notch eases
-  the page over a few frames instead of jumping it in one, and a wheel kept
-  turning carries the page in one movement rather than a pulse per notch;
-  the page stops when the wheel does, with nothing coasting on. Trackpads and
-  Magic Mice scroll as they did.
-
 - **A narrow window keeps its buttons.** The top row gives way at the
-  model's name, its size figures first; Code's workspace keeps a few
-  letters of its own, and "Open workspace…" stays on one line, down to its
-  folder icon where there is no room for the words. In a small window the
-  sidebar gives way too, so the panel keeps room for its header.
-
-- **What scrolls under the top row fades under it** — Code's failed tool
-  steps, the music studio's progress and the empty chat's suggestions
-  painted over the row instead.
-
-- **The arrow back to the latest message fades** in and out, instead of
-  popping in and out of view, in chat, Code and both studios.
+  model's name, its size figures first, and Code's workspace keeps a few
+  letters of its own.
 
 - Settings → About says what Chaty is now.
 
@@ -133,40 +271,10 @@
   the canvas it is drawn on and ended at a straight line across the middle
   of the screen; it now fades out long before any edge.
 
-### Code
-
-- **A Code session exports as a trace.** The download arrow at the top
-  right exports the open session as JSON Lines, one record a line in the
-  order things happened: each request, every tool call with its arguments,
-  the whole of what it returned and its diff, the reasoning, the plan and the
-  answer. The arrow follows the mode — in Code it is the session's, not the
-  chat conversation open behind it.
-
-- In Code mode the command palette's New starts a new session, and a
-  conversation picked from it opens in chat.
-
-- **Answers set like the rest of Code mode.** A Code answer took the chat's
-  reading serif without the chat's markdown rules: headings at the
-  browser's size, tables without borders, quotes as a bare indent, inline
-  code without a ground. It is set in the app's sans now, with quiet
-  headings, hairline tables, rules and quotes, and a code block without the
-  highlight theme's own padding.
-
-- **No emoji in what the model writes** — not in answers, not in the files
-  it writes — unless you ask for them. The rule names "attractive" as no
-  reason, which is what Gemma-4 26B took a request for an attractive README
-  to be; and what the model is shown stops modelling emoji (the 📁/📄 of a
-  folder listing, which Qwen3.6 35B drew a project survey with, the ⚠ over
-  web results, the ⏱ of a timed-out check). On a README and a pros-and-cons
-  task, three runs each on Gemma-4 26B and Qwen3.6 35B: no emoji in the
-  answers; in the README files 0 and 0/0/6, against 12/7 and 12/13.
-
 ### Sidebars
 
 - **Several sessions deleted at once in Code and the image studio,** as the
   chat's conversations are (#20); the confirmation says their files go too.
-  The selection bar fits the narrowest sidebar in every language, its
-  actions on a second line rather than over the count.
 
 - **Code's sessions can be searched,** as the chat's conversations are: by
   title as you type, and by what was said and done in them.
@@ -179,50 +287,6 @@
   `experts` weight; they load now, with the low / medium / high rungs (oQ4e:
   30–36 tok/s on an M4 Pro).
 
-### Web search and sources
-
-- **No cap of six sources.** A web search gives every result on topic a
-  number — its page's text where the page could be read, its snippet where
-  not — in the search engine's order, for as long as they fit a quarter of
-  the model's context window; before, it stopped at six however much room
-  there was, and each search engine's list stopped at eight.
-- **Sources sit under an answer as one line** — "wikipedia.org and 9 more
-  sources" — that opens into the list: each source's number (the 【n】 in the
-  answer), title, site and passage, a web page opening in the browser, a
-  knowledge-base passage opening to its whole text. The chip row and its
-  pop-up per source are gone.
-- **An answer keeps its sources.** They were only on screen: a conversation
-  opened again had answers citing 【n】 with nothing under them.
-- **Pages and files read in their own character set.** A page that declares
-  it only in its own markup, or not at all — many Chinese sites, in GBK —
-  came through as rows of replacement characters, in the sources and in
-  what the model was given; so did it in links pasted into a chat and in
-  Code's web_fetch. Text files in a knowledge base or attached to a chat
-  were read as UTF-8 or else GBK, whatever they were: Notepad's "Unicode"
-  (UTF-16), Big5 and Shift_JIS files now read as written. A script inside a
-  paragraph no longer comes through as a page's text.
-- **A web page in a knowledge base is indexed as it reads** — its words, not
-  its markup, scripts and styles, which came back as passages of source.
-- **A PDF whose text layer is junk is read like a scan.** Text in a font with
-  no Unicode map extracts as replacement and private-use characters; it was
-  indexed as it came out, and is now read page by page instead.
-
-### Model store
-
-- **When Hugging Face cannot list models, the store still shows them.** Each
-  list the store opens on — every format, task and order — is kept as it
-  last loaded and shown, with a line saying so, when Hugging Face's listing
-  fails; the music shelf keeps its official packages whatever happens. Where
-  nothing is kept, the list says what went wrong, and that a repo pasted in
-  still opens.
-- **A bad moment at Hugging Face is tried again.** A gateway timeout or server
-  error from its API is retried before the store gives up, and then it says
-  the trouble is Hugging Face's, not the connection; a Hugging Face that
-  cannot be reached at all points to the endpoint setting.
-- A Hugging Face server error no longer reads as "repo not found" when a
-  model is opened or downloaded, and an author's picture no longer stays
-  blank for the rest of the session after Hugging Face failed to answer.
-
 ### Reliability
 
 - The window moves from its top edge whatever is over it — Live mode, a
@@ -231,8 +295,6 @@
 - The microphone opens while the audio device is changing mode — a Bluetooth
   headset going from playback to its headset mode — instead of failing with
   "The requested stream configuration is not supported by the device".
-- Formulas and their stylesheet come from the same KaTeX (0.19); DOMPurify,
-  Mermaid and the Rust networking and TLS crates carry their security fixes.
 
 ## v2.3.0 — Put to work (2026-09-25)
 
