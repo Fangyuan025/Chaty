@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { Markdown, StreamingContext } from "./Markdown";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
+import { PrefillRing } from "./PrefillRing";
 import { normalizeChannels, withoutToolCallSpans } from "../lib/voiceText";
 import { parseThinking } from "../lib/reasoning";
 
@@ -30,6 +31,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   streaming,
   searching,
   composing,
+  prefill,
   hideThinking,
   sources,
 }: {
@@ -37,6 +39,8 @@ export const AssistantMessage = memo(function AssistantMessage({
   streaming: boolean;
   searching?: SearchKind;
   composing?: boolean;
+  /** How far a long prompt has been read (0..1) before the first token. */
+  prefill?: number | null;
   hideThinking?: boolean;
   sources?: { title: string; url: string; snippet: string }[];
 }) {
@@ -70,6 +74,11 @@ export const AssistantMessage = memo(function AssistantMessage({
           <span className="searching-hint">
             <span className="searching-spinner" />
             {busyHint}
+          </span>
+        ) : streaming && !answer && prefill != null ? (
+          <span className="searching-hint">
+            <PrefillRing frac={prefill} />
+            {t("cmPrefill")}
           </span>
         ) : streaming && !answer ? (
           <span className="cursor" />
@@ -145,6 +154,11 @@ export const AssistantMessage = memo(function AssistantMessage({
         <span className="searching-hint">
           <span className="searching-spinner" />
           {busyHint}
+        </span>
+      ) : streaming && !cleanAnswer && !thinking && !showThink && prefill != null ? (
+        <span className="searching-hint">
+          <PrefillRing frac={prefill} />
+          {t("cmPrefill")}
         </span>
       ) : streaming && !cleanAnswer && !thinking ? (
         <span className="cursor" />

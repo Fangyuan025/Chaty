@@ -1643,6 +1643,17 @@ export async function saveMessage(
   await invoke("save_message", { id, conversationId, role, content, images: images ?? null, sources: sources ?? null });
 }
 
+/** What a conversation's ("chat") or a Code session's ("code") last reply
+ *  counted — its context ring — as kept with it; "" when nothing has. */
+export async function sessionStatsGet(kind: "chat" | "code", id: string): Promise<string> {
+  return await invoke<string>("session_stats_get", { kind, id });
+}
+
+/** Keep what a reply counted with its conversation or Code session. */
+export async function sessionStatsSet(kind: "chat" | "code", id: string, stats: string): Promise<void> {
+  await invoke("session_stats_set", { kind, id, stats });
+}
+
 export async function listConversations(): Promise<Conversation[]> {
   return await invoke<Conversation[]>("list_conversations");
 }

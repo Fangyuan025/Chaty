@@ -57,6 +57,8 @@ import {
   codeSessionSearch,
   codeSessionLoad,
   codeSessionSave,
+  sessionStatsGet,
+  sessionStatsSet,
   type ChatMessage,
   type CodeSessionMeta,
   type ModelInfo,
@@ -88,6 +90,7 @@ import { loadMemoryIndex, sessionMemoryIndex } from "../lib/memoryFiles";
 import { homeDir } from "@tauri-apps/api/path";
 import { fmtBytes } from "../lib/fmt";
 import { JumpBottom } from "./JumpBottom";
+import { PrefillRing } from "./PrefillRing";
 
 interface CodeMsg {
   id: string;
@@ -624,55 +627,6 @@ function ImgThumb({ path }: { path: string }) {
 }
 
 
-/** Circular prompt-processing progress: a small ring that fills 0→100% while a
- *  long prompt is prefilling (the silent gap before tokens stream), plus the
- *  live percentage. Replaces the generic spinner whenever progress is known. */
-function PrefillRing({ frac, size = 16 }: { frac: number; size?: number }) {
-  const r = (size - 3) / 2; // stroke 2.5 + hairline padding
-  const c = 2 * Math.PI * r;
-  // Progress events arrive per decode batch / per media segment — seconds
-  // apart on big prompts, which read as jumps. Smooth the DISPLAYED value:
-  // chase a new target quickly, and between events creep gently ahead (capped
-  // a few percent past the last report) so the ring visibly keeps moving
-  // through long silent stretches like image encoding.
-  const [shown, setShown] = useState(frac);
-  const targetRef = useRef(frac);
-  targetRef.current = frac;
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setShown((s) => {
-        const t = targetRef.current;
-        if (t < s - 0.08) return t; // new turn restarted — snap back
-        if (t > s) return Math.min(t, s + Math.max((t - s) * 0.3, 0.005)); // chase
-        return Math.min(s + 0.0015, t + 0.05, 0.99); // creep between events
-      });
-    }, 80);
-    return () => clearInterval(timer);
-  }, []);
-  const pct = Math.round(Math.min(1, Math.max(0, shown)) * 100);
-  return (
-    <span className="cm-prefill" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--border-strong)" strokeWidth="2.5" />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          fill="none"
-          stroke="var(--accent)"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeDasharray={c}
-          strokeDashoffset={c * (1 - pct / 100)}
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-          className="cm-prefill-arc"
-        />
-      </svg>
-      <span className="cm-prefill-pct">{pct}%</span>
-    </span>
-  );
-}
-
 export function CodeMode({
   model,
   active,
@@ -762,6 +716,10 @@ export function CodeMode({
   const confirm = useConfirm();
   const [sessions, setSessions] = useState<CodeSessionMeta[]>([]);
   const [sid, setSid] = useState<string>(() => uid());
+  /** The session on screen, for callbacks that outlive a render: a run's
+   *  numbers belong to the session it started in, not whichever is open. */
+  const sidRef = useRef(sid);
+  sidRef.current = sid;
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<CodeMsg[]>([]);
   const [input, setInput] = useState("");
@@ -833,6 +791,10 @@ export function CodeMode({
   const [atHidden, setAtHidden] = useState(false);
   const [stats, setStats] = useState<{ tokens: number; tps: number } | null>(null);
   const [ctxUsed, setCtxUsed] = useState(0);
+  /** The context window `ctxUsed` was counted against: the ring is the last
+   *  turn's, and stays as it was through a model or context-size change until
+   *  the next turn counts again. */
+  const [ctxTotal, setCtxTotal] = useState(0);
   /** Messages typed while the agent was running — auto-sent one by one after. */
   const [queue, setQueue] = useState<string[]>([]);
   const queueRef = useRef(queue);
@@ -1231,11 +1193,14 @@ export function CodeMode({
     // N identical calls…" and hotter sampling — the model then reasoned about
     // another session's steps (owner report: context bleeding across sessions).
     stuckRef.current = null;
-    setSid(uid());
+    const fresh = uid();
+    sidRef.current = fresh;
+    setSid(fresh);
     setMsgs([]);
     setInput("");
     setRefSessions([]);
     setCtxUsed(0);
+    setStats(null);
     sessionAllowsRef.current = new Set();
     void agentClearGrants().catch(() => {});
     setDirGrants([]);
@@ -1250,6 +1215,7 @@ export function CodeMode({
     try {
       const parsed = forDisk(JSON.parse(raw) as CodeMsg[]);
       stuckRef.current = null;
+      sidRef.current = id;
       setSid(id);
       // The draft survives a switch, but a reference to the session now open
       // would only quote it back to itself.
@@ -1257,6 +1223,16 @@ export function CodeMode({
       setMsgs(parsed);
       setCtxUsed(0);
       setStats(null);
+      // The context ring this session last showed, kept with it — after a
+      // restart too, and whichever model is loaded now, until its next turn.
+      void sessionStatsGet("code", id)
+        .then((raw) => {
+          const kept = JSON.parse(raw || "{}") as { ctxUsed?: number; nCtx?: number };
+          if (sidRef.current !== id || typeof kept.ctxUsed !== "number") return;
+          setCtxUsed(kept.ctxUsed);
+          setCtxTotal(kept.nCtx ?? 0);
+        })
+        .catch(() => {});
       sessionAllowsRef.current = new Set();
       void agentClearGrants().catch(() => {});
       setDirGrants([]);
@@ -1358,12 +1334,15 @@ export function CodeMode({
       // left behind, the next send in the fresh session resumed with the old
       // session's escape (newSession/openSession already clear it).
       stuckRef.current = null;
-      setSid(uid());
+      const fresh = uid();
+      sidRef.current = fresh;
+      setSid(fresh);
       setMsgs([]);
       setInput("");
       setRefSessions([]);
       setCtxUsed(0);
       setStats(null);
+      setPrefill(null);
       sessionAllowsRef.current = new Set();
       void agentClearGrants().catch(() => {});
       setDirGrants([]);
@@ -1791,7 +1770,13 @@ export function CodeMode({
     // by then the user may be running another turn — in this session or a new
     // one. Whatever this turn reports past that point is about itself, not
     // the run on screen.
+    const runSid = sid;
+    const runCtx = model?.nCtx ?? 0;
     const owns = () => signalRef.current === signal;
+    // A run's numbers are its session's: once that session is deleted (or
+    // another is open) they no longer reach the screen — a stopped run's last
+    // report used to land after the reset and put the old ring back.
+    const shown = () => owns() && sidRef.current === runSid;
     const update = (fn: (a: CodeMsg) => CodeMsg) =>
       setMsgs((cur) => cur.map((m) => (m.id === asst.id ? fn(m) : m)));
 
@@ -1891,9 +1876,14 @@ export function CodeMode({
           }
         : {}),
       onThinking: (t) => update((m) => ({ ...m, liveThinking: t })),
-      onStats: (tokens, tps) => owns() && setStats({ tokens, tps }),
-      onContext: (used) => owns() && setCtxUsed(used),
-      onPrefill: (frac) => owns() && setPrefill(frac),
+      onStats: (tokens, tps) => shown() && setStats({ tokens, tps }),
+      onContext: (used) => {
+        if (!shown()) return;
+        setCtxUsed(used);
+        setCtxTotal(runCtx);
+        void sessionStatsSet("code", runSid, JSON.stringify({ ctxUsed: used, nCtx: runCtx })).catch(() => {});
+      },
+      onPrefill: (frac) => shown() && setPrefill(frac),
       onDirGrants: (grants) => owns() && setDirGrants(grants),
       onPlan: (todos) => update((m) => ({ ...m, plan: todos })),
       onCompacted: () => update((m) => ({ ...m, compacted: true })),
@@ -2641,8 +2631,8 @@ export function CodeMode({
               <span className="cm-head-label">{t("cmBypass")}</span>
             </button>
             <span className="cm-status-spacer" />
-            {ctxUsed > 0 && (model?.nCtx ?? 0) > 0 && (() => {
-              const nCtx = model!.nCtx!;
+            {ctxUsed > 0 && ctxTotal > 0 && (() => {
+              const nCtx = ctxTotal;
               const pct = Math.min(100, Math.round((ctxUsed / nCtx) * 100));
               const r = 7;
               const circ = 2 * Math.PI * r;

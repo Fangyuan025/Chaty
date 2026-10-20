@@ -4,7 +4,6 @@ import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { Select } from "./Select";
-import { Markdown } from "./Markdown";
 import { fmtBytes, fmtCount } from "../lib/fmt";
 import { downloadMusicParts } from "../lib/musicDownload";
 import { OrgAvatar } from "./VendorIcon";
@@ -12,7 +11,6 @@ import {
   hfSearch,
   hfModelDetail,
   hfResolveUrl,
-  hfBase,
   downloadModel,
   downloadMlxRepo,
   cancelDownload,
@@ -24,6 +22,7 @@ import {
   type HfModelDetail,
 } from "../lib/ipc";
 import { hfErrorText } from "../lib/hfError";
+import { ReadmeView } from "./ReadmeView";
 
 // MLX repos are only usable on macOS (Apple-Silicon sidecar).
 const IS_MACOS = (() => {
@@ -57,29 +56,6 @@ function daysAgo(iso: string, t: ReturnType<typeof useI18n>["t"]): string {
   return t("storeDaysAgo", { n: String(d) });
 }
 
-/**
- * HF READMEs mix raw HTML into markdown. react-markdown (rightly) escapes
- * HTML, which showed as source code — so: relative image/link URLs become
- * absolute `resolve/main` URLs, `<img>` tags become markdown images, and any
- * remaining HTML tags are stripped (their text content stays).
- */
-function cleanReadme(md: string, repo: string): string {
-  const abs = (u: string) =>
-    /^(https?:)?\/\//.test(u) || u.startsWith("#")
-      ? u
-      : `${hfBase()}/${repo}/resolve/main/${u.replace(/^\.?\//, "")}`;
-  let s = md;
-  // <img src=…> → ![](abs)
-  s = s.replace(/<img[^>]*?src=["']([^"']+)["'][^>]*>/gi, (_m, src) => `\n\n![](${abs(src)})\n\n`);
-  // markdown images/links with relative targets → absolute
-  s = s.replace(/(!?\[[^\]]*\]\()([^)\s]+)(\))/g, (_m, pre, url, post) => pre + abs(url) + post);
-  // drop every other tag, keep inner text
-  s = s.replace(/<\/?[a-zA-Z][^>]*>/g, "\n");
-  // drop html comments and collapse blank runs
-  s = s.replace(/<!--[\s\S]*?-->/g, "");
-  s = s.replace(/\n{3,}/g, "\n\n");
-  return s.trim();
-}
 
 /** owner/name or a pasted HF URL → repo id; null when it's just a keyword. */
 function asRepoId(input: string): string | null {
@@ -583,7 +559,7 @@ export function DownloadModal({
                   }}
                 >
                   {detail.readme ? (
-                    <Markdown>{cleanReadme(detail.readme, detail.repo || detail.id)}</Markdown>
+                    <ReadmeView text={detail.readme} repo={detail.repo || detail.id} />
                   ) : (
                     <div className="store-empty">{t("storeReadmeEmpty")}</div>
                   )}

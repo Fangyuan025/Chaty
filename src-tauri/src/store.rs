@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     model_path  TEXT,
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
-    pinned      INTEGER NOT NULL DEFAULT 0
+    pinned      INTEGER NOT NULL DEFAULT 0,
+    last_stats  TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS messages (
     id              TEXT PRIMARY KEY,
@@ -85,7 +86,8 @@ CREATE TABLE IF NOT EXISTS code_sessions (
     workspace   TEXT,
     data        TEXT NOT NULL DEFAULT '[]',
     created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL
+    updated_at  INTEGER NOT NULL,
+    last_stats  TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS code_step_texts (
     session_id  TEXT NOT NULL,
@@ -154,6 +156,11 @@ pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
         "ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT '[]'",
         [],
     );
+    // Migration for DBs created before v2.3.5: what a conversation's or a Code
+    // session's last reply counted (its context ring), kept with it so the
+    // ring comes back with the conversation, after a restart too.
+    let _ = conn.execute("ALTER TABLE conversations ADD COLUMN last_stats TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE code_sessions ADD COLUMN last_stats TEXT NOT NULL DEFAULT ''", []);
     // Migration for DBs created before v2.3.5: an answer's sources. Before it,
     // they lived only on screen, and a conversation opened again had answers
     // citing 【n】 with nothing under them.
@@ -503,6 +510,45 @@ pub fn code_session_save(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Which table's `last_stats` a stats command touches. A fixed set, so the
+/// name can go into the SQL.
+fn stats_table(kind: &str) -> Result<&'static str, String> {
+    match kind {
+        "chat" => Ok("conversations"),
+        "code" => Ok("code_sessions"),
+        _ => Err(format!("unknown session kind: {kind}")),
+    }
+}
+
+/// What a conversation's (`kind` "chat") or a Code session's (`kind` "code")
+/// last reply counted, as the frontend stored it; empty when nothing has.
+#[tauri::command]
+pub fn session_stats_get(db: State<'_, Db>, kind: String, id: String) -> Result<String, String> {
+    let conn = lock(&db)?;
+    stats_get(&conn, stats_table(&kind)?, &id).map_err(|e| e.to_string())
+}
+
+/// Keep what a reply counted with its conversation or session. A session
+/// already deleted is left alone (nothing to update).
+#[tauri::command]
+pub fn session_stats_set(db: State<'_, Db>, kind: String, id: String, stats: String) -> Result<(), String> {
+    let conn = lock(&db)?;
+    stats_set(&conn, stats_table(&kind)?, &id, &stats).map(|_| ()).map_err(|e| e.to_string())
+}
+
+fn stats_get(conn: &Connection, table: &str, id: &str) -> rusqlite::Result<String> {
+    match conn.query_row(&format!("SELECT last_stats FROM {table} WHERE id = ?1"), params![id], |r| r.get(0)) {
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(String::new()),
+        other => other,
+    }
+}
+
+fn stats_set(conn: &Connection, table: &str, id: &str, stats: &str) -> rusqlite::Result<usize> {
+    // Not the conversation's `updated_at`: counting a reply does not move it
+    // up the sidebar — the message that was saved already did.
+    conn.execute(&format!("UPDATE {table} SET last_stats = ?2 WHERE id = ?1"), params![id, stats])
 }
 
 #[tauri::command]
@@ -1739,7 +1785,7 @@ pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats,
 #[cfg(test)]
 mod tests {
     use rusqlite::{params, Connection};
-    use super::{put_message, search_terms, session_hits, session_mentions, sources_from_json, MsgSource};
+    use super::{put_message, search_terms, session_hits, session_mentions, sources_from_json, stats_get, stats_set, stats_table, MsgSource};
 
     /// A session as the frontend stores one: messages, and the tool steps
     /// under them.
@@ -1987,6 +2033,27 @@ mod tests {
     /// leaving a row no screen could reach.
     fn save(conn: &Connection, id: &str, conv_id: &str) -> usize {
         put_message(conn, id, conv_id, "assistant", "hi", 0, "[]", None).unwrap()
+    }
+
+    /// A conversation's and a Code session's last numbers stay with them,
+    /// and go when they do.
+    #[test]
+    fn last_stats_stay_with_their_session() {
+        let conn = db();
+        conv(&conn, "c1");
+        assert_eq!(stats_get(&conn, "conversations", "c1").unwrap(), "");
+        stats_set(&conn, "conversations", "c1", r#"{"promptTokens":1800}"#).unwrap();
+        assert_eq!(stats_get(&conn, "conversations", "c1").unwrap(), r#"{"promptTokens":1800}"#);
+        assert_eq!(stats_set(&conn, "conversations", "gone", "{}").unwrap(), 0);
+        assert_eq!(stats_get(&conn, "conversations", "gone").unwrap(), "");
+        conn.execute(
+            "INSERT INTO code_sessions (id, title, workspace, data, created_at, updated_at) VALUES ('s1', 't', NULL, '[]', 0, 0)",
+            [],
+        )
+        .unwrap();
+        stats_set(&conn, "code_sessions", "s1", r#"{"ctxUsed":42000}"#).unwrap();
+        assert_eq!(stats_get(&conn, "code_sessions", "s1").unwrap(), r#"{"ctxUsed":42000}"#);
+        assert!(stats_table("other").is_err());
     }
 
     /// An answer keeps its sources: saved with them, written again without

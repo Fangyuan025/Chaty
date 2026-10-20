@@ -578,6 +578,63 @@ const START_MODEL = new URLSearchParams(window.location.search).get("model");
 // Windows window controls.
 const NO_WORKSPACE = new URLSearchParams(window.location.search).get("ws") === "none";
 const OS = new URLSearchParams(window.location.search).get("os") === "windows" ? "windows" : "macos";
+/** `?readme=rich`: the store's model page shows a README written the way
+ *  Hugging Face model cards are — badge rows and lists in HTML, a centred
+ *  banner, tables both ways, <details>, code — and an attempt at script and
+ *  style the sanitiser must take out. */
+const DEMO_README = new URLSearchParams(window.location.search).get("readme");
+/** What each conversation's / session's last reply counted (session_stats_*). */
+const SESSION_STATS = new Map<string, string>();
+const RICH_README = [
+  "# Run Gemma 4 12B with our [setup guide](https://example.com/guide)",
+  '<div>\n  <p style="margin: 0"><em>See <a href="https://example.com/quants">our quantization notes</a> for benchmarks.</em></p>',
+  '  <div style="display: flex; gap: 5px;">\n    <a href="https://example.com"><img src="https://img.shields.io/badge/docs-guide-blue" width="96"></a>\n    <a href="https://example.com/chat"><img src="https://img.shields.io/badge/chat-community-green" width="110"></a>\n  </div>',
+  "  <ul>\n    <li>NEW: tool calling works in agents and editors.</li>\n    <li>Runs in <a href=\"https://example.com/studio\">the studio</a> with vision.</li>\n  </ul>\n</div>",
+  '<img src="javascript:alert(1)" onerror="alert(2)"><script>alert(3)</script><style>body{display:none}</style>',
+  "",
+  '<p align="center"><img src="assets/banner.png" alt="banner" width="70%"></p>',
+  "",
+  "> [!Note]",
+  "> This repository contains the weights in GGUF format.",
+  ">",
+  "> They run in llama.cpp, LM Studio, Ollama and Chaty.",
+  "",
+  "> [!WARNING]",
+  "> The Q8_0 file needs 14 GB of memory.",
+  "",
+  "## Model overview",
+  "",
+  "Gemma 4 12B QAT keeps quality close to **bfloat16** while using much less memory. It reads text and images, and holds `128K` tokens of context.",
+  "",
+  "> Quantization-aware training means the model learned with the rounding it will run with.",
+  "",
+  "| Quant | Size | Notes |",
+  "| --- | ---: | --- |",
+  "| Q4_0 | 7.15 GB | Recommended for most machines |",
+  "| Q8_0 | 12.8 GB | Near-lossless |",
+  "",
+  "<table><tr><th>Benchmark</th><th>Score</th></tr><tr><td>MMLU</td><td>78.3</td></tr><tr><td>GSM8K</td><td>91.2</td></tr></table>",
+  "",
+  "### Quick start",
+  "",
+  "1. Download a quant.",
+  "2. Load it in your app.",
+  "   - Turn thinking on for harder questions.",
+  "",
+  "```bash",
+  "llama-server -m gemma-4-12b-qat-Q4_0.gguf --ctx-size 32768 --temp 1.0 --top-p 0.95",
+  "```",
+  "",
+  "<details><summary>Recommended sampling</summary>",
+  "",
+  "Use `temperature = 1.0`, `top_p = 0.95` and `top_k = 64`.",
+  "",
+  "</details>",
+  "",
+  "---",
+  "",
+  "See the [license](LICENSE) and the ![chart](./assets/chart.png) for details.",
+].join("\n");
 /** `?sources=web` / `?sources=kb`: the last answer of the showcase chat cites
  *  web pages / knowledge-base passages, to look at the sources under it. */
 const DEMO_SOURCES = new URLSearchParams(window.location.search).get("sources");
@@ -971,6 +1028,11 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return SHOWCASE_MESSAGES;
     case "search_conversations":
       return [];
+    case "session_stats_get":
+      return SESSION_STATS.get(`${args?.kind}:${args?.id}`) ?? "";
+    case "session_stats_set":
+      SESSION_STATS.set(`${args?.kind}:${args?.id}`, String(args?.stats ?? ""));
+      return null;
     case "save_conversation":
     case "save_message":
     case "replace_messages":
@@ -1362,7 +1424,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         ],
         mmproj: "mmproj-F16.gguf",
         mmprojSize: 812 * 2 ** 20,
-        readme: '<p align="center"> <img src="assets/banner.png" alt="banner" width="100%"/> </p>\n\n# Gemma 4 12B QAT\n\n<b>V2.0 is available</b> — Gemma 4 12B QAT is the <em>Quantization-Aware Training</em> version of Gemma 4 12B. It aims to keep quality close to bfloat16 while using much less memory.\n\n- Text and image input\n- 128K context\n\n<details><summary>Benchmarks</summary>MMLU 78.3 · GSM8K 91.2</details>\n\n![chart](./assets/chart.png)',
+        readme: DEMO_README === "rich" ? RICH_README : '<p align="center"> <img src="assets/banner.png" alt="banner" width="100%"/> </p>\n\n# Gemma 4 12B QAT\n\n<b>V2.0 is available</b> — Gemma 4 12B QAT is the <em>Quantization-Aware Training</em> version of Gemma 4 12B. It aims to keep quality close to bfloat16 while using much less memory.\n\n- Text and image input\n- 128K context\n\n<details><summary>Benchmarks</summary>MMLU 78.3 · GSM8K 91.2</details>\n\n![chart](./assets/chart.png)',
         totalRamMb: 49152,
       };
     case "list_hf_ggufs":

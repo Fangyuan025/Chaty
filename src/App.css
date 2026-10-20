@@ -8826,30 +8826,202 @@ body,
   padding: 12px 4px 4px 0;
   font-size: 13px;
   line-height: 1.65;
+  color: var(--text);
+  overflow-wrap: anywhere;
   animation: ctxin 0.15s var(--ease-out) both;
 }
-.store-readme img {
-  max-width: 100%;
-  border-radius: var(--r-md);
+/* A model's README, as Hugging Face shows it but in the app's own type:
+   quiet headings, hairline tables, the app's code blocks, links in the text
+   colour with a faint underline, badge rows kept on one line. */
+.store-readme > :first-child {
+  margin-top: 0;
+}
+.store-readme p,
+.store-readme ul,
+.store-readme ol,
+.store-readme blockquote,
+.store-readme table,
+.store-readme pre,
+.store-readme details {
+  margin: 0 0 12px;
+}
+.store-readme h1,
+.store-readme h2,
+.store-readme h3,
+.store-readme h4,
+.store-readme h5,
+.store-readme h6 {
+  font-family: var(--font-body);
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  color: var(--text);
+  margin: 20px 0 8px;
 }
 .store-readme h1 {
-  font-size: 19px;
-  margin: 10px 0 8px;
+  font-size: 18px;
 }
 .store-readme h2 {
-  font-size: 16px;
-  margin: 12px 0 6px;
+  font-size: 15.5px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
 }
 .store-readme h3 {
   font-size: 14px;
+}
+.store-readme h4,
+.store-readme h5,
+.store-readme h6 {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.store-readme a {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--text-faint);
+  text-underline-offset: 2px;
+  transition: text-decoration-color var(--t-fast) var(--ease);
+}
+.store-readme a:hover {
+  text-decoration-color: var(--text-dim);
+}
+.store-readme ul,
+.store-readme ol {
+  padding-left: 20px;
+}
+.store-readme li {
+  margin: 3px 0;
+}
+.store-readme li > ul,
+.store-readme li > ol {
+  margin: 3px 0 0;
+}
+.store-readme li::marker {
+  color: var(--text-faint);
+}
+.store-readme img {
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+/* A paragraph or link made of pictures is a badge row: small, side by side. */
+.store-readme p > img,
+.store-readme p > a > img,
+.store-readme div > a > img {
+  margin: 0 4px 4px 0;
+}
+.store-readme p:only-child > img:only-child {
+  border-radius: var(--r-md);
+}
+.store-readme [align="center"] {
+  text-align: center;
+}
+.store-readme code {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-size: 0.9em;
+}
+.store-readme :not(pre) > code {
+  background: var(--ink-soft);
+  padding: 1.5px 5px;
+  border-radius: var(--r-sm);
+}
+.store-readme pre {
+  background: var(--code-bg, var(--bg-elev));
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 4;
+  overflow-wrap: normal;
+}
+.store-readme pre code.hljs {
+  background: transparent;
+  padding: 0;
+}
+.store-readme blockquote {
+  padding: 2px 12px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-dim);
+}
+/* GitHub's [!NOTE] / [!WARNING] … alerts: a callout in the body's colour,
+   its kind named over it; only a warning or a caution takes a colour. */
+.store-readme blockquote.readme-alert {
+  color: var(--text);
+  padding: 8px 12px;
+  background: var(--ink-faint);
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+}
+.store-readme .readme-alert-title {
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.store-readme blockquote.readme-alert-warning {
+  border-left-color: var(--warn);
+}
+.store-readme blockquote.readme-alert-caution {
+  border-left-color: var(--danger);
+}
+.store-readme .readme-alert-warning .readme-alert-title {
+  color: var(--warn);
+}
+.store-readme .readme-alert-caution .readme-alert-title {
+  color: var(--danger);
 }
 .store-readme table {
   display: block;
   max-width: 100%;
   overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  overflow-wrap: normal;
 }
-.store-readme pre {
-  overflow-x: auto;
+.store-readme th,
+.store-readme td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.store-readme th {
+  background: var(--ink-faint);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.store-readme hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 18px 0;
+}
+.store-readme details {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 8px 12px;
+}
+.store-readme summary {
+  cursor: pointer;
+  color: var(--text-dim);
+}
+.store-readme details[open] summary {
+  margin-bottom: 8px;
+}
+.store-readme details > :last-child,
+.store-readme blockquote > :last-child,
+.store-readme li > :last-child,
+.store-readme td > :last-child,
+.store-readme th > :last-child {
+  margin-bottom: 0;
+}
+.store-readme kbd {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 1px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
 }
 .store-empty {
   color: var(--text-dim);

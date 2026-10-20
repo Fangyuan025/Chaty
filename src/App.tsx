@@ -76,6 +76,8 @@ import {
   fetchUrl,
   generate,
   getMessages,
+  sessionStatsGet,
+  sessionStatsSet,
   getModel,
   imageModelProbe,
   musicModelProbe,
@@ -296,13 +298,19 @@ export default function App() {
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  /** The conversation on screen, for a reply's callbacks that outlive a render. */
+  const shownConvRef = useRef<string | null>(null);
+  shownConvRef.current = conversationId;
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [busy, setBusy] = useState(false);
   const [streamingId, setStreamingId] = useState<string | null>(null);
-  const [stats, setStats] = useState<GenStats | null>(null);
+  /** The last reply's numbers, and the context window it was counted
+   *  against: the ring is that reply's, and stays as it was through a model or
+   *  context-size change until the next reply counts again. */
+  const [stats, setStats] = useState<(GenStats & { nCtx?: number }) | null>(null);
   const [loadingModel, setLoadingModel] = useState(false);
   const [loadProgress, setLoadProgress] = useState<LoadProgress | null>(null);
   // Weight ticks come from a poller thread and can race the final "ready" —
@@ -425,6 +433,21 @@ export default function App() {
         render();
       } else if (ev.type === "done" || ev.type === "error") {
         if (ev.type === "error") acc = withErrorNote(acc, ev.message);
+        else {
+          // Its numbers, kept with the conversation like any other reply's —
+          // with the window they were counted against, which this page (it
+          // came up mid-reply) asks the engine for.
+          const conv = live.conversationId;
+          const numbers = ev.stats;
+          void getModel()
+            .catch(() => null)
+            .then((m) => {
+              const counted = { ...numbers, nCtx: m?.nCtx ?? undefined };
+              if (shownConvRef.current === conv) setStats(counted);
+              return sessionStatsSet("chat", conv, JSON.stringify(counted));
+            })
+            .catch(() => {});
+        }
         early.over = true;
         render();
         setBusy(false);
@@ -606,6 +629,9 @@ export default function App() {
   });
   const [searching, setSearching] = useState<"" | "web" | "kb" | "mix">("");
   const [composing, setComposing] = useState(false);
+  /** How far the engine is through a long prompt (0..1) before the reply's
+   *  first token; null when it is not reading one. */
+  const [prefill, setPrefill] = useState<number | null>(null);
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [attaching, setAttaching] = useState(false);
   const [attachError, setAttachError] = useState("");
@@ -1762,7 +1788,13 @@ export default function App() {
     if (busy || id === conversationId) return;
     const mine = ++openSeq.current;
     try {
-      const stored = await getMessages(id);
+      // The last reply's numbers come back with the conversation — its context
+      // ring included, after a restart too, whichever model is loaded now —
+      // until its next reply replaces them.
+      const [stored, kept] = await Promise.all([
+        getMessages(id),
+        sessionStatsGet("chat", id).catch(() => ""),
+      ]);
       if (mine !== openSeq.current) return;
       setMessages(
         stored.map((m) => ({
@@ -1774,7 +1806,13 @@ export default function App() {
         })),
       );
       setConversationId(id);
-      setStats(null);
+      let last: (GenStats & { nCtx?: number }) | null = null;
+      try {
+        last = kept ? (JSON.parse(kept) as GenStats & { nCtx?: number }) : null;
+      } catch {
+        last = null;
+      }
+      setStats(last);
       setAttachment(null);
       setAttachError("");
     } catch (e) {
@@ -2070,6 +2108,7 @@ export default function App() {
     setBusy(true);
     setStreamingId(asstId);
     setStats(null);
+    setPrefill(null);
 
     let wake = () => {};
     const stopSignal = new Promise<void>((resolve) => (wake = resolve));
@@ -2380,6 +2419,8 @@ export default function App() {
     // Coalesce token → state into one re-render per animation frame (was: one
     // setMessages per token = a full re-render of the list on every token).
     let rafId: number | null = null;
+    /** A prefill ring is up for this reply (cleared by its first token). */
+    let prefilling = false;
     const renderMsg = () =>
       setMessages((cur) => cur.map((m) => (m.id === asstId ? { ...m, content: acc.text } : m)));
     const scheduleRender = () => {
@@ -2408,9 +2449,18 @@ export default function App() {
         },
         (ev: StreamEvent) => {
           if (ev.type === "token") {
+            if (prefilling) {
+              prefilling = false;
+              setPrefill(null);
+            }
             acc.text += ev.text;
             scheduleRender();
             pumpSpeech(false);
+          } else if (ev.type === "prefill") {
+            if (shownConvRef.current === convId) {
+              prefilling = true;
+              setPrefill(ev.total > 0 ? ev.processed / ev.total : 0);
+            }
           } else if (ev.type === "done") {
             if (rafId != null) {
               cancelAnimationFrame(rafId);
@@ -2418,7 +2468,12 @@ export default function App() {
             }
             renderMsg();
             final.stats = ev.stats;
-            setStats(ev.stats);
+            // Only onto the screen if this conversation is still the one on
+            // it: deleted mid-reply (or left), the cancelled reply's numbers
+            // used to arrive after the reset and put the old ring back.
+            const counted = { ...ev.stats, nCtx: model?.nCtx ?? undefined };
+            if (shownConvRef.current === convId) setStats(counted);
+            void sessionStatsSet("chat", convId, JSON.stringify(counted)).catch(() => {});
             lastPromptTokens.current.set(convId, ev.stats.promptTokens);
             calibrate(sentRaw, ev.stats.promptTokens);
           } else if (ev.type === "error") {
@@ -2443,6 +2498,7 @@ export default function App() {
         cancelAnimationFrame(rafId);
         rafId = null;
       }
+      setPrefill(null);
       renderMsg();
       // A finished turn with no answer in it must say so. It happens two ways:
       // the prompt outgrew the window, so the engine generated nothing at all
@@ -3167,6 +3223,7 @@ export default function App() {
                       streaming={streamingId === m.id}
                       searching={streamingId === m.id ? searching : ""}
                       composing={streamingId === m.id && composing}
+                      prefill={streamingId === m.id ? prefill : null}
                       hideThinking={!thinkEnabled}
                       sources={m.sources}
                     />
@@ -3374,15 +3431,16 @@ export default function App() {
                               : stats.stopReason}
                   </span>
                 ) : null}
-                {model?.nCtx
+                {stats.nCtx ?? model?.nCtx
                   ? (() => {
+                      const ringCtx = (stats.nCtx ?? model?.nCtx)!;
                       const used = stats.promptTokens + stats.completionTokens;
-                      const pct = Math.min(1, used / model.nCtx);
+                      const pct = Math.min(1, used / ringCtx);
                       const C = 2 * Math.PI * 7; // ring circumference (r=7)
                       return (
                         <span className="ctx-meter" title={t("ctxUsage")}>
                           {" · ctx "}
-                          {fmtK(used)}/{fmtK(model.nCtx)}
+                          {fmtK(used)}/{fmtK(ringCtx)}
                           <svg
                             className={`ctx-ring ${pct > 0.95 ? "danger" : pct > 0.8 ? "warn" : ""}`}
                             viewBox="0 0 18 18"

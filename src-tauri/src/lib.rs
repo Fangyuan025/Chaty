@@ -714,6 +714,8 @@ pub fn run() {
             store::set_conversation_pinned,
             store::rename_conversation,
             store::code_session_save,
+            store::session_stats_get,
+            store::session_stats_set,
             store::code_session_list,
             store::code_session_load,
             store::code_session_delete,

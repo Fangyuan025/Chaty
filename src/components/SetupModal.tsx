@@ -56,16 +56,14 @@ function recommend(budgetGb: number): Pick[] {
   if (budgetGb >= 30) {
     return [
       {
-        family: "Qwen3.5",
-        label: "Qwen3.5 35B-A3B",
+        family: "Qwen3.6",
+        label: "Qwen3.6 35B-A3B",
         vision: true,
         quant: "Q4_K_M",
         approxGb: 21,
-        repos: [
-          "unsloth/Qwen3.5-35B-A3B-GGUF",
-          "AesSedai/Qwen3.5-35B-A3B-GGUF",
-          "Qwen/Qwen3.5-35B-A3B-GGUF",
-        ],
+        // Single-file Q4_K_M builds with a vision encoder beside them (the
+        // download takes one file per quant; split builds are skipped).
+        repos: ["unsloth/Qwen3.6-35B-A3B-GGUF", "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF"],
         blurbZh: "旗舰级 MoE：35B 总参数、每次只激活 3B，速度快、能力强，本机内存足以全 GPU 运行。",
         blurbEn: "Flagship MoE: 35B total / 3B active — fast and capable, fits fully on your GPU memory.",
       },
