@@ -41,12 +41,17 @@
 - **Each conversation and Code session keeps its ring** — the last reply's
   share of the context window — after a switch and after a restart. It is
   that reply's: a model or context-size change leaves it as it was until the
-  next reply counts again.
+  next reply counts again. A reply's speed and why it stopped stay beside it
+  only until the conversation is left; one opened again shows its ring.
+- **Chat's ring is Code mode's**: a ring and its share, the token counts on
+  hover, in place of "ctx 12.2K/90.1K" spelled out — and amber from 70%, red
+  from 90%, as in Code.
 - **Deleting the open conversation or session clears its numbers.** A reply
   still running when it was deleted used to report after the reset and put
   the old tok/s and ring back; so did a stopped Code run.
 - **Chat shows how far a long prompt has been read**, with the same ring Code
-  mode has, in place of the cursor while nothing has been written yet.
+  mode has, in place of the cursor while nothing has been written yet — with
+  thinking on too, where an empty "Thinking…" panel stood in its place.
 
 ### Web search and sources
 

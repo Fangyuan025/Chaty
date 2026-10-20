@@ -328,8 +328,10 @@ jobs:
 
             The context ring stays with its chat conversation or Code session —
             after a switch, after a restart, and through a model change until
-            the next reply counts again. Deleting a conversation clears its
-            numbers for good, and chat shows how far a long prompt has been read.
+            the next reply counts again — and chat's ring is now Code mode's,
+            the counts on hover. Deleting a conversation clears its numbers for
+            good, and chat shows how far a long prompt has been read, thinking
+            on or off.
 
             ## Every source, in its own script
 
