@@ -1202,6 +1202,56 @@ final class Engine: @unchecked Sendable {
         return min(Self.prefillChunk, max(Self.minPrefillChunk, fits / 32 * 32))
     }
 
+    /// A record key taken apart once per prompt, for `extendedTurn`: the
+    /// reasoning (nil for a turn keyed by its text alone) and the answer, as
+    /// UTF-8.
+    struct TurnKey {
+        let key: String
+        let reasoning: Substring.UTF8View?
+        let answer: Substring.UTF8View
+    }
+
+    static func turnKeys(_ keys: Dictionary<String, [Int]>.Keys) -> [TurnKey] {
+        keys.map { key in
+            if let sep = key.utf8.firstIndex(of: 0) {
+                let after = key.utf8.index(after: sep)
+                return TurnKey(key: key, reasoning: key[..<sep].utf8, answer: key[after...].utf8)
+            }
+            return TurnKey(key: key, reasoning: nil, answer: key[...].utf8)
+        }
+    }
+
+    /// The record a stored turn extends: the longest generated turn whose
+    /// text the stored one begins with and goes on past, with the same
+    /// reasoning where the reasoning is split out — and what the app added.
+    /// Compared as UTF-8, which at whole characters is comparing Unicode
+    /// scalars: text added after an emoji or an accent is not folded into it.
+    static func extendedTurn(
+        of keys: [TurnKey], split: String, body: String, trimmed: String
+    ) -> (key: String, added: String)? {
+        func rest(_ text: String, after head: Substring.UTF8View) -> String? {
+            let t = text.utf8
+            guard !head.isEmpty, t.count > head.count, t.starts(with: head) else { return nil }
+            return String(decoding: t.dropFirst(head.count), as: UTF8.self)
+        }
+        var best: (key: String, added: String, length: Int)?
+        for k in keys {
+            if let best, k.answer.count <= best.length { continue }
+            var hit: String?
+            if let reasoning = k.reasoning {
+                // Reasoning split out: the same thought, the answer extended.
+                guard !split.isEmpty, reasoning.count == split.utf8.count,
+                    reasoning.elementsEqual(split.utf8)
+                else { continue }
+                hit = rest(trimmed, after: k.answer)
+            } else if split.isEmpty {
+                hit = rest(body, after: k.answer) ?? rest(trimmed, after: k.answer)
+            }
+            if let added = hit { best = (k.key, added, k.answer.count) }
+        }
+        return best.map { ($0.key, $0.added) }
+    }
+
     func load(path: String, nCtx: Int?, speculative: Bool) async {
         // The folder itself, not a link to it: the weight loader walks the
         // directory with an enumerator that does not follow a symbolic link,
@@ -1688,6 +1738,8 @@ final class Engine: @unchecked Sendable {
                 }
                 // Rebuild once, back to front, so earlier offsets stay valid.
                 var out = tokens
+                /// The records taken apart, on the first turn that needs them.
+                var parsedKeys: [TurnKey]?
                 for (k, m) in stored.enumerated().reversed() {
                     guard k < starts.count else { continue }
                     // The body the app stored, minus any block it carries —
@@ -1700,11 +1752,40 @@ final class Engine: @unchecked Sendable {
                     let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
                     let split = (m.reasoningContent ?? "").trimmingCharacters(
                         in: .whitespacesAndNewlines)
-                    guard
-                        let recorded = turnIds[split.isEmpty ? body : split + "\u{0}" + trimmed]
-                            ?? turnIds[body] ?? turnIds[trimmed],
-                        !recorded.isEmpty
-                    else {
+                    var found = turnIds[split.isEmpty ? body : split + "\u{0}" + trimmed]
+                        ?? turnIds[body] ?? turnIds[trimmed]
+                    // A turn stored as generated with something added at the
+                    // end: the app closes a call it cut short (an edit whose
+                    // old_string stopped matching, a call that would not
+                    // stop) before it stores it. Replay what the model
+                    // produced and encode only what was added. Re-rendered
+                    // instead — with its reasoning in a field of its own, the
+                    // template writes the thought differently from the model
+                    // — the turn stopped matching at its first token, and a
+                    // hybrid model re-read the whole conversation: 302 s at
+                    // 86k tokens on Qwen3.6 35B.
+                    if found == nil, parsedKeys == nil { parsedKeys = Self.turnKeys(turnIds.keys) }
+                    if found == nil, let parsed = parsedKeys,
+                        let hit = Self.extendedTurn(of: parsed, split: split, body: body, trimmed: trimmed),
+                        let ids = turnIds[hit.key], !ids.isEmpty
+                    {
+                        // The model's own trailing whitespace is in its ids;
+                        // the text it is matched by was trimmed.
+                        let tail = String(
+                            String.UnicodeScalarView(
+                                context.tokenizer.decode(tokenIds: ids, skipSpecialTokens: false)
+                                    .unicodeScalars.reversed().prefix { $0.properties.isWhitespace }
+                                    .reversed()))
+                        var rest = hit.added
+                        if !tail.isEmpty, rest.unicodeScalars.starts(with: tail.unicodeScalars) {
+                            rest = String(
+                                String.UnicodeScalarView(rest.unicodeScalars.dropFirst(tail.unicodeScalars.count)))
+                        }
+                        found = ids + context.tokenizer.encode(text: rest, addSpecialTokens: false)
+                        // Its record stays as long as the turn does.
+                        liveTurnKeys?.insert(hit.key)
+                    }
+                    guard let recorded = found, !recorded.isEmpty else {
                         if ProcessInfo.processInfo.environment["CHATY_MLX_DUMP_REUSE"] != nil {
                             FileHandle.standardError.write(
                                 ("mlx-replay MISS body=<<<\(body.prefix(40))>>>"
