@@ -309,8 +309,11 @@ export default function App() {
   const [streamingId, setStreamingId] = useState<string | null>(null);
   /** The last reply's numbers, and the context window it was counted
    *  against: the ring is that reply's, and stays as it was through a model or
-   *  context-size change until the next reply counts again. */
-  const [stats, setStats] = useState<(GenStats & { nCtx?: number }) | null>(null);
+   *  context-size change until the next reply counts again. `restored` when
+   *  they came back with the conversation (a switch, a restart) rather than
+   *  from a reply just written: then only the ring is shown — its speed and
+   *  why it stopped are that moment's, gone once the conversation is left. */
+  const [stats, setStats] = useState<(GenStats & { nCtx?: number; restored?: boolean }) | null>(null);
   const [loadingModel, setLoadingModel] = useState(false);
   const [loadProgress, setLoadProgress] = useState<LoadProgress | null>(null);
   // Weight ticks come from a poller thread and can race the final "ready" —
@@ -1812,7 +1815,7 @@ export default function App() {
       } catch {
         last = null;
       }
-      setStats(last);
+      setStats(last ? { ...last, restored: true } : null);
       setAttachment(null);
       setAttachError("");
     } catch (e) {
@@ -3385,7 +3388,7 @@ export default function App() {
                     setSpeakReplies(false);
                   },
                 });
-              if (flags.length === 0 && !stats) return null;
+              if (flags.length === 0 && !(stats && (!stats.restored || (stats.nCtx ?? model?.nCtx)))) return null;
               return (
                 <div className="status-line">
                   {flags.length > 0 && (
@@ -3406,31 +3409,35 @@ export default function App() {
                       ))}
                     </div>
                   )}
-            {stats && (
+            {stats && (!stats.restored || (stats.nCtx ?? model?.nCtx)) && (
               <div className="stats">
-                {stats.completionTokens} tokens · {stats.tokensPerSecond.toFixed(1)} tok/s
-                {stats.stopReason ? (
-                  <span
-                    className={`stop-reason ${
-                      stats.stopReason === "context" || stats.stopReason === "length"
-                        ? "warn"
-                        : ""
-                    }`}
-                  >
-                    {" · "}
-                    {stats.stopReason === "eos"
-                      ? t("stopEos")
-                      : stats.stopReason === "length"
-                        ? t("stopLength")
-                        : stats.stopReason === "context"
-                          ? t("stopContext")
-                          : stats.stopReason === "stop"
-                            ? t("stopStop")
-                            : stats.stopReason === "cancelled"
-                              ? t("stopCancelled")
-                              : stats.stopReason}
-                  </span>
-                ) : null}
+                {!stats.restored && (
+                  <>
+                    {stats.completionTokens} tokens · {stats.tokensPerSecond.toFixed(1)} tok/s
+                    {stats.stopReason ? (
+                      <span
+                        className={`stop-reason ${
+                          stats.stopReason === "context" || stats.stopReason === "length"
+                            ? "warn"
+                            : ""
+                        }`}
+                      >
+                        {" · "}
+                        {stats.stopReason === "eos"
+                          ? t("stopEos")
+                          : stats.stopReason === "length"
+                            ? t("stopLength")
+                            : stats.stopReason === "context"
+                              ? t("stopContext")
+                              : stats.stopReason === "stop"
+                                ? t("stopStop")
+                                : stats.stopReason === "cancelled"
+                                  ? t("stopCancelled")
+                                  : stats.stopReason}
+                      </span>
+                    ) : null}
+                  </>
+                )}
                 {stats.nCtx ?? model?.nCtx
                   ? (() => {
                       const ringCtx = (stats.nCtx ?? model?.nCtx)!;
@@ -3439,7 +3446,7 @@ export default function App() {
                       const C = 2 * Math.PI * 7; // ring circumference (r=7)
                       return (
                         <span className="ctx-meter" title={t("ctxUsage")}>
-                          {" · ctx "}
+                          {stats.restored ? "ctx " : " · ctx "}
                           {fmtK(used)}/{fmtK(ringCtx)}
                           <svg
                             className={`ctx-ring ${pct > 0.95 ? "danger" : pct > 0.8 ? "warn" : ""}`}

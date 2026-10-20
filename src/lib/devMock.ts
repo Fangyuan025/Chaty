@@ -1320,8 +1320,14 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
               : "命令已执行完成。")
           : '<tool_call>{"name":"bash","arguments":{"command":"sudo apt-get install -y cowsay"}}</tool_call>';
       }
+      // As both engines do with thinking on: the thought the template opened
+      // goes out as a token before the prompt is read.
+      const thinkOn = (args?.request as { params?: { think?: boolean } } | undefined)?.params?.think;
+      const opened = thinkOn && reply.startsWith("<think>\n") ? "<think>\n" : "";
+      reply = reply.slice(opened.length);
       return (async () => {
         emit({ type: "started" });
+        if (opened) emit({ type: "token", text: opened });
         for (let done = 0; done <= total; done += 512) {
           emit({ type: "prefill", processed: Math.min(done, total), total });
           await new Promise((r) => setTimeout(r, fast ? 15 : 140));
