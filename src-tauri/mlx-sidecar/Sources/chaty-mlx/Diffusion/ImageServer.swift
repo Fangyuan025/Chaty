@@ -374,7 +374,8 @@ final class ImageServer: @unchecked Sendable {
             Device.setDefault(device: Device(.cpu))
         }
         do {
-            let fam = try await FamilyProbe.load(dir: URL(fileURLWithPath: path)) { component, i, n in
+            // The folder itself, not a link to it (see the chat engine's load).
+            let fam = try await FamilyProbe.load(dir: URL(fileURLWithPath: path).resolvingSymlinksInPath()) { component, i, n in
                 if !component.isEmpty { out.emit(["event": "load_stage", "component": component]) }
                 out.emit(["event": "load_progress", "step": i, "steps": n])
             }

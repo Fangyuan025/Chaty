@@ -99,6 +99,15 @@ final class Out: @unchecked Sendable {
 
 let out = Out()
 
+/// A forward pass came back with NaN logits (see `sample`).
+struct SpoiledLogits: Error, CustomStringConvertible {
+    var description: String {
+        "模型这一步算出了无效数值（多半是显存不足），已停止这次回复并清空缓存；可以直接重试 "
+            + "(the model's last step came out as NaN, most likely out of GPU memory; the reply was "
+            + "stopped and the cache cleared — try again)"
+    }
+}
+
 func log(_ s: String) {
     FileHandle.standardError.write(Data(("chaty-mlx: " + s + "\n").utf8))
 }
@@ -1097,12 +1106,109 @@ final class Engine: @unchecked Sendable {
     var pendingBlock: [Int] = []
 
     static let prefillChunk = 512
+    /// The smallest a prefill chunk gets when memory is short (see
+    /// `nextPrefillChunk`), and the scratch room it keeps clear of the
+    /// working set.
+    static let minPrefillChunk = 32
+    static let prefillHeadroom = 256 << 20
+    /// Room left beside the weights and the cache for a reply's own working
+    /// memory, a side generation's small cache and a picture's encoding.
+    static let contextHeadroom = 1 << 30
+    /// What a context token is budgeted at, over what its cache costs: the
+    /// rest is the scratch a prefill needs at that length in small chunks.
+    /// Measured on Qwen3.6 35B-A3B mxfp8 (34 GB) on a 48 GB Mac, Code mode:
+    /// past 103k tokens a 512-token chunk's scratch took the GPU over its
+    /// working set, macOS paged it out, and decoding fell from 23 to 3 tok/s
+    /// and stayed there.
+    static let contextTokenFactor = 1.3
+    /// The GPU's working set (Metal's recommendedMaxWorkingSetSize): what the
+    /// weights, the cache and a prefill's scratch have to fit in. Past it
+    /// macOS pages GPU memory — decoding slows to a crawl, and a command
+    /// buffer that runs out of memory hands back garbage.
+    var workingSet = 0
+    /// A prefill's scratch per query token per context token, as last
+    /// measured on this model (see `nextPrefillChunk`) — kept across turns, so
+    /// a turn that resumes a long cache sizes its first chunk with it.
+    var scratchPerPair = 0.0
     /// Only bother the UI with prefill events for prompts big enough to have
     /// a visible gap (mirrors the llama.cpp engine's behaviour).
     static let prefillEventThreshold = 256
 
+    /// The context the GPU can carry beside the weights: what the working set
+    /// leaves once the weights, the cache's fixed part and some headroom are
+    /// in, divided by what the cache gains per token. Nil when the working
+    /// set is unknown or the cache cannot be measured.
+    static func contextThatFits(_ context: ModelContext, workingSet: Int) -> Int? {
+        guard workingSet > 0 else { return nil }
+        let paramBytes = context.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
+        let weights = max(Memory.activeMemory, paramBytes)
+        guard let growth = probeCacheGrowth(context), growth.perToken > 0 else { return nil }
+        let room = workingSet - weights - growth.fixed - contextHeadroom
+        let perToken = Int((Double(growth.perToken) * contextTokenFactor).rounded(.up))
+        let fits = max(4096, room / perToken / 1024 * 1024)
+        log(
+            "context fit: weights \(weights >> 20) MB, cache \(growth.perToken) B/token"
+                + " + \(growth.fixed >> 20) MB fixed, working set \(workingSet >> 20) MB -> \(fits) tokens")
+        return fits
+    }
+
+    /// What this model's cache gains per token of context, and what it holds
+    /// that does not grow — measured by reading 64 tokens and 64 more, so it
+    /// is right for every architecture: attention layers grow, recurrent
+    /// layers (Qwen3.5/3.6's linear attention, Mamba) hold a fixed state, and
+    /// a sliding window grows only to its width.
+    static func probeCacheGrowth(_ context: ModelContext) -> (perToken: Int, fixed: Int)? {
+        let cache = context.model.newCache(parameters: nil)
+        let id = Int32(context.tokenizer.encode(text: " the", addSpecialTokens: false).first ?? 1)
+        let step = 64
+        func feed() {
+            let text = LMInput.Text(tokens: MLXArray([Int32](repeating: id, count: step)))
+            let out = withPreparedCache(cache, lengths: text.sequenceLengths) {
+                context.model(text[text: .newAxis], cache: cache, state: nil)
+            }
+            eval(out.logits)
+        }
+        func sizes() -> [Int] { cache.map { $0.state.reduce(0) { $0 + $1.nbytes } } }
+        feed()
+        let first = sizes()
+        feed()
+        let second = sizes()
+        var perToken = 0.0
+        var fixed = 0
+        for (i, c) in cache.enumerated() {
+            let grew = second[i] - first[i]
+            if grew <= 0 {
+                fixed += second[i]
+            } else if let window = c.maxSize {
+                fixed += Int(Double(grew) / Double(step) * Double(window))
+            } else {
+                perToken += Double(grew) / Double(step)
+            }
+        }
+        return perToken > 0 ? (Int(perToken.rounded(.up)), fixed) : nil
+    }
+
+    /// How big the next prefill chunk may be: `prefillChunk`, unless the
+    /// scratch it would take runs past the working set. The scratch is
+    /// measured off the chunk just read, per query token per context token —
+    /// an attention the kernels do not fuse (Qwen3.6's 256-wide heads) holds a
+    /// chunk × context matrix of scores, 1.5 GB at 50k tokens in 512-token
+    /// chunks — so the chunk shrinks only when the context is long and the
+    /// memory short, and a model with room keeps its speed.
+    func nextPrefillChunk(perPair: Double, context: Int, resident: Int) -> Int {
+        guard perPair > 0, workingSet > 0 else { return Self.prefillChunk }
+        let room = Double(workingSet - resident - Self.prefillHeadroom)
+        let fits = Int(max(0, room) / (perPair * Double(max(context, 1))))
+        return min(Self.prefillChunk, max(Self.minPrefillChunk, fits / 32 * 32))
+    }
+
     func load(path: String, nCtx: Int?, speculative: Bool) async {
-        let dir = URL(fileURLWithPath: path)
+        // The folder itself, not a link to it: the weight loader walks the
+        // directory with an enumerator that does not follow a symbolic link,
+        // so a model linked into the models folder (kept on another drive, or
+        // shared with another app) found no weights at all and failed on the
+        // first one it asked for.
+        let dir = URL(fileURLWithPath: path).resolvingSymlinksInPath()
         var meta = inspectModelDir(dir)
         var loadWarning: String?
         healTokenizerConfig(dir: dir, healTemplate: !healJinjaTemplateFile(dir: dir))
@@ -1275,7 +1381,18 @@ final class Engine: @unchecked Sendable {
                     + (meta.layoutOn == nil ? "template" : "learned"))
             self.meta = meta
             let trained = meta.nCtxTrain ?? 4096
-            self.nCtxCap = min(nCtx ?? trained, trained)
+            let wanted = min(nCtx ?? trained, trained)
+            // The context is held to what memory can carry, as the llama.cpp
+            // engine's is: a 34 GB model on a 48 GB Mac was given its whole
+            // trained 262k, a long Code session grew its cache past the GPU's
+            // working set, and decoding slowed to a crawl and then came out
+            // as rows of "!".
+            let workingSet = GPU.maxRecommendedWorkingSetBytes() ?? 0
+            self.workingSet = workingSet
+            self.scratchPerPair = 0
+            let fits = await container.perform { ctx in Self.contextThatFits(ctx, workingSet: workingSet) }
+            self.nCtxCap = fits.map { min(wanted, $0) } ?? wanted
+            if let fits, fits < wanted, loadWarning == nil { loadWarning = "ctx-clamped" }
             var info: [String: Any] = [
                 "quant": meta.quantLabel,
                 "sizeMb": Int(meta.sizeBytes / (1024 * 1024)),
@@ -1916,19 +2033,34 @@ final class Engine: @unchecked Sendable {
             /// Ordinary text, fed in chunks, positions threaded. Returns false
             /// if the caller should stop (cancelled).
             func runText(to stopAt: Int) -> Bool {
+                var chunk = self.nextPrefillChunk(
+                    perPair: self.scratchPerPair, context: pos + Self.prefillChunk,
+                    resident: Memory.activeMemory)
                 while pos < stopAt {
                     if cancelFlag.isSet {
                         self.finish(
                             prompt: total, done: 0, tps: 0, reason: "cancelled", generated: nil)
                         return false
                     }
-                    let end = min(pos + Self.prefillChunk, stopAt)
+                    let end = min(pos + chunk, stopAt)
                     let chunkText = LMInput.Text(
                         tokens: MLXArray(tokens[pos..<end].map(Int32.init)))
+                    let before = Memory.activeMemory
+                    Memory.peakMemory = 0
                     let result = withPreparedCache(warm, lengths: chunkText.sequenceLengths) {
                         context.model(chunkText[text: .newAxis], cache: warm, state: state)
                     }
                     eval(result.logits)
+                    let resident = Memory.activeMemory
+                    let scratch = max(0, Memory.peakMemory - max(before, resident))
+                    // Only once the context is long enough for its share of
+                    // the scratch to show: a short one's is mostly the chunk's
+                    // own working memory.
+                    if end >= 4096 {
+                        self.scratchPerPair = Double(scratch) / Double((end - pos) * end)
+                    }
+                    chunk = self.nextPrefillChunk(
+                        perPair: self.scratchPerPair, context: end + chunk, resident: resident)
                     state = result.state
                     pos = end
                     if emitProgress {
@@ -2051,7 +2183,7 @@ final class Engine: @unchecked Sendable {
                 let closer = String(block[cut.lowerBound...])
                 return context.tokenizer.encode(text: closer, addSpecialTokens: false).first
             }()
-            self.decode(
+            try self.decode(
                 context: context, cache: warm, tokens: tokens, total: total,
                 state: state, gp: gp,
                 recorded: tokens, imageKeys: imageKeys,
@@ -2135,7 +2267,7 @@ final class Engine: @unchecked Sendable {
         /// The token that would close a reasoning block that has said nothing
         /// yet — banned for the first few steps (see the call site).
         emptyThoughtClose: Int? = nil
-    ) {
+    ) throws {
         var state = initialState
         // The rope state saved for the next turn's resume: ropeDeltas is
         // constant for a given prompt layout, so the pre-decode value is the
@@ -2175,6 +2307,8 @@ final class Engine: @unchecked Sendable {
         // is still empty.
         let minThought = 16
         var banRow: MLXArray?
+        /// The forward pass produced NaN (see `sample`): the turn ends there.
+        var spoiled = false
         func sample(_ logits: MLXArray) -> Int {
             // In fp32 before anything touches them: a bf16 logit near 100 is
             // good to half a unit, so a penalty's division lands on ties and
@@ -2190,6 +2324,14 @@ final class Engine: @unchecked Sendable {
                 if let row = banRow { l = l + row }
             }
             let y = sampler.sample(logits: l)
+            // A NaN anywhere in the row means the forward pass broke — a
+            // command buffer that ran out of memory, an overflow — and every
+            // token after it is noise: the model "says" "!!!!!!!!" (token 0)
+            // and the cache it says it into is spoiled. Checked in the same
+            // evaluation as the token, at no cost worth measuring.
+            let broken = MLX.isNaN(l).any()
+            eval(y, broken)
+            if broken.item(Bool.self) { spoiled = true }
             processor?.didSample(token: y)
             return y.item(Int.self)
         }
@@ -2535,7 +2677,12 @@ final class Engine: @unchecked Sendable {
                 // one ordinary step rather than ending the turn.
                 tok = sample(stepEval(tok))
             }
+            if spoiled { break }
         }
+        // The token drawn from the broken step is never shown. Thrown, so the
+        // engine drops the spoiled cache (see `generate`) and the next turn
+        // reads its prompt afresh instead of continuing from noise.
+        if spoiled { throw SpoiledLogits() }
         if dumpTokens {
             let whole = context.tokenizer.decode(tokenIds: dumpIds)
             log("STREAMED[\(dumpStreamed.count)]>>>" + dumpStreamed + "<<<END")
@@ -2601,6 +2748,14 @@ final class Engine: @unchecked Sendable {
         // and re-reading the whole conversation. With the reply in the ledger,
         // a turn that only appends (an agent posting a tool result) matches
         // right to the end: nothing to trim, nothing to re-read.
+        if ProcessInfo.processInfo.environment["CHATY_MLX_MEMLOG"] == "1" {
+            let m = Memory.snapshot()
+            let rec = GPU.maxRecommendedWorkingSetBytes() ?? 0
+            log(
+                "MEM prompt=\(prompt) gen=\(done) tps=\(String(format: "%.1f", tps)) reason=\(reason) "
+                    + "active=\(m.activeMemory >> 20)MB cache=\(m.cacheMemory >> 20)MB "
+                    + "peak=\(m.peakMemory >> 20)MB recommended=\(rec >> 20)MB")
+        }
         if let generated {
             kvTokens = generated
             kvImageKeys = images
