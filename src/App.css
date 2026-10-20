@@ -5215,11 +5215,6 @@ body:has(.live-overlay) .win-btn.close:hover {
 }
 
 /* Context-usage meter in the stats line */
-.ctx-meter {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
 .mermaid-err {
   margin-top: 6px;
   font-size: 11.5px;
@@ -5670,31 +5665,6 @@ body:has(.live-overlay) .win-btn.close:hover {
   max-height: 140px;
 }
 
-.ctx-ring {
-  width: 15px;
-  height: 15px;
-  vertical-align: -3px;
-  transform: rotate(-90deg); /* fill starts at 12 o'clock */
-}
-.ctx-ring circle {
-  fill: none;
-  stroke-width: 2.5;
-}
-.ctx-ring-track {
-  stroke: var(--surface-2);
-}
-/* Neutral while there is room; it takes colour only when the window fills. */
-.ctx-ring-fill {
-  stroke: var(--text-dim);
-  stroke-linecap: round;
-  transition: stroke-dashoffset 0.3s ease;
-}
-.ctx-ring.warn .ctx-ring-fill {
-  stroke: var(--warn);
-}
-.ctx-ring.danger .ctx-ring-fill {
-  stroke: var(--danger);
-}
 .stop-reason.warn {
   color: var(--warn);
 }
@@ -8050,11 +8020,19 @@ body:has(.live-overlay) .win-btn.close:hover {
 
 /* ---- context-usage ring (header) ---- */
 .cm-ctx {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 5px;
   color: var(--text-dim);
   margin-right: 2px;
+  vertical-align: middle;
+}
+/* In chat it follows the reply's numbers on the same line. */
+.stats .cm-ctx {
+  margin: -2px 0 -2px 10px;
+}
+.stats .cm-ctx:first-child {
+  margin-left: 0;
 }
 .cm-ctx.warn {
   color: #d98e04;

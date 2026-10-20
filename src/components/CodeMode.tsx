@@ -91,6 +91,7 @@ import { homeDir } from "@tauri-apps/api/path";
 import { fmtBytes } from "../lib/fmt";
 import { JumpBottom } from "./JumpBottom";
 import { PrefillRing } from "./PrefillRing";
+import { ContextRing } from "./ContextRing";
 
 interface CodeMsg {
   id: string;
@@ -2631,26 +2632,7 @@ export function CodeMode({
               <span className="cm-head-label">{t("cmBypass")}</span>
             </button>
             <span className="cm-status-spacer" />
-            {ctxUsed > 0 && ctxTotal > 0 && (() => {
-              const nCtx = ctxTotal;
-              const pct = Math.min(100, Math.round((ctxUsed / nCtx) * 100));
-              const r = 7;
-              const circ = 2 * Math.PI * r;
-              const tone = pct >= 90 ? "hot" : pct >= 70 ? "warn" : "";
-              return (
-                <div className={`cm-ctx ${tone}`} title={`${ctxUsed.toLocaleString()} / ${nCtx.toLocaleString()} tokens · ${t("cmContext")}`}>
-                  <svg width="18" height="18" viewBox="0 0 18 18">
-                    <circle cx="9" cy="9" r={r} fill="none" stroke="var(--border-strong)" strokeWidth="2.2" />
-                    <circle
-                      cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"
-                      strokeDasharray={circ} strokeDashoffset={circ * (1 - pct / 100)}
-                      transform="rotate(-90 9 9)"
-                    />
-                  </svg>
-                  <span className="cm-ctx-pct">{pct}%</span>
-                </div>
-              );
-            })()}
+            {ctxUsed > 0 && ctxTotal > 0 && <ContextRing used={ctxUsed} total={ctxTotal} />}
           </div>
         </div>
       </main>

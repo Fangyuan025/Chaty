@@ -5,6 +5,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrent as getDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { AssistantMessage } from "./components/AssistantMessage";
+import { ContextRing } from "./components/ContextRing";
 import { maybeAutorun } from "./lib/debugProbe";
 import { RECENCY_LABEL, recencyGroups } from "./lib/recency";
 
@@ -172,7 +173,6 @@ const OS_PLATFORM = (() => {
 const IS_MACOS = OS_PLATFORM === "macos";
 
 const uid = () => Math.random().toString(36).slice(2);
-const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
 const SETTINGS_KEY = "chaty.settings";
 /** A stable "nothing picked by hand" for an image model's companions. */
 const NO_OVERRIDES: Record<string, string> = {};
@@ -2424,8 +2424,17 @@ export default function App() {
     let rafId: number | null = null;
     /** A prefill ring is up for this reply (cleared by its first token). */
     let prefilling = false;
-    const renderMsg = () =>
+    /** The ring comes down with the first words, in the same render: taken
+     *  down at the token, a frame before the text it carried, it left a
+     *  bare cursor between the two. */
+    let ringDone = false;
+    const renderMsg = () => {
+      if (ringDone) {
+        ringDone = false;
+        setPrefill(null);
+      }
       setMessages((cur) => cur.map((m) => (m.id === asstId ? { ...m, content: acc.text } : m)));
+    };
     const scheduleRender = () => {
       if (rafId == null)
         rafId = requestAnimationFrame(() => {
@@ -2454,7 +2463,7 @@ export default function App() {
           if (ev.type === "token") {
             if (prefilling) {
               prefilling = false;
-              setPrefill(null);
+              ringDone = true;
             }
             acc.text += ev.text;
             scheduleRender();
@@ -2462,6 +2471,7 @@ export default function App() {
           } else if (ev.type === "prefill") {
             if (shownConvRef.current === convId) {
               prefilling = true;
+              ringDone = false;
               setPrefill(ev.total > 0 ? ev.processed / ev.total : 0);
             }
           } else if (ev.type === "done") {
@@ -3438,35 +3448,12 @@ export default function App() {
                     ) : null}
                   </>
                 )}
-                {stats.nCtx ?? model?.nCtx
-                  ? (() => {
-                      const ringCtx = (stats.nCtx ?? model?.nCtx)!;
-                      const used = stats.promptTokens + stats.completionTokens;
-                      const pct = Math.min(1, used / ringCtx);
-                      const C = 2 * Math.PI * 7; // ring circumference (r=7)
-                      return (
-                        <span className="ctx-meter" title={t("ctxUsage")}>
-                          {stats.restored ? "ctx " : " · ctx "}
-                          {fmtK(used)}/{fmtK(ringCtx)}
-                          <svg
-                            className={`ctx-ring ${pct > 0.95 ? "danger" : pct > 0.8 ? "warn" : ""}`}
-                            viewBox="0 0 18 18"
-                            aria-hidden="true"
-                          >
-                            <circle className="ctx-ring-track" cx="9" cy="9" r="7" />
-                            <circle
-                              className="ctx-ring-fill"
-                              cx="9"
-                              cy="9"
-                              r="7"
-                              strokeDasharray={C}
-                              strokeDashoffset={C * (1 - pct)}
-                            />
-                          </svg>
-                        </span>
-                      );
-                    })()
-                  : null}
+                {(stats.nCtx ?? model?.nCtx) ? (
+                  <ContextRing
+                    used={stats.promptTokens + stats.completionTokens}
+                    total={(stats.nCtx ?? model?.nCtx)!}
+                  />
+                ) : null}
               </div>
             )}
                 </div>

@@ -98,11 +98,13 @@ export const AssistantMessage = memo(function AssistantMessage({
   // (expanded while reasoning, auto-collapsed once the answer starts).
   const [override, setOverride] = useState<boolean | null>(null);
   const expanded = override ?? thinking;
-  // Still reading the prompt. With thinking on, the engine sends the opened
-  // thought before it reads anything, and the panel it opened — "Thinking…"
-  // with nothing under it — stood where the reading progress belongs.
-  const reading = streaming && prefill != null && !reasoning && !cleanAnswer;
-  const showThink = hasThink && (thinking || reasoning.length > 0) && !reading;
+  // Nothing written yet. With thinking on, the engine sends the opened
+  // thought before it reads the prompt, and the panel that opened — "Thinking…"
+  // with nothing under it — stood where the reading progress belongs, or
+  // flashed up before it: the first progress comes once a chunk is read. The
+  // panel waits for the first words of the thought.
+  const opening = streaming && !reasoning && !cleanAnswer;
+  const showThink = hasThink && (thinking || reasoning.length > 0) && !opening;
   // Focus-follows-generation: while reasoning streams (and the user hasn't
   // manually expanded), show a small window pinned to the latest text with
   // the older lines fading out above.
@@ -159,12 +161,12 @@ export const AssistantMessage = memo(function AssistantMessage({
           <span className="searching-spinner" />
           {busyHint}
         </span>
-      ) : reading ? (
+      ) : opening && prefill != null ? (
         <span className="searching-hint">
-          <PrefillRing frac={prefill!} />
+          <PrefillRing frac={prefill} />
           {t("cmPrefill")}
         </span>
-      ) : streaming && !cleanAnswer && !thinking ? (
+      ) : streaming && !cleanAnswer && (!thinking || opening) ? (
         <span className="cursor" />
       ) : null}
       </StreamingContext.Provider>

@@ -510,7 +510,6 @@ export const T = {
   updateLater: { zh: "稍后", en: "Later", pt: "Mais tarde" },
   updateDownloading: { zh: "下载中…", en: "Downloading…", pt: "Baixando…" },
   // context usage
-  ctxUsage: { zh: "上下文占用", en: "Context usage", pt: "Uso de contexto" },
   stopTitle: { zh: "停止生成", en: "Stop", pt: "Parar" },
   sendTitle: { zh: "发送", en: "Send", pt: "Enviar" },
   micStart: { zh: "语音输入", en: "Voice input", pt: "Entrada de voz" },
