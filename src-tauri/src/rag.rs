@@ -428,6 +428,7 @@ pub(crate) fn extract_pptx(path: &str) -> Result<String, String> {
     let mut zip = zip::ZipArchive::new(file)
         .map_err(|e| format!("PPTX 解析失败 (not a valid .pptx): {e}"))?;
     let mut slides: Vec<(usize, String)> = Vec::new();
+    let mut budget = crate::zipguard::Budget::default();
     for i in 0..zip.len() {
         let Ok(mut entry) = zip.by_index(i) else { continue };
         let name = entry.name().to_string();
@@ -438,11 +439,14 @@ pub(crate) fn extract_pptx(path: &str) -> Result<String, String> {
         else {
             continue;
         };
-        let mut xml = String::new();
-        use std::io::Read as _;
-        if entry.read_to_string(&mut xml).is_err() {
-            continue;
-        }
+        // A slide past the caps is a built archive, not a deck: refused
+        // whole, not skipped (see `zipguard`).
+        let xml = match crate::zipguard::read_part_string(&mut entry, crate::zipguard::PART_MAX) {
+            Ok(xml) => xml,
+            Err(e) if e.contains("unpacks to more than") => return Err(e),
+            Err(_) => continue,
+        };
+        budget.spend(xml.len())?;
         // <a:t>text runs</a:t> hold the visible text; join runs with spaces.
         let mut text = String::new();
         let mut rest = xml.as_str();
@@ -599,15 +603,13 @@ fn pdf_by_page(doc: &pdf_extract::Document) -> Result<String, String> {
 /// holds the body). Paragraph/line/tab tags become whitespace; all other tags
 /// are stripped and the basic XML entities decoded.
 pub(crate) fn extract_docx(path: &str) -> Result<String, String> {
-    use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file)
         .map_err(|e| format!("DOCX 解析失败 (not a valid .docx): {e}"))?;
-    let mut xml = String::new();
-    zip.by_name("word/document.xml")
-        .map_err(|_| "DOCX 缺少 word/document.xml (corrupt .docx)".to_string())?
-        .read_to_string(&mut xml)
-        .map_err(|e| e.to_string())?;
+    let body = zip
+        .by_name("word/document.xml")
+        .map_err(|_| "DOCX 缺少 word/document.xml (corrupt .docx)".to_string())?;
+    let xml = crate::zipguard::read_part_string(body, crate::zipguard::PART_MAX)?;
 
     // Turn structural tags into whitespace before stripping the rest.
     let xml = xml
@@ -638,6 +640,8 @@ pub(crate) fn extract_docx(path: &str) -> Result<String, String> {
 /// resolves shared strings, numbers and dates, so the result reads like a CSV.
 pub(crate) fn extract_xlsx(path: &str) -> Result<String, String> {
     use calamine::{open_workbook, Reader, Xlsx};
+    // calamine unpacks the sheets itself, with no cap: measured first.
+    crate::zipguard::check_unpacked(path)?;
     let mut wb: Xlsx<_> =
         open_workbook(path).map_err(|e| format!("XLSX 解析失败 (failed to read .xlsx): {e}"))?;
     let mut out = String::new();

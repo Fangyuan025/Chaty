@@ -8,7 +8,6 @@
 //! logos) are filtered out; extraction is best-effort and never fails the
 //! caller — a document with no extractable images just returns an empty list.
 
-use std::io::Read;
 use std::path::PathBuf;
 
 /// Skip graphics smaller than this many bytes (icons/bullets).
@@ -16,6 +15,12 @@ const MIN_BYTES: usize = 6 * 1024;
 /// Skip decoded images smaller than this on either side, or in total area.
 const MIN_SIDE: u32 = 64;
 const MIN_AREA: u64 = 16_384;
+/// The most one embedded image may unpack to, and the most pixels a PDF's
+/// raw bitmap may declare: past either it is skipped. A crafted file can
+/// declare gigabytes in a few kilobytes (see `zipguard`); a scanned A4 page
+/// at 600 dpi is 35 million pixels.
+const MEDIA_MAX: u64 = 64 << 20;
+const MAX_PIXELS: usize = 64 << 20;
 
 fn out_dir() -> PathBuf {
     let d = std::env::temp_dir().join("chaty-doc-imgs");
@@ -73,6 +78,7 @@ pub fn extract_embedded_images(path: &str, cap: usize) -> Vec<String> {
 fn extract_ooxml(path: &str, cap: usize, out: &mut Vec<String>) {
     let Ok(file) = std::fs::File::open(path) else { return };
     let Ok(mut zip) = zip::ZipArchive::new(file) else { return };
+    let mut budget = crate::zipguard::Budget::default();
     for i in 0..zip.len() {
         if out.len() >= cap {
             break;
@@ -89,9 +95,11 @@ fn extract_ooxml(path: &str, cap: usize, out: &mut Vec<String>) {
             Some(e @ ("png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif")) => e,
             _ => continue,
         };
-        let mut bytes = Vec::new();
-        if entry.read_to_end(&mut bytes).is_err() {
-            continue;
+        // An image past MEDIA_MAX is skipped (best-effort, as everything
+        // here); a document whose media unpack past the total ends the walk.
+        let Ok(bytes) = crate::zipguard::read_part(&mut entry, MEDIA_MAX) else { continue };
+        if budget.spend(bytes.len()).is_err() {
+            break;
         }
         if keep(&bytes) {
             save(&bytes, img_ext, out);
@@ -194,16 +202,15 @@ fn pdf_image_file(dict: &lopdf::Dictionary, content: &[u8]) -> Option<(Vec<u8>, 
             if has_predictor {
                 return None;
             }
-            let mut data = Vec::new();
-            flate2::read::ZlibDecoder::new(content).read_to_end(&mut data).ok()?;
+            let data = crate::zipguard::read_part(flate2::read::ZlibDecoder::new(content), MEDIA_MAX).ok()?;
             let w = dict.get(b"Width").ok().and_then(|o| o.as_i64().ok())?;
             let h = dict.get(b"Height").ok().and_then(|o| o.as_i64().ok())?;
             let bpc = dict.get(b"BitsPerComponent").ok().and_then(|o| o.as_i64().ok()).unwrap_or(8);
             if w <= 0 || h <= 0 {
                 return None;
             }
-            let (w, h) = (w as u32, h as u32);
-            let px = (w as usize) * (h as usize);
+            let (w, h) = (u32::try_from(w).ok()?, u32::try_from(h).ok()?);
+            let px = (w as usize).checked_mul(h as usize).filter(|&p| p <= MAX_PIXELS)?;
             let img = match bpc {
                 8 if data.len() >= px * 3 => image::RgbImage::from_raw(w, h, data[..px * 3].to_vec())
                     .map(image::DynamicImage::ImageRgb8),

@@ -26,6 +26,7 @@ mod smooth_wheel;
 mod state;
 mod store;
 pub mod textenc;
+pub mod zipguard;
 mod user_skills;
 mod terminal;
 pub mod update;
