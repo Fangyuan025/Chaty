@@ -169,8 +169,17 @@
 
 ### Reliability
 
+- **A document built to unpack to gigabytes is refused.** A Word, PowerPoint
+  or Excel file is a zip, and one made to unpack to gigabytes from a few
+  kilobytes — attached to a chat, read in Code or imported into the
+  knowledge base — took the app's memory with it. A part past 256 MB, or a
+  document past 1 GB, is now refused with a note saying so; an embedded
+  image past 64 MB, or a PDF bitmap claiming more than 64 million pixels, is
+  skipped. Ordinary documents read as they did.
 - Formulas and their stylesheet come from the same KaTeX (0.19); DOMPurify,
-  Mermaid and the Rust networking and TLS crates carry their security fixes.
+  Mermaid and the Rust networking and TLS crates carry their security fixes —
+  TLS (rustls 0.23.46) and its root certificates up to date, so downloads
+  and web search no longer trust the distrusted emSign intermediates.
 
 ## v2.3.5 — Make it sing (2026-09-27)
 
