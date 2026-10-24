@@ -185,6 +185,11 @@ export interface ToolStep {
   status: StepStatus;
   /** The model's reasoning that led to this tool call (shown collapsed). */
   thinking?: string;
+  /** What the model said with this call, outside its reasoning — "the file
+   *  is written, now I'll run it", or the summary it wrote before a last
+   *  update_plan. It showed in the answer box while streaming and the next
+   *  step's words replaced it; kept here, it reaches the session's trace. */
+  said?: string;
   /** Human-readable result/output (for the UI). */
   result?: string;
   /** For edit/write, the before/after so the UI can render a diff. */
@@ -251,6 +256,10 @@ export interface AgentCallbacks {
   onAskUser?: (question: string, options: string[]) => Promise<string>;
   /** The model set/updated its task plan (todo list). */
   onPlan?: (todos: PlanItem[]) => void;
+  /** What the model said with a call that has no step card (update_plan):
+   *  its words would otherwise be nowhere — the summary written before a
+   *  last plan update is often what a turn really ended on. */
+  onSaid?: (text: string) => void;
   /** Context was auto-compacted (old history/tool results elided). Fires once per turn. */
   onCompacted?: () => void;
   /** The model finished the task (no more tool calls). `reason` is "steps"
@@ -2621,12 +2630,20 @@ async function execTool(
         const body = read.turns
           .map((t) => {
             const who = t.role === "user" ? (isZh() ? "用户" : "user") : isZh() ? "助手" : "assistant";
+            // What the assistant said between its steps, where it said it.
+            const words = (s: string) => `    > ${s.replace(/\s*\n\s*/g, " ")}`;
+            const saidAt = (n: number) => (t.said ?? []).filter((w) => w.after === n).map((w) => words(w.text));
             const steps = t.steps
-              .map((st) => {
+              .flatMap((st, i) => {
                 const ok = st.status === "done" ? "✓" : st.status === "denied" ? "⊘" : "✗";
                 const size = isZh() ? `${st.resultChars} 字` : `${st.resultChars} chars`;
-                return `    ${ok} ${st.name} ${st.args}`.trimEnd() + ` — ${size}, step=${st.stepId}`;
+                return [
+                  ...saidAt(i),
+                  ...(st.said ? [words(st.said)] : []),
+                  `    ${ok} ${st.name} ${st.args}`.trimEnd() + ` — ${size}, step=${st.stepId}`,
+                ];
               })
+              .concat((t.said ?? []).filter((w) => w.after >= t.steps.length).map((w) => words(w.text)))
               .join("\n");
             return `── ${isZh() ? "第" : "#"} ${t.turn} ${isZh() ? "条" : ""} · ${who} ──\n${t.text}${steps ? `\n${steps}` : ""}`;
           })
@@ -4086,7 +4103,8 @@ export async function runAgentTurn(
               : "\n\nSeveral misses in a row: read_file the lines you want to change (with offset/limit) to see them as they are now, and keep old_string to the changed lines plus one line of context."
             : "";
         const result = `ERROR: ${why}${advice}`;
-        const stepObj: ToolStep = { id: uid(), call, status: "error", thinking, result };
+        const said = proseAfter(raw).trim();
+        const stepObj: ToolStep = { id: uid(), call, status: "error", thinking, ...(said ? { said } : {}), result };
         const shown = live as Live | null;
         if (shown && !shown.claimed && sameFileTool(shown.view.name, name)) {
           stepObj.id = shown.id;
@@ -4447,7 +4465,8 @@ export async function runAgentTurn(
       if (callStart(turn) === -1) turn = `${turn}\n${renderCall(call.name, call.args)}`.trim();
       storeAssistantTurn(messages, turn, opts.reasoningField);
 
-      const stepObj: ToolStep = { id: uid(), call, status: "running", thinking };
+      const said = proseAfter(raw).trim();
+      const stepObj: ToolStep = { id: uid(), call, status: "running", thinking, ...(said ? { said } : {}) };
       resultStep = stepObj;
       // The live card of this very call becomes its step card.
       const shown = live as Live | null;
@@ -4680,6 +4699,7 @@ export async function runAgentTurn(
         const todos = parsePlan(call.args);
         currentPlan = todos;
         cb.onPlan?.(todos);
+        if (stepObj.said) cb.onSaid?.(stepObj.said);
         // Echo the statuses back: the panel is for the user — this line is
         // the only way the plan re-enters the MODEL's context.
         pushUser(toolResultMsg("update_plan", planEcho(todos, lang)));

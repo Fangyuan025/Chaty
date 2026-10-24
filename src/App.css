@@ -6438,6 +6438,10 @@ body:has(.live-overlay) .win-btn.close:hover {
 .cm-asst > .cm-asst-text {
   margin-top: 6px;
 }
+/* What the model said with a step, above its card. */
+.cm-block > .cm-said {
+  margin: 4px 0 8px;
+}
 .cm-asst-text > :first-child {
   margin-top: 0;
 }

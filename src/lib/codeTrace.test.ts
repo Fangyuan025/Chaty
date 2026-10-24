@@ -21,9 +21,10 @@ const msgs: TraceMsg[] = [
         diff: { path: "src/lexer.rs", before: "a", after: "b" },
         fullDiff: true,
       },
-      { id: "st3", call: { name: "bash", args: { command: "cargo test" } }, status: "error", result: "exit 101" },
+      { id: "st3", call: { name: "bash", args: { command: "cargo test" } }, status: "error", result: "exit 101", said: "Now the tests." },
     ],
     prompt: [{ role: "user", content: "Fix the lexer" }],
+    said: [{ after: 2, text: "Plan updated: tests next." }, { after: 3, text: "Summary: fixed the lexer." }],
   },
   { id: "u2", role: "user", text: "Thanks", steps: [] },
   { id: "a2", role: "assistant", text: "You're welcome.", steps: [] },
@@ -39,13 +40,18 @@ describe("a Code session as a JSONL trace", () => {
     const out = await buildCodeTrace(session, msgs, async (k) => (asked.push(k), kept[k] ?? null), new Date("2026-10-03T00:00:00Z"));
     expect(out.endsWith("\n")).toBe(true);
     const lines = out.trimEnd().split("\n").map((l) => JSON.parse(l));
-    expect(lines.map((l) => l.type)).toEqual(["session", "user", "tool_call", "tool_call", "tool_call", "assistant", "context", "user", "assistant"]);
+    expect(lines.map((l) => l.type)).toEqual(["session", "user", "tool_call", "tool_call", "assistant_text", "tool_call", "assistant_text", "assistant", "context", "user", "assistant"]);
+    expect(lines[4]).toMatchObject({ turn: 1, text: "Plan updated: tests next." });
+    expect(lines[6]).toMatchObject({ turn: 1, text: "Summary: fixed the lexer." });
+    lines.splice(6, 1);
+    lines.splice(4, 1);
     expect(lines[0]).toMatchObject({ ...session, exportedAt: "2026-10-03T00:00:00.000Z" });
     expect(lines[1]).toMatchObject({ turn: 1, text: "Fix the lexer", images: ["/tmp/a.png"] });
     // The card's trimmed copy gives way to what the model was given.
     expect(lines[2]).toMatchObject({ turn: 1, step: 1, name: "read_file", args: { path: "src/lexer.rs" }, thinking: "read it", result: kept.st1 });
     expect(lines[3].diff).toEqual({ path: "src/lexer.rs", before: "a\nmore", after: "b\nmore" });
-    expect(lines[4]).toMatchObject({ status: "error", result: "exit 101" });
+    expect(lines[4]).toMatchObject({ status: "error", result: "exit 101", text: "Now the tests." });
+    expect(lines[2].text).toBeUndefined();
     expect(lines[5]).toMatchObject({ turn: 1, text: "Fixed.", thinking: "look first", plan: [{ content: "read", status: "done" }] });
     expect(lines[6]).toMatchObject({ turn: 1, messages: [{ role: "user", content: "Fix the lexer" }] });
     expect(lines[8]).toMatchObject({ turn: 2, text: "You're welcome." });

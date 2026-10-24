@@ -116,3 +116,61 @@ describe("agentLoop onTrace instrument", () => {
     expect(last).not.toContain("temporarily disabled");
   });
 });
+
+describe("a step keeps what the model said with its call", () => {
+  afterEach(() => clearMocks());
+
+  it("the words beside a call land on its step, the last answer on the turn", async () => {
+    const rounds = [
+      // Words, then the call — what a model writes with thinking off.
+      'The file is in place; now I run it.\n<tool_call>{"name":"list_dir","arguments":{"path":"."}}</tool_call>',
+      // A summary written before a last call: the words a turn ended on, in effect.
+      '<think>all done</think>\n\nSummary: hello.py prints hi.\n<tool_call>{"name":"update_plan","arguments":{"todos":[{"content":"run","status":"completed"}]}}</tool_call>',
+      "Done.",
+    ];
+    mockIPC(async (cmd, args) => {
+      if (cmd === "generate") {
+        streamRound((args as { onEvent: Chan }).onEvent, rounds.shift() ?? "Done.");
+        return null;
+      }
+      if (cmd === "agent_list_dir") return "hello.py";
+      return null;
+    });
+    const steps = new Map<string, { name: string; said?: string }>();
+    const saidWithoutCard: string[] = [];
+    let final = "";
+    await runAgentTurn(
+      "make hello.py and run it",
+      [],
+      "/tmp/ws",
+      "en",
+      {
+        thinkMode: "off",
+        maxSteps: 10,
+        signal: { cancelled: false },
+        autoRunReadOnly: true,
+        approve: async () => true,
+        approveDir: async () => false,
+        approveSudo: async () => ({ ok: false }),
+      } as never,
+      {
+        onThinking: () => {},
+        onAssistantText: () => {},
+        onStep: (s) => steps.set(s.id, { name: s.call.name, said: s.said }),
+        onSaid: (t) => saidWithoutCard.push(t),
+        onFinal: (f) => {
+          final = f;
+        },
+        onError: (m) => {
+          throw new Error(`loop errored: ${m}`);
+        },
+      },
+    );
+    const byName = Object.fromEntries([...steps.values()].map((s) => [s.name, s.said]));
+    expect(byName.list_dir).toBe("The file is in place; now I run it.");
+    // update_plan has no card: its words come through on their own.
+    expect(byName.update_plan).toBeUndefined();
+    expect(saidWithoutCard).toEqual(["Summary: hello.py prints hi."]);
+    expect(final).toBe("Done.");
+  });
+});

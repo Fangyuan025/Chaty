@@ -1121,6 +1121,8 @@ export interface HistoryStep {
   args: string;
   status: string;
   resultChars: number;
+  /** What the model said with this call, outside its reasoning. */
+  said?: string;
 }
 
 export interface HistoryTurn {
@@ -1128,6 +1130,8 @@ export interface HistoryTurn {
   role: string;
   text: string;
   steps: HistoryStep[];
+  /** Words said with a call that has no step (a plan update), after how many steps. */
+  said?: { after: number; text: string }[];
 }
 
 export interface HistoryRead {

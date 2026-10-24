@@ -20,6 +20,9 @@ export interface TraceMsg {
   thinking?: string;
   steps: ToolStep[];
   plan?: PlanItem[];
+  /** Words said with a call that has no step card (update_plan), and how many
+   *  steps came before them. */
+  said?: { after: number; text: string }[];
   compacted?: boolean;
   paused?: boolean;
   changes?: TurnChange[];
@@ -58,7 +61,14 @@ export async function buildCodeTrace(
       });
       continue;
     }
+    // Words said with a call that has no card, in their place among the steps.
+    const sayAfter = (n: number) => {
+      for (const w of m.said ?? []) {
+        if (w.after === n) lines.push({ type: "assistant_text", turn, text: w.text });
+      }
+    };
     for (const [i, s] of m.steps.entries()) {
+      sayAfter(i);
       // What the model was given: the whole of it when the card only kept a part.
       const full = s.fullText ? await stepText(s.id).catch(() => null) : null;
       let diff = s.diff;
@@ -81,11 +91,17 @@ export async function buildCodeTrace(
         args: s.call.args,
         status: s.status,
         ...(s.thinking ? { thinking: s.thinking } : {}),
+        // What the model said with the call — its words between steps, and a
+        // summary written before a last call, which the answer did not keep.
+        ...(s.said ? { text: s.said } : {}),
         ...(full != null || s.result != null ? { result: full ?? s.result } : {}),
         ...(diff ? { diff } : {}),
         ...(s.diffCounts ? { diffCounts: s.diffCounts } : {}),
         ...(s.image ? { image: s.image } : {}),
       });
+    }
+    for (const w of m.said ?? []) {
+      if (w.after >= m.steps.length) lines.push({ type: "assistant_text", turn, text: w.text });
     }
     lines.push({
       type: "assistant",

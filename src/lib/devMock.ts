@@ -1036,6 +1036,13 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return SHOWCASE_MESSAGES;
     case "search_conversations":
       return [];
+    // Exports: the save dialog picks a path, and what would be written is
+    // kept on `window.__lastExport` for the preview to inspect.
+    case "plugin:dialog|save":
+      return "/tmp/chaty-preview-export";
+    case "write_text_file":
+      (window as unknown as { __lastExport?: string }).__lastExport = String(args?.content ?? "");
+      return null;
     case "session_stats_get":
       return SESSION_STATS.get(`${args?.kind}:${args?.id}`) ?? "";
     case "session_stats_set":
@@ -1319,7 +1326,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
                 ? "The user denied access to that folder — continuing with workspace files only."
                 : "用户拒绝了该目录的访问,我改用工作区内的资料继续。");
         } else {
-          reply = '<tool_call>{"name":"read_file","arguments":{"path":"/Users/dev/secrets/manifest.txt"}}</tool_call>';
+          // Words before the call, as models write them: they stay above its card.
+          reply = (outsideEn ? "Let me read the manifest first.\n" : "先读一下这份清单。\n") +
+            '<tool_call>{"name":"read_file","arguments":{"path":"/Users/dev/secrets/manifest.txt"}}</tool_call>';
         }
       } else if (wantsSudo) {
         reply = last.includes("<tool_result")
@@ -1463,6 +1472,7 @@ export function installDevMock() {
     // Tauri plugins arrive as "plugin:name|method".
     if (cmd.startsWith("plugin:")) {
       if (cmd === "plugin:os|platform") return OS;
+      if (cmd === "plugin:dialog|save") return handle(cmd, args as Record<string, unknown> | undefined);
       return null;
     }
     return handle(cmd, args as Record<string, unknown> | undefined);

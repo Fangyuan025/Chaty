@@ -618,6 +618,18 @@ pub struct HistoryStep {
     /// Size of the result kept for it, so the reader knows what it is asking
     /// for before it asks.
     pub result_chars: usize,
+    /// What the model said with this call, outside its reasoning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub said: Option<String>,
+}
+
+/// Words the model said with a call that has no step (a plan update), after
+/// how many of the turn's steps.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySaid {
+    pub after: usize,
+    pub text: String,
 }
 
 /// One turn of a past session, with its tool steps listed but not spelled out.
@@ -628,6 +640,8 @@ pub struct HistoryTurn {
     pub role: String,
     pub text: String,
     pub steps: Vec<HistoryStep>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub said: Vec<HistorySaid>,
 }
 
 /// A session read back: the turns asked for, and how many there are in all.
@@ -790,11 +804,39 @@ fn session_pieces(data: &str) -> Vec<Piece> {
         if let Some(text) = m["text"].as_str().filter(|t| !t.trim().is_empty()) {
             out.push((turn, role.clone(), text.to_string(), None, None));
         }
-        if let Some(steps) = m["steps"].as_array() {
-            for step in steps {
-                let (name, body, id, status) = step_text(step);
-                if !body.trim().is_empty() {
-                    out.push((turn, name, body, id, status));
+        // What the model said between its steps is the assistant speaking:
+        // with a step's call (the hit names the step), or with a plan update.
+        let said_at = |n: usize| -> Vec<String> {
+            m["said"]
+                .as_array()
+                .map(|l| {
+                    l.iter()
+                        .filter(|w| w["after"].as_u64().unwrap_or(0) as usize == n)
+                        .filter_map(|w| w["text"].as_str().filter(|t| !t.trim().is_empty()).map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let steps = m["steps"].as_array().cloned().unwrap_or_default();
+        for (k, step) in steps.iter().enumerate() {
+            for w in said_at(k) {
+                out.push((turn, "assistant".to_string(), w, None, None));
+            }
+            if let Some(said) = step["said"].as_str().filter(|s| !s.trim().is_empty()) {
+                let id = step["id"].as_str().map(str::to_string);
+                out.push((turn, "assistant".to_string(), said.to_string(), id, None));
+            }
+            let (name, body, id, status) = step_text(step);
+            if !body.trim().is_empty() {
+                out.push((turn, name, body, id, status));
+            }
+        }
+        if let Some(list) = m["said"].as_array() {
+            for w in list {
+                if w["after"].as_u64().unwrap_or(0) as usize >= steps.len() {
+                    if let Some(t) = w["text"].as_str().filter(|t| !t.trim().is_empty()) {
+                        out.push((turn, "assistant".to_string(), t.to_string(), None, None));
+                    }
                 }
             }
         }
@@ -878,13 +920,15 @@ fn session_turns(data: &str, want: Option<usize>, text_cap: usize) -> (usize, Ve
         // each message's cap, since the point of that read is the shape of the
         // conversation rather than every word of it.
         let cap = if want.is_some() { text_cap.max(4000) } else { text_cap };
-        let raw = m["text"].as_str().unwrap_or("");
-        let text = if raw.chars().count() > cap {
-            let cut: String = raw.chars().take(cap).collect();
-            format!("{cut}…")
-        } else {
-            raw.to_string()
+        let capped = |raw: &str| {
+            if raw.chars().count() > cap {
+                let cut: String = raw.chars().take(cap).collect();
+                format!("{cut}…")
+            } else {
+                raw.to_string()
+            }
         };
+        let text = capped(m["text"].as_str().unwrap_or(""));
         let steps = m["steps"]
             .as_array()
             .map(|list| {
@@ -895,6 +939,18 @@ fn session_turns(data: &str, want: Option<usize>, text_cap: usize) -> (usize, Ve
                         args: step_args(step),
                         status: step["status"].as_str().unwrap_or("done").to_string(),
                         result_chars: step["result"].as_str().map(|r| r.chars().count()).unwrap_or(0),
+                        said: step["said"].as_str().filter(|s| !s.trim().is_empty()).map(|s| capped(s)),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let said = m["said"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|w| {
+                        let text = w["text"].as_str().filter(|t| !t.trim().is_empty())?;
+                        Some(HistorySaid { after: w["after"].as_u64().unwrap_or(0) as usize, text: capped(text) })
                     })
                     .collect()
             })
@@ -904,6 +960,7 @@ fn session_turns(data: &str, want: Option<usize>, text_cap: usize) -> (usize, Ve
             role: m["role"].as_str().unwrap_or("assistant").to_string(),
             text,
             steps,
+            said,
         });
     }
     (msgs.len(), turns)
@@ -1948,6 +2005,35 @@ mod tests {
         assert_eq!(one.len(), 1);
         assert_eq!(one[0].turn, 3);
         assert!(one[0].text.contains("tooltip"));
+    }
+
+    /// What the model said between its steps — with a call, or with a plan
+    /// update that has no step — is read back and found as the assistant's.
+    #[test]
+    fn words_said_between_steps_are_read_back_and_found() {
+        let data = serde_json::json!([
+            { "role": "user", "text": "make hello.py" },
+            {
+                "role": "assistant",
+                "text": "Done.",
+                "steps": [
+                    { "id": "s1", "call": { "name": "write_file", "args": { "path": "hello.py" } }, "status": "done",
+                      "said": "Writing the file first.", "result": "wrote" },
+                    { "id": "s2", "call": { "name": "bash", "args": { "command": "python3 hello.py" } }, "status": "done",
+                      "result": "hi" },
+                ],
+                "said": [{ "after": 2, "text": "Summary: hello.py prints hi." }],
+            },
+        ])
+        .to_string();
+        let (_, turns) = super::session_turns(&data, Some(2), 1200);
+        assert_eq!(turns[0].steps[0].said.as_deref(), Some("Writing the file first."));
+        assert_eq!(turns[0].steps[1].said, None);
+        assert_eq!(turns[0].said, vec![super::HistorySaid { after: 2, text: "Summary: hello.py prints hi.".into() }]);
+        let found = session_hits("s9", "t", 10, &data, &search_terms("Summary hello"), 8);
+        assert!(found.iter().any(|(_, h)| h.role == "assistant" && h.text.contains("Summary")), "{found:#?}");
+        let with_step = session_hits("s9", "t", 10, &data, &search_terms("Writing the file"), 8);
+        assert!(with_step.iter().any(|(_, h)| h.role == "assistant" && h.step_id.as_deref() == Some("s1")), "{with_step:#?}");
     }
 
     /// A long message is cut for a whole-session read and kept for a single

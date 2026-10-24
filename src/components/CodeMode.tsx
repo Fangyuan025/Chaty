@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { RECENCY_LABEL, recencyGroups } from "../lib/recency";
 import { ImagePreview } from "./ImagePreview";
@@ -112,6 +112,9 @@ interface CodeMsg {
   steps: ToolStep[];
   /** The agent's current task plan (todo list), updated in place. */
   plan?: PlanItem[];
+  /** Words the model said with a call that has no step card (update_plan),
+   *  after how many steps — kept for the session's trace. */
+  said?: { after: number; text: string }[];
   /** Context was auto-compacted during this turn. */
   compacted?: boolean;
   /** The turn paused at the step limit (offer a Continue button). */
@@ -1890,6 +1893,12 @@ export function CodeMode({
       onPrefill: (frac) => shown() && setPrefill(frac),
       onDirGrants: (grants) => owns() && setDirGrants(grants),
       onPlan: (todos) => update((m) => ({ ...m, plan: todos })),
+      onSaid: (text) =>
+        update((m) => ({
+          ...m,
+          said: [...(m.said ?? []), { after: m.steps.length, text }],
+          text: m.text.trim() === text.trim() ? "" : m.text,
+        })),
       onCompacted: () => update((m) => ({ ...m, compacted: true })),
       onAskUser: (question, options) =>
         new Promise<string>((resolve) => {
@@ -1913,8 +1922,12 @@ export function CodeMode({
           const i = steps.findIndex((s) => s.id === step.id);
           if (i >= 0) steps[i] = step;
           else steps.push(step);
-          // the reasoning is now captured on the step → clear the live buffer
-          return { ...m, steps, liveThinking: "" };
+          // the reasoning is now captured on the step → clear the live buffer;
+          // and the words it said, which streamed into the answer box, now
+          // sit on the step — not twice.
+          const said = step.said?.trim();
+          const text = said && m.text.trim() === said ? "" : m.text;
+          return { ...m, steps, liveThinking: "", text };
         });
         // Mid-run durability: every step lands on disk (debounced), so a
         // pause + quit — or a crash — loses at most the last two seconds,
@@ -2316,12 +2329,35 @@ export function CodeMode({
                     </div>
                   )}
                   {m.plan && m.plan.length > 0 && <PlanPanel plan={m.plan} label={t("cmPlan")} />}
-                  {m.steps.map((s) => (
-                    <div key={s.id} className="cm-block">
-                      {s.thinking && <ThinkPanel text={s.thinking} label={t("cmThought")} />}
-                      <StepCard step={s} sessionId={sid} onPreview={setPreviewImg} liveOpen={liveCardsOpen} />
-                    </div>
+                  {/* What the model said between its steps stays where it said it:
+                      with a step's call, or with a plan update (which has no card). */}
+                  {m.steps.map((s, i) => (
+                    <Fragment key={s.id}>
+                      {(m.said ?? [])
+                        .filter((w) => w.after === i)
+                        .map((w, j) => (
+                          <div key={`said-${j}`} className="cm-asst-text answer cm-said">
+                            <Markdown>{w.text}</Markdown>
+                          </div>
+                        ))}
+                      <div className="cm-block">
+                        {s.thinking && <ThinkPanel text={s.thinking} label={t("cmThought")} />}
+                        {s.said && (
+                          <div className="cm-asst-text answer cm-said">
+                            <Markdown>{s.said}</Markdown>
+                          </div>
+                        )}
+                        <StepCard step={s} sessionId={sid} onPreview={setPreviewImg} liveOpen={liveCardsOpen} />
+                      </div>
+                    </Fragment>
                   ))}
+                  {(m.said ?? [])
+                    .filter((w) => w.after >= m.steps.length)
+                    .map((w, j) => (
+                      <div key={`said-end-${j}`} className="cm-asst-text answer cm-said">
+                        <Markdown>{w.text}</Markdown>
+                      </div>
+                    ))}
                   {m.liveThinking && <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />}
                   {m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />}
                   {m.text && (
