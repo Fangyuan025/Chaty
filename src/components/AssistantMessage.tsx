@@ -51,6 +51,34 @@ export const AssistantMessage = memo(function AssistantMessage({
       ? t(searching === "kb" ? "searchingKb" : searching === "mix" ? "searchingMix" : "searching")
       : null;
   const hasSources = (sources?.length ?? 0) > 0;
+  // A reply rendered block by block re-renders only the block being written
+  // (see Markdown) — the way for one that streams. One already finished when
+  // it came on screen renders whole: the same page at under half the cost,
+  // which is most of what opening a long conversation spent. A reply that
+  // streamed here keeps its blocks once it ends, so finishing does not
+  // rebuild it, and the previews in it, from scratch.
+  const streamedHere = useRef(false);
+  if (streaming) streamedHere.current = true;
+  const blocks = streamedHere.current;
+
+  const { reasoning, answer, thinking: open, hasThink } = parseThinking(withoutToolCallSpans(content));
+  // An unclosed think block is "thinking" only while the reply streams. One
+  // that was stopped, or ended by an error, is finished reasoning — it kept a
+  // "Thinking" label and its dots running forever after (issue #18).
+  const thinking = open && streaming;
+  // Manual override of the panel; until the user clicks, follow the thinking state
+  // (expanded while reasoning, auto-collapsed once the answer starts).
+  const [override, setOverride] = useState<boolean | null>(null);
+  // Focus-follows-generation: while reasoning streams (and the user hasn't
+  // manually expanded), show a small window pinned to the latest text with
+  // the older lines fading out above.
+  const focusMode = thinking && override === null && !hideThinking;
+  const thinkBodyRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (focusMode && thinkBodyRef.current) {
+      thinkBodyRef.current.scrollTop = thinkBodyRef.current.scrollHeight;
+    }
+  }, [reasoning, focusMode]);
 
   // Thinking off: never use the reasoning panel — strip the whole <think> block
   // and any stray tags so a buggy/empty panel can never appear.
@@ -67,7 +95,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         <StreamingContext.Provider value={streaming}>
         {answer && (
           <div className="answer" data-copy={answer}>
-            <Markdown cites={sources} blocks>{answer}</Markdown>
+            <Markdown cites={sources} blocks={blocks}>{answer}</Markdown>
           </div>
         )}
         {busyHint && !answer ? (
@@ -88,15 +116,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     );
   }
 
-  const { reasoning, answer, thinking: open, hasThink } = parseThinking(withoutToolCallSpans(content));
-  // An unclosed think block is "thinking" only while the reply streams. One
-  // that was stopped, or ended by an error, is finished reasoning — it kept a
-  // "Thinking" label and its dots running forever after (issue #18).
-  const thinking = open && streaming;
   const cleanAnswer = prepareCitations(answer, hasSources);
-  // Manual override of the panel; until the user clicks, follow the thinking state
-  // (expanded while reasoning, auto-collapsed once the answer starts).
-  const [override, setOverride] = useState<boolean | null>(null);
   const expanded = override ?? thinking;
   // Nothing written yet. With thinking on, the engine sends the opened
   // thought before it reads the prompt, and the panel that opened — "Thinking…"
@@ -105,16 +125,6 @@ export const AssistantMessage = memo(function AssistantMessage({
   // panel waits for the first words of the thought.
   const opening = streaming && !reasoning && !cleanAnswer;
   const showThink = hasThink && (thinking || reasoning.length > 0) && !opening;
-  // Focus-follows-generation: while reasoning streams (and the user hasn't
-  // manually expanded), show a small window pinned to the latest text with
-  // the older lines fading out above.
-  const focusMode = thinking && override === null;
-  const thinkBodyRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (focusMode && thinkBodyRef.current) {
-      thinkBodyRef.current.scrollTop = thinkBodyRef.current.scrollHeight;
-    }
-  }, [reasoning, focusMode]);
 
   return (
     <div className="bubble">
@@ -144,7 +154,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           </button>
           {expanded && (
             <div ref={thinkBodyRef} className={`think-body ${focusMode ? "focus" : ""}`}>
-              <Markdown blocks>{reasoning}</Markdown>
+              <Markdown blocks={blocks}>{reasoning}</Markdown>
             </div>
           )}
         </div>
@@ -152,7 +162,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 
       {cleanAnswer && (
         <div className="answer" data-copy={cleanAnswer}>
-          <Markdown cites={sources} blocks>{cleanAnswer}</Markdown>
+          <Markdown cites={sources} blocks={blocks}>{cleanAnswer}</Markdown>
         </div>
       )}
 

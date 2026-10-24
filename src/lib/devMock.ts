@@ -638,6 +638,9 @@ const RICH_README = [
 /** `?sources=web` / `?sources=kb`: the last answer of the showcase chat cites
  *  web pages / knowledge-base passages, to look at the sources under it. */
 const DEMO_SOURCES = new URLSearchParams(window.location.search).get("sources");
+/** `?long=N`: every conversation is the showcase N times over — a long
+ *  history, for measuring what typing and streaming cost beside it. */
+const LONG_REPEAT = Number(new URLSearchParams(window.location.search).get("long") ?? 0);
 const WEB_SOURCES = [
   ["The Rust Reference — Lifetime elision", "https://doc.rust-lang.org/reference/lifetime-elision.html", "Rust's lifetime elision rules allow lifetimes to be elided in function signatures when the compiler can infer them from the inputs."],
   ["Validating References with Lifetimes — The Rust Book", "https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html", "Every reference in Rust has a lifetime, which is the scope for which that reference is valid."],
@@ -1021,6 +1024,11 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "list_conversations":
       return CONVERSATIONS;
     case "get_messages":
+      if (LONG_REPEAT > 0) {
+        return Array.from({ length: LONG_REPEAT }, (_, i) =>
+          SHOWCASE_MESSAGES.map((m) => ({ ...m, id: `${m.id}-${i}` })),
+        ).flat();
+      }
       if (DEMO_SOURCES) {
         const sources = DEMO_SOURCES === "kb" ? KB_SOURCES : WEB_SOURCES;
         return SHOWCASE_MESSAGES.map((m) => (m.id === "m4" ? { ...m, sources } : m));

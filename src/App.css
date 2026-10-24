@@ -80,8 +80,10 @@
   --composer-radius: 18px;
   --composer-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 1px 2px rgba(0, 0, 0, 0.18),
     0 10px 30px rgba(0, 0, 0, 0.28);
-  --composer-focus: 0 0 0 1px rgba(77, 156, 116, 0.55), 0 0 0 5px rgba(77, 156, 116, 0.12),
-    0 10px 30px rgba(0, 0, 0, 0.28);
+  /* Focus lifts the composer instead of ringing it in the accent: the
+     hairline steps up to the strong border, the shadow deepens a little. */
+  --composer-focus: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 1px var(--border-strong),
+    0 2px 4px rgba(0, 0, 0, 0.22), 0 14px 36px rgba(0, 0, 0, 0.36);
 
   /* ---- type ---- */
   --font-body: "Instrument Sans Variable", -apple-system, BlinkMacSystemFont, "PingFang SC",
@@ -154,8 +156,8 @@
   --shadow-1: 0 1px 2px rgba(35, 30, 20, 0.07);
   --inset-shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(35, 30, 20, 0.05), 0 6px 22px rgba(35, 30, 20, 0.07);
   --composer-shadow: 0 1px 2px rgba(35, 30, 20, 0.06), 0 8px 26px rgba(35, 30, 20, 0.09);
-  --composer-focus: 0 0 0 1px rgba(53, 117, 87, 0.5), 0 0 0 5px rgba(53, 117, 87, 0.1),
-    0 8px 26px rgba(35, 30, 20, 0.09);
+  --composer-focus: 0 0 0 1px var(--border-strong), 0 2px 4px rgba(35, 30, 20, 0.06),
+    0 12px 32px rgba(35, 30, 20, 0.12);
   --shadow-2: 0 4px 16px rgba(35, 30, 20, 0.08);
   --shadow-3: 0 12px 32px rgba(35, 30, 20, 0.15), 0 2px 6px rgba(35, 30, 20, 0.06);
   --shadow-4: 0 24px 56px rgba(35, 30, 20, 0.16);
@@ -191,8 +193,8 @@
     --shadow-1: 0 1px 2px rgba(35, 30, 20, 0.07);
   --inset-shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(35, 30, 20, 0.05), 0 6px 22px rgba(35, 30, 20, 0.07);
   --composer-shadow: 0 1px 2px rgba(35, 30, 20, 0.06), 0 8px 26px rgba(35, 30, 20, 0.09);
-  --composer-focus: 0 0 0 1px rgba(53, 117, 87, 0.5), 0 0 0 5px rgba(53, 117, 87, 0.1),
-    0 8px 26px rgba(35, 30, 20, 0.09);
+  --composer-focus: 0 0 0 1px var(--border-strong), 0 2px 4px rgba(35, 30, 20, 0.06),
+    0 12px 32px rgba(35, 30, 20, 0.12);
     --shadow-2: 0 4px 16px rgba(35, 30, 20, 0.08);
     --shadow-3: 0 12px 32px rgba(35, 30, 20, 0.15), 0 2px 6px rgba(35, 30, 20, 0.06);
     --shadow-4: 0 24px 56px rgba(35, 30, 20, 0.16);
@@ -230,8 +232,8 @@
   --danger-soft: rgba(224, 82, 82, 0.14);
   --ok: #45ad84;
   --ok-soft: rgba(69, 173, 132, 0.14);
-  --composer-focus: 0 0 0 1px rgba(66, 176, 135, 0.5), 0 0 0 5px rgba(66, 176, 135, 0.1),
-    0 10px 30px rgba(0, 0, 0, 0.3);
+  --composer-focus: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 1px var(--border-strong),
+    0 2px 4px rgba(0, 0, 0, 0.24), 0 14px 36px rgba(0, 0, 0, 0.38);
 }
 /* Under "system", the cool overrides above must NOT apply when the OS is
    light — hand the tokens back to the light palette. */
@@ -259,8 +261,8 @@
     --danger-soft: rgba(192, 61, 56, 0.12);
     --ok: #3d8a63;
     --ok-soft: rgba(61, 138, 99, 0.13);
-    --composer-focus: 0 0 0 1px rgba(53, 117, 87, 0.5), 0 0 0 5px rgba(53, 117, 87, 0.1),
-      0 8px 26px rgba(35, 30, 20, 0.09);
+    --composer-focus: 0 0 0 1px var(--border-strong), 0 2px 4px rgba(35, 30, 20, 0.06),
+      0 12px 32px rgba(35, 30, 20, 0.12);
   }
 }
 
@@ -5811,7 +5813,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   line-height: 1.5;
 }
 .dr-input-row:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-color: var(--border-strong);
 }
 .dr-input {
   width: 100%;
@@ -7825,7 +7827,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   box-sizing: border-box;
 }
 .cm-sudo-pw:focus {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
 }
 .cm-sudo-pw-note {
   font-size: 11.5px;
@@ -7995,7 +7997,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   outline: none;
 }
 .cm-ask-input:focus {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
 }
 .cm-ask-go {
   width: 42px;
