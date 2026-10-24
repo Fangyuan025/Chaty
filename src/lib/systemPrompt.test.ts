@@ -13,9 +13,9 @@ setHistoryToolEnabled(true);
 
 const variants = [
   { zh: true, vision: false, label: "zh plain", maxChars: 4240 },
-  { zh: true, vision: true, label: "zh vision", maxChars: 5400 },
+  { zh: true, vision: true, label: "zh vision", maxChars: 5550 },
   { zh: false, vision: false, label: "en plain", maxChars: 7370 },
-  { zh: false, vision: true, label: "en vision", maxChars: 9240 },
+  { zh: false, vision: true, label: "en vision", maxChars: 9480 },
 ] as const;
 // Caps anchored to the post-slimming sizes (2026-07 WS1: 3545 / 4432 / 6031 /
 // 7516 JS chars at think=normal, no project doc; before slimming they were
@@ -75,6 +75,16 @@ const variants = [
 //   answers 0 emoji on Gemma-4 26B and Qwen3.6 35B, README files 0 and 0/0/6
 //   against 12/7 and 12/13 before. list_dir also stopped handing the model
 //   📁/📄 to imitate.
+
+//   2026-10-24  vision +151 zh / +237 en — browser_tabs, and browser_eval
+//   saying how it runs. A link that opens a new tab (target=_blank,
+//   window.open) left the agent reading the tab it clicked in, with no way to
+//   see or reach the page it had opened; the browser now follows such a tab,
+//   and the line names the one tool that lists, opens, switches and closes the
+//   session's tabs. browser_eval's line says it runs as the console does
+//   (top-level await, the last expression's value as the result): a body with
+//   `const` and no `return` used to come back undefined, and `await` in one
+//   was a syntax error.
 
 describe("systemPrompt size gate", () => {
   for (const v of variants) {

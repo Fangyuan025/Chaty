@@ -333,6 +333,14 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
         "browser_scroll" => res(
             ag::browser_scroll(s_arg(&args, "to"), args.get("by").and_then(|v| v.as_f64())).await,
         ),
+        "browser_tabs" => res(
+            ag::browser_tabs(
+                s_arg(&args, "action"),
+                args.get("index").and_then(|v| v.as_u64()).map(|n| n as usize),
+                s_arg(&args, "url"),
+            )
+            .await,
+        ),
         "browser_eval" => match req_s(&args, "expression") {
             Ok(x) => res(ag::browser_eval(x).await),
             Err(e) => Err(e),

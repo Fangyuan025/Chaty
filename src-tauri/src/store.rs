@@ -1043,6 +1043,9 @@ pub fn code_session_find(db: State<'_, Db>, query: String) -> Result<Vec<String>
 pub fn code_session_delete(db: State<'_, Db>, id: String) -> Result<(), String> {
     // Its background jobs go with it: the running ones stopped, the history dropped.
     crate::agent::bg_forget_session(&id);
+    // And its browser tabs — off this thread: the browser may be busy.
+    let owner = id.clone();
+    std::thread::spawn(move || crate::browser::close_for(&owner));
     let conn = lock(&db)?;
     delete_code_session_rows(&conn, &id).map_err(|e| e.to_string())
 }

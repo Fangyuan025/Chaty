@@ -671,6 +671,7 @@ pub fn run() {
             agent::browser_snapshot,
             agent::browser_scroll,
             agent::browser_eval,
+            agent::browser_tabs,
             agent::browser_click,
             agent::browser_type,
             agent::browser_key,

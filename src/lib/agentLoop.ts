@@ -27,6 +27,7 @@ import {
   browserSnapshot,
   browserScroll,
   browserEval,
+  browserTabs,
   browserClick,
   browserType,
   browserKey,
@@ -2412,6 +2413,12 @@ async function execTool(
       return { result: await browserRead(asStr(a.selector).trim() || undefined) };
     case "browser_close":
       return { result: await browserClose() };
+    case "browser_tabs": {
+      const action = (asStr(a.action) || asStr(a.op) || "list").trim().toLowerCase();
+      const n = typeof a.index === "number" ? a.index : Number.parseInt(asStr(a.index) || asStr(a.tab), 10);
+      const url = asStr(a.url).trim() || undefined;
+      return { result: await browserTabs(action, Number.isFinite(n) && n > 0 ? n : undefined, url) };
+    }
     case "browser_eval": {
       const expr = asStr(a.expression) || asStr(a.expr) || asStr(a.code);
       if (!expr) return { result: 'ERROR: 缺少 "expression" 参数 (missing "expression")' };

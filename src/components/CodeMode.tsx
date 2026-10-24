@@ -173,6 +173,7 @@ const TOOL_ICON: Record<string, string> = {
   browser_click: "M7 3v6l2-1 2 4 2-1-2-4h3z",
   browser_type: "M4 7h16M4 12h16M4 17h10",
   browser_eval: "M8 3H5a2 2 0 00-2 2v14a2 2 0 002 2h3M16 3h3a2 2 0 012 2v14a2 2 0 01-2 2h-3M10 8l-2 4 2 4M14 8l2 4-2 4",
+  browser_tabs: "M3 8h18v12H3zM3 8V5h7l2 3",
 };
 
 function toolSummary(call: ToolCall): string {
@@ -271,6 +272,8 @@ function toolSummary(call: ToolCall): string {
       return `type → ${a.label ?? a.selector ?? ""}`;
     case "browser_eval":
       return `eval ${(a.expression ?? "").slice(0, 40)}`;
+    case "browser_tabs":
+      return `tabs ${a.action ?? "list"}${a.index != null ? ` ${a.index}` : ""}`;
     default:
       return call.name;
   }

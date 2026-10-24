@@ -1890,6 +1890,11 @@ export async function browserSnapshot(): Promise<string> {
 export async function browserScroll(to?: "bottom" | "top", by?: number): Promise<string> {
   return await invoke<string>("browser_scroll", { to: to ?? null, by: by ?? null });
 }
+/** The current Code session's browser tabs: list (default), new [url],
+ *  select <index>, close [index]. */
+export async function browserTabs(action?: string, index?: number, url?: string): Promise<string> {
+  return await invoke<string>("browser_tabs", { action: action ?? null, index: index ?? null, url: url ?? null });
+}
 export async function browserEval(expression: string): Promise<string> {
   return await invoke<string>("browser_eval", { expression });
 }

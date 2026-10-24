@@ -2125,6 +2125,14 @@ fn write_shot(png: Vec<u8>) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
+/// The current Code session's browser tabs: list, new, select, close.
+#[tauri::command]
+pub async fn browser_tabs(action: Option<String>, index: Option<usize>, url: Option<String>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || crate::browser::tabs(action.as_deref().unwrap_or("list"), index, url))
+        .await
+        .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
+}
+
 #[tauri::command]
 pub async fn browser_eval(expression: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || crate::browser::eval(&expression))
@@ -2220,11 +2228,12 @@ pub async fn browser_read(selector: Option<String>) -> Result<String, String> {
         .map_err(|e| trf!("浏览器任务异常: {e}", "browser task failed: {e}"))?
 }
 
-/// Close the automation browser the agent has been driving.
+/// Close this Code session's tabs — and the browser, when no other session
+/// has one open.
 #[tauri::command]
 pub async fn browser_close() -> Result<String, String> {
     tokio::task::spawn_blocking(|| {
-        crate::browser::shutdown();
+        crate::browser::close_for(&current_session());
         tr("已关闭浏览器", "browser closed")
     })
     .await
@@ -4689,6 +4698,11 @@ pub fn agent_set_session(id: String) {
 
 fn current_session() -> String {
     SESSION.lock().unwrap().clone()
+}
+
+/// The Code session browser commands run for (see `browser::BrowserSession::owner`).
+pub(crate) fn current_session_id() -> String {
+    current_session()
 }
 
 /// A new job's id: its row in the session's task history when there is one,

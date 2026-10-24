@@ -51,6 +51,8 @@ describe("derived sets match the pre-M0 literals", () => {
         "bg_output",
         // "down" twice is two steps through a menu, not a loop (09-17).
         "bg_input",
+        // Listing the tabs again after working in one is not a loop (10-24).
+        "browser_tabs",
       ]),
     );
   });
@@ -69,6 +71,8 @@ describe("derived sets match the pre-M0 literals", () => {
         "browser_key",
         "browser_scroll",
         "browser_eval",
+        // Switching to a tab returns that page's text (10-24).
+        "browser_tabs",
       ]),
     );
   });

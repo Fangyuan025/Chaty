@@ -150,9 +150,13 @@ export const DOC_LINES: Record<string, Bi> = {
     zh: "- browser_type: 填输入框,也用于下拉框(text=选项可见文字);多个字段一次用 steps 填完。args: { \"text\"?, \"label\"?, \"selector\"?, \"steps\"?: [{ \"text\", \"label\"?, \"selector\"? }] }",
     en: "- browser_type: fill inputs, also selects dropdowns (text = the option's visible label); fill several fields in one steps call. args: { \"text\"?, \"label\"?, \"selector\"?, \"steps\"?: [{ \"text\", \"label\"?, \"selector\"? }] }",
   },
+  browser_tabs: {
+    zh: "- browser_tabs: 本会话标签页:action 为 list(默认)/new(可带 url)/select/close(index,不带=当前);点击打开的新标签页会自动切过去。args: { \"action\"?, \"index\"?, \"url\"? }",
+    en: "- browser_tabs: your tabs: action list (default) / new (url?) / select / close (index; none = current). A tab a click opens is switched to. args: { \"action\"?, \"index\"?, \"url\"? }",
+  },
   browser_eval: {
-    zh: "- browser_eval: 执行 JavaScript 并返回结果。args: { \"expression\": string }",
-    en: "- browser_eval: run JavaScript and return the result. args: { \"expression\": string }",
+    zh: "- browser_eval: 在页面里执行 JS,同控制台:可顶层 await,最后一个表达式的值即结果。args: { \"expression\": string }",
+    en: "- browser_eval: run JS in the page like the console: top-level await; the last expression's value is the result. args: { \"expression\": string }",
   },
   edit_lines: {
     zh: "- edit_lines: 按行锚点批量改行(锚点=read_file 行首的 \"22:abc\")。op: replace(anchor 单行,或 anchor+end_anchor 区间;content 为新内容,空串=删除)、insert_after(anchor|\"0\" 文件头|\"EOF\" 文件尾)。content 只写文件内容,不要带锚点前缀。args: { \"path\", \"edits\": [{ \"op\": \"replace\", \"anchor\": \"22:abc\", \"content\": \"新行\" }] }",

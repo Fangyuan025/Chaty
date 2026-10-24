@@ -12,6 +12,7 @@
 //! No heavyweight browser crate: CDP is line-oriented JSON over a localhost
 //! WebSocket, so `tungstenite` + `serde_json` is all it takes.
 
+use std::collections::HashMap;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
@@ -42,6 +43,11 @@ enum BrowserCmd {
     Console { reply: Sender<Result<String, String>> },
     Refresh { reply: Sender<Result<String, String>> },
     Read { selector: Option<String>, reply: Sender<Result<String, String>> },
+    /// List / open / switch to / close the browser's tabs.
+    Tabs { action: String, index: Option<usize>, url: Option<String>, reply: Sender<Result<String, String>> },
+    /// Close one Code session's tabs (`browser_close`, a deleted session) —
+    /// and the browser, when no other session has a tab open.
+    CloseOwner { owner: String, done: Sender<()> },
     Close(Sender<()>),
 }
 
@@ -731,6 +737,7 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
     fn run<T>(
         session: &mut BrowserSession,
         headless: bool,
+        owner: &str,
         mut f: impl FnMut(&mut BrowserSession) -> Result<T, String>,
     ) -> Result<T, String> {
         // An adopted browser has no process of ours to check; if it has gone
@@ -741,7 +748,9 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
             .map(|c| c.try_wait().map(|s| s.is_some()).unwrap_or(true))
             .unwrap_or(false);
         if !dead {
-            match f(session) {
+            // On the tabs of the Code session that asked.
+            let r = session.activate_owner(owner).and_then(|_| f(session));
+            match r {
                 Ok(v) => return Ok(v),
                 Err(e) if !is_dead_session(&e) => return Err(e),
                 Err(_) => {} // fall through to relaunch + retry
@@ -749,6 +758,7 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
         }
         session.kill();
         *session = BrowserSession::launch(headless, true)?;
+        session.activate_owner(owner)?;
         f(session)
     }
 
@@ -810,13 +820,15 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
     }
 
     while let Ok(cmd) = rx.recv() {
+        let owner = crate::agent::current_session_id();
+        let owner = owner.as_str();
         match cmd {
             BrowserCmd::Navigate { url, reply } => {
-                let r = run(&mut session, headless, |s| s.navigate(&url));
+                let r = run(&mut session, headless, owner, |s| s.navigate(&url));
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Screenshot { reply } => {
-                let r = run(&mut session, headless, |s| {
+                let r = run(&mut session, headless, owner, |s| {
                     if !page_loaded(&s.current_url) {
                         return Err(no_page_error());
                     }
@@ -825,7 +837,7 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
                 let _ = reply.send(r);
             }
             BrowserCmd::Snapshot { reply } => {
-                let r = run(&mut session, headless, |s| {
+                let r = run(&mut session, headless, owner, |s| {
                     if !page_loaded(&s.current_url) {
                         return Err(no_page_error());
                     }
@@ -834,46 +846,67 @@ fn actor(rx: Receiver<BrowserCmd>, init: Sender<Result<(), String>>) {
                 let _ = reply.send(r);
             }
             BrowserCmd::Scroll { to, by, reply } => {
-                let r = run(&mut session, headless, |s| s.scroll(to.as_deref(), by));
+                let r = run(&mut session, headless, owner, |s| s.scroll(to.as_deref(), by));
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Eval { expr, reply } => {
-                let r = run(&mut session, headless, |s| s.eval(&expr));
+                let r = run(&mut session, headless, owner, |s| s.eval_user(&expr));
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Click { selector, text, reply } => {
-                let r = run(&mut session, headless, |s| s.click(selector.as_deref(), text.as_deref()));
+                let r = run(&mut session, headless, owner, |s| {
+                    let before: Vec<String> = s.page_tabs()?.into_iter().map(|t| t.0).collect();
+                    let done = s.click(selector.as_deref(), text.as_deref())?;
+                    s.follow_new_tab(&before, done)
+                });
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::ClickSeq { steps, reply } => {
-                let r = run(&mut session, headless, |s| s.click_seq(&steps));
+                let r = run(&mut session, headless, owner, |s| {
+                    let before: Vec<String> = s.page_tabs()?.into_iter().map(|t| t.0).collect();
+                    let done = s.click_seq(&steps)?;
+                    s.follow_new_tab(&before, done)
+                });
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
+            BrowserCmd::Tabs { action, index, url, reply } => {
+                let r = run(&mut session, headless, owner, |s| s.tabs(&action, index, url.as_deref()));
+                let _ = reply.send(with_console_errors(&mut session, r));
+            }
+            BrowserCmd::CloseOwner { owner: closing, done } => {
+                // The browser itself goes when no other session has a tab.
+                if !session.close_owner(&closing).unwrap_or(false) {
+                    session.kill();
+                    let _ = done.send(());
+                    return;
+                }
+                let _ = done.send(());
+            }
             BrowserCmd::Key { keys, selector, label, reply } => {
-                let r = run(&mut session, headless, |s| {
+                let r = run(&mut session, headless, owner, |s| {
                     s.press_keys(&keys, selector.as_deref(), label.as_deref())
                 });
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Type { selector, label, text, reply } => {
-                let r = run(&mut session, headless, |s| s.type_text(selector.as_deref(), &text, label.as_deref()));
+                let r = run(&mut session, headless, owner, |s| s.type_text(selector.as_deref(), &text, label.as_deref()));
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::TypeSeq { steps, reply } => {
-                let r = run(&mut session, headless, |s| s.type_seq(&steps));
+                let r = run(&mut session, headless, owner, |s| s.type_seq(&steps));
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Refresh { reply } => {
-                let r = run(&mut session, headless, |s| s.refresh());
+                let r = run(&mut session, headless, owner, |s| s.refresh());
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
             BrowserCmd::Console { reply } => {
-                let _ = reply.send(run(&mut session, headless, |s| Ok(s.drain_console())));
+                let _ = reply.send(run(&mut session, headless, owner, |s| Ok(s.drain_console())));
             }
             BrowserCmd::Read { selector, reply } => {
                 let r = match selector.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                    Some(sel) => run(&mut session, headless, |s| s.read_selector(sel)),
-                    None => run(&mut session, headless, |s| s.rich_digest(12000)),
+                    Some(sel) => run(&mut session, headless, owner, |s| s.read_selector(sel)),
+                    None => run(&mut session, headless, owner, |s| s.rich_digest(12000)),
                 };
                 let _ = reply.send(with_console_errors(&mut session, r));
             }
@@ -917,6 +950,28 @@ struct BrowserSession {
     /// gates console auto-attach to LOCAL pages only (real websites are full
     /// of third-party console noise the model must not drown in).
     current_url: String,
+    /// The tab `session_id` drives, and the tabs of the Code session it drives
+    /// them for, in the order first seen — the numbers `browser_tabs` shows,
+    /// stable while tabs come and go.
+    target_id: String,
+    tab_order: Vec<String>,
+    /// Which Code session these tabs are, and every other session's tabs and
+    /// the tab it was on. A session sees, lists and drives only its own: one
+    /// session's browsing no longer carried on in the page another left, nor
+    /// reached into its tabs.
+    owner: String,
+    parked: HashMap<String, (Vec<String>, String)>,
+    /// Tabs open before this session attached — what a browser adopted from
+    /// an earlier run had open. Nobody's: never listed, never driven, never
+    /// counted as a session's.
+    foreign: Vec<String>,
+    /// Page sessions attached to a tab by us, by target: a tab switched back
+    /// to keeps the session, and the domains enabled on it.
+    own_sessions: HashMap<String, String>,
+    /// Every attached session → the session it was attached under (`None` at
+    /// the browser level). A session at or under the tab's own is that tab —
+    /// its iframes, its workers — and only those report into its console.
+    session_parent: HashMap<String, Option<String>>,
     /// Throwaway profile guard (deletes on drop); `None` for a persistent profile.
     _profile: Option<tempdir::Guard>,
 }
@@ -1079,29 +1134,44 @@ impl BrowserSession {
             return Err("CDP 会话附加失败 (failed to attach CDP session)".into());
         }
 
-        let mut s = BrowserSession { child, ws, session_id, next_id, console: Vec::new(), surfaced: 0, pending_sessions: Vec::new(), last_click_blocker: None, current_url: String::new(), _profile: _guard };
-        // Enable the domains we consume. Runtime.enable surfaces console API
-        // calls + uncaught exceptions; Log.enable surfaces browser log entries.
-        let sid = s.session_id.clone();
-        let _ = s.call(Some(&sid), "Page.enable", json!({}));
-        let _ = s.call(Some(&sid), "Runtime.enable", json!({}));
-        // New-headless parks rendering for unfocused pages — a later
-        // captureScreenshot then waits on a frame that never comes and hits
-        // the CDP read timeout (observed on Chrome 150 after a plain
-        // scroll). Emulating focus keeps the compositor producing frames;
-        // Puppeteer ships the same call for exactly this reason.
-        let _ = s.call(Some(&sid), "Emulation.setFocusEmulationEnabled", json!({"enabled": true}));
-        let _ = s.call(Some(&sid), "Log.enable", json!({}));
-        // Everything the page spawns reports on its OWN session: a cross-origin
-        // iframe, a window it opens, a worker. Without this they are simply not
-        // attached, and their errors appear in Chrome's console — where the user
-        // sees them — while `browser_console` comes back empty, which is exactly
-        // the shape of "the browser shows an error the tool cannot find".
-        let _ = s.call(
-            Some(&sid),
-            "Target.setAutoAttach",
-            json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}),
-        );
+        let mut s = BrowserSession {
+            child,
+            ws,
+            session_id: session_id.clone(),
+            next_id,
+            console: Vec::new(),
+            surfaced: 0,
+            pending_sessions: Vec::new(),
+            last_click_blocker: None,
+            current_url: String::new(),
+            target_id: target_id.clone(),
+            tab_order: vec![target_id.clone()],
+            owner: String::new(),
+            parked: HashMap::new(),
+            foreign: Vec::new(),
+            own_sessions: HashMap::from([(target_id, session_id.clone())]),
+            session_parent: HashMap::new(),
+            _profile: _guard,
+        };
+        s.prepare_page_session(&session_id);
+        // Tabs already open are nobody's: the window's own first tab — closed
+        // when we started the browser, a blank page nobody asked for — or what
+        // an adopted browser's last run left. Counted as the first session's,
+        // they took its tab numbers, and a close by number shut the wrong tab.
+        let adopted_browser = s.child.is_none();
+        if let Ok(r) = s.call(None, "Target.getTargets", json!({})) {
+            for t in r["targetInfos"].as_array().into_iter().flatten() {
+                let id = t["targetId"].as_str().unwrap_or_default().to_string();
+                if t["type"].as_str() != Some("page") || id == s.target_id {
+                    continue;
+                }
+                if !adopted_browser && t["url"].as_str() == Some("about:blank") {
+                    let _ = s.call(None, "Target.closeTarget", json!({"targetId": id}));
+                } else {
+                    s.foreign.push(id);
+                }
+            }
+        }
         // And at the browser level, for targets the page did not create.
         let _ = s.call(
             None,
@@ -1110,6 +1180,50 @@ impl BrowserSession {
         );
         s.enable_pending_sessions();
         Ok(s)
+    }
+
+    /// Enable what this module consumes on a tab's page session — at launch,
+    /// and on a tab switched to for the first time.
+    fn prepare_page_session(&mut self, sid: &str) {
+        // Runtime.enable surfaces console API calls + uncaught exceptions;
+        // Log.enable surfaces browser log entries.
+        let _ = self.call(Some(sid), "Page.enable", json!({}));
+        let _ = self.call(Some(sid), "Runtime.enable", json!({}));
+        // New-headless parks rendering for unfocused pages — a later
+        // captureScreenshot then waits on a frame that never comes and hits
+        // the CDP read timeout (observed on Chrome 150 after a plain
+        // scroll). Emulating focus keeps the compositor producing frames;
+        // Puppeteer ships the same call for exactly this reason.
+        let _ = self.call(Some(sid), "Emulation.setFocusEmulationEnabled", json!({"enabled": true}));
+        let _ = self.call(Some(sid), "Log.enable", json!({}));
+        // Everything the page spawns reports on its OWN session: a cross-origin
+        // iframe, a window it opens, a worker. Without this they are simply not
+        // attached, and their errors appear in Chrome's console — where the user
+        // sees them — while `browser_console` comes back empty, which is exactly
+        // the shape of "the browser shows an error the tool cannot find".
+        let _ = self.call(
+            Some(sid),
+            "Target.setAutoAttach",
+            json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}),
+        );
+    }
+
+    /// Whether an event comes from the tab being driven: its own session, or
+    /// one attached under it (an iframe, a worker, a window it opened). Another
+    /// tab's navigation used to move `current_url` and clear the console as if
+    /// it were this one's.
+    fn belongs_to_this_tab(&self, v: &Value) -> bool {
+        let Some(mut sid) = v.get("sessionId").and_then(|s| s.as_str()) else { return true };
+        for _ in 0..16 {
+            if sid == self.session_id {
+                return true;
+            }
+            match self.session_parent.get(sid) {
+                Some(Some(parent)) => sid = parent,
+                _ => return false,
+            }
+        }
+        false
     }
 
     /// Send a CDP method to the page session and pump events until its reply.
@@ -1165,9 +1279,12 @@ impl BrowserSession {
         match method {
             "Page.frameNavigated" => {
                 // Main frame only (no parentId): clicks and redirects move the
-                // page without a navigate() call.
+                // page without a navigate() call. And this tab's main frame:
+                // a cross-origin iframe's document is the main frame of ITS
+                // session, and so is another tab's.
                 let frame = &p["frame"];
-                if frame.get("parentId").and_then(|v| v.as_str()).is_none() {
+                let ours = v.get("sessionId").and_then(|s| s.as_str()) == Some(self.session_id.as_str());
+                if ours && frame.get("parentId").and_then(|v| v.as_str()).is_none() {
                     if let Some(u) = frame["url"].as_str() {
                         self.current_url = u.to_string();
                     }
@@ -1186,8 +1303,17 @@ impl BrowserSession {
             "Target.attachedToTarget" => {
                 if let Some(sid) = p["sessionId"].as_str() {
                     self.pending_sessions.push(sid.to_string());
+                    let parent = v.get("sessionId").and_then(|s| s.as_str()).map(str::to_string);
+                    self.session_parent.insert(sid.to_string(), parent);
                 }
             }
+            "Target.detachedFromTarget" => {
+                if let Some(sid) = p["sessionId"].as_str() {
+                    self.session_parent.remove(sid);
+                    self.own_sessions.retain(|_, own| own != sid);
+                }
+            }
+            _ if !self.belongs_to_this_tab(v) && method != "Page.javascriptDialogOpening" => {}
             "Runtime.consoleAPICalled" => {
                 let level = p["type"].as_str().unwrap_or("log");
                 let args: Vec<String> = p["args"]
@@ -1219,13 +1345,19 @@ impl BrowserSession {
                 let accept = dtype == "alert";
                 let id = self.next_id;
                 self.next_id += 1;
+                // Answered on the session it opened in — a dialog in another
+                // tab freezes that tab, and is answered there.
+                let on = v.get("sessionId").and_then(|s| s.as_str()).unwrap_or(&self.session_id).to_string();
                 let cmd = json!({
                     "id": id,
-                    "sessionId": self.session_id,
+                    "sessionId": on,
                     "method": "Page.handleJavaScriptDialog",
                     "params": { "accept": accept },
                 });
                 let _ = self.ws.send(Message::Text(cmd.to_string().into()));
+                if !self.belongs_to_this_tab(v) {
+                    return;
+                }
                 self.push_console(format!(
                     "[dialog] {dtype}: {text} ({})",
                     if accept { "auto-accepted" } else { "auto-dismissed" }
@@ -1391,6 +1523,405 @@ impl BrowserSession {
             title,
             rich
         ))
+    }
+
+    /// The browser's tabs, in the order this session first saw them: (target,
+    /// title, url). Pages only — not workers, iframes or extensions.
+    fn page_tabs(&mut self) -> Result<Vec<(String, String, String)>, String> {
+        let r = self.call(None, "Target.getTargets", json!({}))?;
+        let pages: Vec<(String, String, String)> = r["targetInfos"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|t| t["type"].as_str() == Some("page"))
+                    .map(|t| {
+                        let s = |k: &str| t[k].as_str().unwrap_or("").to_string();
+                        (s("targetId"), s("title"), s("url"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let open = |id: &String| pages.iter().any(|(p, _, _)| p == id);
+        self.tab_order.retain(open);
+        self.foreign.retain(open);
+        for (tabs, _) in self.parked.values_mut() {
+            tabs.retain(open);
+        }
+        // A tab nobody owns yet — one a page or a click opened, one opened by
+        // hand in the window — belongs to the session driving now.
+        for (id, _, _) in &pages {
+            let owned = self.tab_order.contains(id)
+                || self.foreign.contains(id)
+                || self.parked.values().any(|(t, _)| t.contains(id));
+            if !owned {
+                self.tab_order.push(id.clone());
+            }
+        }
+        let mut ordered = Vec::with_capacity(pages.len());
+        for id in &self.tab_order {
+            if let Some(t) = pages.iter().find(|(p, _, _)| p == id) {
+                ordered.push(t.clone());
+            }
+        }
+        Ok(ordered)
+    }
+
+    /// Drive another tab from now on: attach to it (once), bring it to the
+    /// front, and start its console afresh.
+    fn switch_to_tab(&mut self, target: &str, url: &str) -> Result<(), String> {
+        let sid = match self.own_sessions.get(target) {
+            Some(sid) => sid.clone(),
+            None => {
+                let attached = self.call(None, "Target.attachToTarget", json!({"targetId": target, "flatten": true}))?;
+                let sid = attached["sessionId"].as_str().unwrap_or_default().to_string();
+                if sid.is_empty() {
+                    return Err(trf!("无法附加到该标签页", "could not attach to that tab"));
+                }
+                self.prepare_page_session(&sid);
+                self.own_sessions.insert(target.to_string(), sid.clone());
+                sid
+            }
+        };
+        let _ = self.call(None, "Target.activateTarget", json!({"targetId": target}));
+        self.session_id = sid;
+        self.target_id = target.to_string();
+        self.current_url = url.to_string();
+        self.console.clear();
+        self.surfaced = 0;
+        self.last_click_blocker = None;
+        self.enable_pending_sessions();
+        Ok(())
+    }
+
+    /// Drive `owner`'s tabs from now on: the tab it was on, or its last one,
+    /// or — the first time a session browses — a blank tab of its own.
+    fn activate_owner(&mut self, owner: &str) -> Result<(), String> {
+        if owner == self.owner {
+            return Ok(());
+        }
+        // The tab the browser opened with belongs to nobody until someone
+        // browses: it becomes the first session's, rather than a blank left
+        // behind.
+        if self.owner.is_empty() && !self.parked.contains_key(owner) {
+            self.owner = owner.to_string();
+            return Ok(());
+        }
+        let mine = std::mem::take(&mut self.tab_order);
+        let was = std::mem::replace(&mut self.owner, owner.to_string());
+        self.parked.insert(was, (mine, self.target_id.clone()));
+        let (tabs, on) = self.parked.remove(owner).unwrap_or_default();
+        self.tab_order = tabs;
+        let open = self.page_tabs()?;
+        match open.iter().find(|(id, _, _)| *id == on).or(open.last()).cloned() {
+            Some((id, _, url)) => self.switch_to_tab(&id, &url),
+            None => {
+                let created = self.call(None, "Target.createTarget", json!({"url": "about:blank"}))?;
+                let id = created["targetId"].as_str().unwrap_or_default().to_string();
+                self.tab_order.push(id.clone());
+                self.switch_to_tab(&id, "about:blank")
+            }
+        }
+    }
+
+    /// Close `owner`'s tabs. False when no other session has a tab open — then
+    /// the browser itself is what closes (the caller's job).
+    fn close_owner(&mut self, owner: &str) -> Result<bool, String> {
+        let _ = self.page_tabs();
+        let others = self
+            .parked
+            .iter()
+            .filter(|(o, _)| o.as_str() != owner)
+            .any(|(_, (t, _))| !t.is_empty())
+            || (owner != self.owner && !self.tab_order.is_empty());
+        if !others {
+            return Ok(false);
+        }
+        let tabs = if owner == self.owner {
+            std::mem::take(&mut self.tab_order)
+        } else {
+            self.parked.remove(owner).map(|(t, _)| t).unwrap_or_default()
+        };
+        for id in &tabs {
+            let _ = self.call(None, "Target.closeTarget", json!({"targetId": id}));
+            if let Some(sid) = self.own_sessions.remove(id) {
+                self.session_parent.remove(&sid);
+            }
+        }
+        // The driven tab is gone: drive one that is still open, another
+        // session's, until a command comes from this session again.
+        if owner == self.owner {
+            let next = self.parked.iter().find(|(_, (t, _))| !t.is_empty()).map(|(o, _)| o.clone());
+            if let Some(next) = next {
+                let (tabs, on) = self.parked.remove(&next).unwrap_or_default();
+                self.owner = next;
+                self.tab_order = tabs;
+                let open = self.page_tabs()?;
+                if let Some((id, _, url)) = open.iter().find(|(id, _, _)| *id == on).or(open.last()).cloned() {
+                    self.switch_to_tab(&id, &url)?;
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// The tab list as the model reads it: numbered, the driven one marked.
+    fn tab_list_text(&self, tabs: &[(String, String, String)]) -> String {
+        let mut out = String::new();
+        for (i, (id, title, url)) in tabs.iter().enumerate() {
+            let mark = if *id == self.target_id { trf!(" (当前)", " (current)") } else { String::new() };
+            let title = if title.trim().is_empty() { "-".to_string() } else { title.trim().chars().take(80).collect() };
+            out.push_str(&format!("{}. {title}{mark}\n   {url}\n", i + 1));
+        }
+        out
+    }
+
+    /// `browser_tabs`: list (default), new [url], select <n>, close [n].
+    fn tabs(&mut self, action: &str, index: Option<usize>, url: Option<&str>) -> Result<String, String> {
+        let tabs = self.page_tabs()?;
+        let pick = |n: Option<usize>| -> Result<(String, String, String), String> {
+            let n = n.ok_or_else(|| trf!("需要 index(标签页编号,见 browser_tabs 列表)", "need index (the tab's number from the browser_tabs list)"))?;
+            tabs.get(n.wrapping_sub(1)).cloned().ok_or_else(|| {
+                trf!("没有第 {n} 个标签页(共 {} 个)", "there is no tab {n} ({} open)", tabs.len())
+            })
+        };
+        match action {
+            "new" | "open" => {
+                let created = self.call(None, "Target.createTarget", json!({"url": "about:blank"}))?;
+                let id = created["targetId"].as_str().unwrap_or_default().to_string();
+                self.page_tabs()?;
+                self.switch_to_tab(&id, "about:blank")?;
+                let n = self.tab_order.iter().position(|t| *t == id).map_or(0, |i| i + 1);
+                match url.map(str::trim).filter(|u| !u.is_empty()) {
+                    Some(u) => {
+                        let loaded = self.navigate(u)?;
+                        Ok(trf!("已在新标签页 {n} 打开。\n\n{}", "Opened in new tab {n}.\n\n{}", loaded))
+                    }
+                    None => Ok(trf!("已新建标签页 {n} 并切换过去(空白页)。", "Opened new tab {n} (blank) and switched to it.")),
+                }
+            }
+            "select" | "switch" | "activate" => {
+                let (id, _, url) = pick(index)?;
+                self.switch_to_tab(&id, &url)?;
+                let n = index.unwrap_or(0);
+                let (final_url, title, rich) = self.settle_and_digest()?;
+                Ok(trf!(
+                    "已切换到标签页 {n}:{}\n标题:{}\n\n{}",
+                    "Switched to tab {n}: {}\nTitle: {}\n\n{}",
+                    final_url,
+                    title,
+                    rich
+                ))
+            }
+            "close" => {
+                let (id, _, _) = match index {
+                    Some(_) => pick(index)?,
+                    None => tabs.iter().find(|(t, _, _)| *t == self.target_id).cloned().ok_or_else(|| trf!("没有可关闭的标签页", "no tab to close"))?,
+                };
+                self.call(None, "Target.closeTarget", json!({"targetId": id}))?;
+                if let Some(sid) = self.own_sessions.remove(&id) {
+                    self.session_parent.remove(&sid);
+                }
+                // closeTarget answers before the tab is gone from the list.
+                for _ in 0..20 {
+                    if !self.page_tabs()?.iter().any(|(t, _, _)| *t == id) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                // Closing the tab being driven moves to the one before it in
+                // the list — or to a fresh blank tab, so there is always a page.
+                let left = self.page_tabs()?;
+                if id == self.target_id {
+                    let was = tabs.iter().position(|(t, _, _)| *t == id).unwrap_or(0);
+                    match left.get(was.saturating_sub(1)).or(left.first()).cloned() {
+                        Some((next, _, url)) => self.switch_to_tab(&next, &url)?,
+                        None => {
+                            let created = self.call(None, "Target.createTarget", json!({"url": "about:blank"}))?;
+                            let next = created["targetId"].as_str().unwrap_or_default().to_string();
+                            self.switch_to_tab(&next, "about:blank")?;
+                        }
+                    }
+                }
+                let left = self.page_tabs()?;
+                Ok(trf!("已关闭。现在的标签页:\n{}", "Closed. Tabs now:\n{}", self.tab_list_text(&left)))
+            }
+            _ => Ok(trf!(
+                "{} 个标签页:\n{}\n切换:browser_tabs {{\"action\":\"select\",\"index\":n}};新开:{{\"action\":\"new\",\"url\":\"…\"}};关闭:{{\"action\":\"close\",\"index\":n}}。",
+                "{} tab(s):\n{}\nSwitch: browser_tabs {{\"action\":\"select\",\"index\":n}}; open: {{\"action\":\"new\",\"url\":\"…\"}}; close: {{\"action\":\"close\",\"index\":n}}.",
+                tabs.len(),
+                self.tab_list_text(&tabs)
+            )),
+        }
+    }
+
+    /// After a click: a tab it opened (a `target=_blank` link, `window.open`)
+    /// is where the user would now be looking — Chrome brings it to the front
+    /// — so the agent follows it, and says so. Before, the agent went on
+    /// reading the tab it clicked in and never saw the page it had opened.
+    fn follow_new_tab(&mut self, before: &[String], result: String) -> Result<String, String> {
+        // A tab opened by a click can take a moment to appear.
+        let mut fresh = None;
+        for _ in 0..6 {
+            let tabs = self.page_tabs()?;
+            if let Some(t) = tabs.into_iter().rev().find(|(id, _, _)| !before.contains(id)) {
+                fresh = Some(t);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let Some((id, _, url)) = fresh else { return Ok(result) };
+        let back = self.tab_order.iter().position(|t| *t == self.target_id).map_or(1, |i| i + 1);
+        self.switch_to_tab(&id, &url)?;
+        let n = self.tab_order.iter().position(|t| *t == id).map_or(0, |i| i + 1);
+        let (final_url, title, rich) = self.settle_and_digest()?;
+        Ok(trf!(
+            "{}\n\n[新标签页] 这次点击打开了标签页 {n},已切换过去(回原页:browser_tabs {{\"action\":\"select\",\"index\":{back}}}):{}\n标题:{}\n\n{}",
+            "{}\n\n[new tab] The click opened tab {n}; switched to it (back: browser_tabs {{\"action\":\"select\",\"index\":{back}}}): {}\nTitle: {}\n\n{}",
+            result,
+            final_url,
+            title,
+            rich
+        ))
+    }
+
+    /// `browser_eval`: the agent's JavaScript, run the way DevTools' console
+    /// runs it — top-level `await`, `const` declared again on the next call,
+    /// the last expression's value as the result — and a body that `return`s
+    /// runs as an async function. A promise is waited for, but not past
+    /// `EVAL_AWAIT_MS`; a script that never stops is cut at `EVAL_RUN_MS`.
+    /// Before, a statement body ran in a plain function (`await` was a syntax
+    /// error, `const x = …; x` came back undefined), and a promise that never
+    /// settled held the call for 30 s, read as a dead browser and relaunched
+    /// it — the page gone, the code run again on a blank one.
+    fn eval_user(&mut self, code: &str) -> Result<String, String> {
+        let r = self.evaluate_in_page(code, true);
+        let r = match r {
+            Ok(v) if exception_text(&v).is_some_and(|t| t.contains("Illegal return statement")) => {
+                self.evaluate_in_page(&format!("(async () => {{\n{code}\n}})()"), false)
+            }
+            other => other,
+        };
+        let out = self.eval_result(r);
+        let sid = self.session_id.clone();
+        let _ = self.call(Some(&sid), "Runtime.releaseObjectGroup", json!({"objectGroup": EVAL_GROUP}));
+        out.map(cap_eval)
+    }
+
+    fn evaluate_in_page(&mut self, expression: &str, repl: bool) -> Result<Value, String> {
+        let sid = self.session_id.clone();
+        // In REPL mode the reply waits for the script's top-level `await`s —
+        // `awaitPromise` or not — so the wait is bounded here, not by the
+        // 30 s that would read as a dead browser.
+        let reply = self.call_within(
+            &sid,
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "replMode": repl,
+                "awaitPromise": false,
+                "returnByValue": false,
+                "userGesture": true,
+                "objectGroup": EVAL_GROUP,
+                "timeout": EVAL_RUN_MS,
+            }),
+            Duration::from_millis(EVAL_AWAIT_MS),
+        )?;
+        reply.ok_or_else(|| {
+            trf!(
+                "代码在 {} 秒内没有结束,已不再等待(它可能仍在页面里运行)。",
+                "The code did not finish within {} s; stopped waiting (it may still be running in the page).",
+                EVAL_AWAIT_MS / 1000
+            )
+        })
+    }
+
+    /// `call`, waiting at most `limit` for the reply: `None` when it has not
+    /// come by then. Its reply arriving later is dropped like any reply
+    /// nobody is waiting for.
+    fn call_within(&mut self, session: &str, method: &str, params: Value, limit: Duration) -> Result<Option<Value>, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let msg = json!({"id": id, "method": method, "params": params, "sessionId": session});
+        self.ws
+            .send(Message::Text(msg.to_string().into()))
+            .map_err(|e| format!("CDP send failed: {e}"))?;
+        let deadline = Instant::now() + limit;
+        set_read_timeout(&self.ws, Duration::from_millis(200));
+        let out = loop {
+            if Instant::now() > deadline {
+                break Ok(None);
+            }
+            let frame = match self.ws.read() {
+                Ok(Message::Text(t)) => t.to_string(),
+                Ok(Message::Close(_)) => break Err(trf!("CDP 连接已关闭", "the CDP connection closed")),
+                Ok(_) => continue,
+                Err(tungstenite::Error::Io(e))
+                    if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
+                {
+                    continue
+                }
+                Err(e) => break Err(format!("CDP read failed: {e}")),
+            };
+            let Ok(v) = serde_json::from_str::<Value>(&frame) else { continue };
+            if v.get("id").and_then(|x| x.as_i64()) == Some(id) {
+                if let Some(err) = v.get("error") {
+                    break Err(format!("CDP error: {}", err["message"].as_str().unwrap_or("unknown")));
+                }
+                break Ok(Some(v.get("result").cloned().unwrap_or(Value::Null)));
+            }
+            self.record_event(&v);
+        };
+        set_read_timeout(&self.ws, Duration::from_secs(30));
+        out
+    }
+
+    fn eval_result(&mut self, r: Result<Value, String>) -> Result<String, String> {
+        let r = r?;
+        if let Some(text) = exception_text(&r) {
+            return Err(format!("JS 报错 (JS error): {text}"));
+        }
+        let mut result = r["result"].clone();
+        if result["subtype"].as_str() == Some("promise") {
+            let sid = self.session_id.clone();
+            let settled = self.call(
+                Some(&sid),
+                "Runtime.callFunctionOn",
+                json!({
+                    "objectId": result["objectId"],
+                    "functionDeclaration": EVAL_SETTLE_JS,
+                    "arguments": [{"value": EVAL_AWAIT_MS}],
+                    "awaitPromise": true,
+                    "returnByValue": false,
+                    "objectGroup": EVAL_GROUP,
+                }),
+            )?;
+            if let Some(text) = exception_text(&settled) {
+                return Err(format!("JS 报错 (JS error): {text}"));
+            }
+            result = settled["result"].clone();
+            if result["value"].as_str() == Some(EVAL_TIMEOUT_MARK) {
+                return Err(trf!(
+                    "Promise 在 {} 秒内没有结束,已不再等待(页面里的操作可能仍在进行)。",
+                    "The promise did not settle within {} s; stopped waiting (whatever it started may still be running in the page).",
+                    EVAL_AWAIT_MS / 1000
+                ));
+            }
+        }
+        // An object or a function is shown by the page itself (EVAL_SHOW_JS);
+        // a primitive comes back as its value.
+        if let Some(id) = result["objectId"].as_str().map(str::to_string) {
+            let sid = self.session_id.clone();
+            if let Ok(shown) = self.call(
+                Some(&sid),
+                "Runtime.callFunctionOn",
+                json!({"objectId": id, "functionDeclaration": EVAL_SHOW_JS, "returnByValue": true}),
+            ) {
+                if exception_text(&shown).is_none() {
+                    return Ok(remote_object_to_string(&shown["result"]));
+                }
+            }
+        }
+        Ok(remote_object_to_string(&result))
     }
 
     /// Shared post-load tail: settle, re-arm the async watcher, read back
@@ -2506,6 +3037,102 @@ fn cdp_call(
 }
 
 /// Best-effort human string for a CDP RemoteObject (console args / eval result).
+/// `browser_eval`'s limits: how long a script may run, how long its promise is
+/// waited for (each well inside the 30 s a CDP reply gets), and how much of
+/// the result is returned — under the agent's own 12 000-character cap, with a
+/// note that says what was cut and how to get the rest.
+const EVAL_RUN_MS: u64 = 15_000;
+const EVAL_AWAIT_MS: u64 = 20_000;
+const EVAL_MAX: usize = 11_000;
+const EVAL_GROUP: &str = "chaty-eval";
+const EVAL_TIMEOUT_MARK: &str = "\u{0}chaty-eval-timeout\u{0}";
+/// Race the result promise against the await limit.
+const EVAL_SETTLE_JS: &str = r#"function(ms){ var p = this; return Promise.race([p, new Promise(function(r){ setTimeout(function(){ r('\u0000chaty-eval-timeout\u0000'); }, ms); })]); }"#;
+/// An object as the agent should read it, called with `this` bound to it:
+/// elements as their tag, attributes and text (not `{}`), node lists and sets
+/// as lists, maps as objects, dates, errors and functions by name, cycles
+/// marked — bounded in depth, length and total size.
+const EVAL_SHOW_JS: &str = r#"function(){
+  var seen = new WeakSet(), budget = 4000;
+  function clip(x, n){ x = String(x); return x.length > n ? x.slice(0, n) + '…' : x; }
+  function el(n){
+    if (n.nodeType === 3) return '#text "' + clip(n.textContent.trim(), 80) + '"';
+    if (n.nodeType !== 1) return '#' + String(n.nodeName).toLowerCase().replace(/^#/, '');
+    var s = '<' + n.tagName.toLowerCase();
+    var keep = ['id','class','name','type','href','src','role','aria-label','placeholder','for','alt','title'];
+    for (var i = 0; i < keep.length; i++) { var v = n.getAttribute(keep[i]); if (v) s += ' ' + keep[i] + '="' + clip(v, 80) + '"'; }
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName) && n.value) s += ' value="' + clip(n.value, 80) + '"';
+    s += '>';
+    var t = (n.innerText || n.textContent || '').replace(/\s+/g, ' ').trim();
+    return t ? s + clip(t, 120) : s;
+  }
+  function walk(v, depth){
+    if (--budget < 0) return '…';
+    if (v === undefined) return '[undefined]';
+    if (v === null || typeof v === 'boolean' || typeof v === 'string') return v;
+    if (typeof v === 'number') return isFinite(v) ? v : String(v);
+    if (typeof v === 'bigint') return v + 'n';
+    if (typeof v === 'symbol') return v.toString();
+    if (typeof v === 'function') return '[Function' + (v.name ? ' ' + v.name : '') + ']';
+    if (typeof Node !== 'undefined' && v instanceof Node) return el(v);
+    if (seen.has(v)) return '[Circular]';
+    seen.add(v);
+    if (v instanceof Date) return isNaN(v) ? 'Invalid Date' : v.toISOString();
+    if (v instanceof RegExp) return String(v);
+    if (v instanceof Error) return v.name + ': ' + v.message;
+    if (typeof Window !== 'undefined' && v instanceof Window) return '[Window ' + v.location.href + ']';
+    if (typeof Promise !== 'undefined' && v instanceof Promise) return '[Promise]';
+    if (depth > 6) return Array.isArray(v) ? '[Array(' + v.length + ')]' : '[Object]';
+    var list = null;
+    if (Array.isArray(v) || (typeof NodeList !== 'undefined' && v instanceof NodeList) || (typeof HTMLCollection !== 'undefined' && v instanceof HTMLCollection) || ArrayBuffer.isView(v)) list = Array.prototype.slice.call(v);
+    else if (v instanceof Set) list = Array.from(v);
+    if (list) {
+      var out = [];
+      for (var i = 0; i < list.length && i < 200; i++) out.push(walk(list[i], depth + 1));
+      if (list.length > 200) out.push('… ' + (list.length - 200) + ' more');
+      return out;
+    }
+    var o = {}, k = 0;
+    if (v instanceof Map) {
+      v.forEach(function(val, key){ if (k++ < 200) o[typeof key === 'string' ? key : String(key)] = walk(val, depth + 1); });
+      if (v.size > 200) o['…'] = (v.size - 200) + ' more';
+      return o;
+    }
+    var keys = Object.keys(v);
+    for (; k < keys.length && k < 200; k++) { try { o[keys[k]] = walk(v[keys[k]], depth + 1); } catch (e) { o[keys[k]] = '[unreadable]'; } }
+    if (keys.length > 200) o['…'] = (keys.length - 200) + ' more keys';
+    if (keys.length === 0 && v.constructor && v.constructor !== Object && v.constructor.name) return '[' + v.constructor.name + ']';
+    return o;
+  }
+  var x = walk(this, 0);
+  return typeof x === 'string' ? x : JSON.stringify(x, null, 2);
+}"#;
+
+/// The text of a CDP reply's exception, if it carries one.
+fn exception_text(r: &Value) -> Option<String> {
+    let exc = r.get("exceptionDetails")?;
+    Some(
+        exc["exception"]["description"]
+            .as_str()
+            .or_else(|| exc["text"].as_str())
+            .unwrap_or("evaluation error")
+            .to_string(),
+    )
+}
+
+/// `browser_eval`'s result, cut to `EVAL_MAX` with a note saying so.
+fn cap_eval(text: String) -> String {
+    let n = text.chars().count();
+    if n <= EVAL_MAX {
+        return text;
+    }
+    let head: String = text.chars().take(EVAL_MAX).collect();
+    head + &trf!(
+        "\n…(结果共 {n} 字符,只显示前 {EVAL_MAX};要其余部分就把表达式缩小到需要的那一块)",
+        "\n…(the result is {n} characters; the first {EVAL_MAX} are shown — narrow the expression to the part you need)"
+    )
+}
+
 fn remote_object_to_string(o: &Value) -> String {
     if let Some(v) = o.get("value") {
         return match v {
@@ -2571,22 +3198,37 @@ pub fn scroll_page(to: Option<String>, by: Option<f64>) -> Result<String, String
     dispatch(|reply| BrowserCmd::Scroll { to, by, reply })
 }
 
+/// `browser_eval` (see `eval_user`): console semantics, a body that
+/// `return`s run as an async function, the result shown readably and bounded.
 pub fn eval(expr: &str) -> Result<String, String> {
-    // Wrap ordinary statement bodies (with `return`, `const`/`let`/`var` + `;`)
-    // in an IIFE so the model can write multi-line JS, not just one expression.
-    // A body already starting with `(` is assumed self-contained.
-    let trimmed = expr.trim();
-    let looks_like_statements = !trimmed.starts_with('(')
-        && (trimmed.contains("return ")
-            || trimmed.contains("return;")
-            || (trimmed.contains(';')
-                && (trimmed.contains("const ") || trimmed.contains("let ") || trimmed.contains("var "))));
-    let expr = if looks_like_statements {
-        format!("(function(){{{trimmed}}})()")
-    } else {
-        expr.to_string()
-    };
+    let expr = expr.to_string();
     dispatch(|reply| BrowserCmd::Eval { expr, reply })
+}
+
+/// `browser_tabs`: list (default), new [url], select <index>, close [index] —
+/// over the current Code session's tabs only.
+pub fn tabs(action: &str, index: Option<usize>, url: Option<String>) -> Result<String, String> {
+    let action = action.trim().to_ascii_lowercase();
+    // A tab opened on an address takes it the way browser_navigate does.
+    let url = match url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+        Some(u) => {
+            let ws = crate::agent::agent_get_workspace().map(std::path::PathBuf::from);
+            Some(normalize_url(u, ws.as_deref())?)
+        }
+        None => None,
+    };
+    dispatch(|reply| BrowserCmd::Tabs { action, index, url, reply })
+}
+
+/// Close a Code session's tabs — `browser_close`, and a session deleted. The
+/// browser closes with them when no other session has a tab open. Never
+/// starts a browser that is not running.
+pub fn close_for(owner: &str) {
+    let Some(tx) = BROWSER.lock().unwrap().as_ref().map(|(_, tx)| tx.clone()) else { return };
+    let (done, wait) = std::sync::mpsc::channel();
+    if tx.send(BrowserCmd::CloseOwner { owner: owner.to_string(), done }).is_ok() {
+        let _ = wait.recv_timeout(Duration::from_secs(5));
+    }
 }
 
 pub fn click(selector: Option<String>, text: Option<String>) -> Result<String, String> {
@@ -3830,5 +4472,144 @@ mod tests {
         assert!(png.len() > 1000 && &png[1..4] == b"PNG");
         assert!(console.contains("cap-err-7"), "console should be captured: {console}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// browser_eval runs as the console does and says what it got back.
+    ///   CHATY_BROWSER_HEADLESS=1 cargo test --lib eval_runs_like -- --ignored --test-threads=1
+    #[test]
+    #[ignore]
+    fn eval_runs_like_the_console_and_shows_what_it_returns() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        crate::agent::agent_set_session("eval-test".into());
+        navigate("data:text/html,<title>ev</title><body><ul><li class='a'>one</li><li>two</li></ul><input id='q' value='hi'></body>")
+            .expect("navigate");
+        // Top-level await; the last expression's value is the result.
+        assert_eq!(eval("const n = await Promise.resolve(41); n + 1").unwrap(), "42");
+        // The same const again on the next call, as the console allows.
+        assert_eq!(eval("const n = 7; n * 6").unwrap(), "42");
+        // A body that returns runs as an async function.
+        assert_eq!(eval("const xs = [1, 2, 3];\nreturn xs.reduce((a, b) => a + b, 0) * 7;").unwrap(), "42");
+        assert_eq!(eval("await new Promise(r => setTimeout(r, 50)); return 'waited';").unwrap(), "waited");
+        // Elements and node lists read as what they are, not {}.
+        let li = eval("document.querySelector('li.a')").unwrap();
+        assert!(li.contains("<li class=\"a\">one"), "{li}");
+        let all = eval("document.querySelectorAll('li')").unwrap();
+        assert!(all.starts_with('[') && all.contains("one") && all.contains("two"), "{all}");
+        let input = eval("document.getElementById('q')").unwrap();
+        assert!(input.contains("value=\"hi\""), "{input}");
+        // Maps, cycles, primitives.
+        let m = eval("new Map([['k', 1]])").unwrap();
+        assert!(m.contains("\"k\": 1"), "{m}");
+        let c = eval("const o = {name: 'x'}; o.self = o; o").unwrap();
+        assert!(c.contains("[Circular]") && c.contains("\"name\": \"x\""), "{c}");
+        assert_eq!(eval("undefined").unwrap(), "undefined");
+        assert_eq!(eval("'plain'").unwrap(), "plain");
+        assert_eq!(eval("document.title").unwrap(), "ev");
+        // An error says what it was.
+        let e = eval("nope.nothing").unwrap_err();
+        assert!(e.contains("ReferenceError"), "{e}");
+        // A huge result is cut, and says how big it was.
+        let big = eval("'x'.repeat(50000)").unwrap();
+        assert!(big.chars().count() < 12_000 && big.contains("50000"), "{} chars", big.chars().count());
+        shutdown();
+        crate::agent::agent_set_session(String::new());
+    }
+
+    /// A promise that never settles, and a loop that never ends, are given up
+    /// on in time — and the page they ran in is still the page. Before, the
+    /// 30 s CDP wait read as a dead browser: it was relaunched, the code run
+    /// again on a blank page.
+    #[test]
+    #[ignore]
+    fn eval_gives_up_on_what_never_ends_and_keeps_the_page() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        navigate("data:text/html,<title>keep</title><body>KEEP-ME</body>").expect("navigate");
+        eval("window.mark = 'still-here'").unwrap();
+        let t0 = Instant::now();
+        let e = eval("await new Promise(() => {})").unwrap_err();
+        assert!(e.contains("20"), "{e}");
+        assert!(t0.elapsed() < Duration::from_secs(28), "{:?}", t0.elapsed());
+        assert_eq!(eval("window.mark").unwrap(), "still-here");
+        let t1 = Instant::now();
+        let looped = eval("while (true) {}");
+        assert!(looped.is_err(), "{looped:?}");
+        assert!(t1.elapsed() < Duration::from_secs(25), "{:?}", t1.elapsed());
+        assert_eq!(eval("window.mark").unwrap(), "still-here");
+        shutdown();
+    }
+
+    /// A click that opens a tab is followed; the tabs are listed, switched and
+    /// closed; and each Code session browses its own tabs — one never lands
+    /// on another's page, lists its tabs, or closes them.
+    #[test]
+    #[ignore]
+    fn tabs_follow_what_a_click_opens_and_each_session_keeps_its_own() {
+        if chrome_path().is_none() {
+            eprintln!("SKIP: no Chrome found");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("chaty-tabs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let page = |name: &str, body: &str| {
+            let f = dir.join(name);
+            std::fs::write(&f, body).unwrap();
+            format!("file://{}", f.display())
+        };
+        let a = page("a.html", "<title>Page A</title><body><a href='b.html' target='_blank'>OPEN-B</a> A-BODY</body>");
+        page("b.html", "<title>Page B</title><body>B-BODY</body>");
+        let c = page("c.html", "<title>Page C</title><body>C-BODY</body>");
+
+        crate::agent::agent_set_session("sess-A".into());
+        navigate(&a).expect("navigate a");
+        let clicked = click(None, Some("OPEN-B".into())).expect("click");
+        assert!(clicked.contains("B-BODY"), "the click should land on the tab it opened: {clicked}");
+        assert_eq!(eval("document.title").unwrap(), "Page B");
+        let list = tabs("list", None, None).unwrap();
+        assert!(list.contains("Page A") && list.contains("Page B"), "{list}");
+        // Exactly these two: no tab of nobody's (the window's first) among them.
+        assert!(list.contains("2. ") && !list.contains("3. "), "{list}");
+        let back = tabs("select", Some(1), None).unwrap();
+        assert!(back.contains("A-BODY"), "{back}");
+        assert_eq!(eval("document.title").unwrap(), "Page A");
+
+        // Another session starts on a blank tab of its own.
+        crate::agent::agent_set_session("sess-B".into());
+        assert_eq!(eval("location.href").unwrap(), "about:blank");
+        navigate(&c).expect("navigate c");
+        let list_b = tabs("list", None, None).unwrap();
+        assert!(list_b.contains("Page C") && !list_b.contains("Page A") && !list_b.contains("Page B"), "{list_b}");
+
+        // Back in A: where it was, its tabs untouched by B.
+        crate::agent::agent_set_session("sess-A".into());
+        assert_eq!(eval("document.title").unwrap(), "Page A");
+        let list_a = tabs("list", None, None).unwrap();
+        assert!(!list_a.contains("Page C"), "{list_a}");
+
+        // B closing its tabs leaves A browsing.
+        close_for("sess-B");
+        assert_eq!(eval("document.title").unwrap(), "Page A");
+        // Closing A's second tab keeps A on its first.
+        let closed = tabs("close", Some(2), None).unwrap();
+        assert!(closed.contains("Page A") && !closed.contains("Page B"), "{closed}");
+        // A session opens a tab on an address.
+        let opened = tabs("new", None, Some(c.clone())).unwrap();
+        assert!(opened.contains("C-BODY"), "{opened}");
+        assert_eq!(eval("document.title").unwrap(), "Page C");
+
+        // The last session closing: the browser goes.
+        close_for("sess-A");
+        let t0 = Instant::now();
+        while BROWSER.lock().unwrap().is_some() && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(BROWSER.lock().unwrap().is_none(), "the browser should close with its last session's tabs");
+        crate::agent::agent_set_session(String::new());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
