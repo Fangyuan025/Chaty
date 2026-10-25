@@ -1372,7 +1372,8 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           call("write_file", { path: "src/tokens.ts", content: "export function tokenize(s: string): string[] {\n  return [...s];\n}\n" }),
         "<think>改 parser。</think>\n" +
           call("edit_file", { path: "src/parser.ts", old_string: "  const out = [];\n  for (const ch of s) out.push(ch);\n  return out;", new_string: "  return tokenize(s);" }),
-        "<think>验证。</think>\n改完了,跑一下测试确认没破坏原有行为。\n" + call("bash", { command: "npm test" }),
+        // The update in the call's note, as a model that thinks writes it.
+        "<think>验证。</think>\n" + call("bash", { note: "改完了,跑一下测试确认没破坏原有行为。", command: "npm test" }),
         "<think>都通过了。</think>\n完成:新增 `src/tokens.ts`,`parser.ts` 改为调用它,4 个测试全部通过。",
       ];
       if (wantsDemo && !isTitleReq) reply = DEMO[Math.min(demoStep, DEMO.length - 1)];

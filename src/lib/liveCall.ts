@@ -20,6 +20,8 @@ const LIVE_TOOLS = new Set<string>(["write_file", "edit_file", "multi_edit"]);
 export interface LiveView {
   name: LiveTool;
   path?: string;
+  /** The call's word to the user (its `note`), once written whole. */
+  note?: string;
   /** The file as it was before the call, once read ("" for a new file). */
   before?: string;
   content?: string;
@@ -144,7 +146,11 @@ function withoutPartialMarker(v: string, marker: string): string {
 export function xmlOpenTag(tag: "function" | "parameter"): string {
   // MiniCPM5's template writes an argument as `<param name="…">`.
   const name = tag === "parameter" ? "(?:parameter|param)" : tag;
-  return `<${name}(?:\\s*=\\s*|>|\\s+name\\s*=\\s*|\\s+)["']?([A-Za-z_][\\w.-]*)["']?\\s*>`;
+  // `</parameter=note>` opens one too: Qwen3.6 35B, asked for a note, wrote
+  // it so — a closing slash on an opener, never on a plain `</parameter>` —
+  // and the note was read as missing, three times running.
+  const slash = tag === "parameter" ? "(?:\\/(?=(?:parameter|param)\\s*=))?" : "";
+  return `<${slash}${name}(?:\\s*=\\s*|>|\\s+name\\s*=\\s*|\\s+)["']?([A-Za-z_][\\w.-]*)["']?\\s*>`;
 }
 
 /** A value wrapped in CDATA — MiniCPM5's template wraps any that holds `<`,
@@ -624,6 +630,8 @@ export function liveFileCall(raw: string): LiveView | null {
   const view: LiveView = { name: name as LiveTool };
   const path = pick(PATH_KEYS);
   if (path?.done && path.text) view.path = path.text;
+  const note = pick(["note"]);
+  if (note?.done && note.text?.trim()) view.note = note.text.trim();
   const editsArg = pick(EDITS_KEYS);
   if (editsArg) {
     // XML writes the array as the parameter's text; the others as a value.

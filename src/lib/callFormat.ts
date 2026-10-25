@@ -223,7 +223,7 @@ function gemmaValue(v: unknown): string {
  *  the examples inside corrections and hints. A JSON example in a turn that
  *  teaches another format is what pulled Gemma 4 back to JSON after its
  *  first native call. */
-export function callExample(name: string, json: string): string {
+export function callExample(name: string, json: string, f: CallFormat = format): string {
   let o: Record<string, unknown>;
   try {
     o = JSON.parse(json) as Record<string, unknown>;
@@ -231,7 +231,7 @@ export function callExample(name: string, json: string): string {
     return `${name} ${json}`;
   }
   const entries = Object.entries(o);
-  switch (format) {
+  switch (f) {
     case "xml":
       return `<function=${name}>${entries
         .map(([k, v]) => `<parameter=${k}>${typeof v === "string" ? v : JSON.stringify(v)}</parameter>`)

@@ -2117,6 +2117,7 @@ export function CodeMode({
         return new Promise<boolean | "plan">((resolve) => setApproval({ call, resolve }));
       },
       planMode: modeRef.current === "plan",
+      askFirstNote: true,
     }, {
       // DEV forensics: keep the last 200 raw rounds + injected corrections on
       // window.__agentTrace — `copy(window.__agentTrace)` in devtools dumps

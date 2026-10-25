@@ -55,6 +55,15 @@ config.json</parameter>
     expect(parseXmlToolCall("<function>read_file>\n<parameter=path>a.md</parameter></function>")?.name).toBe("read_file");
   });
 
+  it("reads an argument opened with a stray slash (Qwen3.6 35B, verbatim)", () => {
+    const call = parseXmlToolCall(
+      "<tool_call>\n<function=understand_repo>\n</parameter=note>\n先了解项目结构，定位计算总价的代码位置。</parameter>\n</function>\n",
+    );
+    expect(call?.args).toEqual({ note: "先了解项目结构，定位计算总价的代码位置。" });
+    // A plain closer, stray or not, is never an opener.
+    expect(parseXmlToolCall("<tool_call>\n<function=understand_repo>\n</parameter></function>\n")?.args).toEqual({});
+  });
+
   it("never reads a value as a name", () => {
     // `<parameter>` followed by a line of text is not a name opening.
     expect(parseXmlToolCall("<function=write_file>\n<parameter=path>a</parameter>\n<parameter>\ncontent</parameter></function>")?.args)

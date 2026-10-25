@@ -392,6 +392,9 @@ export interface AgentOptions {
   approve: (call: ToolCall) => Promise<boolean | "plan">;
   /** Plan mode: this turn researches and proposes; it changes nothing. */
   planMode?: boolean;
+  /** Send the turn's first call back once when it says nothing to the user
+   *  (see the first-call note guard). Code mode turns it on. */
+  askFirstNote?: boolean;
   /** The model tried to touch a path OUTSIDE the workspace: ask the user
    *  whether to grant access to `dir` for this session. Granting retries the
    *  tool call transparently. */
@@ -459,8 +462,29 @@ export function turnCall(raw: string): ToolCall | null {
   return callStart(region) === -1 ? parseToolCall(region) : null;
 }
 
-/** Calls in a row without a word before the agent is reminded to say one. */
-const SILENT_CALLS = 3;
+/** A call's `note` — what the model tells the user with it — taken off its
+ *  arguments. A model that thinks writes its updates inside the thought
+ *  whatever it is asked; the one thing it always writes outside is the call,
+ *  so that is where the update goes. Qwen3.6 35B, sent to find a bug in a
+ *  small project with thinking on: asked for words before its calls, one
+ *  update in 11 runs; with thinking off, 6 of 8 calls. */
+export function takeNote(call: ToolCall): string {
+  const a = call.args as Record<string, unknown> | undefined;
+  if (!a || !("note" in a)) return "";
+  const n = typeof a.note === "string" ? a.note.trim() : "";
+  delete a.note;
+  // No word in it — the "…" a sent-back call was shown, copied as it was.
+  return /\p{L}/u.test(n) ? n : "";
+}
+
+/** Calls the first-call note guard lets through: a question already speaks
+ *  to the user, and a write or edit would be generated again whole. */
+const NOTE_EXEMPT = new Set(["ask_user", "write_file", "edit_file", "multi_edit", "edit_lines", "update_plan"]);
+
+/** Quiet calls in a row before the next quiet one is sent back for a note,
+ *  and how many calls a turn sends back at most. */
+const SILENT_CALLS = 2;
+const NOTE_ASKS = 3;
 
 /** Prose outside every think block and before any tool call. */
 function proseAfter(raw: string): string {
@@ -647,6 +671,30 @@ export function grantsLine(dirs: string[], zh: boolean, history: ChatMessage[]):
   return "";
 }
 
+/** On every turn of the user's: talk while working. The system prompt asks
+ *  for it too, but a rule that far back lost to the habit of going from one
+ *  call to the next in silence — Qwen3.6 35B, sent to find a bug in a small
+ *  project, made 8 and 9 calls without a word before its summary. Said here,
+ *  at the end of what it reads, it is the last thing before the work. */
+export function narrateLine(zh: boolean): string {
+  return zh
+    ? "\n\n(边做边说:我看不到你的思考。每做完一小步或者有了发现,就在下一个调用里加上 note 参数,用一两句话告诉我刚才做了什么、发现了什么、接下来做什么;不要连续两三个调用都不带。)"
+    : "\n\n(Talk as you work: I can't see your thinking. After each small step, or when you find something out, give your next call a note argument — a sentence or two on what you did or found and what's next. Never two or three calls without one.)";
+}
+
+/** The `note` rule's example, written in the call format the turn teaches. */
+function noteExample(zh: boolean, f: CallFormat): string {
+  // On a read: the quiet stretch is the finding-out, and an example on a
+  // command taught a model that the note goes on commands.
+  return callExample(
+    "read_file",
+    zh
+      ? '{"note":"入口在 src/main.ts,配置是从 config 模块读进来的。接下来看它怎么解析。","path":"src/config.ts"}'
+      : '{"note":"The entry point is src/main.ts and it reads its settings from the config module. Looking at how that parses them next.","path":"src/config.ts"}',
+    f,
+  );
+}
+
 /** Plan mode's word to the model, on the user's turn. */
 export function planLine(zh: boolean): string {
   return zh
@@ -730,7 +778,7 @@ ${callRule(true, toolFormat)}
 - 改完代码先用 validate_change 验证(它会自己找相关测试、只跑最小集);它找不到测试时再用 bash 跑项目自己的命令。
 - **换路原则:同一手段连续两次没带来新进展,就必须换一种做法**——搜索搜不到就 web_fetch 直抓或开浏览器;页面文字摘要看不明白就截图亲眼看;命令报同样的错就换方案。把同一动作原样再试第三遍,几乎不会有不同结果。
 - 任务较复杂时,先用 update_plan 列出待办步骤,推进中及时更新状态;需要用户拍板时用 ask_user 提问。
-- 每做完一小步(读完要看的文件、改完一个文件、跑完一条命令),在下一个调用前先用一两句话告诉用户刚才做了什么、发现了什么、接下来做什么——写在思考之外,用户通常看不到你的思考。不要一连好几个调用都不说话,只有紧接着的同类动作(接着读同一批文件)可以不说。
+- 用户看不到你的思考,只看得到你的调用。每做完一小步、或者发现了关键信息(比如找到了问题所在),就在下一个调用里加一个 note 参数——任何工具都能带(read_file、edit_file、bash……)——用一两句话告诉用户刚才做了什么、发现了什么、接下来做什么,例如 ${noteExample(true, toolFormat)};不要连续两三个调用都不带 note。
 - 任务完成后,不要再调用工具,直接用简洁的中文总结你做了什么;简短回答不加标题。
 - **不用 emoji**:回答和写进文件的内容都不用(美观、吸引人不是理由),除非用户明确要你用 emoji。
 - 谨慎对待 write_file / edit_file / bash(它们会真实改动文件或执行命令)。
@@ -749,7 +797,7 @@ ${callRule(false, toolFormat)}
 - Commands that don't exit quickly (dev servers, npm run dev, long builds) MUST run via bash_bg; check they started with bg_output, and bg_kill them when done.
 - **Switch-strategy rule: when the same approach brings no new progress twice in a row, change approach** — search coming up empty → web_fetch a likely URL directly or open the browser; a page's text digest you can't make sense of → screenshot and look with your own eyes; a command failing the same way → different plan. Running the same move a third time unchanged almost never ends differently.
 - For non-trivial tasks, lay out a todo list with update_plan first and keep its statuses current as you go; use ask_user when a decision is the user's to make.
-- After each small step (the files you needed read, a file edited, a command run), write a sentence or two before your next call: what you just did or found, and what you'll do next — outside your thinking, which the user usually doesn't see. Never make several calls in a row without a word; only a call that carries straight on (the next file of the same batch) needs none.
+- The user can't see your thinking, only your calls. After each small step, or as soon as you learn something that matters (where the bug is, say), give your next call a note argument — any tool takes one (read_file, edit_file, bash…) — a sentence or two on what you did or found and what's next, e.g. ${noteExample(false, toolFormat)}. Never let two or three calls go by without one.
 - When done, DON'T call a tool — just give a concise summary of what you did; no headings on a short answer.
 - **No emoji** — in answers or in files you write ("attractive" is not a reason) — unless the user explicitly asks for emoji.
 - Be careful with write_file / edit_file / bash (they really change files / run commands).
@@ -3464,6 +3512,7 @@ export async function runAgentTurn(
         (opts.resume ? resumeNudge(opts.resume, lang === "zh") : "") +
         grantsLine(grants, lang === "zh", history) +
         (opts.planMode ? planLine(lang === "zh") : "") +
+        narrateLine(lang === "zh") +
         nowLine(lang === "zh") +
         turnSuffix,
       ...(userImages ? { images: userImages } : {}),
@@ -3490,9 +3539,13 @@ export async function runAgentTurn(
     }
   }
   const jitShown = new Set<HintKey>(); // per-turn: hints re-arm next turn
-  // Calls in a row with no word to the user, and how often that was said.
+  // Calls in a row with no word to the user.
   let silentCalls = 0;
-  let silentNudges = 0;
+  // Tool calls run this turn, and how many were sent back for a note.
+  let stepsThisTurn = 0;
+  let noteAsks = 0;
+  /** The call last sent back for a note — made again as it was, it runs. */
+  let lastAsked = "";
   /** What the last step sent, to check the next one is an append of it. */
   let sentShape: SentShape[] | null = null;
   // The step whose result has not been pushed yet — the next tool_result is its.
@@ -3751,7 +3804,7 @@ export async function runAgentTurn(
     if (!live) live = { id: uid(), view, thinking: shownThought(raw), said: "", claimed: false, settled: false };
     const cur = live;
     cur.view = view;
-    cur.said = proseAfter(raw);
+    cur.said = proseAfter(raw) || view.note || "";
     // The file as it stands, read once its path has arrived: a rewrite is
     // shown against it, and an edit among the lines around it.
     if (view.path && cur.readPath !== view.path) {
@@ -4461,6 +4514,56 @@ export async function runAgentTurn(
       // A valid tool call = real progress; clear the stuck-thinking streak.
       stuckThinkCount = 0;
       editMisses = 0;
+      // The model's word to the user, when it put one in the call (the
+      // `note` rule): off the arguments before anything reads them.
+      const note = takeNote(call);
+
+      // ── Note guard ── a call with no word to the user, made where one is
+      // owed — the turn's first, or after two quiet calls — is sent back once
+      // to be made again with a note. A turn goes on the way its first call
+      // went (Qwen3.6 35B: first call silent, then quiet for 56–100% of the
+      // calls after; first call noted, 11%), and a reminder riding in a tool
+      // result was read and ignored, run after run; a call sent back was
+      // made again with a note nearly every time, and the calls after it
+      // kept one. A cheap call only — a write would be regenerated whole —
+      // and three a turn at most.
+      // One send-back per call: Qwen3.6 35B, sent back for a note on an
+      // understand_repo, thought "I'll add the note" and wrote the call bare
+      // again, three times — the whole allowance gone on a call that takes no
+      // arguments. Made again as it was, it runs; the next quiet one is asked.
+      const askKey = `${call.name}\u0000${JSON.stringify(call.args ?? {})}`;
+      if (
+        opts.askFirstNote &&
+        noteAsks < NOTE_ASKS &&
+        askKey !== lastAsked &&
+        (stepsThisTurn === 0 || silentCalls >= SILENT_CALLS) &&
+        !proseAfter(raw).trim() &&
+        !note &&
+        !NOTE_EXEMPT.has(call.name)
+      ) {
+        const first = stepsThisTurn === 0;
+        noteAsks++;
+        lastAsked = askKey;
+        silentCalls = 0;
+        storeAssistantTurn(messages, raw, opts.reasoningField);
+        // The call itself, written back with the note in it: what a model
+        // sent back with only "add a note" failed at was putting one into a
+        // call — an understand_repo, with no arguments, came back bare.
+        const shape = renderCall(call.name, { note: "…", ...call.args });
+        pushUser(
+          toolResultMsg(
+            call.name,
+            lang === "zh"
+              ? first
+                ? `未执行:用户看不到你的思考,开始干活前先跟用户说一声。照下面的样子重新发出,把 note 的 … 换成你自己的一两句话(你打算先做什么、为什么):\n${shape}`
+                : `未执行:已经连续两次调用没跟用户说话了,思考里写的用户看不到。照下面的样子重新发出,把 note 的 … 换成你自己的一两句话(刚才发现了什么、接下来做什么):\n${shape}`
+              : first
+                ? `Not run: the user can't see your thinking, so say a word before you start. Make the call again like this, with the note's … replaced by a sentence or two of your own (what you're about to do first, and why):\n${shape}`
+                : `Not run: two calls in a row without a word to the user, and they can't see your thinking. Make the call again like this, with the note's … replaced by a sentence or two of your own (what you found and what's next):\n${shape}`,
+          ),
+        );
+        continue;
+      }
 
       // ── Required-args guard ──
       // A call missing a required argument is a format slip, not an action:
@@ -4554,8 +4657,9 @@ export async function runAgentTurn(
       if (callStart(turn) === -1) turn = `${turn}\n${renderCall(call.name, call.args)}`.trim();
       storeAssistantTurn(messages, turn, opts.reasoningField);
 
-      const said = proseAfter(raw).trim();
+      const said = proseAfter(raw).trim() || note;
       const stepObj: ToolStep = { id: uid(), call, status: "running", thinking, ...(said ? { said } : {}) };
+      stepsThisTurn++;
       resultStep = stepObj;
       // The live card of this very call becomes its step card.
       const shown = live as Live | null;
@@ -5430,19 +5534,8 @@ export async function runAgentTurn(
         );
         if (hint) resultText += "\n\n" + hint;
       }
-      // Quiet too long: the user watches a run of calls with no idea how it
-      // is going (owner: a word after every small step, never long silent).
-      // The rule says so up front; this says it where it happens, after the
-      // third quiet call — three times a turn at most.
+      // Quiet calls in a row — see the note guard.
       silentCalls = stepObj.said ? 0 : silentCalls + 1;
-      if (silentCalls >= SILENT_CALLS && silentNudges < 3) {
-        silentCalls = 0;
-        silentNudges++;
-        resultText +=
-          lang === "zh"
-            ? "\n\n[系统提示] 你已经连续几次调用都没对用户说话——思考里写的,用户通常看不到。下一次调用前,在思考之外先用一两句话说明刚才做了什么、发现了什么、接下来做什么。"
-            : "\n\n[system note] Several calls in a row without a word to the user — what you write in your thinking, they usually don't see. Before your next call, say outside your thinking, in a sentence or two, what you just did or found and what's next.";
-      }
       pushUser(toolResultMsg(call.name, resultText), { name: call.name, args: call.args });
     }
     cb.onFinal(

@@ -12,10 +12,10 @@ const { setHistoryToolEnabled } = await import("./toolRegistry");
 setHistoryToolEnabled(true);
 
 const variants = [
-  { zh: true, vision: false, label: "zh plain", maxChars: 4360 },
-  { zh: true, vision: true, label: "zh vision", maxChars: 5670 },
-  { zh: false, vision: false, label: "en plain", maxChars: 7713 },
-  { zh: false, vision: true, label: "en vision", maxChars: 9823 },
+  { zh: true, vision: false, label: "zh plain", maxChars: 4479 },
+  { zh: true, vision: true, label: "zh vision", maxChars: 5789 },
+  { zh: false, vision: false, label: "en plain", maxChars: 7851 },
+  { zh: false, vision: true, label: "en vision", maxChars: 9961 },
 ] as const;
 // Caps anchored to the post-slimming sizes (2026-07 WS1: 3545 / 4432 / 6031 /
 // 7516 JS chars at think=normal, no project doc; before slimming they were
@@ -96,6 +96,18 @@ const variants = [
 //   after: Qwen3.6 35B 3 of 19 calls with words, 721 s, tests failing → 2
 //   of 4, 77 s, passing; Qwen3.5 9B 0/14, 519 s → 0/4, 101 s; Gemma-4 26B
 //   0/3, 70 s → 0/4, 95 s — the small two keep it in their thought.
+
+//   2026-10-24  all four +119 zh / +138 en — the word to the user rides in
+//   the call. Asked for words before its calls, Qwen3.6 35B with thinking on
+//   wrote them inside its thought every time (one update in 11 runs of a
+//   find-the-bug task); with thinking off, 6 of 8 calls. The one thing a
+//   thinking model always writes outside its thought is the call — so the
+//   rule now asks for a `note` argument, with an example on a read (an
+//   example on a command taught it the note was for commands). A turn's
+//   first quiet call, and a quiet one after two, is sent back once with the
+//   call shown with its note in place (agentLoop's note guard). 35B: 0/9,
+//   0/8 → 5/9, 6/9, 4/8, 5/9 over four runs, never more than two quiet
+//   calls running; Qwen3.5 9B 15/16, Gemma-4 26B 10/11.
 
 describe("systemPrompt size gate", () => {
   for (const v of variants) {
