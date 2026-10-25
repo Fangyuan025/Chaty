@@ -81,9 +81,10 @@
   --composer-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 1px 2px rgba(0, 0, 0, 0.18),
     0 10px 30px rgba(0, 0, 0, 0.28);
   /* Focus lifts the composer instead of ringing it in the accent: the
-     hairline steps up to the strong border, the shadow deepens a little. */
-  --composer-focus: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 1px var(--border-strong),
-    0 2px 4px rgba(0, 0, 0, 0.22), 0 14px 36px rgba(0, 0, 0, 0.36);
+     border steps up to the strong one, and these — layer for layer the
+     resting shadow's, so each fades into its own — deepen a little. */
+  --composer-focus: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 2px 4px rgba(0, 0, 0, 0.22),
+    0 14px 36px rgba(0, 0, 0, 0.36);
 
   /* ---- type ---- */
   --font-body: "Instrument Sans Variable", -apple-system, BlinkMacSystemFont, "PingFang SC",
@@ -156,8 +157,7 @@
   --shadow-1: 0 1px 2px rgba(35, 30, 20, 0.07);
   --inset-shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(35, 30, 20, 0.05), 0 6px 22px rgba(35, 30, 20, 0.07);
   --composer-shadow: 0 1px 2px rgba(35, 30, 20, 0.06), 0 8px 26px rgba(35, 30, 20, 0.09);
-  --composer-focus: 0 0 0 1px var(--border-strong), 0 2px 4px rgba(35, 30, 20, 0.06),
-    0 12px 32px rgba(35, 30, 20, 0.12);
+  --composer-focus: 0 2px 4px rgba(35, 30, 20, 0.07), 0 12px 32px rgba(35, 30, 20, 0.12);
   --shadow-2: 0 4px 16px rgba(35, 30, 20, 0.08);
   --shadow-3: 0 12px 32px rgba(35, 30, 20, 0.15), 0 2px 6px rgba(35, 30, 20, 0.06);
   --shadow-4: 0 24px 56px rgba(35, 30, 20, 0.16);
@@ -193,8 +193,7 @@
     --shadow-1: 0 1px 2px rgba(35, 30, 20, 0.07);
   --inset-shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(35, 30, 20, 0.05), 0 6px 22px rgba(35, 30, 20, 0.07);
   --composer-shadow: 0 1px 2px rgba(35, 30, 20, 0.06), 0 8px 26px rgba(35, 30, 20, 0.09);
-  --composer-focus: 0 0 0 1px var(--border-strong), 0 2px 4px rgba(35, 30, 20, 0.06),
-    0 12px 32px rgba(35, 30, 20, 0.12);
+  --composer-focus: 0 2px 4px rgba(35, 30, 20, 0.07), 0 12px 32px rgba(35, 30, 20, 0.12);
     --shadow-2: 0 4px 16px rgba(35, 30, 20, 0.08);
     --shadow-3: 0 12px 32px rgba(35, 30, 20, 0.15), 0 2px 6px rgba(35, 30, 20, 0.06);
     --shadow-4: 0 24px 56px rgba(35, 30, 20, 0.16);
@@ -232,8 +231,8 @@
   --danger-soft: rgba(224, 82, 82, 0.14);
   --ok: #45ad84;
   --ok-soft: rgba(69, 173, 132, 0.14);
-  --composer-focus: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 0 0 1px var(--border-strong),
-    0 2px 4px rgba(0, 0, 0, 0.24), 0 14px 36px rgba(0, 0, 0, 0.38);
+  --composer-focus: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 2px 4px rgba(0, 0, 0, 0.24),
+    0 14px 36px rgba(0, 0, 0, 0.38);
 }
 /* Under "system", the cool overrides above must NOT apply when the OS is
    light — hand the tokens back to the light palette. */
@@ -261,8 +260,7 @@
     --danger-soft: rgba(192, 61, 56, 0.12);
     --ok: #3d8a63;
     --ok-soft: rgba(61, 138, 99, 0.13);
-    --composer-focus: 0 0 0 1px var(--border-strong), 0 2px 4px rgba(35, 30, 20, 0.06),
-      0 12px 32px rgba(35, 30, 20, 0.12);
+    --composer-focus: 0 2px 4px rgba(35, 30, 20, 0.07), 0 12px 32px rgba(35, 30, 20, 0.12);
   }
 }
 
@@ -4394,11 +4392,12 @@ a:focus-visible,
   border: 1px solid var(--border);
   border-radius: var(--composer-radius);
   box-shadow: var(--composer-shadow);
-  transition: box-shadow var(--t-med) var(--ease), border-color var(--t-med) var(--ease);
+  /* Focus fades in and out rather than switching. */
+  transition: box-shadow var(--t-slow) var(--ease), border-color var(--t-slow) var(--ease);
 }
 
 .input-row:focus-within {
-  border-color: transparent;
+  border-color: var(--border-strong);
   box-shadow: var(--composer-focus);
 }
 
@@ -5798,7 +5797,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  transition: border-color 0.15s;
+  transition: border-color var(--t-slow) var(--ease);
 }
 /* KB report needs no topic box — a slim status line + the action button. */
 .dr-input-row.kb {
@@ -6442,6 +6441,108 @@ body:has(.live-overlay) .win-btn.close:hover {
 .cm-block > .cm-said {
   margin: 4px 0 8px;
 }
+/* A run of tool calls folded to one line (Settings → Code): the words the
+   thinking line uses, a little firmer, and the caret after them; opened,
+   the steps as they always show. */
+.cm-run-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 3px 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  text-align: left;
+  transition: color var(--t-fast);
+}
+.cm-run-head:hover {
+  color: var(--text);
+}
+.cm-run-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cm-run-diff {
+  margin-left: 6px;
+  font-size: 12px;
+}
+.cm-run-failed {
+  color: var(--danger);
+}
+.cm-run-caret {
+  flex: none;
+  display: inline-flex;
+  color: var(--faint);
+  transition: transform var(--t-fast) var(--ease);
+}
+.cm-run-caret.open {
+  transform: rotate(90deg);
+}
+/* The run going on: a light passing rightwards through its words. The
+   cards inside keep their own spinner. */
+.cm-run.active .cm-run-label {
+  background: linear-gradient(
+    90deg,
+    var(--text-dim) 0%,
+    var(--text-dim) 38%,
+    var(--text) 50%,
+    var(--text-dim) 62%,
+    var(--text-dim) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: cmrunlight 1.8s linear infinite;
+}
+@keyframes cmrunlight {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-run.active .cm-run-label {
+    animation: none;
+    background: none;
+    color: var(--text-dim);
+  }
+}
+.cm-run-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 6px;
+  animation: cmrunin var(--t-med) var(--ease-out) both;
+}
+@keyframes cmrunin {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+/* Folded, a run still shows the file it is writing, and once it is over,
+   what it did to its files. */
+.cm-run-peek {
+  margin-top: 6px;
+  animation: cmrunin var(--t-med) var(--ease-out) both;
+}
+.cm-changes.cm-run-changes {
+  margin-top: 6px;
+  border-radius: var(--r-md);
+  animation: cmrunin var(--t-med) var(--ease-out) both;
+}
+.cm-run-changes .cm-change-diff {
+  max-height: 280px;
+}
 .cm-asst-text > :first-child {
   margin-top: 0;
 }
@@ -6639,14 +6740,22 @@ body:has(.live-overlay) .win-btn.close:hover {
   font-size: 12px;
 }
 .cm-runbar-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text);
   font-weight: 500;
 }
 .cm-runbar-stats {
+  flex: none;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-variant-ligatures: none;
 }
 .cm-runbar-stop {
+  flex: none;
+  white-space: nowrap;
   margin-left: auto;
   padding: 3px 12px;
   font-size: 12px;
@@ -6930,10 +7039,11 @@ body:has(.live-overlay) .win-btn.close:hover {
   border: 1px solid var(--border);
   border-radius: var(--composer-radius);
   box-shadow: var(--composer-shadow);
-  transition: box-shadow var(--t-med) var(--ease), border-color var(--t-med) var(--ease);
+  /* Focus fades in and out rather than switching. */
+  transition: box-shadow var(--t-slow) var(--ease), border-color var(--t-slow) var(--ease);
 }
 .cm-input-row:focus-within {
-  border-color: transparent;
+  border-color: var(--border-strong);
   box-shadow: var(--composer-focus);
 }
 .cm-input {
@@ -7075,6 +7185,9 @@ body:has(.live-overlay) .win-btn.close:hover {
 /* ---- spinner ---- */
 .cm-spin {
   display: inline-block;
+  /* A fixed circle: in a row with long words (a long command in the run bar)
+     it was squeezed into an ellipse. */
+  flex: none;
   width: 12px;
   height: 12px;
   border: 1.5px solid var(--border-strong);
@@ -7198,6 +7311,132 @@ body:has(.live-overlay) .win-btn.close:hover {
   transition: background 0.15s;
 }
 .cm-continue:hover {
+  background: var(--accent-bright);
+}
+
+/* ---- permission modes (under the input) ---- */
+.cm-perm {
+  position: relative;
+  display: inline-flex;
+}
+.cm-perm-trigger.open {
+  color: var(--text);
+  background: var(--ink-faint);
+}
+/* Upward, from the line under the input: below it is the window's edge. */
+.cm-perm-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 70;
+  width: min(340px, calc(100vw - 32px));
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-3);
+  animation: ui-pop-in var(--t-med) var(--ease-out) both;
+}
+.cm-perm-title {
+  padding: 4px 10px 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--faint);
+  user-select: none;
+}
+.cm-perm-opt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.cm-perm-opt:hover {
+  background: var(--surface);
+}
+.cm-perm-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.cm-perm-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 550;
+}
+.cm-perm-badge {
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border-radius: var(--r-full);
+}
+.cm-perm-desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.cm-perm-side {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+}
+.cm-perm-num {
+  min-width: 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--faint);
+}
+
+/* ---- a plan, ready to carry out ---- */
+.cm-plan-go {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.cm-plan-go-q {
+  margin-right: 4px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.cm-plan-go-btn {
+  padding: 6px 14px;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  cursor: pointer;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+.cm-plan-go-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+.cm-plan-go-btn.primary {
+  font-weight: 550;
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: transparent;
+}
+.cm-plan-go-btn.primary:hover {
   background: var(--accent-bright);
 }
 
@@ -7636,6 +7875,13 @@ body:has(.live-overlay) .win-btn.close:hover {
 /* A group's sessions sit under it, not level with it. */
 .cm-ws-block .cm-session {
   margin-left: 16px;
+}
+/* Inside a workspace, the recency headings line up with its sessions. */
+.cm-ws-recency .conv-group-label {
+  padding-left: 26px;
+}
+.conv-group.cm-ws-recency + .conv-group.cm-ws-recency {
+  margin-top: 8px;
 }
 
 /* ---- copy button on the final answer ---- */

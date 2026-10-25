@@ -4,14 +4,26 @@ import { RECENCY_LABEL, recencyGroups } from "../lib/recency";
 import { ImagePreview } from "./ImagePreview";
 import { resolveToolFormat, type CallFormat } from "../lib/callFormat";
 import { open } from "@tauri-apps/plugin-dialog";
-import { agentLang, useI18n } from "../lib/i18n";
+import { agentLang, useI18n, type TKey } from "../lib/i18n";
 import { watchContentHeight } from "../lib/autoGrow";
 /** Matches `.cm-input` max-height. */
 const CM_COMPOSER_MAX_H = 200;
 import { effortLabel, intensityOf, thinkTabActive } from "../lib/effort";
 import { diffLines } from "../lib/diff";
+import {
+  activityOf,
+  deniedCount,
+  failedCount,
+  isEditStep,
+  runFileChanges,
+  segmentsOf,
+  workSummary,
+  type DiffCounter,
+  type RunFile,
+  type WorkKind,
+} from "../lib/toolGroups";
 import { liveScan, type LiveScan } from "../lib/liveCall";
-import { useConfirm } from "./ConfirmModal";
+import { useChoice, useConfirm } from "./ConfirmModal";
 import { BgTasksPanel } from "./BgTasksPanel";
 import { groupSessionsByWorkspace, workspaceName } from "../lib/sessionGroups";
 import { keptRestore, toTurnChange, type TurnChange } from "../lib/turnChanges";
@@ -21,6 +33,7 @@ import { copyToClipboard } from "../lib/clipboard";
 import { cleanTitle } from "../lib/voiceText";
 import { DiffView } from "./DiffView";
 import { Icon } from "./Icon";
+import { PermModePicker } from "./PermModePicker";
 import { SelectBar, SelectCheck, SelectToggle, selectClick, useMultiSelect } from "./MultiSelect";
 import { Markdown } from "./Markdown";
 import {
@@ -82,7 +95,7 @@ import {
   type ToolStep,
   replayableTail,
 } from "../lib/agentLoop";
-import { isReadOnlyCommand } from "../lib/readOnlyCmd";
+import { LASTING_MODES, PERM_MODES, permVerdict, type PermMode } from "../lib/permMode";
 import { syncMcpServers } from "../lib/mcp";
 import { localSave } from "../lib/localSave";
 import { loadSkills } from "../lib/skillFiles";
@@ -115,6 +128,8 @@ interface CodeMsg {
   /** Words the model said with a call that has no step card (update_plan),
    *  after how many steps — kept for the session's trace. */
   said?: { after: number; text: string }[];
+  /** Sent in plan mode: its answer is a plan to carry out or keep working on. */
+  planned?: boolean;
   /** Context was auto-compacted during this turn. */
   compacted?: boolean;
   /** The turn paused at the step limit (offer a Continue button). */
@@ -411,16 +426,20 @@ function StepCard({
   sessionId,
   onPreview,
   liveOpen = true,
+  pinOpen = false,
 }: {
   step: ToolStep;
   sessionId?: string | null;
   onPreview?: (path: string) => void;
   /** A live card opens while its call is written (Settings → Code). */
   liveOpen?: boolean;
+  /** Open whatever happens — a folded run's file being written. */
+  pinOpen?: boolean;
 }) {
   const { t } = useI18n();
   const live = step.live;
-  const [open, setOpen] = useState(step.status === "error" || (!!live && liveOpen));
+  const [openState, setOpen] = useState(step.status === "error" || (!!live && liveOpen));
+  const open = pinOpen || openState;
   // A live card opens while its call is written — when the setting says so —
   // and folds away once the call has run, unless the user has opened or
   // closed it by hand.
@@ -476,7 +495,7 @@ function StepCard({
   // Clicking an image step opens the preview directly; otherwise toggle the body.
   const onHead = () => {
     if (hasImage && step.image) onPreview?.(step.image);
-    else if (hasBody) {
+    else if (hasBody && !pinOpen) {
       touched.current = true;
       setOpen((o) => !o);
     }
@@ -579,6 +598,212 @@ function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label
   );
 }
 
+/** Lines a step's diff adds and removes — the card's own count when the
+ *  contents were capped, else counted once per diff and kept. */
+const diffCountCache = new WeakMap<object, { added: number; removed: number }>();
+const countStepDiff: DiffCounter = (s) => {
+  if (s.diffCounts) return s.diffCounts;
+  if (!s.diff) return null;
+  let c = diffCountCache.get(s.diff);
+  if (!c) {
+    const d = diffLines(s.diff.before, s.diff.after);
+    c = { added: d.added, removed: d.removed };
+    diffCountCache.set(s.diff, c);
+  }
+  return c;
+};
+
+const SUM_KEY: Record<WorkKind, TKey> = {
+  read: "sumRead",
+  create: "sumCreate",
+  edit: "sumEdit",
+  command: "sumCommand",
+  search: "sumSearch",
+  websearch: "sumWebSearch",
+  fetch: "sumFetch",
+  browser: "sumBrowser",
+  validate: "sumValidate",
+  image: "sumImage",
+  other: "sumOther",
+};
+
+/** One kind of work as its words: the count, singular or plural (en carries
+ *  both, "one|many"). */
+function sumPhrase(t: (k: TKey, v?: Record<string, string | number>) => string, kind: WorkKind, n: number): string {
+  const forms = t(SUM_KEY[kind], { n }).split("|");
+  return forms.length > 1 && n !== 1 ? forms[1] : forms[0];
+}
+
+/** A run of tool calls folded to one line (Settings → Code → collapse tool
+ *  calls). While it is the run going on, the line says what its latest call
+ *  is doing; once the model has spoken again, or the turn is over, what the
+ *  run did — "Read 3 files, ran 2 commands, edited 1 file +12 −3". Opened,
+ *  the steps as they always show. */
+function ToolRun({
+  steps,
+  activity,
+  doneLabel,
+  folded,
+  children,
+}: {
+  steps: ToolStep[];
+  /** What the run going on is doing now; absent for a run that is over. */
+  activity?: Activity | null;
+  /** The line of a run that is over and called no tool — only thought. */
+  doneLabel?: string;
+  /** Shown under the line while the run is folded: the file being written,
+   *  or what the run did to its files. */
+  folded?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  const { t, lang } = useI18n();
+  const [open, setOpen] = useState(false);
+  const active = !!activity;
+  const openable = steps.length > 0 || !!children;
+  let label: React.ReactNode;
+  if (activity) {
+    label = <ActivityLabel activity={activity} />;
+  } else if (doneLabel) {
+    label = <span className="cm-run-label">{doneLabel}</span>;
+  } else {
+    const items = workSummary(steps, countStepDiff);
+    const failed = failedCount(steps);
+    const denied = deniedCount(steps);
+    const sep = lang === "zh" ? "，" : ", ";
+    // The tail after what was done: "1 failed", "2 not run" — leading the
+    // line when nothing ran at all.
+    const tails = [
+      ...(failed > 0 ? [{ cls: "cm-run-failed", text: t("sumFailed", { n: failed }) }] : []),
+      ...(denied > 0 ? [{ cls: "cm-run-denied", text: t("sumDenied", { n: denied }) }] : []),
+    ];
+    label = (
+      <span className="cm-run-label">
+        {items.map((it, i) => {
+          let words = sumPhrase(t, it.kind, it.n);
+          if (i > 0 && lang !== "zh") words = words.charAt(0).toLowerCase() + words.slice(1);
+          return (
+            <span key={it.kind}>
+              {i > 0 && sep}
+              {words}
+              {(it.added || it.removed) ? (
+                <span className="cm-step-diffstat cm-run-diff">
+                  {it.added ? <em className="plus">+{it.added}</em> : null}
+                  {it.removed ? <em className="minus">-{it.removed}</em> : null}
+                </span>
+              ) : null}
+            </span>
+          );
+        })}
+        {tails.map((x, i) => (
+          <span key={x.cls} className={x.cls}>
+            {items.length > 0 || i > 0 ? sep : ""}
+            {x.text}
+          </span>
+        ))}
+      </span>
+    );
+  }
+  return (
+    <div className={`cm-run${active ? " active" : ""}${open ? " open" : ""}`}>
+      <button
+        type="button"
+        className="cm-run-head"
+        onClick={() => openable && setOpen((o) => !o)}
+        aria-expanded={openable ? open : undefined}
+        disabled={!openable}
+      >
+        {label}
+        {openable && (
+          <span className={`cm-run-caret${open ? " open" : ""}`}>
+            <Icon name="chevron-right" size={11} strokeWidth={2} />
+          </span>
+        )}
+      </button>
+      {open && openable ? <div className="cm-run-body">{children}</div> : folded}
+    </div>
+  );
+}
+
+/** What a run that is over did to its files, each once — from before its
+ *  first change to after its last — under the folded line. Up to three open;
+ *  past that, each a click away. */
+function RunChanges({ steps }: { steps: ToolStep[] }) {
+  const { t } = useI18n();
+  const files = useMemo(() => runFileChanges(steps), [steps]);
+  const [open, setOpen] = useState<Set<string>>(() => new Set(files.length <= 3 ? files.map((f) => f.key) : []));
+  if (!files.length) return null;
+  const toggle = (key: string) =>
+    setOpen((cur) => {
+      const next = new Set(cur);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  return (
+    <div className="cm-changes open cm-run-changes">
+      {files.map((f) => (
+        <RunChange key={f.key} file={f} open={open.has(f.key)} onToggle={() => toggle(f.key)} newLabel={t("cmChangeNew")} tooBig={t("cmChangeTooBig")} />
+      ))}
+    </div>
+  );
+}
+
+function RunChange({
+  file,
+  open,
+  onToggle,
+  newLabel,
+  tooBig,
+}: {
+  file: RunFile;
+  open: boolean;
+  onToggle: () => void;
+  newLabel: string;
+  tooBig: string;
+}) {
+  // A capped copy has no whole file to diff: the steps' own counts, summed.
+  const counts = useMemo(() => {
+    if (!file.capped) return diffLines(file.before, file.after);
+    return file.steps.reduce(
+      (acc, s) => {
+        const c = countStepDiff(s);
+        return c ? { added: acc.added + c.added, removed: acc.removed + c.removed } : acc;
+      },
+      { added: 0, removed: 0 },
+    );
+  }, [file]);
+  return (
+    <div className="cm-change">
+      <div className="cm-change-row">
+        <button className="cm-change-file" title={file.path} aria-expanded={open} onClick={onToggle}>
+          <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
+          <span className="cm-change-name">{file.path}</span>
+          {file.created && <span className="cm-change-tag">{newLabel}</span>}
+          <span className="cm-step-diffstat">
+            <em className="plus">+{counts.added}</em>
+            <em className="minus">-{counts.removed}</em>
+          </span>
+        </button>
+      </div>
+      {open &&
+        (file.capped ? (
+          <div className="cm-change-note">{tooBig}</div>
+        ) : (
+          <DiffView className="cm-change-diff" before={file.before} after={file.after} total={counts.added + counts.removed} />
+        ))}
+    </div>
+  );
+}
+
+type Activity = { key: string; x?: string };
+
+/** What is happening now, in words: "Running npm test", "Thinking". */
+function ActivityLabel({ activity }: { activity: Activity }) {
+  const { t } = useI18n();
+  const x = activity.x ? (activity.x.length > 80 ? activity.x.slice(0, 80) + "…" : activity.x) : "…";
+  return <span className="cm-run-label">{t(activity.key as TKey, { x })}</span>;
+}
+
 /** The agent's task plan as a live checklist with a progress count. */
 function PlanPanel({ plan, label }: { plan: PlanItem[]; label: string }) {
   if (!plan.length) return null;
@@ -650,13 +875,15 @@ export function CodeMode({
   maxGenTokens = 0,
   toolFormat = "auto",
   toolFallback = "xml",
-  autoApproveEdits = false,
+  permMode = "manual",
+  onPermMode,
   autoRunReadOnly = true,
   skills = [],
   disabledSkills = [],
   memoryEnabled = true,
   groupByWorkspace = false,
   liveCardsOpen = true,
+  collapseTools = false,
   allowedCommands = [],
   sendKey = "enter",
   autoTitle = true,
@@ -693,9 +920,11 @@ export function CodeMode({
   toolFormat?: "auto" | CallFormat;
   /** The format for a model whose template names none (Settings → Code). */
   toolFallback?: "xml" | "json";
-  /** Auto-approve file edits — write/edit/multi_edit run without asking
-   *  (Settings → Code; checkpoints still allow rollback). */
-  autoApproveEdits?: boolean;
+  /** The permission mode Code starts in (Settings → Code) — one of the
+   *  modes a choice is remembered in; see permMode.ts. */
+  permMode?: PermMode;
+  /** A remembered mode was picked under the input: keep it. */
+  onPermMode?: (m: PermMode) => void;
   /** Auto-run obviously read-only bash commands without asking (Settings → Code). */
   autoRunReadOnly?: boolean;
   /** User-defined skills: /name inserts the prompt template (Settings → Code). */
@@ -709,6 +938,9 @@ export function CodeMode({
   groupByWorkspace?: boolean;
   /** Settings → Code: a write/edit card is open while its call is written. */
   liveCardsOpen?: boolean;
+  /** Settings → Code: the tool calls between two things the model says fold
+   *  into one line (see ToolRun). */
+  collapseTools?: boolean;
   /** Persistent command prefixes that never need approval (Settings → Code). */
   allowedCommands?: string[];
   /** Composer send shortcut (Settings → General). */
@@ -721,6 +953,7 @@ export function CodeMode({
 }) {
   const { t, lang } = useI18n();
   const confirm = useConfirm();
+  const choose = useChoice();
   const [sessions, setSessions] = useState<CodeSessionMeta[]>([]);
   const [sid, setSid] = useState<string>(() => uid());
   /** The session on screen, for callbacks that outlive a render: a run's
@@ -750,7 +983,10 @@ export function CodeMode({
   // Full-size image preview (screenshot / view_image steps).
   const [previewImg, setPreviewImg] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  const [bypass, setBypass] = useState(false);
+  // Plan and bypass hold until the app quits; the other modes are the
+  // remembered one (Settings → Code).
+  const [modeOverride, setModeOverride] = useState<PermMode | null>(null);
+  const mode: PermMode = modeOverride ?? permMode;
   /** The model exposes a native reasoning-effort ladder (Qwen3.8) — the think
    *  switch then shows the model's own rungs instead of Chaty's intensities. */
   const effortLevels = useMemo(() => model?.effortLevels ?? [], [model?.effortLevels]);
@@ -781,7 +1017,10 @@ export function CodeMode({
     if (mapped && effortLevels.includes(mapped)) return mapped;
     return effortLevels[Math.min(1, effortLevels.length - 1)] ?? "";
   }, [effortLevels, codeEffort, thinkMode]);
-  const [approval, setApproval] = useState<{ call: ToolCall; resolve: (ok: boolean) => void } | null>(null);
+  const [approval, setApproval] = useState<{ call: ToolCall; resolve: (ok: boolean | "plan") => void } | null>(null);
+  /** The model is writing a tool call: the tool's name once it shows, "" until
+   *  then, null when it is not (see onCalling). */
+  const [callingTool, setCallingTool] = useState<string | null>(null);
   /** Out-of-workspace access request from the agent (grant persists this session). */
   const [dirAsk, setDirAsk] = useState<{ dir: string; resolve: (ok: boolean) => void } | null>(null);
   /** High-risk sudo command awaiting explicit user permission (always asks). */
@@ -804,6 +1043,18 @@ export function CodeMode({
   const [ctxTotal, setCtxTotal] = useState(0);
   /** Messages typed while the agent was running — auto-sent one by one after. */
   const [queue, setQueue] = useState<string[]>([]);
+  /** The turn in flight, settled once it has wound down (see sendWhileRunning). */
+  const turnDone = useRef<Promise<void> | null>(null);
+  // Whether a turn runs, as of now rather than as of the last render: a
+  // message sent right after a stop must not be turned away by a `running`
+  // that rendering has not caught up with.
+  const runningRef = useRef(false);
+  const setRunningNow = (v: boolean) => {
+    runningRef.current = v;
+    setRunning(v);
+  };
+  const sendRef = useRef(send);
+  sendRef.current = send;
   const queueRef = useRef(queue);
   queueRef.current = queue;
   /** Background jobs (dev servers …), running and finished — header pill and
@@ -870,34 +1121,69 @@ export function CodeMode({
   bodyRef.current = { msgs, workspace, sid };
   // The memory index each session started with — see sessionMemoryIndex.
   const memoryPinsRef = useRef(new Map<string, string>());
-  // The approve callback closes over send()-time state — read bypass through a
-  // ref so flipping the toggle MID-RUN takes effect immediately.
-  const bypassRef = useRef(bypass);
-  bypassRef.current = bypass;
+  // The approve callback closes over send()-time state — read the mode
+  // through a ref so a change MID-RUN takes effect immediately.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   // Session-scoped "always allow" grants (from the approval dialog's third
   // button). Keyed "cmd:<two-token prefix>" or "tool:<name>"; reset per session.
   const sessionAllowsRef = useRef<Set<string>>(new Set());
   const allowedCommandsRef = useRef(allowedCommands);
   allowedCommandsRef.current = allowedCommands;
-  const autoEditsRef = useRef(autoApproveEdits);
-  autoEditsRef.current = autoApproveEdits;
   const autoRunReadOnlyRef = useRef(autoRunReadOnly);
   autoRunReadOnlyRef.current = autoRunReadOnly;
   /** Prompt-processing progress (0..1) for the current step, null = not prefilling. */
   const [prefill, setPrefill] = useState<number | null>(null);
 
-  /** Toggle bypass; turning it ON also releases any approval that's waiting. */
-  const toggleBypass = useCallback(() => {
-    setBypass((b) => !b);
-    if (!bypassRef.current) {
-      // was off → now on: release the pending approval, if any
+  /** What the mode makes of a call, with this session's allowances. */
+  const verdictFor = useCallback(
+    (m: PermMode, call: ToolCall) =>
+      permVerdict(m, call, {
+        readOnlyAuto: autoRunReadOnlyRef.current,
+        allowlist: allowedCommandsRef.current,
+        sessionAllowed: sessionAllowsRef.current.has(allowKeyFor(call)),
+        windows: IS_WINDOWS,
+      }),
+    [],
+  );
+
+  /** Switch the permission mode — remembered, if it is one that can be,
+   *  unless `remember` is false (a plan carried out switches for now only).
+   *  A call waiting on the user is judged again under the new mode:
+   *  switching to accept edits lets the edit on screen through, as turning
+   *  bypass on always did. */
+  const pickMode = useCallback(
+    (m: PermMode, remember = true) => {
+      modeRef.current = m;
+      if (remember && LASTING_MODES.includes(m)) {
+        setModeOverride(null);
+        onPermMode?.(m);
+      } else {
+        setModeOverride(m);
+      }
       setApproval((cur) => {
-        cur?.resolve(true);
+        if (!cur) return cur;
+        const v = verdictFor(m, cur.call);
+        if (v === "ask") return cur;
+        cur.resolve(v === "plan" ? "plan" : true);
         return null;
       });
+    },
+    [onPermMode, verdictFor],
+  );
+  const cycleMode = useCallback(() => {
+    pickMode(PERM_MODES[(PERM_MODES.indexOf(modeRef.current) + 1) % PERM_MODES.length]);
+  }, [pickMode]);
+  /** `/bypass`: into bypass, or back to the mode it was entered from. */
+  const preBypass = useRef<PermMode>("manual");
+  const toggleBypass = useCallback(() => {
+    if (modeRef.current === "bypass") pickMode(preBypass.current);
+    else {
+      preBypass.current = modeRef.current;
+      pickMode("bypass");
     }
-  }, []);
+  }, [pickMode]);
 
   const refreshSessions = useCallback(() => {
     codeSessionList().then(setSessions).catch(() => {});
@@ -1457,7 +1743,7 @@ export function CodeMode({
     ask?.resolve("");
     setAsk(null);
     setQueue([]);
-    setRunning(false);
+    setRunningNow(false);
   }
 
   // ── @-mention: reference a workspace file from the composer ──
@@ -1572,8 +1858,8 @@ export function CodeMode({
         : "";
       const text =
         (lang === "zh"
-          ? "**可用命令**\n\n- `/clear` — 新建会话(清空上下文)\n- `/think off|normal|deep` — 思考强度\n- `/bypass` — 切换自动批准\n- `/help` — 显示本帮助\n\n**快捷键**:运行中按 `Esc` 中断;`Shift+Tab` 切换自动批准;审批弹窗 `Enter` 允许、`Esc` 拒绝;选择题可按数字键;输入 `@` 可引用工作区文件。"
-          : "**Commands**\n\n- `/clear` — new session (clears context)\n- `/think off|normal|deep` — reasoning depth\n- `/bypass` — toggle auto-approve\n- `/help` — this help\n\n**Shortcuts**: `Esc` interrupts a run; `Shift+Tab` toggles auto-approve; approval dialog `Enter` allows / `Esc` denies; number keys answer choice questions; type `@` to reference a workspace file.") +
+          ? "**可用命令**\n\n- `/clear` — 新建会话(清空上下文)\n- `/think off|normal|deep` — 思考强度\n- `/bypass` — 切换绕过权限\n- `/help` — 显示本帮助\n\n**快捷键**:运行中按 `Esc` 中断;`Shift+Tab` 切换权限模式(自动、手动、接受编辑、计划、绕过权限);审批弹窗 `Enter` 允许、`Esc` 拒绝;选择题可按数字键;输入 `@` 可引用工作区文件。"
+          : "**Commands**\n\n- `/clear` — new session (clears context)\n- `/think off|normal|deep` — reasoning depth\n- `/bypass` — toggle bypass permissions\n- `/help` — this help\n\n**Shortcuts**: `Esc` interrupts a run; `Shift+Tab` cycles the permission modes (auto, manual, accept edits, plan, bypass); approval dialog `Enter` allows / `Esc` denies; number keys answer choice questions; type `@` to reference a workspace file.") +
         skillLines;
       setMsgs((cur) => {
         const next = [...cur, { id: uid(), role: "assistant" as const, text, steps: [] }];
@@ -1646,14 +1932,61 @@ export function CodeMode({
     }
   }
 
+  /** Sent while a turn runs: ask whether it waits for the turn (queued, sent
+   *  once the turn ends) or cuts in — the turn stopped, and the message sent
+   *  once it has wound down, so what the stopped turn did is in the record
+   *  the new one starts from. Escape leaves it in the input. */
+  async function sendWhileRunning() {
+    const q = input.trim();
+    if (!q) return;
+    // After the key that sent it is done with: opened within it, the dialog's
+    // default button took focus in time for the same Enter to press it.
+    await new Promise((r) => setTimeout(r, 0));
+    const pick = await choose({
+      title: t("cmBusyTitle"),
+      message: t("cmBusyMsg"),
+      confirmLabel: t("cmBusyQueue"),
+      altLabel: t("cmBusyInterrupt"),
+    });
+    if (!pick) return;
+    setInput("");
+    if (pick === "ok" || !runningRef.current) {
+      // Queued — or the turn ended while the dialog was up: the queue sends
+      // it next either way.
+      if (runningRef.current) setQueue((cur) => [...cur, q]);
+      else void sendRef.current(q);
+      return;
+    }
+    const winding = turnDone.current;
+    stop();
+    // Shown as waiting while the stopped turn winds down; taking it off the
+    // queue meanwhile takes the message back.
+    setQueue([q]);
+    await winding?.catch(() => {});
+    if (!queueRef.current.includes(q)) return;
+    setQueue((cur) => cur.filter((x) => x !== q));
+    void sendRef.current(q);
+  }
+
   async function send(textArg?: string) {
     const text = (textArg ?? input).trim();
     if (!textArg && text.startsWith("/") && slashMenu.some((e) => e.cmd === text)) {
       runSlash(text);
       return;
     }
-    if (!text || running || !model || !workspace) return;
+    if (!text || runningRef.current || !model || !workspace) return;
     if (!textArg) setInput("");
+    let finish = () => {};
+    turnDone.current = new Promise<void>((r) => (finish = r));
+    try {
+      await runTurn(text, textArg);
+    } finally {
+      finish();
+    }
+  }
+
+  async function runTurn(text: string, textArg?: string) {
+    if (!model || !workspace) return;
     // The session this turn belongs to, fixed BEFORE the first await below.
     // Preparing a turn reads the project doc, the memory index and the skill
     // files, and none of that blocks the session list: switching sessions in
@@ -1716,7 +2049,14 @@ export function CodeMode({
             ]
           : undefined,
     };
-    const asst: CodeMsg = { id: uid(), role: "assistant", text: "", steps: [] };
+    // A planning turn ends on a plan the user can carry out from under it.
+    const asst: CodeMsg = {
+      id: uid(),
+      role: "assistant",
+      text: "",
+      steps: [],
+      ...(modeRef.current === "plan" ? { planned: true } : {}),
+    };
     // The previous turn hands back exactly what it sent, so this one continues
     // from it instead of from a summary. Replaying that tail is what keeps the
     // model's own work in front of it — a follow-up used to arrive with the
@@ -1756,7 +2096,7 @@ export function CodeMode({
     const base = [...msgs, userMsg, asst];
     const isFirstTurn = msgs.length === 0;
     setMsgs(base);
-    setRunning(true);
+    setRunningNow(true);
     // A run in flight, recorded outside React state. The webview reloads on its
     // own sometimes and takes the turn with it; without this the session simply
     // reappeared idle and there was nothing to say what had happened.
@@ -1845,30 +2185,15 @@ export function CodeMode({
       // (with optional secure password entry), even under bypass/allowlist.
       approveSudo: (cmd: string) =>
         new Promise<{ ok: boolean; password?: string }>((resolve) => setSudoAsk({ cmd, resolve })),
+      // The permission mode decides, as it stands when the call comes —
+      // with the allowlist, read-only commands and "always allow" in it.
       approve: (call: ToolCall) => {
-        if (bypassRef.current) return Promise.resolve(true);
-        if (sessionAllowsRef.current.has(allowKeyFor(call))) return Promise.resolve(true);
-        // Settings → Code: file edits run without asking (checkpoints cover rollback).
-        if (
-          autoEditsRef.current &&
-          (call.name === "write_file" || call.name === "edit_file" || call.name === "multi_edit")
-        ) {
-          return Promise.resolve(true);
-        }
-        if (call.name === "bash" || call.name === "bash_bg") {
-          const cmd = String(call.args.command ?? "").trim();
-          // Settings → Code: obviously read-only commands skip the dialog —
-          // their approval prompt has only one sane answer. Fail-closed:
-          // anything uncertain falls through to the allowlist / dialog.
-          if (autoRunReadOnlyRef.current && isReadOnlyCommand(cmd, { windows: IS_WINDOWS })) {
-            return Promise.resolve(true);
-          }
-          if (allowedCommandsRef.current.some((p) => cmd === p || cmd.startsWith(p + " "))) {
-            return Promise.resolve(true);
-          }
-        }
-        return new Promise<boolean>((resolve) => setApproval({ call, resolve }));
+        const v = verdictFor(modeRef.current, call);
+        if (v === "allow") return Promise.resolve(true);
+        if (v === "plan") return Promise.resolve("plan" as const);
+        return new Promise<boolean | "plan">((resolve) => setApproval({ call, resolve }));
       },
+      planMode: modeRef.current === "plan",
     }, {
       // DEV forensics: keep the last 200 raw rounds + injected corrections on
       // window.__agentTrace — `copy(window.__agentTrace)` in devtools dumps
@@ -1891,6 +2216,7 @@ export function CodeMode({
         void sessionStatsSet("code", runSid, JSON.stringify({ ctxUsed: used, nCtx: runCtx })).catch(() => {});
       },
       onPrefill: (frac) => shown() && setPrefill(frac),
+      onCalling: (name) => shown() && setCallingTool(name),
       onDirGrants: (grants) => owns() && setDirGrants(grants),
       onPlan: (todos) => update((m) => ({ ...m, plan: todos })),
       onSaid: (text) =>
@@ -1912,8 +2238,11 @@ export function CodeMode({
           const i = steps.findIndex((s) => s.id === step.id);
           if (i >= 0) steps[i] = step;
           else steps.push(step);
-          // The reasoning behind the call now rides on its card.
-          return { ...m, steps, liveThinking: "" };
+          // The reasoning behind the call now rides on its card, and so do
+          // the words before it — not twice.
+          const said = step.said?.trim();
+          const text = said && m.text.trim() === said ? "" : m.text;
+          return { ...m, steps, liveThinking: "", text };
         }),
       onLiveStepGone: (id) => update((m) => ({ ...m, steps: m.steps.filter((s) => s.id !== id) })),
       onStep: (step) => {
@@ -1996,10 +2325,11 @@ export function CodeMode({
     // come) and its in-flight marker. Only the run that still owns the
     // controls resets them.
     if (owns()) {
-      setRunning(false);
+      setRunningNow(false);
       localStorage.removeItem(RUN_INFLIGHT_KEY);
       setApproval(null);
       setPrefill(null);
+      setCallingTool(null);
     }
     // Persist only while this turn's session is still the active one — after
     // a mid-run delete, writing here would resurrect the file the user just
@@ -2018,6 +2348,43 @@ export function CodeMode({
       void send(next);
     }
   }
+
+  /** The folded view of an assistant turn (Settings → Code → collapse tool
+   *  calls): its words and runs, which run is going on, what is happening,
+   *  and whether that needs a line of its own under what was said last. */
+  const foldOf = (m: CodeMsg, isLast: boolean) => {
+    const segs = segmentsOf(m.steps, m.said);
+    const tail = segs[segs.length - 1];
+    const turnLive = running && isLast;
+    // Words in the answer box: the model is speaking — a step's words before
+    // its call, or the answer. Thinking is not what is happening then.
+    const speaking = !!m.text.trim();
+    const lastStep = m.steps[m.steps.length - 1];
+    // What is happening, most specific first: a call waiting on the user, a
+    // step running, the prompt being read, a call being written (named once
+    // its tool is), thinking.
+    const activity: Activity | null = !turnLive
+      ? null
+      : approval
+        ? { key: "actAwaiting" }
+        : lastStep?.status === "running"
+          ? activityOf(lastStep)
+          : prefill != null
+            ? { key: "actPrefill", x: `${Math.round(Math.min(1, Math.max(0, prefill)) * 100)}%` }
+            : callingTool !== null
+              ? callingTool
+                ? activityOf({ id: "", call: { name: callingTool as never, args: {} }, status: "running" })
+                : { key: "actUsingTools" }
+              : speaking
+                ? null
+                : { key: "actThinking" };
+    const activeKey = turnLive && !speaking && tail?.kind === "tools" ? tail.key : null;
+    // The thinking that is not a step's — before the answer, or before a call
+    // still being written — goes in the last run, out of sight like the rest.
+    // A turn with no run shows it as any reply does.
+    const lastRun = [...segs].reverse().find((s) => s.kind === "tools")?.key ?? null;
+    return { segs, activeKey, activity, bottom: activity && !activeKey ? activity : null, lastRun };
+  };
 
   // Either separator: split on "/" alone, a Windows workspace showed its whole
   // path where its folder name belongs.
@@ -2082,7 +2449,9 @@ export function CodeMode({
     (sq
       ? shownSessions
       : groupByWorkspace
-        ? groupSessionsByWorkspace(sessions).flatMap((g) => (collapsedWs.has(g.path ?? "") ? [] : g.sessions))
+        ? groupSessionsByWorkspace(sessions).flatMap((g) =>
+            collapsedWs.has(g.path ?? "") ? [] : recencyGroups(g.sessions).flatMap((r) => r.items),
+          )
         : recencyGroups(sessions).flatMap((g) => g.items)
     ).map((x) => x.id),
   );
@@ -2147,7 +2516,15 @@ export function CodeMode({
                     <span className="cm-ws-group-name">{g.path ? g.name : t("cmNoWorkspace")}</span>
                     <span className="cm-ws-group-count">{g.sessions.length}</span>
                   </button>
-                  {!folded && g.sessions.map(sessionRow)}
+                  {/* Inside a workspace, by when they were last touched — as
+                      the rail is ungrouped. */}
+                  {!folded &&
+                    recencyGroups(g.sessions).map((r) => (
+                      <div key={r.key} className="conv-group cm-ws-recency">
+                        <div className="conv-group-label">{t(RECENCY_LABEL[r.key])}</div>
+                        {r.items.map(sessionRow)}
+                      </div>
+                    ))}
                 </div>
               );
             })
@@ -2281,8 +2658,11 @@ export function CodeMode({
             </div>
           ) : (
             <div className="cm-thread" ref={threadRef}>
-            {msgs.map((m) =>
-              m.role === "user" ? (
+            {msgs.map((m, mi) => {
+              const f = collapseTools && m.role !== "user" ? foldOf(m, mi === msgs.length - 1) : null;
+              // Thinking that belongs to no step, in the last run when folded.
+              const foldThought = !!f?.lastRun;
+              return m.role === "user" ? (
                 <div key={m.id} className="cm-user-row">
                   {m.checkpointId != null && !running && (
                     <button
@@ -2329,37 +2709,97 @@ export function CodeMode({
                     </div>
                   )}
                   {m.plan && m.plan.length > 0 && <PlanPanel plan={m.plan} label={t("cmPlan")} />}
-                  {/* What the model said between its steps stays where it said it:
-                      with a step's call, or with a plan update (which has no card). */}
-                  {m.steps.map((s, i) => (
-                    <Fragment key={s.id}>
-                      {(m.said ?? [])
-                        .filter((w) => w.after === i)
-                        .map((w, j) => (
-                          <div key={`said-${j}`} className="cm-asst-text answer cm-said">
-                            <Markdown>{w.text}</Markdown>
-                          </div>
-                        ))}
-                      <div className="cm-block">
-                        {s.thinking && <ThinkPanel text={s.thinking} label={t("cmThought")} />}
-                        {s.said && (
-                          <div className="cm-asst-text answer cm-said">
-                            <Markdown>{s.said}</Markdown>
-                          </div>
-                        )}
-                        <StepCard step={s} sessionId={sid} onPreview={setPreviewImg} liveOpen={liveCardsOpen} />
-                      </div>
-                    </Fragment>
-                  ))}
-                  {(m.said ?? [])
-                    .filter((w) => w.after >= m.steps.length)
-                    .map((w, j) => (
-                      <div key={`said-end-${j}`} className="cm-asst-text answer cm-said">
-                        <Markdown>{w.text}</Markdown>
-                      </div>
+                  {f ? (
+                    // Folded: the model's words in the open, the runs of steps
+                    // between them one line each — the run going on says what
+                    // is happening, and every thought sits in a run.
+                    f.segs.map((seg) =>
+                      seg.kind === "say" ? (
+                        <div key={seg.key} className="cm-asst-text answer cm-said">
+                          <Markdown>{seg.text}</Markdown>
+                        </div>
+                      ) : (
+                        <ToolRun
+                          key={seg.key}
+                          steps={seg.steps}
+                          activity={seg.key === f.activeKey ? f.activity : null}
+                          folded={
+                            seg.key === f.activeKey ? (
+                              // The file being written or just written, live,
+                              // until the next call starts.
+                              isEditStep(seg.steps[seg.steps.length - 1]) ? (
+                                <div className="cm-run-peek">
+                                  <StepCard step={seg.steps[seg.steps.length - 1]} sessionId={sid} pinOpen />
+                                </div>
+                              ) : null
+                            ) : (
+                              <RunChanges steps={seg.steps} />
+                            )
+                          }
+                        >
+                          {seg.steps.map((s) => (
+                            <div key={s.id} className="cm-block">
+                              {s.thinking && <ThinkPanel text={s.thinking} label={t("cmThought")} />}
+                              <StepCard step={s} sessionId={sid} onPreview={setPreviewImg} liveOpen={liveCardsOpen} />
+                            </div>
+                          ))}
+                          {seg.key === f.lastRun && m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />}
+                          {/* The live thought, unless the line under the answer holds it. */}
+                          {seg.key === f.lastRun && m.liveThinking && !f.bottom && (
+                            <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />
+                          )}
+                        </ToolRun>
+                      ),
+                    )
+                  ) : (
+                    <>
+                    {/* What the model said between its steps stays where it said it:
+                        with a step's call, or with a plan update (which has no card). */}
+                    {m.steps.map((s, i) => (
+                      <Fragment key={s.id}>
+                        {(m.said ?? [])
+                          .filter((w) => w.after === i)
+                          .map((w, j) => (
+                            <div key={`said-${j}`} className="cm-asst-text answer cm-said">
+                              <Markdown>{w.text}</Markdown>
+                            </div>
+                          ))}
+                        <div className="cm-block">
+                          {s.thinking && <ThinkPanel text={s.thinking} label={t("cmThought")} />}
+                          {s.said && (
+                            <div className="cm-asst-text answer cm-said">
+                              <Markdown>{s.said}</Markdown>
+                            </div>
+                          )}
+                          <StepCard step={s} sessionId={sid} onPreview={setPreviewImg} liveOpen={liveCardsOpen} />
+                        </div>
+                      </Fragment>
                     ))}
-                  {m.liveThinking && <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />}
-                  {m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />}
+                    {(m.said ?? [])
+                      .filter((w) => w.after >= m.steps.length)
+                      .map((w, j) => (
+                        <div key={`said-end-${j}`} className="cm-asst-text answer cm-said">
+                          <Markdown>{w.text}</Markdown>
+                        </div>
+                      ))}
+                    {m.liveThinking && <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />}
+                    </>
+                  )}
+                  {f ? (
+                    // Folded, a turn that called no tool still keeps its
+                    // thought in a run of its own: one line, opened by hand.
+                    !foldThought &&
+                    !f.bottom &&
+                    (m.thinking || m.liveThinking) && (
+                      <ToolRun steps={[]} doneLabel={t("cmThought")}>
+                        <div className="cm-think-body">
+                          {[m.thinking, m.liveThinking].filter(Boolean).join("\n\n")}
+                        </div>
+                      </ToolRun>
+                    )
+                  ) : (
+                    m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />
+                  )}
                   {m.text && (
                     <div className="cm-asst-text answer" data-copy={m.text}>
                       <Markdown>{m.text}</Markdown>
@@ -2382,12 +2822,45 @@ export function CodeMode({
                       )}
                     </div>
                   )}
+                  {f?.bottom && (
+                    <ToolRun steps={[]} activity={f.bottom}>
+                      {m.liveThinking ? <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} /> : null}
+                    </ToolRun>
+                  )}
                   {m.changes && m.changes.length > 0 && (
                     <TurnChangesCard
                       changes={m.changes}
                       disabled={running}
                       onUndo={(paths) => void undoChanges(m, paths)}
                     />
+                  )}
+                  {m.planned && !m.paused && !running && mode === "plan" && m === msgs[msgs.length - 1] && m.text.trim() && (
+                    // The plan is written: carry it out — edits accepted, or
+                    // each one asked — or say what to change and keep planning.
+                    <div className="cm-plan-go">
+                      <span className="cm-plan-go-q">{t("planReady")}</span>
+                      <button
+                        className="cm-plan-go-btn primary"
+                        onClick={() => {
+                          pickMode("acceptEdits", false);
+                          void send(t("planGoMsg"));
+                        }}
+                      >
+                        {t("planGoAccept")}
+                      </button>
+                      <button
+                        className="cm-plan-go-btn"
+                        onClick={() => {
+                          pickMode("manual", false);
+                          void send(t("planGoMsg"));
+                        }}
+                      >
+                        {t("planGoManual")}
+                      </button>
+                      <button className="cm-plan-go-btn" onClick={() => inputRef.current?.focus()}>
+                        {t("planKeep")}
+                      </button>
+                    </div>
                   )}
                   {m.paused && !running && m === msgs[msgs.length - 1] && (
                     <button
@@ -2398,12 +2871,12 @@ export function CodeMode({
                       {t("cmContinue")}
                     </button>
                   )}
-                  {running && m === msgs[msgs.length - 1] && !m.text && !m.liveThinking && m.steps.length === 0 && (
+                  {!collapseTools && running && m === msgs[msgs.length - 1] && !m.text && !m.liveThinking && m.steps.length === 0 && (
                     prefill != null ? <PrefillRing frac={prefill} size={18} /> : <span className="cm-spin cm-working" />
                   )}
                 </div>
-              ),
-            )}
+              );
+            })}
             </div>
           )}
         </div>
@@ -2421,14 +2894,12 @@ export function CodeMode({
           {/* What the agent is doing sits inside the composer, as chat's
               status line does: above it, the transcript's fade covered it. */}
           {running && (() => {
+            // The same words the folded run uses — what is going on now, the
+            // tool it is by name — whichever way the steps are shown.
             const cur = msgs[msgs.length - 1];
-            const curStep = cur?.steps?.[cur.steps.length - 1];
+            const act = cur && cur.role !== "user" ? foldOf(cur, true).activity : null;
             const label =
-              prefill != null
-                ? t("cmPrefill")
-                : curStep && curStep.status === "running"
-                  ? stepSummary(curStep)
-                  : t("cmRunning");
+              prefill != null ? t("cmPrefill") : act ? <ActivityLabel activity={act} /> : t(cur?.role === "user" ? "cmRunning" : "actReplying");
             return (
               <div className="cm-runbar">
                 {prefill != null ? <PrefillRing frac={prefill} /> : <span className="cm-spin" />}
@@ -2554,10 +3025,10 @@ export function CodeMode({
               disabled={!model || !workspace}
               onChange={(e) => { setInput(e.target.value); setSlashSel(0); setAtHidden(false); }}
               onKeyDown={(e) => {
-                // Shift+Tab toggles auto-approve, mirroring Claude Code.
+                // Shift+Tab cycles the permission modes, as in Claude Code.
                 if (e.key === "Tab" && e.shiftKey) {
                   e.preventDefault();
-                  toggleBypass();
+                  cycleMode();
                   return;
                 }
                 if (atMenu.length > 0) {
@@ -2588,12 +3059,7 @@ export function CodeMode({
                 if (sends) {
                   e.preventDefault();
                   if (running) {
-                    // Queue it — sent automatically once the current turn ends.
-                    const q = input.trim();
-                    if (q) {
-                      setQueue((cur) => [...cur, q]);
-                      setInput("");
-                    }
+                    void sendWhileRunning();
                     return;
                   }
                   void send();
@@ -2662,14 +3128,7 @@ export function CodeMode({
                 );
               })}
             </div>
-            <button
-              className={`cm-bypass ${bypass ? "on" : ""}`}
-              onClick={toggleBypass}
-              title={t("cmBypassHint")}
-            >
-              <Icon name="bolt" size={12} strokeWidth={1.9} />
-              <span className="cm-head-label">{t("cmBypass")}</span>
-            </button>
+            <PermModePicker mode={mode} onPick={pickMode} />
             <span className="cm-status-spacer" />
             {ctxUsed > 0 && ctxTotal > 0 && <ContextRing used={ctxUsed} total={ctxTotal} />}
           </div>

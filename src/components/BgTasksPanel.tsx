@@ -26,14 +26,20 @@ export function BgTasksPanel({
   const confirm = useConfirm();
   // Hung under the control that opened it, and kept off the window's edge —
   // pinned to the right edge it sat flush against it. Re-placed on resize.
-  const [, setResized] = useState(0);
+  const [resized, setResized] = useState(0);
   useEffect(() => {
     const onResize = () => setResized((n) => n + 1);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
   const EDGE = 32;
-  const anchor = anchorRef?.current?.getBoundingClientRect();
+  // Where it hangs is taken when it opens, and again on a resize — not on
+  // every render: the pill narrows as its jobs end and is gone once they are
+  // cleared, and the panel followed it sideways, then to the window's edge.
+  const pin = useRef<{ at: number; rect: DOMRect } | null>(null);
+  const live = anchorRef?.current?.getBoundingClientRect();
+  if (live && (!pin.current || pin.current.at !== resized)) pin.current = { at: resized, rect: live };
+  const anchor = pin.current?.rect;
   const width = Math.min(460, window.innerWidth - 2 * EDGE);
   const place = anchor
     ? {

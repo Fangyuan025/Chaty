@@ -31,6 +31,8 @@ import { decodeAudio, playAudio, primeAudioPlayback } from "../lib/audio";
 import { CODE_THEMES, type CodeTheme } from "../lib/codeTheme";
 import { useConfirm } from "./ConfirmModal";
 import { Select } from "./Select";
+import { PERM_LABEL } from "./PermModePicker";
+import { LASTING_MODES, type PermMode } from "../lib/permMode";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { loadMcpServers, saveMcpServers, syncMcpServers, type McpServerCfg } from "../lib/mcp";
 import catalog from "../lib/mcpStore.catalog.json";
@@ -126,8 +128,9 @@ export interface GenSettings extends ImageSettings, MusicSettings {
   codeToolFallback: "xml" | "json";
   /** Shell id commands run in ("" = this platform's default; issue #19). */
   codeShell: string;
-  /** Code mode: file edits (write/edit/multi_edit) run without approval. */
-  codeAutoApproveEdits: boolean;
+  /** Code mode: the permission mode it starts in — auto, manual or accept
+   *  edits (plan and bypass are picked for a while, not remembered). */
+  codePermMode: PermMode;
   /** Code mode: obviously read-only bash commands run without approval. */
   codeAutoRunReadOnly: boolean;
   /** Code mode: run the agent's browser hidden (headless). */
@@ -138,6 +141,8 @@ export interface GenSettings extends ImageSettings, MusicSettings {
   /** Code mode: a write/edit card is open while its call is being written
    *  (the diff grows in view); off, it stays folded to its header. */
   codeLiveCardsOpen: boolean;
+  /** Fold the tool calls between two things the model says into one line. */
+  codeCollapseTools: boolean;
   /** Code mode: user-defined skills (named prompt templates, invoked via /). */
   codeSkills: PromptPreset[];
   /** Code mode: names of built-in skills the user turned off. */
@@ -215,12 +220,13 @@ export const defaultSettings: GenSettings = {
   codeToolFormat: "auto",
   codeToolFallback: "xml",
   codeShell: "",
-  codeAutoApproveEdits: false,
+  codePermMode: "manual",
   codeAutoRunReadOnly: true,
   codeBrowserHeadless: false,
   codeMemory: true,
   codeGroupByWorkspace: false,
   codeLiveCardsOpen: true,
+  codeCollapseTools: false,
   codeSkills: [],
   codeDisabledSkills: [],
   codeAllowedCommands: [],
@@ -1643,10 +1649,13 @@ export function SettingsPanel({
                 />
               </SetRow>
               <div className="settings-section">{t("secPermissions")}</div>
-              <SetRow label={t("cmAutoEdits")} hint={t("cmAutoEditsHint")}>
-                <Switch
-                  on={value.codeAutoApproveEdits}
-                  onToggle={() => set("codeAutoApproveEdits", !value.codeAutoApproveEdits)}
+              <SetRow label={t("cmPermMode")} hint={t("cmPermModeHint")}>
+                <Select
+                  className="field-select"
+                  value={value.codePermMode}
+                  ariaLabel={t("cmPermMode")}
+                  onChange={(v) => set("codePermMode", v as PermMode)}
+                  options={LASTING_MODES.map((m) => ({ value: m, label: t(PERM_LABEL[m]) }))}
                 />
               </SetRow>
               <SetRow label={t("cmAutoReadOnly")} hint={t("cmAutoReadOnlyHint")}>
@@ -1698,6 +1707,12 @@ export function SettingsPanel({
                 <Switch
                   on={value.codeLiveCardsOpen}
                   onToggle={() => set("codeLiveCardsOpen", !value.codeLiveCardsOpen)}
+                />
+              </SetRow>
+              <SetRow label={t("cmCollapseTools")} hint={t("cmCollapseToolsHint")}>
+                <Switch
+                  on={value.codeCollapseTools}
+                  onToggle={() => set("codeCollapseTools", !value.codeCollapseTools)}
                 />
               </SetRow>
               <SetRow label={t("cmGroupByWs")} hint={t("cmGroupByWsHint")}>

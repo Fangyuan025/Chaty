@@ -638,6 +638,17 @@ const RICH_README = [
 /** `?sources=web` / `?sources=kb`: the last answer of the showcase chat cites
  *  web pages / knowledge-base passages, to look at the sources under it. */
 const DEMO_SOURCES = new URLSearchParams(window.location.search).get("sources");
+/** Background jobs in the preview, stopped and cleared for real. */
+const MOCK_BG = [
+  { id: 2, command: "npm run dev", running: true, code: null as number | null, killed: false, elapsedSecs: 94, tail: "" },
+  { id: 1, command: "npm test -- --run", running: false, code: 0 as number | null, killed: false, elapsedSecs: 12, tail: "" },
+];
+/** The agent's files in the preview: written and edited for real, so a diff
+ *  (and the +N/−M the cards and folded runs show) has something to count. */
+const MOCK_FS = new Map<string, string>([
+  ["src/parser.ts", "export function parse(s: string) {\n  const out = [];\n  for (const ch of s) out.push(ch);\n  return out;\n}\n"],
+  ["package.json", '{\n  "name": "parser-kit",\n  "scripts": { "test": "vitest run" }\n}\n'],
+]);
 /** `?long=N`: every conversation is the showcase N times over — a long
  *  history, for measuring what typing and streaming cost beside it. */
 const LONG_REPEAT = Number(new URLSearchParams(window.location.search).get("long") ?? 0);
@@ -1122,7 +1133,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       // the preview (the fixtures alone made every session immortal).
       const id = String(args?.id ?? "");
       const i = SAVED_CODE_SESSIONS.findIndex((s) => s.id === id);
-      const meta = { id, title: String(args?.title ?? "session"), workspace: String(args?.workspace ?? "") };
+      const meta = { id, title: String(args?.title ?? "session"), workspace: String(args?.workspace ?? ""), updatedAt: Date.now() };
       if (i >= 0) SAVED_CODE_SESSIONS[i] = meta;
       else SAVED_CODE_SESSIONS.unshift(meta);
       SAVED_CODE_BODIES.set(id, String(args?.data ?? "[]"));
@@ -1229,7 +1240,36 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       GRANTS.length = 0;
       return null;
     case "agent_bash":
-      return { stdout: "(preview) cowsay installed", stderr: "", code: 0, timedOut: false };
+      return /npm test|vitest/.test(String(args?.command ?? ""))
+        ? { stdout: " ✓ src/parser.test.ts (4 tests)\n Test Files  1 passed (1)\n      Tests  4 passed (4)", stderr: "", code: 0, timedOut: false }
+        : { stdout: "(preview) cowsay installed", stderr: "", code: 0, timedOut: false };
+    case "agent_read_file_raw": {
+      const f = MOCK_FS.get(String(args?.path ?? ""));
+      if (f == null) throw "文件不存在 (no such file)";
+      return f;
+    }
+    case "agent_write_file": {
+      const path = String(args?.path ?? "");
+      const content = String(args?.content ?? "");
+      MOCK_FS.set(path, content);
+      return `已写入 ${path} (${content.split("\n").length} 行)`;
+    }
+    case "agent_edit_file": {
+      const path = String(args?.path ?? "");
+      const cur = MOCK_FS.get(path);
+      const oldS = String(args?.oldString ?? "");
+      if (cur == null || !cur.includes(oldS)) throw `old_string 在 ${path} 里找不到`;
+      MOCK_FS.set(path, cur.replace(oldS, String(args?.newString ?? "")));
+      return `已编辑 ${path}`;
+    }
+    case "agent_list_dir":
+      return [
+        { name: "src", isDir: true, size: 0 },
+        { name: "package.json", isDir: false, size: 72 },
+        { name: "README.md", isDir: false, size: 240 },
+      ];
+    case "agent_grep":
+      return "src/parser.ts:1:export function parse(s: string) {\nsrc/parser.ts:3:  for (const ch of s) out.push(ch);";
     case "agent_read_file": {
       const path = String(args?.path ?? "");
       if (path.startsWith(SECRET_DIR)) {
@@ -1249,12 +1289,15 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "agent_bg_reap":
       return [];
     // A dev server still up and a test run that finished, so the background
-    // tasks panel has something to show in the browser.
+    // tasks panel has something to show in the browser — stopped and cleared
+    // for real, so the panel can be watched emptying.
     case "agent_bg_all":
-      return [
-        { id: 2, command: "npm run dev", running: true, code: null, killed: false, elapsedSecs: 94, tail: "" },
-        { id: 1, command: "npm test -- --run", running: false, code: 0, killed: false, elapsedSecs: 12, tail: "" },
-      ];
+      return MOCK_BG.map((j) => ({ ...j }));
+    case "agent_bg_kill": {
+      const j = MOCK_BG.find((x) => x.id === Number(args?.id));
+      if (j) Object.assign(j, { running: false, killed: true });
+      return null;
+    }
     case "agent_bg_log":
       return {
         id: Number(args?.id ?? 0),
@@ -1265,8 +1308,11 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         elapsedSecs: 94,
         tail: "  VITE v5.4.2  ready in 312 ms\n\n  ➜  Local:   http://localhost:5173/\n",
       };
-    case "agent_bg_clear_finished":
-      return 1;
+    case "agent_bg_clear_finished": {
+      const n = MOCK_BG.filter((j) => !j.running).length;
+      MOCK_BG.splice(0, MOCK_BG.length, ...MOCK_BG.filter((j) => j.running));
+      return n;
+    }
     case "agent_set_session":
       return null;
     case "agent_checkpoint_changes":
@@ -1304,6 +1350,10 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       const wantsDate = msgs.some((m) => m.role === "user" && /日期|今天|date|today/i.test(m.content));
       const sysMsg = msgs.find((m) => m.role === "system")?.content ?? "";
       const dateEcho = (sysMsg.match(/当前日期时间:([^\n]+)/) || sysMsg.match(/Current date & time: ([^\n]+)/) || [])[1];
+      // Typing a task with 演示/demo runs a scripted multi-step turn: words,
+      // then reads and a search; words, then a file created and one edited;
+      // words, then the tests — the folded view's runs and their summaries.
+      const wantsDemo = msgs.some((m) => m.role === "user" && /演示|demo/i.test(m.content));
       const fast = wantsOutside || wantsSudo || wantsDate;
       // Thinking first, so the preview exercises the think panel (and stopping
       // a turn mid-thought, which is where its spinner used to stay turning).
@@ -1312,7 +1362,21 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         Array.from({ length: 24 }, (_, i) => `第 ${i + 1} 步:读一点、想一点、再决定下一步该做什么。`).join("\n") +
         "\n</think>\n\n" +
         "收到。这是浏览器预览的模拟输出 — the mock stream after a simulated prompt-processing phase.";
-      if (isTitleReq) {
+      const demoStep = msgs.filter((m) => m.role !== "system" && /<tool_result/.test(m.content)).length;
+      const call = (name: string, a: Record<string, unknown>) => `<tool_call>${JSON.stringify({ name, arguments: a })}</tool_call>`;
+      const DEMO = [
+        "<think>先摸清结构。</think>\n先看看现有的代码结构。\n" + call("list_dir", { path: "." }),
+        "<think>看 parser。</think>\n" + call("read_file", { path: "src/parser.ts" }),
+        "<think>找调用点。</think>\n" + call("grep", { pattern: "parse" }),
+        "<think>拆出 tokenizer。</think>\n结构清楚了:把逐字符切分拆成独立的 tokens 模块,再让 parser 用它。\n" +
+          call("write_file", { path: "src/tokens.ts", content: "export function tokenize(s: string): string[] {\n  return [...s];\n}\n" }),
+        "<think>改 parser。</think>\n" +
+          call("edit_file", { path: "src/parser.ts", old_string: "  const out = [];\n  for (const ch of s) out.push(ch);\n  return out;", new_string: "  return tokenize(s);" }),
+        "<think>验证。</think>\n改完了,跑一下测试确认没破坏原有行为。\n" + call("bash", { command: "npm test" }),
+        "<think>都通过了。</think>\n完成:新增 `src/tokens.ts`,`parser.ts` 改为调用它,4 个测试全部通过。",
+      ];
+      if (wantsDemo && !isTitleReq) reply = DEMO[Math.min(demoStep, DEMO.length - 1)];
+      else if (isTitleReq) {
         reply = /dataset manifest/i.test(last) ? "Summarize dataset manifest" : "读取数据集清单";
       } else if (wantsDate && dateEcho) {
         reply = `根据系统提示,当前日期时间是:${dateEcho}`;

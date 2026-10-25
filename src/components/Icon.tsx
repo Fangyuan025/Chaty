@@ -22,6 +22,12 @@ const PATHS: Record<string, string> = {
   image: "M5 4.5h14A1.5 1.5 0 0120.5 6v12a1.5 1.5 0 01-1.5 1.5H5A1.5 1.5 0 013.5 18V6A1.5 1.5 0 015 4.5zM3.5 16l5-5 4 4 2.5-2.5 5 5M15.5 9.5a1.5 1.5 0 100-.01",
   // Auto-approve: runs without asking.
   bolt: "M13.5 3L5.5 13.5h6L10.5 21l8-10.5h-6L13.5 3z",
+  // The other permission modes: Chaty judges, it asks, edits go through,
+  // it plans.
+  shield: "M12 3.5l7 2.8v5.4c0 4.3-2.9 8-7 9.3-4.1-1.3-7-5-7-9.3V6.3l7-2.8z",
+  lock: "M7.5 10.5V8a4.5 4.5 0 019 0v2.5M5.5 10.5h13v10h-13z",
+  pencil: "M4.5 19.5l1-4.5L15.8 4.7a1.6 1.6 0 012.3 0l1.2 1.2a1.6 1.6 0 010 2.3L9 18.5l-4.5 1zM13.8 6.7l3.5 3.5",
+  map: "M9 4.5l-5.5 2v13l5.5-2 6 2 5.5-2v-13l-5.5 2-6-2zM9 4.5v13M15 6.5v13",
   refresh: "M20 12a8 8 0 11-2.34-5.66L20 8.5M20 3.5v5h-5",
   eject: "M12 5l7 8H5l7-8zM5 18.5h14",
   // The music studio: a note, and a voice.
