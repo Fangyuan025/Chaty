@@ -21,6 +21,13 @@ describe("output that has stopped carrying information", () => {
     expect(looksDegenerate("ab".repeat(300))).toBe(false);
   });
 
+  test("a longer cycle of digits and marks — Gemma-4's opening thought", () => {
+    expect(looksDegenerate("<|channel>thought\n6" + "42327".repeat(300))).toBe(true);
+    expect(looksDegenerate("x = " + "1, 0, ".repeat(160))).toBe(true);
+    // Not until it has gone round long enough to be nothing else.
+    expect(looksDegenerate("ids: " + "42327".repeat(100))).toBe(false);
+  });
+
   test("nothing shorter than the window is ever cut", () => {
     expect(looksDegenerate("!".repeat(399))).toBe(false);
     expect(looksDegenerate("")).toBe(false);

@@ -22,9 +22,9 @@ describe("the XML tool format, when a turn asks for it", () => {
     const xml = systemPrompt("/ws", true, "off", undefined, false, false, undefined, undefined, "xml");
     expect(xml).toContain("<function=工具名>");
     expect(xml).toContain("<parameter=参数名>");
-    expect(xml).not.toContain('只输出一行 <tool_call>{"name"');
+    expect(xml).not.toContain('输出一行 <tool_call>{"name"');
     const json = systemPrompt("/ws", true, "off");
-    expect(json).toContain('只输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call>');
+    expect(json).toContain('输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call>');
     expect(json).not.toContain("<function=");
   });
 

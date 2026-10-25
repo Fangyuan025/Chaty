@@ -5,17 +5,17 @@ import { describe, expect, test } from "vitest";
 (globalThis as Record<string, unknown>).window = globalThis;
 const { mockIPC } = await import("@tauri-apps/api/mocks");
 mockIPC(() => Promise.resolve(null));
-const { systemPrompt, agentSetEditAnchors, nowLine } = await import("./agentLoop");
+const { systemPrompt, agentSetEditAnchors, nowLine, grantsLine, planLine } = await import("./agentLoop");
 const { setHistoryToolEnabled } = await import("./toolRegistry");
 // The app always runs a turn inside a session, so search_history is part of
 // every prompt it sends: measure what ships, not a prompt nobody gets.
 setHistoryToolEnabled(true);
 
 const variants = [
-  { zh: true, vision: false, label: "zh plain", maxChars: 4240 },
-  { zh: true, vision: true, label: "zh vision", maxChars: 5550 },
-  { zh: false, vision: false, label: "en plain", maxChars: 7370 },
-  { zh: false, vision: true, label: "en vision", maxChars: 9480 },
+  { zh: true, vision: false, label: "zh plain", maxChars: 4360 },
+  { zh: true, vision: true, label: "zh vision", maxChars: 5670 },
+  { zh: false, vision: false, label: "en plain", maxChars: 7713 },
+  { zh: false, vision: true, label: "en vision", maxChars: 9823 },
 ] as const;
 // Caps anchored to the post-slimming sizes (2026-07 WS1: 3545 / 4432 / 6031 /
 // 7516 JS chars at think=normal, no project doc; before slimming they were
@@ -85,6 +85,17 @@ const variants = [
 //   (top-level await, the last expression's value as the result): a body with
 //   `const` and no `return` used to come back undefined, and `await` in one
 //   was a syntax error.
+
+//   2026-10-24  all four +120 zh / +343 en — a word after each small step.
+//   The call rule forbade any prose in a message that made a call, so the
+//   user watched a run of tool cards with no idea how it was going; it now
+//   forbids only what comes after the call, and a rule asks for a sentence
+//   or two after each small step — outside the thinking, which the user
+//   usually doesn't see (Qwen3.5 9B wrote exactly that sentence every step,
+//   inside its thought). With the app's sampling, one run each, before →
+//   after: Qwen3.6 35B 3 of 19 calls with words, 721 s, tests failing → 2
+//   of 4, 77 s, passing; Qwen3.5 9B 0/14, 519 s → 0/4, 101 s; Gemma-4 26B
+//   0/3, 70 s → 0/4, 95 s — the small two keep it in their thought.
 
 describe("systemPrompt size gate", () => {
   for (const v of variants) {
@@ -204,5 +215,24 @@ describe("systemPrompt behavior contracts", () => {
     expect(nowLine(false, at)).toMatch(/Current date & time/);
     // At the tail, so it is never part of what an earlier turn established.
     expect(nowLine(true, at).startsWith("\n\n")).toBe(true);
+  });
+
+  test("the turn names the folders granted outside the workspace, and says once when they are gone", () => {
+    const line = grantsLine(["/Users/me/data", "/opt/assets"], true, []);
+    expect(line).toContain("/Users/me/data、/opt/assets");
+    expect(grantsLine(["/x"], false, [])).toMatch(/Folders outside the workspace/);
+    // None now: silent unless the model was told of some.
+    expect(grantsLine([], true, [])).toBe("");
+    const told = [{ role: "user" as const, content: "改一下" + line }];
+    const revoked = grantsLine([], true, told);
+    expect(revoked).toContain("撤销");
+    expect(grantsLine([], true, [...told, { role: "user" as const, content: "继续" + revoked }])).toBe("");
+    // Not in the system prompt: a grant would change it, and re-read it all.
+    expect(systemPrompt("/w", true, "normal")).not.toContain("工作区外可以访问的目录");
+  });
+
+  test("plan mode is said on the turn", () => {
+    expect(planLine(true)).toContain("计划模式");
+    expect(planLine(false)).toMatch(/^\n\n\(Plan mode/);
   });
 });

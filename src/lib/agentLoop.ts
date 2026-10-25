@@ -105,6 +105,7 @@ import {
   compactValue,
   callAt,
   callRegion,
+  callingName,
   liveFileCall,
   unCdata,
   XML_COMPACT,
@@ -236,6 +237,9 @@ export interface AgentCallbacks {
    *  call runs, as it always did. Kept apart from onStep, which counts steps. */
   onLiveStep?: (step: ToolStep) => void;
   onLiveStepGone?: (id: string) => void;
+  /** A call is being written: the tool's name once it is in ("" before),
+   *  null when none is (any more). */
+  onCalling?: (name: string | null) => void;
   /** The exact text the model was given for a step, where it differs from the
    *  card's copy (`step.result`: trimmed for the renderer, and without the
    *  notes appended for the model). The host keeps it outside the session. */
@@ -382,9 +386,12 @@ export interface AgentOptions {
   /** Absolute paths of images the user attached to this turn (vision models). */
   images?: string[];
   signal: AgentSignal;
-  /** Gate a mutating tool call. Return true to run, false to deny. Bypass mode
-   *  passes a function that always resolves true. */
-  approve: (call: ToolCall) => Promise<boolean>;
+  /** Gate a mutating tool call. Return true to run, false to deny, "plan"
+   *  to send it back unrun because the user is planning (plan mode). Bypass
+   *  mode passes a function that always resolves true. */
+  approve: (call: ToolCall) => Promise<boolean | "plan">;
+  /** Plan mode: this turn researches and proposes; it changes nothing. */
+  planMode?: boolean;
   /** The model tried to touch a path OUTSIDE the workspace: ask the user
    *  whether to grant access to `dir` for this session. Granting retries the
    *  tool call transparently. */
@@ -452,6 +459,9 @@ export function turnCall(raw: string): ToolCall | null {
   return callStart(region) === -1 ? parseToolCall(region) : null;
 }
 
+/** Calls in a row without a word before the agent is reminded to say one. */
+const SILENT_CALLS = 3;
+
 /** Prose outside every think block and before any tool call. */
 function proseAfter(raw: string): string {
   let t = normalizeChannels(withoutToolCallSpans(raw));
@@ -463,6 +473,20 @@ function proseAfter(raw: string): string {
   if (open !== -1) t = t.slice(0, open); // still thinking → prose so far only
   const tc = callStart(t);
   return (tc === -1 ? t : t.slice(0, tc)).trim();
+}
+
+/** The first characters every call opener shares — see callStart. */
+const CALL_OPENERS = ["<tool_call>", "<|tool_call>", "<|tool_call_start|>", "<function=", "<ifm|tool_call", "<function name="];
+
+/** The words so far, as the answer box shows them while they stream: a call
+ *  whose opener is only partly written (`<tool_`, `<|tool`) is not words —
+ *  held back, it no longer flashes up as text for a token or two. */
+function streamingProse(raw: string): string {
+  const t = proseAfter(raw);
+  const lt = t.lastIndexOf("<");
+  if (lt === -1) return t;
+  const tail = t.slice(lt);
+  return CALL_OPENERS.some((o) => o.startsWith(tail)) ? t.slice(0, lt).trimEnd() : t;
 }
 
 // ── Hashline anchor mode ──
@@ -554,9 +578,18 @@ export function looksDegenerate(text: string): boolean {
   const CYCLE = 800;
   if (text.length < CYCLE) return false;
   const tail = text.slice(-CYCLE);
-  for (let n = 2; n <= 4; n++) {
-    const unit = tail.slice(0, n);
-    if (unit.repeat(Math.ceil(CYCLE / n)).slice(0, CYCLE) === tail) return true;
+  const periodic = (n: number) => {
+    for (let i = n; i < CYCLE; i++) if (tail[i] !== tail[i - n]) return false;
+    return true;
+  };
+  for (let n = 2; n <= 4; n++) if (periodic(n)) return true;
+  // A longer cycle with no word in it — digits and marks going round. Gemma-4
+  // on MLX was seen opening a thought with "42327" over and over, a five-
+  // character cycle past the four above: it ran to the 24,576-token cap each
+  // time, twelve minutes of digits, three times in one turn. A cycle with a
+  // letter in it ("very very very") is still left alone.
+  for (let n = 5; n <= 16; n++) {
+    if (periodic(n) && !/\p{L}/u.test(tail.slice(0, n))) return true;
   }
   return false;
 }
@@ -594,6 +627,31 @@ export function nowLine(zh: boolean, at: Date = new Date()): string {
   return zh
     ? `\n\n(当前日期时间:${dateStr} ${timeStr}——涉及"今天/现在/最近"以此为准,不要凭训练数据猜。)`
     : `\n\n(Current date & time: ${dateStr}, ${timeStr} — use this for "today/now/recent", don't guess from training data.)`;
+}
+
+const GRANTS_ZH = "(工作区外可以访问的目录(用户已授权,用绝对路径访问):";
+const GRANTS_EN = "(Folders outside the workspace you may also use (granted by the user; use absolute paths): ";
+const REVOKED_ZH = "(工作区外的目录授权已全部撤销。)";
+const REVOKED_EN = "(Access to folders outside the workspace has been withdrawn.)";
+
+/** The folders outside the workspace this session may use, for the user's
+ *  turn — not the system prompt, which a grant would change and so re-read
+ *  whole. Said again each turn while there are any; that they are gone, once. */
+export function grantsLine(dirs: string[], zh: boolean, history: ChatMessage[]): string {
+  if (dirs.length) return zh ? `\n\n${GRANTS_ZH}${dirs.join("、")})` : `\n\n${GRANTS_EN}${dirs.join(", ")})`;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const c = history[i].role === "user" ? history[i].content : "";
+    if (c.includes(REVOKED_ZH) || c.includes(REVOKED_EN)) return "";
+    if (c.includes(GRANTS_ZH) || c.includes(GRANTS_EN)) return `\n\n${zh ? REVOKED_ZH : REVOKED_EN}`;
+  }
+  return "";
+}
+
+/** Plan mode's word to the model, on the user's turn. */
+export function planLine(zh: boolean): string {
+  return zh
+    ? "\n\n(计划模式:这一轮只调研、不改动——不要写或改文件,也不要运行会改变东西的命令。读完需要的代码和资料后,把具体方案写成回答:改哪些文件、怎么改、怎么验证。用户同意后才会开始执行。)"
+    : "\n\n(Plan mode: research only this turn — don't write or edit files, or run commands that change anything. Once you've read what you need, write the concrete plan as your answer: which files change, how, and how you'll verify it. Nothing is carried out until the user approves the plan.)";
 }
 
 export function systemPrompt(
@@ -672,6 +730,7 @@ ${callRule(true, toolFormat)}
 - 改完代码先用 validate_change 验证(它会自己找相关测试、只跑最小集);它找不到测试时再用 bash 跑项目自己的命令。
 - **换路原则:同一手段连续两次没带来新进展,就必须换一种做法**——搜索搜不到就 web_fetch 直抓或开浏览器;页面文字摘要看不明白就截图亲眼看;命令报同样的错就换方案。把同一动作原样再试第三遍,几乎不会有不同结果。
 - 任务较复杂时,先用 update_plan 列出待办步骤,推进中及时更新状态;需要用户拍板时用 ask_user 提问。
+- 每做完一小步(读完要看的文件、改完一个文件、跑完一条命令),在下一个调用前先用一两句话告诉用户刚才做了什么、发现了什么、接下来做什么——写在思考之外,用户通常看不到你的思考。不要一连好几个调用都不说话,只有紧接着的同类动作(接着读同一批文件)可以不说。
 - 任务完成后,不要再调用工具,直接用简洁的中文总结你做了什么;简短回答不加标题。
 - **不用 emoji**:回答和写进文件的内容都不用(美观、吸引人不是理由),除非用户明确要你用 emoji。
 - 谨慎对待 write_file / edit_file / bash(它们会真实改动文件或执行命令)。
@@ -690,6 +749,7 @@ ${callRule(false, toolFormat)}
 - Commands that don't exit quickly (dev servers, npm run dev, long builds) MUST run via bash_bg; check they started with bg_output, and bg_kill them when done.
 - **Switch-strategy rule: when the same approach brings no new progress twice in a row, change approach** — search coming up empty → web_fetch a likely URL directly or open the browser; a page's text digest you can't make sense of → screenshot and look with your own eyes; a command failing the same way → different plan. Running the same move a third time unchanged almost never ends differently.
 - For non-trivial tasks, lay out a todo list with update_plan first and keep its statuses current as you go; use ask_user when a decision is the user's to make.
+- After each small step (the files you needed read, a file edited, a command run), write a sentence or two before your next call: what you just did or found, and what you'll do next — outside your thinking, which the user usually doesn't see. Never make several calls in a row without a word; only a call that carries straight on (the next file of the same batch) needs none.
 - When done, DON'T call a tool — just give a concise summary of what you did; no headings on a short answer.
 - **No emoji** — in answers or in files you write ("attractive" is not a reason) — unless the user explicitly asks for emoji.
 - Be careful with write_file / edit_file / bash (they really change files / run commands).
@@ -3372,6 +3432,15 @@ export async function runAgentTurn(
   // The user's opening turn carries any attached images (vision models only);
   // otherwise it's plain text as before.
   const userImages = opts.visionReady && opts.images?.length ? opts.images : undefined;
+  // Folders the session may use outside the workspace — added from the
+  // header, they were invisible to the model until a call happened to ask.
+  let grants: string[] = [];
+  try {
+    const got: unknown = await agentListGrants();
+    if (Array.isArray(got)) grants = got.map(String);
+  } catch {
+    /* no backend (tests) */
+  }
   const messages: ChatMessage[] = [
     {
       role: "system",
@@ -3393,6 +3462,8 @@ export async function runAgentTurn(
       content:
         userInput +
         (opts.resume ? resumeNudge(opts.resume, lang === "zh") : "") +
+        grantsLine(grants, lang === "zh", history) +
+        (opts.planMode ? planLine(lang === "zh") : "") +
         nowLine(lang === "zh") +
         turnSuffix,
       ...(userImages ? { images: userImages } : {}),
@@ -3419,6 +3490,9 @@ export async function runAgentTurn(
     }
   }
   const jitShown = new Set<HintKey>(); // per-turn: hints re-arm next turn
+  // Calls in a row with no word to the user, and how often that was said.
+  let silentCalls = 0;
+  let silentNudges = 0;
   /** What the last step sent, to check the next one is an append of it. */
   let sentShape: SentShape[] | null = null;
   // The step whose result has not been pushed yet — the next tool_result is its.
@@ -3633,6 +3707,9 @@ export async function runAgentTurn(
     id: string;
     view: LiveView;
     thinking: string;
+    /** What the model said before the call — on the card from the start, so
+     *  the run it opens is its own while it is still being written. */
+    said: string;
     before?: string;
     readPath?: string;
     read?: Promise<void>;
@@ -3663,6 +3740,7 @@ export async function runAgentTurn(
       call: { name: cur.view.name, args: cur.view.path ? { path: cur.view.path } : {} },
       status: "running",
       thinking: cur.thinking || undefined,
+      ...(cur.said ? { said: cur.said } : {}),
       live: { ...cur.view, before: cur.before, pending: true },
     });
   };
@@ -3670,9 +3748,10 @@ export async function runAgentTurn(
     if (!cb.onLiveStep) return;
     const view = liveFileCall(raw);
     if (!view) return;
-    if (!live) live = { id: uid(), view, thinking: shownThought(raw), claimed: false, settled: false };
+    if (!live) live = { id: uid(), view, thinking: shownThought(raw), said: "", claimed: false, settled: false };
     const cur = live;
     cur.view = view;
+    cur.said = proseAfter(raw);
     // The file as it stands, read once its path has arrived: a rewrite is
     // shown against it, and an edit among the lines around it.
     if (view.path && cur.readPath !== view.path) {
@@ -3818,6 +3897,7 @@ export async function runAgentTurn(
       /** The engine's own count of this step's prompt, when it refused it. */
       let overflowAt = 0;
       let liveTokens = 0;
+      let calling: string | null = null;
       let budgetTripped = false;
       let degenerated = false;
       let closersCut = false;
@@ -3935,7 +4015,15 @@ export async function runAgentTurn(
             // Once a live card is up, the reasoning that led to it rides on
             // the card, above it, as it does on every finished step.
             if (!live) cb.onThinking(shownThought(raw));
-            cb.onAssistantText(proseAfter(raw));
+            // Words a live card already carries are shown there, not here too.
+            cb.onAssistantText(live?.said ? "" : streamingProse(raw));
+            if (cb.onCalling) {
+              const name = callingName(raw);
+              if (name !== calling) {
+                calling = name;
+                cb.onCalling(name);
+              }
+            }
             if (cb.onLiveStep && performance.now() - liveShownAt >= LIVE_CARD_MS) {
               liveShownAt = performance.now();
               showLive(raw);
@@ -4025,6 +4113,7 @@ export async function runAgentTurn(
         return;
       }
       cb.onTrace?.({ kind: "raw", text: raw });
+      if (calling !== null) cb.onCalling?.(null);
       // The call as it finished, and the file it is shown against, before
       // anything can take the card over.
       if (cb.onLiveStep && !opts.signal.cancelled) {
@@ -4699,7 +4788,10 @@ export async function runAgentTurn(
         const todos = parsePlan(call.args);
         currentPlan = todos;
         cb.onPlan?.(todos);
-        if (stepObj.said) cb.onSaid?.(stepObj.said);
+        if (stepObj.said) {
+          cb.onSaid?.(stepObj.said);
+          silentCalls = 0;
+        }
         // Echo the statuses back: the panel is for the user — this line is
         // the only way the plan re-enters the MODEL's context.
         pushUser(toolResultMsg("update_plan", planEcho(todos, lang)));
@@ -4920,6 +5012,20 @@ export async function runAgentTurn(
       if ((MUTATING_TOOLS.has(call.name) || needsApproval(call.name)) && !isSudo) {
         const ok = await opts.approve(call);
         if (opts.signal.cancelled) return;
+        if (ok === "plan") {
+          stepObj.status = "denied";
+          stepObj.result = lang === "zh" ? "计划模式:未执行" : "plan mode: not run";
+          cb.onStep(stepObj);
+          pushUser(
+            toolResultMsg(
+              call.name,
+              lang === "zh"
+                ? "现在是计划模式:只调研、不改动,这个调用没有执行。不要再尝试修改文件;把方案写成回答交给用户,用户同意后才会开始执行。"
+                : "This is plan mode: research only, nothing gets changed — this call was not run. Don't try to change files again; write your plan as the answer, and it will be carried out once the user approves it.",
+            ),
+          );
+          continue;
+        }
         if (!ok) {
           stepObj.status = "denied";
           stepObj.result = lang === "zh" ? "已被用户拒绝" : "denied by the user";
@@ -5323,6 +5429,19 @@ export async function runAgentTurn(
           Boolean(turnSessionId) && asksAboutThePast(userInput),
         );
         if (hint) resultText += "\n\n" + hint;
+      }
+      // Quiet too long: the user watches a run of calls with no idea how it
+      // is going (owner: a word after every small step, never long silent).
+      // The rule says so up front; this says it where it happens, after the
+      // third quiet call — three times a turn at most.
+      silentCalls = stepObj.said ? 0 : silentCalls + 1;
+      if (silentCalls >= SILENT_CALLS && silentNudges < 3) {
+        silentCalls = 0;
+        silentNudges++;
+        resultText +=
+          lang === "zh"
+            ? "\n\n[系统提示] 你已经连续几次调用都没对用户说话——思考里写的,用户通常看不到。下一次调用前,在思考之外先用一两句话说明刚才做了什么、发现了什么、接下来做什么。"
+            : "\n\n[system note] Several calls in a row without a word to the user — what you write in your thinking, they usually don't see. Before your next call, say outside your thinking, in a sentence or two, what you just did or found and what's next.";
       }
       pushUser(toolResultMsg(call.name, resultText), { name: call.name, args: call.args });
     }

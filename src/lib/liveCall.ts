@@ -68,6 +68,22 @@ function callText(raw: string): string | null {
   return at === -1 ? null : raw.slice(at);
 }
 
+/** The tool a call being written is for: null while no call has begun, ""
+ *  until its name is written out whole — a half-written name is not one. */
+export function callingName(raw: string): string | null {
+  const s = callText(raw);
+  if (s === null) return null;
+  const m =
+    /^<\|tool_call>call:([\w.-]+)\s*\{/.exec(s) ??
+    /^<\|tool_call_start\|>\s*\[?\s*([\w.-]+)\s*\(/.exec(s) ??
+    /"name"\s*:\s*"([\w.-]+)"/.exec(s) ??
+    /<function=([\w.-]+)>/.exec(s) ??
+    /<function\s+name\s*=\s*["']?([\w.-]+)["'\s>]/.exec(s) ??
+    /<ifm\|tool_call>\s*([A-Za-z_][\w.-]*)\s/.exec(s) ??
+    /^<tool_call>\s*([A-Za-z_][\w.-]*)\s*(?:<arg_key>|<\/tool_call>)/.exec(s);
+  return m ? m[1] : "";
+}
+
 /** Where a turn's reasoning ends: past its last closing think marker — any
  *  family's (`</think>`, Gemma's `<channel|>`, K2's `</ifm|think…>`) — or -1. */
 export function thoughtEnd(raw: string): number {
