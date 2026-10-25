@@ -14,12 +14,9 @@ import {
   activityOf,
   deniedCount,
   failedCount,
-  isEditStep,
-  runFileChanges,
   segmentsOf,
   workSummary,
   type DiffCounter,
-  type RunFile,
   type WorkKind,
 } from "../lib/toolGroups";
 import { liveScan, type LiveScan } from "../lib/liveCall";
@@ -426,20 +423,16 @@ function StepCard({
   sessionId,
   onPreview,
   liveOpen = true,
-  pinOpen = false,
 }: {
   step: ToolStep;
   sessionId?: string | null;
   onPreview?: (path: string) => void;
   /** A live card opens while its call is written (Settings → Code). */
   liveOpen?: boolean;
-  /** Open whatever happens — a folded run's file being written. */
-  pinOpen?: boolean;
 }) {
   const { t } = useI18n();
   const live = step.live;
-  const [openState, setOpen] = useState(step.status === "error" || (!!live && liveOpen));
-  const open = pinOpen || openState;
+  const [open, setOpen] = useState(step.status === "error" || (!!live && liveOpen));
   // A live card opens while its call is written — when the setting says so —
   // and folds away once the call has run, unless the user has opened or
   // closed it by hand.
@@ -495,7 +488,7 @@ function StepCard({
   // Clicking an image step opens the preview directly; otherwise toggle the body.
   const onHead = () => {
     if (hasImage && step.image) onPreview?.(step.image);
-    else if (hasBody && !pinOpen) {
+    else if (hasBody) {
       touched.current = true;
       setOpen((o) => !o);
     }
@@ -643,7 +636,6 @@ function ToolRun({
   steps,
   activity,
   doneLabel,
-  folded,
   children,
 }: {
   steps: ToolStep[];
@@ -651,9 +643,6 @@ function ToolRun({
   activity?: Activity | null;
   /** The line of a run that is over and called no tool — only thought. */
   doneLabel?: string;
-  /** Shown under the line while the run is folded: the file being written,
-   *  or what the run did to its files. */
-  folded?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const { t, lang } = useI18n();
@@ -719,78 +708,7 @@ function ToolRun({
           </span>
         )}
       </button>
-      {open && openable ? <div className="cm-run-body">{children}</div> : folded}
-    </div>
-  );
-}
-
-/** What a run that is over did to its files, each once — from before its
- *  first change to after its last — under the folded line. Up to three open;
- *  past that, each a click away. */
-function RunChanges({ steps }: { steps: ToolStep[] }) {
-  const { t } = useI18n();
-  const files = useMemo(() => runFileChanges(steps), [steps]);
-  const [open, setOpen] = useState<Set<string>>(() => new Set(files.length <= 3 ? files.map((f) => f.key) : []));
-  if (!files.length) return null;
-  const toggle = (key: string) =>
-    setOpen((cur) => {
-      const next = new Set(cur);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  return (
-    <div className="cm-changes open cm-run-changes">
-      {files.map((f) => (
-        <RunChange key={f.key} file={f} open={open.has(f.key)} onToggle={() => toggle(f.key)} newLabel={t("cmChangeNew")} tooBig={t("cmChangeTooBig")} />
-      ))}
-    </div>
-  );
-}
-
-function RunChange({
-  file,
-  open,
-  onToggle,
-  newLabel,
-  tooBig,
-}: {
-  file: RunFile;
-  open: boolean;
-  onToggle: () => void;
-  newLabel: string;
-  tooBig: string;
-}) {
-  // A capped copy has no whole file to diff: the steps' own counts, summed.
-  const counts = useMemo(() => {
-    if (!file.capped) return diffLines(file.before, file.after);
-    return file.steps.reduce(
-      (acc, s) => {
-        const c = countStepDiff(s);
-        return c ? { added: acc.added + c.added, removed: acc.removed + c.removed } : acc;
-      },
-      { added: 0, removed: 0 },
-    );
-  }, [file]);
-  return (
-    <div className="cm-change">
-      <div className="cm-change-row">
-        <button className="cm-change-file" title={file.path} aria-expanded={open} onClick={onToggle}>
-          <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
-          <span className="cm-change-name">{file.path}</span>
-          {file.created && <span className="cm-change-tag">{newLabel}</span>}
-          <span className="cm-step-diffstat">
-            <em className="plus">+{counts.added}</em>
-            <em className="minus">-{counts.removed}</em>
-          </span>
-        </button>
-      </div>
-      {open &&
-        (file.capped ? (
-          <div className="cm-change-note">{tooBig}</div>
-        ) : (
-          <DiffView className="cm-change-diff" before={file.before} after={file.after} total={counts.added + counts.removed} />
-        ))}
+      {open && openable && <div className="cm-run-body">{children}</div>}
     </div>
   );
 }
@@ -2353,7 +2271,13 @@ export function CodeMode({
    *  calls): its words and runs, which run is going on, what is happening,
    *  and whether that needs a line of its own under what was said last. */
   const foldOf = (m: CodeMsg, isLast: boolean) => {
-    const segs = segmentsOf(m.steps, m.said);
+    // A run is keyed by its place among the turn's runs, not by its first
+    // step: the line for a run not yet begun — the thinking before it, its
+    // call still being written — then carries the key of the run it turns
+    // into, and stays the same element. Keyed by step, the line was dropped
+    // for a new one as the step arrived, and a run opened by hand shut.
+    let runs = 0;
+    const segs = segmentsOf(m.steps, m.said).map((x) => (x.kind === "tools" ? { ...x, key: `run-${runs++}` } : x));
     const tail = segs[segs.length - 1];
     const turnLive = running && isLast;
     // Words in the answer box: the model is speaking — a step's words before
@@ -2383,7 +2307,7 @@ export function CodeMode({
     // still being written — goes in the last run, out of sight like the rest.
     // A turn with no run shows it as any reply does.
     const lastRun = [...segs].reverse().find((s) => s.kind === "tools")?.key ?? null;
-    return { segs, activeKey, activity, bottom: activity && !activeKey ? activity : null, lastRun };
+    return { segs, activeKey, activity, bottom: activity && !activeKey ? activity : null, lastRun, nextRun: `run-${runs}`, turnLive };
   };
 
   // Either separator: split on "/" alone, a Windows workspace showed its whole
@@ -2660,8 +2584,6 @@ export function CodeMode({
             <div className="cm-thread" ref={threadRef}>
             {msgs.map((m, mi) => {
               const f = collapseTools && m.role !== "user" ? foldOf(m, mi === msgs.length - 1) : null;
-              // Thinking that belongs to no step, in the last run when folded.
-              const foldThought = !!f?.lastRun;
               return m.role === "user" ? (
                 <div key={m.id} className="cm-user-row">
                   {m.checkpointId != null && !running && (
@@ -2712,8 +2634,10 @@ export function CodeMode({
                   {f ? (
                     // Folded: the model's words in the open, the runs of steps
                     // between them one line each — the run going on says what
-                    // is happening, and every thought sits in a run.
-                    f.segs.map((seg) =>
+                    // is happening, and every thought sits in a run. One list,
+                    // so a line becomes its run without being replaced.
+                    [
+                    ...f.segs.map((seg) =>
                       seg.kind === "say" ? (
                         <div key={seg.key} className="cm-asst-text answer cm-said">
                           <Markdown>{seg.text}</Markdown>
@@ -2723,19 +2647,6 @@ export function CodeMode({
                           key={seg.key}
                           steps={seg.steps}
                           activity={seg.key === f.activeKey ? f.activity : null}
-                          folded={
-                            seg.key === f.activeKey ? (
-                              // The file being written or just written, live,
-                              // until the next call starts.
-                              isEditStep(seg.steps[seg.steps.length - 1]) ? (
-                                <div className="cm-run-peek">
-                                  <StepCard step={seg.steps[seg.steps.length - 1]} sessionId={sid} pinOpen />
-                                </div>
-                              ) : null
-                            ) : (
-                              <RunChanges steps={seg.steps} />
-                            )
-                          }
                         >
                           {seg.steps.map((s) => (
                             <div key={s.id} className="cm-block">
@@ -2744,13 +2655,42 @@ export function CodeMode({
                             </div>
                           ))}
                           {seg.key === f.lastRun && m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />}
-                          {/* The live thought, unless the line under the answer holds it. */}
+                          {/* The live thought, unless the run not yet begun holds it. */}
                           {seg.key === f.lastRun && m.liveThinking && !f.bottom && (
                             <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />
                           )}
                         </ToolRun>
                       ),
-                    )
+                    ),
+                    ...(f.bottom
+                      ? [
+                          // The words before a call still being written, then
+                          // the run that call begins.
+                          ...(m.text.trim()
+                            ? [
+                                <div key="said-pending" className="cm-asst-text answer cm-said">
+                                  <Markdown>{m.text}</Markdown>
+                                </div>,
+                              ]
+                            : []),
+                          <ToolRun key={f.nextRun} steps={[]} activity={f.bottom}>
+                            {m.liveThinking ? <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} /> : null}
+                          </ToolRun>,
+                        ]
+                      : // A turn that called no tool keeps its thought in a run
+                        // of its own: one line, opened by hand. Not while the
+                        // turn goes on — words then may be the ones before a
+                        // call, whose run comes under them, not over.
+                        !f.lastRun && !f.turnLive && (m.thinking || m.liveThinking)
+                        ? [
+                            <ToolRun key={f.nextRun} steps={[]} doneLabel={t("cmThought")}>
+                              <div className="cm-think-body">
+                                {[m.thinking, m.liveThinking].filter(Boolean).join("\n\n")}
+                              </div>
+                            </ToolRun>,
+                          ]
+                        : []),
+                    ]
                   ) : (
                     <>
                     {/* What the model said between its steps stays where it said it:
@@ -2785,22 +2725,8 @@ export function CodeMode({
                     {m.liveThinking && <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />}
                     </>
                   )}
-                  {f ? (
-                    // Folded, a turn that called no tool still keeps its
-                    // thought in a run of its own: one line, opened by hand.
-                    !foldThought &&
-                    !f.bottom &&
-                    (m.thinking || m.liveThinking) && (
-                      <ToolRun steps={[]} doneLabel={t("cmThought")}>
-                        <div className="cm-think-body">
-                          {[m.thinking, m.liveThinking].filter(Boolean).join("\n\n")}
-                        </div>
-                      </ToolRun>
-                    )
-                  ) : (
-                    m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />
-                  )}
-                  {m.text && (
+                  {!f && m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />}
+                  {m.text && !f?.bottom && (
                     <div className="cm-asst-text answer" data-copy={m.text}>
                       <Markdown>{m.text}</Markdown>
                       {!running && (
@@ -2821,11 +2747,6 @@ export function CodeMode({
                         </button>
                       )}
                     </div>
-                  )}
-                  {f?.bottom && (
-                    <ToolRun steps={[]} activity={f.bottom}>
-                      {m.liveThinking ? <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} /> : null}
-                    </ToolRun>
                   )}
                   {m.changes && m.changes.length > 0 && (
                     <TurnChangesCard

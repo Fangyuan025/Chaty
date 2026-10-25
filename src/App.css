@@ -6485,27 +6485,33 @@ body:has(.live-overlay) .win-btn.close:hover {
   transform: rotate(90deg);
 }
 /* The run going on: a light passing rightwards through its words. The
-   cards inside keep their own spinner. */
+   gradient is three times the words' width, so the light comes in from past
+   the left edge and leaves past the right one — at two times it sat half on
+   at both ends and jumped from one to the other. Gone, it rests a moment
+   before the next pass. The cards inside keep their own spinner. */
 .cm-run.active .cm-run-label {
   background: linear-gradient(
     90deg,
     var(--text-dim) 0%,
-    var(--text-dim) 38%,
+    var(--text-dim) 42%,
     var(--text) 50%,
-    var(--text-dim) 62%,
+    var(--text-dim) 58%,
     var(--text-dim) 100%
   );
-  background-size: 200% 100%;
+  background-size: 300% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: cmrunlight 1.8s linear infinite;
+  animation: cmrunlight 2.6s ease-in-out infinite;
 }
 @keyframes cmrunlight {
-  from {
+  0% {
     background-position: 100% 0;
   }
-  to {
+  62% {
+    background-position: 0% 0;
+  }
+  100% {
     background-position: 0% 0;
   }
 }
@@ -6529,20 +6535,7 @@ body:has(.live-overlay) .win-btn.close:hover {
     transform: translateY(-3px);
   }
 }
-/* Folded, a run still shows the file it is writing, and once it is over,
-   what it did to its files. */
-.cm-run-peek {
-  margin-top: 6px;
-  animation: cmrunin var(--t-med) var(--ease-out) both;
-}
-.cm-changes.cm-run-changes {
-  margin-top: 6px;
-  border-radius: var(--r-md);
-  animation: cmrunin var(--t-med) var(--ease-out) both;
-}
-.cm-run-changes .cm-change-diff {
-  max-height: 280px;
-}
+
 .cm-asst-text > :first-child {
   margin-top: 0;
 }

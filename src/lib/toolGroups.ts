@@ -147,53 +147,6 @@ export function deniedCount(steps: ToolStep[]): number {
   return steps.filter((s) => s.status === "denied").length;
 }
 
-/** A file as a run left it: what it was before the run's first change to
- *  it, and after its last. */
-export interface RunFile {
-  /** The diff's own path — one file however the calls named it. */
-  key: string;
-  /** As the model named it, for showing. */
-  path: string;
-  before: string;
-  after: string;
-  created: boolean;
-  /** A step's copy of the file was capped: no whole before/after to diff. */
-  capped: boolean;
-  steps: ToolStep[];
-}
-
-const EDIT_NAMES = new Set(["write_file", "edit_file", "multi_edit", "edit_lines"]);
-
-export const isEditStep = (s: ToolStep): boolean => EDIT_NAMES.has(s.call.name);
-
-/** The files a run changed, each once, in the order first changed — what
- *  the run did to them all told, not call by call. A file that ends where it
- *  began is left out. */
-export function runFileChanges(steps: ToolStep[]): RunFile[] {
-  const by = new Map<string, RunFile>();
-  for (const s of steps) {
-    if (!isEditStep(s) || s.status !== "done" || !s.diff) continue;
-    const key = s.diff.path;
-    const f = by.get(key);
-    if (f) {
-      f.after = s.diff.after;
-      f.capped ||= !!s.fullDiff;
-      f.steps.push(s);
-    } else {
-      by.set(key, {
-        key,
-        path: pathsOf(s)[0] ?? key,
-        before: s.diff.before,
-        after: s.diff.after,
-        created: s.diff.before === "" && s.call.name === "write_file",
-        capped: !!s.fullDiff,
-        steps: [s],
-      });
-    }
-  }
-  return [...by.values()].filter((f) => f.capped || f.before !== f.after);
-}
-
 /** A step that failed: one that errored, or a command that ran and exited
  *  non-zero — its result went back to the model, but it did not work. */
 export function stepFailed(s: ToolStep): boolean {
