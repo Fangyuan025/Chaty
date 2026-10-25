@@ -185,11 +185,6 @@ export const T = {
     en: "Used when a model's chat template names no tool-call format. XML takes every argument as written, nothing escaped, so long code is hard to break.",
     pt: "Usado quando o template de chat do modelo não define formato de chamada. O XML recebe cada argumento como escrito, sem escapes, então código longo dificilmente quebra.",
   },
-  cmPermMode: { zh: "权限模式", en: "Permission mode" },
-  cmPermModeHint: {
-    zh: "打开应用时用的模式，在输入框下方也能切换（Shift+Tab）。计划和绕过权限只在本次打开期间有效。任何模式下，工作区外的目录和 sudo 都会询问；命令白名单与只读命令在绕过权限以外的模式里都照常生效。",
-    en: "The mode Code starts in; switch it under the input too (Shift+Tab). Plan and bypass last until the app quits. In every mode, folders outside the workspace and sudo still ask; the allowlist and read-only commands hold in every mode but bypass.",
-  },
   copyMsg: { zh: "复制这条消息", en: "Copy this message", pt: "Copiar esta mensagem" },
   jumpLatest: { zh: "回到最新", en: "Jump to latest", pt: "Pular para o mais recente" },
   expandAll: { zh: "展开全部", en: "Show all", pt: "Mostrar tudo" },

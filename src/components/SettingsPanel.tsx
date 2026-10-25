@@ -31,8 +31,6 @@ import { decodeAudio, playAudio, primeAudioPlayback } from "../lib/audio";
 import { CODE_THEMES, type CodeTheme } from "../lib/codeTheme";
 import { useConfirm } from "./ConfirmModal";
 import { Select } from "./Select";
-import { PERM_LABEL } from "./PermModePicker";
-import { LASTING_MODES, type PermMode } from "../lib/permMode";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { loadMcpServers, saveMcpServers, syncMcpServers, type McpServerCfg } from "../lib/mcp";
 import catalog from "../lib/mcpStore.catalog.json";
@@ -128,9 +126,6 @@ export interface GenSettings extends ImageSettings, MusicSettings {
   codeToolFallback: "xml" | "json";
   /** Shell id commands run in ("" = this platform's default; issue #19). */
   codeShell: string;
-  /** Code mode: the permission mode it starts in — auto, manual or accept
-   *  edits (plan and bypass are picked for a while, not remembered). */
-  codePermMode: PermMode;
   /** Code mode: obviously read-only bash commands run without approval. */
   codeAutoRunReadOnly: boolean;
   /** Code mode: run the agent's browser hidden (headless). */
@@ -220,13 +215,12 @@ export const defaultSettings: GenSettings = {
   codeToolFormat: "auto",
   codeToolFallback: "xml",
   codeShell: "",
-  codePermMode: "manual",
   codeAutoRunReadOnly: true,
   codeBrowserHeadless: false,
   codeMemory: true,
   codeGroupByWorkspace: false,
   codeLiveCardsOpen: true,
-  codeCollapseTools: false,
+  codeCollapseTools: true,
   codeSkills: [],
   codeDisabledSkills: [],
   codeAllowedCommands: [],
@@ -1649,15 +1643,6 @@ export function SettingsPanel({
                 />
               </SetRow>
               <div className="settings-section">{t("secPermissions")}</div>
-              <SetRow label={t("cmPermMode")} hint={t("cmPermModeHint")}>
-                <Select
-                  className="field-select"
-                  value={value.codePermMode}
-                  ariaLabel={t("cmPermMode")}
-                  onChange={(v) => set("codePermMode", v as PermMode)}
-                  options={LASTING_MODES.map((m) => ({ value: m, label: t(PERM_LABEL[m]) }))}
-                />
-              </SetRow>
               <SetRow label={t("cmAutoReadOnly")} hint={t("cmAutoReadOnlyHint")}>
                 <Switch
                   on={value.codeAutoRunReadOnly}

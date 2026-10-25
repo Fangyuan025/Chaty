@@ -21,7 +21,6 @@ import { LiveMode } from "./components/LiveMode";
 import { ModelInfoPanel } from "./components/ModelInfoPanel";
 import { WindowControls } from "./components/WindowControls";
 import { useI18n, type Lang, type TKey, detectLang } from "./lib/i18n";
-import { LASTING_MODES } from "./lib/permMode";
 import { clampRung, effortLabel } from "./lib/effort";
 import { watchContentHeight } from "./lib/autoGrow";
 /** Ceiling for the chat composer, matching `.input-row textarea` max-height. */
@@ -277,13 +276,10 @@ function loadSettings(): GenSettings {
       // and the new default exists because 32 starved app-scale deliveries),
       // so drop it and let the new default through.
       if (stored.codeMaxSteps === 32) delete stored.codeMaxSteps;
-      // Migration: "auto-approve file edits" became a permission mode —
-      // accept edits for whoever had it on, manual for everyone else, as
-      // before.
-      if (!LASTING_MODES.includes(stored.codePermMode)) {
-        stored.codePermMode = stored.codeAutoApproveEdits ? "acceptEdits" : "manual";
-      }
+      // "Auto-approve file edits" became the permission mode each Code
+      // session keeps for itself (under its input), so it is no setting.
       delete stored.codeAutoApproveEdits;
+      delete stored.codePermMode;
       const merged = { ...defaultSettings, ...stored };
       // Chinese speech is on by default in the Chinese interface — but as a
       // stored setting, not a forced one, so it can be turned back off.
@@ -3001,8 +2997,6 @@ export default function App() {
         maxGenTokens={settings.limitTokens ? settings.maxTokens : 0}
         toolFormat={settings.codeToolFormat}
         toolFallback={settings.codeToolFallback}
-        permMode={settings.codePermMode}
-        onPermMode={(m) => setSettings((cur) => ({ ...cur, codePermMode: m }))}
         autoRunReadOnly={settings.codeAutoRunReadOnly}
         skills={settings.codeSkills}
         disabledSkills={settings.codeDisabledSkills}

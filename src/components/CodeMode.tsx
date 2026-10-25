@@ -92,7 +92,7 @@ import {
   type ToolStep,
   replayableTail,
 } from "../lib/agentLoop";
-import { LASTING_MODES, PERM_MODES, permVerdict, type PermMode } from "../lib/permMode";
+import { PERM_MODES, isPermMode, permVerdict, type PermMode } from "../lib/permMode";
 import { syncMcpServers } from "../lib/mcp";
 import { localSave } from "../lib/localSave";
 import { loadSkills } from "../lib/skillFiles";
@@ -554,6 +554,26 @@ function StepCard({
 }
 
 /** Collapsible reasoning panel. Streams open while `live`; collapsed once done. */
+/** Each Code session's permission mode, by session id. */
+const PERM_MODES_KEY = "chaty.code.permModes";
+
+function loadPermModes(): Record<string, PermMode> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PERM_MODES_KEY) ?? "{}") as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(raw).filter((e): e is [string, PermMode] => isPermMode(e[1])));
+  } catch {
+    return {};
+  }
+}
+
+function savePermModes(m: Record<string, PermMode>): void {
+  try {
+    localStorage.setItem(PERM_MODES_KEY, JSON.stringify(m));
+  } catch {
+    /* storage off: the mode lasts as long as the app is open */
+  }
+}
+
 /** Marks a code run as in flight so an interrupted one can be reported. */
 const RUN_INFLIGHT_KEY = "chaty.code.runInflight";
 
@@ -798,8 +818,6 @@ export function CodeMode({
   maxGenTokens = 0,
   toolFormat = "auto",
   toolFallback = "xml",
-  permMode = "manual",
-  onPermMode,
   autoRunReadOnly = true,
   skills = [],
   disabledSkills = [],
@@ -843,11 +861,6 @@ export function CodeMode({
   toolFormat?: "auto" | CallFormat;
   /** The format for a model whose template names none (Settings → Code). */
   toolFallback?: "xml" | "json";
-  /** The permission mode Code starts in (Settings → Code) — one of the
-   *  modes a choice is remembered in; see permMode.ts. */
-  permMode?: PermMode;
-  /** A remembered mode was picked under the input: keep it. */
-  onPermMode?: (m: PermMode) => void;
   /** Auto-run obviously read-only bash commands without asking (Settings → Code). */
   autoRunReadOnly?: boolean;
   /** User-defined skills: /name inserts the prompt template (Settings → Code). */
@@ -906,10 +919,14 @@ export function CodeMode({
   // Full-size image preview (screenshot / view_image steps).
   const [previewImg, setPreviewImg] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  // Plan and bypass hold until the app quits; the other modes are the
-  // remembered one (Settings → Code).
-  const [modeOverride, setModeOverride] = useState<PermMode | null>(null);
-  const mode: PermMode = modeOverride ?? permMode;
+  // Each session's permission mode, its own and kept across restarts; a
+  // session never set is in auto.
+  const [permModes, setPermModes] = useState<Record<string, PermMode>>(loadPermModes);
+  const modesRef = useRef(permModes);
+  modesRef.current = permModes;
+  const mode: PermMode = permModes[sid] ?? "auto";
+  /** The session a running turn belongs to — whose mode its calls answer to. */
+  const runSidRef = useRef<string | null>(null);
   /** The model exposes a native reasoning-effort ladder (Qwen3.8) — the think
    *  switch then shows the model's own rungs instead of Chaty's intensities. */
   const effortLevels = useMemo(() => model?.effortLevels ?? [], [model?.effortLevels]);
@@ -1071,29 +1088,27 @@ export function CodeMode({
     [],
   );
 
-  /** Switch the permission mode — remembered, if it is one that can be,
-   *  unless `remember` is false (a plan carried out switches for now only).
-   *  A call waiting on the user is judged again under the new mode:
-   *  switching to accept edits lets the edit on screen through, as turning
-   *  bypass on always did. */
+  /** Switch the open session's permission mode, and keep it. A call of
+   *  this session's turn waiting on the user is judged again under the new
+   *  mode: switching to accept edits lets the edit on screen through, as
+   *  turning bypass on always did. */
   const pickMode = useCallback(
-    (m: PermMode, remember = true) => {
+    (m: PermMode) => {
+      const at = sidRef.current;
+      const next = { ...modesRef.current, [at]: m };
+      modesRef.current = next;
       modeRef.current = m;
-      if (remember && LASTING_MODES.includes(m)) {
-        setModeOverride(null);
-        onPermMode?.(m);
-      } else {
-        setModeOverride(m);
-      }
+      setPermModes(next);
+      savePermModes(next);
       setApproval((cur) => {
-        if (!cur) return cur;
+        if (!cur || runSidRef.current !== at) return cur;
         const v = verdictFor(m, cur.call);
         if (v === "ask") return cur;
         cur.resolve(v === "plan" ? "plan" : true);
         return null;
       });
     },
-    [onPermMode, verdictFor],
+    [verdictFor],
   );
   const cycleMode = useCallback(() => {
     pickMode(PERM_MODES[(PERM_MODES.indexOf(modeRef.current) + 1) % PERM_MODES.length]);
@@ -1527,6 +1542,12 @@ export function CodeMode({
    *  when the row could not be removed; the callers confirm and refresh. */
   async function removeSession(id: string) {
     await codeSessionDelete(id);
+    if (id in modesRef.current) {
+      const { [id]: _gone, ...rest } = modesRef.current;
+      modesRef.current = rest;
+      setPermModes(rest);
+      savePermModes(rest);
+    }
     if (id === sid) {
       // Deleting the session you're viewing must reset the view even
       // mid-run: newSession()'s running-guard is for the "+" button (don't
@@ -1978,7 +1999,7 @@ export function CodeMode({
       role: "assistant",
       text: "",
       steps: [],
-      ...(modeRef.current === "plan" ? { planned: true } : {}),
+      ...((modesRef.current[turnSid] ?? "auto") === "plan" ? { planned: true } : {}),
     };
     // The previous turn hands back exactly what it sent, so this one continues
     // from it instead of from a summary. Replaying that tail is what keeps the
@@ -2041,6 +2062,7 @@ export function CodeMode({
     // one. Whatever this turn reports past that point is about itself, not
     // the run on screen.
     const runSid = sid;
+    runSidRef.current = runSid;
     const runCtx = model?.nCtx ?? 0;
     const owns = () => signalRef.current === signal;
     // A run's numbers are its session's: once that session is deleted (or
@@ -2111,12 +2133,12 @@ export function CodeMode({
       // The permission mode decides, as it stands when the call comes —
       // with the allowlist, read-only commands and "always allow" in it.
       approve: (call: ToolCall) => {
-        const v = verdictFor(modeRef.current, call);
+        const v = verdictFor(modesRef.current[runSid] ?? "auto", call);
         if (v === "allow") return Promise.resolve(true);
         if (v === "plan") return Promise.resolve("plan" as const);
         return new Promise<boolean | "plan">((resolve) => setApproval({ call, resolve }));
       },
-      planMode: modeRef.current === "plan",
+      planMode: (modesRef.current[runSid] ?? "auto") === "plan",
       askFirstNote: true,
     }, {
       // DEV forensics: keep the last 200 raw rounds + injected corrections on
@@ -2769,7 +2791,7 @@ export function CodeMode({
                       <button
                         className="cm-plan-go-btn primary"
                         onClick={() => {
-                          pickMode("acceptEdits", false);
+                          pickMode("acceptEdits");
                           void send(t("planGoMsg"));
                         }}
                       >
@@ -2778,7 +2800,7 @@ export function CodeMode({
                       <button
                         className="cm-plan-go-btn"
                         onClick={() => {
-                          pickMode("manual", false);
+                          pickMode("manual");
                           void send(t("planGoMsg"));
                         }}
                       >

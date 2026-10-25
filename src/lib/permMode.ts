@@ -1,6 +1,7 @@
 /** Code mode's permission modes — the five Claude Code has, picked under the
- *  input (or cycled with Shift+Tab) — and what each makes of a call that
- *  needs a say: run it, ask, or (planning) send it back unrun.
+ *  input (or cycled with Shift+Tab), each session its own, auto until picked —
+ *  and what each makes of a call that needs a say: run it, ask, or
+ *  (planning) send it back unrun.
  *
  *  Whatever the mode, two things always ask, outside this module: a folder
  *  outside the workspace, and sudo. And whatever the mode short of planning,
@@ -14,10 +15,6 @@ export type PermMode = "auto" | "manual" | "acceptEdits" | "plan" | "bypass";
 
 /** Menu order — also the numbers 1–5 and the Shift+Tab cycle. */
 export const PERM_MODES: PermMode[] = ["auto", "manual", "acceptEdits", "plan", "bypass"];
-
-/** The modes a choice is remembered in; planning and bypassing last until
- *  the app quits. */
-export const LASTING_MODES: PermMode[] = ["auto", "manual", "acceptEdits"];
 
 export const isPermMode = (v: unknown): v is PermMode => PERM_MODES.includes(v as PermMode);
 
