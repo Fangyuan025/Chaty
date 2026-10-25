@@ -638,6 +638,8 @@ const RICH_README = [
 /** `?sources=web` / `?sources=kb`: the last answer of the showcase chat cites
  *  web pages / knowledge-base passages, to look at the sources under it. */
 const DEMO_SOURCES = new URLSearchParams(window.location.search).get("sources");
+/** A generation told to stop (cancel_generation) stops streaming. */
+let mockGenStop = false;
 /** Background jobs in the preview, stopped and cleared for real. */
 const MOCK_BG = [
   { id: 2, command: "npm run dev", running: true, code: null as number | null, killed: false, elapsedSecs: 94, tail: "" },
@@ -1407,6 +1409,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       const thinkOn = (args?.request as { params?: { think?: boolean } } | undefined)?.params?.think;
       const opened = thinkOn && reply.startsWith("<think>\n") ? "<think>\n" : "";
       reply = reply.slice(opened.length);
+      mockGenStop = false;
       return (async () => {
         emit({ type: "started" });
         if (opened) emit({ type: "token", text: opened });
@@ -1415,6 +1418,8 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           await new Promise((r) => setTimeout(r, fast ? 15 : 140));
         }
         for (const piece of reply.match(/.{1,6}/g) ?? []) {
+          // Told to stop, it stops, as the engines do.
+          if (mockGenStop) break;
           emit({ type: "token", text: piece });
           await new Promise((r) => setTimeout(r, 30));
         }
@@ -1433,6 +1438,8 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "browser_set_headless":
       return null;
     case "cancel_generation":
+      mockGenStop = true;
+      return null;
     case "cancel_download":
       return null;
     case "agent_dl_list":

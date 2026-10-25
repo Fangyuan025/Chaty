@@ -392,6 +392,10 @@ export interface AgentOptions {
   approve: (call: ToolCall) => Promise<boolean | "plan">;
   /** Plan mode: this turn researches and proposes; it changes nothing. */
   planMode?: boolean;
+  /** A call that will not run whatever its arguments say, known from its
+   *  name alone ("plan": a change while planning) — stopped as soon as the
+   *  name is written, not after the whole call. */
+  blocked?: (name: string) => "plan" | null;
   /** Send the turn's first call back once when it says nothing to the user
    *  (see the first-call note guard). Code mode turns it on. */
   askFirstNote?: boolean;
@@ -693,6 +697,13 @@ function noteExample(zh: boolean, f: CallFormat): string {
       : '{"note":"The entry point is src/main.ts and it reads its settings from the config module. Looking at how that parses them next.","path":"src/config.ts"}',
     f,
   );
+}
+
+/** What a change sent back while planning says to the model. */
+function planRefusal(zh: boolean): string {
+  return zh
+    ? "现在是计划模式:只调研、不改动,这个调用没有执行。不要再尝试修改文件;把方案写成回答交给用户,用户同意后才会开始执行。"
+    : "This is plan mode: research only, nothing gets changed — this call was not run. Don't try to change files again; write your plan as the answer, and it will be carried out once the user approves it.";
 }
 
 /** Plan mode's word to the model, on the user's turn. */
@@ -3951,6 +3962,8 @@ export async function runAgentTurn(
       let overflowAt = 0;
       let liveTokens = 0;
       let calling: string | null = null;
+      /** The call stopped as soon as its name showed it would not run. */
+      let blockedCall: string | null = null;
       let budgetTripped = false;
       let degenerated = false;
       let closersCut = false;
@@ -4070,11 +4083,17 @@ export async function runAgentTurn(
             if (!live) cb.onThinking(shownThought(raw));
             // Words a live card already carries are shown there, not here too.
             cb.onAssistantText(live?.said ? "" : streamingProse(raw));
-            if (cb.onCalling) {
+            if (cb.onCalling || opts.blocked) {
               const name = callingName(raw);
               if (name !== calling) {
                 calling = name;
-                cb.onCalling(name);
+                cb.onCalling?.(name);
+                // A change while planning: stopped here, before its content —
+                // a whole file written out only to be sent back.
+                if (name && !blockedCall && opts.blocked?.(name)) {
+                  blockedCall = name;
+                  void cancelGeneration().catch(() => {});
+                }
               }
             }
             if (cb.onLiveStep && performance.now() - liveShownAt >= LIVE_CARD_MS) {
@@ -4257,6 +4276,30 @@ export async function runAgentTurn(
         lastResultErrored = true;
         lastResultText = result;
         pushUser(toolResultMsg(name, result), call);
+        continue;
+      }
+
+      // ── Blocked call ── stopped as its name was written (see `blocked`).
+      // Recorded as generated, and answered as a planning turn answers any
+      // change: not run, and why.
+      if (blockedCall) {
+        const v = liveFileCall(raw);
+        const call: ToolCall = { name: blockedCall as ToolCall["name"], args: v?.path ? { path: v.path } : {} };
+        storeAssistantTurn(messages, raw, opts.reasoningField);
+        const said = proseAfter(raw).trim();
+        const stepObj: ToolStep = {
+          id: uid(),
+          call,
+          status: "denied",
+          thinking,
+          ...(said ? { said } : {}),
+          result: lang === "zh" ? "计划模式:未执行" : "plan mode: not run",
+        };
+        // The live card this call put up, if it got that far, is its card.
+        const shown = live as Live | null;
+        if (shown && !shown.claimed && sameFileTool(shown.view.name, blockedCall)) stepObj.id = shown.id;
+        cb.onStep(stepObj);
+        pushUser(toolResultMsg(blockedCall, planRefusal(lang === "zh")), call);
         continue;
       }
 
@@ -5120,14 +5163,7 @@ export async function runAgentTurn(
           stepObj.status = "denied";
           stepObj.result = lang === "zh" ? "计划模式:未执行" : "plan mode: not run";
           cb.onStep(stepObj);
-          pushUser(
-            toolResultMsg(
-              call.name,
-              lang === "zh"
-                ? "现在是计划模式:只调研、不改动,这个调用没有执行。不要再尝试修改文件;把方案写成回答交给用户,用户同意后才会开始执行。"
-                : "This is plan mode: research only, nothing gets changed — this call was not run. Don't try to change files again; write your plan as the answer, and it will be carried out once the user approves it.",
-            ),
-          );
+          pushUser(toolResultMsg(call.name, planRefusal(lang === "zh")));
           continue;
         }
         if (!ok) {

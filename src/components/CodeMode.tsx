@@ -92,7 +92,7 @@ import {
   type ToolStep,
   replayableTail,
 } from "../lib/agentLoop";
-import { PERM_MODES, isPermMode, permVerdict, type PermMode } from "../lib/permMode";
+import { PERM_MODES, isFileEdit, isPermMode, permVerdict, type PermMode } from "../lib/permMode";
 import { syncMcpServers } from "../lib/mcp";
 import { localSave } from "../lib/localSave";
 import { loadSkills } from "../lib/skillFiles";
@@ -2141,6 +2141,10 @@ export function CodeMode({
         return new Promise<boolean | "plan">((resolve) => setApproval({ call, resolve }));
       },
       planMode: (modesRef.current[runSid] ?? "auto") === "plan",
+      // While planning, a change is known not to run from its name — as the
+      // mode stands then, so switching out of planning lets the next through.
+      blocked: (name: string) =>
+        (modesRef.current[runSid] ?? "auto") === "plan" && (isFileEdit(name) || name === "web_download") ? "plan" : null,
       askFirstNote: true,
     }, {
       // DEV forensics: keep the last 200 raw rounds + injected corrections on
