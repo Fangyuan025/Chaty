@@ -90,16 +90,17 @@ export function classifyCatalogueFit(
     return needed > ram * 0.85 ? "large" : "unknown";
   }
 
-  // Use total download only as a rough upper-bound proxy for model assets:
-  // images and multimodal models may load components at different times.
-  // Reserving 25% helps avoid incorrectly promising full GPU residency.
+  // The Linux Vulkan allocation budget already includes a safety margin.
+  // Do not subtract another arbitrary margin for this catalogue hint.
+  // File sizes are proxies; a positive result is not a loading guarantee.
   if (gpu !== null) {
-    if (needed <= gpu * 0.75) return "gpu";
-    const systemRemainder = Math.max(0, needed - gpu * 0.75);
+    if (needed <= gpu) return "gpu";
+    // Optional assets may not reside on the GPU simultaneously. If the main
+    // model weights fit, we cannot infer that CPU offload is required.
+    if (estimate.gpuFitsMainWeights === true) return "unknown";
+    const systemRemainder = Math.max(0, estimate.modelBytes - gpu);
     if (ram !== null && systemRemainder > ram * 0.75) return "large";
-    // Music has selectable GPU/CPU modes, not verified partial-layer offload.
     if (kind.music) return "cpuMode";
-    // GGUF can offload layers; image models expose CPU component/offload options.
     return "mixed";
   }
 
