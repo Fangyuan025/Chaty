@@ -701,7 +701,12 @@ function ToolRun({
         aria-expanded={openable ? open : undefined}
         disabled={!openable}
       >
-        {label}
+        {/* Keyed by the state, not its words: a new state fades in, while
+            the same one updating — a path arriving, the prompt's percent —
+            changes in place. */}
+        <span key={activity ? `a:${activity.key}` : doneLabel ? "done:thought" : "done"} className="cm-run-state">
+          {label}
+        </span>
         {openable && (
           <span className={`cm-run-caret${open ? " open" : ""}`}>
             <Icon name="chevron-right" size={11} strokeWidth={2} />

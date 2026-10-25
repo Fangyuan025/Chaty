@@ -6468,6 +6468,18 @@ body:has(.live-overlay) .win-btn.close:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The line in one state — thinking, running a command, done — fading in
+   when the state changes. */
+.cm-run-state {
+  display: inline-flex;
+  min-width: 0;
+  animation: cmrunstate var(--t-slow) var(--ease-out) both;
+}
+@keyframes cmrunstate {
+  from {
+    opacity: 0;
+  }
+}
 .cm-run-diff {
   margin-left: 6px;
   font-size: 12px;
@@ -6516,6 +6528,9 @@ body:has(.live-overlay) .win-btn.close:hover {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .cm-run-state {
+    animation: none;
+  }
   .cm-run.active .cm-run-label {
     animation: none;
     background: none;
