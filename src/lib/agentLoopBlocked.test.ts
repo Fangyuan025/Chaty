@@ -17,10 +17,14 @@ type Chan = { onmessage?: (ev: Ev) => void };
 type Step = { call: { name: string; args: Record<string, unknown> }; status: string; result?: string };
 
 /** Each round as the chunks it streams in; the engine stops when told to. */
-async function run(rounds: string[][], blocked?: (name: string) => "plan" | null) {
+async function run(rounds: string[][], blocked?: (name: string) => "plan" | "planAsk" | null) {
   const script = rounds.map((r) => [...r]);
   const cmds: string[] = [];
   const streamed: string[] = [];
+  const asked: string[] = [];
+  const prompts: string[] = [];
+  let final = "";
+  let reason: string | undefined;
   let stop = false;
   mockIPC(async (cmd, args) => {
     cmds.push(cmd);
@@ -29,7 +33,8 @@ async function run(rounds: string[][], blocked?: (name: string) => "plan" | null
       return null;
     }
     if (cmd === "generate") {
-      const a = args as { onEvent: Chan };
+      const a = args as { onEvent: Chan; request: { messages: { content: string }[] } };
+      prompts.push(a.request.messages[a.request.messages.length - 1].content);
       stop = false;
       let out = "";
       for (const chunk of script.shift() ?? ["Done."]) {
@@ -55,12 +60,19 @@ async function run(rounds: string[][], blocked?: (name: string) => "plan" | null
     } as never,
     {
       onThinking: () => {}, onAssistantText: () => {}, onCalling: () => {},
+      onAskUser: async (q: string) => {
+        asked.push(q);
+        return "ok";
+      },
       onStep: (s) => steps.set(s.id, s as never),
-      onFinal: () => {},
+      onFinal: (t, _th, r) => {
+        final = t;
+        reason = r;
+      },
       onError: (m) => { throw new Error(m); },
     },
   );
-  return { steps: [...steps.values()], cmds, streamed };
+  return { steps: [...steps.values()], cmds, streamed, asked, prompts, final, reason };
 }
 
 const WRITE = [
@@ -83,6 +95,32 @@ describe("a change while planning", () => {
     expect(steps).toHaveLength(1);
     expect(steps[0].call.name).toBe("write_file");
     expect(steps[0].status).toBe("denied");
+  });
+
+  it("a question that would stand in for the plan is stopped too, and never asked", async () => {
+    const ASK = [
+      "<tool_call>\n<function=ask_user>\n",
+      "<parameter=question>\nHere is my plan: … Shall I go ahead?\n</parameter>\n</function>\n</tool_call>",
+    ];
+    const { steps, cmds, streamed, asked, prompts } = await run([ASK, ["The plan: …"]], (n) =>
+      n === "ask_user" ? "planAsk" : null,
+    );
+    expect(cmds).toContain("cancel_generation");
+    expect(asked).toEqual([]);
+    expect(streamed[0]).not.toContain("Shall I go ahead");
+    expect(steps[0].call.name).toBe("ask_user");
+    expect(steps[0].status).toBe("denied");
+    expect(prompts[1]).toMatch(/don't use ask_user to hand in the plan/);
+  });
+
+  it("tried again and again, it is told so, then the turn pauses instead of spinning", async () => {
+    const { steps, prompts, final, reason } = await run([WRITE, WRITE, WRITE, WRITE, WRITE, ["never reached"]], (n) =>
+      n === "write_file" ? "plan" : null,
+    );
+    expect(prompts[2]).toMatch(/This is attempt 2/);
+    expect(steps).toHaveLength(5);
+    expect(reason).toBe("steps");
+    expect(final).toMatch(/tried 5 times/);
   });
 
   it("without the check, the whole call is written and then sent back", async () => {

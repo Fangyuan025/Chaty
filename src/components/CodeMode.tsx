@@ -2143,8 +2143,13 @@ export function CodeMode({
       planMode: (modesRef.current[runSid] ?? "auto") === "plan",
       // While planning, a change is known not to run from its name — as the
       // mode stands then, so switching out of planning lets the next through.
-      blocked: (name: string) =>
-        (modesRef.current[runSid] ?? "auto") === "plan" && (isFileEdit(name) || name === "web_download") ? "plan" : null,
+      // And a question would stand in for the plan, which belongs in the
+      // answer, where the choice to carry it out goes under it.
+      blocked: (name: string) => {
+        if ((modesRef.current[runSid] ?? "auto") !== "plan") return null;
+        if (isFileEdit(name) || name === "web_download") return "plan";
+        return name === "ask_user" ? "planAsk" : null;
+      },
       askFirstNote: true,
     }, {
       // DEV forensics: keep the last 200 raw rounds + injected corrections on

@@ -12,10 +12,10 @@ const { setHistoryToolEnabled } = await import("./toolRegistry");
 setHistoryToolEnabled(true);
 
 const variants = [
-  { zh: true, vision: false, label: "zh plain", maxChars: 4479 },
-  { zh: true, vision: true, label: "zh vision", maxChars: 5789 },
-  { zh: false, vision: false, label: "en plain", maxChars: 7851 },
-  { zh: false, vision: true, label: "en vision", maxChars: 9961 },
+  { zh: true, vision: false, label: "zh plain", maxChars: 4507 },
+  { zh: true, vision: true, label: "zh vision", maxChars: 5817 },
+  { zh: false, vision: false, label: "en plain", maxChars: 7944 },
+  { zh: false, vision: true, label: "en vision", maxChars: 10054 },
 ] as const;
 // Caps anchored to the post-slimming sizes (2026-07 WS1: 3545 / 4432 / 6031 /
 // 7516 JS chars at think=normal, no project doc; before slimming they were
@@ -108,6 +108,13 @@ const variants = [
 //   call shown with its note in place (agentLoop's note guard). 35B: 0/9,
 //   0/8 → 5/9, 6/9, 4/8, 5/9 over four runs, never more than two quiet
 //   calls running; Qwen3.5 9B 15/16, Gemma-4 26B 10/11.
+
+//   2026-10-25  all four +28 zh / +93 en — the summary needs no call. "The
+//   user can't see your thinking, only your calls" taught Qwen3.5 9B that a
+//   call was the only way to speak: planning, it handed in its plan as the
+//   note of understand_repo, again and again, until the identical-call
+//   breaker stopped it. The note is for while it works; the summary (the
+//   plan, planning) is the answer, with no call.
 
 describe("systemPrompt size gate", () => {
   for (const v of variants) {

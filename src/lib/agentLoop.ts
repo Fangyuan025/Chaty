@@ -393,9 +393,10 @@ export interface AgentOptions {
   /** Plan mode: this turn researches and proposes; it changes nothing. */
   planMode?: boolean;
   /** A call that will not run whatever its arguments say, known from its
-   *  name alone ("plan": a change while planning) — stopped as soon as the
-   *  name is written, not after the whole call. */
-  blocked?: (name: string) => "plan" | null;
+   *  name alone — a change while planning ("plan"), or a question that would
+   *  stand in for the plan ("planAsk") — stopped as soon as the name is
+   *  written, not after the whole call. */
+  blocked?: (name: string) => Blocked | null;
   /** Send the turn's first call back once when it says nothing to the user
    *  (see the first-call note guard). Code mode turns it on. */
   askFirstNote?: boolean;
@@ -699,6 +700,22 @@ function noteExample(zh: boolean, f: CallFormat): string {
   );
 }
 
+/** Stopped calls in a turn before it pauses instead of sending one back. */
+const BLOCKED_PAUSE = 5;
+
+/** Why a call is stopped from its name alone — see AgentOptions.blocked. */
+export type Blocked = "plan" | "planAsk";
+
+/** What a call stopped from its name says to the model. */
+function blockedRefusal(why: Blocked, zh: boolean): string {
+  if (why === "planAsk") {
+    return zh
+      ? "现在是计划模式:不要用 ask_user 交方案或确认方案,这个调用没有执行。直接把方案写成回答——用户会在方案下面选择执行、逐个确认或继续规划;拿不准、需要用户定的地方,写进方案里作为待确认的问题。"
+      : "This is plan mode: don't use ask_user to hand in the plan or to confirm it — this call was not run. Write the plan as your answer; the user picks below it whether to carry it out, approve each change, or keep planning. Anything you're unsure of, or that is the user's to decide, goes in the plan as an open question.";
+  }
+  return planRefusal(zh);
+}
+
 /** What a change sent back while planning says to the model. */
 function planRefusal(zh: boolean): string {
   return zh
@@ -709,8 +726,8 @@ function planRefusal(zh: boolean): string {
 /** Plan mode's word to the model, on the user's turn. */
 export function planLine(zh: boolean): string {
   return zh
-    ? "\n\n(计划模式:这一轮只调研、不改动——不要写或改文件,也不要运行会改变东西的命令。读完需要的代码和资料后,把具体方案写成回答:改哪些文件、怎么改、怎么验证。用户同意后才会开始执行。)"
-    : "\n\n(Plan mode: research only this turn — don't write or edit files, or run commands that change anything. Once you've read what you need, write the concrete plan as your answer: which files change, how, and how you'll verify it. Nothing is carried out until the user approves the plan.)";
+    ? "\n\n(计划模式:这一轮只调研、不改动——不要写或改文件,也不要运行会改变东西的命令。读完需要的代码和资料后,把具体方案写成回答:改哪些文件、怎么改、怎么验证;不要用 ask_user 交方案或确认方案,拿不准的地方写进方案作为待确认的问题。用户同意后才会开始执行。)"
+    : "\n\n(Plan mode: research only this turn — don't write or edit files, or run commands that change anything. Once you've read what you need, write the concrete plan as your answer: which files change, how, and how you'll verify it — not through ask_user; anything unsure goes in the plan as an open question. Nothing is carried out until the user approves the plan.)";
 }
 
 export function systemPrompt(
@@ -789,7 +806,7 @@ ${callRule(true, toolFormat)}
 - 改完代码先用 validate_change 验证(它会自己找相关测试、只跑最小集);它找不到测试时再用 bash 跑项目自己的命令。
 - **换路原则:同一手段连续两次没带来新进展,就必须换一种做法**——搜索搜不到就 web_fetch 直抓或开浏览器;页面文字摘要看不明白就截图亲眼看;命令报同样的错就换方案。把同一动作原样再试第三遍,几乎不会有不同结果。
 - 任务较复杂时,先用 update_plan 列出待办步骤,推进中及时更新状态;需要用户拍板时用 ask_user 提问。
-- 用户看不到你的思考,只看得到你的调用。每做完一小步、或者发现了关键信息(比如找到了问题所在),就在下一个调用里加一个 note 参数——任何工具都能带(read_file、edit_file、bash……)——用一两句话告诉用户刚才做了什么、发现了什么、接下来做什么,例如 ${noteExample(true, toolFormat)};不要连续两三个调用都不带 note。
+- 用户看不到你的思考。做事过程中,每做完一小步、或者发现了关键信息(比如找到了问题所在),就在下一个调用里加一个 note 参数——任何工具都能带(read_file、edit_file、bash……)——用一两句话告诉用户刚才做了什么、发现了什么、接下来做什么,例如 ${noteExample(true, toolFormat)};不要连续两三个调用都不带 note。做完后的总结(计划模式下是方案)不用再调用工具,直接写成回答。
 - 任务完成后,不要再调用工具,直接用简洁的中文总结你做了什么;简短回答不加标题。
 - **不用 emoji**:回答和写进文件的内容都不用(美观、吸引人不是理由),除非用户明确要你用 emoji。
 - 谨慎对待 write_file / edit_file / bash(它们会真实改动文件或执行命令)。
@@ -808,7 +825,7 @@ ${callRule(false, toolFormat)}
 - Commands that don't exit quickly (dev servers, npm run dev, long builds) MUST run via bash_bg; check they started with bg_output, and bg_kill them when done.
 - **Switch-strategy rule: when the same approach brings no new progress twice in a row, change approach** — search coming up empty → web_fetch a likely URL directly or open the browser; a page's text digest you can't make sense of → screenshot and look with your own eyes; a command failing the same way → different plan. Running the same move a third time unchanged almost never ends differently.
 - For non-trivial tasks, lay out a todo list with update_plan first and keep its statuses current as you go; use ask_user when a decision is the user's to make.
-- The user can't see your thinking, only your calls. After each small step, or as soon as you learn something that matters (where the bug is, say), give your next call a note argument — any tool takes one (read_file, edit_file, bash…) — a sentence or two on what you did or found and what's next, e.g. ${noteExample(false, toolFormat)}. Never let two or three calls go by without one.
+- The user can't see your thinking. While you work, after each small step, or as soon as you learn something that matters (where the bug is, say), give your next call a note argument — any tool takes one (read_file, edit_file, bash…) — a sentence or two on what you did or found and what's next, e.g. ${noteExample(false, toolFormat)}. Never let two or three calls go by without one. The summary when you're done (in plan mode, the plan) needs no call: write it as your answer.
 - When done, DON'T call a tool — just give a concise summary of what you did; no headings on a short answer.
 - **No emoji** — in answers or in files you write ("attractive" is not a reason) — unless the user explicitly asks for emoji.
 - Be careful with write_file / edit_file / bash (they really change files / run commands).
@@ -3552,6 +3569,34 @@ export async function runAgentTurn(
   const jitShown = new Set<HintKey>(); // per-turn: hints re-arm next turn
   // Calls in a row with no word to the user.
   let silentCalls = 0;
+  // Calls stopped from their name alone this turn — see `blocked`. They never
+  // reach the identical-call breaker, so they are counted here: Qwen3.5 9B,
+  // planning, tried edit_file fourteen times running to the step limit.
+  let blockedCount = 0;
+  /** Answer a stopped call; true when the turn should pause instead. */
+  const sendBlockedBack = (name: string, why: Blocked, call: ToolCall): boolean => {
+    blockedCount++;
+    if (blockedCount >= BLOCKED_PAUSE) {
+      cb.onFinal(
+        lang === "zh"
+          ? `计划模式下,模型连续 ${blockedCount} 次想直接修改文件或提问,已暂停以免空转。要它动手,就切换到别的模式;要它接着规划,就告诉它只写方案。`
+          : `While planning, the model tried ${blockedCount} times to change files or ask instead — paused rather than spinning. To have it do the work, switch to another mode; to keep planning, tell it to write the plan only.`,
+        undefined,
+        "steps",
+        { kind: "repeat", tool: name, key: `blocked:${name}`, count: blockedCount },
+      );
+      return true;
+    }
+    const again =
+      blockedCount >= 2
+        ? lang === "zh"
+          ? `\n\n这已经是第 ${blockedCount} 次了:计划模式下任何修改都不会执行。现在停止调用工具,把方案写成回答。`
+          : `\n\nThis is attempt ${blockedCount}: nothing gets changed in plan mode. Stop calling tools and write the plan as your answer now.`
+        : "";
+    if (blockedCount >= 2) hotNext = true;
+    pushUser(toolResultMsg(name, blockedRefusal(why, lang === "zh") + again), call);
+    return false;
+  };
   // Tool calls run this turn, and how many were sent back for a note.
   let stepsThisTurn = 0;
   let noteAsks = 0;
@@ -3964,6 +4009,7 @@ export async function runAgentTurn(
       let calling: string | null = null;
       /** The call stopped as soon as its name showed it would not run. */
       let blockedCall: string | null = null;
+      let blockedWhy: Blocked = "plan";
       let budgetTripped = false;
       let degenerated = false;
       let closersCut = false;
@@ -4090,8 +4136,10 @@ export async function runAgentTurn(
                 cb.onCalling?.(name);
                 // A change while planning: stopped here, before its content —
                 // a whole file written out only to be sent back.
-                if (name && !blockedCall && opts.blocked?.(name)) {
+                const why = name && !blockedCall ? opts.blocked?.(name) : null;
+                if (name && why) {
                   blockedCall = name;
+                  blockedWhy = why;
                   void cancelGeneration().catch(() => {});
                 }
               }
@@ -4299,7 +4347,7 @@ export async function runAgentTurn(
         const shown = live as Live | null;
         if (shown && !shown.claimed && sameFileTool(shown.view.name, blockedCall)) stepObj.id = shown.id;
         cb.onStep(stepObj);
-        pushUser(toolResultMsg(blockedCall, planRefusal(lang === "zh")), call);
+        if (sendBlockedBack(blockedCall, blockedWhy, call)) return;
         continue;
       }
 
@@ -4560,6 +4608,24 @@ export async function runAgentTurn(
       // The model's word to the user, when it put one in the call (the
       // `note` rule): off the arguments before anything reads them.
       const note = takeNote(call);
+
+      // A call the turn will not run, whose name the stream did not show in
+      // time to stop it (see `blocked`): sent back all the same, unrun.
+      const blockedNow = opts.blocked?.(call.name);
+      if (blockedNow) {
+        storeAssistantTurn(messages, raw, opts.reasoningField);
+        const said = proseAfter(raw).trim() || note;
+        cb.onStep({
+          id: uid(),
+          call,
+          status: "denied",
+          thinking,
+          ...(said ? { said } : {}),
+          result: lang === "zh" ? "计划模式:未执行" : "plan mode: not run",
+        });
+        if (sendBlockedBack(call.name, blockedNow, call)) return;
+        continue;
+      }
 
       // ── Note guard ── a call with no word to the user, made where one is
       // owed — the turn's first, or after two quiet calls — is sent back once
@@ -5508,8 +5574,14 @@ export async function runAgentTurn(
         obsHintsShown++;
         obsStreak = 0;
         hotNext = true;
-        resultText +=
-          lang === "zh"
+        // Planning, the next concrete action is the plan itself: "write the
+        // next file" told a model that could not write to keep looking —
+        // Qwen3.5 9B read the same files round and round to the step limit.
+        resultText += opts.planMode
+          ? lang === "zh"
+            ? "\n\n[行动提示] 你已连续 5 步只在调研。信息已经足够——现在就把方案写成回答(改哪些文件、怎么改、怎么验证),不要再重读同样的文件。"
+            : "\n\n[act now] Five consecutive steps of looking around. You have enough — write the plan as your answer now (which files change, how, how you'll verify it), and don't read the same files again."
+          : lang === "zh"
             ? "\n\n[行动提示] 你已连续 5 步只在观察(list/搜索/只读命令),工作区没有任何变化。信息已经足够——现在就执行下一个实质动作:写下一个文件,或运行构建/验证。"
             : "\n\n[act now] Five consecutive steps of pure observation (listing/searching/read-only commands) with zero workspace changes. You have enough information — take the next concrete action now: write the next file, or run the build/verification.";
       }
