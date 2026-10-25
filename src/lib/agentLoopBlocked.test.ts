@@ -17,7 +17,11 @@ type Chan = { onmessage?: (ev: Ev) => void };
 type Step = { call: { name: string; args: Record<string, unknown> }; status: string; result?: string };
 
 /** Each round as the chunks it streams in; the engine stops when told to. */
-async function run(rounds: string[][], blocked?: (name: string) => "plan" | "planAsk" | null) {
+async function run(
+  rounds: string[][],
+  blocked?: (name: string) => "plan" | "planAsk" | "planTodo" | null,
+  planMode = false,
+) {
   const script = rounds.map((r) => [...r]);
   const cmds: string[] = [];
   const streamed: string[] = [];
@@ -25,6 +29,7 @@ async function run(rounds: string[][], blocked?: (name: string) => "plan" | "pla
   const prompts: string[] = [];
   let final = "";
   let reason: string | undefined;
+  const plans: unknown[] = [];
   let stop = false;
   mockIPC(async (cmd, args) => {
     cmds.push(cmd);
@@ -53,13 +58,14 @@ async function run(rounds: string[][], blocked?: (name: string) => "plan" | "pla
   await runAgentTurn(
     "plan it", [], "/tmp/ws", "en",
     {
-      thinkMode: "off", maxSteps: 6, temperature: 0.2, toolFormat: "xml", blocked,
+      thinkMode: "off", maxSteps: 8, temperature: 0.2, toolFormat: "xml", blocked, planMode,
       signal: { cancelled: false },
       approve: async () => "plan",
       approveDir: async () => false, approveSudo: async () => ({ ok: false }),
     } as never,
     {
       onThinking: () => {}, onAssistantText: () => {}, onCalling: () => {},
+      onPlan: (p: unknown) => plans.push(p),
       onAskUser: async (q: string) => {
         asked.push(q);
         return "ok";
@@ -72,7 +78,7 @@ async function run(rounds: string[][], blocked?: (name: string) => "plan" | "pla
       onError: (m) => { throw new Error(m); },
     },
   );
-  return { steps: [...steps.values()], cmds, streamed, asked, prompts, final, reason };
+  return { steps: [...steps.values()], cmds, streamed, asked, prompts, final, reason, plans };
 }
 
 const WRITE = [
@@ -121,6 +127,40 @@ describe("a change while planning", () => {
     expect(steps).toHaveLength(5);
     expect(reason).toBe("steps");
     expect(final).toMatch(/tried 5 times/);
+  });
+
+  it("a todo list is stopped too — it would hold the plan back as unfinished", async () => {
+    const TODO = [
+      "<tool_call>\n<function=update_plan>\n",
+      '<parameter=todos>\n[{"content":"fix it","status":"pending"}]\n</parameter>\n</function>\n</tool_call>',
+    ];
+    const { steps, plans, prompts } = await run([TODO, ["The plan: …"]], (n) => (n === "update_plan" ? "planTodo" : null), true);
+    expect(plans).toEqual([]);
+    expect(steps[0].status).toBe("denied");
+    expect(prompts[1]).toMatch(/don't lay out todos with update_plan/);
+  });
+
+  it("a planning turn's answer is not held back by the wrap-up gate", async () => {
+    // The todo list already there, unfinished — what held a plan back.
+    const TODO = [
+      '<tool_call>\n<function=update_plan>\n<parameter=todos>\n[{"content":"fix it","status":"pending"}]\n</parameter>\n</function>\n</tool_call>',
+    ];
+    const { final, prompts } = await run([TODO, ["The plan: change line_total."], ["(a nudged second answer)"]], undefined, true);
+    expect(final).toBe("The plan: change line_total.");
+    expect(prompts).toHaveLength(2);
+  });
+
+  it("going round two files, the third read of one is answered from what was read", async () => {
+    const rd = (p: string) => [`<tool_call>\n<function=read_file>\n<parameter=path>\n${p}\n</parameter>\n</function>\n</tool_call>`];
+    const { cmds, prompts, final } = await run(
+      [rd("a.py"), rd("b.py"), rd("a.py"), rd("b.py"), rd("a.py"), ["The plan: …"]],
+      undefined,
+      true,
+    );
+    expect(cmds.filter((c) => c === "agent_read_file")).toHaveLength(4);
+    expect(prompts[5]).toMatch(/You have read a\.py 2 times this turn/);
+    expect(prompts[5]).toMatch(/write the plan as your answer/);
+    expect(final).toBe("The plan: …");
   });
 
   it("without the check, the whole call is written and then sent back", async () => {

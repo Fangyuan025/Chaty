@@ -393,9 +393,9 @@ export interface AgentOptions {
   /** Plan mode: this turn researches and proposes; it changes nothing. */
   planMode?: boolean;
   /** A call that will not run whatever its arguments say, known from its
-   *  name alone — a change while planning ("plan"), or a question that would
-   *  stand in for the plan ("planAsk") — stopped as soon as the name is
-   *  written, not after the whole call. */
+   *  name alone — a change while planning ("plan"), or a question or a todo
+   *  list that would stand in for the plan ("planAsk", "planTodo") — stopped
+   *  as soon as the name is written, not after the whole call. */
   blocked?: (name: string) => Blocked | null;
   /** Send the turn's first call back once when it says nothing to the user
    *  (see the first-call note guard). Code mode turns it on. */
@@ -704,10 +704,15 @@ function noteExample(zh: boolean, f: CallFormat): string {
 const BLOCKED_PAUSE = 5;
 
 /** Why a call is stopped from its name alone — see AgentOptions.blocked. */
-export type Blocked = "plan" | "planAsk";
+export type Blocked = "plan" | "planAsk" | "planTodo";
 
 /** What a call stopped from its name says to the model. */
 function blockedRefusal(why: Blocked, zh: boolean): string {
+  if (why === "planTodo") {
+    return zh
+      ? "现在是计划模式:不要用 update_plan 列待办,这个调用没有执行。把方案直接写成回答——改哪些文件、怎么改、怎么验证;用户同意执行之后,再用 update_plan。"
+      : "This is plan mode: don't lay out todos with update_plan — this call was not run. Write the plan as your answer: which files change, how, and how you'll verify it. Once the user approves it, update_plan is yours again.";
+  }
   if (why === "planAsk") {
     return zh
       ? "现在是计划模式:不要用 ask_user 交方案或确认方案,这个调用没有执行。直接把方案写成回答——用户会在方案下面选择执行、逐个确认或继续规划;拿不准、需要用户定的地方,写进方案里作为待确认的问题。"
@@ -726,8 +731,8 @@ function planRefusal(zh: boolean): string {
 /** Plan mode's word to the model, on the user's turn. */
 export function planLine(zh: boolean): string {
   return zh
-    ? "\n\n(计划模式:这一轮只调研、不改动——不要写或改文件,也不要运行会改变东西的命令。读完需要的代码和资料后,把具体方案写成回答:改哪些文件、怎么改、怎么验证;不要用 ask_user 交方案或确认方案,拿不准的地方写进方案作为待确认的问题。用户同意后才会开始执行。)"
-    : "\n\n(Plan mode: research only this turn — don't write or edit files, or run commands that change anything. Once you've read what you need, write the concrete plan as your answer: which files change, how, and how you'll verify it — not through ask_user; anything unsure goes in the plan as an open question. Nothing is carried out until the user approves the plan.)";
+    ? "\n\n(计划模式:这一轮只调研、不改动——不要写或改文件,也不要运行会改变东西的命令。读完需要的代码和资料后,把具体方案写成回答:改哪些文件、怎么改、怎么验证;不要用 ask_user 交方案或确认方案,也不要用 update_plan 列待办,拿不准的地方写进方案作为待确认的问题。用户同意后才会开始执行。)"
+    : "\n\n(Plan mode: research only this turn — don't write or edit files, or run commands that change anything. Once you've read what you need, write the concrete plan as your answer: which files change, how, and how you'll verify it — not through ask_user or an update_plan todo list; anything unsure goes in the plan as an open question. Nothing is carried out until the user approves the plan.)";
 }
 
 export function systemPrompt(
@@ -3721,6 +3726,9 @@ export async function runAgentTurn(
   // audit: three failed xcodebuilds plus a syntax-only parse each cleared the
   // old ledger while the project didn't compile.)
   const codeEditsSinceExec = { files: new Set<string>(), lines: 0 };
+  // Each file (and part of it) read since the workspace last could have
+  // changed — see the re-read breaker.
+  const readsSinceChange = new Map<string, number>();
   // Each ledger file's share of `lines`, so one file can leave the ledger on
   // its own — a walkthrough vouches for the page files, not for a script
   // beside them, whose volume must not stay inflated by theirs.
@@ -4497,8 +4505,11 @@ export async function runAgentTurn(
         // turn. Once per turn, catch the two audited cut-corner patterns:
         // a todo list it wrote and abandoned, and page edits it never looked
         // at in the browser. One corrective nudge, then its next answer
-        // stands either way.
-        if (answer && step < maxSteps - 2) {
+        // stands either way. Not while planning: the answer is the plan, and
+        // what the gate looks for — todos done, changes run — is the work a
+        // planning turn does not do; a plan's own todo list held its answer
+        // back as unfinished, again and again.
+        if (answer && step < maxSteps - 2 && !opts.planMode) {
           // macOS-app delivery check: app-entry sources were written this
           // turn — is there a packaged .app in the tree? (Cheap listing,
           // only on delivery attempts of app-shaped turns.)
@@ -4876,9 +4887,19 @@ export async function runAgentTurn(
                 ? `这份文件内容已经原样写入过了(第 ${repeatCount + 1} 次重复,一字未变)——它已经在磁盘上,重写不会有任何变化。继续下一步:写下一个文件,或用 validate_change 验证已写的代码。${first ? `计划里的下一项:「${first}」。` : ""}`
                 : `This exact file content is already on disk (repeat #${repeatCount + 1}, byte-identical) — rewriting changes nothing. Move on: write the NEXT file, or run validate_change on what exists.${first ? ` Next plan item: "${first}".` : ""}`
             : call.name === "read_file"
-              ? lang === "zh"
-                ? `这个文件你刚读过且内容没有变化(第 ${repeatCount + 1} 次重复)——再读一遍不会出现新信息。直接行动:编辑它、构建、或继续下一步。${first ? `计划里的下一项:「${first}」。` : ""}`
-                : `You just read this file and it has not changed (repeat #${repeatCount + 1}) — reading again reveals nothing new. Act instead: edit it, build, or move to the next step.${first ? ` Next plan item: "${first}".` : ""}`
+              ? // Planning, there is nothing to act on but the plan: "edit it"
+                // sent a planning Qwen3.5 9B back to the same read nine times.
+                opts.planMode
+                ? lang === "zh"
+                  ? `这个文件你刚读过且内容没有变化(第 ${repeatCount + 1} 次重复)——再读一遍不会出现新信息。你需要的信息已经够了:现在把方案写成回答。`
+                  : `You just read this file and it has not changed (repeat #${repeatCount + 1}) — reading again reveals nothing new. You have what you need: write the plan as your answer now.`
+                : lang === "zh"
+                  ? `这个文件你刚读过且内容没有变化(第 ${repeatCount + 1} 次重复)——再读一遍不会出现新信息。直接行动:编辑它、构建、或继续下一步。${first ? `计划里的下一项:「${first}」。` : ""}`
+                  : `You just read this file and it has not changed (repeat #${repeatCount + 1}) — reading again reveals nothing new. Act instead: edit it, build, or move to the next step.${first ? ` Next plan item: "${first}".` : ""}`
+              : opts.planMode
+                ? lang === "zh"
+                  ? `同一条失败的命令已重发 ${repeatCount + 1} 次,再跑结果也一样。计划模式下不用去修:把这个错误、以及你打算怎么修,写进方案,然后把方案写成回答。`
+                  : `This identical failed command has now been sent ${repeatCount + 1} times; running it again ends the same way. Planning, there is nothing to fix yet: put the error, and how you'd fix it, in the plan — and write the plan as your answer.`
               : lang === "zh"
                 ? `命令已锁定:同一条失败的命令已重发 ${repeatCount + 1} 次——错误在代码里,不在命令里。按上面输出的 文件:行号 打开文件(read_file),修复那个错误(edit_file),然后再运行。修复之前这条命令不会被执行。`
                 : `Command LOCKED: this identical FAILED command has now been sent ${repeatCount + 1} times — the error lives in the code, not the command. Open the file at the file:line the output names (read_file), fix it (edit_file), then run again. It will not execute until something changes.`;
@@ -4888,6 +4909,37 @@ export async function runAgentTurn(
         pushUser(toolResultMsg(call.name, note));
         continue;
       }
+      // ── Re-read breaker ── the same file (and part of it) read a third time
+      // this turn with nothing changed since: the identical-call breaker
+      // above sees only a call repeated back to back, and a model going round
+      // two files
+      // — Qwen3.5 9B, planning, read report.py and test_store.py by turns
+      // twenty times — never repeats one. Answered from what it already has.
+      if (call.name === "read_file") {
+        const a = call.args ?? {};
+        const key = `${asStr(a.path ?? a.file_path ?? a.file)}\u0000${asStr(a.offset)}\u0000${asStr(a.limit)}\u0000${asStr(a.symbol)}`;
+        const n = (readsSinceChange.get(key) ?? 0) + 1;
+        readsSinceChange.set(key, n);
+        if (n >= 3) {
+          const path = asStr(a.path ?? a.file_path ?? a.file);
+          const note = opts.planMode
+            ? lang === "zh"
+              ? `${path} 这一轮你已经读过 ${n - 1} 次,其间什么都没改,再读不会有新信息。你需要的信息已经够了:现在把方案写成回答。`
+              : `You have read ${path} ${n - 1} times this turn and nothing has changed since; reading it again shows nothing new. You have what you need: write the plan as your answer now.`
+            : lang === "zh"
+              ? `${path} 这一轮你已经读过 ${n - 1} 次,其间什么都没改,再读不会有新信息。直接行动:编辑它、运行它,或做下一步。`
+              : `You have read ${path} ${n - 1} times this turn and nothing has changed since; reading it again shows nothing new. Act instead: edit it, run it, or move to the next step.`;
+          stepObj.status = "error";
+          stepObj.result = note;
+          cb.onStep(stepObj);
+          pushUser(toolResultMsg(call.name, note));
+          continue;
+        }
+      } else if (MUTATING_TOOLS.has(call.name)) {
+        // Something may have changed: a file read before may read differently.
+        readsSinceChange.clear();
+      }
+
       // A cycle: the last several UI actions kept landing the page back on the
       // same one or two states. Distinct calls, so the repeat counter is blind
       // to it; distinct RESULTS are what says the page is moving, and here it

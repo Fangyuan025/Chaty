@@ -369,6 +369,11 @@ pub fn agent_read_file(
             "(offset beyond EOF: file has {total} lines)"
         ));
     }
+    // Said in words: an empty result read as a read that failed, and Qwen3.5
+    // 9B read an empty `__init__.py` sixteen times running.
+    if total == 0 {
+        return Ok(trf!("(空文件,0 行)", "(empty file, 0 lines)"));
+    }
 
     if end < total {
         out.push_str(&trf!(
@@ -7018,6 +7023,21 @@ mod tests {
         // Text is still text.
         std::fs::write(dir.join("a.txt"), "plain\ntext\n").unwrap();
         assert_eq!(agent_read_file("a.txt".into(), None, None, None, None).unwrap(), "plain\ntext");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An empty file says so: an empty result read as a read that had failed,
+    /// and was tried again and again.
+    #[test]
+    fn read_file_says_an_empty_file_is_empty() {
+        let _g = serial();
+        let dir = std::env::temp_dir().join(format!("chaty-agent-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_ws(&dir);
+        std::fs::write(dir.join("__init__.py"), "").unwrap();
+        let out = agent_read_file("__init__.py".into(), None, None, None, None).unwrap();
+        assert!(out.contains('0') && !out.trim().is_empty(), "{out}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

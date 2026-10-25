@@ -2148,7 +2148,7 @@ export function CodeMode({
       blocked: (name: string) => {
         if ((modesRef.current[runSid] ?? "auto") !== "plan") return null;
         if (isFileEdit(name) || name === "web_download") return "plan";
-        return name === "ask_user" ? "planAsk" : null;
+        return name === "ask_user" ? "planAsk" : name === "update_plan" ? "planTodo" : null;
       },
       askFirstNote: true,
     }, {
