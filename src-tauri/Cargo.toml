@@ -116,6 +116,11 @@ portable-pty = "0.9"
 vt100 = "0.16"
 chardetng = "1"
 
+# Linux: enumerate AMD/Intel/NVIDIA compute devices through Vulkan.
+# The loader is opened dynamically, so Vulkan is optional at app startup.
+[target.'cfg(target_os = "linux")'.dependencies]
+ash = "0.38"
+
 # GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers â€” cross-vendor on Windows.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

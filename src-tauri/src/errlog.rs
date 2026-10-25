@@ -16,8 +16,13 @@ pub(crate) fn chaty_data_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from);
     #[cfg(target_os = "macos")]
     let base = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"));
+    // Before Tauri starts, logs and GPU-crash markers must use the same
+    // Linux data root as app.path().app_data_dir(). Ignore relative XDG paths.
     #[cfg(all(unix, not(target_os = "macos")))]
-    let base = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"));
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
     let dir = base.unwrap_or_else(std::env::temp_dir).join("com.chaty.desktop");
     let _ = std::fs::create_dir_all(&dir);
     dir

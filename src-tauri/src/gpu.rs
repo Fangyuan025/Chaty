@@ -12,6 +12,8 @@ use std::path::Path;
 pub struct GpuInfo {
     pub name: String,
     pub vram_mb: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -115,7 +117,7 @@ pub fn detect_gpu() -> Option<GpuInfo> {
                 .trim()
                 .to_string();
             if best.as_ref().map_or(true, |b| vram_mb > b.vram_mb) {
-                best = Some(GpuInfo { name, vram_mb });
+                best = Some(GpuInfo { name, vram_mb, kind: None });
             }
         }
         best.filter(|g| g.vram_mb > 0)
@@ -136,6 +138,7 @@ pub fn detect_gpu() -> Option<GpuInfo> {
     Some(GpuInfo {
         name,
         vram_mb: working_set / (1024 * 1024),
+        kind: None,
     })
 }
 
@@ -151,9 +154,334 @@ fn mac_chip_name() -> String {
         .unwrap_or_else(|| "Apple GPU".to_string())
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+// Linux: query the Vulkan loader directly. Do not depend on vulkaninfo or
+// PCI vendor-specific tools. Keep all devices for the later selection UI.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug)]
+pub struct LinuxGpu {
+    pub index: usize,
+    pub name: String,
+    pub kind: &'static str,
+    pub vendor_id: u32,
+    pub device_id: u32,
+    pub memory_mb: u64,
+    pub budget_mb: u64,
+}
+
+// Returns a *remaining allocation budget* for this process, not total VRAM.
+// VK_EXT_memory_budget accounts for memory pressure from other applications in
+// heapBudget and for allocations by this process in heapUsage. The extension
+// is optional; Vulkan 1.0 devices take the conservative fallback below.
+#[cfg(target_os = "linux")]
+fn linux_vulkan_free_mb(
+    instance: &ash::Instance,
+    device: ash::vk::PhysicalDevice,
+    memory: &ash::vk::PhysicalDeviceMemoryProperties,
+    supports_properties2: bool,
+) -> Option<u64> {
+    use ash::vk;
+    use std::ffi::CStr;
+
+    if !supports_properties2 {
+        return None;
+    }
+    let props = unsafe { instance.get_physical_device_properties(device) };
+    if props.api_version < vk::API_VERSION_1_1 {
+        return None;
+    }
+    let extensions = unsafe { instance.enumerate_device_extension_properties(device) }.ok()?;
+    let supported = extensions.iter().any(|ext| {
+        unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) }.to_bytes()
+            == b"VK_EXT_memory_budget"
+    });
+    if !supported {
+        return None;
+    }
+
+    let mut budget = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
+    {
+        let mut props2 = vk::PhysicalDeviceMemoryProperties2::default()
+            .push_next(&mut budget);
+        unsafe { instance.get_physical_device_memory_properties2(device, &mut props2) };
+    }
+    let mut total_free = 0_u64;
+    let mut found_local_heap = false;
+    for (i, heap) in memory.memory_heaps[..memory.memory_heap_count as usize]
+        .iter().enumerate()
+    {
+        if !heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL) {
+            continue;
+        }
+        let max_for_process = budget.heap_budget[i].min(heap.size);
+        if max_for_process == 0 {
+            continue;
+        }
+        found_local_heap = true;
+        total_free = total_free.saturating_add(
+            max_for_process.saturating_sub(budget.heap_usage[i]),
+        );
+    }
+    found_local_heap.then_some(total_free / (1024 * 1024))
+}
+
+// Conservative policy shared by AMD, Intel, NVIDIA and other Vulkan drivers.
+// An iGPU shares system RAM: never plan offload from the entire local heap.
+// A dGPU without VK_EXT_memory_budget keeps a safety margin; fit_layers()
+// separately reserves memory for KV cache and compute buffers.
+#[cfg(target_os = "linux")]
+fn linux_offload_budget_mb(
+    kind: &str,
+    memory_mb: u64,
+    available_ram_mb: u64,
+    driver_free_mb: Option<u64>,
+) -> u64 {
+    let fallback = if kind == "integrated" {
+        memory_mb.min(available_ram_mb / 4)
+    } else {
+        memory_mb.saturating_mul(85) / 100
+    };
+    driver_free_mb.map_or(fallback, |free| fallback.min(free))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_budget_tests {
+    use super::linux_offload_budget_mb;
+
+    #[test]
+    fn integrated_budget_is_capped_by_available_system_ram() {
+        assert_eq!(linux_offload_budget_mb("integrated", 32_768, 8_000, None), 2_000);
+    }
+
+    #[test]
+    fn discrete_budget_respects_driver_free_memory() {
+        assert_eq!(linux_offload_budget_mb("discrete", 8_192, 16_000, Some(1_500)), 1_500);
+    }
+
+    #[test]
+    fn missing_driver_budget_uses_safe_fallback() {
+        assert_eq!(linux_offload_budget_mb("discrete", 8_000, 16_000, None), 6_800);
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn linux_vulkan_gpus() -> Vec<LinuxGpu> {
+    use ash::vk;
+    use std::ffi::CStr;
+
+    // A missing/broken loader must not prevent a CPU-only launch.
+    let entry = match unsafe { ash::Entry::load() } {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    // Try Vulkan 1.1 to query memory budgets. Vulkan 1.0 still enumerates
+    // GPUs and falls back to a static, conservative budget.
+    let loader_api = unsafe { entry.try_enumerate_instance_version() }
+        .ok().flatten().unwrap_or(vk::API_VERSION_1_0);
+    let mut instance = None;
+    let mut supports_properties2 = false;
+    for api in [vk::API_VERSION_1_1, vk::API_VERSION_1_0] {
+        if api > loader_api {
+            continue;
+        }
+        let app_info = vk::ApplicationInfo::default().api_version(api);
+        let create_info = vk::InstanceCreateInfo::default().application_info(&app_info);
+        if let Ok(i) = unsafe { entry.create_instance(&create_info, None) } {
+            supports_properties2 = api >= vk::API_VERSION_1_1;
+            instance = Some(i);
+            break;
+        }
+    }
+    let instance = match instance {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    let handles = unsafe { instance.enumerate_physical_devices() }.unwrap_or_default();
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    let available_ram_mb = sys.available_memory() / (1024 * 1024);
+    let mut result = Vec::new();
+
+    for (index, device) in handles.into_iter().enumerate() {
+        let props = unsafe { instance.get_physical_device_properties(device) };
+        let kind = match props.device_type {
+            vk::PhysicalDeviceType::DISCRETE_GPU => "discrete",
+            vk::PhysicalDeviceType::INTEGRATED_GPU => "integrated",
+            vk::PhysicalDeviceType::VIRTUAL_GPU => "virtual",
+            vk::PhysicalDeviceType::CPU => continue,
+            _ => "other",
+        };
+        let name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        let lower = name.to_ascii_lowercase();
+        if ["llvmpipe", "lavapipe", "softpipe", "swiftshader"]
+            .iter()
+            .any(|tag| lower.contains(tag))
+        {
+            continue;
+        }
+        // llama.cpp requires a compute-capable Vulkan queue.
+        if !unsafe { instance.get_physical_device_queue_family_properties(device) }
+            .iter()
+            .any(|q| q.queue_count > 0 && q.queue_flags.contains(vk::QueueFlags::COMPUTE))
+        {
+            continue;
+        }
+        let memory = unsafe { instance.get_physical_device_memory_properties(device) };
+        let local_bytes = memory.memory_heaps[..memory.memory_heap_count as usize]
+            .iter()
+            .filter(|h| h.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
+            .fold(0_u64, |total, h| total.saturating_add(h.size));
+        let memory_mb = local_bytes / (1024 * 1024);
+        // The driver's remaining process budget accounts for GPU memory
+        // pressure, including allocations from other applications. If the
+        // extension is absent, use a conservative cross-vendor fallback.
+        let driver_free_mb = linux_vulkan_free_mb(
+            &instance, device, &memory, supports_properties2,
+        );
+        let budget_mb = linux_offload_budget_mb(
+            kind, memory_mb, available_ram_mb, driver_free_mb,
+        );
+        result.push(LinuxGpu {
+            index, name, kind,
+            vendor_id: props.vendor_id,
+            device_id: props.device_id,
+            memory_mb, budget_mb,
+        });
+    }
+    unsafe { instance.destroy_instance(None) };
+    result
+}
+
+// Linux Vulkan device indices refer to the native vkEnumeratePhysicalDevices
+// order. GGML_VK_VISIBLE_DEVICES uses that same order, *not* ggml's backend
+// device indices (which may include non-Vulkan backends).
+#[cfg(target_os = "linux")]
+fn choose_linux_gpu(devices: &[LinuxGpu], requested: Option<usize>) -> Option<&LinuxGpu> {
+    devices.iter()
+        .filter(|d| d.budget_mb > 0 && requested.map_or(true, |idx| d.index == idx))
+        .max_by_key(|d| {
+            let rank = match d.kind {
+                "discrete" => 3_u8,
+                "integrated" => 2,
+                "virtual" => 1,
+                _ => 0,
+            };
+            // Stable tie breaking avoids random GPU switching between runs.
+            (rank, d.budget_mb, std::cmp::Reverse(d.index))
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn first_visible_vulkan_index(raw: &str) -> Option<usize> {
+    raw.split(|c: char| c == ',' || c.is_ascii_whitespace())
+        .find(|p| !p.is_empty())?
+        .parse::<usize>()
+        .ok()
+}
+
+/// Called once, before backend initialization AND before worker threads start.
+/// Allows selecting either an iGPU or dGPU while preserving an explicit GGML
+/// override (including an empty value, which intentionally means CPU-only).
+/// CHATY_VULKAN_DEVICE accepts the Vulkan physical-device index; by default
+/// prefer the largest usable discrete GPU, then the largest integrated GPU.
+#[cfg(target_os = "linux")]
+pub fn configure_linux_vulkan_device() {
+    if !cfg!(feature = "gpu") {
+        return;
+    }
+    if std::env::var_os("GGML_VK_VISIBLE_DEVICES").is_some() {
+        eprintln!("[chaty/linux] honoring existing GGML_VK_VISIBLE_DEVICES");
+        return;
+    }
+    let devices = linux_vulkan_gpus();
+    let forced = std::env::var("CHATY_VULKAN_DEVICE").ok();
+    let selected = if let Some(ref value) = forced {
+        value.trim().parse::<usize>().ok()
+            .and_then(|idx| choose_linux_gpu(&devices, Some(idx)))
+    } else {
+        choose_linux_gpu(&devices, None)
+    };
+    match selected {
+        Some(dev) => {
+            // GGML reads this once, when the Vulkan backend is initialized.
+            std::env::set_var("GGML_VK_VISIBLE_DEVICES", dev.index.to_string());
+            eprintln!(
+                "[chaty/linux] Vulkan device {}: {} ({}, budget {} MiB)",
+                dev.index, dev.name, dev.kind, dev.budget_mb,
+            );
+        }
+        None => {
+            // Invalid explicit index must NOT silently select another GPU.
+            // Also prevents a Vulkan software renderer from becoming an
+            // accidental fallback when no compatible hardware was found.
+            std::env::set_var("GGML_VK_VISIBLE_DEVICES", "");
+            eprintln!(
+                "[chaty/linux] no usable Vulkan GPU for selection {:?}; CPU fallback",
+                forced,
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub fn detect_gpu() -> Option<GpuInfo> {
-    None
+    if !cfg!(feature = "gpu") {
+        return None;
+    }
+    let devices = linux_vulkan_gpus();
+    // The visible device is authoritative. It is important that the auto-tuner
+    // sizes layers for the SAME GPU on which GGML actually places them.
+    let best = if let Ok(raw) = std::env::var("GGML_VK_VISIBLE_DEVICES") {
+        choose_linux_gpu(&devices, Some(first_visible_vulkan_index(&raw)?))
+    } else if let Ok(raw) = std::env::var("CHATY_VULKAN_DEVICE") {
+        choose_linux_gpu(&devices, Some(raw.trim().parse::<usize>().ok()?))
+    } else {
+        choose_linux_gpu(&devices, None)
+    }?;
+    Some(GpuInfo {
+        name: best.name.clone(),
+        vram_mb: best.budget_mb,
+        kind: Some(best.kind.to_string()),
+    })
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_gpu_selection_tests {
+    use super::{choose_linux_gpu, first_visible_vulkan_index, LinuxGpu};
+
+    fn sample(index: usize, kind: &'static str, budget_mb: u64) -> LinuxGpu {
+        LinuxGpu {
+            index, name: format!("test-{index}"), kind, vendor_id: 0,
+            device_id: 0, memory_mb: budget_mb, budget_mb,
+        }
+    }
+
+    #[test]
+    fn discrete_is_preferred_even_if_integrated_has_larger_heap() {
+        let devices = [sample(0, "integrated", 32_768), sample(1, "discrete", 8_192)];
+        assert_eq!(choose_linux_gpu(&devices, None).unwrap().index, 1);
+    }
+
+    #[test]
+    fn an_integrated_gpu_is_usable_when_no_discrete_gpu_exists() {
+        let devices = [sample(2, "integrated", 2_048)];
+        assert_eq!(choose_linux_gpu(&devices, None).unwrap().index, 2);
+    }
+
+    #[test]
+    fn explicit_choice_can_select_integrated_gpu() {
+        let devices = [sample(0, "integrated", 4_096), sample(1, "discrete", 8_192)];
+        assert_eq!(choose_linux_gpu(&devices, Some(0)).unwrap().index, 0);
+        assert!(choose_linux_gpu(&devices, Some(5)).is_none());
+    }
+
+    #[test]
+    fn visibility_uses_first_physical_vulkan_index() {
+        assert_eq!(first_visible_vulkan_index("2, 1"), Some(2));
+        assert_eq!(first_visible_vulkan_index(""), None);
+        assert_eq!(first_visible_vulkan_index("invalid"), None);
+    }
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]

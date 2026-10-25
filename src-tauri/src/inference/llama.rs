@@ -576,6 +576,13 @@ impl LlamaEngine {
                 // The head's layers are extra ones plain decoding never
                 // touches, so llama.cpp leaves them on disk unless asked.
                 .with_load_mtp(mtp);
+            // Linux: one GPU per model. The visible Vulkan physical device was
+            // pinned at startup; avoid silently spreading layers across iGPU
+            // and dGPU (and sizing memory for the wrong adapter).
+            #[cfg(target_os = "linux")]
+            let params = params.with_split_mode(
+                llama_cpp_2::model::params::LlamaSplitMode::None,
+            );
             // macOS: load via malloc instead of mmap. Freeing malloc'd weights
             // is synchronous, whereas the Metal-wired pages of an mmap'd MoE
             // model have been observed to never return to the kernel after

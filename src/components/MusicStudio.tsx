@@ -102,6 +102,9 @@ function Pop({ open, onClose, children, className }: { open: boolean; onClose: (
 
 /** The one piece playing: starting another pauses it. */
 let playingNow: HTMLAudioElement | null = null;
+// Each Linux track frees its fetched WAV when another track takes over.
+// Weak keys avoid retaining unmounted audio elements.
+const linuxPlaybackRelease = new WeakMap<HTMLAudioElement, () => void>();
 
 /** A waveform: the piece's outline, what has played, and a stretch selected
  *  by dragging (for the edits that replace one). */
@@ -208,22 +211,94 @@ function Track({
   const [dur, setDur] = useState(rec.audio.seconds || 0);
   const [sel, setSel] = useState<[number, number] | null>(null);
   const [failed, setFailed] = useState(false);
-  const src = useMemo(() => musicMediaUrl(rec.audio.path), [rec.audio.path]);
+  const isLinux = navigator.userAgent.includes("Linux");
+  const src = useMemo(
+    () => (isLinux ? undefined : musicMediaUrl(rec.audio.path)),
+    [rec.audio.path, isLinux],
+  );
+  const blobUrl = useRef<string | null>(null);
+  const blobLoad = useRef<Promise<string> | null>(null);
+  const blobAbort = useRef<AbortController | null>(null);
   const edits = spec && spec.id === rec.family ? spec.edits : [];
   const canRange = edits.some((e) => RANGE_EDITS.includes(e));
+
+  // Keep the object URL during pause/resume of the same track. Release it
+  // when another track starts, the path changes, or the component unmounts.
+  const clearLinuxBlob = useCallback(() => {
+    blobAbort.current?.abort();
+    blobAbort.current = null;
+    blobLoad.current = null;
+    const a = audio.current;
+    if (a) {
+      a.removeAttribute("src");
+      a.load();
+    }
+    if (blobUrl.current) {
+      URL.revokeObjectURL(blobUrl.current);
+      blobUrl.current = null;
+    }
+  }, []);
 
   const play = useCallback(() => {
     const a = audio.current;
     if (!a) return;
-    if (playingNow && playingNow !== a) playingNow.pause();
+    if (playingNow && playingNow !== a) {
+      const previous = playingNow;
+      previous.pause();
+      linuxPlaybackRelease.get(previous)?.();
+    }
     playingNow = a;
-    // A pause before it starts (AbortError) or a blocked autoplay
-    // (NotAllowedError) leaves a good file paused; only a source that
-    // cannot be played is one.
-    void a.play().catch((e: unknown) => {
-      if ((e as DOMException)?.name === "NotSupportedError") setFailed(true);
+    if (isLinux) {
+      linuxPlaybackRelease.set(a, clearLinuxBlob);
+      // A failed decoder may leave a bad blob URL attached. Retry from disk.
+      if (a.error) clearLinuxBlob();
+    }
+    setFailed(false);
+
+    void (async () => {
+      if (isLinux) {
+        if (!blobLoad.current) {
+          const controller = new AbortController();
+          blobAbort.current = controller;
+          const request = (async () => {
+            const response = await fetch(musicMediaUrl(rec.audio.path), {
+              signal: controller.signal,
+            });
+            if (!response.ok) throw new Error(`Music HTTP ${response.status}`);
+            const blob = await response.blob();
+            if (controller.signal.aborted) {
+              throw new DOMException("Aborted", "AbortError");
+            }
+            const url = URL.createObjectURL(blob);
+            blobUrl.current = url;
+            return url;
+          })();
+          // A network error must not leave a permanently rejected promise.
+          const loading = request.catch((error: unknown) => {
+            // An older aborted request must not clear a newer track load.
+            if (blobLoad.current === loading) {
+              blobLoad.current = null;
+              if (blobAbort.current === controller) blobAbort.current = null;
+            }
+            throw error;
+          });
+          blobLoad.current = loading;
+        }
+        const url = await blobLoad.current;
+        if (!a.isConnected || playingNow !== a) return;
+        if (a.src !== url) a.src = url;
+      }
+      await a.play();
+    })().catch((error: unknown) => {
+      const name = (error as DOMException)?.name;
+      if (name === "AbortError" || name === "NotAllowedError") return;
+      if (!a.isConnected || playingNow !== a) return;
+      if (isLinux || name === "NotSupportedError") {
+        console.error("[chaty/music] Playback failed", error);
+        setFailed(true);
+      }
     });
-  }, []);
+  }, [isLinux, rec.audio.path, clearLinuxBlob]);
 
   useEffect(() => {
     if (autoPlay) play();
@@ -236,8 +311,10 @@ function Track({
         a.pause();
         playingNow = null;
       }
+      if (a) linuxPlaybackRelease.delete(a);
+      if (isLinux) clearLinuxBlob();
     };
-  }, []);
+  }, [isLinux, rec.audio.path, clearLinuxBlob]);
 
   const toggle = () => {
     const a = audio.current;
@@ -275,10 +352,10 @@ function Track({
         onEnded={() => setPlaying(false)}
         onTimeUpdate={(e) => setPos(e.currentTarget.currentTime)}
         onLoadedMetadata={(e) => Number.isFinite(e.currentTarget.duration) && setDur(e.currentTarget.duration)}
-        onError={() => setFailed(true)}
+        onError={() => { if (!isLinux || playingNow === audio.current) setFailed(true); }}
       />
       <div className="ms-track-row">
-        <button className={`ms-play ${playing ? "on" : ""}`} onClick={toggle} title={playing ? t("musPause") : t("musPlay")} disabled={failed}>
+        <button className={`ms-play ${playing ? "on" : ""}`} onClick={toggle} title={playing ? t("musPause") : t("musPlay")}>
           {playing ? (
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
               <rect x="6.5" y="5" width="4" height="14" rx="1.2" fill="currentColor" />

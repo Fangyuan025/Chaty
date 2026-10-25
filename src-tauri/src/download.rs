@@ -726,8 +726,8 @@ pub async fn hf_search(
     sort: String,
     limit: Option<u32>,
     endpoint: Option<String>,
-    // "image" narrows to text-to-image models, "music" to text-to-music
-    // ones; anything else is everything.
+    // "text" narrows to text-only chat/coding models; "image" and "music"
+    // select their studios; "all" preserves the complete storefront.
     task: Option<String>,
 ) -> Result<HfShelf, String> {
     let shelves = app.path().app_data_dir().ok().map(|d| d.join(SHELVES_FILE));
@@ -774,7 +774,9 @@ async fn search_shelf(
             _ => "trendingScore",
         };
         let mut list = format!("api/models?filter={filter}&sort={sort}&direction=-1&limit={}", limit.unwrap_or(30).min(50));
-        if task == Some("image") && !mflux {
+        if task == Some("text") {
+            list.push_str("&pipeline_tag=text-generation");
+        } else if task == Some("image") && !mflux {
             list.push_str("&pipeline_tag=text-to-image");
         }
         list
@@ -792,7 +794,7 @@ async fn search_shelf(
             return Err(hf_status_error(resp.status()));
         }
         let items: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        Ok(hits_from(&items, mflux, music))
+        Ok(filter_text_hits(hits_from(&items, mflux, music), task))
     }
     .await;
     match fetched {
@@ -814,6 +816,15 @@ async fn search_shelf(
     }
 }
 
+// Hugging Face task tags are imperfect. Exclude visibly multimodal and
+// studio models from the explicitly text-only Chat / Code shelf.
+fn filter_text_hits(hits: Vec<HfModelHit>, task: Option<&str>) -> Vec<HfModelHit> {
+    if task == Some("text") {
+        hits.into_iter().filter(|h| !h.image && !h.music && !h.vision).collect()
+    } else {
+        hits
+    }
+}
 /// The fields a store list shows. Asked for by name: the listing stopped
 /// sending `lastModified` unasked, and every model's date went blank.
 const LIST_FIELDS: &str =
@@ -1963,6 +1974,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn text_generation_keeps_plain_chat_and_coding_models() {
+        let mut chat = hit("example/Chat-GGUF");
+        chat.vision = false;
+        let mut coder = hit("example/Coder-GGUF");
+        coder.vision = false;
+        let mut image = hit("example/Image-GGUF");
+        image.vision = false;
+        image.image = true;
+        let mut music = hit("example/Music-GGUF");
+        music.vision = false;
+        music.music = true;
+        let vision = hit("example/Vision-GGUF");
+        let hits = vec![chat, coder, image, music, vision];
+        assert_eq!(filter_text_hits(hits.clone(), None).len(), 5);
+        let filtered = filter_text_hits(hits, Some("text"));
+        assert_eq!(filtered.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
+            vec!["Chat-GGUF", "Coder-GGUF"]);
+    }
     #[test]
     fn a_kept_shelf_comes_back_by_its_list() {
         let root = fresh_root("shelf");

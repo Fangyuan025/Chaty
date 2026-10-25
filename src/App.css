@@ -5052,6 +5052,16 @@ body:has(.live-overlay) .win-btn.close:hover {
   text-align: right;
   word-break: break-word;
 }
+.hw-gpu-name {
+  display: block;
+  font-weight: 500;
+}
+.hw-gpu-detail {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+}
 .hw-v small,
 .hw-accel small {
   color: var(--text-dim);

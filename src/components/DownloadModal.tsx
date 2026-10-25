@@ -20,7 +20,10 @@ import {
   DOWNLOAD_CANCELLED,
   type HfModelHit,
   type HfModelDetail,
+  getHardwareInfo,
+  type HardwareInfo,
 } from "../lib/ipc";
+import { classifyCatalogueFit, estimateStoreMemory } from "../lib/storeMemory";
 import { hfErrorText } from "../lib/hfError";
 import { ReadmeView } from "./ReadmeView";
 
@@ -86,9 +89,8 @@ export function DownloadModal({
   const [query, setQuery] = useState("");
   const [format, setFormat] = useState<"gguf" | "mlx">("gguf");
   const [sort, setSort] = useState<"trending" | "downloads" | "likes" | "updated">("trending");
-  /** "image" narrows the store to text-to-image models, "music" to
-   *  text-to-music ones. */
-  const [task, setTask] = useState<"all" | "image" | "music">("all");
+  /** Task filter for text-only chat/coding, image and music models. */
+  const [task, setTask] = useState<"all" | "text" | "image" | "music">("all");
   const [hits, setHits] = useState<HfModelHit[]>([]);
   const [listLoading, setListLoading] = useState(false);
   /** Why the list could not be fetched, when nothing could be shown instead. */
@@ -100,6 +102,18 @@ export function DownloadModal({
   const [detail, setDetail] = useState<HfModelDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [quantIdx, setQuantIdx] = useState(0);
+  // The Vulkan GPU selected by the backend, NOT the machine's installed RAM.
+  // If the IPC fails, don't invent a GPU-fit verdict.
+  const [hardware, setHardware] = useState<HardwareInfo | null>(null);
+  const [hardwareChecked, setHardwareChecked] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void getHardwareInfo()
+      .then((info) => { if (live) setHardware(info); })
+      .catch(() => { /* unknown budget is safer than a green fit indicator */ })
+      .finally(() => { if (live) setHardwareChecked(true); });
+    return () => { live = false; };
+  }, []);
   // -- download state --
   const [active, setActive] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
@@ -110,7 +124,7 @@ export function DownloadModal({
   const seq = useRef(0);
 
   const runSearch = useCallback(
-    async (q: string, f: "gguf" | "mlx", s: typeof sort, k: "all" | "image" | "music") => {
+    async (q: string, f: "gguf" | "mlx", s: typeof sort, k: "all" | "text" | "image" | "music") => {
       const my = ++seq.current;
       setListLoading(true);
       setError("");
@@ -321,7 +335,24 @@ export function DownloadModal({
       (detail?.format === "gguf" && detail.mmproj ? detail.mmprojSize : 0) +
       (detail?.image ? (detail.companions ?? []).reduce((a, c) => a + c.size, 0) : detail?.music ? (quant.extra ?? 0) : 0)
     : 0;
-  const fitsRam = detail ? needBytes * 1.15 < detail.totalRamMb * 1024 * 1024 : false;
+  const memory = quant
+    ? estimateStoreMemory(
+        quant.size,
+        needBytes,
+        hardware?.gpu?.vramMb,
+        hardware?.ramMb ?? detail?.totalRamMb,
+        hardware?.gpuBackend,
+        hardware?.gpu?.kind,
+      )
+    : null;
+  // One plain-language hardware hint, not a diagnostics panel.
+  const fitStatus = hardwareChecked
+    ? classifyCatalogueFit(memory, {
+        image: !!detail?.image,
+        music: !!detail?.music,
+        mlx: detail?.format === "mlx",
+      })
+    : "unknown";
   const pct = progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : 0;
 
   return (
@@ -373,6 +404,7 @@ export function DownloadModal({
                 onChange={(v) => setTask(v)}
                 options={[
                   { value: "all" as const, label: t("storeTaskAll") },
+                  { value: "text" as const, label: t("storeTaskText") },
                   { value: "image" as const, label: t("storeTaskImage") },
                   { value: "music" as const, label: t("storeTaskMusic") },
                 ]}
@@ -534,17 +566,30 @@ export function DownloadModal({
                       </span>
                     </div>
                   )}
-                  <div className={`store-fit ${fitsRam && !detail.unsupported ? "ok" : "warn"}`}>
+                  <div
+                    className={`store-fit ${!detail.unsupported &&
+                      (fitStatus === "gpu" || fitStatus === "ram" || fitStatus === "cpuOnly") ? "ok" : "warn"}`}
+                    title={t("storeFitCaveat")}
+                  >
                     {detail.format === "mlx" && !IS_MACOS
                       ? t("storeMlxMacOnly")
                       : detail.unsupported
-                      ? detail.unsupported
-                      : (fitsRam ? t("storeFitsRam") : t("storeOverRam")) +
-                        (detail.format === "gguf" && detail.mmproj ? ` · ${t("storeVisionIncluded")}` : "") +
-                        (detail.image
-                          ? ` · ${detail.format === "mlx" || (detail.companions?.length ?? 0) > 0 ? t("storeImageIncluded") : t("storeImageManual")}`
-                          : "") +
-                        (detail.music && (quant?.extra ?? 0) > 0 ? ` · ${t("storeMusicIncluded")}` : "")}
+                        ? detail.unsupported
+                        : !hardwareChecked
+                          ? t("storeFitChecking")
+                          : fitStatus === "gpu"
+                            ? t("storeFitGpu")
+                            : fitStatus === "mixed"
+                              ? t("storeFitMixed")
+                              : fitStatus === "cpuMode"
+                                ? t("storeFitCpuMode")
+                                : fitStatus === "cpuOnly"
+                                  ? t("storeFitCpuOnly")
+                                  : fitStatus === "ram"
+                                    ? t("storeFitRam")
+                                    : fitStatus === "large"
+                                      ? t("storeFitLarge")
+                                      : t("storeFitUnknown")}
                   </div>
                 </div>
 
