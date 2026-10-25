@@ -983,6 +983,8 @@ export function CodeMode({
   const [ctxTotal, setCtxTotal] = useState(0);
   /** Messages typed while the agent was running — auto-sent one by one after. */
   const [queue, setQueue] = useState<string[]>([]);
+  /** The plan the user chose to keep working on — its choices put away. */
+  const [keptPlanning, setKeptPlanning] = useState<string | null>(null);
   /** The turn in flight, settled once it has wound down (see sendWhileRunning). */
   const turnDone = useRef<Promise<void> | null>(null);
   // Whether a turn runs, as of now rather than as of the last render: a
@@ -2783,7 +2785,7 @@ export function CodeMode({
                       onUndo={(paths) => void undoChanges(m, paths)}
                     />
                   )}
-                  {m.planned && !m.paused && !running && mode === "plan" && m === msgs[msgs.length - 1] && m.text.trim() && (
+                  {m.planned && !m.paused && !running && mode === "plan" && m === msgs[msgs.length - 1] && m.text.trim() && keptPlanning !== m.id && (
                     // The plan is written: carry it out — edits accepted, or
                     // each one asked — or say what to change and keep planning.
                     <div className="cm-plan-go">
@@ -2806,7 +2808,15 @@ export function CodeMode({
                       >
                         {t("planGoManual")}
                       </button>
-                      <button className="cm-plan-go-btn" onClick={() => inputRef.current?.focus()}>
+                      <button
+                        className="cm-plan-go-btn"
+                        onClick={() => {
+                          // Still planning: the choice goes, and the input
+                          // asks for what to change.
+                          setKeptPlanning(m.id);
+                          inputRef.current?.focus();
+                        }}
+                      >
                         {t("planKeep")}
                       </button>
                     </div>
@@ -2966,7 +2976,9 @@ export function CodeMode({
                     ? t("cmPlaceholderNoWs")
                     : running
                       ? t("cmQueuePlaceholder")
-                      : sendKey === "modEnter"
+                      : keptPlanning && keptPlanning === msgs[msgs.length - 1]?.id && mode === "plan"
+                        ? t("planKeepHint")
+                        : sendKey === "modEnter"
                         ? t("cmPlaceholderMod")
                         : t("cmPlaceholder")
               }

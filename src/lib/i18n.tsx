@@ -66,6 +66,7 @@ export const T = {
   planGoAccept: { zh: "执行，自动接受编辑", en: "Yes, auto-accept edits" },
   planGoManual: { zh: "执行，逐个确认", en: "Yes, approve each change" },
   planKeep: { zh: "继续规划", en: "Keep planning" },
+  planKeepHint: { zh: "说说方案哪里要改，接着规划…", en: "Say what to change in the plan, and planning goes on…" },
   planGoMsg: { zh: "方案可以，按它开始执行。", en: "The plan looks good. Go ahead with it." },
   cmWelcome: { zh: "编程智能体", en: "Coding agent", pt: "Agente de programação" },
   cmWelcomeReady: {
