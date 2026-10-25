@@ -11,7 +11,11 @@ use std::path::Path;
 #[serde(rename_all = "camelCase")]
 pub struct GpuInfo {
     pub name: String,
+    /// Linux/Metal: offload budget; Windows: reported dedicated capacity.
     pub vram_mb: u64,
+    /// Physical dedicated VRAM in MiB, when separately measurable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dedicated_vram_mb: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
 }
@@ -117,7 +121,7 @@ pub fn detect_gpu() -> Option<GpuInfo> {
                 .trim()
                 .to_string();
             if best.as_ref().map_or(true, |b| vram_mb > b.vram_mb) {
-                best = Some(GpuInfo { name, vram_mb, kind: None });
+                best = Some(GpuInfo { name, vram_mb, dedicated_vram_mb: None, kind: None });
             }
         }
         best.filter(|g| g.vram_mb > 0)
@@ -138,6 +142,7 @@ pub fn detect_gpu() -> Option<GpuInfo> {
     Some(GpuInfo {
         name,
         vram_mb: working_set / (1024 * 1024),
+        dedicated_vram_mb: None,
         kind: None,
     })
 }
@@ -425,6 +430,16 @@ pub fn configure_linux_vulkan_device() {
 }
 
 #[cfg(target_os = "linux")]
+fn linux_gpu_info(device: &LinuxGpu) -> GpuInfo {
+    GpuInfo {
+        name: device.name.clone(),
+        vram_mb: device.budget_mb,
+        dedicated_vram_mb: (device.kind == "discrete").then_some(device.memory_mb),
+        kind: Some(device.kind.to_string()),
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub fn detect_gpu() -> Option<GpuInfo> {
     if !cfg!(feature = "gpu") {
         return None;
@@ -439,22 +454,31 @@ pub fn detect_gpu() -> Option<GpuInfo> {
     } else {
         choose_linux_gpu(&devices, None)
     }?;
-    Some(GpuInfo {
-        name: best.name.clone(),
-        vram_mb: best.budget_mb,
-        kind: Some(best.kind.to_string()),
-    })
+    Some(linux_gpu_info(best))
 }
 
 #[cfg(all(test, target_os = "linux"))]
 mod linux_gpu_selection_tests {
-    use super::{choose_linux_gpu, first_visible_vulkan_index, LinuxGpu};
+    use super::{choose_linux_gpu, first_visible_vulkan_index, linux_gpu_info, LinuxGpu};
 
     fn sample(index: usize, kind: &'static str, budget_mb: u64) -> LinuxGpu {
         LinuxGpu {
             index, name: format!("test-{index}"), kind, vendor_id: 0,
             device_id: 0, memory_mb: budget_mb, budget_mb,
         }
+    }
+
+    #[test]
+    fn dedicated_capacity_is_distinct_from_runtime_budget() {
+        let mut gpu = sample(0, "discrete", 6_000);
+        gpu.memory_mb = 8_192;
+        let info = linux_gpu_info(&gpu);
+        assert_eq!(info.vram_mb, 6_000);
+        assert_eq!(info.dedicated_vram_mb, Some(8_192));
+        let json = serde_json::to_value(info).unwrap();
+        assert_eq!(json["dedicatedVramMb"], 8_192);
+        let integrated = linux_gpu_info(&sample(1, "integrated", 3_000));
+        assert_eq!(integrated.dedicated_vram_mb, None);
     }
 
     #[test]

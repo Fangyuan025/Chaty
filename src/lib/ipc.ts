@@ -646,7 +646,10 @@ export async function imageHistoryClear(deleteFiles: boolean): Promise<void> {
 
 export interface GpuInfo {
   name: string;
+  /** Vulkan runtime budget on Linux, not physical VRAM capacity. */
   vramMb: number;
+  /** Physical dedicated VRAM in MiB, when known. */
+  dedicatedVramMb?: number;
   /** Vulkan device type; currently reported on Linux. */
   kind?: "discrete" | "integrated" | "virtual" | "other";
 }

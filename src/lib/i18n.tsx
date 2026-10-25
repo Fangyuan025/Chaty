@@ -762,7 +762,6 @@ export const T = {
   hwGpuDedicated: { zh: "\u72ec\u7acb\u663e\u5361", en: "Dedicated GPU", pt: "GPU dedicada" },
   hwGpuIntegrated: { zh: "\u96c6\u6210\u663e\u5361", en: "Integrated GPU", pt: "GPU integrada" },
   hwGpuShared: { zh: "\u5171\u4eab\u5185\u5b58", en: "Shared memory", pt: "Mem\u00f3ria compartilhada" },
-  hwGpuAvailable: { zh: "\u53ef\u7528", en: "available", pt: "dispon\u00edveis" },
   // Compact model catalogue hints; download size is shown on the button.
   storeFitChecking: { zh: "正在检查内存...", en: "Checking memory...", pt: "Verificando memória..." },
   storeFitGpu: { zh: "\u2713 预计可完全在 GPU 上运行", en: "\u2713 Likely fits on GPU", pt: "\u2713 Provavelmente cabe na GPU" },

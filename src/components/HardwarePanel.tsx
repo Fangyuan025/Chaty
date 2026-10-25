@@ -110,7 +110,10 @@ export function HardwarePanel({
                       </small>
                     ) : hw.gpu.kind === "discrete" ? (
                       <small className="hw-gpu-detail">
-                        {t("hwGpuDedicated")} · ~{fmtGbFromMb(hw.gpu.vramMb)} {t("hwGpuAvailable")}
+                        {t("hwGpuDedicated")}
+                        {hw.gpu.dedicatedVramMb ? (
+                          <> · {(hw.gpu.dedicatedVramMb / 1024).toFixed(1)} GiB VRAM</>
+                        ) : null}
                       </small>
                     ) : (
                       <small className="hw-gpu-detail">
