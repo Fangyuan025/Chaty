@@ -771,7 +771,7 @@ export const T = {
   storeFitRam: { zh: "\u2713 预计能放入内存", en: "\u2713 Likely fits in memory", pt: "\u2713 Provavelmente cabe na mem\u00f3ria" },
   storeFitLarge: { zh: "\u26a0 可能对这台电脑太大", en: "\u26a0 May be too large", pt: "\u26a0 Pode ser grande demais" },
   storeFitUnknown: { zh: "\u2014 暂无法估算", en: "\u2014 Can't estimate yet", pt: "\u2014 Estimativa indispon\u00edvel" },
-  storeFitCaveat: { zh: "仅为估算，实际使用取决于模型和设置。", en: "Estimate only: actual memory use depends on the model and settings.", pt: "Apenas uma estimativa; o uso real depende do modelo e das configura\u00e7\u00f5es." },
+  storeFitCaveat: { zh: "\u4ec5\u6839\u636e\u4e3b\u6a21\u578b\u5927\u5c0f\u4f30\u7b97\uff1b\u9644\u52a0\u7ec4\u4ef6\u548c\u8fd0\u884c\u65f6\u5185\u5b58\u4f1a\u5f71\u54cd\u5b9e\u9645\u5360\u7528\u3002", en: "Estimate based on the main model size; additional components and runtime memory affect actual fit.", pt: "Estimativa baseada no modelo principal; componentes adicionais e mem\u00f3ria de execu\u00e7\u00e3o podem afetar o resultado." },
   storeVisionIncluded: { zh: "自动附带视觉编码器", en: "vision encoder included", pt: "codificador de visão incluído" },
   storeReadmeEmpty: { zh: "该仓库没有 README", en: "This repo has no README", pt: "Este repositório não possui README" },
   storeToday: { zh: "今天", en: "today", pt: "hoje" },

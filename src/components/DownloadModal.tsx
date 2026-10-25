@@ -335,14 +335,17 @@ export function DownloadModal({
       (detail?.format === "gguf" && detail.mmproj ? detail.mmprojSize : 0) +
       (detail?.image ? (detail.companions ?? []).reduce((a, c) => a + c.size, 0) : detail?.music ? (quant.extra ?? 0) : 0)
     : 0;
-  const memory = quant
+  // A missing hardware snapshot is genuinely unknown; do not infer
+  // "CPU-only" from installed RAM when the GPU query failed.
+  const memory = quant && hardware
     ? estimateStoreMemory(
         quant.size,
         needBytes,
-        hardware?.gpu?.vramMb,
-        hardware?.ramMb ?? detail?.totalRamMb,
-        hardware?.gpuBackend,
-        hardware?.gpu?.kind,
+        hardware.gpu?.vramMb,
+        hardware.ramMb,
+        hardware.gpuBackend,
+        hardware.gpu?.kind,
+        hardware.gpu?.dedicatedVramMb,
       )
     : null;
   // One plain-language hardware hint, not a diagnostics panel.

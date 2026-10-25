@@ -1,27 +1,32 @@
-/** Catalogue-only preview, not an inference memory allocator.
- *
- * A download's byte count is NOT peak RAM/VRAM. GPU reporting differs by
- * platform: Chaty's Linux Vulkan backend reports a conservative selected-GPU
- * allocation budget; Windows may report total dedicated VRAM; Metal has
- * unified memory. Never promise that a model will load based on these sizes.
+/** Catalogue-only memory hint, never a runtime allocator.
+ * File download size is not GPU residency. In particular, extra VAE,
+ * projector, and audio assets can be placed or loaded separately.
+ * The catalogue compares primary weights with device capacity; the runtime
+ * uses its own currently available Vulkan budget, context, and buffers.
  */
 export interface StoreMemoryEstimate {
   modelBytes: number;
   extraBytes: number;
   downloadBytes: number;
   ramBytes: number | null;
+  /** Runtime allocation budget, when the backend exposes one. */
   gpuBudgetBytes: number | null;
-  /** null = no separate dedicated-GPU estimate (or unknown). */
+  /** Capacity used for a stable pre-download fit hint. */
+  gpuCapacityBytes: number | null;
+  /** Primary model weights only, NOT a promise of runtime GPU residency. */
   gpuFitsMainWeights: boolean | null;
-  /** A *theoretical upper bound* for llama.cpp model weights, NOT layer count. */
+  /** Budget-based, theoretical weight bounds, not a layer count. */
   gpuWeightsCeilingBytes: number | null;
-  /** A *theoretical lower bound* for CPU-resident model weights. */
   cpuWeightsFloorBytes: number | null;
   modelOverInstalledRam: boolean | null;
   unifiedMemory: boolean;
 }
 
-/** Values in the IPC hardware snapshot are MiB, but file sizes are bytes. */
+const MIB = 1024 * 1024;
+const positive = (n?: number | null): n is number =>
+  n != null && Number.isFinite(n) && n > 0;
+
+/** IPC memory quantities are MiB; Hugging Face file sizes are bytes. */
 export function estimateStoreMemory(
   modelBytes: number,
   downloadBytes: number,
@@ -29,42 +34,50 @@ export function estimateStoreMemory(
   ramMb?: number | null,
   gpuBackend?: string | null,
   gpuKind?: "discrete" | "integrated" | "virtual" | "other" | null,
+  dedicatedVramMb?: number | null,
 ): StoreMemoryEstimate {
-  const model = Number.isFinite(modelBytes) ? Math.max(0, modelBytes) : 0;
-  const download = Number.isFinite(downloadBytes) ? Math.max(model, downloadBytes) : model;
-  const mib = 1024 * 1024;
-  const ramBytes = ramMb != null && Number.isFinite(ramMb) && ramMb > 0 ? ramMb * mib : null;
-  // Integrated Vulkan GPUs and Metal share system RAM.
-  const unifiedMemory =
-    gpuBackend === "Metal" || gpuKind === "integrated";
-  const gpuBudgetBytes = !unifiedMemory && gpuKind !== "virtual" &&
-    gpuKind !== "other" &&
-    gpuBackend !== "CPU" && vramMb != null && Number.isFinite(vramMb) && vramMb > 0
-    ? vramMb * mib
-    : null;
-  // Metal's budget and system RAM describe the SAME shared pool, not two
-  // independent memory pools, so it is misleading to calculate GPU/CPU split.
-  const separateBudget = !unifiedMemory && gpuBudgetBytes != null && model > 0;
-  const gpuWeightsCeilingBytes = separateBudget ? Math.min(model, gpuBudgetBytes) : null;
-  const cpuWeightsFloorBytes = separateBudget ? Math.max(0, model - gpuWeightsCeilingBytes!) : null;
+  const model = positive(modelBytes) ? modelBytes : 0;
+  const download = positive(downloadBytes) ? Math.max(model, downloadBytes) : model;
+  const ramBytes = positive(ramMb) ? ramMb * MIB : null;
+
+  // UMA/Metal uses system RAM; never add it to a fictitious VRAM pool.
+  const unifiedMemory = gpuBackend === "Metal" || gpuKind === "integrated";
+  const usableSeparateGpu = gpuBackend !== "CPU" && !unifiedMemory &&
+    gpuKind !== "virtual" && gpuKind !== "other";
+
+  const gpuBudgetBytes = usableSeparateGpu && positive(vramMb)
+    ? vramMb * MIB : null;
+  // Linux provides physical VRAM separately from its fluctuating Vulkan
+  // allocation budget. On other platforms, retain the existing IPC fallback.
+  const gpuCapacityBytes = !usableSeparateGpu ? null
+    : gpuKind === "discrete" && positive(dedicatedVramMb)
+      ? dedicatedVramMb * MIB
+      : gpuBudgetBytes;
+
+  // These optional diagnostics continue to use the *runtime* budget, not
+  // the catalogue capacity. They must not be summed with unified RAM.
+  const planned = gpuBudgetBytes !== null && model > 0;
+  const gpuWeightsCeilingBytes = planned ? Math.min(model, gpuBudgetBytes) : null;
+  const cpuWeightsFloorBytes = planned
+    ? Math.max(0, model - gpuWeightsCeilingBytes!) : null;
+
   return {
     modelBytes: model,
     extraBytes: download - model,
     downloadBytes: download,
     ramBytes,
     gpuBudgetBytes,
-    gpuFitsMainWeights: separateBudget ? model <= gpuBudgetBytes : null,
+    gpuCapacityBytes,
+    gpuFitsMainWeights: gpuCapacityBytes !== null && model > 0
+      ? model <= gpuCapacityBytes : null,
     gpuWeightsCeilingBytes,
     cpuWeightsFloorBytes,
-    modelOverInstalledRam: ramBytes != null && model > 0 ? model > ramBytes : null,
+    modelOverInstalledRam: ramBytes !== null && model > 0
+      ? model > ramBytes : null,
     unifiedMemory,
   };
 }
 
-/** A short, deliberately conservative hint for the model catalogue.
- * The backend only reports installed RAM and a GPU budget. It cannot predict
- * runtime memory precisely, so this is never a guarantee or a layer count.
- */
 export type CatalogueFit =
   | "gpu"
   | "mixed"
@@ -74,39 +87,34 @@ export type CatalogueFit =
   | "large"
   | "unknown";
 
+/** File-size-only suitability hint, never equivalent to LM Studio's
+ * model-aware estimator (context, KV cache, architecture, and buffers).
+ * Return "unknown" only when essential data is genuinely missing.
+ */
 export function classifyCatalogueFit(
   estimate: StoreMemoryEstimate | null,
   kind: { image: boolean; music: boolean; mlx: boolean },
 ): CatalogueFit {
-  if (!estimate || estimate.downloadBytes <= 0) return "unknown";
-  const needed = estimate.downloadBytes;
+  if (!estimate || !positive(estimate.modelBytes)) return "unknown";
+  const model = estimate.modelBytes;
   const ram = estimate.ramBytes;
-  const gpu = estimate.gpuBudgetBytes;
+  const gpu = estimate.gpuCapacityBytes;
 
-  // Metal shares RAM with its GPU. Never add a second, fictitious VRAM pool.
   if (estimate.unifiedMemory || kind.mlx) {
     if (ram === null) return "unknown";
-    if (needed <= ram * 0.7) return "ram";
-    return needed > ram * 0.85 ? "large" : "unknown";
+    return model <= ram ? "ram" : "large";
   }
 
-  // The Linux Vulkan allocation budget already includes a safety margin.
-  // Do not subtract another arbitrary margin for this catalogue hint.
-  // File sizes are proxies; a positive result is not a loading guarantee.
   if (gpu !== null) {
-    if (needed <= gpu) return "gpu";
-    // Optional assets may not reside on the GPU simultaneously. If the main
-    // model weights fit, we cannot infer that CPU offload is required.
-    if (estimate.gpuFitsMainWeights === true) return "unknown";
-    const systemRemainder = Math.max(0, estimate.modelBytes - gpu);
-    if (ram !== null && systemRemainder > ram * 0.75) return "large";
-    if (kind.music) return "cpuMode";
-    return "mixed";
+    // The badge describes primary model weights. Supplementary downloads do
+    // not necessarily occupy GPU memory at the same time as the main model.
+    if (model <= gpu) return "gpu";
+    if (ram === null) return "unknown";
+    // CPU RAM and dedicated VRAM are separate pools only in this branch.
+    if (model > gpu + ram) return "large";
+    return kind.music ? "cpuMode" : "mixed";
   }
 
-  if (ram !== null) {
-    if (needed <= ram * 0.7) return "cpuOnly";
-    if (needed > ram * 0.85) return "large";
-  }
-  return "unknown";
+  if (ram === null) return "unknown";
+  return model <= ram ? "cpuOnly" : "large";
 }
