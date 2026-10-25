@@ -1,5 +1,88 @@
 # Changelog
 
+## v2.3.7 — Show your work (2026-10-25)
+
+### Code: what the agent is doing, as it does it
+
+- **Tool calls fold into runs.** The calls between two things the model
+  says are one line: while they run, what is going on now, tool by tool —
+  reading a file, running `npm test`, opening a page, waiting for your
+  approval — and once the model speaks again, what the run did: "Read 3
+  files, ran 2 commands, 1 failed", a command that exited non-zero counted
+  as failed and a call you turned down as not run. Opened, a run is its
+  steps as they always were — thinking, cards, a write drawn as it is
+  written — and folded it is that one line, thinking and all. On by default;
+  **Settings → Code → Collapse tool calls** turns it off. The line over the
+  input says the same, in both views, instead of "Running".
+- **The model says what it is doing.** After each small step it says, in a
+  sentence or two, what it did or found and what comes next. A model that
+  thinks wrote that sentence inside its thought whatever it was asked —
+  Qwen3.6 35B, sent to find a bug in a small project, made 8 or 9 calls
+  without a word before its summary, every time — so it now rides in the
+  call itself, as a `note` any tool takes, and shows like any other words.
+  A turn's first call with nothing said, and a quiet one after two, is sent
+  back once to be made again with one. On the same task: 35B 4 to 6 calls of
+  8 or 9 with an update, never more than two quiet ones running; Qwen3.5 9B
+  13 of 14; Gemma 4 26B 7 of 7.
+- **What the model says with a call stays** — shown above its card, kept in
+  the session, read back and found by the agent's history search, and in
+  the exported trace, which also no longer missed the model's final answer.
+
+### Code: permissions and plans
+
+- **Five permission modes, as Claude Code has them**, picked under the input
+  or cycled with Shift+Tab: **Auto** goes ahead with routine work and asks
+  before what is hard to take back — deleting, pushing, publishing,
+  deploying, killing processes, sending data out; **Manual** asks before any
+  change; **Accept edits** lets file changes through; **Plan** researches and
+  proposes; **Bypass permissions** lets everything through. Each session
+  keeps its own, and a new one starts in Auto; the setting for auto-approving
+  edits is gone. The allowlist, read-only commands and "allow for this
+  session" hold in every mode but bypass; a folder outside the workspace and
+  `sudo` still ask in all of them. Switching modes judges a waiting approval
+  again under the new one.
+- **Plan mode.** A planning turn researches, and its answer is the plan; under
+  it, carry it out with edits accepted, approve each change, or keep planning.
+  A change, a question or a todo list in its place is stopped as soon as its
+  name is written — not after a whole file has been generated only to be sent
+  back — and five such tries pause the turn rather than spin.
+- **A message sent mid-run asks**: queue it for when the turn ends, or
+  interrupt — the turn is stopped, wound down, and your message sent.
+- **Folders granted outside the workspace are named to the model** on every
+  turn; added from the top row, they were invisible to it until a call
+  happened to ask.
+
+### Code: fewer wasted steps
+
+- **A file read a third time with nothing changed since** is answered from
+  what was read: a model going round two files never repeats a call back to
+  back, and so passed the identical-call breaker. An empty file now says it
+  is empty — an empty result read as a failed read, and was read again.
+- **A thought that goes round on digits is cut.** Gemma 4 26B on MLX opened a
+  thought with "42327" over and over to the 24,576-token cap — twelve
+  minutes, three times in one turn; a cycle of digits and marks is now caught
+  a few hundred tokens in.
+- **A slashed parameter opener is read.** Qwen3.6 35B wrote
+  `</parameter=note>` for `<parameter=note>`, and the argument was lost.
+
+### Browser
+
+- **Tabs per Code session** — listed, opened, switched and closed; a tab a
+  click opens is followed; each session keeps its own, and closing or
+  deleting one closes only its tabs.
+- **`browser_eval` runs as the console does**: top-level `await`, the last
+  expression as the result, objects shown readably, and a script that never
+  ends given up on instead of the browser restarted.
+
+### Chat and the window
+
+- **A long conversation opens in half the time** — a finished reply renders
+  whole, not block by block.
+- **The input's focus fades in**, a lift instead of a green ring.
+- **The background tasks panel stays put** when its tasks are stopped or
+  cleared, and **sessions grouped by workspace keep their dates** inside each
+  group.
+
 ## v2.3.6 — Go the distance (2026-10-19)
 
 ### Long sessions on MLX

@@ -64,7 +64,7 @@ Um chat que mostra o raciocínio. O pensamento aparece num painel que você pode
 
 Um agente de programação para o modelo que você consegue rodar. Mude para **Code**, abra uma pasta e descreva a tarefa. O agente lê, busca, edita e roda comandos no seu projeto — cada passo aparece na hora, cada edição como um diff real — e fecha a rodada com um cartão listando cada arquivo alterado, cada um reversível.
 
-- **Você no controle** — um plano de tarefas ao vivo; edições e comandos esperam sua aprovação, a menos que você permita. O acesso a arquivos fica restrito ao workspace; no macOS o shell roda na sandbox do sistema.
+- **Você no controle** — um plano de tarefas ao vivo e cinco modos de permissão: por padrão o trabalho de rotina segue e o que é difícil de desfazer — apagar, enviar, publicar — espera por você; ou peça um plano antes, aprovação a cada mudança, ou libere tudo. O acesso a arquivos fica restrito ao workspace; no macOS o shell roda na sandbox do sistema.
 - **Comandos que continuam rodando** — servidores de desenvolvimento e watchers vão para segundo plano; um comando que faz uma pergunta (`[y/N]`, `Password:`, um REPL, o menu de um scaffolder) ganha um terminal para responder.
 - **Ele lembra** — memória do projeto em Markdown simples; ele pode buscar nas próprias sessões anteriores, e você pode mencionar uma com @ para trazê-la.
 - **Ferramentas que você adiciona** — servidores MCP (com uma lista curada e testada ao vivo), skills escritas em Markdown e um navegador que ele consegue controlar.

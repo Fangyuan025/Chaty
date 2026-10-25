@@ -310,42 +310,30 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## Long Code sessions keep their pace
+            ## Watch it work
 
-            An MLX model was given its whole trained context, whatever the
-            machine. Qwen3.6 35B-A3B on a 48 GB Mac got 262k tokens, and past
-            100k a Code session's cache outgrew the GPU's memory: decoding fell
-            from 26 to 3 tok/s and stayed there. The engine now measures what
-            the loaded model's cache costs per token and holds the context to
-            what memory can carry — 90k for that 35B, which ran at 24 to 29
-            tok/s up to the session's compaction. A long prompt is read in
-            chunks that fit, a step left with its tool call open no longer
-            makes the next one re-read the whole conversation (302 s at 86k
-            tokens), and a forward pass that breaks stops the reply instead of
-            writing noise.
+            Code mode now shows what the agent is doing as it does it. The tool calls
+            between two things the model says fold into one line — what is going on now,
+            tool by tool, then what the run did ("Read 3 files, ran 2 commands, 1
+            failed") — and opening it shows every step as before. After each small step
+            the model says what it did and what comes next: a thinking model wrote that
+            inside its thought whatever it was asked, so it now rides in the tool call
+            itself, and Qwen3.6 35B, which made 8 or 9 calls without a word on a
+            find-the-bug task, now never goes more than two calls without one.
 
-            ## Each conversation keeps its numbers
+            ## Five permission modes, and a plan before the work
 
-            The context ring stays with its chat conversation or Code session —
-            after a switch, after a restart, and through a model change until
-            the next reply counts again — and chat's ring is now Code mode's,
-            the counts on hover. Deleting a conversation clears its numbers for
-            good, and chat shows how far a long prompt has been read, thinking
-            on or off.
+            Auto, Manual, Accept edits, Plan and Bypass permissions, as Claude Code has
+            them, kept by each session and Auto for a new one. Auto goes ahead with
+            routine work and asks before what is hard to take back. Plan researches and
+            hands you the plan, with the choice under it to carry it out — a change
+            attempted while planning is stopped as its name is written, not after a whole
+            file has been generated. A message sent mid-run asks whether to queue or
+            interrupt, and folders granted outside the workspace are named to the model.
 
-            ## Every source, in its own script
-
-            A web search is no longer held to six sources: every result on topic
-            goes in while it fits, folded into one line under the answer and
-            kept with it. Pages and files are read in their own character set —
-            GBK sites, Notepad's UTF-16, Big5 and Shift_JIS — instead of rows of
-            replacement characters.
-
-            Also: a model's README in the store reads as it does on Hugging
-            Face, and the store keeps its lists when Hugging Face cannot list
-            models; YuE2's instrumentals keep the voice out; a mouse wheel
-            glides on a Mac; a Code session exports as a full JSONL trace, and
-            Code's answers come set cleanly and without emoji.
+            Also: browser tabs per Code session and a console-like `browser_eval`; a long
+            chat opens in half the time; a file read a third time unchanged, an empty
+            file, and a Gemma 4 thought going round on digits no longer cost minutes.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
