@@ -1463,7 +1463,7 @@ export async function hfSearch(
   query: string,
   format: "gguf" | "mlx",
   sort: "trending" | "downloads" | "likes" | "updated",
-  /** "text" = text-only chat/coding, "image" and "music" = studios. */
+  /** "text" = text-output models including Vision; other tasks = studios. */
   task: "all" | "text" | "image" | "music" = "all",
 ): Promise<HfShelf> {
   return await invoke<HfShelf>("hf_search", {

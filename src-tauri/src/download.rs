@@ -418,7 +418,7 @@ pub struct HfModelDetail {
 /// The repo is a text-to-image model, by its pipeline tag or its tags.
 fn is_image_repo(tags: &[String], pipeline: Option<&str>) -> bool {
     matches!(pipeline, Some("text-to-image") | Some("image-to-image"))
-        || tags.iter().any(|t| t == "text-to-image" || t == "image-generation")
+        || tags.iter().any(|t| matches!(t.as_str(), "text-to-image" | "image-to-image" | "image-generation"))
 }
 
 fn tag_vision(tags: &[String]) -> bool {
@@ -726,8 +726,8 @@ pub async fn hf_search(
     sort: String,
     limit: Option<u32>,
     endpoint: Option<String>,
-    // "text" narrows to text-only chat/coding models; "image" and "music"
-    // select their studios; "all" preserves the complete storefront.
+    // "text" includes models that generate text, including vision-language
+    // models; "image" and "music" select their studios.
     task: Option<String>,
 ) -> Result<HfShelf, String> {
     let shelves = app.path().app_data_dir().ok().map(|d| d.join(SHELVES_FILE));
@@ -751,6 +751,10 @@ async fn search_shelf(
     // diffusers folders), and some mflux saves carry no pipeline tag at all.
     let mflux = format == "mlx" && task == Some("image");
     let q = query.trim();
+    let visible_limit = limit.unwrap_or(30).min(50);
+    // Filter text output locally: overfetch so excluded non-text models
+    // do not leave the visible shelf arbitrarily half-empty.
+    let fetch_limit = if matches!(task, Some("text" | "image" | "music")) { visible_limit.saturating_mul(4).min(200) } else { visible_limit };
     let mut list = if music {
         let sort = match sort {
             "likes" => "likes",
@@ -758,7 +762,11 @@ async fn search_shelf(
             "trending" => "trendingScore",
             _ => "downloads",
         };
-        format!("api/models?filter=audio.cpp&pipeline_tag=text-to-audio&sort={sort}&direction=-1&limit={}", limit.unwrap_or(30).min(50))
+        // A keyword query must also find compatible untagged GGUFs.
+        // Browsing starts with tagged audio.cpp packages and merges
+        // other music-producing GGUFs below.
+        let filter = if q.is_empty() { "audio.cpp" } else { "gguf" };
+        format!("api/models?filter={filter}&sort={sort}&direction=-1&limit={fetch_limit}")
     } else {
         let filter = if mflux {
             "mflux"
@@ -773,10 +781,11 @@ async fn search_shelf(
             "updated" => "lastModified",
             _ => "trendingScore",
         };
-        let mut list = format!("api/models?filter={filter}&sort={sort}&direction=-1&limit={}", limit.unwrap_or(30).min(50));
-        if task == Some("text") {
-            list.push_str("&pipeline_tag=text-generation");
-        } else if task == Some("image") && !mflux {
+        let mut list = format!("api/models?filter={filter}&sort={sort}&direction=-1&limit={fetch_limit}");
+        // Image search needs GGUFs with missing/image-to-image task tags.
+        // Only browsing uses HF canonical task ranking; alternative
+        // tasks and untagged repos are merged below.
+        if task == Some("image") && !mflux && q.is_empty() {
             list.push_str("&pipeline_tag=text-to-image");
         }
         list
@@ -787,14 +796,60 @@ async fn search_shelf(
         list.push_str(&format!("&search={}", percent_encoding::utf8_percent_encode(q, percent_encoding::NON_ALPHANUMERIC)));
     }
     let official = if music { music_packages(q) } else { Vec::new() };
+    // Only browse needs multiple complementary HF views. Search never has a
+    // server-side pipeline gate, so one broad query covers matching repos.
+    let secondary = if q.is_empty() && task == Some("image") && !mflux {
+        Some(list.replace("&pipeline_tag=text-to-image", "&pipeline_tag=image-to-image"))
+    } else if q.is_empty() && music {
+        Some(list.replace("filter=audio.cpp", "filter=gguf&pipeline_tag=text-to-audio"))
+    } else { None };
+    let broad = if q.is_empty() && task == Some("image") && !mflux {
+        Some(list.split("&pipeline_tag=").next().unwrap_or(&list).to_string())
+    } else if q.is_empty() && music {
+        Some(list.replace("filter=audio.cpp", "filter=gguf"))
+    } else { None };
     let fetched = async {
         let client = crate::http::client(UA, std::time::Duration::from_secs(30))?;
-        let resp = hf_get(&client, &format!("{base}/{list}{LIST_FIELDS}")).await?;
-        if !resp.status().is_success() {
-            return Err(hf_status_error(resp.status()));
+        // Fetch alternatives concurrently to avoid multiplying UI latency.
+        let (first, second, third) = tokio::join!(
+            fetch_media_shelf_page(&client, &base, Some(&list)),
+            fetch_media_shelf_page(&client, &base, secondary.as_deref()),
+            fetch_media_shelf_page(&client, &base, broad.as_deref()),
+        );
+        let mut batches: Vec<Vec<HfModelHit>> = Vec::new();
+        let mut error = None;
+        for response in [first, second, third] {
+            match response {
+                Ok(Some(items)) => {
+                    let hits = hits_from(&items, mflux, music);
+                    let hits = filter_text_hits(hits, &items, task);
+                    batches.push(filter_media_hits(hits, task));
+                }
+                Ok(None) => {},
+                Err(e) => { if error.is_none() { error = Some(e); } }
+            }
         }
-        let items: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        Ok(filter_text_hits(hits_from(&items, mflux, music), task))
+        if batches.is_empty() {
+            return Err(error.unwrap_or_else(|| "Hugging Face returned no model lists".into()));
+        }
+        // Round-robin the filtered views: do not let the first canonical
+        // task list crowd out image-edit or untagged but recognised families.
+        // Deduplicate while retaining the ranking within each HF view.
+        let mut seen = std::collections::HashSet::new();
+        let mut found = Vec::new();
+        let max_len = batches.iter().map(Vec::len).max().unwrap_or(0);
+        for index in 0..max_len {
+            for batch in &batches {
+                if let Some(hit) = batch.get(index) {
+                    if seen.insert(hit.id.clone()) {
+                        found.push(hit.clone());
+                    }
+                }
+            }
+            if found.len() >= visible_limit as usize { break; }
+        }
+        found.truncate(visible_limit as usize);
+        Ok(found)
     }
     .await;
     match fetched {
@@ -816,14 +871,84 @@ async fn search_shelf(
     }
 }
 
-// Hugging Face task tags are imperfect. Exclude visibly multimodal and
-// studio models from the explicitly text-only Chat / Code shelf.
-fn filter_text_hits(hits: Vec<HfModelHit>, task: Option<&str>) -> Vec<HfModelHit> {
-    if task == Some("text") {
-        hits.into_iter().filter(|h| !h.image && !h.music && !h.vision).collect()
-    } else {
-        hits
+// The Text generation shelf is for models that OUTPUT text (chat, code,
+// instruction and vision-language). HF's primary pipeline is not a reliable
+// classifier: VLMs use image-text-to-text, and many GGUFs have no pipeline.
+// Exclude confirmed other-output and non-generative tasks, never "vision".
+fn hf_generates_text(item: &serde_json::Value) -> bool {
+    const MEDIA_TASKS: &[&str] = &[
+        "text-to-image", "image-to-image", "image-generation",
+        "text-to-audio", "text-to-speech", "audio-to-audio", "audio-generation",
+        "text-to-video", "image-to-video", "video-generation", "text-to-3d",
+    ];
+    const TEXT_TASKS: &[&str] = &[
+        "text-generation", "text2text-generation", "image-text-to-text",
+        "image-to-text", "visual-question-answering", "conversational",
+        "video-text-to-text",
+    ];
+    const OTHER_TASKS: &[&str] = &[
+        "feature-extraction", "sentence-similarity", "text-classification",
+        "token-classification", "zero-shot-classification", "fill-mask",
+        "text-ranking", "reranking", "question-answering",
+        "table-question-answering", "automatic-speech-recognition",
+        "audio-classification", "image-classification", "object-detection",
+        "image-segmentation",
+    ];
+
+    let pipeline = item.get("pipeline_tag").and_then(|v| v.as_str()).unwrap_or("");
+    let tags = item.get("tags").and_then(|v| v.as_array());
+    let tagged_as = |tasks: &[&str]| -> bool {
+        tags.is_some_and(|all| all.iter().any(|tag| {
+            tag.as_str().is_some_and(|t| tasks.contains(&t))
+        }))
+    };
+    // Output capability takes priority over an incorrect HF pipeline tag.
+    if tagged_as(&["audio.cpp", "mflux"]) {
+        return false;
     }
+    let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let tag_strings: Vec<String> = tags.into_iter().flatten()
+        .filter_map(|v| v.as_str().map(str::to_string)).collect();
+    let declared_task = (!pipeline.is_empty()).then_some(pipeline);
+    if hf_is_image_model(id, &tag_strings, declared_task, false)
+        || hf_is_music_model(id, &tag_strings, declared_task) {
+        return false;
+    }
+    // A declared primary pipeline takes priority over incidental tags. This
+    // avoids excluding VLMs that also advertise other input modalities.
+    if MEDIA_TASKS.contains(&pipeline) { return false; }
+    if TEXT_TASKS.contains(&pipeline) { return true; }
+    if OTHER_TASKS.contains(&pipeline) { return false; }
+    if tagged_as(MEDIA_TASKS) { return false; }
+    if tagged_as(TEXT_TASKS) { return true; }
+    if tagged_as(OTHER_TASKS) { return false; }
+    // For missing/unreliable HF metadata, known studio families are not chat.
+    // Unknown GGUF/MLX repos stay visible rather than being silently lost.
+    let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    crate::imagegen::family::guess_by_name(id).is_none()
+        && crate::musicgen::family::guess_by_repo(id).is_none()
+}
+
+/// Apply one task classification AFTER fetching the broad GGUF/MLX list.
+/// Filtering by HF pipeline on the server would permanently hide VLMs and
+/// models with no task metadata before this function could examine them.
+fn filter_text_hits(
+    hits: Vec<HfModelHit>,
+    items: &serde_json::Value,
+    task: Option<&str>,
+) -> Vec<HfModelHit> {
+    if task != Some("text") {
+        return hits;
+    }
+    let allowed: std::collections::HashSet<&str> = items.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|it| hf_generates_text(it))
+        .filter_map(|it| it.get("id").and_then(|id| id.as_str()))
+        .collect();
+    hits.into_iter()
+        .filter(|h| !h.image && !h.music && allowed.contains(h.id.as_str()))
+        .collect()
 }
 /// The fields a store list shows. Asked for by name: the listing stopped
 /// sending `lastModified` unasked, and every model's date went blank.
@@ -857,6 +982,78 @@ fn music_packages(query: &str) -> Vec<HfModelHit> {
         .collect()
 }
 
+/// HF pipeline labels describe the hosted task, not the GGUF layout.
+/// A known diffusion family, an image-output task, or an mflux save may
+/// generate images, even if the canonical pipeline tag is missing.
+/// Text-output VLMs and music packages must not enter the image shelf.
+fn hf_is_image_model(id: &str, tags: &[String], pipeline: Option<&str>, mflux: bool) -> bool {
+    if mflux || tags.iter().any(|t| t == "mflux") {
+        return true;
+    }
+    if crate::imagegen::family::guess_by_name(id).is_some() {
+        return true;
+    }
+    if is_audiocpp_repo(tags) || matches!(pipeline, Some(
+        "text-generation" | "text2text-generation" | "image-text-to-text" |
+        "image-to-text" | "text-to-audio" | "text-to-speech" |
+        "audio-generation" | "automatic-speech-recognition"
+    )) {
+        return false;
+    }
+    is_image_repo(tags, pipeline)
+}
+
+/// Music in Chaty means an audio.cpp GGUF from a supported engine family;
+/// generic speech synthesis and unrelated audio models are not compatible.
+/// A family name alone is weak, so require an audio.cpp tag or GGUF evidence
+/// and reject explicitly non-music pipelines. The detail view applies the
+/// same rule rather than silently relabelling an untagged result as chat.
+fn hf_is_music_model(id: &str, tags: &[String], pipeline: Option<&str>) -> bool {
+    if crate::musicgen::family::guess_by_repo(id).is_none() {
+        return false;
+    }
+    if is_audiocpp_repo(tags) {
+        return true;
+    }
+    let lower = id.to_ascii_lowercase();
+    let has_gguf = lower.contains("gguf") || tags.iter().any(|t| t == "gguf");
+    if !has_gguf {
+        return false;
+    }
+    matches!(pipeline, None | Some(
+        "text-to-audio" | "text-to-music" | "audio-generation" | "audio-to-audio"
+    ))
+}
+
+/// All media shelves use the same classification as the all-model listing.
+fn filter_media_hits(hits: Vec<HfModelHit>, task: Option<&str>) -> Vec<HfModelHit> {
+    match task {
+        Some("image") => hits.into_iter().filter(|h| h.image && !h.music).collect(),
+        Some("music") => hits.into_iter().filter(|h| h.music && !h.image).collect(),
+        _ => hits,
+    }
+}
+
+/// Fetch an optional HF list. For browse we combine complementary HF views:
+/// canonical tasks (high precision) and a broad GGUF list (high recall).
+/// Search uses one un-gated list, then local engine-aware classification.
+async fn fetch_media_shelf_page(
+    client: &reqwest::Client,
+    base: &str,
+    path: Option<&str>,
+) -> Result<Option<serde_json::Value>, String> {
+    let Some(path) = path else { return Ok(None); };
+    let resp = hf_get(client, &format!("{base}/{path}{LIST_FIELDS}")).await?;
+    if !resp.status().is_success() {
+        return Err(hf_status_error(resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if !body.is_array() {
+        return Err("Invalid Hugging Face model listing".into());
+    }
+    Ok(Some(body))
+}
+
 /// The hits in an `api/models` listing. On the music shelf, only repos of the
 /// families the engine runs: a repo of another family (a TTS model tagged
 /// text-to-audio) would download and then not load.
@@ -864,7 +1061,7 @@ fn hits_from(items: &serde_json::Value, mflux: bool, music: bool) -> Vec<HfModel
     let mut out = Vec::new();
     for it in items.as_array().into_iter().flatten() {
         let id = it.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if id.is_empty() || (music && crate::musicgen::family::guess_by_repo(&id).is_none()) {
+        if id.is_empty() {
             continue;
         }
         let tags: Vec<String> = it
@@ -872,6 +1069,9 @@ fn hits_from(items: &serde_json::Value, mflux: bool, music: bool) -> Vec<HfModel
             .and_then(|v| v.as_array())
             .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
+        let pipeline = it.get("pipeline_tag").and_then(|v| v.as_str());
+        let is_music = hf_is_music_model(&id, &tags, pipeline);
+        if music && !is_music { continue; }
         let (author, name) = id.split_once('/').unwrap_or(("", id.as_str()));
         out.push(HfModelHit {
             name: name.to_string(),
@@ -879,9 +1079,13 @@ fn hits_from(items: &serde_json::Value, mflux: bool, music: bool) -> Vec<HfModel
             downloads: it.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0),
             likes: it.get("likes").and_then(|v| v.as_u64()).unwrap_or(0),
             updated_at: it.get("lastModified").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            vision: !music && tag_vision(&tags),
-            image: !music && (mflux || is_image_repo(&tags, it.get("pipeline_tag").and_then(|v| v.as_str()))),
-            music: music || (is_audiocpp_repo(&tags) && crate::musicgen::family::guess_by_repo(&id).is_some()),
+            // A VLM may have only the pipeline tag, not a "vision" tag.
+            vision: !music && (tag_vision(&tags) || matches!(
+                it.get("pipeline_tag").and_then(|v| v.as_str()),
+                Some("image-text-to-text" | "image-to-text" | "visual-question-answering")
+            )),
+            image: !is_music && !music && hf_is_image_model(&id, &tags, pipeline, mflux),
+            music: is_music,
             params_b: params_from_name(&id),
             id,
         });
@@ -1036,8 +1240,9 @@ pub async fn hf_model_detail(
     }
     // An audio.cpp repo of a music family: its GGUFs are packages of parts,
     // offered file by file (see music_quants).
-    let music_fam = if is_audiocpp_repo(&tags) || subdir.is_some() {
-        crate::musicgen::family::guess_by_repo(subdir.as_deref().unwrap_or(&repo))
+    let family_repo = subdir.as_deref().unwrap_or(&repo);
+    let music_fam = if subdir.is_some() || hf_is_music_model(family_repo, &tags, pipeline.as_deref()) {
+        crate::musicgen::family::guess_by_repo(family_repo)
     } else {
         None
     };
@@ -1102,7 +1307,7 @@ pub async fn hf_model_detail(
     // Any GGUF in the repo is a diffusion model when the repo says it is one;
     // its family names the VAE and encoder to fetch alongside.
     // An mflux save is an image model whatever its tags say.
-    let image = !music && (is_mflux_tree(&tree) || (format == "gguf" && is_image_repo(&tags, pipeline.as_deref())));
+    let image = !music && (is_mflux_tree(&tree) || (format == "gguf" && hf_is_image_model(&repo, &tags, pipeline.as_deref(), false)));
     let companions = if image && format == "gguf" {
         crate::imagegen::family::guess_by_name(&repo)
             .map(|f| {
@@ -1975,23 +2180,280 @@ mod tests {
     }
 
     #[test]
-    fn text_generation_keeps_plain_chat_and_coding_models() {
-        let mut chat = hit("example/Chat-GGUF");
-        chat.vision = false;
-        let mut coder = hit("example/Coder-GGUF");
-        coder.vision = false;
-        let mut image = hit("example/Image-GGUF");
-        image.vision = false;
-        image.image = true;
-        let mut music = hit("example/Music-GGUF");
-        music.vision = false;
-        music.music = true;
-        let vision = hit("example/Vision-GGUF");
-        let hits = vec![chat, coder, image, music, vision];
-        assert_eq!(filter_text_hits(hits.clone(), None).len(), 5);
-        let filtered = filter_text_hits(hits, Some("text"));
-        assert_eq!(filtered.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
-            vec!["Chat-GGUF", "Coder-GGUF"]);
+    fn media_classification_matrix_all_formats_and_tasks() {
+        let cases = serde_json::json!([
+            {"id":"models/Chat-GGUF", "pipeline_tag":"text-generation", "tags":["gguf"]},
+            {"id":"models/Vision-GGUF", "pipeline_tag":"image-text-to-text", "tags":["gguf","vision"]},
+            {"id":"models/Qwen-Image-2.1-GGUF", "tags":["gguf"]},
+            {"id":"models/Z-Image-Turbo-GGUF", "pipeline_tag":"text-generation", "tags":["gguf"]},
+            {"id":"models/Edit-Diffusion-GGUF", "pipeline_tag":"image-to-image", "tags":["gguf"]},
+            {"id":"models/Generic-Image-GGUF", "pipeline_tag":"text-to-image", "tags":["gguf"]},
+            {"id":"models/Tag-Only-Image-GGUF", "tags":["gguf", "image-generation"]},
+            {"id":"models/Qwen3-VL-8B-GGUF", "pipeline_tag":"image-text-to-text", "tags":["gguf"]},
+            {"id":"agosh/Yue2-3B-GGUF", "pipeline_tag":"text-to-audio", "tags":["audio.cpp","gguf"]},
+            {"id":"models/Yue2-3B-GGUF", "tags":["gguf"]},
+            {"id":"models/ACE-Step1.5-GGUF", "pipeline_tag":"text-to-audio", "tags":["gguf"]},
+            {"id":"models/Stable-Audio-3-GGUF", "pipeline_tag":"text-to-audio", "tags":["gguf"]},
+            {"id":"models/Kokoro-TTS-GGUF", "pipeline_tag":"text-to-speech", "tags":["gguf"]},
+            {"id":"models/Unrelated-Music-GGUF", "pipeline_tag":"text-to-audio", "tags":["gguf"]},
+            {"id":"models/Yue2-Language-GGUF", "pipeline_tag":"text-generation", "tags":["gguf"]},
+            {"id":"models/SDXL-Reranker-GGUF", "pipeline_tag":"text-ranking", "tags":["gguf"]}
+        ]);
+        let list = hits_from(&cases, false, false);
+        let text = filter_text_hits(list.clone(), &cases, Some("text"));
+        assert!(text.iter().any(|h| h.id == "models/Vision-GGUF"));
+        assert!(!text.iter().any(|h| h.id == "models/Qwen-Image-2.1-GGUF"));
+        assert!(!text.iter().any(|h| h.id == "models/Z-Image-Turbo-GGUF"));
+        let images = filter_media_hits(list.clone(), Some("image"));
+        assert!(images.iter().any(|h| h.id == "models/Qwen-Image-2.1-GGUF"));
+        assert!(images.iter().any(|h| h.id == "models/Edit-Diffusion-GGUF"));
+        assert!(images.iter().any(|h| h.id == "models/Generic-Image-GGUF"));
+        assert!(images.iter().any(|h| h.id == "models/Tag-Only-Image-GGUF"));
+        assert!(!images.iter().any(|h| h.id == "models/Vision-GGUF"));
+        assert!(!images.iter().any(|h| h.id == "models/SDXL-Reranker-GGUF"));
+        let music = filter_media_hits(list.clone(), Some("music"));
+        for id in ["agosh/Yue2-3B-GGUF", "models/Yue2-3B-GGUF",
+                   "models/ACE-Step1.5-GGUF", "models/Stable-Audio-3-GGUF"] {
+            assert!(music.iter().any(|h| h.id == id), "missing: {id}");
+        }
+        for id in ["models/Kokoro-TTS-GGUF", "models/Unrelated-Music-GGUF",
+                   "models/Yue2-Language-GGUF"] {
+            assert!(!music.iter().any(|h| h.id == id), "false positive: {id}");
+        }
+        assert_eq!(filter_media_hits(list.clone(), None).len(), list.len());
+        assert_eq!(filter_media_hits(list, Some("text")).len(), cases.as_array().unwrap().len());
+    }
+
+    #[test]
+    fn media_missing_metadata_and_false_positive_boundaries() {
+        let tags = |items: &[&str]| -> Vec<String> { items.iter().map(|s| s.to_string()).collect() };
+        assert!(hf_is_image_model("test/Qwen-Image-2.1-GGUF", &tags(&["gguf"]), None, false));
+        assert!(hf_is_image_model("test/Image-edit-GGUF", &tags(&["gguf"]), Some("image-to-image"), false));
+        assert!(!hf_is_image_model("test/Qwen-Vision-GGUF", &tags(&["gguf", "vision"]), Some("image-text-to-text"), false));
+        assert!(!hf_is_image_model("test/Generic-LLM-GGUF", &tags(&["gguf"]), None, false));
+        assert!(hf_is_image_model("test/MLX-Diffusion", &tags(&["mflux"]), None, true));
+        assert!(hf_is_music_model("example/Yue2-3B-GGUF", &tags(&["gguf"]), None));
+        assert!(hf_is_music_model("example/Yue2-3B-GGUF", &tags(&["audio.cpp"]), Some("text-generation")));
+        assert!(hf_is_music_model("example/MiDashengLM-Gen-GGUF", &tags(&["gguf"]), Some("audio-generation")));
+        assert!(!hf_is_music_model("example/Yue2-LM-GGUF", &tags(&["gguf"]), Some("text-generation")));
+        assert!(!hf_is_music_model("example/Yue2-Speech-GGUF", &tags(&["gguf"]), Some("text-to-speech")));
+        assert!(!hf_is_music_model("example/Kokoro-GGUF", &tags(&["audio.cpp"]), Some("text-to-audio")));
+        assert!(!hf_is_music_model("example/Yue2-3B", &[], None));
+        let items = serde_json::json!([
+            {"id":"example/Yue2-3B-GGUF", "tags":["gguf"]},
+            {"id":"example/Non-AudioCpp-GGUF", "tags":["gguf","text-to-audio"]}
+        ]);
+        let selected = hits_from(&items, false, true);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, "example/Yue2-3B-GGUF");
+        assert!(selected[0].music);
+    }
+
+    #[tokio::test]
+    async fn media_search_uses_broad_hf_results_then_filters_locally() {
+        let image_list = serde_json::json!([
+            {"id":"test/Chat-GGUF", "tags":["gguf"], "pipeline_tag":"text-generation"},
+            {"id":"test/Qwen-Image-2.1-GGUF", "tags":["gguf"]},
+            {"id":"test/Vision-GGUF", "tags":["gguf"], "pipeline_tag":"image-text-to-text"},
+            {"id":"test/SD-Edit-GGUF", "tags":["gguf"], "pipeline_tag":"image-to-image"}
+        ]);
+        let port = serve_once("200 OK", image_list.to_string().into_bytes());
+        let base = format!("http://127.0.0.1:{port}");
+        let images = search_shelf(None, "image", "gguf", "downloads", Some(3), Some(&base), Some("image"))
+            .await.unwrap().hits;
+        assert_eq!(images.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec![
+            "test/Qwen-Image-2.1-GGUF", "test/SD-Edit-GGUF"
+        ]);
+
+        let music_list = serde_json::json!([
+            {"id":"example/Yue2-3B-GGUF", "tags":["gguf"]},
+            {"id":"example/Kokoro-TTS-GGUF", "tags":["gguf"], "pipeline_tag":"text-to-speech"},
+            {"id":"example/ACE-Step1.5-GGUF", "tags":["gguf"], "pipeline_tag":"text-to-audio"}
+        ]);
+        let port = serve_once("200 OK", music_list.to_string().into_bytes());
+        let base = format!("http://127.0.0.1:{port}");
+        let music = search_shelf(None, "example", "gguf", "downloads", Some(2), Some(&base), Some("music"))
+            .await.unwrap().hits;
+        assert!(music.iter().any(|h| h.id == "example/Yue2-3B-GGUF"));
+        assert!(music.iter().any(|h| h.id == "example/ACE-Step1.5-GGUF"));
+        assert!(!music.iter().any(|h| h.id == "example/Kokoro-TTS-GGUF"));
+    }
+
+    #[tokio::test]
+    async fn media_browse_merges_multiple_task_views_without_duplicates() {
+        let image_items = r#"[
+            {"id":"models/Qwen-Image-2.1-GGUF", "tags":["gguf"]},
+            {"id":"models/Generic-Image-GGUF", "pipeline_tag":"text-to-image", "tags":["gguf"]},
+            {"id":"models/Video-GGUF", "pipeline_tag":"text-to-video", "tags":["gguf"]}
+        ]"#;
+        let (port, _) = serve_seq(vec![
+            ("200 OK", image_items),
+            ("200 OK", image_items),
+            ("200 OK", image_items),
+        ]);
+        let base = format!("http://127.0.0.1:{port}");
+        let shelf = search_shelf(None, "", "gguf", "downloads", Some(30), Some(&base), Some("image"))
+            .await.unwrap();
+        assert_eq!(shelf.hits.len(), 2);
+        assert!(shelf.hits.iter().all(|h| h.image && !h.music));
+    }
+    #[test]
+    fn text_generation_covers_all_text_output_families() {
+        let items = serde_json::json!([
+            {"id":"example/Plain-Chat-GGUF", "pipeline_tag":"text-generation", "tags":["gguf"]},
+            {"id":"example/Coder-GGUF", "pipeline_tag":"text2text-generation", "tags":["gguf"]},
+            {"id":"example/Vision-Language-GGUF", "pipeline_tag":"image-text-to-text", "tags":["gguf"]},
+            {"id":"example/Image-Caption-GGUF", "pipeline_tag":"image-to-text", "tags":["gguf"]},
+            {"id":"example/Visual-QA-GGUF", "pipeline_tag":"visual-question-answering", "tags":["gguf"]},
+            {"id":"example/Multimodal-Without-Pipeline-GGUF", "tags":["gguf", "vision"]},
+            {"id":"example/Untagged-GGUF", "tags":["gguf"]},
+            {"id":"example/Conversational-MLX", "pipeline_tag":"conversational", "tags":["mlx"]},
+            {"id":"example/Diffusion-GGUF", "pipeline_tag":"text-to-image", "tags":["gguf"]},
+            {"id":"example/Image-Edit-GGUF", "pipeline_tag":"image-to-image", "tags":["gguf"]},
+            {"id":"example/Music-GGUF", "pipeline_tag":"text-to-audio", "tags":["gguf"]},
+            {"id":"example/AudioCpp-GGUF", "tags":["gguf", "audio.cpp"]},
+            {"id":"example/MLX-Diffusion", "tags":["mlx", "mflux"]},
+            {"id":"example/Embedding-GGUF", "pipeline_tag":"feature-extraction", "tags":["gguf"]},
+            {"id":"example/Reranker-GGUF", "pipeline_tag":"text-ranking", "tags":["gguf"]},
+            {"id":"example/Classifier-GGUF", "pipeline_tag":"text-classification", "tags":["gguf"]},
+            {"id":"example/Speech-Recognition-GGUF", "pipeline_tag":"automatic-speech-recognition", "tags":["gguf"]},
+            {"id":"example/Video-Generation-GGUF", "pipeline_tag":"text-to-video", "tags":["gguf"]},
+            {"id":"example/Qwen-Image-2.1-GGUF", "tags":["gguf"]},
+            {"id":"example/Yue2-3B-GGUF", "tags":["gguf"]}
+        ]);
+        let all = hits_from(&items, false, false);
+        assert_eq!(filter_text_hits(all.clone(), &items, None).len(), 20);
+        assert_eq!(filter_text_hits(all.clone(), &items, Some("image")).len(), 20);
+        let selected = filter_text_hits(all, &items, Some("text"));
+        let ids: Vec<&str> = selected.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec![
+            "example/Plain-Chat-GGUF", "example/Coder-GGUF",
+            "example/Vision-Language-GGUF", "example/Image-Caption-GGUF",
+            "example/Visual-QA-GGUF", "example/Multimodal-Without-Pipeline-GGUF",
+            "example/Untagged-GGUF", "example/Conversational-MLX",
+        ]);
+        // Vision is an input capability, not a reason to exclude text output.
+        assert!(selected[2].vision);
+        assert!(selected[5].vision);
+        assert!(selected.iter().all(|m| !m.image && !m.music));
+    }
+
+    #[test]
+    fn text_generation_negative_metadata_matrix_and_missing_pipeline() {
+        let media = [
+            "text-to-image", "image-to-image", "image-generation",
+            "text-to-audio", "text-to-speech", "audio-to-audio",
+            "audio-generation", "text-to-video", "image-to-video",
+            "video-generation", "text-to-3d",
+        ];
+        let nongenerative = [
+            "feature-extraction", "sentence-similarity", "text-classification",
+            "token-classification", "zero-shot-classification", "fill-mask",
+            "text-ranking", "reranking", "question-answering",
+            "table-question-answering", "automatic-speech-recognition",
+            "audio-classification", "image-classification", "object-detection",
+            "image-segmentation",
+        ];
+        for pipeline in media.into_iter().chain(nongenerative) {
+            let item = serde_json::json!({"id": "sample/model", "pipeline_tag": pipeline});
+            assert!(!hf_generates_text(&item), "unexpected task: {pipeline}");
+            let tagged = serde_json::json!({"id": "sample/model", "tags": [pipeline]});
+            assert!(!hf_generates_text(&tagged), "unexpected tag: {pipeline}");
+        }
+        for pipeline in [
+            "text-generation", "text2text-generation", "image-text-to-text",
+            "image-to-text", "visual-question-answering", "conversational",
+            "video-text-to-text",
+        ] {
+            assert!(hf_generates_text(&serde_json::json!({
+                "id":"sample/model", "pipeline_tag":pipeline
+            })), "missing text task: {pipeline}");
+        }
+        assert!(hf_generates_text(&serde_json::json!({"id":"sample/Unknown-GGUF", "tags":["gguf"]})));
+        assert!(hf_generates_text(&serde_json::json!({"id":"sample/Vision-GGUF", "tags":["vision"]})));
+        assert!(!hf_generates_text(&serde_json::json!({"id":"sample/Qwen-Image-2.1-GGUF"})));
+        assert!(!hf_generates_text(&serde_json::json!({"id":"sample/Yue2-3B-GGUF"})));
+        assert!(hf_generates_text(&serde_json::json!({
+            "id":"sample/VLM-GGUF", "pipeline_tag":"image-text-to-text",
+            "tags":["gguf", "audio-generation"]
+        })), "primary text-output pipeline overrides incidental tags");
+        assert!(!hf_generates_text(&serde_json::json!({
+            "id":"sample/Image-GGUF", "pipeline_tag":"text-to-image",
+            "tags":["gguf", "text-generation"]
+        })), "primary image-output pipeline overrides incidental tags");
+        assert!(!hf_generates_text(&serde_json::json!({
+            "id":"sample/AudioCpp-GGUF", "pipeline_tag":"text-generation",
+            "tags":["audio.cpp", "gguf"]
+        })), "studio framework is authoritative");
+    }
+
+    #[test]
+    fn text_generation_does_not_discard_vision_when_only_pipeline_identifies_it() {
+        let items = serde_json::json!([{
+            "id":"example/VLM-GGUF", "pipeline_tag":"image-text-to-text",
+            "tags":["gguf"], "downloads": 1
+        }]);
+        let models = filter_text_hits(hits_from(&items, false, false), &items, Some("text"));
+        assert_eq!(models.len(), 1);
+        assert!(models[0].vision);
+    }
+
+    #[tokio::test]
+    async fn text_generation_search_does_not_preexclude_models_at_hf() {
+        use std::io::{Read, Write};
+        let items = serde_json::json!([
+            {"id":"test/Chat-GGUF", "tags":["gguf"], "pipeline_tag":"text-generation"},
+            {"id":"test/Vision-GGUF", "tags":["gguf"], "pipeline_tag":"image-text-to-text"},
+            {"id":"test/Not-Text-GGUF", "tags":["gguf"], "pipeline_tag":"text-to-image"},
+            {"id":"test/No-Pipeline-GGUF", "tags":["gguf"]},
+            {"id":"test/Music-GGUF", "tags":["gguf"], "pipeline_tag":"text-to-audio"},
+            {"id":"test/Extra-Chat-GGUF", "tags":["gguf"], "pipeline_tag":"text-generation"}
+        ]);
+        let body = items.to_string();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let observed = received.clone();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 8192];
+            let count = socket.read(&mut buf).unwrap();
+            *observed.lock().unwrap() = String::from_utf8_lossy(&buf[..count]).into_owned();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            socket.write_all(headers.as_bytes()).unwrap();
+            socket.write_all(body.as_bytes()).unwrap();
+        });
+        let base = format!("http://127.0.0.1:{port}");
+        let shelf = search_shelf(None, "Qwen", "gguf", "downloads", Some(3), Some(&base), Some("text"))
+            .await.unwrap();
+        assert_eq!(shelf.hits.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), vec![
+            "Chat-GGUF", "Vision-GGUF", "No-Pipeline-GGUF",
+        ]);
+        let request = received.lock().unwrap().clone();
+        assert!(request.contains("filter=gguf"), "{request}");
+        assert!(request.contains("sort=downloads"), "{request}");
+        assert!(request.contains("limit=12"), "{request}");
+        assert!(request.contains("search=Qwen"), "{request}");
+        assert!(!request.contains("pipeline_tag=text-generation"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn text_generation_mlx_search_preserves_format_and_vision() {
+        let items = serde_json::json!([
+            {"id":"test/Multimodal-4bit", "tags":["mlx","vision"], "pipeline_tag":"image-text-to-text"},
+            {"id":"test/Plain-4bit", "tags":["mlx"]},
+            {"id":"test/Studio-4bit", "tags":["mlx","mflux"], "pipeline_tag":"text-to-image"}
+        ]);
+        let port = serve_once("200 OK", items.to_string().into_bytes());
+        let base = format!("http://127.0.0.1:{port}");
+        let shelf = search_shelf(None, "4bit", "mlx", "likes", Some(5), Some(&base), Some("text"))
+            .await.unwrap();
+        assert_eq!(shelf.hits.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), vec![
+            "Multimodal-4bit", "Plain-4bit",
+        ]);
     }
     #[test]
     fn a_kept_shelf_comes_back_by_its_list() {

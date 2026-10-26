@@ -89,7 +89,7 @@ export function DownloadModal({
   const [query, setQuery] = useState("");
   const [format, setFormat] = useState<"gguf" | "mlx">("gguf");
   const [sort, setSort] = useState<"trending" | "downloads" | "likes" | "updated">("trending");
-  /** Task filter for text-only chat/coding, image and music models. */
+  /** Text output includes chat/coding and vision-language models. */
   const [task, setTask] = useState<"all" | "text" | "image" | "music">("all");
   const [hits, setHits] = useState<HfModelHit[]>([]);
   const [listLoading, setListLoading] = useState(false);
@@ -397,14 +397,14 @@ export function DownloadModal({
                 onChange={(v) => setFormat(v)}
                 options={[
                   { value: "gguf" as const, label: "GGUF" },
-                  ...(IS_MACOS ? [{ value: "mlx" as const, label: "MLX" }] : []),
+                  ...(IS_MACOS && task !== "music" ? [{ value: "mlx" as const, label: "MLX" }] : []),
                 ]}
               />
               <Select
                 value={task}
                 disabled={active}
                 ariaLabel={t("storeTask")}
-                onChange={(v) => setTask(v)}
+                onChange={(v) => { setTask(v); if (v === "music") setFormat("gguf"); }}
                 options={[
                   { value: "all" as const, label: t("storeTaskAll") },
                   { value: "text" as const, label: t("storeTaskText") },
