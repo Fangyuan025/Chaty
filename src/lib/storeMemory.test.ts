@@ -26,9 +26,9 @@ type Case = {
 const scenarios: Case[] = [
   // Size comparisons use raw bytes, including decimal GB displayed by the UI.
   { name: "chat weights fit despite optional downloads", model: 5.6 * GB, download: 6.5 * GB, budget: 5700, ram: 32000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: chat, expected: "gpu" },
-  { name: "vision projector does not become model weights", model: 6.7 * GB, download: 7.7 * GB, budget: 5500, ram: 32000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: vision, expected: "gpu" },
+  { name: "vision model exceeds current budget despite physical capacity", model: 6.7 * GB, download: 7.7 * GB, budget: 5500, ram: 32000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: vision, expected: "mixed" },
   { name: "image companions do not become model weights", model: 4.2 * GB, download: 10 * GB, budget: 5500, ram: 32000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: image, expected: "gpu" },
-  { name: "music package overhead does not become model weights", model: 7.3 * GB, download: 7.5 * GB, budget: 5500, ram: 32000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: music, expected: "gpu" },
+  { name: "music weights exceed available GPU budget", model: 7.3 * GB, download: 7.5 * GB, budget: 5500, ram: 32000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: music, expected: "cpuMode" },
   { name: "very large chat model may need offload", model: 13 * GiB, download: 16 * GiB, budget: 5000, ram: 32000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: chat, expected: "mixed" },
   { name: "large vision weights may need offload", model: 10 * GiB, download: 12 * GiB, budget: 5000, ram: 32000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: vision, expected: "mixed" },
   { name: "large image weights may need system RAM", model: 10 * GiB, download: 13 * GiB, budget: 5000, ram: 32000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: image, expected: "mixed" },
@@ -45,8 +45,8 @@ const scenarios: Case[] = [
   { name: "virtual GPU is not dedicated VRAM", model: 3 * GiB, download: 3 * GiB, budget: 8192, ram: 16000, backend: "Vulkan", gpuKind: "virtual", kind: chat, expected: "cpuOnly" },
   { name: "other GPU class is not trusted", model: 3 * GiB, download: 4 * GiB, budget: 8192, ram: 16000, backend: "Vulkan", gpuKind: "other", kind: image, expected: "cpuOnly" },
   { name: "Windows-compatible IPC without kind", model: 4 * GiB, download: 6 * GiB, budget: 8192, ram: 16000, backend: "Vulkan", kind: chat, expected: "gpu" },
-  { name: "positive physical VRAM survives missing dynamic budget", model: 7 * GiB, download: 8 * GiB, budget: null, ram: 16000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: chat, expected: "gpu" },
-  { name: "model exactly matches dedicated VRAM", model: 8192 * MiB, download: 8192 * MiB, budget: 2000, ram: 16000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: chat, expected: "gpu" },
+  { name: "physical VRAM alone is insufficient to claim GPU fit", model: 7 * GiB, download: 8 * GiB, budget: null, ram: 16000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: chat, expected: "unknown" },
+  { name: "physical-VRAM equality does not override smaller budget", model: 8192 * MiB, download: 8192 * MiB, budget: 2000, ram: 16000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: chat, expected: "mixed" },
   { name: "model one byte beyond dedicated VRAM", model: 8192 * MiB + 1, download: 8192 * MiB + 1, budget: 2000, ram: 16000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: chat, expected: "mixed" },
   { name: "small GPU with big RAM still allows partial offload", model: 6 * GiB, download: 10 * GiB, budget: 2000, ram: 24000, backend: "Vulkan", gpuKind: "discrete", capacity: 2048, kind: chat, expected: "mixed" },
   { name: "missing RAM prevents mixed-offload prediction", model: 12 * GiB, download: 13 * GiB, budget: 4000, ram: null, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: chat, expected: "unknown" },
@@ -55,7 +55,7 @@ const scenarios: Case[] = [
   { name: "negative main size is unknown", model: -1, download: 4 * GiB, budget: 5000, ram: 16000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: chat, expected: "unknown" },
   { name: "nonfinite main size is unknown", model: Infinity, download: 4 * GiB, budget: 5000, ram: 16000, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: chat, expected: "unknown" },
   { name: "unknown GPU but verified RAM", model: 3 * GiB, download: 4 * GiB, ram: 16000, backend: "CPU", kind: music, expected: "cpuOnly" },
-  { name: "GPU weight fit does not require RAM snapshot", model: 4 * GiB, download: 20 * GiB, budget: 2000, ram: null, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: image, expected: "gpu" },
+  { name: "missing RAM prevents an offload estimate when weights exceed budget", model: 4 * GiB, download: 20 * GiB, budget: 2000, ram: null, backend: "Vulkan", gpuKind: "discrete", capacity: 8192, kind: image, expected: "unknown" },
 ];
 
 describe("catalogue suitability across model families and memory topologies", () => {
@@ -74,13 +74,16 @@ describe("catalogue suitability across model families and memory topologies", ()
     }
   });
 
-  it("separates physical capacity from fluctuating runtime Vulkan budget", () => {
-    for (const budget of [null, 0, 512, 2500, 5700, 7000]) {
-      const estimate = estimateStoreMemory(7 * GiB, 12 * GiB, budget, 32000, "Vulkan", "discrete", 8192);
+  it("caps catalogue fit at the dynamic budget without losing physical VRAM", () => {
+    const model = 6.5 * GiB;
+    for (const budget of [null, 0, 512, 2500, 5700, 7000, 9000]) {
+      const estimate = estimateStoreMemory(model, 12 * GiB, budget, 32000, "Vulkan", "discrete", 8192);
+      const limit = budget && budget > 0 ? Math.min(budget, 8192) * MiB : null;
       expect(estimate.gpuCapacityBytes).toBe(8192 * MiB);
-      expect(estimate.gpuFitsMainWeights).toBe(true);
       expect(estimate.gpuBudgetBytes).toBe(budget && budget > 0 ? budget * MiB : null);
-      expect(classifyCatalogueFit(estimate, chat)).toBe("gpu");
+      expect(estimate.gpuFitLimitBytes).toBe(limit);
+      expect(estimate.gpuFitsMainWeights).toBe(limit === null ? null : model <= limit);
+      expect(classifyCatalogueFit(estimate, chat)).toBe(limit === null ? "unknown" : model <= limit ? "gpu" : "mixed");
     }
   });
 
@@ -118,12 +121,49 @@ describe("catalogue suitability across model families and memory topologies", ()
     expect(combinations).toBe(288);
   });
 
-  it("does not mis-handle decimal GB versus binary GiB", () => {
+  it("compares byte sizes with MiB budgets rather than rounded display units", () => {
     const capacity = 8192 * MiB;
     expect(8 * GB).toBeLessThan(capacity);
     expect(9 * GB).toBeGreaterThan(capacity);
-    expect(classifyCatalogueFit(estimateStoreMemory(8 * GB, 10 * GB, 6000, 32000, "Vulkan", "discrete", 8192), chat)).toBe("gpu");
-    expect(classifyCatalogueFit(estimateStoreMemory(9 * GB, 10 * GB, 6000, 32000, "Vulkan", "discrete", 8192), chat)).toBe("mixed");
+    expect(7.3 * GB).toBeLessThan(7096 * MiB);
+    expect(8.1 * GB).toBeGreaterThan(7096 * MiB);
+    expect(classifyCatalogueFit(estimateStoreMemory(7.3 * GB, 8 * GB, 7096, 32000, "Vulkan", "discrete", 8192), chat)).toBe("gpu");
+    expect(classifyCatalogueFit(estimateStoreMemory(8.1 * GB, 9 * GB, 7096, 32000, "Vulkan", "discrete", 8192), chat)).toBe("mixed");
+    expect(classifyCatalogueFit(estimateStoreMemory(8.1 * GiB, 10 * GiB, 9000, 32000, "Vulkan", "discrete", 8192), chat)).toBe("mixed");
+  });
+
+  it("requires enough usable GPU budget across chat, vision, image and music", () => {
+    let checked = 0;
+    for (const kind of [chat, vision, image, music]) {
+      for (const capacity of [2048, 8192, 16384]) {
+        for (const budget of [512, 2048, 5400, 7096, 8192, 20000]) {
+          const limit = Math.min(capacity, budget) * MiB;
+          for (const model of [1, 4.2, 5.6, 6.7, 7.3, 8.1, 10, 20]) {
+            const bytes = model * GB;
+            const estimate = estimateStoreMemory(bytes, bytes + 20 * GB, budget, 32000, "Vulkan", "discrete", capacity);
+            const result = classifyCatalogueFit(estimate, kind);
+            expect(estimate.gpuFitLimitBytes).toBe(limit);
+            expect(estimate.gpuFitsMainWeights).toBe(bytes <= limit);
+            expect(result === "gpu").toBe(bytes <= limit);
+            checked++;
+          }
+        }
+      }
+    }
+    expect(checked).toBe(576);
+  });
+
+  it("treats the GPU-fit boundary byte-exactly", () => {
+    const budget = 7096;
+    const limit = budget * MiB;
+    for (const kind of [chat, image, music]) {
+      const below = estimateStoreMemory(limit - 1, limit + 20 * GB, budget, 32000, "Vulkan", "discrete", 8192);
+      const equal = estimateStoreMemory(limit, limit + 20 * GB, budget, 32000, "Vulkan", "discrete", 8192);
+      const above = estimateStoreMemory(limit + 1, limit + 20 * GB, budget, 32000, "Vulkan", "discrete", 8192);
+      expect(classifyCatalogueFit(below, kind)).toBe("gpu");
+      expect(classifyCatalogueFit(equal, kind)).toBe("gpu");
+      expect(classifyCatalogueFit(above, kind)).toBe(kind.music ? "cpuMode" : "mixed");
+    }
   });
 
   it("does not invent a memory fit from invalid numbers", () => {
@@ -131,6 +171,7 @@ describe("catalogue suitability across model families and memory topologies", ()
     expect(invalid.modelBytes).toBe(0);
     expect(invalid.gpuBudgetBytes).toBeNull();
     expect(invalid.gpuCapacityBytes).toBeNull();
+    expect(invalid.gpuFitLimitBytes).toBeNull();
     expect(classifyCatalogueFit(invalid, chat)).toBe("unknown");
   });
 

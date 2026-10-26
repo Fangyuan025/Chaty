@@ -1,8 +1,9 @@
 /** Catalogue-only memory hint, never a runtime allocator.
  * File download size is not GPU residency. In particular, extra VAE,
  * projector, and audio assets can be placed or loaded separately.
- * The catalogue compares primary weights with device capacity; the runtime
- * uses its own currently available Vulkan budget, context, and buffers.
+ * A dedicated GPU is a possible full-weights fit only within BOTH its
+ * physical VRAM and the backend's reported current allocation budget.
+ * Runtime buffers and KV cache can further reduce actual residency.
  */
 export interface StoreMemoryEstimate {
   modelBytes: number;
@@ -11,8 +12,10 @@ export interface StoreMemoryEstimate {
   ramBytes: number | null;
   /** Runtime allocation budget, when the backend exposes one. */
   gpuBudgetBytes: number | null;
-  /** Capacity used for a stable pre-download fit hint. */
+  /** Physical VRAM on Linux, or the existing capacity fallback elsewhere. */
   gpuCapacityBytes: number | null;
+  /** Conservative GPU-fit ceiling. null if the usable budget is unavailable. */
+  gpuFitLimitBytes: number | null;
   /** Primary model weights only, NOT a promise of runtime GPU residency. */
   gpuFitsMainWeights: boolean | null;
   /** Budget-based, theoretical weight bounds, not a layer count. */
@@ -54,10 +57,16 @@ export function estimateStoreMemory(
       ? dedicatedVramMb * MIB
       : gpuBudgetBytes;
 
-  // These optional diagnostics continue to use the *runtime* budget, not
-  // the catalogue capacity. They must not be summed with unified RAM.
-  const planned = gpuBudgetBytes !== null && model > 0;
-  const gpuWeightsCeilingBytes = planned ? Math.min(model, gpuBudgetBytes) : null;
+  // Do not equate physical capacity with allocatable memory. The Linux
+  // Vulkan backend already applies its headroom and driver budget.
+  // No second arbitrary percentage, and never more than physical VRAM.
+  const gpuFitLimitBytes = gpuBudgetBytes === null
+    ? null
+    : Math.min(gpuBudgetBytes, gpuCapacityBytes ?? gpuBudgetBytes);
+  // Diagnostics and the catalogue must use the SAME effective ceiling.
+  // Dedicated VRAM and shared RAM cannot be counted twice.
+  const planned = gpuFitLimitBytes !== null && model > 0;
+  const gpuWeightsCeilingBytes = planned ? Math.min(model, gpuFitLimitBytes) : null;
   const cpuWeightsFloorBytes = planned
     ? Math.max(0, model - gpuWeightsCeilingBytes!) : null;
 
@@ -68,8 +77,9 @@ export function estimateStoreMemory(
     ramBytes,
     gpuBudgetBytes,
     gpuCapacityBytes,
-    gpuFitsMainWeights: gpuCapacityBytes !== null && model > 0
-      ? model <= gpuCapacityBytes : null,
+    gpuFitLimitBytes,
+    gpuFitsMainWeights: gpuFitLimitBytes !== null && model > 0
+      ? model <= gpuFitLimitBytes : null,
     gpuWeightsCeilingBytes,
     cpuWeightsFloorBytes,
     modelOverInstalledRam: ramBytes !== null && model > 0
@@ -98,7 +108,7 @@ export function classifyCatalogueFit(
   if (!estimate || !positive(estimate.modelBytes)) return "unknown";
   const model = estimate.modelBytes;
   const ram = estimate.ramBytes;
-  const gpu = estimate.gpuCapacityBytes;
+  const gpu = estimate.gpuFitLimitBytes;
 
   if (estimate.unifiedMemory || kind.mlx) {
     if (ram === null) return "unknown";
@@ -113,6 +123,15 @@ export function classifyCatalogueFit(
     // CPU RAM and dedicated VRAM are separate pools only in this branch.
     if (model > gpu + ram) return "large";
     return kind.music ? "cpuMode" : "mixed";
+  }
+  // Physical memory without an available budget cannot establish a
+  // GPU-only fit. An over-capacity model can still need offload.
+  if (estimate.gpuCapacityBytes !== null) {
+    if (ram !== null && model > estimate.gpuCapacityBytes) {
+      if (model > estimate.gpuCapacityBytes + ram) return "large";
+      return kind.music ? "cpuMode" : "mixed";
+    }
+    return "unknown";
   }
 
   if (ram === null) return "unknown";
