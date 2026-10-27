@@ -17,6 +17,7 @@ import {
   imageModelProbe,
   musicModelProbe,
   modelFolderFor,
+  openExternal,
   DOWNLOAD_CANCELLED,
   type HfModelHit,
   type HfModelDetail,
@@ -508,7 +509,22 @@ export function DownloadModal({
               <div className="store-empty">{t("storePickModel")}</div>
             ) : (
               <>
-                <div className="store-detail-title">{detail.id.split("/").pop()}</div>
+                <div className="store-detail-heading">
+                  <div className="store-detail-title">{detail.id.split("/").pop()}</div>
+                  <button
+                    type="button"
+                    className="store-hf-link"
+                    title={t("storeOpenHf")}
+                    aria-label={t("storeOpenHf")}
+                    onClick={() => {
+                      void openExternal(`https://huggingface.co/${detail.repo || detail.id}`).catch((e) =>
+                        setError(String(e)),
+                      );
+                    }}
+                  >
+                    <Icon name="external-link" size={16} />
+                  </button>
+                </div>
                 <div className="store-detail-author">
                   <OrgAvatar author={detail.id.split("/")[0]} size={15} /> {detail.id.split("/")[0]}
                 </div>

@@ -13,6 +13,7 @@ const PATHS: Record<string, string> = {
   pin: "M12 3l1.8 5.4H19l-4.3 3.4 1.7 5.5-4.4-3.4-4.4 3.4 1.7-5.5L5 8.4h5.2z",
   search: "M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-4.5-4.5",
   download: "M12 3v12M7 10l5 5 5-5M5 21h14",
+  "external-link": "M14 4h6v6M20 4l-9 9M20 13v5a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h5",
   // Folder — CodeMode drew this same path inline three times.
   folder: "M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z",
   lines: "M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01",

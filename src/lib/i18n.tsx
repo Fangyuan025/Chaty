@@ -756,6 +756,7 @@ export const T = {
   storeAgoHour: { zh: "{n} 小时前", en: "{n} h ago", pt: "há {n} h" },
   storeAgoDay: { zh: "{n} 天前", en: "{n} d ago", pt: "há {n} d" },
   storePickModel: { zh: "从左侧选择一个模型查看详情", en: "Pick a model on the left to see details", pt: "Escolha um modelo à esquerda para ver detalhes" },
+  storeOpenHf: { zh: "在 Hugging Face 上打开模型", en: "Open on Hugging Face", pt: "Abrir no Hugging Face" },
   storeFitsRam: { zh: "✓ 可完整载入内存", en: "✓ Fits fully in memory", pt: "✓ Cabe totalmente na memória" },
   storeOverRam: { zh: "≈ 接近或超出内存，速度可能受影响", en: "≈ Near or over memory — may run slowly", pt: "≈ Próximo ou acima da memória — pode rodar lento" },
   // GPU details in the hardware panel.
