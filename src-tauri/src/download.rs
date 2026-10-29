@@ -830,7 +830,7 @@ async fn search_shelf(
             }
         }
         if batches.is_empty() {
-            return Err(error.unwrap_or_else(|| "Hugging Face returned no model lists".into()));
+            return Err(error.unwrap_or_else(|| trf!("Hugging Face 没有返回模型列表", "Hugging Face returned no model lists")));
         }
         // Round-robin the filtered views: do not let the first canonical
         // task list crowd out image-edit or untagged but recognised families.
@@ -1035,7 +1035,7 @@ async fn fetch_media_shelf_page(
     }
     let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     if !body.is_array() {
-        return Err("Invalid Hugging Face model listing".into());
+        return Err(trf!("Hugging Face 返回的模型列表无法解析", "invalid Hugging Face model listing"));
     }
     Ok(Some(body))
 }
