@@ -99,7 +99,7 @@
 
 <sub>Chaty 直接输出，未经修图；Apple M4 Pro，48 GB 内存。</sub>
 
-- **主流的模型家族**——Z-Image 与 Z-Image Turbo、Qwen-Image 2.1、FLUX.1 dev 与 schnell、Chroma、Stable Diffusion 1.x、2.x、XL 与 3.x。
+- **主流的模型家族**——Z-Image 与 Z-Image Turbo、Qwen-Image 2.1、FLUX.2 [klein] 4B 与 9B、FLUX.1 dev 与 schnell、Chroma、Stable Diffusion 1.x、2.x、XL 与 3.x。
 - **配套文件，自动找齐**——文生图 GGUF 只包含去噪模型；Chaty 会在旁边找到它的 VAE 和文本编码器，缺的一键下载。
 - **从一张图接着画**——下一轮可以从任何一张图开始；支持改图的模型会把它当参考，只改你说的地方。
 - **连同配方一起保存**——PNG 里写着提示词和参数，按日期存放。

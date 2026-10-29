@@ -310,30 +310,28 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## Watch it work
+            ## FLUX.2 [klein]
 
-            Code mode now shows what the agent is doing as it does it. The tool calls
-            between two things the model says fold into one line — what is going on now,
-            tool by tool, then what the run did ("Read 3 files, ran 2 commands, 1
-            failed") — and opening it shows every step as before. After each small step
-            the model says what it did and what comes next: a thinking model wrote that
-            inside its thought whatever it was asked, so it now rides in the tool call
-            itself, and Qwen3.6 35B, which made 8 or 9 calls without a word on a
-            find-the-bug task, now never goes more than two calls without one.
+            FLUX.2 [klein] 4B and 9B, distilled and base, now load and draw. A klein GGUF
+            is the denoiser alone; Chaty recognises it, offers the Qwen3 encoder and the
+            FLUX.2 VAE it needs in the same download, and draws at the settings it was
+            made for — four steps at CFG 1 for the distilled ones. klein 4B draws
+            1024×1024 in about a minute on an M4 Pro.
 
-            ## Five permission modes, and a plan before the work
+            ## Errors in the language you picked
 
-            Auto, Manual, Accept edits, Plan and Bypass permissions, as Claude Code has
-            them, kept by each session and Auto for a new one. Auto goes ahead with
-            routine work and asks before what is hard to take back. Plan researches and
-            hands you the plan, with the choice under it to carry it out — a change
-            attempted while planning is stopped as its name is written, not after a whole
-            file has been generated. A message sent mid-run asks whether to queue or
-            interrupt, and folders granted outside the workspace are named to the model.
+            Every message from the backend is now in the language the UI is in, from the
+            first one at startup on, instead of Chinese until a coding turn started, or
+            both languages at once. An engine's own words come after a line in yours, and
+            an image model missing a file says which one.
 
-            Also: browser tabs per Code session and a console-like `browser_eval`; a long
-            chat opens in half the time; a file read a third time unchanged, an empty
-            file, and a Gemma 4 thought going round on digits no longer cost minutes.
+            ## Linux, and the store
+
+            Thanks to @davidecelentano: on Linux Chaty picks one GPU through Vulkan —
+            discrete over integrated — and sizes offload by what the driver says is free;
+            music plays in the AppImage. The store gains a Text generation filter, links
+            to Hugging Face, and a fit hint that knows whether a model fits the GPU, or,
+            on a Mac, fits in memory with everything it downloads.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

@@ -99,7 +99,7 @@ Load a text-to-image model and the whole app becomes an image studio: sessions t
 
 <sub>Straight out of Chaty, unedited, on an Apple M4 Pro with 48 GB.</sub>
 
-- **The families that matter** — Z-Image and Z-Image Turbo, Qwen-Image 2.1, FLUX.1 dev and schnell, Chroma, Stable Diffusion 1.x, 2.x, XL and 3.x.
+- **The families that matter** — Z-Image and Z-Image Turbo, Qwen-Image 2.1, FLUX.2 [klein] 4B and 9B, FLUX.1 dev and schnell, Chroma, Stable Diffusion 1.x, 2.x, XL and 3.x.
 - **The other files, found** — a text-to-image GGUF is only the denoiser; Chaty finds its VAE and text encoder beside it, or downloads the missing ones in one click.
 - **Keep going from a picture** — start the next round from any image; models that edit take it as a reference and change only what you ask.
 - **Saved with its recipe** — PNGs carry the prompt and settings inside, filed by date.

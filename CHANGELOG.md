@@ -1,5 +1,52 @@
 # Changelog
 
+## v2.3.8 — Speak my language (2026-10-29)
+
+### Image: FLUX.2 [klein]
+
+- **FLUX.2 [klein] 4B and 9B, and their base checkpoints, load and draw.**
+  A klein GGUF is the denoiser alone: it reads the prompt through a plain
+  Qwen3 (4B for the 4B model, 8B for the 9B) and decodes through FLUX.2's own
+  VAE, which FLUX.1's does not replace. Chaty used to take it for an unknown
+  diffusion model and hand it to the engine as it was, which answered that a
+  tensor was "not in model metadata" (issue #25). It now tells the model by
+  the width of the text it takes in, offers the encoder and the VAE in the
+  model's download, and draws at the settings it was made for: four steps at
+  CFG 1 for the distilled ones, real CFG for the base ones. klein 4B Q4_0
+  draws 1024×1024 in about 66 seconds on an M4 Pro. FLUX.2 [dev] is not set
+  up yet; MLX builds of klein are still not run.
+
+### Errors in the language you picked
+
+- **Every error is in the UI's language.** The backend used to learn the
+  language only once a coding turn started, so until then its messages came
+  in Chinese whatever the UI said, and many carried both languages at once or
+  only one. It now learns it before the window paints, keeps it for what is
+  said at startup, and writes every message in that one language. What an
+  engine says in its own words — stable-diffusion.cpp, llama.cpp, the music
+  and MLX engines — comes after a line in yours, kept for a bug report. An
+  image model missing its encoder or VAE says which, instead of a tensor
+  name.
+
+### Linux, and the store
+
+Thanks to @davidecelentano (#24):
+
+- **Linux picks one GPU and sizes for it.** Chaty asks Vulkan for the
+  devices, prefers a discrete GPU over an integrated one, pins the choice
+  before the engines start (`CHATY_VULKAN_DEVICE` picks another), and plans
+  offload from the memory the driver says is free rather than the card's
+  total. The hardware panel names the GPU as dedicated or integrated. Logs go
+  under `XDG_DATA_HOME` when it is set.
+- **Music plays in the AppImage**, which now carries the media framework
+  WebKitGTK needs, and a track loads in full before it plays there.
+- **The store** has a Text generation filter (vision models included), a
+  button to open a model on Hugging Face, and a fit hint that knows the GPU:
+  on a dedicated card, whether the weights fit it or will share with RAM; on
+  a Mac, an integrated GPU or the CPU, whether everything it downloads fits
+  in memory with room to run. Image search also finds edit models and GGUFs
+  of known families that carry no task tag.
+
 ## v2.3.7 — Show your work (2026-10-25)
 
 ### Code: what the agent is doing, as it does it

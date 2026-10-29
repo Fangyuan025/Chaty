@@ -99,7 +99,7 @@ Carregue um modelo de texto para imagem e o app inteiro vira um estúdio: sessõ
 
 <sub>Direto do Chaty, sem edição, num Apple M4 Pro com 48 GB.</sub>
 
-- **As famílias que importam** — Z-Image e Z-Image Turbo, Qwen-Image 2.1, FLUX.1 dev e schnell, Chroma, Stable Diffusion 1.x, 2.x, XL e 3.x.
+- **As famílias que importam** — Z-Image e Z-Image Turbo, Qwen-Image 2.1, FLUX.2 [klein] 4B e 9B, FLUX.1 dev e schnell, Chroma, Stable Diffusion 1.x, 2.x, XL e 3.x.
 - **Os outros arquivos, encontrados** — um GGUF de texto para imagem contém só o denoiser; o Chaty encontra o VAE e o codificador de texto ao lado dele, ou baixa os que faltam com um clique.
 - **Continue a partir de uma imagem** — comece a próxima rodada de qualquer imagem; modelos que editam a usam como referência e mudam só o que você pedir.
 - **Salva com a receita** — PNGs levam o prompt e as configurações dentro, organizados por data.
