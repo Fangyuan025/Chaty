@@ -1535,7 +1535,7 @@ fn run_turn(
     // template with no off switch the engine could not close) puts the model
     // inside one, and the stream has to say so.
     if let Some(tag) = preopened_think_tag(&prompt) {
-        sink.emit(StreamEvent::Token { text: format!("{tag}\n") })?;
+        sink.emit(StreamEvent::Token { text: opened_think_text(&prompt, tag) })?;
     }
 
     let n_batch = (dec.ctx().n_batch() as usize).max(1);
@@ -2455,15 +2455,47 @@ fn with_think_off_prefix(
     messages: &[ChatMessage],
     think: Option<bool>,
 ) -> Vec<ChatMessage> {
-    prefixed_assistant_turns(messages, think == Some(false) && template_uses_think(model))
+    let block = (think == Some(false) && template_uses_think(model)).then(|| think_off_block(model));
+    prefixed_assistant_turns(messages, block.as_deref())
+}
+
+/// The empty reasoning block as this model's prompt actually carries it with
+/// thinking off. A template that closes the block itself spells it its own way
+/// — LFM3 writes `<think></think>`, nothing between — and a stored turn wearing
+/// Chaty's spelling instead no longer matched what the model continued from:
+/// 0% reuse on every turn. Where the template leaves the block to Chaty, it is
+/// Chaty's own prefill.
+fn think_off_block(model: &LlamaModel) -> String {
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<u64, String>>> = OnceLock::new();
+    let src = model.meta_val_str("tokenizer.chat_template").unwrap_or_default();
+    let key = super::jinja::key_of(&src, &special_text(model, model.vocab().bos()), "think-off");
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return hit;
+    }
+    let off = super::jinja::Kwargs { enable_thinking: Some(false), ..Default::default() };
+    let user = [ChatMessage { role: Role::User, content: "q".into(), images: vec![], reasoning_content: None }];
+    let block = match (render_chat_with(model, &user, true, off), render_chat_with(model, &user, false, off)) {
+        (Ok(gen), Ok(body)) => gen
+            .strip_prefix(&body)
+            .and_then(|tail| tail.find("<think>").map(|at| tail[at..].to_string()))
+            .filter(|b| b.contains("</think>")),
+        _ => None,
+    }
+    .unwrap_or_else(|| THINK_OFF_PREFIX.to_string());
+    if let Ok(mut c) = cache.lock() {
+        c.insert(key, block.clone());
+    }
+    block
 }
 
 /// The message rewrite itself, with the model question already answered so the
-/// rule is testable on its own.
-fn prefixed_assistant_turns(messages: &[ChatMessage], apply: bool) -> Vec<ChatMessage> {
-    if !apply {
+/// rule is testable on its own. `block`: the empty reasoning block to put in
+/// front, or None to leave the turns as they are.
+fn prefixed_assistant_turns(messages: &[ChatMessage], block: Option<&str>) -> Vec<ChatMessage> {
+    let Some(block) = block else {
         return messages.to_vec();
-    }
+    };
     messages
         .iter()
         .map(|m| {
@@ -2471,7 +2503,7 @@ fn prefixed_assistant_turns(messages: &[ChatMessage], apply: bool) -> Vec<ChatMe
                 return m.clone();
             }
             ChatMessage {
-                content: format!("{THINK_OFF_PREFIX}{}", m.content),
+                content: format!("{block}{}", m.content),
                 ..m.clone()
             }
         })
@@ -2700,6 +2732,15 @@ fn build_prompt_pair(
 /// `<ifm|think_faster>` depending on the rung. A closing tag (the empty block
 /// of thinking-off) is not an opener, and neither is Gemma 4's `<|think|>`
 /// control token, whose pipes wrap the name instead of namespacing it.
+/// The opened thought exactly as the prompt ends on it — the tag and whatever
+/// the template wrote after it. Qwen's write `<think>\n`, LFM3's `<think>` and
+/// nothing more; the stream used to add the newline for everyone, so an LFM3
+/// turn came back to its template one character longer than the model had read
+/// it, and the next turn reused nothing.
+fn opened_think_text(prompt: &str, tag: &str) -> String {
+    prompt.rfind(tag).map_or_else(|| format!("{tag}\n"), |at| prompt[at..].to_string())
+}
+
 pub(crate) fn preopened_think_tag(prompt: &str) -> Option<&str> {
     let tail = prompt.trim_end();
     if !tail.ends_with('>') {
@@ -3802,6 +3843,10 @@ mod tests {
         assert_eq!(open("<|ifm|im_start|>assistant\n<ifm|think>\n"), Some("<ifm|think>"));
         assert_eq!(open("<|ifm|im_start|>assistant\n<ifm|think_faster>\n"), Some("<ifm|think_faster>"));
         assert_eq!(open("<|im_start|>assistant\n<think>\n"), Some("<think>"));
+        // What the stream says is what the prompt says: Qwen's newline, and
+        // none for a template that writes none (LFM3).
+        assert_eq!(opened_think_text("<|im_start|>assistant\n<think>\n", "<think>"), "<think>\n");
+        assert_eq!(opened_think_text("<|im_start|>assistant\n<think>", "<think>"), "<think>");
         assert_eq!(open("<|ifm|im_start|>assistant\n<ifm|think>\n</ifm|think>\n"), None);
         assert_eq!(open("<|turn>model\n<|think|>"), None);
         assert_eq!(open("<|im_start|>assistant\n"), None);
@@ -7777,9 +7822,13 @@ mod think_off_prefix {
         // qwen35 and lfm2 with thinking off, which is code mode's default.
         let out = prefixed_assistant_turns(
             &[msg(Role::User, "q"), msg(Role::Assistant, "the answer")],
-            true,
+            Some(THINK_OFF_PREFIX),
         );
         assert_eq!(out[1].content, format!("{THINK_OFF_PREFIX}the answer"));
+        // A template that closes the block itself is matched in its own
+        // spelling (LFM3: nothing between the tags).
+        let out = prefixed_assistant_turns(&[msg(Role::Assistant, "the answer")], Some("<think></think>"));
+        assert_eq!(out[0].content, "<think></think>the answer");
     }
 
     #[test]
@@ -7790,7 +7839,7 @@ mod think_off_prefix {
                 msg(Role::User, "q"),
                 msg(Role::Tool, "result"),
             ],
-            true,
+            Some(THINK_OFF_PREFIX),
         );
         assert_eq!(out[0].content, "s");
         assert_eq!(out[1].content, "q");
@@ -7802,14 +7851,14 @@ mod think_off_prefix {
         // The model wrote a block despite the request; doubling it would break
         // the prefix exactly as badly as omitting it.
         let already = "<think>\nhmm\n</think>\n\nthe answer";
-        let out = prefixed_assistant_turns(&[msg(Role::Assistant, already)], true);
+        let out = prefixed_assistant_turns(&[msg(Role::Assistant, already)], Some(THINK_OFF_PREFIX));
         assert_eq!(out[0].content, already);
     }
 
     #[test]
     fn thinking_on_changes_nothing() {
         let before = [msg(Role::User, "q"), msg(Role::Assistant, "a")];
-        let out = prefixed_assistant_turns(&before, false);
+        let out = prefixed_assistant_turns(&before, None);
         assert_eq!(out[1].content, "a");
     }
 

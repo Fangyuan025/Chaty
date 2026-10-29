@@ -29,6 +29,10 @@ pub struct Compiled {
     env: Environment<'static>,
     pub bos: String,
     pub eos: String,
+    /// The template offers `preserve_thinking` (LFM3's does): keep the
+    /// reasoning of earlier turns instead of re-rendering them with an empty
+    /// thinking block.
+    keeps_thinking_on_request: bool,
 }
 
 /// One message as a template sees it.
@@ -62,7 +66,12 @@ impl Compiled {
         env.add_filter("tojson", py_tojson);
         env.add_template_owned("chat", without_generation_tags(source))
             .map_err(|e| anyhow!(trf!("模型的对话模板无法按 Jinja 解析:{e}", "the chat template does not parse as Jinja: {e}")))?;
-        Ok(Self { env, bos: bos.to_string(), eos: eos.to_string() })
+        Ok(Self {
+            env,
+            bos: bos.to_string(),
+            eos: eos.to_string(),
+            keeps_thinking_on_request: source.contains("preserve_thinking"),
+        })
     }
 
     pub fn render(&self, turns: &[Turn], add_generation_prompt: bool) -> Result<String> {
@@ -96,6 +105,16 @@ impl Compiled {
         }
         if let Some(rung) = kw.reasoning_effort {
             ctx.insert("reasoning_effort", Value::from(rung));
+        }
+        // A template that drops earlier turns' reasoning unless asked not to
+        // is asked not to. Re-rendered without it, the turn the model just
+        // wrote no longer matches the cache — and on a hybrid model, whose
+        // state cannot rewind, every turn then re-reads the whole conversation
+        // (LFM3: 0% reuse turn after turn). The same trade the owner took for
+        // Gemma 4: reasoning stays in history, compaction trims it when the
+        // window tightens.
+        if self.keeps_thinking_on_request {
+            ctx.insert("preserve_thinking", Value::from(true));
         }
         tmpl.render(Value::from_serialize(&ctx)).map_err(|e| anyhow!(trf!("模型的对话模板渲染失败:{e}", "the chat template failed to render: {e}")))
     }
@@ -440,6 +459,22 @@ mod tests {
         );
         let ind = Compiled::new("{{ {'a': 1, 'b': [true, none]} | tojson(indent=2) }}", "", "").unwrap();
         assert_eq!(ind.render(&[], false).unwrap(), "{\n  \"a\": 1,\n  \"b\": [\n    true,\n    null\n  ]\n}");
+    }
+
+    /// A template that keeps earlier reasoning only when asked
+    /// (`preserve_thinking`, LFM3's) is asked; one that never mentions it is
+    /// rendered as before.
+    #[test]
+    fn earlier_reasoning_is_kept_where_the_template_offers_it() {
+        let src = "{%- set keep = preserve_thinking | default(false) -%}{% for m in messages %}{% if m.role == 'assistant' and not keep %}<think></think>{{ m.content.split('</think>')[-1] }}{% else %}{{ m.content }}{% endif %}|{% endfor %}";
+        let c = Compiled::new(src, "", "").unwrap();
+        let turns = [
+            Turn { role: "user", content: "q", reasoning: None },
+            Turn { role: "assistant", content: "<think>R</think>A", reasoning: None },
+        ];
+        assert_eq!(c.render(&turns, false).unwrap(), "q|<think>R</think>A|");
+        let plain = Compiled::new("{% for m in messages %}{{ m.content }}|{% endfor %}", "", "").unwrap();
+        assert_eq!(plain.render(&turns, false).unwrap(), "q|<think>R</think>A|");
     }
 
     /// A template that reads `enable_thinking` hears the caller's choice, and
