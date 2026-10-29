@@ -689,9 +689,27 @@ export async function checkUpdate(): Promise<UpdateInfo> {
   return await invoke<UpdateInfo>("check_update");
 }
 
-/** Download the installer and launch it (the app will exit). */
-export async function runUpdate(url: string): Promise<void> {
-  await invoke("run_update", { url });
+/** How far the new version's download has got. */
+export interface UpdateProgress {
+  downloaded: number;
+  /** null when the server does not say how big it is. */
+  total: number | null;
+}
+
+/** Download the installer — reporting how far it has got — and launch it
+ *  (the app will exit). */
+export async function runUpdate(url: string, onProgress?: (p: UpdateProgress) => void): Promise<void> {
+  const onProgressCh = new Channel<UpdateProgress>();
+  onProgressCh.onmessage = (p) => onProgress?.(p);
+  await invoke("run_update", { url, onProgress: onProgressCh });
+}
+
+/** The words for an update's download so far: "42%", or the megabytes when
+ *  the size is not known. */
+export function updateProgressText(p: UpdateProgress | null): string {
+  if (!p) return "";
+  if (p.total && p.total > 0) return `${Math.min(100, Math.floor((p.downloaded / p.total) * 100))}%`;
+  return `${(p.downloaded / 1e6).toFixed(1)} MB`;
 }
 
 export interface GenStats {

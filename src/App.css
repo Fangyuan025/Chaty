@@ -2708,11 +2708,32 @@ body.resizing-x {
 }
 .about-actions .data-btn {
   min-width: 140px;
+  font-variant-numeric: tabular-nums;
 }
 .about-status {
   font-size: 12.5px;
   color: var(--text-dim);
   margin-top: 10px;
+}
+.about-status.about-error {
+  color: var(--danger);
+  max-width: 360px;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+/* The new version's download, under the buttons. */
+.about-progress {
+  width: 220px;
+  height: 3px;
+  margin-top: 12px;
+  border-radius: var(--r-full);
+  background: var(--border);
+  overflow: hidden;
+}
+.about-progress > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s linear;
 }
 .data-btn.accent {
   color: var(--on-accent);
@@ -5216,6 +5237,10 @@ body:has(.live-overlay) .win-btn.close:hover {
   color: var(--on-accent);
   background: var(--accent);
   font-weight: 600;
+  /* The percentage counts up in place: digits of one width, and room for
+     "100%" from the start, so the banner does not twitch as it grows. */
+  font-variant-numeric: tabular-nums;
+  min-width: 8.5em;
 }
 .update-btn.primary:hover:not(:disabled) {
   filter: brightness(1.08);

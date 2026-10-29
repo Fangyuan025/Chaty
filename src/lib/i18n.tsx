@@ -599,6 +599,7 @@ export const T = {
   updateNow: { zh: "立即更新", en: "Update now", pt: "Atualizar agora" },
   updateLater: { zh: "稍后", en: "Later", pt: "Mais tarde" },
   updateDownloading: { zh: "下载中…", en: "Downloading…", pt: "Baixando…" },
+  updateDownloadingAt: { zh: "下载中 {x}", en: "Downloading {x}", pt: "Baixando {x}" },
   // context usage
   stopTitle: { zh: "停止生成", en: "Stop", pt: "Parar" },
   sendTitle: { zh: "发送", en: "Send", pt: "Enviar" },

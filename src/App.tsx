@@ -21,6 +21,7 @@ import { LiveMode } from "./components/LiveMode";
 import { ModelInfoPanel } from "./components/ModelInfoPanel";
 import { WindowControls } from "./components/WindowControls";
 import { useI18n, type Lang, type TKey, detectLang } from "./lib/i18n";
+import { startUpdateDownload, useUpdateDownload } from "./lib/updateDownload";
 import { clampRung, effortLabel } from "./lib/effort";
 import { watchContentHeight } from "./lib/autoGrow";
 /** Ceiling for the chat composer, matching `.input-row textarea` max-height. */
@@ -105,7 +106,7 @@ import {
   renameConversation,
   setConversationPinned,
   replaceMessages,
-  runUpdate,
+  updateProgressText,
   searchConversations,
   exportTextFile,
   exportHtmlFile,
@@ -583,7 +584,14 @@ export default function App() {
   const [notice, setNotice] = useState<{ kind: "warn" | "error"; text: string } | null>(null);
   const noticeTimer = useRef<number | null>(null);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
-  const [updating, setUpdating] = useState(false);
+  const updateDl = useUpdateDownload();
+  const updating = updateDl.running;
+  const updateProgress = updateDl.progress;
+  // A download that stopped says why, wherever it was started from.
+  useEffect(() => {
+    if (updateDl.error) showLoadError(updateDl.error);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [updateDl.error]);
   const [webEnabled, setWebEnabled] = useState(false);
   const [ragEnabled, setRagEnabled] = useState(false);
   const [showKb, setShowKb] = useState(false);
@@ -1544,13 +1552,7 @@ export default function App() {
 
   async function applyUpdate() {
     if (!update?.url || updating) return;
-    setUpdating(true);
-    try {
-      await runUpdate(update.url); // downloads + launches installer, then app exits
-    } catch (e) {
-      setUpdating(false);
-      showLoadError(e);
-    }
+    await startUpdateDownload(update.url); // downloads + launches installer, then app exits
   }
 
   async function refreshModels() {
@@ -4209,7 +4211,11 @@ export default function App() {
         <div className="update-banner">
           <span className="update-text">{t("updateAvailable", { v: update.latest })}</span>
           <button className="update-btn primary" onClick={applyUpdate} disabled={updating}>
-            {updating ? t("updateDownloading") : t("updateNow")}
+            {updating
+              ? updateProgress
+                ? t("updateDownloadingAt", { x: updateProgressText(updateProgress) })
+                : t("updateDownloading")
+              : t("updateNow")}
           </button>
           <button
             className="update-btn"

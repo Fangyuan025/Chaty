@@ -1,6 +1,7 @@
 import { cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LANGS, useI18n } from "../lib/i18n";
+import { startUpdateDownload, useUpdateDownload } from "../lib/updateDownload";
 import { useExitTransition } from "../lib/useExit";
 import { Icon } from "./Icon";
 import {
@@ -10,7 +11,7 @@ import {
   openDataDir,
   clearAllConversations,
   checkUpdate,
-  runUpdate,
+  updateProgressText,
   dataStats,
   listModels,
   ragStatus,
@@ -545,6 +546,11 @@ export function SettingsPanel({
   const [presetName, setPresetName] = useState("");
   const [upd, setUpd] = useState<UpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
+  // The update's download — the same one the banner shows.
+  const updateDl = useUpdateDownload();
+  const updating = updateDl.running;
+  const updProgress = updateDl.progress;
+  const updError = updateDl.error;
   const set = <K extends keyof GenSettings>(key: K, v: GenSettings[K]) =>
     onChange({ ...value, [key]: v });
 
@@ -2668,9 +2674,14 @@ export function SettingsPanel({
                   <button
                     type="button"
                     className="data-btn accent"
-                    onClick={() => void runUpdate(upd.url!).catch(console.error)}
+                    disabled={updating}
+                    onClick={() => void startUpdateDownload(upd.url!)}
                   >
-                    {t("aboutUpdateNow")}
+                    {updating
+                      ? updProgress
+                        ? t("updateDownloadingAt", { x: updateProgressText(updProgress) })
+                        : t("updateDownloading")
+                      : t("aboutUpdateNow")}
                   </button>
                 )}
               </div>
@@ -2681,6 +2692,13 @@ export function SettingsPanel({
                     : t("aboutUpToDate")}
                 </div>
               )}
+              {updating && updProgress?.total ? (
+                <div className="about-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100}
+                  aria-valuenow={Math.floor((updProgress.downloaded / updProgress.total) * 100)}>
+                  <div style={{ width: `${Math.min(100, (updProgress.downloaded / updProgress.total) * 100)}%` }} />
+                </div>
+              ) : null}
+              {updError && <div className="about-status about-error">{updError}</div>}
               <div className="about-links">
                 <button type="button" onClick={() => void openExternal("https://chaty.ca").catch(console.error)}>
                   chaty.ca

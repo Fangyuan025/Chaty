@@ -638,6 +638,7 @@ const RICH_README = [
 /** `?sources=web` / `?sources=kb`: the last answer of the showcase chat cites
  *  web pages / knowledge-base passages, to look at the sources under it. */
 const DEMO_SOURCES = new URLSearchParams(window.location.search).get("sources");
+const DEMO_UPDATE = new URLSearchParams(window.location.search).get("update") === "1";
 /** A generation told to stop (cancel_generation) stops streaming. */
 let mockGenStop = false;
 /** Background jobs in the preview, stopped and cleared for real. */
@@ -1031,7 +1032,19 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "get_gpu_usage":
       return { usedMb: 22300, totalMb: 40200 };
     case "check_update":
-      return { available: false, current: "1.5.0", latest: "1.5.0" };
+      // ?update=1: a newer version, to see the banner and its download.
+      return DEMO_UPDATE
+        ? { available: true, current: "2.3.8", latest: "2.3.9", url: "https://example.invalid/Chaty_2.3.9_aarch64.dmg" }
+        : { available: false, current: "1.5.0", latest: "1.5.0" };
+    // The download, told in steps (it never finishes: the app would exit).
+    case "run_update": {
+      const ch = (args as { onProgress?: { onmessage?: (ev: unknown) => void } } | undefined)?.onProgress;
+      const total = 92_400_000;
+      for (let i = 0; i <= 5; i++) {
+        setTimeout(() => ch?.onmessage?.({ downloaded: i * 7_760_000, total }), 120 * i);
+      }
+      return new Promise(() => {});
+    }
 
     // ---- conversations ----
     case "list_conversations":
