@@ -504,8 +504,15 @@ function RuntimesPane() {
     runtimesInfo().then(setInfo).catch(() => {});
     // An automatic update finishing while the page is open.
     let off: (() => void) | null = null;
-    void listen("runtime-updated", () => void runtimesInfo().then(setInfo).catch(() => {})).then((u) => (off = u));
-    return () => off?.();
+    let gone = false;
+    void listen("runtime-updated", () => void runtimesInfo().then(setInfo).catch(() => {})).then((u) => {
+      if (gone) u();
+      else off = u;
+    });
+    return () => {
+      gone = true;
+      off?.();
+    };
   }, []);
 
   const check = () => {

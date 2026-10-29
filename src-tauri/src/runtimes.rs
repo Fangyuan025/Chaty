@@ -189,6 +189,13 @@ fn now() -> u64 {
 /// The engine binary to start: the pack in use when there is a sound one,
 /// else None — the bundled engine.
 pub fn active_binary(e: Engine) -> Option<PathBuf> {
+    active_pack(e).map(|(dir, _)| dir.join(e.exe()))
+}
+
+/// The pack in use and its manifest, when it can run here: not set aside,
+/// speaking this app's protocol, and newer than the engine the app came with
+/// (an app update can bring a newer one than the pack chosen before it).
+fn active_pack(e: Engine) -> Option<(PathBuf, Pack)> {
     if !e.swappable() {
         return None;
     }
@@ -199,11 +206,10 @@ pub fn active_binary(e: Engine) -> Option<PathBuf> {
     }
     let dir = pack_dir(e, version);
     let manifest: Pack = serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).ok()?).ok()?;
-    if manifest.protocol != e.protocol() {
+    if manifest.protocol != e.protocol() || manifest.date.as_str() <= e.bundled().date {
         return None;
     }
-    let exe = dir.join(e.exe());
-    exe.is_file().then_some(exe)
+    dir.join(e.exe()).is_file().then_some((dir, manifest))
 }
 
 /// A pack that would not start: set aside for good, and the bundled engine
@@ -260,12 +266,14 @@ pub fn start_with<T>(
     }
 }
 
-/// The newest pack in `index` this app can use for `e` on this platform.
+/// The newest pack in `index` this app can use for `e` on this platform, when
+/// it is newer than the engine the app came with.
 fn best_pack<'a>(index: &'a Index, e: Engine, broken: &BTreeSet<String>) -> Option<&'a Pack> {
     index
         .packs
         .iter()
         .filter(|p| p.engine == e && p.platform == platform() && p.protocol == e.protocol())
+        .filter(|p| p.date.as_str() > e.bundled().date)
         .filter(|p| !broken.contains(&format!("{}:{}", e.id(), p.version)))
         .max_by(|a, b| (a.date.as_str(), a.version.as_str()).cmp(&(b.date.as_str(), b.version.as_str())))
 }
@@ -315,10 +323,7 @@ fn info() -> RuntimesInfo {
         .filter(|e| e.here())
         .map(|e| {
             let b = e.bundled();
-            let pack = active_binary(e).and_then(|_| {
-                let v = state.active.get(e.id())?;
-                serde_json::from_str::<Pack>(&std::fs::read_to_string(pack_dir(e, v).join("manifest.json")).ok()?).ok()
-            });
+            let pack = active_pack(e).map(|(_, p)| p);
             let (active, upstream, rev, date) = match &pack {
                 Some(p) => (p.version.clone(), p.upstream.clone(), p.rev.clone(), p.date.clone()),
                 None => ("bundled".to_string(), b.upstream.to_string(), b.rev.to_string(), b.date.to_string()),
@@ -658,6 +663,9 @@ mod tests {
         assert_eq!(best_pack(&index, Engine::Sd, &broken).unwrap().version, "2026.10.01");
         assert_eq!(newer_needs_app(&index, Engine::Sd, "2026-10-20T00:00:00Z").as_deref(), Some("2.3.8"));
         assert!(best_pack(&index, Engine::Mlx, &none).is_none());
+        // Nothing older than the engine the app came with.
+        let old = Index { packs: vec![pack(Engine::Sd, "2020.01.01", "1", "2020-01-01T00:00:00Z")] };
+        assert!(best_pack(&old, Engine::Sd, &none).is_none());
     }
 
     /// A signature over the exact bytes, by the right key, and nothing else.

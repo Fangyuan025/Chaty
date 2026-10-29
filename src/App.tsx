@@ -827,10 +827,17 @@ export default function App() {
   useEffect(() => {
     const names: Record<string, string> = { sd: "stable-diffusion.cpp", audio: "audio.cpp", mlx: "MLX", llama: "llama.cpp" };
     let off: (() => void) | undefined;
+    let gone = false;
     void listen<{ engine: string }>("runtime-updated", (e) =>
       showNotice("info", t("rtUpdatedToast", { x: names[e.payload.engine] ?? e.payload.engine })),
-    ).then((u) => (off = u));
-    return () => off?.();
+    ).then((u) => {
+      if (gone) u();
+      else off = u;
+    });
+    return () => {
+      gone = true;
+      off?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
