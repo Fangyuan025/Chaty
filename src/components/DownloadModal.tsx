@@ -17,10 +17,14 @@ import {
   imageModelProbe,
   musicModelProbe,
   modelFolderFor,
+  openExternal,
   DOWNLOAD_CANCELLED,
   type HfModelHit,
   type HfModelDetail,
+  getHardwareInfo,
+  type HardwareInfo,
 } from "../lib/ipc";
+import { classifyCatalogueFit, estimateStoreMemory } from "../lib/storeMemory";
 import { hfErrorText } from "../lib/hfError";
 import { ReadmeView } from "./ReadmeView";
 
@@ -86,9 +90,8 @@ export function DownloadModal({
   const [query, setQuery] = useState("");
   const [format, setFormat] = useState<"gguf" | "mlx">("gguf");
   const [sort, setSort] = useState<"trending" | "downloads" | "likes" | "updated">("trending");
-  /** "image" narrows the store to text-to-image models, "music" to
-   *  text-to-music ones. */
-  const [task, setTask] = useState<"all" | "image" | "music">("all");
+  /** Text output includes chat/coding and vision-language models. */
+  const [task, setTask] = useState<"all" | "text" | "image" | "music">("all");
   const [hits, setHits] = useState<HfModelHit[]>([]);
   const [listLoading, setListLoading] = useState(false);
   /** Why the list could not be fetched, when nothing could be shown instead. */
@@ -100,6 +103,18 @@ export function DownloadModal({
   const [detail, setDetail] = useState<HfModelDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [quantIdx, setQuantIdx] = useState(0);
+  // The Vulkan GPU selected by the backend, NOT the machine's installed RAM.
+  // If the IPC fails, don't invent a GPU-fit verdict.
+  const [hardware, setHardware] = useState<HardwareInfo | null>(null);
+  const [hardwareChecked, setHardwareChecked] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void getHardwareInfo()
+      .then((info) => { if (live) setHardware(info); })
+      .catch(() => { /* unknown budget is safer than a green fit indicator */ })
+      .finally(() => { if (live) setHardwareChecked(true); });
+    return () => { live = false; };
+  }, []);
   // -- download state --
   const [active, setActive] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
@@ -110,7 +125,7 @@ export function DownloadModal({
   const seq = useRef(0);
 
   const runSearch = useCallback(
-    async (q: string, f: "gguf" | "mlx", s: typeof sort, k: "all" | "image" | "music") => {
+    async (q: string, f: "gguf" | "mlx", s: typeof sort, k: "all" | "text" | "image" | "music") => {
       const my = ++seq.current;
       setListLoading(true);
       setError("");
@@ -321,7 +336,27 @@ export function DownloadModal({
       (detail?.format === "gguf" && detail.mmproj ? detail.mmprojSize : 0) +
       (detail?.image ? (detail.companions ?? []).reduce((a, c) => a + c.size, 0) : detail?.music ? (quant.extra ?? 0) : 0)
     : 0;
-  const fitsRam = detail ? needBytes * 1.15 < detail.totalRamMb * 1024 * 1024 : false;
+  // A missing hardware snapshot is genuinely unknown; do not infer
+  // "CPU-only" from installed RAM when the GPU query failed.
+  const memory = quant && hardware
+    ? estimateStoreMemory(
+        quant.size,
+        needBytes,
+        hardware.gpu?.vramMb,
+        hardware.ramMb,
+        hardware.gpuBackend,
+        hardware.gpu?.kind,
+        hardware.gpu?.dedicatedVramMb,
+      )
+    : null;
+  // One plain-language hardware hint, not a diagnostics panel.
+  const fitStatus = hardwareChecked
+    ? classifyCatalogueFit(memory, {
+        image: !!detail?.image,
+        music: !!detail?.music,
+        mlx: detail?.format === "mlx",
+      })
+    : "unknown";
   const pct = progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : 0;
 
   return (
@@ -363,16 +398,17 @@ export function DownloadModal({
                 onChange={(v) => setFormat(v)}
                 options={[
                   { value: "gguf" as const, label: "GGUF" },
-                  ...(IS_MACOS ? [{ value: "mlx" as const, label: "MLX" }] : []),
+                  ...(IS_MACOS && task !== "music" ? [{ value: "mlx" as const, label: "MLX" }] : []),
                 ]}
               />
               <Select
                 value={task}
                 disabled={active}
                 ariaLabel={t("storeTask")}
-                onChange={(v) => setTask(v)}
+                onChange={(v) => { setTask(v); if (v === "music") setFormat("gguf"); }}
                 options={[
                   { value: "all" as const, label: t("storeTaskAll") },
+                  { value: "text" as const, label: t("storeTaskText") },
                   { value: "image" as const, label: t("storeTaskImage") },
                   { value: "music" as const, label: t("storeTaskMusic") },
                 ]}
@@ -473,7 +509,22 @@ export function DownloadModal({
               <div className="store-empty">{t("storePickModel")}</div>
             ) : (
               <>
-                <div className="store-detail-title">{detail.id.split("/").pop()}</div>
+                <div className="store-detail-heading">
+                  <div className="store-detail-title">{detail.id.split("/").pop()}</div>
+                  <button
+                    type="button"
+                    className="store-hf-link"
+                    title={t("storeOpenHf")}
+                    aria-label={t("storeOpenHf")}
+                    onClick={() => {
+                      void openExternal(`https://huggingface.co/${detail.repo || detail.id}`).catch((e) =>
+                        setError(String(e)),
+                      );
+                    }}
+                  >
+                    <Icon name="external-link" size={16} />
+                  </button>
+                </div>
                 <div className="store-detail-author">
                   <OrgAvatar author={detail.id.split("/")[0]} size={15} /> {detail.id.split("/")[0]}
                 </div>
@@ -534,17 +585,37 @@ export function DownloadModal({
                       </span>
                     </div>
                   )}
-                  <div className={`store-fit ${fitsRam && !detail.unsupported ? "ok" : "warn"}`}>
+                  <div
+                    className={`store-fit ${!detail.unsupported &&
+                      (fitStatus === "gpu" || fitStatus === "ram" || fitStatus === "cpuOnly") ? "ok" : "warn"}`}
+                    title={t("storeFitCaveat")}
+                  >
                     {detail.format === "mlx" && !IS_MACOS
                       ? t("storeMlxMacOnly")
                       : detail.unsupported
-                      ? detail.unsupported
-                      : (fitsRam ? t("storeFitsRam") : t("storeOverRam")) +
-                        (detail.format === "gguf" && detail.mmproj ? ` · ${t("storeVisionIncluded")}` : "") +
-                        (detail.image
-                          ? ` · ${detail.format === "mlx" || (detail.companions?.length ?? 0) > 0 ? t("storeImageIncluded") : t("storeImageManual")}`
-                          : "") +
-                        (detail.music && (quant?.extra ?? 0) > 0 ? ` · ${t("storeMusicIncluded")}` : "")}
+                        ? detail.unsupported
+                        : !hardwareChecked
+                          ? t("storeFitChecking")
+                          : (fitStatus === "gpu"
+                              ? t("storeFitGpu")
+                              : fitStatus === "mixed"
+                                ? t("storeFitMixed")
+                                : fitStatus === "cpuMode"
+                                  ? t("storeFitCpuMode")
+                                  : fitStatus === "cpuOnly"
+                                    ? t("storeFitCpuOnly")
+                                    : fitStatus === "ram"
+                                      ? t("storeFitRam")
+                                      : fitStatus === "large"
+                                        ? t("storeFitLarge")
+                                        : t("storeFitUnknown")) +
+                            // What comes with it — and, for an image model with
+                            // no known companions, that they are to be added.
+                            (detail.format === "gguf" && detail.mmproj ? ` · ${t("storeVisionIncluded")}` : "") +
+                            (detail.image
+                              ? ` · ${detail.format === "mlx" || (detail.companions?.length ?? 0) > 0 ? t("storeImageIncluded") : t("storeImageManual")}`
+                              : "") +
+                            (detail.music && (quant?.extra ?? 0) > 0 ? ` · ${t("storeMusicIncluded")}` : "")}
                   </div>
                 </div>
 

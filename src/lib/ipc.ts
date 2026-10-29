@@ -646,7 +646,12 @@ export async function imageHistoryClear(deleteFiles: boolean): Promise<void> {
 
 export interface GpuInfo {
   name: string;
+  /** Vulkan runtime budget on Linux, not physical VRAM capacity. */
   vramMb: number;
+  /** Physical dedicated VRAM in MiB, when known. */
+  dedicatedVramMb?: number;
+  /** Vulkan device type; currently reported on Linux. */
+  kind?: "discrete" | "integrated" | "virtual" | "other";
 }
 
 export interface HardwareInfo {
@@ -1458,8 +1463,8 @@ export async function hfSearch(
   query: string,
   format: "gguf" | "mlx",
   sort: "trending" | "downloads" | "likes" | "updated",
-  /** "image" = text-to-image models only, "music" = text-to-music ones. */
-  task: "all" | "image" | "music" = "all",
+  /** "text" = text-output models including Vision; other tasks = studios. */
+  task: "all" | "text" | "image" | "music" = "all",
 ): Promise<HfShelf> {
   return await invoke<HfShelf>("hf_search", {
     query,

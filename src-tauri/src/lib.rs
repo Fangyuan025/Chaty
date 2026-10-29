@@ -314,6 +314,10 @@ pub fn run() {
     crate::errlog::install_panic_hook();
     // What is said before the window exists is said in the UI's language.
     crate::agent::load_saved_lang();
+    // Linux: pin the chosen physical Vulkan device before GGML init and
+    // before skillsync or other worker threads start. Respect user overrides.
+    #[cfg(target_os = "linux")]
+    crate::gpu::configure_linux_vulkan_device();
     // Native crashes kill the process before any hook — on macOS, surface
     // the OS crash reports left behind by the previous run.
     #[cfg(target_os = "macos")]

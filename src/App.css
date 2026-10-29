@@ -5052,6 +5052,16 @@ body:has(.live-overlay) .win-btn.close:hover {
   text-align: right;
   word-break: break-word;
 }
+.hw-gpu-name {
+  display: block;
+  font-weight: 500;
+}
+.hw-gpu-detail {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+}
 .hw-v small,
 .hw-accel small {
   color: var(--text-dim);
@@ -8974,12 +8984,40 @@ body,
   padding-left: 16px;
   overflow: hidden;
 }
+.store-detail-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
 .store-detail-title {
   font-size: 19px;
   font-weight: 700;
   letter-spacing: -0.2px;
   word-break: break-all;
+  min-width: 0;
   animation: ctxin 0.12s var(--ease-out) both;
+}
+.store-hf-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+}
+.store-hf-link:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.store-hf-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .store-detail-author {
   display: flex;

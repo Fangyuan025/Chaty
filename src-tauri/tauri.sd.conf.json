@@ -1,6 +1,14 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "externalBin": ["binaries/chaty-sd", "binaries/chaty-audio"]
+    "externalBin": [
+      "binaries/chaty-sd",
+      "binaries/chaty-audio"
+    ],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    }
   }
 }

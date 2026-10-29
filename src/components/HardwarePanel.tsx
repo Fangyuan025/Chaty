@@ -101,7 +101,27 @@ export function HardwarePanel({
             <div className="hw-row">
               <span className="hw-k">{t("hwGpu")}</span>
               <span className="hw-v">
-                {hw.gpu ? `${hw.gpu.name} · ${fmtGbFromMb(hw.gpu.vramMb)}` : t("hwNoGpu")}
+                {hw.gpu ? (
+                  <>
+                    <span className="hw-gpu-name">{hw.gpu.name}</span>
+                    {hw.gpu.kind === "integrated" ? (
+                      <small className="hw-gpu-detail">
+                        {t("hwGpuIntegrated")} · {t("hwGpuShared")}
+                      </small>
+                    ) : hw.gpu.kind === "discrete" ? (
+                      <small className="hw-gpu-detail">
+                        {t("hwGpuDedicated")}
+                        {hw.gpu.dedicatedVramMb ? (
+                          <> · {(hw.gpu.dedicatedVramMb / 1024).toFixed(1)} GiB VRAM</>
+                        ) : null}
+                      </small>
+                    ) : (
+                      <small className="hw-gpu-detail">
+                        {fmtGbFromMb(hw.gpu.vramMb)}
+                      </small>
+                    )}
+                  </>
+                ) : t("hwNoGpu")}
               </span>
             </div>
             {usage && usage.totalMb > 0 && (
