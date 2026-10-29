@@ -15,7 +15,7 @@ use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
+use llama_cpp_2::model::{LlamaChatMessage, LlamaChatTemplate, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 
@@ -35,7 +35,7 @@ fn turn(
         .map(|(r, c)| LlamaChatMessage::new(r.clone(), c.clone()))
         .collect::<std::result::Result<_, _>>()?;
     let prompt = model.apply_chat_template(&template, &chat, true)?;
-    let tokens = model.str_to_token(&prompt, AddBos::Always)?;
+    let tokens = model.vocab().tokenize(prompt.as_bytes(), true, true);
     let n_prompt = tokens.len();
 
     let mut prefix = 0usize;
@@ -83,12 +83,12 @@ fn turn(
     loop {
         let token = sampler.sample(ctx, idx);
         sampler.accept(token);
-        if model.is_eog_token(token) {
+        if model.vocab().is_eog(token) {
             break;
         }
-        let piece = model
-            .token_to_piece(token, &mut decoder, false, None)
-            .unwrap_or_default();
+        let bytes = model.vocab().token_to_piece(token, false, None);
+        let mut piece = String::with_capacity(decoder.max_utf8_buffer_length(bytes.len()).unwrap_or(bytes.len() * 3 + 4));
+        let _ = decoder.decode_to_string(&bytes, &mut piece, false);
         print!("{piece}");
         std::io::stdout().flush().ok();
         out.push_str(&piece);

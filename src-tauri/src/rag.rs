@@ -21,7 +21,7 @@ use std::sync::Mutex;
 use llama_cpp_2::context::params::{LlamaContextParams, LlamaPoolingType};
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaModel};
+use llama_cpp_2::model::LlamaModel;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -202,13 +202,7 @@ fn embedder_start(model_path: &PathBuf, layers: Option<i32>) -> Result<Embedder,
                         let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
                         let mut failed: Option<String> = None;
                         for text in &texts {
-                            let tokens = match model.str_to_token(text, AddBos::Always) {
-                                Ok(t) => t,
-                                Err(e) => {
-                                    failed = Some(format!("tokenize failed: {e}"));
-                                    break;
-                                }
-                            };
+                            let tokens = crate::inference::llama::tokenize(&model, text, true);
                             let take = tokens.len().min(limit);
                             let mut batch = LlamaBatch::new(take.max(1), 1);
                             let mut add_err = None;
@@ -2103,7 +2097,7 @@ mod tests {
         let model = LlamaModel::load_from_file(backend, &model_path, &params).expect("vocab");
         let mut lens: Vec<usize> = chunks
             .iter()
-            .map(|c| model.str_to_token(c, AddBos::Always).map(|t| t.len()).unwrap_or(0))
+            .map(|c| crate::inference::llama::tokenize(&model, c, true).len())
             .collect();
         let first_batch_max = lens.iter().take(8).cloned().max().unwrap_or(0);
         lens.sort_unstable();

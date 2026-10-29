@@ -24,7 +24,7 @@ use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
+use llama_cpp_2::model::{LlamaChatMessage, LlamaChatTemplate, LlamaModel};
 use llama_cpp_2::mtmd::{
     mtmd_default_marker, MtmdBitmap, MtmdContext, MtmdContextParams, MtmdInputText,
 };
@@ -1220,7 +1220,7 @@ fn worker(
     // Vision encoder (mmproj), when the model ships one. A failure here is
     // non-fatal: the model still chats, images are just unavailable.
     let mut mtmd_err: Option<String> = None;
-    let mtmd = mmproj.as_deref().and_then(|p| {
+    let mut mtmd = mmproj.as_deref().and_then(|p| {
         let params = MtmdContextParams {
             use_gpu,
             n_threads,
@@ -1287,7 +1287,7 @@ fn worker(
                         &model,
                         &mut dec,
                         &mut cached,
-                        mtmd.as_ref(),
+                        mtmd.as_mut(),
                         &mut media_cache,
                         n_ctx,
                         &req,
@@ -1325,7 +1325,7 @@ fn worker(
                         &model,
                         &mut dec,
                         &mut cached,
-                        mtmd.as_ref(),
+                        mtmd.as_mut(),
                         &mut media_cache,
                         n_ctx,
                         &req,
@@ -1493,7 +1493,7 @@ fn run_turn(
     model: &LlamaModel,
     dec: &mut Decoder,
     cached: &mut Vec<LlamaToken>,
-    mtmd: Option<&MtmdContext>,
+    mtmd: Option<&mut MtmdContext>,
     media_cache: &mut Option<MediaCache>,
     n_ctx: u32,
     req: &GenRequest,
@@ -1562,7 +1562,7 @@ fn run_turn(
         // evaluates only the tail. The text regime adds a BOS the media tail
         // never will, so it counts as a position but not as prompt text.
         if media_cache.is_none() && !cached.is_empty() {
-            let skip = usize::from(cached[0] == model.token_bos());
+            let skip = usize::from(cached[0] == model.vocab().bos());
             let held: Vec<u8> = cached[skip..].iter().flat_map(|&t| piece_bytes(model, t)).collect();
             if let Ok(held) = String::from_utf8(held) {
                 if !held.is_empty() && prompt.len() > held.len() && prompt.starts_with(held.as_str()) {
@@ -1817,7 +1817,7 @@ fn run_turn(
                 t
             }
         };
-        if model.is_eog_token(token) || turn_end.contains(&token) {
+        if model.vocab().is_eog(token) || turn_end.contains(&token) {
             break;
         }
         if dump_gen {
@@ -2048,7 +2048,7 @@ fn run_turn(
 #[allow(clippy::too_many_arguments)]
 fn prefill_media(
     ctx: &mut LlamaContext,
-    mtmd: &MtmdContext,
+    mtmd: &mut MtmdContext,
     media_cache: &mut Option<MediaCache>,
     prompt: &str,
     prompt_body: &str,
@@ -3058,7 +3058,7 @@ fn special_text(model: &LlamaModel, token: LlamaToken) -> String {
 fn turn_end_tokens(model: &LlamaModel) -> Vec<LlamaToken> {
     static CACHE: OnceLock<Mutex<std::collections::HashMap<u64, Vec<i32>>>> = OnceLock::new();
     let src = model.meta_val_str("tokenizer.chat_template").unwrap_or_default();
-    let key = super::jinja::key_of(&src, &special_text(model, model.token_bos()), "turn-end");
+    let key = super::jinja::key_of(&src, &special_text(model, model.vocab().bos()), "turn-end");
     let cache = CACHE.get_or_init(Default::default);
     if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
         return hit.into_iter().map(LlamaToken).collect();
@@ -3074,11 +3074,11 @@ fn turn_end_tokens(model: &LlamaModel) -> Vec<LlamaToken> {
         .ok()
         .and_then(|text| {
             let after = &text[text.find(MARK)? + MARK.len()..];
-            let first = *model.str_to_token(after, AddBos::Never).ok()?.first()?;
+            let first = *tokenize(model, after, false).first()?;
             let piece = special_text(model, first);
-            let single = model.str_to_token(&piece, AddBos::Never).ok()? == vec![first];
+            let single = tokenize(model, &piece, false) == vec![first];
             let tag = piece.len() >= 3 && piece.starts_with('<') && piece.ends_with('>');
-            (single && tag && !model.is_eog_token(first)).then_some(vec![first.0])
+            (single && tag && !model.vocab().is_eog(first)).then_some(vec![first.0])
         })
         .unwrap_or_default();
     if !found.is_empty() {
@@ -3094,9 +3094,16 @@ fn turn_end_tokens(model: &LlamaModel) -> Vec<LlamaToken> {
 /// its own BOS has one already, and llama.cpp adding another in front of it
 /// (it does whenever the vocabulary asks for automatic BOS) doubles it.
 fn tokenize_prompt(model: &LlamaModel, prompt: &str) -> Result<Vec<LlamaToken>> {
-    let bos = special_text(model, model.token_bos());
-    let add = if !bos.is_empty() && prompt.starts_with(&bos) { AddBos::Never } else { AddBos::Always };
-    model.str_to_token(prompt, add).context(trf!("分词失败", "tokenization failed"))
+    let bos = special_text(model, model.vocab().bos());
+    let add = bos.is_empty() || !prompt.starts_with(&bos);
+    Ok(tokenize(model, prompt, add))
+}
+
+/// Text to tokens the way the engine has always read text: special tokens
+/// written in it are parsed as the tokens they name, and BOS is put in front
+/// when asked (and when the vocabulary wants one).
+pub(crate) fn tokenize(model: &LlamaModel, text: &str, add_bos: bool) -> Vec<LlamaToken> {
+    model.vocab().tokenize(text.as_bytes(), add_bos, true)
 }
 
 /// `text` with every `<think>…</think>` block (and the blank lines after it)
@@ -3124,8 +3131,8 @@ fn jinja_template(model: &LlamaModel) -> Option<std::sync::Arc<super::jinja::Com
         return None;
     }
     let src = model.meta_val_str("tokenizer.chat_template").ok().filter(|t| !t.trim().is_empty())?;
-    let bos = special_text(model, model.token_bos());
-    let eos = special_text(model, model.token_eos());
+    let bos = special_text(model, model.vocab().bos());
+    let eos = special_text(model, model.vocab().eos());
     let key = super::jinja::key_of(&src, &bos, &eos);
     if let Some(d) = super::jinja::decided(key) {
         return d;
@@ -3396,13 +3403,7 @@ fn role_str(role: &Role) -> &'static str {
 /// End-of-generation tokens never reach here — the sampling loop breaks on
 /// `is_eog_token` first.
 fn piece_bytes(model: &LlamaModel, token: LlamaToken) -> Vec<u8> {
-    match model.token_to_piece_bytes(token, 32, true, None) {
-        Ok(b) => b,
-        Err(llama_cpp_2::TokenToStringError::InsufficientBufferSpace(i)) => model
-            .token_to_piece_bytes(token, (-i) as usize, true, None)
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    }
+    model.vocab().token_to_piece(token, true, None)
 }
 
 /// How many of `new`'s tokens spell exactly the bytes `held` spells, ending on
@@ -5327,7 +5328,7 @@ mod vision_e2e {
             .with_n_threads_batch(nt);
         let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
-        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params)
+        let mut mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params)
             .expect("mtmd init");
         let img_path = std::env::temp_dir().join(format!("chaty-vision-after-text-{}.png", std::process::id()));
         image::RgbImage::from_pixel(224, 224, image::Rgb([214, 30, 30]))
@@ -5361,7 +5362,7 @@ mod vision_e2e {
             };
             let sink = Stats { buf: RefCell::new(String::new()), reused: Default::default(), prompt: Default::default() };
             let cancel = AtomicBool::new(false);
-            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel)
+            run_turn(&model, &mut ctx, &mut cached, Some(&mut mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel)
                 .expect("run_turn");
             (sink.buf.into_inner(), sink.reused.get(), sink.prompt.get())
         };
@@ -5422,7 +5423,7 @@ mod vision_e2e {
             n_threads: nt,
             ..MtmdContextParams::default()
         };
-        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params)
+        let mut mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params)
             .expect("mtmd init");
         assert!(mtmd.support_vision(), "mmproj must provide a vision encoder");
 
@@ -5432,7 +5433,7 @@ mod vision_e2e {
             .save(&img_path)
             .expect("write test image");
 
-        let ask = |messages: Vec<ChatMessage>,
+        let mut ask = |messages: Vec<ChatMessage>,
                    ctx: &mut Decoder,
                    cached: &mut Vec<LlamaToken>,
                    media_cache: &mut Option<MediaCache>|
@@ -5448,7 +5449,7 @@ mod vision_e2e {
             };
             let sink = Collector { buf: RefCell::new(String::new()) };
             let cancel = AtomicBool::new(false);
-            run_turn(&model, ctx, cached, Some(&mtmd), media_cache, n_ctx, &req, &sink, &cancel)
+            run_turn(&model, ctx, cached, Some(&mut mtmd), media_cache, n_ctx, &req, &sink, &cancel)
                 .expect("run_turn");
             let out = sink.buf.into_inner();
             eprintln!("--- reply: {out}");
@@ -5741,7 +5742,7 @@ mod browser_task_probe {
         let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
-        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
         // The engine decodes through a `Decoder`; without a head that is just
         // the context.
         let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
@@ -5773,7 +5774,7 @@ mod browser_task_probe {
         for step in 0..16 {
             let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.3, max_tokens: 1024, think: Some(false), ..Default::default() } };
             let sink = Collector { buf: RefCell::new(String::new()) };
-            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            run_turn(&model, &mut ctx, &mut cached, Some(&mut mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
             let raw = sink.buf.into_inner();
             let call = parse_tool_call(&raw);
             eprintln!("--- step {step}: {}", call.as_ref().map(|(n,a)| format!("{n} {a}")).unwrap_or_else(|| format!("(no tool) {}", raw.trim().chars().take(80).collect::<String>())));
@@ -5882,7 +5883,7 @@ mod browser_tasks_e2e {
     fn drive(
         model: &LlamaModel,
         backend: &LlamaBackend,
-        mtmd: &MtmdContext,
+        mtmd: &mut MtmdContext,
         n_ctx: u32,
         nt: i32,
         rt: &tokio::runtime::Runtime,
@@ -6141,7 +6142,7 @@ addEventListener('scroll',function(){if(window.innerHeight+window.scrollY>=docum
         let nt = crate::gpu::cpu_worker_threads() as i32;
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
-        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         let mut reports: Vec<TaskReport> = Vec::new();
@@ -6155,7 +6156,7 @@ addEventListener('scroll',function(){if(window.innerHeight+window.scrollY>=docum
             };
             let task = format!("打开 {shop2},进入商品 Nimbus Pro,把它加入购物车,前往结账,\
                 姓名填 Alice、邮箱填 alice@example.com、收货地址填 1 Rue Nimbus,然后下单(Place order)。");
-            reports.push(drive(&model, backend, &mtmd, n_ctx, nt, &rt, "shop-checkout", SYS, &task, 16, true, &done));
+            reports.push(drive(&model, backend, &mut mtmd, n_ctx, nt, &rt, "shop-checkout", SYS, &task, 16, true, &done));
         }
 
         // ── Task 2: login with correct creds → read the revealed secret token ──
@@ -6166,7 +6167,7 @@ addEventListener('scroll',function(){if(window.innerHeight+window.scrollY>=docum
             };
             let task = format!("打开 {login},用用户名 admin、密码 nimbus2026 登录,\
                 然后告诉我登录后页面显示的 API 密钥是什么。");
-            reports.push(drive(&model, backend, &mtmd, n_ctx, nt, &rt, "login-secret", SYS, &task, 12, false, &done));
+            reports.push(drive(&model, backend, &mut mtmd, n_ctx, nt, &rt, "login-secret", SYS, &task, 12, false, &done));
         }
 
         // ── Task 3: lazy-load feed — scroll repeatedly until item-30 appears ──
@@ -6177,7 +6178,7 @@ addEventListener('scroll',function(){if(window.innerHeight+window.scrollY>=docum
             };
             let task = format!("打开 {feed},这是一个懒加载的信息流,一直向下滚动直到出现第 30 条 (item-30),\
                 然后告诉我第 30 条的文字内容。");
-            reports.push(drive(&model, backend, &mtmd, n_ctx, nt, &rt, "lazy-feed", SYS, &task, 14, true, &done));
+            reports.push(drive(&model, backend, &mut mtmd, n_ctx, nt, &rt, "lazy-feed", SYS, &task, 14, true, &done));
         }
 
         // ── Task 4: research a page — should full-page screenshot FIRST to
@@ -6186,14 +6187,14 @@ addEventListener('scroll',function(){if(window.innerHeight+window.scrollY>=docum
         {
             let done = || false; // content question — judged by final text + tool path
             let task = format!("打开 {pricing},这是 Nimbus 的定价页面,告诉我 Enterprise(企业版)套餐每月多少钱。");
-            reports.push(drive(&model, backend, &mtmd, n_ctx, nt, &rt, "locate-price", SYS, &task, 8, false, &done));
+            reports.push(drive(&model, backend, &mut mtmd, n_ctx, nt, &rt, "locate-price", SYS, &task, 8, false, &done));
         }
 
         // ── Task 5: pure research — should pick web_fetch, NOT the browser ──
         let research_online = {
             let done = || false; // no DOM; judged by final text + tool choice
             let task = "查一下 https://example.com 这个网页的主标题(H1)是什么,一句话告诉我。".to_string();
-            let r = drive(&model, backend, &mtmd, n_ctx, nt, &rt, "research", SYS, &task, 6, false, &done);
+            let r = drive(&model, backend, &mut mtmd, n_ctx, nt, &rt, "research", SYS, &task, 6, false, &done);
             // If the fetch itself failed (offline/sandbox), don't hard-fail the suite.
             let online = !r.final_text.is_empty()
                 && (r.final_text.to_lowercase().contains("example domain")
@@ -6511,7 +6512,7 @@ mod media_prefill_e2e {
             .with_n_threads_batch(nt);
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
-        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
         // The engine decodes through a `Decoder`; without a head that is just
         // the context.
         let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
@@ -6529,7 +6530,7 @@ mod media_prefill_e2e {
             params: GenParams { temperature: 0.0, max_tokens: 12, think: Some(false), ..Default::default() },
         };
         let sink = AllEvents { evs: RefCell::new(Vec::new()) };
-        run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel)
+        run_turn(&model, &mut ctx, &mut cached, Some(&mut mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel)
             .expect("run_turn media");
         let evs = sink.evs.into_inner();
         let prefills: Vec<(u32, u32)> = evs
@@ -6647,7 +6648,7 @@ pw.addEventListener("input",render);render();
         let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
-        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
         // The engine decodes through a `Decoder`; without a head that is just
         // the context.
         let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
@@ -6681,7 +6682,7 @@ pw.addEventListener("input",render);render();
         for step in 0..20 {
             let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.3, max_tokens: 700, think: Some(false), ..Default::default() } };
             let sink = Collector { buf: RefCell::new(String::new()) };
-            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            run_turn(&model, &mut ctx, &mut cached, Some(&mut mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
             let raw = sink.buf.into_inner();
             let Some((name, args)) = parse_tool_call(&raw) else {
                 eprintln!("--- step {step}: (no tool) {}", strip_think(&raw).chars().take(80).collect::<String>());
@@ -6805,7 +6806,7 @@ document.getElementById("submit").addEventListener("click",function(){
         let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
-        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
         // The engine decodes through a `Decoder`; without a head that is just
         // the context.
         let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
@@ -6841,7 +6842,7 @@ document.getElementById("submit").addEventListener("click",function(){
         for step in 0..18 {
             let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.3, max_tokens: 900, think: Some(false), ..Default::default() } };
             let sink = Collector { buf: RefCell::new(String::new()) };
-            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            run_turn(&model, &mut ctx, &mut cached, Some(&mut mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
             let raw = sink.buf.into_inner();
             let Some((name, args)) = parse_tool_call(&raw) else {
                 eprintln!("--- step {step}: FINAL: {}", strip_think(&raw).chars().take(100).collect::<String>());
@@ -7000,7 +7001,7 @@ mod visual_verify_e2e {
         let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
-        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
         // The engine decodes through a `Decoder`; without a head that is just
         // the context.
         let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
@@ -7024,7 +7025,7 @@ mod visual_verify_e2e {
         for step in 0..10 {
             let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.3, max_tokens: 500, think: Some(false), ..Default::default() } };
             let sink = Collector { buf: RefCell::new(String::new()) };
-            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            run_turn(&model, &mut ctx, &mut cached, Some(&mut mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
             let raw = sink.buf.into_inner();
             let Some((name, args)) = parse_tool_call(&raw) else {
                 final_text = strip_think(&raw);
@@ -7158,7 +7159,7 @@ document.getElementById("check").addEventListener("click",function(){
         let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx)).with_n_threads(nt).with_n_threads_batch(nt);
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
-        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
         // The engine decodes through a `Decoder`; without a head that is just
         // the context.
         let mut ctx = Decoder::Plain(model.new_context(backend, ctx_params).expect("ctx"));
@@ -7183,7 +7184,7 @@ document.getElementById("check").addEventListener("click",function(){
         for step in 0..14 {
             let req = GenRequest { messages: messages.clone(), params: GenParams { temperature: 0.2, max_tokens: 600, think: Some(false), ..Default::default() } };
             let sink = Collector { buf: RefCell::new(String::new()) };
-            run_turn(&model, &mut ctx, &mut cached, Some(&mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
+            run_turn(&model, &mut ctx, &mut cached, Some(&mut mtmd), &mut media_cache, n_ctx, &req, &sink, &cancel).expect("run_turn");
             let raw = sink.buf.into_inner();
             let Some((name, args)) = parse_tool_call(&raw) else {
                 eprintln!("--- step {step}: FINAL: {}", strip_think(&raw).chars().take(90).collect::<String>());
@@ -7293,7 +7294,7 @@ mod real_scenarios_e2e {
 
     #[allow(clippy::too_many_arguments)]
     fn drive(
-        model: &LlamaModel, backend: &LlamaBackend, mtmd: &MtmdContext, n_ctx: u32, nt: i32,
+        model: &LlamaModel, backend: &LlamaBackend, mtmd: &mut MtmdContext, n_ctx: u32, nt: i32,
         rt: &tokio::runtime::Runtime, name: &'static str, sys: &str, task: &str, max_steps: usize,
         done: &dyn Fn() -> bool,
     ) -> Report {
@@ -7378,13 +7379,13 @@ mod real_scenarios_e2e {
         let nt = crate::gpu::cpu_worker_threads() as i32;
         let mtmd_params = MtmdContextParams { use_gpu: true, n_threads: nt, ..MtmdContextParams::default() };
         let mmproj = find_mmproj(&model_path).expect("mmproj");
-        let mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
+        let mut mtmd = MtmdContext::init_from_file(&mmproj.to_string_lossy(), &model, &mtmd_params).expect("mtmd");
 
         // Reuse the PRODUCTION system prompt so the probe measures what ships.
         let sys = system_prompt_for_probe();
 
         let mut reports: Vec<Report> = Vec::new();
-        macro_rules! run { ($n:expr,$t:expr,$m:expr,$d:expr) => { reports.push(drive(&model,backend,&mtmd,n_ctx,nt,&rt,$n,&sys,$t,$m,&$d)); }; }
+        macro_rules! run { ($n:expr,$t:expr,$m:expr,$d:expr) => { reports.push(drive(&model,backend,&mut mtmd,n_ctx,nt,&rt,$n,&sys,$t,$m,&$d)); }; }
 
         // 1. PURE READ — should use web_fetch, NOT the browser.
         run!("read-wikipedia", "查一下英文维基百科 Coffee 词条,咖啡因(caffeine)属于哪一类生物碱/化合物?一句话回答。", 6, || false);
@@ -7677,9 +7678,7 @@ mod decode_width_cost {
             .expect("context");
 
         let all_logits = std::env::var("WIDTH_LAST_ONLY").as_deref() != Ok("1");
-        let filler = model
-            .str_to_token("The quick brown fox jumps over the lazy dog. ", AddBos::Always)
-            .expect("tokenize");
+        let filler = tokenize(&model, "The quick brown fox jumps over the lazy dog. ", true);
         let mut batch = LlamaBatch::new(512, 1);
 
         // Wake the GPU up before anything is recorded. Measured cold, the
