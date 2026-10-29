@@ -24,7 +24,7 @@ on open models running entirely on your own Mac or PC. No account, no cloud, no 
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-code-light.jpg" />
-  <img src="docs/screenshots/shot-code.jpg" width="900" alt="Chaty's Code mode: a task plan, tool steps, a real diff and the files the turn changed" />
+  <img src="docs/screenshots/shot-code.jpg" width="900" alt="Chaty's Code mode: the agent saying what it is doing between folded tool calls, one group opened on a real diff, and the files the turn changed" />
 </picture>
 
 <sub>Code mode: the agent found the upstream fix, patched the parser, added a test and ran the suite — on a model running on the same laptop.</sub>

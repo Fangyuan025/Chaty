@@ -24,7 +24,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-code-zh-light.jpg" />
-  <img src="docs/screenshots/shot-code-zh.jpg" width="900" alt="Chaty 编程模式：任务计划、工具步骤、真实差异，以及这一轮改过的文件" />
+  <img src="docs/screenshots/shot-code-zh.jpg" width="900" alt="Chaty 编程模式：智能体边做边说，工具调用折叠成一行，展开一组就是真实差异，以及这一轮改过的文件" />
 </picture>
 
 <sub>编程模式：智能体找到上游的修复，改了解析器，补上测试，跑完整套用例——用的是同一台笔记本上跑着的模型。</sub>

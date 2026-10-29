@@ -24,7 +24,7 @@ com modelos abertos rodando inteiramente no seu Mac ou PC. Sem conta, sem nuvem,
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/shot-code-light.jpg" />
-  <img src="docs/screenshots/shot-code.jpg" width="900" alt="Modo Code do Chaty: um plano de tarefas, passos de ferramentas, um diff real e os arquivos que a rodada alterou" />
+  <img src="docs/screenshots/shot-code.jpg" width="900" alt="Modo Code do Chaty: o agente diz o que está fazendo entre as chamadas de ferramenta recolhidas, um grupo aberto num diff real e os arquivos que a rodada alterou" />
 </picture>
 
 <sub>Modo Code: o agente encontrou a correção no projeto original, corrigiu o parser, adicionou um teste e rodou a suíte — com um modelo rodando no mesmo notebook.</sub>
