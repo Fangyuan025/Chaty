@@ -62,7 +62,7 @@ A chat that shows its work. Reasoning streams into a panel you can fold away; on
 
 ## Code
 
-A coding agent for the model you can actually run. Switch to **Code**, open a folder, describe the task. The agent reads, searches, edits and runs commands in your project — each step shown as it happens, each edit as a real diff — and ends the turn with a card listing every file it changed, each one undoable.
+A coding agent for the model you can actually run. Switch to **Code**, open a folder, describe the task. The agent reads, searches, edits and runs commands in your project and tells you what it is doing as it goes — its tool calls fold into a line each, opened to show every step and every edit as a real diff — and ends the turn with a card listing every file it changed, each one undoable.
 
 - **You stay in charge** — a live task plan and five permission modes: by default routine work goes ahead and anything hard to take back — deleting, pushing, publishing — waits for you; or have it plan first, ask before every change, or let it all run. File access is confined to the workspace; on macOS its shell runs in the system sandbox.
 - **Commands that keep running** — dev servers and watchers move to the background; a command that asks a question (`[y/N]`, `Password:`, a REPL, a scaffolder's menu) gets a terminal to answer in.

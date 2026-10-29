@@ -62,7 +62,7 @@ Um chat que mostra o raciocínio. O pensamento aparece num painel que você pode
 
 ## Code
 
-Um agente de programação para o modelo que você consegue rodar. Mude para **Code**, abra uma pasta e descreva a tarefa. O agente lê, busca, edita e roda comandos no seu projeto — cada passo aparece na hora, cada edição como um diff real — e fecha a rodada com um cartão listando cada arquivo alterado, cada um reversível.
+Um agente de programação para o modelo que você consegue rodar. Mude para **Code**, abra uma pasta e descreva a tarefa. O agente lê, busca, edita e roda comandos no seu projeto e conta o que está fazendo enquanto trabalha — as chamadas de ferramenta se recolhem numa linha cada, que se abre para mostrar cada passo e cada edição como um diff real — e fecha a rodada com um cartão listando cada arquivo alterado, cada um reversível.
 
 - **Você no controle** — um plano de tarefas ao vivo e cinco modos de permissão: por padrão o trabalho de rotina segue e o que é difícil de desfazer — apagar, enviar, publicar — espera por você; ou peça um plano antes, aprovação a cada mudança, ou libere tudo. O acesso a arquivos fica restrito ao workspace; no macOS o shell roda na sandbox do sistema.
 - **Comandos que continuam rodando** — servidores de desenvolvimento e watchers vão para segundo plano; um comando que faz uma pergunta (`[y/N]`, `Password:`, um REPL, o menu de um scaffolder) ganha um terminal para responder.
