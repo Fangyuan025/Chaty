@@ -162,6 +162,7 @@
 | K2 Horizon · MoVA | 思考档位与 `<ifm\|arg_key>` 式工具调用，两个引擎都支持 |
 | GLM-4.5 · 4.6 · 4.7 | `<tool_call>名字<arg_key>…` 式工具调用 |
 | Llama 3 · Muse-Glimmer | 视觉，以及 Muse-Glimmer 的四档思考 |
+| LFM3 · LFM3-VL | 思考可开可关；LFM3-VL 能看图 |
 | MiniCPM5 · LFM 2.5 | 各自家族的工具调用格式 |
 | [Chaty · Qwen3.5-4B 设计版](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF) | 我们自己微调的单文件网页设计模型——首次启动一键安装 |
 

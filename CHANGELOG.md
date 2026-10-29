@@ -16,6 +16,21 @@
   draws 1024×1024 in about 66 seconds on an M4 Pro. FLUX.2 [dev] is not set
   up yet; MLX builds of klein are still not run.
 
+### LFM3, and llama.cpp v0.8.0
+
+- **LFM3 and LFM3-VL load** (issue #27). llama.cpp moves to b11960
+  (v0.8.0), which has Liquid AI's new architecture — and K2 Horizon too, so
+  Chaty's own backport of it is gone. LFM3-VL reads pictures; both write
+  their tool calls in the XML Chaty already speaks.
+- **LFM3 reads on from its last turn.** It is a hybrid model, whose state
+  cannot rewind, so a turn that came back to its template differently from
+  how the model read it cost the whole conversation every time: its template
+  writes the empty thought as `<think></think>`, not the way Chaty wrote it
+  into stored turns, the opened thought had a newline added on the way out,
+  and earlier reasoning was dropped unless the template was asked to keep it
+  (`preserve_thinking`, which it now is wherever a template offers it).
+  0% of each prompt reused before; 90–99% now, thinking on or off.
+
 ### Errors in the language you picked
 
 - **Every error is in the UI's language.** The backend used to learn the
@@ -40,6 +55,18 @@ Thanks to @davidecelentano (#24):
   under `XDG_DATA_HOME` when it is set.
 - **Music plays in the AppImage**, which now carries the media framework
   WebKitGTK needs, and a track loads in full before it plays there.
+- **The AppImage opens on Fedora** instead of a gray window (issue #26): it
+  no longer carries its own libwayland-client, which a newer Mesa on the
+  host cannot work with — the AppImage excludelist says as much — and every
+  release now checks the image starts before it is published.
+
+### Updates
+
+- **The download of a new version shows how far it has got**, on the update
+  button and in Settings → About alike, and says why if it stops. It goes
+  straight to disk and is checked for its full size before it is opened.
+- **Linux updates itself**: the new AppImage takes the old one's place. It
+  used to be offered the Windows installer.
 - **The store** has a Text generation filter (vision models included), a
   button to open a model on Hugging Face, and a fit hint that knows the GPU:
   on a dedicated card, whether the weights fit it or will share with RAM; on

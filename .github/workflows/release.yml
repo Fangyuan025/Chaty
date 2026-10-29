@@ -322,6 +322,12 @@ jobs:
             made for — four steps at CFG 1 for the distilled ones. klein 4B draws
             1024×1024 in about a minute on an M4 Pro.
 
+            ## LFM3
+
+            llama.cpp moves to v0.8.0: LFM3 and LFM3-VL load, read pictures and call
+            tools, and as hybrid models they now reuse 90–99% of each prompt from the
+            last turn instead of reading the whole conversation again.
+
             ## Errors in the language you picked
 
             Every message from the backend is now in the language the UI is in, from the
@@ -333,7 +339,9 @@ jobs:
 
             Thanks to @davidecelentano: on Linux Chaty picks one GPU through Vulkan —
             discrete over integrated — and sizes offload by what the driver says is free;
-            music plays in the AppImage. The store gains a Text generation filter, links
+            music plays in the AppImage, which also opens on Fedora instead of a gray
+            window and updates itself in place. The download of an update shows how far
+            it has got. The store gains a Text generation filter, links
             to Hugging Face, and a fit hint that knows whether a model fits the GPU, or,
             on a Mac, fits in memory with everything it downloads.
 

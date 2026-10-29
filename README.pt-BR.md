@@ -162,6 +162,7 @@ Qualquer GGUF roda no llama.cpp (Metal, ou Vulkan em NVIDIA, AMD e Intel); no Ap
 | K2 Horizon · MoVA | Seus níveis de esforço e chamadas `<ifm\|arg_key>`, nos dois motores |
 | GLM-4.5 · 4.6 · 4.7 | Suas chamadas `<tool_call>nome<arg_key>…` |
 | Llama 3 · Muse-Glimmer | Visão, e os quatro níveis de esforço do Muse-Glimmer |
+| LFM3 · LFM3-VL | Raciocínio ligado ou desligado; visão no LFM3-VL |
 | MiniCPM5 · LFM 2.5 | O formato de chamada de cada família |
 | [Chaty · Qwen3.5-4B design](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF) | Nosso próprio ajuste fino para páginas web de um arquivo — um clique na primeira execução |
 
