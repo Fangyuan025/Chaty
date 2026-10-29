@@ -596,19 +596,26 @@ export function DownloadModal({
                         ? detail.unsupported
                         : !hardwareChecked
                           ? t("storeFitChecking")
-                          : fitStatus === "gpu"
-                            ? t("storeFitGpu")
-                            : fitStatus === "mixed"
-                              ? t("storeFitMixed")
-                              : fitStatus === "cpuMode"
-                                ? t("storeFitCpuMode")
-                                : fitStatus === "cpuOnly"
-                                  ? t("storeFitCpuOnly")
-                                  : fitStatus === "ram"
-                                    ? t("storeFitRam")
-                                    : fitStatus === "large"
-                                      ? t("storeFitLarge")
-                                      : t("storeFitUnknown")}
+                          : (fitStatus === "gpu"
+                              ? t("storeFitGpu")
+                              : fitStatus === "mixed"
+                                ? t("storeFitMixed")
+                                : fitStatus === "cpuMode"
+                                  ? t("storeFitCpuMode")
+                                  : fitStatus === "cpuOnly"
+                                    ? t("storeFitCpuOnly")
+                                    : fitStatus === "ram"
+                                      ? t("storeFitRam")
+                                      : fitStatus === "large"
+                                        ? t("storeFitLarge")
+                                        : t("storeFitUnknown")) +
+                            // What comes with it — and, for an image model with
+                            // no known companions, that they are to be added.
+                            (detail.format === "gguf" && detail.mmproj ? ` · ${t("storeVisionIncluded")}` : "") +
+                            (detail.image
+                              ? ` · ${detail.format === "mlx" || (detail.companions?.length ?? 0) > 0 ? t("storeImageIncluded") : t("storeImageManual")}`
+                              : "") +
+                            (detail.music && (quant?.extra ?? 0) > 0 ? ` · ${t("storeMusicIncluded")}` : "")}
                   </div>
                 </div>
 

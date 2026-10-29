@@ -26,6 +26,10 @@ export interface StoreMemoryEstimate {
 }
 
 const MIB = 1024 * 1024;
+/** What loads into system RAM is everything downloaded — the encoder, the
+ *  VAE, the projector are resident beside the weights — plus room for the
+ *  context and the compute buffers: the margin the store has always used. */
+const RAM_HEADROOM = 1.15;
 const positive = (n?: number | null): n is number =>
   n != null && Number.isFinite(n) && n > 0;
 
@@ -110,9 +114,12 @@ export function classifyCatalogueFit(
   const ram = estimate.ramBytes;
   const gpu = estimate.gpuFitLimitBytes;
 
+  // One pool for everything: on unified memory and on the CPU, the extras
+  // count, and so does the headroom.
+  const resident = estimate.downloadBytes * RAM_HEADROOM;
   if (estimate.unifiedMemory || kind.mlx) {
     if (ram === null) return "unknown";
-    return model <= ram ? "ram" : "large";
+    return resident <= ram ? "ram" : "large";
   }
 
   if (gpu !== null) {
@@ -135,5 +142,5 @@ export function classifyCatalogueFit(
   }
 
   if (ram === null) return "unknown";
-  return model <= ram ? "cpuOnly" : "large";
+  return resident <= ram ? "cpuOnly" : "large";
 }

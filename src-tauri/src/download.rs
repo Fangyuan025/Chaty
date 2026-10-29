@@ -911,7 +911,7 @@ fn hf_generates_text(item: &serde_json::Value) -> bool {
         .filter_map(|v| v.as_str().map(str::to_string)).collect();
     let declared_task = (!pipeline.is_empty()).then_some(pipeline);
     if hf_is_image_model(id, &tag_strings, declared_task, false)
-        || hf_is_music_model(id, &tag_strings, declared_task) {
+        || hf_is_music_model(id, &tag_strings) {
         return false;
     }
     // A declared primary pipeline takes priority over incidental tags. This
@@ -1003,26 +1003,12 @@ fn hf_is_image_model(id: &str, tags: &[String], pipeline: Option<&str>, mflux: b
     is_image_repo(tags, pipeline)
 }
 
-/// Music in Chaty means an audio.cpp GGUF from a supported engine family;
-/// generic speech synthesis and unrelated audio models are not compatible.
-/// A family name alone is weak, so require an audio.cpp tag or GGUF evidence
-/// and reject explicitly non-music pipelines. The detail view applies the
-/// same rule rather than silently relabelling an untagged result as chat.
-fn hf_is_music_model(id: &str, tags: &[String], pipeline: Option<&str>) -> bool {
-    if crate::musicgen::family::guess_by_repo(id).is_none() {
-        return false;
-    }
-    if is_audiocpp_repo(tags) {
-        return true;
-    }
-    let lower = id.to_ascii_lowercase();
-    let has_gguf = lower.contains("gguf") || tags.iter().any(|t| t == "gguf");
-    if !has_gguf {
-        return false;
-    }
-    matches!(pipeline, None | Some(
-        "text-to-audio" | "text-to-music" | "audio-generation" | "audio-to-audio"
-    ))
+/// Music in Chaty means an audio.cpp package of a family the engine runs. The
+/// `audio.cpp` tag is the evidence the files are in the engine's layout: a
+/// GGUF of the same family converted some other way (an LM stage on its own,
+/// a llama.cpp conversion) downloads and then does not load.
+fn hf_is_music_model(id: &str, tags: &[String]) -> bool {
+    is_audiocpp_repo(tags) && crate::musicgen::family::guess_by_repo(id).is_some()
 }
 
 /// All media shelves use the same classification as the all-model listing.
@@ -1070,7 +1056,7 @@ fn hits_from(items: &serde_json::Value, mflux: bool, music: bool) -> Vec<HfModel
             .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
         let pipeline = it.get("pipeline_tag").and_then(|v| v.as_str());
-        let is_music = hf_is_music_model(&id, &tags, pipeline);
+        let is_music = hf_is_music_model(&id, &tags);
         if music && !is_music { continue; }
         let (author, name) = id.split_once('/').unwrap_or(("", id.as_str()));
         out.push(HfModelHit {
@@ -1241,7 +1227,7 @@ pub async fn hf_model_detail(
     // An audio.cpp repo of a music family: its GGUFs are packages of parts,
     // offered file by file (see music_quants).
     let family_repo = subdir.as_deref().unwrap_or(&repo);
-    let music_fam = if subdir.is_some() || hf_is_music_model(family_repo, &tags, pipeline.as_deref()) {
+    let music_fam = if subdir.is_some() || hf_is_music_model(family_repo, &tags) {
         crate::musicgen::family::guess_by_repo(family_repo)
     } else {
         None
@@ -2212,12 +2198,12 @@ mod tests {
         assert!(!images.iter().any(|h| h.id == "models/Vision-GGUF"));
         assert!(!images.iter().any(|h| h.id == "models/SDXL-Reranker-GGUF"));
         let music = filter_media_hits(list.clone(), Some("music"));
-        for id in ["agosh/Yue2-3B-GGUF", "models/Yue2-3B-GGUF",
-                   "models/ACE-Step1.5-GGUF", "models/Stable-Audio-3-GGUF"] {
-            assert!(music.iter().any(|h| h.id == id), "missing: {id}");
-        }
+        assert!(music.iter().any(|h| h.id == "agosh/Yue2-3B-GGUF"), "missing the audio.cpp package");
+        // A family's name on a GGUF the audio.cpp converter did not make is
+        // not something the engine can load.
         for id in ["models/Kokoro-TTS-GGUF", "models/Unrelated-Music-GGUF",
-                   "models/Yue2-Language-GGUF"] {
+                   "models/Yue2-Language-GGUF", "models/Yue2-3B-GGUF",
+                   "models/ACE-Step1.5-GGUF", "models/Stable-Audio-3-GGUF"] {
             assert!(!music.iter().any(|h| h.id == id), "false positive: {id}");
         }
         assert_eq!(filter_media_hits(list.clone(), None).len(), list.len());
@@ -2232,15 +2218,14 @@ mod tests {
         assert!(!hf_is_image_model("test/Qwen-Vision-GGUF", &tags(&["gguf", "vision"]), Some("image-text-to-text"), false));
         assert!(!hf_is_image_model("test/Generic-LLM-GGUF", &tags(&["gguf"]), None, false));
         assert!(hf_is_image_model("test/MLX-Diffusion", &tags(&["mflux"]), None, true));
-        assert!(hf_is_music_model("example/Yue2-3B-GGUF", &tags(&["gguf"]), None));
-        assert!(hf_is_music_model("example/Yue2-3B-GGUF", &tags(&["audio.cpp"]), Some("text-generation")));
-        assert!(hf_is_music_model("example/MiDashengLM-Gen-GGUF", &tags(&["gguf"]), Some("audio-generation")));
-        assert!(!hf_is_music_model("example/Yue2-LM-GGUF", &tags(&["gguf"]), Some("text-generation")));
-        assert!(!hf_is_music_model("example/Yue2-Speech-GGUF", &tags(&["gguf"]), Some("text-to-speech")));
-        assert!(!hf_is_music_model("example/Kokoro-GGUF", &tags(&["audio.cpp"]), Some("text-to-audio")));
-        assert!(!hf_is_music_model("example/Yue2-3B", &[], None));
+        // The audio.cpp tag is what says the engine reads it; a family name
+        // on another conversion is not enough.
+        assert!(hf_is_music_model("example/Yue2-3B-GGUF", &tags(&["audio.cpp", "gguf"])));
+        assert!(!hf_is_music_model("example/Yue2-3B-GGUF", &tags(&["gguf"])));
+        assert!(!hf_is_music_model("example/Kokoro-GGUF", &tags(&["audio.cpp"])));
+        assert!(!hf_is_music_model("example/Yue2-3B", &[]));
         let items = serde_json::json!([
-            {"id":"example/Yue2-3B-GGUF", "tags":["gguf"]},
+            {"id":"example/Yue2-3B-GGUF", "tags":["gguf", "audio.cpp"]},
             {"id":"example/Non-AudioCpp-GGUF", "tags":["gguf","text-to-audio"]}
         ]);
         let selected = hits_from(&items, false, true);
@@ -2266,9 +2251,9 @@ mod tests {
         ]);
 
         let music_list = serde_json::json!([
-            {"id":"example/Yue2-3B-GGUF", "tags":["gguf"]},
+            {"id":"example/Yue2-3B-GGUF", "tags":["gguf", "audio.cpp"]},
             {"id":"example/Kokoro-TTS-GGUF", "tags":["gguf"], "pipeline_tag":"text-to-speech"},
-            {"id":"example/ACE-Step1.5-GGUF", "tags":["gguf"], "pipeline_tag":"text-to-audio"}
+            {"id":"example/ACE-Step1.5-GGUF", "tags":["gguf", "audio.cpp"], "pipeline_tag":"text-to-audio"}
         ]);
         let port = serve_once("200 OK", music_list.to_string().into_bytes());
         let base = format!("http://127.0.0.1:{port}");

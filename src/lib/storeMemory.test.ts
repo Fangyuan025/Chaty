@@ -87,8 +87,8 @@ describe("catalogue suitability across model families and memory topologies", ()
     }
   });
 
-  it("never changes a fit verdict when only download extras change", () => {
-    const variants: Kind[] = [chat, image, music, mlx];
+  it("on a dedicated GPU, never changes a fit verdict when only download extras change", () => {
+    const variants: Kind[] = [chat, image, music];
     let comparisons = 0;
     for (const kind of variants) {
       for (const size of [1, 4, 7, 8, 12, 24, 42]) {
@@ -101,7 +101,20 @@ describe("catalogue suitability across model families and memory topologies", ()
         }
       }
     }
-    expect(comparisons).toBe(168);
+    expect(comparisons).toBe(126);
+  });
+
+  it("on unified memory and the CPU, the companions count, with headroom", () => {
+    // A 12 GB image denoiser on a 16 GB Mac fits alone; with its 5 GB
+    // encoder beside it, it does not.
+    const alone = estimateStoreMemory(12 * GB, 12 * GB, 12000, 16384, "Metal");
+    const withEncoder = estimateStoreMemory(12 * GB, 17.5 * GB, 12000, 16384, "Metal");
+    expect(classifyCatalogueFit(alone, image)).toBe("ram");
+    expect(classifyCatalogueFit(withEncoder, image)).toBe("large");
+    // A model the size of the RAM leaves nothing for its context.
+    expect(classifyCatalogueFit(estimateStoreMemory(15.5 * GiB, 15.5 * GiB, 12000, 16384, "Metal"), chat)).toBe("large");
+    expect(classifyCatalogueFit(estimateStoreMemory(14 * GiB, 14 * GiB, null, 16384, "CPU"), chat)).toBe("large");
+    expect(classifyCatalogueFit(estimateStoreMemory(12 * GiB, 12 * GiB, null, 16384, "CPU"), chat)).toBe("cpuOnly");
   });
 
   it("never reports unknown when all essential hardware and model sizes are known", () => {
