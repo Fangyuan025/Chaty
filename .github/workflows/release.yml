@@ -258,7 +258,7 @@ jobs:
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             libasound2-dev libssl-dev ninja-build vulkan-sdk libfuse2 \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad gstreamer1.0-gl
+            gstreamer1.0-plugins-bad gstreamer1.0-gl xvfb
       - run: npm ci
       - name: Build image engine sidecar (chaty-sd, Vulkan)
         run: ./scripts/build-sd-sidecar.sh vulkan
@@ -277,6 +277,10 @@ jobs:
           # dependencies from standard paths only and died on exactly this
           # ('Could not find dependency', round six's verbose forensics).
           LD_LIBRARY_PATH: ${{ github.workspace }}/src-tauri/target/release
+      - name: Use the host's libwayland-client (issue #26)
+        run: ./scripts/appimage-host-wayland.sh
+      - name: Check the AppImage starts
+        run: ./scripts/appimage-check.sh src-tauri/target/release/bundle/appimage/*.AppImage
       - name: Forensics when linuxdeploy dies silently
         if: failure()
         run: |
