@@ -312,6 +312,8 @@ fn tray_template_icon() -> Option<tauri::image::Image<'static>> {
 pub fn run() {
     // Panics land in the user-attachable error log from the first instant.
     crate::errlog::install_panic_hook();
+    // What is said before the window exists is said in the UI's language.
+    crate::agent::load_saved_lang();
     // Native crashes kill the process before any hook — on macOS, surface
     // the OS crash reports left behind by the previous run.
     #[cfg(target_os = "macos")]

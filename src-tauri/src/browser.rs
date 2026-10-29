@@ -701,9 +701,15 @@ pub fn shutdown() {
 
 /// Does an error mean the CDP session/browser is gone (user closed the window,
 /// Chrome quit)? Such commands are retried against a freshly relaunched browser.
+/// Our own timeouts are worded in the user's language: both wordings count.
 fn is_dead_session(e: &str) -> bool {
     let e = e.to_lowercase();
-    e.contains("session with given id not found")
+    e.contains("cdp 响应超时")
+        || e.contains("cdp 读取超时")
+        || e.contains("cdp 读取失败")
+        || e.contains("cdp 初始化超时")
+        || e.contains("cdp 发送失败")
+        || e.contains("session with given id not found")
         || e.contains("connection closed")
         || e.contains("cdp read")
         || e.contains("cdp send")
@@ -987,7 +993,7 @@ impl BrowserSession {
     /// cleared reports the failure instead of looping.
     fn launch_once(headless: bool, track_pid: bool, may_recover: bool) -> Result<Self, String> {
         let exe = chrome_path().ok_or(
-            "未找到 Chrome/Chromium,请先安装 Chrome。(No Chrome/Chromium found — install Google Chrome.)",
+            trf!("未找到 Chrome/Chromium,请先安装 Chrome", "No Chrome/Chromium found — install Google Chrome."),
         )?;
         // The interactive browser (track_pid) uses a PERSISTENT profile so the
         // user's logins survive across runs; one-shot captures use a throwaway.
@@ -1057,7 +1063,7 @@ impl BrowserSession {
             Some(ws) => (ws, None),
             None => {
                 let mut child = spawn_one(&mut cmd)
-                    .map_err(|e| format!("启动 Chrome 失败 (failed to launch Chrome): {e}"))?;
+                    .map_err(|e| trf!("启动 Chrome 失败:{e}", "failed to launch Chrome: {e}"))?;
                 if track_pid {
                     CHROME_PID.store(child.id(), std::sync::atomic::Ordering::SeqCst);
                 }
@@ -1109,7 +1115,7 @@ impl BrowserSession {
                 // Connect to the browser-level endpoint, open a page target, attach.
                 let url = format!("ws://127.0.0.1:{port}{ws_path}");
                 let (ws, _) = connect(&url)
-                    .map_err(|e| format!("连接 CDP 失败 (failed to connect CDP): {e}"))?;
+                    .map_err(|e| trf!("连接 CDP 失败:{e}", "failed to connect CDP: {e}"))?;
                 (ws, Some(child))
             }
         };
@@ -1131,7 +1137,7 @@ impl BrowserSession {
             if let Some(mut c) = child {
                 let _ = c.kill();
             }
-            return Err("CDP 会话附加失败 (failed to attach CDP session)".into());
+            return Err(trf!("CDP 会话附加失败", "failed to attach CDP session").into());
         }
 
         let mut s = BrowserSession {
@@ -1236,7 +1242,7 @@ impl BrowserSession {
         }
         self.ws
             .send(Message::Text(msg.to_string().into()))
-            .map_err(|e| format!("CDP send failed: {e}"))?;
+            .map_err(|e| trf!("CDP 发送失败:{e}", "CDP send failed: {e}"))?;
         self.pump_until(id)
     }
 
@@ -1245,7 +1251,7 @@ impl BrowserSession {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if Instant::now() > deadline {
-                return Err("CDP 响应超时 (CDP response timed out)".into());
+                return Err(trf!("CDP 响应超时", "CDP response timed out").into());
             }
             let frame = match self.ws.read() {
                 Ok(Message::Text(t)) => t.to_string(),
@@ -1253,9 +1259,9 @@ impl BrowserSession {
                 Ok(Message::Close(_)) => return Err(trf!("CDP 连接已关闭", "the CDP connection closed")),
                 Ok(Message::Frame(_)) => continue,
                 Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    return Err("CDP 读取超时 (CDP read timed out)".into());
+                    return Err(trf!("CDP 读取超时", "CDP read timed out").into());
                 }
-                Err(e) => return Err(format!("CDP read failed: {e}")),
+                Err(e) => return Err(trf!("CDP 读取失败:{e}", "CDP read failed: {e}")),
             };
             let v: Value = match serde_json::from_str(&frame) {
                 Ok(v) => v,
@@ -1263,7 +1269,7 @@ impl BrowserSession {
             };
             if v.get("id").and_then(|x| x.as_i64()) == Some(id) {
                 if let Some(err) = v.get("error") {
-                    return Err(format!("CDP error: {}", err["message"].as_str().unwrap_or("unknown")));
+                    return Err(trf!("CDP 报错:{}", "CDP error: {}", err["message"].as_str().unwrap_or("unknown")));
                 }
                 return Ok(v.get("result").cloned().unwrap_or(Value::Null));
             }
@@ -1495,7 +1501,7 @@ impl BrowserSession {
         let r = self.call(Some(&sid), "Page.navigate", json!({"url": url}))?;
         if let Some(err) = r.get("errorText").and_then(|e| e.as_str()) {
             if !err.is_empty() {
-                return Err(format!("导航失败 (navigation failed): {err}"));
+                return Err(trf!("导航失败:{err}", "navigation failed: {err}"));
             }
         }
         let (final_url, title, rich) = self.settle_and_digest()?;
@@ -1844,7 +1850,7 @@ impl BrowserSession {
         let msg = json!({"id": id, "method": method, "params": params, "sessionId": session});
         self.ws
             .send(Message::Text(msg.to_string().into()))
-            .map_err(|e| format!("CDP send failed: {e}"))?;
+            .map_err(|e| trf!("CDP 发送失败:{e}", "CDP send failed: {e}"))?;
         let deadline = Instant::now() + limit;
         set_read_timeout(&self.ws, Duration::from_millis(200));
         let out = loop {
@@ -1860,12 +1866,12 @@ impl BrowserSession {
                 {
                     continue
                 }
-                Err(e) => break Err(format!("CDP read failed: {e}")),
+                Err(e) => break Err(trf!("CDP 读取失败:{e}", "CDP read failed: {e}")),
             };
             let Ok(v) = serde_json::from_str::<Value>(&frame) else { continue };
             if v.get("id").and_then(|x| x.as_i64()) == Some(id) {
                 if let Some(err) = v.get("error") {
-                    break Err(format!("CDP error: {}", err["message"].as_str().unwrap_or("unknown")));
+                    break Err(trf!("CDP 报错:{}", "CDP error: {}", err["message"].as_str().unwrap_or("unknown")));
                 }
                 break Ok(Some(v.get("result").cloned().unwrap_or(Value::Null)));
             }
@@ -1878,7 +1884,7 @@ impl BrowserSession {
     fn eval_result(&mut self, r: Result<Value, String>) -> Result<String, String> {
         let r = r?;
         if let Some(text) = exception_text(&r) {
-            return Err(format!("JS 报错 (JS error): {text}"));
+            return Err(trf!("JS 报错:{text}", "JS error: {text}"));
         }
         let mut result = r["result"].clone();
         if result["subtype"].as_str() == Some("promise") {
@@ -1896,7 +1902,7 @@ impl BrowserSession {
                 }),
             )?;
             if let Some(text) = exception_text(&settled) {
-                return Err(format!("JS 报错 (JS error): {text}"));
+                return Err(trf!("JS 报错:{text}", "JS error: {text}"));
             }
             result = settled["result"].clone();
             if result["value"].as_str() == Some(EVAL_TIMEOUT_MARK) {
@@ -2236,11 +2242,11 @@ impl BrowserSession {
                 "clip": {"x": x, "y": y, "width": w, "height": h, "scale": 1},
             }),
         )?;
-        let b64 = r["data"].as_str().ok_or("截图无数据 (no screenshot data)")?;
+        let b64 = r["data"].as_str().ok_or(trf!("截图无数据", "no screenshot data"))?;
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD
             .decode(b64)
-            .map_err(|e| format!("截图解码失败 (screenshot decode failed): {e}"))
+            .map_err(|e| trf!("截图解码失败:{e}", "screenshot decode failed: {e}"))
     }
 
     /// Snapshot of just the current viewport (no scrolling) — pairs with
@@ -2256,11 +2262,11 @@ impl BrowserSession {
             "Page.captureScreenshot",
             json!({"format": "png", "captureBeyondViewport": beyond_viewport}),
         )?;
-        let b64 = r["data"].as_str().ok_or("截图无数据 (no screenshot data)")?;
+        let b64 = r["data"].as_str().ok_or(trf!("截图无数据", "no screenshot data"))?;
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD
             .decode(b64)
-            .map_err(|e| format!("截图解码失败 (screenshot decode failed): {e}"))
+            .map_err(|e| trf!("截图解码失败:{e}", "screenshot decode failed: {e}"))
     }
 
     /// Scroll the page: to "bottom"/"top", or by `by` pixels (default one
@@ -2311,7 +2317,7 @@ impl BrowserSession {
                 .as_str()
                 .or_else(|| exc["text"].as_str())
                 .unwrap_or("evaluation error");
-            return Err(format!("JS 报错 (JS error): {text}"));
+            return Err(trf!("JS 报错:{text}", "JS error: {text}"));
         }
         Ok(remote_object_to_string(&r["result"]))
     }
@@ -3012,26 +3018,26 @@ fn cdp_call(
         msg["sessionId"] = json!(sid);
     }
     ws.send(Message::Text(msg.to_string().into()))
-        .map_err(|e| format!("CDP send failed: {e}"))?;
+        .map_err(|e| trf!("CDP 发送失败:{e}", "CDP send failed: {e}"))?;
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if Instant::now() > deadline {
-            return Err("CDP setup timed out".into());
+            return Err(trf!("CDP 初始化超时", "CDP setup timed out"));
         }
         match ws.read() {
             Ok(Message::Text(t)) => {
                 if let Ok(v) = serde_json::from_str::<Value>(&t) {
                     if v.get("id").and_then(|x| x.as_i64()) == Some(id) {
                         if let Some(err) = v.get("error") {
-                            return Err(format!("CDP error: {}", err["message"].as_str().unwrap_or("?")));
+                            return Err(trf!("CDP 报错:{}", "CDP error: {}", err["message"].as_str().unwrap_or("?")));
                         }
                         return Ok(v.get("result").cloned().unwrap_or(Value::Null));
                     }
                 }
             }
-            Ok(Message::Close(_)) => return Err("CDP closed during setup".into()),
+            Ok(Message::Close(_)) => return Err(trf!("CDP 在初始化时断开", "CDP closed during setup")),
             Ok(_) => continue,
-            Err(e) => return Err(format!("CDP read failed: {e}")),
+            Err(e) => return Err(trf!("CDP 读取失败:{e}", "CDP read failed: {e}")),
         }
     }
 }
@@ -3158,7 +3164,7 @@ where
     let tx = ensure()?;
     let (reply, rx) = std::sync::mpsc::channel();
     tx.send(build(reply)).map_err(|_| trf!("浏览器已关闭", "the browser is closed"))?;
-    rx.recv().map_err(|_| "浏览器无响应 (browser did not respond)".to_string())?
+    rx.recv().map_err(|_| trf!("浏览器无响应", "browser did not respond").to_string())?
 }
 
 pub fn navigate(url: &str) -> Result<String, String> {

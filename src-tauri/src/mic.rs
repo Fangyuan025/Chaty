@@ -27,7 +27,7 @@ pub fn mic_start() -> Result<u32, String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Err("native capture is only used on macOS".into())
+        Err(trf!("原生录音只在 macOS 上使用", "native capture is only used on macOS"))
     }
 }
 
@@ -53,7 +53,7 @@ pub fn mic_stop() -> Result<MicResult, String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Err("native capture is only used on macOS".into())
+        Err(trf!("原生录音只在 macOS 上使用", "native capture is only used on macOS"))
     }
 }
 
@@ -106,13 +106,13 @@ mod imp {
         // App-level TCC consent first — this is the prompt the user can grant.
         if !crate::voice::request_mic_permission() {
             return Err(
-                "麦克风权限被拒绝，请在 系统设置 → 隐私与安全性 → 麦克风 中允许 Chaty。(Microphone access denied — allow Chaty in System Settings → Privacy & Security → Microphone.)".into(),
+                trf!("麦克风权限被拒绝，请在 系统设置 → 隐私与安全性 → 麦克风 中允许 Chaty", "Microphone access denied — allow Chaty in System Settings → Privacy & Security → Microphone.").into(),
             );
         }
 
         let mut stop_slot = STOP.lock().unwrap();
         if stop_slot.is_some() {
-            return Err("已经在录音了 (already recording)".into());
+            return Err(trf!("已经在录音了", "already recording").into());
         }
 
         let sh = shared().clone();
@@ -152,7 +152,7 @@ mod imp {
                 Ok(rate)
             }
             Ok(Err(e)) => Err(e),
-            Err(_) => Err("录音线程启动失败 (capture thread failed to start)".into()),
+            Err(_) => Err(trf!("录音线程启动失败", "capture thread failed to start").into()),
         }
     }
 
@@ -224,7 +224,7 @@ mod imp {
                 }
             }
         }
-        Err(format!("无法打开麦克风输入流 (failed to open input stream): {last}"))
+        Err(trf!("无法打开麦克风输入流:{last}", "failed to open input stream: {last}"))
     }
 
     /// An input stream on `device` in `config`, feeding mono samples and the
@@ -288,7 +288,7 @@ mod imp {
                 on_err,
                 None,
             ),
-            other => return Err(format!("不支持的采样格式 (unsupported sample format): {other:?}")),
+            other => return Err(trf!("不支持的采样格式:{other:?}", "unsupported sample format: {other:?}")),
         };
         built.map_err(|e| e.to_string())
     }
@@ -326,7 +326,7 @@ mod imp {
         Err(format!(
             "没有可用的麦克风输入设备 (no usable microphone)。已尝试 (tried): {}",
             if tried.is_empty() {
-                "系统未报告任何输入设备 (system reports no input devices)".to_string()
+                trf!("系统未报告任何输入设备", "system reports no input devices").to_string()
             } else {
                 tried.join("; ")
             }
@@ -341,7 +341,7 @@ mod imp {
             .lock()
             .unwrap()
             .take()
-            .ok_or_else(|| "当前没有进行中的录音 (no recording in progress)".to_string())?;
+            .ok_or_else(|| trf!("当前没有进行中的录音", "no recording in progress").to_string())?;
         let _ = control.stop.send(());
         match control.released.recv_timeout(Duration::from_secs(2)) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => Ok(()),

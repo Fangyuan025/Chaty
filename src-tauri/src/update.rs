@@ -130,7 +130,7 @@ pub async fn run_update(app: tauri::AppHandle, url: String) -> Result<(), String
         std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
         std::process::Command::new(&path)
             .spawn()
-            .map_err(|e| format!("无法启动安装程序 (failed to launch installer): {e}"))?;
+            .map_err(|e| trf!("无法启动安装程序:{e}", "failed to launch installer: {e}"))?;
     }
     // macOS: mount the .dmg in Finder; the user drags Chaty to Applications.
     #[cfg(target_os = "macos")]
@@ -140,7 +140,7 @@ pub async fn run_update(app: tauri::AppHandle, url: String) -> Result<(), String
         std::process::Command::new("open")
             .arg(&path)
             .spawn()
-            .map_err(|e| format!("无法打开磁盘映像 (failed to open disk image): {e}"))?;
+            .map_err(|e| trf!("无法打开磁盘映像:{e}", "failed to open disk image: {e}"))?;
     }
     // Give the installer a beat to start, then exit so it can replace the binary.
     std::thread::sleep(std::time::Duration::from_millis(400));

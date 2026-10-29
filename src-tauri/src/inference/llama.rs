@@ -241,7 +241,7 @@ fn llama_backend() -> Result<&'static LlamaBackend> {
     if let Some(b) = LLAMA_BACKEND.get() {
         return Ok(b);
     }
-    let backend = LlamaBackend::init().context("failed to initialize llama.cpp backend")?;
+    let backend = LlamaBackend::init().context(trf!("无法初始化 llama.cpp 引擎", "failed to initialize the llama.cpp backend"))?;
     // Not voided any more: warnings and errors are kept so a refused model
     // can be explained in llama.cpp's own words (see llama_log).
     super::llama_log::install();
@@ -504,13 +504,12 @@ impl LlamaEngine {
             let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
             let margin = 1_500u64 * 1024 * 1024; // ctx + compute buffers + app slack
             if weights.saturating_add(margin) > sys.total_memory() {
-                bail!(
-                    "模型体积约 {:.1} GiB，超过本机内存 {:.1} GiB，无法加载，请换用更小的量化版本。(Model ≈{:.1} GiB exceeds the {:.1} GiB of RAM — use a smaller quantization.)",
-                    gib(weights),
-                    gib(sys.total_memory()),
+                bail!(trf!(
+                    "模型体积约 {:.1} GiB，超过本机内存 {:.1} GiB，无法加载，请换用更小的量化版本。",
+                    "Model ≈{:.1} GiB exceeds the {:.1} GiB of RAM — use a smaller quantization.",
                     gib(weights),
                     gib(sys.total_memory())
-                );
+                ));
             }
         }
 
@@ -603,7 +602,7 @@ impl LlamaEngine {
                         continue;
                     }
                     if is_oom(&msg) {
-                        bail!("加载模型权重时内存不足 (out of memory while loading the model weights)");
+                        bail!(trf!("加载模型权重时内存不足", "out of memory while loading the model weights"));
                     }
                     // llama.cpp's null pointer says nothing, but its log does:
                     // that is the reason, in its own words. The file's header
@@ -622,7 +621,7 @@ impl LlamaEngine {
                             "cannot load the GGUF model {file}: {why}"
                         ));
                     }
-                    return Err(e).with_context(|| format!("failed to load GGUF model: {path}"));
+                    return Err(e).with_context(|| trf!("无法加载 GGUF 模型:{path}", "failed to load the GGUF model: {path}"));
                 }
             };
 
@@ -644,7 +643,7 @@ impl LlamaEngine {
                         init_tx,
                     )
                 })
-                .context("failed to start inference thread")?;
+                .context(trf!("无法启动推理线程", "failed to start the inference thread"))?;
 
             match init_rx.recv() {
                 Ok(Ok(mtmd_err)) => break (model, tx, handle, mtmd_err),
@@ -968,13 +967,13 @@ impl InferenceBackend for LlamaEngine {
             .lock()
             .unwrap()
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("模型已卸载 (model unloaded)"))?;
+            .ok_or_else(|| anyhow::anyhow!(trf!("模型已卸载", "model unloaded")))?;
         let (done, done_rx) = tokio::sync::oneshot::channel();
         tx.send(Job::Generate { req, sink, cancel, done })
-            .map_err(|_| anyhow::anyhow!("推理线程已退出 (inference thread exited)"))?;
+            .map_err(|_| anyhow::anyhow!(trf!("推理线程已退出", "inference thread exited")))?;
         match done_rx.await {
             Ok(result) => result,
-            Err(_) => Err(anyhow::anyhow!("推理线程在生成过程中断开 (inference thread disconnected mid-generation)")),
+            Err(_) => Err(anyhow::anyhow!(trf!("推理线程在生成过程中断开", "inference thread disconnected mid-generation"))),
         }
     }
 
@@ -985,13 +984,13 @@ impl InferenceBackend for LlamaEngine {
             .lock()
             .unwrap()
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("模型已卸载 (model unloaded)"))?;
+            .ok_or_else(|| anyhow::anyhow!(trf!("模型已卸载", "model unloaded")))?;
         let (done, done_rx) = tokio::sync::oneshot::channel();
         tx.send(Job::Collect { req, cancel, done })
-            .map_err(|_| anyhow::anyhow!("推理线程已退出 (inference thread exited)"))?;
+            .map_err(|_| anyhow::anyhow!(trf!("推理线程已退出", "inference thread exited")))?;
         match done_rx.await {
             Ok(result) => result,
-            Err(_) => Err(anyhow::anyhow!("推理线程在生成过程中断开 (inference thread disconnected)")),
+            Err(_) => Err(anyhow::anyhow!(trf!("推理线程在生成过程中断开", "inference thread disconnected"))),
         }
     }
 }
@@ -1085,9 +1084,9 @@ impl<'m> Decoder<'m> {
     /// a hole in what it can guess from.
     fn decode(&mut self, batch: &mut LlamaBatch) -> Result<()> {
         match self {
-            Self::Plain(ctx) => ctx.decode(batch).context("decode failed"),
+            Self::Plain(ctx) => ctx.decode(batch).context(trf!("解码失败", "decode failed")),
             Self::Speculative { spec, head } => {
-                spec.target_context_mut().decode(batch).context("decode failed")?;
+                spec.target_context_mut().decode(batch).context(trf!("解码失败", "decode failed"))?;
                 if !*head {
                     return Ok(());
                 }
@@ -1404,8 +1403,8 @@ fn speculate(
     n_past: i32,
     cached: &[LlamaToken],
 ) -> Result<Option<(Vec<LlamaToken>, usize)>> {
-    let spec = dec.spec_mut().context("no MTP head")?;
-    let drafts = spec.draft(n_past, token, cached).context("MTP draft failed")?;
+    let spec = dec.spec_mut().context(trf!("模型没有 MTP 预测头", "the model has no MTP head"))?;
+    let drafts = spec.draft(n_past, token, cached).context(trf!("MTP 草稿生成失败", "MTP draft failed"))?;
     // Guessing left the guesses in the head's own cache, at the very positions
     // the model is about to be asked about. Take them back out: the head has
     // to re-read those positions as the model saw them, from the model's
@@ -1479,7 +1478,7 @@ fn scratch_decoder<'m>(model: &'m LlamaModel, backend: &LlamaBackend, n_threads:
         .with_n_threads_batch(n_threads);
     let ctx = model
         .new_context(backend, params)
-        .map_err(|e| anyhow::anyhow!("side-generation context: {e:#}"))?;
+        .map_err(|e| anyhow::anyhow!(trf!("无法创建辅助生成上下文:{e:#}", "could not create the side-generation context: {e:#}")))?;
     Ok(Decoder::Plain(ctx))
 }
 
@@ -1618,7 +1617,7 @@ fn run_turn(
         if n_prompt + 4 >= n_ctx as usize {
             dec.clear_kv_cache();
             cached.clear();
-            bail!("提示词 {n_prompt} tokens 超出上下文窗口 {n_ctx}，请新建对话或缩短输入。(Prompt exceeds the {n_ctx}-token context window — start a new chat or shorten the input.)");
+            bail!(trf!("提示词 {n_prompt} tokens 超出上下文窗口 {n_ctx}，请新建对话或缩短输入", "Prompt exceeds the {n_ctx}-token context window — start a new chat or shorten the input."));
         }
 
         // Longest common prefix with the cached sequence → reuse that part of the KV.
@@ -1728,7 +1727,7 @@ fn run_turn(
             if let Err(e2) = decode_prompt(dec, &mut batch, &tokens, 0, n_batch, progress(0)) {
                 dec.clear_kv_cache();
                 cached.clear();
-                return Err(e2).context("prompt decode failed");
+                return Err(e2).context(trf!("提示词解码失败", "prompt decode failed"));
             }
         }
         kv_reused = prefix as u32;
@@ -1953,7 +1952,7 @@ fn run_turn(
                     dec.clear_kv_cache();
                     cached.clear();
                     *media_cache = None;
-                    return Err(e).context("decode failed");
+                    return Err(e).context(trf!("解码失败", "decode failed"));
                 }
                 if !media_turn {
                     cached.push(token);
@@ -2147,7 +2146,7 @@ fn prefill_media(
             Ok(b) => bitmaps.push(b),
             Err(e) => {
                 clear_all(ctx, media_cache);
-                bail!("无法读取图片 (failed to read image) {p}: {e}");
+                bail!(trf!("无法读取图片 {p}: {e}", "failed to read image {p}: {e}"));
             }
         }
     }
@@ -2247,7 +2246,7 @@ fn prefill_media(
             }
             Err(e) => {
                 clear_all(ctx, media_cache);
-                bail!("多模态分词失败 (multimodal tokenization failed): {e}");
+                bail!(trf!("多模态分词失败:{e}", "multimodal tokenization failed: {e}"));
             }
         }
     }
@@ -2255,9 +2254,10 @@ fn prefill_media(
     let grand_total = start_past + total_pos;
     if grand_total + 4 >= n_ctx as i32 {
         clear_all(ctx, media_cache);
-        bail!(
-            "图文提示共 {grand_total} 个位置，超出上下文窗口 {n_ctx}，请新建对话、缩短输入或减少图片。(The multimodal prompt needs {grand_total} positions — over the {n_ctx} context window; start a new chat, shorten the input or drop images.)"
-        );
+        bail!(trf!(
+            "图文提示共 {grand_total} 个位置，超出上下文窗口 {n_ctx}，请新建对话、缩短输入或减少图片。",
+            "The multimodal prompt needs {grand_total} positions — over the {n_ctx} context window; start a new chat, shorten the input or drop images."
+        ));
     }
     if cancel.load(Ordering::Relaxed) {
         return Ok((start_past.max(0), start_past.max(0) as u32));
@@ -2289,7 +2289,7 @@ fn prefill_media(
             Ok(p) => p,
             Err(e) => {
                 clear_all(ctx, media_cache);
-                bail!("图文预填充失败 (multimodal prefill failed): {e}");
+                bail!(trf!("图文预填充失败:{e}", "multimodal prefill failed: {e}"));
             }
         };
         let _ = seg.positions; // tracked via n_past
@@ -3089,7 +3089,7 @@ fn turn_end_tokens(model: &LlamaModel) -> Vec<LlamaToken> {
 fn tokenize_prompt(model: &LlamaModel, prompt: &str) -> Result<Vec<LlamaToken>> {
     let bos = special_text(model, model.token_bos());
     let add = if !bos.is_empty() && prompt.starts_with(&bos) { AddBos::Never } else { AddBos::Always };
-    model.str_to_token(prompt, add).context("tokenization failed")
+    model.str_to_token(prompt, add).context(trf!("分词失败", "tokenization failed"))
 }
 
 /// `text` with every `<think>…</think>` block (and the blank lines after it)
@@ -3255,7 +3255,7 @@ fn render_builtin(model: &LlamaModel, messages: &[ChatMessage], add_ass: bool) -
         msgs.iter()
             .map(|m| LlamaChatMessage::new(role_str(&m.role).to_string(), m.content.clone()))
             .collect::<std::result::Result<_, _>>()
-            .context("invalid message content")
+            .context(trf!("消息内容无效", "invalid message content"))
     }
 
     let chat = to_chat(messages)?;

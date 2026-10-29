@@ -518,7 +518,7 @@ fn stats_table(kind: &str) -> Result<&'static str, String> {
     match kind {
         "chat" => Ok("conversations"),
         "code" => Ok("code_sessions"),
-        _ => Err(format!("unknown session kind: {kind}")),
+        _ => Err(trf!("未知的会话类型:{kind}", "unknown session kind: {kind}")),
     }
 }
 

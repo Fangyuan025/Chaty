@@ -226,7 +226,7 @@ pub(crate) async fn xet_fallback_download(
     on_progress: impl Fn(u64, u64) + Send + Sync + 'static,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
-    let (owner, name) = repo.split_once('/').ok_or_else(|| format!("非法仓库名 (bad repo id): {repo}"))?;
+    let (owner, name) = repo.split_once('/').ok_or_else(|| trf!("非法仓库名:{repo}", "bad repo id: {repo}"))?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -270,7 +270,7 @@ pub(crate) async fn xet_fallback_download(
     let finish = result.map_err(|e| e.to_string()).and_then(|_| {
         let src = tmp_dir.join(path);
         if !src.is_file() {
-            return Err(format!("仓库中没有该文件 (file not found in repo): {path}"));
+            return Err(trf!("仓库中没有该文件:{path}", "file not found in repo: {path}"));
         }
         std::fs::rename(&src, dest).or_else(|_| std::fs::copy(&src, dest).map(|_| ())).map_err(|e| e.to_string())
     });
@@ -297,7 +297,7 @@ async fn repo_tree(repo: &str, base: &str) -> Result<Vec<(String, u64)>, String>
     // as for one it cannot say; anything else is its own trouble, not the
     // repo's — a 504 here used to say the repo did not exist.
     if matches!(resp.status().as_u16(), 401 | 404) {
-        return Err(format!("未找到仓库 (repo not found): {repo}"));
+        return Err(trf!("未找到仓库:{repo}", "repo not found: {repo}"));
     }
     if !resp.status().is_success() {
         return Err(hf_status_error(resp.status()));
@@ -323,7 +323,7 @@ pub async fn list_hf_ggufs(repo: String, endpoint: Option<String>) -> Result<Vec
     let base = hf_base(endpoint.as_deref());
     let repo = normalize_repo(&repo);
     if repo.is_empty() || !repo.contains('/') {
-        return Err("请输入有效的 HuggingFace 仓库（owner/name）".into());
+        return Err(trf!("请输入有效的 Hugging Face 仓库(owner/name)", "enter a valid Hugging Face repo (owner/name)"));
     }
     let mut out = Vec::new();
     for (path, size) in repo_tree(&repo, &base).await? {
@@ -334,7 +334,7 @@ pub async fn list_hf_ggufs(repo: String, endpoint: Option<String>) -> Result<Vec
         }
     }
     if out.is_empty() {
-        return Err(format!("该仓库没有 .gguf 文件: {repo}"));
+        return Err(trf!("该仓库没有 .gguf 文件:{repo}", "this repo has no .gguf file: {repo}"));
     }
     out.sort_by_key(|a| a.name.to_lowercase());
     Ok(out)
@@ -692,7 +692,7 @@ pub async fn hf_author_avatar(author: String) -> Result<Option<String>, String> 
         }
     }
     if url.is_none() && !answered {
-        return Err("Hugging Face did not answer".into());
+        return Err(trf!("Hugging Face 没有响应", "Hugging Face did not answer"));
     }
     AVATAR_CACHE
         .lock()
@@ -993,7 +993,7 @@ pub async fn hf_model_detail(
     let base = hf_base(endpoint.as_deref());
     let id = normalize_repo(&repo);
     if id.is_empty() || !id.contains('/') {
-        return Err("请输入有效的 HuggingFace 仓库（owner/name）".into());
+        return Err(trf!("请输入有效的 Hugging Face 仓库(owner/name)", "enter a valid Hugging Face repo (owner/name)"));
     }
     // `owner/name/folder`: a package kept in a folder of a larger repo.
     let (repo, subdir) = {
@@ -1020,7 +1020,7 @@ pub async fn hf_model_detail(
         let prefix = format!("{sub}/");
         tree.retain(|(p, _)| p.starts_with(&prefix));
         if tree.is_empty() {
-            return Err(format!("该仓库没有这个文件夹 (no such folder): {id}"));
+            return Err(trf!("该仓库没有这个文件夹:{id}", "no such folder: {id}"));
         }
     }
     // An audio.cpp repo of a music family: its GGUFs are packages of parts,
@@ -1034,7 +1034,7 @@ pub async fn hf_model_detail(
     let (format, quants, mmproj) = if music {
         let quants = music_quants(&tree, subdir.as_deref().unwrap_or(""), music_fam);
         if quants.is_empty() {
-            return Err(format!("该仓库没有可下载的模型文件 (no model files): {id}"));
+            return Err(trf!("该仓库没有可下载的模型文件:{id}", "no model files: {id}"));
         }
         ("gguf".to_string(), quants, None)
     } else if format == "mlx" || (!tree.iter().any(|(p, _)| p.to_lowercase().ends_with(".gguf")) && mlx_repo_check(&mlx_files(&tree)).is_ok()) {
@@ -1062,7 +1062,7 @@ pub async fn hf_model_detail(
     } else {
         let quants = gguf_quants(&tree);
         if quants.is_empty() {
-            return Err(format!("该仓库没有可下载的模型文件 (no model files): {repo}"));
+            return Err(trf!("该仓库没有可下载的模型文件:{repo}", "no model files: {repo}"));
         }
         ("gguf".to_string(), quants, best_mmproj(&tree))
     };
@@ -1215,9 +1215,10 @@ fn mlx_repo_check(files: &[(String, u64)]) -> Result<(), String> {
     if has_cfg && has_st {
         Ok(())
     } else {
-        Err("该仓库不是 MLX 模型（需要 config.json 与 .safetensors） \
-             (not an MLX model repo: config.json + .safetensors required)"
-            .into())
+        Err(trf!(
+            "该仓库不是 MLX 模型（需要 config.json 与 .safetensors）",
+            "not an MLX model repo: config.json + .safetensors required"
+        ))
     }
 }
 
@@ -1237,7 +1238,7 @@ pub async fn list_hf_mlx(repo: String, endpoint: Option<String>) -> Result<MlxRe
     let base = hf_base(endpoint.as_deref());
     let repo = normalize_repo(&repo);
     if repo.is_empty() || !repo.contains('/') {
-        return Err("请输入有效的 HuggingFace 仓库（owner/name）".into());
+        return Err(trf!("请输入有效的 Hugging Face 仓库(owner/name)", "enter a valid Hugging Face repo (owner/name)"));
     }
     let files = mlx_files(&repo_tree(&repo, &base).await?);
     mlx_repo_check(&files)?;
@@ -1273,7 +1274,7 @@ async fn download_mlx_repo_inner(
     let base = hf_base(endpoint.as_deref());
     let repo = normalize_repo(&repo);
     if repo.is_empty() || !repo.contains('/') {
-        return Err("请输入有效的 HuggingFace 仓库（owner/name）".into());
+        return Err(trf!("请输入有效的 Hugging Face 仓库(owner/name)", "enter a valid Hugging Face repo (owner/name)"));
     }
     let mut files = mlx_files(&repo_tree(&repo, &base).await?);
     mlx_repo_check(&files)?;
@@ -1339,7 +1340,7 @@ async fn download_mlx_repo_inner(
                 continue;
             }
             if !resp.status().is_success() {
-                return Err(format!("下载失败 (download failed): HTTP {} ({path})", resp.status()));
+                return Err(trf!("下载失败:HTTP {} ({path})", "download failed: HTTP {} ({path})", resp.status()));
             }
             let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
             while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
@@ -1395,7 +1396,7 @@ fn set_model_aside(dir: &std::path::Path) -> Result<Option<std::path::PathBuf>, 
     let prev = dir.with_file_name(format!("{name}.previous"));
     let _ = std::fs::remove_dir_all(&prev); // a leftover from an earlier run
     std::fs::rename(dir, &prev)
-        .map_err(|e| format!("无法为重新下载腾出目录 (could not set the existing model aside): {e}"))?;
+        .map_err(|e| trf!("无法为重新下载腾出目录:{e}", "could not set the existing model aside: {e}"))?;
     Ok(Some(prev))
 }
 
@@ -1436,12 +1437,12 @@ pub async fn download_model(
         Some(d) => {
             let canon = std::path::Path::new(d)
                 .canonicalize()
-                .map_err(|e| format!("目标文件夹不存在 (folder not found): {e}"))?;
+                .map_err(|e| trf!("目标文件夹不存在:{e}", "folder not found: {e}"))?;
             let inside = crate::commands::model_dirs(&app)
                 .iter()
                 .any(|r| r.canonicalize().is_ok_and(|rc| canon.starts_with(&rc)));
             if !inside {
-                return Err("目标文件夹不在模型文件夹内 (folder is outside the models folder)".into());
+                return Err(trf!("目标文件夹不在模型文件夹内", "folder is outside the models folder").into());
             }
             // A subfolder of it — where a music package keeps its configs.
             (canon, subdir)
@@ -1493,7 +1494,7 @@ async fn download_inner(
         || lower.ends_with(".json")
         || lower.ends_with(".tiktoken"))
     {
-        return Err("只能下载模型文件和它的配置 (only model files and their configs: .gguf / .safetensors / .json / .tiktoken)".into());
+        return Err(trf!("只能下载模型文件和它的配置", "only model files and their configs: .gguf / .safetensors / .json / .tiktoken").into());
     }
     let dest = dir.join(&safe);
     let tmp = dir.join(format!("{safe}.part"));
@@ -1529,7 +1530,7 @@ async fn download_inner(
         return Err(mirror_403_message(resp.status()));
     }
     if !resp.status().is_success() {
-        return Err(format!("下载失败: HTTP {}", resp.status()));
+        return Err(trf!("下载失败:HTTP {}", "download failed: HTTP {}", resp.status()));
     }
     let total = resp.content_length().unwrap_or(0);
 
@@ -1942,10 +1943,11 @@ mod tests {
     async fn a_failing_hf_is_not_a_missing_repo() {
         let (port, _) = serve_seq(vec![("503 Service Unavailable", ""); 3]);
         let err = repo_tree("a/b", &format!("http://127.0.0.1:{port}")).await.unwrap_err();
-        assert!(err.contains("503") && !err.contains("repo not found"), "{err}");
+        let missing = |e: &str| e.contains("repo not found") || e.contains("未找到仓库");
+        assert!(err.contains("503") && !missing(&err), "{err}");
         let (port, _) = serve_seq(vec![("401 Unauthorized", "")]);
         let err = repo_tree("a/b", &format!("http://127.0.0.1:{port}")).await.unwrap_err();
-        assert!(err.contains("repo not found"), "{err}");
+        assert!(missing(&err), "{err}");
     }
 
     fn hit(id: &str) -> HfModelHit {

@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 /// UI locales. zh/en are the app's native pair and REQUIRED on every entry
 /// (compiler-enforced); community locales are optional per-key and fall back
@@ -1675,6 +1676,13 @@ export function detectLang(): Lang {
   return "en";
 }
 
+/// The backend writes its errors and messages in one language, which follows
+/// the one picked here — from before the first window paints, so an error at
+/// startup is not in the other language. Community locales get English.
+export async function syncBackendLang(lang: Lang): Promise<void> {
+  await invoke("agent_set_lang", { lang: agentLang(lang) }).catch(() => {});
+}
+
 /// Pure resolution (testable without the provider). Community locales are
 /// allowed to be partial — a missing translation shows English, never a
 /// blank or a raw key.
@@ -1704,6 +1712,7 @@ export function LangProvider({ children }: { children: ReactNode }) {
     } catch {
       /* ignore */
     }
+    void syncBackendLang(lang);
   }, [lang]);
 
   const t = useCallback(

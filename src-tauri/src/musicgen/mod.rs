@@ -541,7 +541,7 @@ pub fn make_piece(
                                 whole_part = Some(c);
                             }
                         }
-                        Err("the score was cut short".into())
+                        Err(trf!("乐谱被截断了", "the score was cut short"))
                     }
                     Err(e) => Err(e),
                 };
@@ -627,7 +627,7 @@ fn plan_score(
         return Ok(None);
     }
     let Some((path, truncated)) = out.score else {
-        return Ok(Some(Err("no score".into())));
+        return Ok(Some(Err(trf!("没有写出乐谱", "no score was written"))));
     };
     let text = std::fs::read_to_string(&path);
     let _ = std::fs::remove_file(&path);

@@ -145,12 +145,12 @@ fn stdio_request(conn: &mut StdioConn, id: u64, body: &Value, timeout: Duration)
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err("MCP request timed out".into());
+            return Err(trf!("MCP 请求超时", "MCP request timed out"));
         }
         let msg = conn
             .replies
             .recv_timeout(left)
-            .map_err(|_| "MCP request timed out (server silent or exited)".to_string())?;
+            .map_err(|_| trf!("MCP 请求超时(服务器没有响应或已退出)", "MCP request timed out (server silent or exited)"))?;
         if msg.get("id").and_then(Value::as_u64) == Some(id) {
             return Ok(msg);
         }
@@ -196,7 +196,7 @@ fn parse_http_body(body: &str, content_type: &str, id: u64) -> Result<Value, Str
         if let Some(v) = try_match(&buf) {
             return Ok(v);
         }
-        return Err("MCP HTTP: no matching reply in event stream".into());
+        return Err(trf!("MCP HTTP:事件流里没有对应的回复", "MCP HTTP: no matching reply in event stream"));
     }
     serde_json::from_str(body).map_err(|e| format!("MCP HTTP: bad JSON reply: {e}"))
 }
@@ -236,7 +236,7 @@ async fn http_request(
         .to_string();
     let text = resp.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        return Err(format!("MCP HTTP {status}: {}", text.chars().take(300).collect::<String>()));
+        return Err(trf!("MCP HTTP {status}:{}", "MCP HTTP {status}: {}", text.chars().take(300).collect::<String>()));
     }
     parse_http_body(&text, &ctype, id)
 }
@@ -281,7 +281,7 @@ async fn request(
     };
     if let Some(err) = reply.get("error") {
         let msg = err.get("message").and_then(Value::as_str).unwrap_or("unknown error");
-        return (server, Err(format!("MCP error: {msg}")));
+        return (server, Err(trf!("MCP 报错:{msg}", "MCP error: {msg}")));
     }
     let result = reply.get("result").cloned().unwrap_or(Value::Null);
     (server, Ok(result))
@@ -315,8 +315,8 @@ fn spawn_stdio(command: &str, args: &[String], env: &HashMap<String, String>) ->
         .spawn()
         .map_err(|e| format!("failed to start MCP server `{command}`: {e}"))?;
     MCP_PIDS.lock().unwrap().push(child.id());
-    let stdin = child.stdin.take().ok_or("no stdin")?;
-    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stdin = child.stdin.take().ok_or_else(|| trf!("MCP 服务器没有输入管道", "the MCP server has no stdin"))?;
+    let stdout = child.stdout.take().ok_or_else(|| trf!("MCP 服务器没有输出管道", "the MCP server has no stdout"))?;
     let (tx, rx): (Sender<Value>, Receiver<Value>) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -387,7 +387,7 @@ async fn connect_inner(name: &str, transport: McpTransport) -> Result<Vec<McpToo
     let mut server = server;
     if let Err(e) = init {
         kill_server(server);
-        return Err(format!("initialize failed: {e}"));
+        return Err(trf!("MCP 初始化失败:{e}", "initialize failed: {e}"));
     }
     if let Err(e) = notify(&mut server, "notifications/initialized").await {
         kill_server(server);

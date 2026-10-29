@@ -325,26 +325,26 @@ async fn fetch_file(
     eprintln!("voice: downloading {url}");
     let mut resp = client.get(url).send().await?.error_for_status()?;
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).context("create voice model directory")?;
+        std::fs::create_dir_all(parent).context(trf!("无法创建语音模型文件夹", "could not create the voice model folder"))?;
     }
     let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
     let part = dest.with_file_name(format!("{name}.part"));
-    let mut file = std::fs::File::create(&part).context("write voice model file")?;
+    let mut file = std::fs::File::create(&part).context(trf!("无法写入语音模型文件", "could not write the voice model file"))?;
     let mut got = 0u64;
     while let Some(chunk) = resp.chunk().await? {
         got += chunk.len() as u64;
         if got > size {
             break;
         }
-        file.write_all(&chunk).context("write voice model file")?;
+        file.write_all(&chunk).context(trf!("无法写入语音模型文件", "could not write the voice model file"))?;
         meter.add(chunk.len() as u64);
     }
     drop(file);
     if got != size {
         let _ = std::fs::remove_file(&part);
-        bail!("{name} came back as {got} bytes, expected {size}");
+        bail!(trf!("{name} 下载不完整:收到 {got} 字节,应为 {size}", "{name} came back as {got} bytes, expected {size}"));
     }
-    std::fs::rename(&part, dest).context("install voice model file")?;
+    std::fs::rename(&part, dest).context(trf!("无法安装语音模型文件", "could not install the voice model file"))?;
     meter.send();
     Ok(())
 }
@@ -447,7 +447,7 @@ async fn install_archive(
     meter: &mut Meter<'_>,
 ) -> Result<PathBuf> {
     let dir = models_dir.join(dir_name);
-    std::fs::create_dir_all(models_dir).context("create voice models dir")?;
+    std::fs::create_dir_all(models_dir).context(trf!("无法创建语音模型文件夹", "could not create the voice models folder"))?;
 
     eprintln!("voice: downloading model from {url}");
     let mut resp = crate::http::download_client(DOWNLOAD_UA)
@@ -469,14 +469,14 @@ async fn install_archive(
     // mistake a lone early .onnx file for a complete model.
     let staging = models_dir.join(format!(".{dir_name}.download-{}", std::process::id()));
     if staging.exists() {
-        std::fs::remove_dir_all(&staging).context("remove stale voice-model staging dir")?;
+        std::fs::remove_dir_all(&staging).context(trf!("无法清理上次未完成的语音模型下载", "could not clear an unfinished voice-model download"))?;
     }
-    std::fs::create_dir_all(&staging).context("create voice-model staging dir")?;
+    std::fs::create_dir_all(&staging).context(trf!("无法创建语音模型临时文件夹", "could not create the voice-model staging folder"))?;
     let target = staging.clone();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let bz = bzip2::read::BzDecoder::new(&bytes[..]);
         let mut archive = tar::Archive::new(bz);
-        archive.unpack(&target).context("解压语音模型失败")?;
+        archive.unpack(&target).context(trf!("解压语音模型失败", "could not unpack the voice model"))?;
         Ok(())
     })
     .await??;
@@ -484,15 +484,16 @@ async fn install_archive(
     let extracted = staging.join(dir_name);
     if !ready(&extracted) {
         let _ = std::fs::remove_dir_all(&staging);
-        bail!(
-            "语音模型下载不完整或解压后结构异常: {}",
+        bail!(trf!(
+            "语音模型下载不完整或解压后结构异常:{}",
+            "the voice model download is incomplete, or unpacked into an unexpected layout: {}",
             extracted.display()
-        );
+        ));
     }
     if dir.exists() {
-        std::fs::remove_dir_all(&dir).context("remove incomplete voice model")?;
+        std::fs::remove_dir_all(&dir).context(trf!("无法删除不完整的语音模型", "could not remove an incomplete voice model"))?;
     }
-    std::fs::rename(&extracted, &dir).context("install downloaded voice model")?;
+    std::fs::rename(&extracted, &dir).context(trf!("无法安装下载好的语音模型", "could not install the downloaded voice model"))?;
     let _ = std::fs::remove_dir_all(&staging);
     Ok(dir)
 }
@@ -526,11 +527,11 @@ fn stt_engine(dir: &Path, multilingual: bool) -> Result<&'static Mutex<WhisperRe
     }
     let encoder = find_in(dir, "encoder.int8.onnx")
         .or_else(|| find_in(dir, "encoder.onnx"))
-        .ok_or_else(|| anyhow!("未找到 Whisper encoder"))?;
+        .ok_or_else(|| anyhow!(trf!("未找到 Whisper encoder", "the Whisper encoder was not found")))?;
     let decoder = find_in(dir, "decoder.int8.onnx")
         .or_else(|| find_in(dir, "decoder.onnx"))
-        .ok_or_else(|| anyhow!("未找到 Whisper decoder"))?;
-    let tokens = find_in(dir, "tokens.txt").ok_or_else(|| anyhow!("未找到 tokens.txt"))?;
+        .ok_or_else(|| anyhow!(trf!("未找到 Whisper decoder", "the Whisper decoder was not found")))?;
+    let tokens = find_in(dir, "tokens.txt").ok_or_else(|| anyhow!(trf!("未找到 tokens.txt", "tokens.txt was not found")))?;
 
     let config = WhisperConfig {
         encoder: encoder.to_string_lossy().into_owned(),
@@ -554,7 +555,7 @@ fn stt_engine(dir: &Path, multilingual: bool) -> Result<&'static Mutex<WhisperRe
         num_threads: Some(voice_threads()),
         ..Default::default()
     };
-    let rec = WhisperRecognizer::new(config).map_err(|e| anyhow!("创建 Whisper 失败: {e}"))?;
+    let rec = WhisperRecognizer::new(config).map_err(|e| anyhow!(trf!("创建 Whisper 失败:{e}", "could not start Whisper: {e}")))?;
     let _ = slot.set(Mutex::new(rec));
     Ok(slot.get().unwrap())
 }
@@ -565,7 +566,7 @@ fn english_tts_engine(dir: &Path) -> Result<&'static Mutex<KokoroTts>> {
     }
     let model = find_in(dir, "model.onnx")
         .or_else(|| find_in(dir, ".onnx"))
-        .ok_or_else(|| anyhow!("未找到 Kokoro 模型"))?;
+        .ok_or_else(|| anyhow!(trf!("未找到 Kokoro 模型", "the Kokoro model was not found")))?;
 
     let config = KokoroTtsConfig {
         model: model.to_string_lossy().into_owned(),
@@ -597,10 +598,10 @@ fn chinese_tts_engine(dir: &Path) -> Result<&'static Mutex<VitsTts>> {
     let clean_lexicon = dir.join("lexicon.chaty-v2.txt");
     if !clean_lexicon.is_file() {
         let source =
-            std::fs::read_to_string(&source_lexicon).context("read Chinese TTS lexicon")?;
+            std::fs::read_to_string(&source_lexicon).context(trf!("无法读取中文语音合成词典", "could not read the Chinese TTS lexicon"))?;
         let valid_tokens: std::collections::HashSet<String> =
             std::fs::read_to_string(dir.join("tokens.txt"))
-                .context("read Chinese TTS tokens")?
+                .context(trf!("无法读取中文语音合成音素表", "could not read the Chinese TTS tokens"))?
                 .lines()
                 .filter_map(|line| line.split_whitespace().next())
                 .map(str::to_owned)
@@ -616,7 +617,7 @@ fn chinese_tts_engine(dir: &Path) -> Result<&'static Mutex<VitsTts>> {
             .collect::<Vec<_>>()
             .join("\n");
         std::fs::write(&clean_lexicon, format!("{cleaned}\n"))
-            .context("write cleaned Chinese TTS lexicon")?;
+            .context(trf!("无法写入整理后的中文语音合成词典", "could not write the cleaned Chinese TTS lexicon"))?;
     }
     let config = VitsTtsConfig {
         model: dir.join("model.onnx").to_string_lossy().into_owned(),
@@ -773,7 +774,7 @@ pub async fn synthesize(
                 // audio at all). A beat of silence, not an error in the
                 // middle of a reply.
                 Err(_) if latin_only => Ok((vec![0.0; 1600], 16000)),
-                Err(e) => Err(anyhow!("中文语音合成失败: {e}")),
+                Err(e) => Err(anyhow!(trf!("中文语音合成失败:{e}", "Chinese speech synthesis failed: {e}"))),
             }
         })
         .await?
@@ -784,7 +785,7 @@ pub async fn synthesize(
             let mut tts = engine_lock(engine, "TTS");
             let audio = tts
                 .create(&text, sid, speed)
-                .map_err(|e| anyhow!("合成失败: {e}"))?;
+                .map_err(|e| anyhow!(trf!("语音合成失败:{e}", "speech synthesis failed: {e}")))?;
             Ok((audio.samples, audio.sample_rate))
         })
         .await?

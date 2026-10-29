@@ -13,10 +13,16 @@ pub const PART_MAX: u64 = 256 << 20;
 /// The most a whole document may unpack to.
 pub const TOTAL_MAX: u64 = 1 << 30;
 
+/// Whether an error from here is the size cap — in either language the
+/// message was written in.
+pub fn is_too_big(e: &str) -> bool {
+    e.contains("unpacks to more than") || e.contains("文档解压后超过")
+}
+
 fn too_big(max: u64) -> String {
-    format!(
-        "文档解压后超过 {} MB，可能已损坏或是特意构造的文件 (the document unpacks to more than {} MB — damaged, or built to do that)",
-        max >> 20,
+    trf!(
+        "文档解压后超过 {} MB，可能已损坏或是特意构造的文件",
+        "the document unpacks to more than {} MB — damaged, or built to do that",
         max >> 20
     )
 }
@@ -102,7 +108,7 @@ mod tests {
         let ok = read_part(&[7u8; 100][..], 100).unwrap();
         assert_eq!(ok.len(), 100);
         let err = read_part(&[7u8; 101][..], 100).unwrap_err();
-        assert!(err.contains("unpacks to more than"), "{err}");
+        assert!(is_too_big(&err), "{err}");
         assert!(read_part_string(&b"\xff\xfe"[..], 100).is_err());
     }
 
@@ -122,7 +128,7 @@ mod tests {
         let docx = bomb(&dir, "bomb.docx", "word/document.xml", 300 << 20);
         assert!(std::fs::metadata(&docx).unwrap().len() < 1 << 20);
         let err = crate::rag::extract_docx(&docx).unwrap_err();
-        assert!(err.contains("unpacks to more than 256 MB"), "{err}");
+        assert!(is_too_big(&err) && err.contains("256"), "{err}");
         let deck = bomb(&dir, "bomb.pptx", "ppt/slides/slide1.xml", 300 << 20);
         assert!(crate::rag::extract_pptx(&deck).unwrap_err().contains("256 MB"));
         let book = bomb(&dir, "bomb.xlsx", "xl/worksheets/sheet1.xml", 300 << 20);

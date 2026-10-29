@@ -354,7 +354,7 @@ async fn brave_search(client: &reqwest::Client, query: &str) -> Result<Vec<Searc
         .await
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("Brave HTTP {}", resp.status()));
+        return Err(trf!("Brave 搜索返回 HTTP {}", "Brave HTTP {}", resp.status()));
     }
     let html = resp.text().await.map_err(|e| e.to_string())?;
     Ok(parse_brave(&html))
@@ -428,7 +428,7 @@ async fn bing_search(client: &reqwest::Client, query: &str) -> Result<Vec<Search
         .await
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("Bing HTTP {}", resp.status()));
+        return Err(trf!("必应搜索返回 HTTP {}", "Bing HTTP {}", resp.status()));
     }
     let html = resp.text().await.map_err(|e| e.to_string())?;
     Ok(parse_bing(&html))
@@ -607,7 +607,7 @@ async fn ddg_endpoint(
         .await
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+        return Err(trf!("服务器返回 HTTP {}", "HTTP {}", resp.status()));
     }
     let html = resp.text().await.map_err(|e| e.to_string())?;
     Ok(parser(&html))
@@ -774,21 +774,21 @@ fn extract_title(html: &str) -> Option<String> {
 pub async fn fetch_url(url: String) -> Result<PageContent, String> {
     let url = url.trim().to_string();
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err("无效的链接".into());
+        return Err(trf!("无效的链接", "not a valid link"));
     }
     let client = build_client()?;
     let resp = client
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("请求失败: {e}"))?;
+        .map_err(|e| trf!("请求失败:{e}", "request failed: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+        return Err(trf!("服务器返回 HTTP {}", "HTTP {}", resp.status()));
     }
     let html = crate::http::page_text(resp).await?;
     let text = extract_main_text(&html, 6000);
     if text.chars().count() < 40 {
-        return Err("该网页正文为空（可能是动态渲染页面）".into());
+        return Err(trf!("该网页正文为空（可能是动态渲染页面）", "the page has no body text (it may be rendered by script)"));
     }
     let title = extract_title(&html).unwrap_or_else(|| url.clone());
     Ok(PageContent { title, url, text })

@@ -33,10 +33,12 @@ pub(crate) fn hide_console(cmd: &mut Command) -> &mut Command {
 /// opens a folder for the coding session.
 static WORKSPACE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Language for model-visible tool output. Historically every string carried
-/// both languages ("已写入 … (wrote …)"), which taxes small local models with
-/// tokens on every single step; now the loop sets the session language once
-/// and each string renders in ONE language. Default Zh keeps the existing
+/// The one language the backend speaks — model-visible tool output, and every
+/// error and message the user reads. Historically every string carried both
+/// languages ("已写入 … (wrote …)"), which taxes small local models with
+/// tokens on every single step; now each renders in ONE language: the UI's,
+/// set by the frontend from before its first paint and kept on disk for what
+/// is said before the window exists. Default Zh keeps the existing
 /// Chinese-asserting tests (and old frontends that never call set_lang) green.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
@@ -45,9 +47,41 @@ pub enum Lang {
 }
 static LANG: Mutex<Lang> = Mutex::new(Lang::Zh);
 
+/// The app's UI language, from the frontend: used now and kept for the next
+/// launch. Only the app saves it — a bench driving the headless binary in
+/// another language must not change what the owner's app starts in.
 #[tauri::command]
 pub fn agent_set_lang(lang: String) {
-    *LANG.lock().unwrap() = if lang == "en" { Lang::En } else { Lang::Zh };
+    let next = set_lang(&lang);
+    #[cfg(not(test))]
+    {
+        let path = lang_file();
+        let word = if next == Lang::En { "en" } else { "zh" };
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(word) {
+            let _ = std::fs::write(&path, word);
+        }
+    }
+    #[cfg(test)]
+    let _ = next;
+}
+
+/// Switch the language for this process only.
+pub fn set_lang(lang: &str) -> Lang {
+    let next = if lang == "en" { Lang::En } else { Lang::Zh };
+    *LANG.lock().unwrap() = next;
+    next
+}
+
+fn lang_file() -> PathBuf {
+    crate::errlog::chaty_data_dir().join("ui-lang")
+}
+
+/// At launch, before the window: the language the UI was last in — what a
+/// dialog or an error at startup is written in. A first launch has none yet
+/// and gets the UI's own default, English.
+pub fn load_saved_lang() {
+    let saved = std::fs::read_to_string(lang_file()).unwrap_or_default();
+    *LANG.lock().unwrap() = if saved.trim() == "zh" { Lang::Zh } else { Lang::En };
 }
 
 /// Hashline anchor mode: read_file prefixes every line with `N:hh→` and the
@@ -5111,7 +5145,7 @@ fn run_in_terminal(root: &Path, command: &str, timeout: Duration) -> Result<Bash
     let id = start_pty_job(root, command)?;
     let (output, seen) = {
         let reg = BG_JOBS.lock().unwrap();
-        let job = reg.as_ref().and_then(|j| j.get(&id)).ok_or("job vanished")?;
+        let job = reg.as_ref().and_then(|j| j.get(&id)).ok_or_else(|| tr("后台任务已不存在", "the background job is gone"))?;
         (job.output.clone(), job.seen.clone())
     };
     let started = Instant::now();
@@ -6422,13 +6456,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("chaty-agent-lang-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         set_ws(&dir);
-        agent_set_lang("en".into());
+        set_lang("en");
         let msg = agent_write_file("hello.txt".into(), "hi".into()).unwrap();
         assert!(msg.starts_with("wrote "), "en output expected, got: {msg}");
         assert!(!msg.contains("已写入"));
         let err = agent_edit_file("hello.txt".into(), "nope".into(), "x".into(), None).unwrap_err();
         assert!(err.contains("old_string not found"), "en error expected, got: {err}");
-        agent_set_lang("zh".into());
+        set_lang("zh");
         let msg = agent_write_file("hello2.txt".into(), "hi".into()).unwrap();
         assert!(msg.starts_with("已写入"), "zh output expected after switch back, got: {msg}");
         let _ = std::fs::remove_dir_all(&dir);

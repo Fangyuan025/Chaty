@@ -421,7 +421,7 @@ async fn fetch_youtube(video_id: &str) -> Result<PageEx, String> {
     let status = v["playabilityStatus"]["status"].as_str().unwrap_or("?");
     if status != "OK" {
         let reason = v["playabilityStatus"]["reason"].as_str().unwrap_or(status);
-        return Err(format!("视频不可用 (video unavailable): {reason}"));
+        return Err(trf!("视频不可用:{reason}", "video unavailable: {reason}"));
     }
     let d = &v["videoDetails"];
     let title = d["title"].as_str().unwrap_or("").to_string();
@@ -448,9 +448,9 @@ async fn fetch_youtube(video_id: &str) -> Result<PageEx, String> {
             let xml = c.get(base).send().await.map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
             let transcript = timedtext_to_transcript(&xml);
             if transcript.is_empty() {
-                text.push_str("\n(字幕轨为空 / caption track came back empty)\n");
+                text.push_str(&crate::agent::tr("\n(字幕轨为空)\n", "\n(the caption track came back empty)\n"));
             } else {
-                text.push_str(&format!("\n—— 字幕转写 (transcript, {lang}{kind}) ——\n{transcript}\n"));
+                text.push_str(&trf!("\n—— 字幕转写({lang}{kind})——\n{transcript}\n", "\n—— transcript ({lang}{kind}) ——\n{transcript}\n"));
             }
         }
         None => {
@@ -588,8 +588,9 @@ async fn fetch_bilibili(bvid: &str) -> Result<PageEx, String> {
         )
     })?;
     if v["code"].as_i64() != Some(0) {
-        return Err(format!(
-            "B站视频不可用 (unavailable): {}",
+        return Err(trf!(
+            "B站视频不可用:{}",
+            "Bilibili video unavailable: {}",
             v["message"].as_str().unwrap_or("?")
         ));
     }
@@ -819,7 +820,7 @@ pub async fn fetch_page_ex(url: String, raw: Option<bool>) -> Result<PageEx, Str
         .trim()
         .to_ascii_lowercase();
     if !status.is_success() {
-        return Err(format!("HTTP {status} for {final_url}"));
+        return Err(trf!("{final_url} 返回 HTTP {status}", "HTTP {status} for {final_url}"));
     }
 
     let is_html = ctype.contains("html") || ctype.contains("xhtml");
@@ -835,7 +836,7 @@ pub async fn fetch_page_ex(url: String, raw: Option<bool>) -> Result<PageEx, Str
     if ctype.contains("pdf") {
         let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
         if bytes.len() > PDF_CAP_BYTES {
-            return Err(format!("PDF too large ({} MB)", bytes.len() / 1024 / 1024));
+            return Err(trf!("PDF 太大({} MB)", "PDF too large ({} MB)", bytes.len() / 1024 / 1024));
         }
         let text = crate::rag::extract_pdf_bytes(&bytes)?;
         let (text, truncated) = cap(text.trim(), TEXT_CAP);
@@ -860,10 +861,11 @@ pub async fn fetch_page_ex(url: String, raw: Option<bool>) -> Result<PageEx, Str
             kind: "binary".into(),
             content_type: ctype.clone(),
             title: String::new(),
-            text: format!(
-                "[binary {} — {}] 用 web_download 保存到工作区 (save it with web_download)",
+            text: trf!(
+                "[binary {} — {}] 用 web_download 保存到工作区",
+                "[binary {} — {}] save it to the workspace with web_download",
                 ctype,
-                len.map(|b| format!("{:.1} KB", b as f64 / 1024.0)).unwrap_or_else(|| "size unknown".into())
+                len.map(|b| format!("{:.1} KB", b as f64 / 1024.0)).unwrap_or_else(|| crate::agent::tr("大小未知", "size unknown"))
             ),
             truncated: false,
             links: Vec::new(),
@@ -968,14 +970,15 @@ async fn fetch_reddit(rss_url: &str) -> Result<PageEx, String> {
     let resp = c.get(rss_url).send().await.map_err(|e| e.to_string())?;
     let status = resp.status();
     if !status.is_success() {
-        return Err(format!(
-            "Reddit HTTP {status} — 被限流了,过一会再试 (rate limited, retry in a minute)"
+        return Err(trf!(
+            "Reddit HTTP {status} — 被限流了,过一会再试",
+            "Reddit HTTP {status} — rate limited, retry in a minute"
         ));
     }
     let body = resp.text().await.map_err(|e| e.to_string())?;
     let entries = parse_atom(&body);
     if entries.is_empty() {
-        return Err("Reddit 返回了空 feed (empty feed)".to_string());
+        return Err(trf!("Reddit 返回了空 feed", "Reddit returned an empty feed"));
     }
     let title = entries[0].title.clone();
     let mut md = String::new();

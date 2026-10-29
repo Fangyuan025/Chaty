@@ -164,7 +164,7 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
         // ---- workspace & grants ----
         "agent_set_workspace" => req_s(&args, "path").and_then(|p| res(ag::agent_set_workspace(p))),
         "agent_set_lang" => req_s(&args, "lang").map(|l| {
-            ag::agent_set_lang(l);
+            ag::set_lang(&l);
             Value::Null
         }),
         "agent_set_edit_anchors" => {

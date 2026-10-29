@@ -13,7 +13,7 @@ const DET_URL: &str = "https://ocrs-models.s3-accelerate.amazonaws.com/text-dete
 const REC_URL: &str = "https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.rten";
 
 async fn ensure_models(dir: &Path) -> Result<(PathBuf, PathBuf)> {
-    std::fs::create_dir_all(dir).context("create models dir")?;
+    std::fs::create_dir_all(dir).context(trf!("无法创建模型文件夹", "could not create the models folder"))?;
     let det = dir.join("text-detection.rten");
     let rec = dir.join("text-recognition.rten");
     if !det.exists() {
@@ -28,7 +28,7 @@ async fn ensure_models(dir: &Path) -> Result<(PathBuf, PathBuf)> {
 async fn download(url: &str, to: &Path) -> Result<()> {
     let bytes = reqwest::get(url)
         .await
-        .with_context(|| format!("下载 OCR 模型失败: {url}"))?
+        .with_context(|| trf!("下载 OCR 模型失败:{url}", "could not download the OCR model: {url}"))?
         .error_for_status()?
         .bytes()
         .await?;
@@ -37,8 +37,8 @@ async fn download(url: &str, to: &Path) -> Result<()> {
     // exists, which is the only thing `ensure_models` asks: the download was
     // never retried and every load failed from then on.
     let tmp = to.with_extension("part");
-    std::fs::write(&tmp, &bytes).context("write model file")?;
-    std::fs::rename(&tmp, to).context("commit model file")?;
+    std::fs::write(&tmp, &bytes).context(trf!("无法写入模型文件", "could not write the model file"))?;
+    std::fs::rename(&tmp, to).context(trf!("无法保存模型文件", "could not save the model file"))?;
     Ok(())
 }
 
@@ -52,11 +52,11 @@ pub async fn ocr_image(models_dir: PathBuf, image_path: String) -> Result<String
         // state: the next run downloads it again rather than failing forever.
         let detection_model = Model::load_file(&det).map_err(|e| {
             let _ = std::fs::remove_file(&det);
-            anyhow::anyhow!("加载检测模型失败(已清除缓存,下次会重新下载): {e}")
+            anyhow::anyhow!(trf!("加载检测模型失败(已清除缓存,下次会重新下载):{e}", "could not load the text-detection model (its cache was cleared; it downloads again next time): {e}"))
         })?;
         let recognition_model = Model::load_file(&rec).map_err(|e| {
             let _ = std::fs::remove_file(&rec);
-            anyhow::anyhow!("加载识别模型失败(已清除缓存,下次会重新下载): {e}")
+            anyhow::anyhow!(trf!("加载识别模型失败(已清除缓存,下次会重新下载):{e}", "could not load the text-recognition model (its cache was cleared; it downloads again next time): {e}"))
         })?;
 
         let engine = OcrEngine::new(OcrEngineParams {
@@ -66,14 +66,14 @@ pub async fn ocr_image(models_dir: PathBuf, image_path: String) -> Result<String
         })?;
 
         let img = image::open(&image_path)
-            .context("打开图片失败")?
+            .context(trf!("打开图片失败", "could not open the image"))?
             .into_rgb8();
         let (w, h) = img.dimensions();
         let source = ImageSource::from_bytes(img.as_raw(), (w, h))
-            .map_err(|e| anyhow::anyhow!("图像预处理失败: {e:?}"))?;
+            .map_err(|e| anyhow::anyhow!(trf!("图像预处理失败:{e:?}", "image preprocessing failed: {e:?}")))?;
         let input = engine.prepare_input(source)?;
         engine.get_text(&input)
     })
     .await
-    .context("OCR 任务异常")?
+    .context(trf!("OCR 任务异常", "the OCR task failed"))?
 }

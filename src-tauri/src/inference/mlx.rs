@@ -68,7 +68,7 @@ pub(crate) fn heal_wrapped_weight_prefix(dir: &Path) -> Result<()> {
     let mut headers = Vec::new();
     for shard in &shards {
         let (len, json) = read_st_header(shard)?;
-        let obj = json.as_object().context("safetensors header is not an object")?;
+        let obj = json.as_object().context(trf!("safetensors 文件头不是对象", "the safetensors header is not an object"))?;
         for k in obj.keys() {
             if k != "__metadata__" && !k.starts_with(WRAP_PREFIX) {
                 return Ok(()); // mixed or already-clean tree — not ours to touch
@@ -92,7 +92,7 @@ pub(crate) fn heal_wrapped_weight_prefix(dir: &Path) -> Result<()> {
         }
         let mut out = serde_json::to_string(&Value::Object(renamed))?;
         if out.len() > orig_len {
-            bail!("renamed header grew — refusing to shift tensor data");
+            bail!(trf!("改名后的文件头变长了,拒绝移动张量数据", "the renamed header grew — refusing to shift tensor data"));
         }
         out.push_str(&" ".repeat(orig_len - out.len()));
         use std::io::{Seek, SeekFrom, Write as _};
@@ -154,11 +154,11 @@ pub(crate) fn read_st_header(path: &Path) -> Result<(usize, Value)> {
     f.read_exact(&mut lenb)?;
     let len = u64::from_le_bytes(lenb) as usize;
     if len == 0 || len > 256 * 1024 * 1024 {
-        bail!("implausible safetensors header length {len}");
+        bail!(trf!("safetensors 文件头长度异常:{len}", "implausible safetensors header length {len}"));
     }
     let mut buf = vec![0u8; len];
     f.read_exact(&mut buf)?;
-    let json: Value = serde_json::from_slice(&buf).context("safetensors header parse")?;
+    let json: Value = serde_json::from_slice(&buf).context(trf!("无法解析 safetensors 文件头", "could not parse the safetensors header"))?;
     Ok((len, json))
 }
 
@@ -400,10 +400,10 @@ impl MlxEngine {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .with_context(|| format!("无法启动 MLX 引擎 (failed to spawn sidecar) {sidecar:?}"))?;
+            .with_context(|| trf!("无法启动 MLX 引擎 {sidecar:?}", "failed to start the MLX engine {sidecar:?}"))?;
         super::SIDECAR_PIDS.lock().unwrap().push(child.id());
-        let mut stdin_pipe = child.stdin.take().context("sidecar stdin unavailable")?;
-        let stdout = child.stdout.take().context("sidecar stdout unavailable")?;
+        let mut stdin_pipe = child.stdin.take().context(trf!("MLX 引擎的输入管道不可用", "the MLX engine's input pipe is unavailable"))?;
+        let stdout = child.stdout.take().context(trf!("MLX 引擎的输出管道不可用", "the MLX engine's output pipe is unavailable"))?;
 
         // Dedicated reader thread; everything downstream consumes parsed
         // lines through this channel and treats disconnect as sidecar death.
@@ -422,7 +422,7 @@ impl MlxEngine {
             loop {
                 let remain = deadline
                     .checked_duration_since(Instant::now())
-                    .ok_or_else(|| anyhow!("MLX 引擎响应超时 (sidecar timed out)"))?;
+                    .ok_or_else(|| anyhow!(trf!("MLX 引擎响应超时", "the MLX engine did not answer in time")))?;
                 match line_rx.recv_timeout(remain) {
                     Ok(line) => {
                         if let Ok(v) = serde_json::from_str::<Value>(&line) {
@@ -432,11 +432,9 @@ impl MlxEngine {
                         }
                     }
                     Err(RecvTimeoutError::Timeout) => {
-                        bail!("MLX 引擎响应超时 (sidecar timed out)")
+                        bail!(trf!("MLX 引擎响应超时", "the MLX engine did not answer in time"))
                     }
-                    Err(RecvTimeoutError::Disconnected) => {
-                        bail!("MLX 引擎意外退出 (sidecar exited unexpectedly)")
-                    }
+                    Err(RecvTimeoutError::Disconnected) => return Err(SidecarExited.into()),
                 }
             }
         };
@@ -444,7 +442,7 @@ impl MlxEngine {
         // Handshake, then load.
         let ev = recv_event(READY_TIMEOUT)?;
         if ev["event"] != "ready" {
-            bail!("MLX 引擎握手失败 (unexpected first event: {ev})");
+            bail!(trf!("MLX 引擎握手失败(首个事件:{ev})", "the MLX engine handshake failed (first event: {ev})"));
         }
         writeln!(
             stdin_pipe,
@@ -465,11 +463,11 @@ impl MlxEngine {
             loop {
                 let remain = deadline
                     .checked_duration_since(Instant::now())
-                    .ok_or_else(|| anyhow!("MLX 模型加载超时 (load timed out)"))?;
+                    .ok_or_else(|| anyhow!(trf!("MLX 模型加载超时", "the MLX model took too long to load")))?;
                 let ev = recv_event(remain.min(Duration::from_millis(250)).max(Duration::from_millis(50)))
                     .or_else(|e| {
                         // Distinguish "still loading" ticks from real death.
-                        if e.to_string().contains("exited") {
+                        if e.is::<SidecarExited>() {
                             Err(e)
                         } else {
                             Ok(json!({ "event": "tick" }))
@@ -589,6 +587,19 @@ impl MlxEngine {
     }
 }
 
+/// The engine's pipe closed — told apart from a quiet moment by its type, not
+/// by its words, which are in the user's language.
+#[derive(Debug)]
+struct SidecarExited;
+
+impl std::fmt::Display for SidecarExited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&trf!("MLX 引擎意外退出", "the MLX engine exited unexpectedly"))
+    }
+}
+
+impl std::error::Error for SidecarExited {}
+
 /// The sidecar's refusal in words a person can act on. An architecture the
 /// MLX engine does not implement used to surface as the Swift error's own
 /// text — `unsupportedModelType("…")` — with nothing about what to do.
@@ -613,7 +624,7 @@ fn explain_mlx_refusal(raw: &str) -> String {
             "this MLX model is missing {file} — the download or the conversion is incomplete."
         );
     }
-    raw.to_string()
+    trf!("MLX 引擎报告:{raw}", "the MLX engine says: {raw}")
 }
 
 impl Drop for MlxEngine {
@@ -641,16 +652,16 @@ impl InferenceBackend for MlxEngine {
         let (done, rx) = tokio::sync::oneshot::channel();
         self.jobs
             .send(Job::Generate { req, sink, cancel, done })
-            .map_err(|_| anyhow!("MLX 引擎已停止 (engine stopped)"))?;
-        rx.await.map_err(|_| anyhow!("MLX 引擎已停止 (engine stopped)"))?
+            .map_err(|_| anyhow!(trf!("MLX 引擎已停止", "the MLX engine has stopped")))?;
+        rx.await.map_err(|_| anyhow!(trf!("MLX 引擎已停止", "the MLX engine has stopped")))?
     }
 
     async fn generate_collect(&self, req: GenRequest, cancel: Arc<AtomicBool>) -> Result<String> {
         let (done, rx) = tokio::sync::oneshot::channel();
         self.jobs
             .send(Job::Collect { req, cancel, done })
-            .map_err(|_| anyhow!("MLX 引擎已停止 (engine stopped)"))?;
-        rx.await.map_err(|_| anyhow!("MLX 引擎已停止 (engine stopped)"))?
+            .map_err(|_| anyhow!(trf!("MLX 引擎已停止", "the MLX engine has stopped")))?;
+        rx.await.map_err(|_| anyhow!(trf!("MLX 引擎已停止", "the MLX engine has stopped")))?
     }
 }
 
@@ -717,10 +728,10 @@ fn actor(
 fn send_cmd(stdin: &Arc<Mutex<Option<ChildStdin>>>, cmd: &Value) -> Result<()> {
     let mut guard = stdin
         .lock()
-        .map_err(|_| anyhow!("stdin poisoned"))?;
+        .map_err(|_| anyhow!(trf!("MLX 引擎的输入管道已损坏", "the MLX engine's input pipe is broken")))?;
     let pipe = guard
         .as_mut()
-        .ok_or_else(|| anyhow!("MLX 引擎已卸载 (engine unloaded)"))?;
+        .ok_or_else(|| anyhow!(trf!("MLX 引擎已卸载", "the MLX engine was unloaded")))?;
     writeln!(pipe, "{cmd}")?;
     pipe.flush()?;
     Ok(())
@@ -805,12 +816,12 @@ fn run_generation(
             Ok(l) => l,
             Err(RecvTimeoutError::Timeout) => {
                 if last_activity.elapsed() > IDLE_TIMEOUT {
-                    bail!("MLX 生成超时无响应 (generation stalled)");
+                    bail!(trf!("MLX 生成超时无响应", "MLX generation stalled"));
                 }
                 continue;
             }
             Err(RecvTimeoutError::Disconnected) => {
-                bail!("MLX 引擎意外退出 (sidecar exited unexpectedly)")
+                bail!(trf!("MLX 引擎意外退出", "the MLX engine exited unexpectedly"))
             }
         };
         last_activity = Instant::now();
@@ -857,7 +868,7 @@ fn run_generation(
                 return Ok(());
             }
             Some("error") => {
-                bail!("{}", ev["message"].as_str().unwrap_or("unknown sidecar error"));
+                bail!("{}", explain_mlx_refusal(ev["message"].as_str().unwrap_or("unknown error")));
             }
             _ => {}
         }
@@ -881,8 +892,10 @@ mod tests {
         assert!(tok.contains("tokenizer.json") && tok.contains("GGUF"), "{tok}");
         let other = super::explain_mlx_refusal("configurationMissing(\"config.json\")");
         assert!(other.contains("config.json"), "{other}");
-        // Anything else passes through as it came.
-        assert_eq!(super::explain_mlx_refusal("out of memory"), "out of memory");
+        // Anything else keeps the engine's words, after a lead in the
+        // user's language.
+        let raw = super::explain_mlx_refusal("out of memory");
+        assert!(raw.ends_with("out of memory") && raw.len() > "out of memory".len(), "{raw}");
     }
 
 

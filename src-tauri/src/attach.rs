@@ -56,7 +56,7 @@ pub async fn read_attachment(app: tauri::AppHandle, path: String) -> Result<Atta
                 .join("ocr-models");
             let text = crate::ocr::ocr_image(dir, path.clone())
                 .await
-                .map_err(|e| format!("OCR 失败：{e:#}"))?;
+                .map_err(|e| trf!("OCR 失败：{e:#}", "OCR failed: {e:#}"))?;
             ("image".to_string(), text)
         }
         _ => ("text".to_string(), read_text_file(&path)?),
@@ -80,7 +80,7 @@ pub async fn read_attachment(app: tauri::AppHandle, path: String) -> Result<Atta
     }
     let text = text.trim().to_string();
     if text.is_empty() && images.is_empty() {
-        return Err("没有从文件中解析到文本内容".into());
+        return Err(trf!("没有从文件中解析到文本内容", "no text could be read from the file"));
     }
 
     Ok(Attachment {

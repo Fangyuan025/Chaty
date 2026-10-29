@@ -121,11 +121,10 @@ pub async fn load_model(
             {
                 Some(main) => main.to_string_lossy().to_string(),
                 None => {
-                    return Err(
-                        "该文件夹里没有可加载的模型（需要 .gguf 权重，或 MLX 的 config.json + safetensors） \
-                         (no loadable model in this folder — needs a .gguf, or an MLX config.json + safetensors)"
-                            .into(),
-                    )
+                    return Err(trf!(
+                        "该文件夹里没有可加载的模型（需要 .gguf 权重，或 MLX 的 config.json + safetensors）",
+                        "no loadable model in this folder — needs a .gguf, or an MLX config.json + safetensors"
+                    ))
                 }
             }
         } else {
@@ -152,11 +151,10 @@ pub async fn load_model(
     };
     #[cfg(not(target_os = "macos"))]
     if is_mlx {
-        return Err(
-            "MLX 模型仅支持 macOS (Apple Silicon)，请改用 GGUF 版本 \
-             (MLX models run on macOS only — use a GGUF build instead)"
-                .into(),
-        );
+        return Err(trf!(
+            "MLX 模型仅支持 macOS (Apple Silicon)，请改用 GGUF 版本",
+            "MLX models run on macOS only — use a GGUF build instead"
+        ));
     }
 
     // Decode with the model's own multi-token-prediction head when it has one.
@@ -232,17 +230,15 @@ pub async fn load_model(
                 std::thread::sleep(std::time::Duration::from_millis(200));
                 now = probe(&mut sys);
             }
-            Err(format!(
-                "旧模型的内存未能释放（{} MiB → {} MiB），为避免系统卡死已中止本次加载，请重试或重启应用。\
-                 (The previous model's memory was not released ({} → {} MiB); load aborted to avoid freezing the system — retry or restart the app.)",
-                pre / (1024 * 1024),
-                now / (1024 * 1024),
+            Err(trf!(
+                "旧模型的内存未能释放（{} MiB → {} MiB），为避免系统卡死已中止本次加载，请重试或重启应用。",
+                "The previous model's memory was not released ({} → {} MiB); load aborted to avoid freezing the system — retry or restart the app.",
                 pre / (1024 * 1024),
                 now / (1024 * 1024)
             ))
         })
         .await
-        .map_err(|e| format!("卸载校验任务异常 (eject check failed): {e}"))?;
+        .map_err(|e| trf!("卸载校验任务异常:{e}", "eject check failed: {e}"))?;
         verified?;
     }
     state.cancel.store(false, Ordering::SeqCst);
@@ -326,7 +322,7 @@ pub async fn load_model(
     // Saturate the mark so a straggling poller tick can't undercut "ready".
     gate.saturate();
     let (backend, mut info) = result
-        .map_err(|e| format!("加载任务异常 (load task panicked): {e}"))
+        .map_err(|e| trf!("加载任务异常:{e}", "load task panicked: {e}"))
         .and_then(|r| r.map_err(|e| format!("{e:#}")))
         .inspect_err(|e| {
             // Load failures are the #1 thing users report — put the full
@@ -503,7 +499,7 @@ pub fn reset_gpu_layer_cap() {
 /// Write `content` to `path` (used by conversation export after a save dialog).
 #[tauri::command(async)]
 pub fn write_text_file(path: String, content: String) -> Result<(), String> {
-    std::fs::write(&path, content).map_err(|e| format!("写入文件失败 (failed to write file): {e}"))
+    std::fs::write(&path, content).map_err(|e| trf!("写入文件失败:{e}", "failed to write file: {e}"))
 }
 
 /// Write base64 little-endian f32 mono PCM to `path` as a 16-bit PCM WAV file
@@ -512,7 +508,7 @@ pub fn write_text_file(path: String, content: String) -> Result<(), String> {
 pub fn write_wav_file(path: String, audio: String, sample_rate: u32) -> Result<(), String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(audio.as_bytes())
-        .map_err(|e| format!("音频解码失败 (audio decode failed): {e}"))?;
+        .map_err(|e| trf!("音频解码失败:{e}", "audio decode failed: {e}"))?;
     let samples: Vec<f32> = bytes
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -539,7 +535,7 @@ pub fn write_wav_file(path: String, audio: String, sample_rate: u32) -> Result<(
         let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
         out.extend_from_slice(&v.to_le_bytes());
     }
-    std::fs::write(&path, out).map_err(|e| format!("写入文件失败 (failed to write file): {e}"))
+    std::fs::write(&path, out).map_err(|e| trf!("写入文件失败:{e}", "failed to write file: {e}"))
 }
 
 #[derive(Serialize)]
@@ -736,17 +732,18 @@ pub fn migrate_or_prompt_models(app: &tauri::AppHandle) {
 fn prompt_models_migration(app: &tauri::AppHandle, n: usize) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
-    let title = "整理模型文件 (Organize models)";
-    let msg = format!(
-        "检测到 {n} 个旧版本散放的模型文件。新版本按「一个模型一个文件夹」管理 —— 点击「立即整理」自动归位（只移动文件位置，不删除任何内容，20GB 大模型也是秒级完成）。\n选择「以后再说」则暂不整理。\n\nFound {n} loose model file(s) from an older version. This version keeps one folder per model — click Organize to move them into place (files are only relocated, never deleted; instant even for 20 GB models). Or choose Later to skip for now."
+    let title = trf!("整理模型文件", "Organize models");
+    let msg = trf!(
+        "检测到 {n} 个旧版本散放的模型文件。新版本按「一个模型一个文件夹」管理 —— 点击「立即整理」自动归位（只移动文件位置，不删除任何内容，20GB 大模型也是秒级完成）。\n选择「以后再说」则暂不整理。",
+        "Found {n} loose model file(s) from an older version. This version keeps one folder per model — click Organize to move them into place (files are only relocated, never deleted; instant even for 20 GB models). Or choose Later to skip for now."
     );
     let handle = app.clone();
     app.dialog()
         .message(msg)
-        .title(title)
+        .title(title.clone())
         .buttons(MessageDialogButtons::OkCancelCustom(
-            "立即整理 (Organize)".into(),
-            "以后再说 (Later)".into(),
+            trf!("立即整理", "Organize").into(),
+            trf!("以后再说", "Later").into(),
         ))
         .show(move |organize| {
             if !organize {
@@ -755,8 +752,9 @@ fn prompt_models_migration(app: &tauri::AppHandle, n: usize) {
             migrate_models_layout(&handle);
             handle
                 .dialog()
-                .message(format!(
-                    "已整理好 {n} 个模型，现在可以在模型列表里直接选用。\nOrganized {n} model(s) — they now appear in the model list."
+                .message(trf!(
+                    "已整理好 {n} 个模型，现在可以在模型列表里直接选用。",
+                    "Organized {n} model(s) — they now appear in the model list."
                 ))
                 .title(title)
                 .show(|_| {});
@@ -903,7 +901,7 @@ pub(crate) fn open_default(target: &str) -> Result<(), String> {
             });
             Ok(())
         }
-        Err(e) => Err(format!("无法打开 (failed to open): {e}")),
+        Err(e) => Err(trf!("无法打开:{e}", "failed to open: {e}")),
     }
 }
 
@@ -1159,7 +1157,7 @@ pub fn open_html_report(
     let path = dir.join(format!("{stem}-{}.html", content_name(html.as_bytes())));
     if !path.exists() {
         std::fs::write(&path, html)
-            .map_err(|e| format!("写入文件失败 (failed to write file): {e}"))?;
+            .map_err(|e| trf!("写入文件失败:{e}", "failed to write file: {e}"))?;
         // Distinct variants still accumulate — keep the folder from growing
         // without bound, newest first. Only on a fresh write, so reopening an
         // existing page never disturbs the directory.
@@ -1227,7 +1225,7 @@ fn prune_exports(dir: &Path, ext: &str, keep: usize) {
 pub fn canvas_session_save(app: tauri::AppHandle, key: String, data: String) -> Result<(), String> {
     // The key is a frontend-computed hex hash — refuse anything path-like.
     if key.is_empty() || key.len() > 64 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("bad canvas session key".into());
+        return Err(trf!("画布会话标识无效", "bad canvas session key"));
     }
     let dir = canvas_sessions_dir(&app)?;
     std::fs::write(dir.join(format!("{key}.json")), data).map_err(|e| e.to_string())?;
@@ -1239,7 +1237,7 @@ pub fn canvas_session_save(app: tauri::AppHandle, key: String, data: String) -> 
 #[tauri::command(async)]
 pub fn canvas_session_load(app: tauri::AppHandle, key: String) -> Result<Option<String>, String> {
     if key.is_empty() || key.len() > 64 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("bad canvas session key".into());
+        return Err(trf!("画布会话标识无效", "bad canvas session key"));
     }
     let dir = canvas_sessions_dir(&app)?;
     match std::fs::read_to_string(dir.join(format!("{key}.json"))) {
@@ -1493,18 +1491,18 @@ pub async fn delete_model_file(
     if target.is_dir() {
         if !crate::inference::mlx::is_mlx_dir(&target) && !crate::imagegen::probe::is_mlx_image_dir(&target) {
             return Err(
-                "只能删除模型文件夹 (only model folders can be deleted this way)".into()
+                trf!("只能删除模型文件夹", "only model folders can be deleted this way").into()
             );
         }
         let canon = target
             .canonicalize()
-            .map_err(|e| format!("文件夹不存在 (folder not found): {e}"))?;
+            .map_err(|e| trf!("文件夹不存在:{e}", "folder not found: {e}"))?;
         let in_models = model_dirs(&app)
             .iter()
             .any(|d| d.canonicalize().is_ok_and(|dc| canon.starts_with(&dc)));
         if !in_models {
             return Err(
-                "该文件夹不在模型文件夹内，已拒绝删除 (folder is outside the models folder; refusing to delete)"
+                trf!("该文件夹不在模型文件夹内，已拒绝删除", "folder is outside the models folder; refusing to delete")
                     .into(),
             );
         }
@@ -1514,30 +1512,30 @@ pub async fn delete_model_file(
                 .unwrap_or_else(|_| PathBuf::from(&m.path));
             if loaded == canon {
                 return Err(
-                    "无法删除正在使用的模型，请先卸载 (can't delete the model in use — eject it first)"
+                    trf!("无法删除正在使用的模型，请先卸载", "can't delete the model in use — eject it first")
                         .into(),
                 );
             }
         }
         return std::fs::remove_dir_all(&canon)
-            .map_err(|e| format!("删除失败 (delete failed): {e}"));
+            .map_err(|e| trf!("删除失败:{e}", "delete failed: {e}"));
     }
     if !target
         .extension()
         .is_some_and(|x| x.eq_ignore_ascii_case("gguf"))
         && !crate::imagegen::probe::is_image_model(&target)
     {
-        return Err("只能删除 .gguf 模型文件 (only .gguf model files can be deleted)".into());
+        return Err(trf!("只能删除 .gguf 模型文件", "only .gguf model files can be deleted").into());
     }
     let canon = target
         .canonicalize()
-        .map_err(|e| format!("文件不存在 (file not found): {e}"))?;
+        .map_err(|e| trf!("文件不存在:{e}", "file not found: {e}"))?;
     let in_models = model_dirs(&app)
         .iter()
         .any(|d| d.canonicalize().is_ok_and(|dc| canon.starts_with(&dc)));
     if !in_models {
         return Err(
-            "该文件不在模型文件夹内，已拒绝删除 (file is outside the models folder; refusing to delete)"
+            trf!("该文件不在模型文件夹内，已拒绝删除", "file is outside the models folder; refusing to delete")
                 .into(),
         );
     }
@@ -1547,7 +1545,7 @@ pub async fn delete_model_file(
             .unwrap_or_else(|_| PathBuf::from(&m.path));
         if loaded == canon {
             return Err(
-                "无法删除正在使用的模型，请先卸载 (can't delete the model in use — eject it first)"
+                trf!("无法删除正在使用的模型，请先卸载", "can't delete the model in use — eject it first")
                     .into(),
             );
         }
@@ -1560,7 +1558,7 @@ pub async fn delete_model_file(
     let parent_is_models_root = is_models_root(&model_dirs(&app), parent.as_deref());
     if parent_is_models_root {
         let mmproj = crate::inference::llama::find_mmproj(&canon.to_string_lossy());
-        std::fs::remove_file(&canon).map_err(|e| format!("删除失败 (delete failed): {e}"))?;
+        std::fs::remove_file(&canon).map_err(|e| trf!("删除失败:{e}", "delete failed: {e}"))?;
         // Remove a flat-dir mmproj orphaned by this delete (it only paired
         // because this was the folder's single main model).
         if let Some(p) = mmproj {
@@ -1570,7 +1568,7 @@ pub async fn delete_model_file(
         }
     } else {
         let dir = parent.expect("non-root parent");
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("删除失败 (delete failed): {e}"))?;
+        std::fs::remove_dir_all(&dir).map_err(|e| trf!("删除失败:{e}", "delete failed: {e}"))?;
     }
     Ok(())
 }
@@ -1581,8 +1579,8 @@ pub async fn delete_model_file(
 pub async fn save_file(src: String, dest: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || std::fs::copy(&src, &dest).map(|_| ()))
         .await
-        .map_err(|e| format!("保存任务异常 (save task failed): {e}"))?
-        .map_err(|e| format!("保存失败 (save failed): {e}"))
+        .map_err(|e| trf!("保存任务异常:{e}", "save task failed: {e}"))?
+        .map_err(|e| trf!("保存失败:{e}", "save failed: {e}"))
 }
 
 /// Full-resolution image as a data URL (no downscaling) — for the crisp
@@ -1590,7 +1588,7 @@ pub async fn save_file(src: String, dest: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn image_data_url(path: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
-        let bytes = std::fs::read(&path).map_err(|e| format!("读取失败 (read failed): {e}"))?;
+        let bytes = std::fs::read(&path).map_err(|e| trf!("读取失败:{e}", "read failed: {e}"))?;
         use base64::Engine as _;
         let lower = path.to_lowercase();
         // Serve PNG/JPEG/etc. verbatim so the preview is pixel-exact; downscale
@@ -1608,18 +1606,18 @@ pub async fn image_data_url(path: String) -> Result<String, String> {
             let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
             return Ok(format!("data:{mime};base64,{b64}"));
         }
-        let img = image::load_from_memory(&bytes).map_err(|e| format!("解码失败 (decode failed): {e}"))?;
+        let img = image::load_from_memory(&bytes).map_err(|e| trf!("解码失败:{e}", "decode failed: {e}"))?;
         let scaled = img.thumbnail(2400, 2400);
         let mut buf = std::io::Cursor::new(Vec::new());
         scaled
             .to_rgb8()
             .write_to(&mut buf, image::ImageFormat::Jpeg)
-            .map_err(|e| format!("编码失败 (encode failed): {e}"))?;
+            .map_err(|e| trf!("编码失败:{e}", "encode failed: {e}"))?;
         let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
         Ok(format!("data:image/jpeg;base64,{b64}"))
     })
     .await
-    .map_err(|e| format!("图片任务异常 (image task failed): {e}"))?
+    .map_err(|e| trf!("图片任务异常:{e}", "image task failed: {e}"))?
 }
 
 /// Downscaled data-URL thumbnail of a local image, for chat-bubble previews.
@@ -1628,7 +1626,7 @@ pub async fn image_data_url(path: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn image_thumb(path: String, max_dim: Option<u32>) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
-        let img = image::open(&path).map_err(|e| format!("无法读取图片 (failed to read image): {e}"))?;
+        let img = image::open(&path).map_err(|e| trf!("无法读取图片:{e}", "failed to read image: {e}"))?;
         let max = max_dim.unwrap_or(512).clamp(64, 1024);
         let thumb = img.thumbnail(max, max);
         let mut buf = std::io::Cursor::new(Vec::new());
@@ -1636,13 +1634,13 @@ pub async fn image_thumb(path: String, max_dim: Option<u32>) -> Result<String, S
         thumb
             .to_rgb8()
             .write_to(&mut buf, image::ImageFormat::Jpeg)
-            .map_err(|e| format!("缩略图编码失败 (thumbnail encode failed): {e}"))?;
+            .map_err(|e| trf!("缩略图编码失败:{e}", "thumbnail encode failed: {e}"))?;
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
         Ok(format!("data:image/jpeg;base64,{b64}"))
     })
     .await
-    .map_err(|e| format!("缩略图任务异常 (thumbnail task failed): {e}"))?
+    .map_err(|e| trf!("缩略图任务异常:{e}", "thumbnail task failed: {e}"))?
 }
 
 /// Rebuild the system-tray menu in the given UI language (`"zh"` | `"en"`).
@@ -1778,7 +1776,7 @@ pub async fn generate(
 ) -> Result<(), String> {
     let Some(backend) = state.backend().await else {
         let _ = on_event.send(StreamEvent::Error {
-            message: "尚未加载模型".into(),
+            message: trf!("尚未加载模型", "no model loaded"),
         });
         return Err(trf!("尚未加载模型", "no model loaded"));
     };
@@ -1878,17 +1876,17 @@ pub async fn vision_query(
         .map(|m| m.vision_ready)
         .unwrap_or(false);
     if !vision_ready {
-        return Err(
-            "当前模型不支持图像识别（未加载视觉编码器 mmproj）。(The active model can't see images — no vision encoder loaded.)"
-                .into(),
-        );
+        return Err(trf!(
+            "当前模型不支持图像识别（未加载视觉编码器 mmproj）。",
+            "The active model can't see images — no vision encoder loaded."
+        ));
     }
     let Some(backend) = state.backend().await else {
-        return Err("尚未加载模型 (no model loaded)".into());
+        return Err(trf!("尚未加载模型", "no model loaded").into());
     };
     for p in &images {
         if !std::path::Path::new(p).exists() {
-            return Err(format!("图片不存在 (image not found): {p}"));
+            return Err(trf!("图片不存在:{p}", "image not found: {p}"));
         }
     }
     state.cancel.store(false, Ordering::SeqCst);

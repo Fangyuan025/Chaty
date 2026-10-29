@@ -171,7 +171,7 @@ fn embedder_start(model_path: &PathBuf, layers: Option<i32>) -> Result<Embedder,
             let model = match LlamaModel::load_from_file(backend, &path, &params) {
                 Ok(m) => m,
                 Err(e) => {
-                    let _ = init_tx.send(Err(format!("加载嵌入模型失败 (failed to load embedding model): {e:#}")));
+                    let _ = init_tx.send(Err(trf!("加载嵌入模型失败:{e:#}", "failed to load embedding model: {e:#}")));
                     return;
                 }
             };
@@ -187,7 +187,7 @@ fn embedder_start(model_path: &PathBuf, layers: Option<i32>) -> Result<Embedder,
             let mut ctx = match model.new_context(backend, ctx_params) {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = init_tx.send(Err(format!("创建嵌入上下文失败 (failed to create embedding context): {e:#}")));
+                    let _ = init_tx.send(Err(trf!("创建嵌入上下文失败:{e:#}", "failed to create embedding context: {e:#}")));
                     return;
                 }
             };
@@ -224,7 +224,7 @@ fn embedder_start(model_path: &PathBuf, layers: Option<i32>) -> Result<Embedder,
                             }
                             ctx.clear_kv_cache();
                             if let Err(e) = ctx.decode(&mut batch) {
-                                failed = Some(format!("embed decode failed: {e}"));
+                                failed = Some(trf!("嵌入解码失败:{e}", "embed decode failed: {e}"));
                                 break;
                             }
                             match ctx.embeddings_seq_ith(0) {
@@ -252,7 +252,7 @@ fn embedder_start(model_path: &PathBuf, layers: Option<i32>) -> Result<Embedder,
     match init_rx.recv() {
         Ok(Ok(())) => Ok(Embedder { tx, worker: Some(worker) }),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err("嵌入线程启动失败 (embedder thread failed to start)".into()),
+        Err(_) => Err(trf!("嵌入线程启动失败", "embedder thread failed to start").into()),
     }
 }
 
@@ -272,11 +272,11 @@ fn embed(app: &tauri::AppHandle, texts: Vec<String>) -> Result<Vec<Vec<f32>>, St
         .unwrap()
         .tx
         .send(EmbedJob::Embed { texts, reply: reply_tx })
-        .map_err(|_| "嵌入线程已退出 (embedder exited)".to_string())?;
+        .map_err(|_| trf!("嵌入线程已退出", "embedder exited"))?;
     drop(guard); // don't hold the lock while embedding
     reply_rx
         .recv()
-        .map_err(|_| "嵌入线程已退出 (embedder exited)".to_string())?
+        .map_err(|_| trf!("嵌入线程已退出", "embedder exited"))?
 }
 
 fn l2_normalize(v: &mut [f32]) {
@@ -426,7 +426,7 @@ fn extract_text(path: &str) -> Result<String, String> {
 pub(crate) fn extract_pptx(path: &str) -> Result<String, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file)
-        .map_err(|e| format!("PPTX 解析失败 (not a valid .pptx): {e}"))?;
+        .map_err(|e| trf!("PPTX 解析失败:{e}", "not a valid .pptx: {e}"))?;
     let mut slides: Vec<(usize, String)> = Vec::new();
     let mut budget = crate::zipguard::Budget::default();
     for i in 0..zip.len() {
@@ -443,7 +443,7 @@ pub(crate) fn extract_pptx(path: &str) -> Result<String, String> {
         // whole, not skipped (see `zipguard`).
         let xml = match crate::zipguard::read_part_string(&mut entry, crate::zipguard::PART_MAX) {
             Ok(xml) => xml,
-            Err(e) if e.contains("unpacks to more than") => return Err(e),
+            Err(e) if crate::zipguard::is_too_big(&e) => return Err(e),
             Err(_) => continue,
         };
         budget.spend(xml.len())?;
@@ -471,7 +471,7 @@ pub(crate) fn extract_pptx(path: &str) -> Result<String, String> {
         .collect::<Vec<_>>()
         .join("\n\n");
     if out.is_empty() {
-        return Err("没有从演示文稿中解析到文本 (no text found in the deck)".into());
+        return Err(trf!("没有从演示文稿中解析到文本", "no text found in the deck").into());
     }
     Ok(out)
 }
@@ -500,7 +500,7 @@ pub(crate) fn extract_pdf(path: &str) -> Result<String, String> {
     let p = path.to_string();
     if let Some(whole) = caught(move || pdf_extract::extract_text(&p)) {
         return whole
-            .map_err(|e| format!("PDF 解析失败 (PDF extraction failed): {e}"))
+            .map_err(|e| trf!("PDF 解析失败:{e}", "PDF extraction failed: {e}"))
             .and_then(has_text);
     }
     let p = path.to_string();
@@ -514,7 +514,7 @@ pub(crate) fn extract_pdf(path: &str) -> Result<String, String> {
 pub(crate) fn extract_pdf_bytes(bytes: &[u8]) -> Result<String, String> {
     if let Some(whole) = caught(|| pdf_extract::extract_text_from_mem(bytes)) {
         return whole
-            .map_err(|e| format!("PDF 解析失败 (PDF extraction failed): {e}"))
+            .map_err(|e| trf!("PDF 解析失败:{e}", "PDF extraction failed: {e}"))
             .and_then(has_text);
     }
     let doc = caught(|| pdf_extract::Document::load_mem(bytes))
@@ -552,7 +552,7 @@ fn no_text_layer() -> String {
 }
 
 fn pdf_unreadable() -> String {
-    "PDF 解析失败:这个文件用了解析器不支持的字体编码      (PDF extraction failed: this file uses a font encoding the extractor does not support)"
+    trf!("PDF 解析失败:这个文件用了解析器不支持的字体编码", "PDF extraction failed: this file uses a font encoding the extractor does not support")
         .to_string()
 }
 
@@ -605,10 +605,10 @@ fn pdf_by_page(doc: &pdf_extract::Document) -> Result<String, String> {
 pub(crate) fn extract_docx(path: &str) -> Result<String, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file)
-        .map_err(|e| format!("DOCX 解析失败 (not a valid .docx): {e}"))?;
+        .map_err(|e| trf!("DOCX 解析失败:{e}", "not a valid .docx: {e}"))?;
     let body = zip
         .by_name("word/document.xml")
-        .map_err(|_| "DOCX 缺少 word/document.xml (corrupt .docx)".to_string())?;
+        .map_err(|_| trf!("DOCX 缺少 word/document.xml,文件可能已损坏", "the .docx has no word/document.xml — the file may be damaged"))?;
     let xml = crate::zipguard::read_part_string(body, crate::zipguard::PART_MAX)?;
 
     // Turn structural tags into whitespace before stripping the rest.
@@ -643,7 +643,7 @@ pub(crate) fn extract_xlsx(path: &str) -> Result<String, String> {
     // calamine unpacks the sheets itself, with no cap: measured first.
     crate::zipguard::check_unpacked(path)?;
     let mut wb: Xlsx<_> =
-        open_workbook(path).map_err(|e| format!("XLSX 解析失败 (failed to read .xlsx): {e}"))?;
+        open_workbook(path).map_err(|e| trf!("XLSX 解析失败:{e}", "failed to read .xlsx: {e}"))?;
     let mut out = String::new();
     for name in wb.sheet_names() {
         let range = match wb.worksheet_range(&name) {
@@ -1087,24 +1087,26 @@ async fn read_scanned_pdf(
     on_progress: &Channel<RagProgress>,
 ) -> Result<String, String> {
     if !vision_ready(app).await {
-        return Err("这个 PDF 没有文字层,是扫描件(每一页都是图片)。要导入它,需要先加载一个能看图的模型——\
-                    模型选择器里带视觉(Vision)标记的——Chaty 会用它逐页读出上面的文字。\
-                    (This PDF has no text layer — it is a scan, every page a picture. To import it, load a \
-                    model that can see images — marked Vision in the model picker — and Chaty will read \
-                    each page with it.)"
-            .into());
+        return Err(trf!(
+            "这个 PDF 没有文字层,是扫描件(每一页都是图片)。要导入它,需要先加载一个能看图的模型——\
+             模型选择器里带视觉(Vision)标记的——Chaty 会用它逐页读出上面的文字。",
+            "This PDF has no text layer — it is a scan, every page a picture. To import it, load a \
+             model that can see images — marked Vision in the model picker — and Chaty will read \
+             each page with it."
+        ));
     }
     let p = path.to_string();
     let pages = tokio::task::spawn_blocking(move || crate::docimg::pdf_page_images(&p, MAX_SCAN_PAGES))
         .await
         .unwrap_or_default();
     if pages.is_empty() {
-        return Err("这个 PDF 没有文字层,而它的页面图片用了暂不支持的编码(如 JBIG2、CCITT),读不出来。\
-                    可以先用别的工具把它转成带文字层的 PDF,或把页面导出成图片再导入。\
-                    (This PDF has no text layer, and its page images use an encoding Chaty cannot read yet, \
-                    such as JBIG2 or CCITT. Convert it to a PDF with a text layer, or export the pages as \
-                    images and import those.)"
-            .into());
+        return Err(trf!(
+            "这个 PDF 没有文字层,而它的页面图片用了暂不支持的编码(如 JBIG2、CCITT),读不出来。\
+             可以先用别的工具把它转成带文字层的 PDF,或把页面导出成图片再导入。",
+            "This PDF has no text layer, and its page images use an encoding Chaty cannot read yet, \
+             such as JBIG2 or CCITT. Convert it to a PDF with a text layer, or export the pages as \
+             images and import those."
+        ));
     }
     let mut texts = Vec::with_capacity(pages.len());
     for (i, img) in pages.iter().enumerate() {
@@ -1204,7 +1206,7 @@ pub async fn rag_add_document(
         // An image with neither a caption nor OCR text has nothing to index.
         if vision_text.is_none() && ocr.is_empty() {
             return Err(
-                "无法从图片中提取内容：未加载视觉模型且未识别到文字。(Nothing to index from the image — no vision model loaded and no OCR text found.)"
+                trf!("无法从图片中提取内容：未加载视觉模型且未识别到文字", "Nothing to index from the image — no vision model loaded and no OCR text found.")
                     .into(),
             );
         }
@@ -1333,7 +1335,7 @@ pub async fn rag_add_document(
         }
         let chunks = chunk_text(&text);
         if chunks.is_empty() {
-            return Err("文档中没有可索引的文本 (no indexable text in document)".into());
+            return Err(trf!("文档中没有可索引的文本", "no indexable text in document").into());
         }
 
         // Replace an existing doc of the same name.
@@ -1420,7 +1422,7 @@ pub async fn rag_add_document(
         Ok(())
     })
     .await
-    .map_err(|e| format!("索引任务异常 (indexing task panicked): {e}"))?
+    .map_err(|e| trf!("索引任务异常:{e}", "indexing task panicked: {e}"))?
 }
 
 /// File extensions the knowledge base can ingest: documents (PDF/DOCX),
@@ -1450,7 +1452,7 @@ pub fn rag_list_supported_files(dir: String) -> Result<Vec<String>, String> {
     const MAX_FILES: usize = 5000;
     let root = std::path::PathBuf::from(&dir);
     if !root.is_dir() {
-        return Err("不是有效的文件夹 (not a directory)".into());
+        return Err(trf!("不是有效的文件夹", "not a directory").into());
     }
     let mut out: Vec<String> = Vec::new();
     let mut stack = vec![root];
@@ -1566,7 +1568,7 @@ pub fn rag_corpus(app: tauri::AppHandle, max_chars: Option<usize>) -> Result<Str
         }
         let trimmed: String = out.trim().chars().take(cap).collect();
         if trimmed.is_empty() {
-            return Err("知识库为空或全部文档已禁用 (knowledge base is empty or all documents are disabled)".into());
+            return Err(trf!("知识库为空或全部文档已禁用", "knowledge base is empty or all documents are disabled").into());
         }
         Ok(trimmed)
     })
@@ -1594,7 +1596,7 @@ pub fn rag_corpus_docs(
             .query_row("SELECT COUNT(*) FROM docs WHERE enabled = 1", [], |r| r.get(0))
             .unwrap_or(0);
         if n_docs == 0 {
-            return Err("知识库为空或全部文档已禁用 (knowledge base is empty or all documents are disabled)".into());
+            return Err(trf!("知识库为空或全部文档已禁用", "knowledge base is empty or all documents are disabled").into());
         }
         let per_doc = (cap / n_docs as usize).clamp(800, 8000);
 
@@ -1824,7 +1826,7 @@ pub async fn rag_download_model(
     }
     crate::download::clear_cancel("rag-embed");
     let _ = std::fs::remove_file(&tmp);
-    let msg = format!("嵌入模型下载失败 (embedding model download failed): {last_err}");
+    let msg = trf!("嵌入模型下载失败:{last_err}", "embedding model download failed: {last_err}");
     let _ = on_progress.send(RagDlProgress::Error { message: msg.clone() });
     Err(msg)
 }

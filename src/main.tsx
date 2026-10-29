@@ -10,7 +10,7 @@ import "@fontsource/source-serif-4/400.css";
 import "@fontsource/source-serif-4/400-italic.css";
 import "@fontsource/source-serif-4/600.css";
 import "@fontsource/source-serif-4/700.css";
-import { LangProvider } from "./lib/i18n";
+import { LangProvider, detectLang, syncBackendLang } from "./lib/i18n";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ConfirmProvider } from "./components/ConfirmModal";
 import { noteFrontendReady } from "./lib/ipc";
@@ -45,6 +45,9 @@ async function bootstrap() {
     const { installDevMock } = await import("./lib/devMock");
     installDevMock();
   }
+  // Errors from the backend come in the language the UI is in, from the first
+  // one on — not only once a coding turn has set it.
+  await syncBackendLang(detectLang());
   // Deferred so App's module-level platform detection runs after the mock
   // (a static import would evaluate it before bootstrap).
   const { default: App } = await import("./App");

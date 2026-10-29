@@ -197,7 +197,7 @@ pub struct SdEngine {
 }
 
 fn send(stdin: &Arc<Mutex<Option<ChildStdin>>>, cmd: &Value) -> Result<()> {
-    let mut guard = stdin.lock().map_err(|_| anyhow!("stdin poisoned"))?;
+    let mut guard = stdin.lock().map_err(|_| anyhow!(trf!("图像引擎的输入管道已损坏", "the image engine's input pipe is broken")))?;
     let pipe = guard
         .as_mut()
         .ok_or_else(|| anyhow!(trf!("图像引擎已卸载", "the image engine was unloaded")))?;
@@ -231,9 +231,9 @@ impl SdEngine {
             .spawn()
             .with_context(|| trf!("无法启动图像引擎 {}", "failed to start the image engine {}", sidecar.display()))?;
         super::SIDECAR_PIDS.lock().unwrap().push(child.id());
-        let stdin = child.stdin.take().context("sidecar stdin unavailable")?;
-        let stdout = child.stdout.take().context("sidecar stdout unavailable")?;
-        let stderr = child.stderr.take().context("sidecar stderr unavailable")?;
+        let stdin = child.stdin.take().context(trf!("图像引擎的输入管道不可用", "the image engine's input pipe is unavailable"))?;
+        let stdout = child.stdout.take().context(trf!("图像引擎的输出管道不可用", "the image engine's output pipe is unavailable"))?;
+        let stderr = child.stderr.take().context(trf!("图像引擎的日志管道不可用", "the image engine's log pipe is unavailable"))?;
 
         // The engine's own log: kept (the tail) for when something goes wrong,
         // and drained always — a full pipe would stall the engine.
@@ -300,7 +300,7 @@ impl SdEngine {
     }
 
     fn handshake_and_load(&self, cmd: Value, progress: impl Fn(f32)) -> Result<Loaded> {
-        let rx = self.lines.lock().map_err(|_| anyhow!("engine lock poisoned"))?;
+        let rx = self.lines.lock().map_err(|_| anyhow!(trf!("图像引擎状态异常,请重新加载模型", "the image engine is in a bad state — load the model again")))?;
         let started = Instant::now();
         let ready = loop {
             if started.elapsed() > READY_TIMEOUT {
@@ -322,7 +322,7 @@ impl SdEngine {
                     ready["message"].as_str().unwrap_or("?")
                 )
             ),
-            _ => bail!("unexpected first event from the image engine: {ready}"),
+            _ => bail!(trf!("图像引擎握手失败(首个事件:{ready})", "unexpected first event from the image engine: {ready}")),
         }
         let device = ready["devices"]
             .as_array()
@@ -385,7 +385,7 @@ impl SdEngine {
                 }
                 Some("error") if ev["scope"] == "load" => {
                     let msg = ev["message"].as_str().unwrap_or("unknown error").to_string();
-                    bail!("{}", explain(&msg));
+                    bail!("{}", explain(&msg, Stage::Load));
                 }
                 _ => {}
             }
@@ -453,7 +453,7 @@ impl SdEngine {
             }
         }
 
-        let rx = self.lines.lock().map_err(|_| anyhow!("engine lock poisoned"))?;
+        let rx = self.lines.lock().map_err(|_| anyhow!(trf!("图像引擎状态异常,请重新加载模型", "the image engine is in a bad state — load the model again")))?;
         // Anything left over from a job that ended abnormally is not ours.
         while let Ok(Some(_)) = self.recv(&rx, Duration::from_millis(0)) {}
         send(&self.stdin, &cmd)?;
@@ -515,7 +515,7 @@ impl SdEngine {
                 }
                 Some("error") => {
                     let msg = ev["message"].as_str().unwrap_or("unknown error").to_string();
-                    bail!("{}", explain(&msg));
+                    bail!("{}", explain(&msg, Stage::Generate));
                 }
                 _ => {}
             }
@@ -572,7 +572,15 @@ impl std::error::Error for SidecarDied {}
 
 /// Put the engine's terse errors in words a user can act on; keep the
 /// original after it for the report.
-fn explain(msg: &str) -> String {
+#[derive(Clone, Copy)]
+enum Stage {
+    Load,
+    Generate,
+}
+
+/// The engine's own words, put in the user's language: what went wrong and
+/// what to do, with the engine's text after it for the report.
+fn explain(msg: &str, stage: Stage) -> String {
     let m = msg.to_lowercase();
     if m.contains("out of memory") || m.contains("failed to allocate") || m.contains("alloc") && m.contains("fail") {
         return format!(
@@ -592,7 +600,28 @@ fn explain(msg: &str) -> String {
             )
         );
     }
-    msg.to_string()
+    // A part the engine went looking for and did not find: the denoiser was
+    // loaded without the text encoder or the VAE it needs (issue #25).
+    if m.contains("not in model metadata") {
+        let part = if m.starts_with("vae ") || m.contains("first_stage_model.") {
+            "VAE".to_string()
+        } else if m.starts_with("conditioner ") || m.contains("text_encoders.") || m.contains("cond_stage_model.") {
+            trf!("文本编码器", "text encoder")
+        } else {
+            trf!("配套文件", "companion file")
+        };
+        return format!(
+            "{} ({msg})",
+            trf!(
+                "这个模型缺少{part},图像引擎在已选的文件里找不到它。请在模型菜单里下载配套文件,或在 设置 → 生图模型 中为它指定对应的文件",
+                "this model is missing its {part} — the image engine did not find it in the files chosen for it. Download the companion files from the model menu, or choose them in Settings → Image model"
+            )
+        );
+    }
+    match stage {
+        Stage::Load => trf!("图像模型没能加载:{msg}", "the image model could not be loaded: {msg}"),
+        Stage::Generate => trf!("图像生成失败:{msg}", "image generation failed: {msg}"),
+    }
 }
 
 impl Drop for SdEngine {

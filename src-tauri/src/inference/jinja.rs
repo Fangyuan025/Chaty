@@ -61,7 +61,7 @@ impl Compiled {
         // with a tool result in it.
         env.add_filter("tojson", py_tojson);
         env.add_template_owned("chat", without_generation_tags(source))
-            .map_err(|e| anyhow!("chat template does not parse as Jinja: {e}"))?;
+            .map_err(|e| anyhow!(trf!("模型的对话模板无法按 Jinja 解析:{e}", "the chat template does not parse as Jinja: {e}")))?;
         Ok(Self { env, bos: bos.to_string(), eos: eos.to_string() })
     }
 
@@ -97,7 +97,7 @@ impl Compiled {
         if let Some(rung) = kw.reasoning_effort {
             ctx.insert("reasoning_effort", Value::from(rung));
         }
-        tmpl.render(Value::from_serialize(&ctx)).map_err(|e| anyhow!("chat template failed to render: {e}"))
+        tmpl.render(Value::from_serialize(&ctx)).map_err(|e| anyhow!(trf!("模型的对话模板渲染失败:{e}", "the chat template failed to render: {e}")))
     }
 }
 

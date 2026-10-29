@@ -171,9 +171,9 @@ impl Proc {
             .spawn()
             .with_context(|| trf!("无法启动音乐引擎 {}", "failed to start the music engine {}", sidecar.display()))?;
         super::SIDECAR_PIDS.lock().unwrap().push(child.id());
-        let stdin = child.stdin.take().context("sidecar stdin unavailable")?;
-        let stdout = child.stdout.take().context("sidecar stdout unavailable")?;
-        let stderr = child.stderr.take().context("sidecar stderr unavailable")?;
+        let stdin = child.stdin.take().context(trf!("音乐引擎的输入管道不可用", "the music engine's input pipe is unavailable"))?;
+        let stdout = child.stdout.take().context(trf!("音乐引擎的输出管道不可用", "the music engine's output pipe is unavailable"))?;
+        let stderr = child.stderr.take().context(trf!("音乐引擎的日志管道不可用", "the music engine's log pipe is unavailable"))?;
         // The engine's own log: kept (the tail) for when something goes
         // wrong, and drained always — a full pipe would stall the engine.
         let tail = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL)));
@@ -207,7 +207,7 @@ impl Proc {
     }
 
     fn send(&self, cmd: &Value) -> Result<()> {
-        let mut guard = self.stdin.lock().map_err(|_| anyhow!("stdin poisoned"))?;
+        let mut guard = self.stdin.lock().map_err(|_| anyhow!(trf!("音乐引擎的输入管道已损坏", "the music engine's input pipe is broken")))?;
         let pipe = guard
             .as_mut()
             .ok_or_else(|| anyhow!(trf!("音乐引擎已卸载", "the music engine was unloaded")))?;
@@ -220,7 +220,7 @@ impl Proc {
         match rx.recv_timeout(timeout) {
             Ok(line) => Ok(serde_json::from_str::<Value>(&line).ok().filter(|v| v.get("event").is_some())),
             Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => Err(anyhow!("sidecar exited")),
+            Err(RecvTimeoutError::Disconnected) => Err(anyhow!(trf!("音乐引擎意外退出", "the music engine exited unexpectedly"))),
         }
     }
 
@@ -238,7 +238,7 @@ impl Proc {
 
     /// The handshake, then `cmd` (a `load`). Returns what the engine said.
     fn handshake_and_load(&self, cmd: &Value, progress: &dyn Fn(f32)) -> Result<Loaded> {
-        let rx = self.lines.lock().map_err(|_| anyhow!("engine lock poisoned"))?;
+        let rx = self.lines.lock().map_err(|_| anyhow!(trf!("音乐引擎状态异常,请重新加载模型", "the music engine is in a bad state — load the model again")))?;
         let started = Instant::now();
         let ready = loop {
             if started.elapsed() > READY_TIMEOUT {
@@ -260,7 +260,7 @@ impl Proc {
                     ready["message"].as_str().unwrap_or("?")
                 )
             ),
-            _ => bail!("unexpected first event from the music engine: {ready}"),
+            _ => bail!(trf!("音乐引擎握手失败(首个事件:{ready})", "unexpected first event from the music engine: {ready}")),
         }
         progress(0.3);
         let device = ready["devices"]
@@ -303,7 +303,7 @@ impl Proc {
                 }
                 Some("error") => {
                     let msg = ev["message"].as_str().unwrap_or("unknown error").to_string();
-                    bail!("{}", explain(&msg));
+                    bail!("{}", explain(&msg, Stage::Load));
                 }
                 _ => {}
             }
@@ -369,7 +369,7 @@ impl AudioEngine {
 
     /// The running sidecar, or a new one when the last was stopped.
     fn live_proc(&self) -> Result<Arc<Proc>> {
-        let mut slot = self.proc.lock().map_err(|_| anyhow!("engine lock poisoned"))?;
+        let mut slot = self.proc.lock().map_err(|_| anyhow!(trf!("音乐引擎状态异常,请重新加载模型", "the music engine is in a bad state — load the model again")))?;
         if let Some(p) = slot.as_ref() {
             return Ok(p.clone());
         }
@@ -413,7 +413,7 @@ impl AudioEngine {
             cmd["audio_path"] = json!(a);
         }
 
-        let rx = proc.lines.lock().map_err(|_| anyhow!("engine lock poisoned"))?;
+        let rx = proc.lines.lock().map_err(|_| anyhow!(trf!("音乐引擎状态异常,请重新加载模型", "the music engine is in a bad state — load the model again")))?;
         // Anything left over from a job that ended abnormally is not ours.
         while let Ok(Some(_)) = Proc::recv(&rx, Duration::from_millis(0)) {}
         proc.send(&cmd)?;
@@ -480,7 +480,7 @@ impl AudioEngine {
                 }
                 Some("error") => {
                     let msg = ev["message"].as_str().unwrap_or("unknown error").to_string();
-                    bail!("{}", explain(&msg));
+                    bail!("{}", explain(&msg, Stage::Generate));
                 }
                 _ => {}
             }
@@ -513,9 +513,15 @@ impl AudioEngine {
     }
 }
 
-/// Put the engine's terse errors in words a user can act on; keep the
-/// original after it for the report.
-fn explain(msg: &str) -> String {
+#[derive(Clone, Copy)]
+enum Stage {
+    Load,
+    Generate,
+}
+
+/// Put the engine's terse errors in words a user can act on, in the user's
+/// language; keep the original after it for the report.
+fn explain(msg: &str, stage: Stage) -> String {
     let m = msg.to_lowercase();
     if m.contains("out of memory") || m.contains("failed to allocate") || m.contains("alloc") && m.contains("fail") {
         return format!(
@@ -535,7 +541,10 @@ fn explain(msg: &str) -> String {
             )
         );
     }
-    msg.to_string()
+    match stage {
+        Stage::Load => trf!("音乐模型没能加载:{msg}", "the music model could not be loaded: {msg}"),
+        Stage::Generate => trf!("音乐生成失败:{msg}", "music generation failed: {msg}"),
+    }
 }
 
 impl Drop for AudioEngine {

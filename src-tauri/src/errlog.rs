@@ -122,7 +122,10 @@ pub fn sweep_native_crash_reports() {
     for name in crash_reports_in(&dir, last) {
         append_error(
             "native-crash",
-            &format!("macOS 崩溃报告(提 issue 请一并附上): ~/Library/Logs/DiagnosticReports/{name}"),
+            &trf!(
+                "macOS 崩溃报告(提 issue 请一并附上):~/Library/Logs/DiagnosticReports/{name}",
+                "macOS crash report (attach it to an issue): ~/Library/Logs/DiagnosticReports/{name}"
+            ),
         );
     }
     let _ = std::fs::create_dir_all(mark.parent().unwrap());
