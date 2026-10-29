@@ -314,6 +314,130 @@ pub static FLUX_SCHNELL: Family = Family {
     edits: false,
 };
 
+// FLUX.2 [klein]: a Qwen3 reads the prompt (4B for the 4B model, 8B for the
+// 9B), and the latents are FLUX.2's own — 32 channels, not FLUX.1's 16, so
+// FLUX.1's `ae.safetensors` does not fit. The distilled checkpoints draw in
+// four steps at CFG 1; the base ones are undistilled and want real CFG.
+const FLUX2_VAE: Companion = Companion {
+    role: Role::Vae,
+    repo: "Comfy-Org/Flux-2-Klein-4B",
+    file: "split_files/vae/flux2-vae.safetensors",
+    size: 336 * MB,
+};
+const FLUX2_VAE_HINTS: &[&str] = &["flux2-vae", "flux2_vae", "flux-2-vae", "flux2-ae", "flux2_ae"];
+// The plain Qwen3 releases, not the 2507 instruct/thinking ones: the encoder
+// is read for its hidden states, and klein was trained on these.
+const KLEIN_4B_HINTS: &[(Role, &[&str])] = &[
+    (Role::Vae, FLUX2_VAE_HINTS),
+    (Role::Llm, &["qwen3-4b-q", "qwen3-4b-ud-", "qwen3-4b-bf16", "qwen3-4b-f16", "qwen3-4b.", "qwen_3_4b"]),
+];
+const KLEIN_9B_HINTS: &[(Role, &[&str])] = &[
+    (Role::Vae, FLUX2_VAE_HINTS),
+    (Role::Llm, &["qwen3-8b-q", "qwen3-8b-ud-", "qwen3-8b-bf16", "qwen3-8b-f16", "qwen3-8b.", "qwen_3_8b"]),
+];
+const KLEIN_4B_COMPANIONS: &[Companion] = &[
+    FLUX2_VAE,
+    Companion {
+        role: Role::Llm,
+        repo: "unsloth/Qwen3-4B-GGUF",
+        file: "Qwen3-4B-Q4_K_M.gguf",
+        size: 2_497 * MB,
+    },
+];
+const KLEIN_9B_COMPANIONS: &[Companion] = &[
+    FLUX2_VAE,
+    Companion {
+        role: Role::Llm,
+        repo: "unsloth/Qwen3-8B-GGUF",
+        file: "Qwen3-8B-Q4_K_M.gguf",
+        size: 5_027 * MB,
+    },
+];
+const KLEIN_DISTILLED: Defaults = Defaults {
+    steps: 4,
+    cfg_scale: 1.0,
+    guidance: None,
+    sampler: "euler",
+    scheduler: "",
+    flow_shift: 0.0,
+    base_size: 1024,
+    align: 16,
+    negative_prompt: false,
+};
+const KLEIN_BASE: Defaults = Defaults {
+    steps: 20,
+    cfg_scale: 4.0,
+    guidance: None,
+    sampler: "euler",
+    scheduler: "",
+    flow_shift: 0.0,
+    base_size: 1024,
+    align: 16,
+    negative_prompt: true,
+};
+
+pub static FLUX2_KLEIN_4B: Family = Family {
+    id: "flux2-klein-4b",
+    name: "FLUX.2 [klein] 4B",
+    all_in_one: false,
+    requires: &[Role::Vae, Role::Llm],
+    optional: &[],
+    companions: KLEIN_4B_COMPANIONS,
+    hints: KLEIN_4B_HINTS,
+    defaults: KLEIN_DISTILLED,
+    edits: false,
+};
+
+pub static FLUX2_KLEIN_BASE_4B: Family = Family {
+    id: "flux2-klein-base-4b",
+    name: "FLUX.2 [klein] Base 4B",
+    all_in_one: false,
+    requires: &[Role::Vae, Role::Llm],
+    optional: &[],
+    companions: KLEIN_4B_COMPANIONS,
+    hints: KLEIN_4B_HINTS,
+    defaults: KLEIN_BASE,
+    edits: false,
+};
+
+pub static FLUX2_KLEIN_9B: Family = Family {
+    id: "flux2-klein-9b",
+    name: "FLUX.2 [klein] 9B",
+    all_in_one: false,
+    requires: &[Role::Vae, Role::Llm],
+    optional: &[],
+    companions: KLEIN_9B_COMPANIONS,
+    hints: KLEIN_9B_HINTS,
+    defaults: KLEIN_DISTILLED,
+    edits: false,
+};
+
+pub static FLUX2_KLEIN_BASE_9B: Family = Family {
+    id: "flux2-klein-base-9b",
+    name: "FLUX.2 [klein] Base 9B",
+    all_in_one: false,
+    requires: &[Role::Vae, Role::Llm],
+    optional: &[],
+    companions: KLEIN_9B_COMPANIONS,
+    hints: KLEIN_9B_HINTS,
+    defaults: KLEIN_BASE,
+    edits: false,
+};
+
+/// Which FLUX.2 a denoiser is, by the width of the text it takes in: three
+/// of the encoder's hidden layers side by side — Qwen3-4B's 2560 for klein
+/// 4B, Qwen3-8B's 4096 for 9B. FLUX.2 [dev] (Mistral Small, 15360) is not
+/// set up here and stays generic. Base and distilled share every shape; the
+/// name tells them apart.
+fn flux2(t: &Tensors, name: &str) -> &'static Family {
+    let base = name.contains("base");
+    match t.dims("txt_in.weight").and_then(|d| d.first().copied()) {
+        Some(7680) => if base { &FLUX2_KLEIN_BASE_4B } else { &FLUX2_KLEIN_4B },
+        Some(12288) => if base { &FLUX2_KLEIN_BASE_9B } else { &FLUX2_KLEIN_9B },
+        _ => &GENERIC,
+    }
+}
+
 pub static CHROMA: Family = Family {
     id: "chroma",
     name: "Chroma",
@@ -433,11 +557,15 @@ pub static GENERIC: Family = Family {
     edits: false,
 };
 
-pub static ALL: [&Family; 11] = [
+pub static ALL: [&Family; 15] = [
     &QWEN_IMAGE_21,
     &QWEN_IMAGE,
     &Z_IMAGE_TURBO,
     &Z_IMAGE,
+    &FLUX2_KLEIN_4B,
+    &FLUX2_KLEIN_BASE_4B,
+    &FLUX2_KLEIN_9B,
+    &FLUX2_KLEIN_BASE_9B,
     &FLUX_DEV,
     &FLUX_SCHNELL,
     &CHROMA,
@@ -566,7 +694,7 @@ pub fn detect(t: &Tensors, arch: Option<&str>, file_name: &str) -> &'static Fami
         // FLUX.2 shares the block names and nothing else — another encoder,
         // another VAE.
         if t.any_prefix("double_stream_modulation_img.") {
-            return &GENERIC;
+            return flux2(t, &name);
         }
         return if t.any_prefix("guidance_in.") { &FLUX_DEV } else { &FLUX_SCHNELL };
     }
@@ -607,6 +735,14 @@ pub fn guess_by_name(name: &str) -> Option<&'static Family> {
         Some(&Z_IMAGE)
     } else if n.contains("chroma") {
         Some(&CHROMA)
+    } else if (n.contains("flux.2") || n.contains("flux-2") || n.contains("flux2")) && n.contains("klein") {
+        let base = n.contains("base");
+        Some(match (n.contains("9b"), base) {
+            (true, true) => &FLUX2_KLEIN_BASE_9B,
+            (true, false) => &FLUX2_KLEIN_9B,
+            (false, true) => &FLUX2_KLEIN_BASE_4B,
+            (false, false) => &FLUX2_KLEIN_4B,
+        })
     } else if n.contains("flux") && n.contains("schnell") {
         Some(&FLUX_SCHNELL)
     } else if n.contains("flux.1") || n.contains("flux1") || n.contains("flux-1") {
@@ -709,6 +845,19 @@ mod tests {
         // projection, a modulation shared by all blocks.
         let klein_m = t(&[("single_transformer_blocks.0.attn.to_qkv_mlp_proj.weight", &[1]), ("x_embedder.weight", &[1]), ("context_embedder.weight", &[1]), ("time_guidance_embed.linear_1.weight", &[1]), ("double_stream_modulation_img.linear.weight", &[1])]);
         assert_eq!(detect(&klein_m, None, "FLUX.2-klein-4B-mflux-4bit").id, "generic");
+        // FLUX.2 in its own names (stable-diffusion.cpp's and unsloth's
+        // GGUFs, BFL's single-file safetensors): the width of `txt_in` says
+        // which Qwen3 reads the prompt (issue #25).
+        let klein = |w: u64| -> Vec<(&'static str, &'static [u64])> {
+            let txt: &'static [u64] = Box::leak(vec![w, 3072].into_boxed_slice());
+            vec![("double_blocks.0.img_attn.qkv.weight", &[3072, 9216]), ("single_blocks.0.linear1.weight", &[3072, 27648]), ("double_stream_modulation_img.lin.weight", &[3072, 18432]), ("txt_in.weight", txt)]
+        };
+        assert_eq!(detect(&t(&klein(7680)), Some("flux"), "flux-2-klein-4b-Q4_0.gguf").id, "flux2-klein-4b");
+        assert_eq!(detect(&t(&klein(7680)), None, "flux-2-klein-base-4b-Q8_0.gguf").id, "flux2-klein-base-4b");
+        assert_eq!(detect(&t(&klein(12288)), None, "flux-2-klein-9b-Q4_0.gguf").id, "flux2-klein-9b");
+        assert_eq!(detect(&t(&klein(12288)), None, "flux-2-klein-base-9b.safetensors").id, "flux2-klein-base-9b");
+        // FLUX.2 [dev] reads Mistral Small's 3 × 5120: not set up, generic.
+        assert_eq!(detect(&t(&klein(15360)), Some("flux"), "flux2-dev-Q4_0.gguf").id, "generic");
         let schnell = t(&[("double_blocks.0.x", &[1]), ("single_blocks.0.x", &[1])]);
         assert_eq!(detect(&schnell, Some("flux"), "flux1-schnell-Q4_K_S.gguf").id, "flux-schnell");
         let chroma = t(&[("double_blocks.0.x", &[1]), ("single_blocks.0.x", &[1]), ("distilled_guidance_layer.in_proj.weight", &[1])]);
@@ -747,6 +896,11 @@ mod tests {
         assert_eq!(guess_by_name("leejet/Z-Image-Turbo-GGUF").map(|f| f.id), Some("z-image-turbo"));
         assert_eq!(guess_by_name("city96/FLUX.1-schnell-gguf").map(|f| f.id), Some("flux-schnell"));
         assert_eq!(guess_by_name("city96/FLUX.1-dev-gguf").map(|f| f.id), Some("flux-dev"));
+        assert_eq!(guess_by_name("leejet/FLUX.2-klein-4B-GGUF").map(|f| f.id), Some("flux2-klein-4b"));
+        assert_eq!(guess_by_name("unsloth/FLUX.2-klein-4B-GGUF").map(|f| f.id), Some("flux2-klein-4b"));
+        assert_eq!(guess_by_name("leejet/FLUX.2-klein-base-9B-GGUF").map(|f| f.id), Some("flux2-klein-base-9b"));
+        assert_eq!(guess_by_name("flux-2-klein-9b-Q4_0.gguf").map(|f| f.id), Some("flux2-klein-9b"));
+        assert_eq!(guess_by_name("city96/FLUX.2-dev-gguf").map(|f| f.id), None);
         assert_eq!(guess_by_name("Qwen/Qwen3-4B-GGUF").map(|f| f.id), None);
     }
 
