@@ -756,6 +756,7 @@ export const T = {
   storeAgoMin: { zh: "{n} 分钟前", en: "{n} min ago", pt: "há {n} min" },
   storeAgoHour: { zh: "{n} 小时前", en: "{n} h ago", pt: "há {n} h" },
   storeAgoDay: { zh: "{n} 天前", en: "{n} d ago", pt: "há {n} d" },
+  mermaidFailed: { zh: "图表没能画出来", en: "The diagram could not be drawn", pt: "Não foi possível desenhar o diagrama" },
   storePickModel: { zh: "从左侧选择一个模型查看详情", en: "Pick a model on the left to see details", pt: "Escolha um modelo à esquerda para ver detalhes" },
   storeFitsRam: { zh: "✓ 可完整载入内存", en: "✓ Fits fully in memory", pt: "✓ Cabe totalmente na memória" },
   storeOverRam: { zh: "≈ 接近或超出内存，速度可能受影响", en: "≈ Near or over memory — may run slowly", pt: "≈ Próximo ou acima da memória — pode rodar lento" },

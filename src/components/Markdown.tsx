@@ -155,6 +155,7 @@ let mermaidSeq = 0;
 /** Lazily-loaded Mermaid diagram. Falls back to the raw code on parse errors
  *  (e.g. while the block is still streaming in). */
 function Mermaid({ code }: { code: string }) {
+  const { t } = useI18n();
   const [svg, setSvg] = useState("");
   const [error, setError] = useState("");
 
@@ -192,7 +193,7 @@ function Mermaid({ code }: { code: string }) {
         }
       })
       .catch((e) => {
-        if (alive) setError(`mermaid failed to load: ${(e as Error)?.message ?? e}`);
+        if (alive) setError(`mermaid: ${(e as Error)?.message ?? e}`);
       });
     return () => {
       alive = false;
@@ -205,7 +206,7 @@ function Mermaid({ code }: { code: string }) {
   return (
     <pre className="mermaid-src">
       <code>{code}</code>
-      {error ? <div className="mermaid-err">{error.slice(0, 300)}</div> : null}
+      {error ? <div className="mermaid-err">{`${t("mermaidFailed")}: ${error.slice(0, 300)}`}</div> : null}
     </pre>
   );
 }
