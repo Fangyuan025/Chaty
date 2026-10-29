@@ -675,6 +675,29 @@ static void do_load(json cmd) {
           {"elapsed_ms", ms}});
 }
 
+// The pictures one generate_image call made, freed when it goes. Upstream
+// changed the call to hand back a result that owns them (a85db96, 2026-10-24);
+// CMakeLists.txt says which form this build's header has, so a runtime pack
+// built from a newer upstream compiles as the pinned one does.
+#if CHATY_SD_RESULT_API
+struct Generated {
+    sd_image_generation_result_t* r = nullptr;
+    bool run(sd_ctx_t* ctx, const sd_img_gen_params_t* g) { return generate_image(ctx, g, &r); }
+    int count() const { return r ? r->count : 0; }
+    const sd_image_t& at(int i) const { return r->items[i].image; }
+    ~Generated() { free_sd_image_generation_result(r); }
+};
+#else
+struct Generated {
+    sd_image_t* images = nullptr;
+    int n              = 0;
+    bool run(sd_ctx_t* ctx, const sd_img_gen_params_t* g) { return generate_image(ctx, g, &images, &n); }
+    int count() const { return images ? n : 0; }
+    const sd_image_t& at(int i) const { return images[i]; }
+    ~Generated() { free_sd_images(images, n); }
+};
+#endif
+
 static void do_generate(json cmd) {
     const std::string id = jstr(cmd, "id");
     auto t0              = std::chrono::steady_clock::now();
@@ -810,15 +833,14 @@ static void do_generate(json cmd) {
         emit_stage_locked();
     }
 
-    sd_image_t* images = nullptr;
-    int count          = 0;
-    bool ok            = generate_image(g_ctx, &g, &images, &count);
+    Generated images;
+    bool ok             = images.run(g_ctx, &g);
+    const int count     = images.count();
     std::string gen_err = take_last_error();
     end_job();
     release();
 
-    if (!ok || images == nullptr || count <= 0) {
-        free_sd_images(images, count);
+    if (!ok || count <= 0) {
         // A cancel ends the call as a failure; it is not one to report.
         if (g_cancel_requested) {
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
@@ -835,7 +857,7 @@ static void do_generate(json cmd) {
     const bool jpeg = format == "jpg" || format == "jpeg";
     int saved       = 0;
     for (int i = 0; i < count; i++) {
-        const sd_image_t& im = images[i];
+        const sd_image_t& im = images.at(i);
         if (im.data == nullptr)
             continue;
         std::vector<unsigned char> bytes;
@@ -855,7 +877,6 @@ static void do_generate(json cmd) {
         std::string name = count > 1 ? stem + "-" + std::to_string(i + 1) : stem;
         fs::path path    = unique_path(dir, name, jpeg ? ".jpg" : ".png");
         if (!enc_ok || !write_file(path, bytes)) {
-            free_sd_images(images, count);
             emit({{"event", "error"}, {"id", id}, {"scope", "save"}, {"message", "cannot write " + path_utf8(path)}});
             return;
         }
@@ -869,7 +890,6 @@ static void do_generate(json cmd) {
               {"seed", seed + i}});
         saved++;
     }
-    free_sd_images(images, count);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     // "after_current" returns the pictures finished so far — fewer than asked.
     emit({{"event", "done"}, {"id", id}, {"count", saved}, {"cancelled", saved < g.batch_count}, {"elapsed_ms", ms}});

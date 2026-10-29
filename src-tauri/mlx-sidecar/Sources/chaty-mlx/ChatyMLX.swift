@@ -2954,7 +2954,7 @@ struct ChatyMLX {
         Memory.cacheLimit = 256 * 1024 * 1024
 
         let engine = Engine()
-        out.emit(["event": "ready"])
+        out.emit(["event": "ready", "protocol": "1"])
         log("ready")
 
         var generation: Task<Void, Never>? = nil

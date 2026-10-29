@@ -20,6 +20,8 @@ $triple = (rustc -vV | Select-String '^host: ').ToString().Substring(6).Trim()
 
 $extra = @()
 if ($env:SDCPP_SOURCE_DIR) { $extra += "-DFETCHCONTENT_SOURCE_DIR_SDCPP=$env:SDCPP_SOURCE_DIR" }
+# Another upstream revision than the pinned one — what a runtime pack is built from.
+if ($env:CHATY_SDCPP_REV) { $extra += "-DCHATY_SDCPP_REV=$env:CHATY_SDCPP_REV" }
 $gen = @()
 if (Get-Command ninja -ErrorAction SilentlyContinue) { $gen = @("-G", "Ninja") }
 

@@ -126,6 +126,9 @@ FetchContent_MakeAvailable(audiocpp)
 find_package(Git REQUIRED)
 file(GLOB CHATY_AUDIOCPP_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch")
 list(SORT CHATY_AUDIOCPP_PATCHES)
+# A runtime pack builds from a newer audio.cpp than the pin, where the code
+# around these lines may have moved: a three-way apply still places them, and
+# where it cannot, the build stops.
 foreach(patch IN LISTS CHATY_AUDIOCPP_PATCHES)
     execute_process(
         COMMAND ${GIT_EXECUTABLE} apply --check --reverse --ignore-whitespace "${patch}"
@@ -133,9 +136,21 @@ foreach(patch IN LISTS CHATY_AUDIOCPP_PATCHES)
         RESULT_VARIABLE already OUTPUT_QUIET ERROR_QUIET)
     if (NOT already EQUAL 0)
         execute_process(
+            COMMAND ${GIT_EXECUTABLE} apply --check --reverse --3way "${patch}"
+            WORKING_DIRECTORY "${audiocpp_SOURCE_DIR}"
+            RESULT_VARIABLE already OUTPUT_QUIET ERROR_QUIET)
+    endif()
+    if (NOT already EQUAL 0)
+        execute_process(
             COMMAND ${GIT_EXECUTABLE} apply --ignore-whitespace --whitespace=nowarn "${patch}"
             WORKING_DIRECTORY "${audiocpp_SOURCE_DIR}"
             RESULT_VARIABLE applied ERROR_VARIABLE why)
+        if (NOT applied EQUAL 0)
+            execute_process(
+                COMMAND ${GIT_EXECUTABLE} apply --3way --whitespace=nowarn "${patch}"
+                WORKING_DIRECTORY "${audiocpp_SOURCE_DIR}"
+                RESULT_VARIABLE applied ERROR_VARIABLE why)
+        endif()
         if (NOT applied EQUAL 0)
             message(FATAL_ERROR "chaty-audio: ${patch} does not apply to audio.cpp at ${CHATY_AUDIOCPP_REV}:\n${why}")
         endif()

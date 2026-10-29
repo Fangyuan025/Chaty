@@ -5,6 +5,7 @@
 # Usage: scripts/build-sd-sidecar.sh [cpu|vulkan|metal|cuda]
 #   default backend: metal on macOS; vulkan on Linux when glslc is installed,
 #   cpu otherwise.
+# Env: CHATY_SDCPP_REV=<commit> builds that upstream revision instead of the pin.
 # Env: SDCPP_SOURCE_DIR=/path/to/stable-diffusion.cpp builds from a local
 #      checkout instead of fetching the pinned revision.
 set -euo pipefail
@@ -33,6 +34,9 @@ GEN=()
 command -v ninja >/dev/null 2>&1 && GEN=(-G Ninja)
 EXTRA=()
 [[ -n "${SDCPP_SOURCE_DIR:-}" ]] && EXTRA+=("-DFETCHCONTENT_SOURCE_DIR_SDCPP=$SDCPP_SOURCE_DIR")
+# Another upstream revision than the pinned one — what a runtime pack is built
+# from (.github/workflows/runtimes.yml).
+[[ -n "${CHATY_SDCPP_REV:-}" ]] && EXTRA+=("-DCHATY_SDCPP_REV=$CHATY_SDCPP_REV")
 if [[ "$(uname -s)" == "Darwin" ]]; then
   # Match the app's floor (tauri.macos.conf.json minimumSystemVersion).
   EXTRA+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_OSX_ARCHITECTURES=arm64)

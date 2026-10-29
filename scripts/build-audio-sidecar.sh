@@ -5,6 +5,7 @@
 # Usage: scripts/build-audio-sidecar.sh [cpu|vulkan|metal|cuda]
 #   default backend: metal on macOS; vulkan on Linux when glslc is installed,
 #   cpu otherwise.
+# Env: CHATY_AUDIOCPP_REV=<commit> builds that upstream revision instead of the pin.
 # Env: AUDIOCPP_SOURCE_DIR=/path/to/audio.cpp builds from a local checkout
 #      instead of fetching the pinned revision.
 set -euo pipefail
@@ -33,6 +34,9 @@ GEN=()
 command -v ninja >/dev/null 2>&1 && GEN=(-G Ninja)
 EXTRA=()
 [[ -n "${AUDIOCPP_SOURCE_DIR:-}" ]] && EXTRA+=("-DFETCHCONTENT_SOURCE_DIR_AUDIOCPP=$AUDIOCPP_SOURCE_DIR")
+# Another upstream revision than the pinned one — what a runtime pack is built
+# from (.github/workflows/runtimes.yml). The progress patch must still apply.
+[[ -n "${CHATY_AUDIOCPP_REV:-}" ]] && EXTRA+=("-DCHATY_AUDIOCPP_REV=$CHATY_AUDIOCPP_REV")
 if [[ "$(uname -s)" == "Darwin" ]]; then
   # audio.cpp's Metal code wants macOS 13.3 (its own release builds use that
   # floor); on anything older the app says the music engine cannot start.

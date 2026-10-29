@@ -89,6 +89,12 @@ target_link_libraries(chaty-sd PRIVATE stable-diffusion)
 if (CHATY_SD_NEEDS_AVX2)
     target_compile_definitions(chaty-sd PRIVATE CHATY_SD_NEEDS_AVX2=1)
 endif()
+# generate_image hands back an owning result since upstream a85db96; a runtime
+# pack may be built from either side of that (main.cpp, struct Generated).
+file(READ "${sdcpp_SOURCE_DIR}/include/stable-diffusion.h" CHATY_SD_HEADER)
+if (CHATY_SD_HEADER MATCHES "sd_image_generation_result_t")
+    target_compile_definitions(chaty-sd PRIVATE CHATY_SD_RESULT_API=1)
+endif()
 if (MSVC)
     target_compile_options(chaty-sd PRIVATE /utf-8 /EHsc)
     # A console subsystem binary is what a pipe-driven child wants; the app
