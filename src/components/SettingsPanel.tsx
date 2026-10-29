@@ -37,6 +37,17 @@ import { loadMcpServers, saveMcpServers, syncMcpServers, type McpServerCfg } fro
 import catalog from "../lib/mcpStore.catalog.json";
 import { disabledSkills, officialSkills, setDisabledSkills } from "../lib/skillFiles";
 import { skillsDeleteUser, skillsImport, skillsListUser, type UserSkill } from "../lib/ipc";
+import {
+  runtimesCheck,
+  runtimesInfo,
+  runtimesSetAuto,
+  runtimesUpdate,
+  runtimesUseBundled,
+  type RuntimeEngine,
+  type RuntimeInstallProgress,
+  type RuntimesInfo,
+} from "../lib/ipc";
+import { listen } from "@tauri-apps/api/event";
 import { fmtBytes, fmtGbFromMb } from "../lib/fmt";
 import {
   ASPECTS,
@@ -291,6 +302,7 @@ type CatId =
   | "musicGen"
   | "musicModel"
   | "data"
+  | "runtimes"
   | "about";
 
 /** Tool-call formats by the family that trained them. */
@@ -320,21 +332,22 @@ const CAT_ICONS: Record<CatId, string> = {
   musicModel: "M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2",
   data: "M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3",
   about: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 8h.01M12 12v5",
+  runtimes: "M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4",
 };
 
 /** The nav, group by group. An image model loaded makes the app the image
  *  studio, and the panel shows the studio's categories in place of those
  *  only a language model reads. */
 function catGroupsFor(mode: "chat" | "image" | "music"): CatId[][] {
-  if (mode === "music") return [["general", "appearance"], ["musicGen", "musicModel"], ["data", "about"]];
+  if (mode === "music") return [["general", "appearance"], ["musicGen", "musicModel"], ["data", "runtimes", "about"]];
   return mode === "image"
-    ? [["general", "appearance"], ["imageGen", "imageModel"], ["data", "about"]]
+    ? [["general", "appearance"], ["imageGen", "imageModel"], ["data", "runtimes", "about"]]
     : [
         ["general", "appearance"],
         ["chat", "knowledge", "voice"],
         ["model", "sampling"],
         ["code", "extensions"],
-        ["data", "about"],
+        ["data", "runtimes", "about"],
       ];
 }
 
@@ -455,6 +468,137 @@ function Switch({
     >
       <span className="set-knob" />
     </button>
+  );
+}
+
+/** The engines' own names, as their projects call them. */
+const RUNTIME_NAME: Record<RuntimeEngine, string> = {
+  llama: "llama.cpp",
+  sd: "stable-diffusion.cpp",
+  audio: "audio.cpp",
+  mlx: "MLX",
+};
+
+/** What each engine runs, in the UI's words. */
+const RUNTIME_ROLE = {
+  llama: "rtRole_llama",
+  sd: "rtRole_sd",
+  audio: "rtRole_audio",
+  mlx: "rtRole_mlx",
+} as const satisfies Record<RuntimeEngine, string>;
+
+/**
+ * Settings → Runtimes: each engine the app runs models on, what version it is,
+ * and a newer one to switch to — by hand, or automatically when turned on.
+ * A newer engine is used the next time a model of its kind loads.
+ */
+function RuntimesPane() {
+  const { t } = useI18n();
+  const [info, setInfo] = useState<RuntimesInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [installing, setInstalling] = useState<Partial<Record<RuntimeEngine, RuntimeInstallProgress | null>>>({});
+  const [errors, setErrors] = useState<Partial<Record<RuntimeEngine | "check", string>>>({});
+  const errText = (e: unknown) => (typeof e === "string" ? e : ((e as Error)?.message ?? String(e)));
+
+  useEffect(() => {
+    runtimesInfo().then(setInfo).catch(() => {});
+    // An automatic update finishing while the page is open.
+    let off: (() => void) | null = null;
+    void listen("runtime-updated", () => void runtimesInfo().then(setInfo).catch(() => {})).then((u) => (off = u));
+    return () => off?.();
+  }, []);
+
+  const check = () => {
+    setChecking(true);
+    setErrors((e) => ({ ...e, check: "" }));
+    runtimesCheck()
+      .then(setInfo)
+      .catch((e) => setErrors((x) => ({ ...x, check: errText(e) })))
+      .finally(() => setChecking(false));
+  };
+  const update = (engine: RuntimeEngine) => {
+    setInstalling((x) => ({ ...x, [engine]: null }));
+    setErrors((x) => ({ ...x, [engine]: "" }));
+    runtimesUpdate(engine, (p) => setInstalling((x) => ({ ...x, [engine]: p })))
+      .then(setInfo)
+      .catch((e) => setErrors((x) => ({ ...x, [engine]: errText(e) })))
+      .finally(() =>
+        setInstalling((x) => {
+          const next = { ...x };
+          delete next[engine];
+          return next;
+        }),
+      );
+  };
+  const progressText = (p: RuntimeInstallProgress | null | undefined) => {
+    if (!p || p.stage === "download") {
+      const pct = p?.total ? `${Math.min(100, Math.floor((p.downloaded / p.total) * 100))}%` : p ? `${(p.downloaded / 1e6).toFixed(1)} MB` : "";
+      return t("updateDownloadingAt", { x: pct }).trim();
+    }
+    return p.stage === "verify" ? t("rtVerifying") : t("rtStarting");
+  };
+  const when = (secs: number) => (secs ? new Date(secs * 1000).toLocaleString() : "");
+
+  if (!info) return null;
+  return (
+    <>
+      <SetRow label={t("rtAuto")} hint={t("rtAutoHint")}>
+        <Switch on={info.autoUpdate} onToggle={() => void runtimesSetAuto(!info.autoUpdate).then(setInfo)} />
+      </SetRow>
+      <div className="rt-check">
+        <button type="button" className="data-btn" disabled={checking} onClick={check}>
+          {checking ? t("rtChecking") : t("rtCheck")}
+        </button>
+        <span className="rt-check-when">
+          {info.lastCheck ? t("rtLastCheck", { x: when(info.lastCheck) }) : t("rtNeverChecked")}
+        </span>
+      </div>
+      {errors.check && <div className="rt-error">{errors.check}</div>}
+      <div className="rt-list">
+        {info.runtimes.map((r) => {
+          const busy = r.engine in installing;
+          return (
+            <div key={r.engine} className="rt-row">
+              <div className="rt-main">
+                <div className="rt-name">
+                  {RUNTIME_NAME[r.engine]}
+                  <span className="rt-role">{t(RUNTIME_ROLE[r.engine])}</span>
+                </div>
+                <div className="rt-version">
+                  {r.active === "bundled" ? t("rtBundled") : t("rtPack")}
+                  {" · "}
+                  <span className="rt-rev" title={`${r.upstream}@${r.rev}`}>{r.rev.slice(0, 7)}</span>
+                  {" · "}
+                  {r.date.slice(0, 10)}
+                </div>
+                {errors[r.engine] && <div className="rt-error">{errors[r.engine]}</div>}
+              </div>
+              <div className="rt-actions">
+                {!r.swappable ? (
+                  <span className="rt-muted">{t("rtWithApp")}</span>
+                ) : busy ? (
+                  <span className="rt-progress">{progressText(installing[r.engine])}</span>
+                ) : r.update ? (
+                  <button type="button" className="data-btn accent" onClick={() => update(r.engine)}>
+                    {t("rtUpdateTo", { x: r.update.date.slice(0, 10) })}
+                  </button>
+                ) : r.needsApp ? (
+                  <span className="rt-muted">{t("rtNeedsApp", { x: r.needsApp })}</span>
+                ) : info.lastCheck ? (
+                  <span className="rt-muted">{t("rtLatest")}</span>
+                ) : null}
+                {r.swappable && r.active !== "bundled" && !busy && (
+                  <button type="button" className="rt-link" onClick={() => void runtimesUseBundled(r.engine).then(setInfo)}>
+                    {t("rtUseBundled")}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="rt-note">{t("rtNote")}</p>
+    </>
   );
 }
 
@@ -943,6 +1087,7 @@ export function SettingsPanel({
     musicGen: t("setCatMusicGen"),
     musicModel: t("setCatMusicModel"),
     data: t("setCatData"),
+    runtimes: t("setCatRuntimes"),
     about: t("setCatAbout"),
   };
   const catGroups = catGroupsFor(mode);
@@ -2647,6 +2792,8 @@ export function SettingsPanel({
               </SetRow>
             </>
           )}
+
+          {cat === "runtimes" && <RuntimesPane />}
 
           {cat === "about" && (
             <div className="about-card">

@@ -7,7 +7,6 @@
 //! opened; on Linux the new AppImage takes the running one's place.
 
 use serde::Serialize;
-use std::io::Write;
 use tauri::ipc::Channel;
 
 const REPO: &str = "Fangyuan025/Chaty";
@@ -198,55 +197,14 @@ pub async fn run_update(app: tauri::AppHandle, url: String, on_progress: Channel
     Ok(())
 }
 
-/// Stream `url` into `dest`, telling `on_progress` how far it has got a few
-/// times a second. Written to disk as it arrives — the installer used to be
-/// held whole in memory, with nothing to show until it was all there.
+/// Stream the installer into `dest`, telling the button how far it has got.
+/// Written to disk as it arrives — it used to be held whole in memory, with
+/// nothing to show until it was all there — and checked for its full size.
 async fn download(url: &str, dest: &std::path::Path, on_progress: &Channel<UpdateProgress>) -> Result<(), String> {
-    // Streaming-flavored timeouts: installers are tens of MB, so no
-    // whole-request cap — but a silent CDN must error out, not hang the
-    // "updating…" state forever.
-    let client = crate::http::download_client(UA)?;
-    let mut resp = client
-        .get(url)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| trf!("下载新版本失败:{e}", "could not download the new version: {e}"))?;
-    let total = resp.content_length();
-    let mut file = std::fs::File::create(dest).map_err(|e| trf!("无法写入下载的文件:{e}", "could not write the download: {e}"))?;
-    let mut downloaded = 0u64;
-    let mut last = std::time::Instant::now();
-    let _ = on_progress.send(UpdateProgress { downloaded, total });
-    loop {
-        let chunk = match resp.chunk().await {
-            Ok(Some(c)) => c,
-            Ok(None) => break,
-            Err(e) => {
-                drop(file);
-                let _ = std::fs::remove_file(dest);
-                return Err(trf!("下载新版本时中断:{e}", "the download of the new version broke off: {e}"));
-            }
-        };
-        file.write_all(&chunk).map_err(|e| trf!("无法写入下载的文件:{e}", "could not write the download: {e}"))?;
-        downloaded += chunk.len() as u64;
-        if last.elapsed().as_millis() >= 150 {
-            let _ = on_progress.send(UpdateProgress { downloaded, total });
-            last = std::time::Instant::now();
-        }
-    }
-    file.flush().map_err(|e| trf!("无法写入下载的文件:{e}", "could not write the download: {e}"))?;
-    drop(file);
-    if total.is_some_and(|t| t != downloaded) {
-        let _ = std::fs::remove_file(dest);
-        return Err(trf!(
-            "新版本下载不完整(收到 {} / {} 字节),请重试",
-            "the new version came down incomplete ({} of {} bytes) — try again",
-            downloaded,
-            total.unwrap_or(0)
-        ));
-    }
-    let _ = on_progress.send(UpdateProgress { downloaded, total });
-    Ok(())
+    crate::http::download_to(UA, url, dest, |downloaded, total| {
+        let _ = on_progress.send(UpdateProgress { downloaded, total });
+    })
+    .await
 }
 
 #[cfg(test)]

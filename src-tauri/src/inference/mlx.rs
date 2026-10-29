@@ -360,13 +360,12 @@ impl MlxEngine {
         speculative: bool,
         progress: impl Fn(f32),
     ) -> Result<(Self, ModelInfo)> {
-        let sidecar = find_sidecar().ok_or_else(|| {
-            anyhow!(
-                "未找到 MLX 引擎组件 chaty-mlx，请重新安装应用 \
-                 (the chaty-mlx sidecar is missing; please reinstall)"
-            )
-        })?;
-        Self::load_with_sidecar(&sidecar, dir, n_ctx, speculative, progress)
+        crate::runtimes::start_with(
+            crate::runtimes::Engine::Mlx,
+            find_sidecar(),
+            || anyhow!(trf!("未找到 MLX 引擎组件 chaty-mlx,请重新安装应用", "the MLX engine (chaty-mlx) is missing; please reinstall")),
+            |sidecar| Self::load_with_sidecar(sidecar, dir, n_ctx, speculative, &progress),
+        )
     }
 
     pub fn load_with_sidecar(

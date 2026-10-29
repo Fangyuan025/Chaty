@@ -125,25 +125,26 @@ pub fn load(
             roles_text(&probe.missing)
         ));
     }
-    let sidecar = crate::inference::sd::find_sidecar().ok_or_else(|| {
-        anyhow::anyhow!(trf!(
-            "未找到图像引擎组件 chaty-sd,请重新安装应用",
-            "the image engine (chaty-sd) is missing; please reinstall"
-        ))
-    })?;
-
     let want_cpu = opts.device == "cpu";
-    let mut warning = None;
-    let (engine, loaded, on_cpu) = match SdEngine::load(&sidecar, load_cmd(&probe, opts, want_cpu), &progress) {
-        Ok((e, l)) => (e, l, want_cpu),
-        Err(e) if !want_cpu && e.downcast_ref::<crate::inference::sd::Crashed>().is_some() => {
-            crate::errlog::append_error("image-model-load", &format!("path: {}\nGPU load crashed, retrying on CPU\n{e:#}", path.display()));
-            warning = Some("image-gpu-crash-cpu".to_string());
-            let (e, l) = SdEngine::load(&sidecar, load_cmd(&probe, opts, true), &progress)?;
-            (e, l, true)
-        }
-        Err(e) => return Err(e),
-    };
+    let (engine, loaded, on_cpu, warning) = crate::runtimes::start_with(
+        crate::runtimes::Engine::Sd,
+        crate::inference::sd::find_sidecar(),
+        || {
+            anyhow::anyhow!(trf!(
+                "未找到图像引擎组件 chaty-sd,请重新安装应用",
+                "the image engine (chaty-sd) is missing; please reinstall"
+            ))
+        },
+        |sidecar| match SdEngine::load(sidecar, load_cmd(&probe, opts, want_cpu), &progress) {
+            Ok((e, l)) => Ok((e, l, want_cpu, None)),
+            Err(e) if !want_cpu && e.downcast_ref::<crate::inference::sd::Crashed>().is_some() => {
+                crate::errlog::append_error("image-model-load", &format!("path: {}\nGPU load crashed, retrying on CPU\n{e:#}", path.display()));
+                let (e, l) = SdEngine::load(sidecar, load_cmd(&probe, opts, true), &progress)?;
+                Ok((e, l, true, Some("image-gpu-crash-cpu".to_string())))
+            }
+            Err(e) => Err(e),
+        },
+    )?;
 
     let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image model").to_string();
     let device = if on_cpu { String::new() } else if !loaded.device.is_empty() { loaded.device.clone() } else {
@@ -229,18 +230,22 @@ fn load_mlx(
             probe.family_name
         ));
     }
-    let sidecar = crate::inference::mlx::find_sidecar().ok_or_else(|| {
-        anyhow::anyhow!(trf!(
-            "未找到 MLX 引擎组件 chaty-mlx,请重新安装应用",
-            "the MLX engine (chaty-mlx) is missing; please reinstall"
-        ))
-    })?;
     // Always the GPU, whatever the image engine's device setting says: MLX's
     // CPU backend runs a quantized model on one core, and a picture that
     // takes seconds per step on the GPU did not finish two steps in twelve
     // minutes there.
     let cmd = json!({ "cmd": "load", "model": path });
-    let (engine, loaded) = SdEngine::load_with(&sidecar, &["--image"], "mlx", cmd, &progress)?;
+    let (engine, loaded) = crate::runtimes::start_with(
+        crate::runtimes::Engine::Mlx,
+        crate::inference::mlx::find_sidecar(),
+        || {
+            anyhow::anyhow!(trf!(
+                "未找到 MLX 引擎组件 chaty-mlx,请重新安装应用",
+                "the MLX engine (chaty-mlx) is missing; please reinstall"
+            ))
+        },
+        |sidecar| SdEngine::load_with(sidecar, &["--image"], "mlx", cmd.clone(), &progress),
+    )?;
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("image model").to_string();
     let device = loaded.device.clone();
     let image = ImageModelInfo {

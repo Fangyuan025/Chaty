@@ -22,6 +22,7 @@ src-tauri/binaries/
 src-tauri/mlx-sidecar/.build/
 src-tauri/sd-sidecar/build/
 src-tauri/audio-sidecar/build/
+tools/runtime-sign/target/
 
 # Editor directories and files
 .vscode/*

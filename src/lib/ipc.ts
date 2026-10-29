@@ -689,6 +689,81 @@ export async function checkUpdate(): Promise<UpdateInfo> {
   return await invoke<UpdateInfo>("check_update");
 }
 
+// ---------- Runtimes: the engines, updated apart from the app ----------
+
+export type RuntimeEngine = "llama" | "sd" | "audio" | "mlx";
+
+export interface RuntimePack {
+  engine: RuntimeEngine;
+  version: string;
+  platform: string;
+  protocol: string;
+  minApp: string;
+  upstream: string;
+  rev: string;
+  /** The upstream commit's date (ISO). */
+  date: string;
+  url: string;
+  size: number;
+  sha256: string;
+}
+
+export interface RuntimeStatus {
+  engine: RuntimeEngine;
+  /** Runs as its own process, so a pack can replace it; llama.cpp cannot yet. */
+  swappable: boolean;
+  /** "bundled", or the pack version in use. */
+  active: string;
+  upstream: string;
+  rev: string;
+  date: string;
+  /** A newer pack this app can use. */
+  update: RuntimePack | null;
+  /** A newer engine that needs a newer Chaty — that version. */
+  needsApp: string | null;
+}
+
+export interface RuntimesInfo {
+  autoUpdate: boolean;
+  /** Unix seconds; 0 = never. */
+  lastCheck: number;
+  runtimes: RuntimeStatus[];
+}
+
+export interface RuntimeInstallProgress {
+  downloaded: number;
+  total: number | null;
+  stage: "download" | "verify" | "start";
+}
+
+export async function runtimesInfo(): Promise<RuntimesInfo> {
+  return await invoke<RuntimesInfo>("runtimes_info");
+}
+
+/** Fetch the newest list of runtime packs (signature-checked). */
+export async function runtimesCheck(): Promise<RuntimesInfo> {
+  return await invoke<RuntimesInfo>("runtimes_check");
+}
+
+/** Download, check and switch to the newest pack for `engine` — in use the
+ *  next time that engine starts. */
+export async function runtimesUpdate(
+  engine: RuntimeEngine,
+  onProgress?: (p: RuntimeInstallProgress) => void,
+): Promise<RuntimesInfo> {
+  const ch = new Channel<RuntimeInstallProgress>();
+  ch.onmessage = (p) => onProgress?.(p);
+  return await invoke<RuntimesInfo>("runtimes_update", { engine, onProgress: ch });
+}
+
+export async function runtimesUseBundled(engine: RuntimeEngine): Promise<RuntimesInfo> {
+  return await invoke<RuntimesInfo>("runtimes_use_bundled", { engine });
+}
+
+export async function runtimesSetAuto(on: boolean): Promise<RuntimesInfo> {
+  return await invoke<RuntimesInfo>("runtimes_set_auto", { on });
+}
+
 /** How far the new version's download has got. */
 export interface UpdateProgress {
   downloaded: number;

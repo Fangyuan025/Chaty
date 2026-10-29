@@ -67,3 +67,66 @@ pub async fn page_text(resp: reqwest::Response) -> Result<String, String> {
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
     Ok(crate::textenc::decode_page(&bytes, header.as_deref()))
 }
+
+/// Stream `url` into `dest`, telling `progress` (bytes so far, total when the
+/// server says) a few times a second, and refusing a body that stops short of
+/// the length it was announced with. The partial file is removed on failure.
+pub async fn download_to(
+    ua: &str,
+    url: &str,
+    dest: &std::path::Path,
+    progress: impl Fn(u64, Option<u64>),
+) -> Result<(), String> {
+    use std::io::Write;
+    let client = download_client(ua)?;
+    let mut resp = client
+        .get(url)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| trf!("下载失败:{e}", "the download failed: {e}"))?;
+    let total = resp.content_length();
+    let mut file = std::fs::File::create(dest).map_err(|e| trf!("无法写入下载的文件:{e}", "could not write the download: {e}"))?;
+    let mut done = 0u64;
+    let mut last = std::time::Instant::now();
+    progress(done, total);
+    loop {
+        let chunk = match resp.chunk().await {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(e) => {
+                drop(file);
+                let _ = std::fs::remove_file(dest);
+                return Err(trf!("下载中断:{e}", "the download broke off: {e}"));
+            }
+        };
+        if let Err(e) = file.write_all(&chunk) {
+            drop(file);
+            let _ = std::fs::remove_file(dest);
+            return Err(trf!("无法写入下载的文件:{e}", "could not write the download: {e}"));
+        }
+        done += chunk.len() as u64;
+        if last.elapsed().as_millis() >= 150 {
+            progress(done, total);
+            last = std::time::Instant::now();
+        }
+    }
+    let flushed = file.flush();
+    drop(file);
+    if let Err(e) = flushed {
+        let _ = std::fs::remove_file(dest);
+        return Err(trf!("无法写入下载的文件:{e}", "could not write the download: {e}"));
+    }
+    if total.is_some_and(|t| t != done) {
+        let _ = std::fs::remove_file(dest);
+        return Err(trf!(
+            "下载不完整(收到 {} / {} 字节),请重试",
+            "the download came down incomplete ({} of {} bytes) — try again",
+            done,
+            total.unwrap_or(0)
+        ));
+    }
+    progress(done, total);
+    Ok(())
+}
+

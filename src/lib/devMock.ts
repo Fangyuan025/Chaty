@@ -639,6 +639,22 @@ const RICH_README = [
  *  web pages / knowledge-base passages, to look at the sources under it. */
 const DEMO_SOURCES = new URLSearchParams(window.location.search).get("sources");
 const DEMO_UPDATE = new URLSearchParams(window.location.search).get("update") === "1";
+
+/** Settings → Runtimes: one engine with an update, one on a pack, one current. */
+const MOCK_RUNTIMES = {
+  autoUpdate: false,
+  lastCheck: Math.floor(Date.now() / 1000) - 3600,
+  runtimes: [
+    { engine: "llama", swappable: false, active: "bundled", upstream: "ggml-org/llama.cpp", rev: "8642541b255bfb5dc39cd351a178be09013a55d6", date: "2026-10-28T11:30:38Z", update: null, needsApp: null },
+    {
+      engine: "sd", swappable: true, active: "bundled", upstream: "leejet/stable-diffusion.cpp", rev: "88411ef1e0688ff2df1010aeeb5d92b2d8cea2be", date: "2026-09-23T17:45:14Z",
+      update: { engine: "sd", version: "2026.10.29-3f2a91c", platform: "macos-arm64", protocol: "1", minApp: "2.3.8", upstream: "leejet/stable-diffusion.cpp", rev: "3f2a91c0d4e5b6a7c8d9e0f1a2b3c4d5e6f7a8b9", date: "2026-10-29T08:12:00Z", url: "", size: 38200000, sha256: "" },
+      needsApp: null,
+    },
+    { engine: "audio", swappable: true, active: "2026.10.21-b7e4410", upstream: "0xShug0/audio.cpp", rev: "b7e44102c9a8d7e6f5a4b3c2d1e0f9a8b7c6d5e4", date: "2026-10-21T19:03:00Z", update: null, needsApp: null },
+    { engine: "mlx", swappable: true, active: "bundled", upstream: "Fangyuan025/mlx-swift-lm", rev: "c11767bc3aa01f33683ef39fa5adb9ad47f214ef", date: "2026-09-05T06:58:53Z", update: null, needsApp: null },
+  ],
+};
 /** A generation told to stop (cancel_generation) stops streaming. */
 let mockGenStop = false;
 /** Background jobs in the preview, stopped and cleared for real. */
@@ -1031,6 +1047,25 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return { cpu: "Apple M4 Pro (14 核)", cpuThreads: 14, ramMb: 49152, gpuBackend: "Metal", gpu: { name: "Apple M4 Pro", vramMb: 40200 } };
     case "get_gpu_usage":
       return { usedMb: 22300, totalMb: 40200 };
+    // ---- runtimes ----
+    case "runtimes_info":
+    case "runtimes_set_auto":
+    case "runtimes_use_bundled":
+      if (cmd === "runtimes_set_auto") MOCK_RUNTIMES.autoUpdate = !!(args as { on?: boolean })?.on;
+      if (cmd === "runtimes_use_bundled") {
+        const r = MOCK_RUNTIMES.runtimes.find((x) => x.engine === (args as { engine?: string })?.engine);
+        if (r) Object.assign(r, { active: "bundled", rev: "955c8725c611d511774e6be132aff6609163b2d2", date: "2026-09-25T22:44:03Z" });
+      }
+      return structuredClone(MOCK_RUNTIMES);
+    case "runtimes_check":
+      MOCK_RUNTIMES.lastCheck = Math.floor(Date.now() / 1000);
+      return structuredClone(MOCK_RUNTIMES);
+    case "runtimes_update": {
+      const ch = (args as { onProgress?: { onmessage?: (ev: unknown) => void } } | undefined)?.onProgress;
+      const total = 38_200_000;
+      for (let i = 0; i <= 4; i++) setTimeout(() => ch?.onmessage?.({ downloaded: i * 6_100_000, total, stage: "download" }), 150 * i);
+      return new Promise(() => {});
+    }
     case "check_update":
       // ?update=1: a newer version, to see the banner and its download.
       return DEMO_UPDATE

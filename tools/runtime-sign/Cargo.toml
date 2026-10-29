@@ -1,0 +1,10 @@
+[package]
+name = "runtime-sign"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Signs Chaty's runtime pack index (Ed25519), and makes its key."
+
+[dependencies]
+ring = "0.17"
+base64 = "0.22"

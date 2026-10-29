@@ -85,22 +85,21 @@ pub fn load(path: &Path, opts: &MusicLoadOptions, progress: impl Fn(f32)) -> any
             probe.missing.join(trf!("、", ", ").as_str())
         ));
     }
-    let sidecar = crate::inference::audio::find_sidecar().ok_or_else(|| {
-        anyhow::anyhow!(trf!("未找到音乐引擎组件 chaty-audio,请重新安装应用", "the music engine (chaty-audio) is missing; please reinstall"))
-    })?;
-
     let want_cpu = opts.device == "cpu";
-    let mut warning = None;
-    let (engine, loaded, on_cpu) = match AudioEngine::load(&sidecar, load_cmd(&probe, opts, want_cpu), &progress) {
-        Ok((e, l)) => (e, l, want_cpu),
-        Err(e) if !want_cpu && e.downcast_ref::<crate::inference::sd::Crashed>().is_some() => {
-            crate::errlog::append_error("music-model-load", &format!("path: {}\nGPU load crashed, retrying on CPU\n{e:#}", path.display()));
-            warning = Some("music-gpu-crash-cpu".to_string());
-            let (e, l) = AudioEngine::load(&sidecar, load_cmd(&probe, opts, true), &progress)?;
-            (e, l, true)
-        }
-        Err(e) => return Err(e),
-    };
+    let (engine, loaded, on_cpu, warning) = crate::runtimes::start_with(
+        crate::runtimes::Engine::Audio,
+        crate::inference::audio::find_sidecar(),
+        || anyhow::anyhow!(trf!("未找到音乐引擎组件 chaty-audio,请重新安装应用", "the music engine (chaty-audio) is missing; please reinstall")),
+        |sidecar| match AudioEngine::load(sidecar, load_cmd(&probe, opts, want_cpu), &progress) {
+            Ok((e, l)) => Ok((e, l, want_cpu, None)),
+            Err(e) if !want_cpu && e.downcast_ref::<crate::inference::sd::Crashed>().is_some() => {
+                crate::errlog::append_error("music-model-load", &format!("path: {}\nGPU load crashed, retrying on CPU\n{e:#}", path.display()));
+                let (e, l) = AudioEngine::load(sidecar, load_cmd(&probe, opts, true), &progress)?;
+                Ok((e, l, true, Some("music-gpu-crash-cpu".to_string())))
+            }
+            Err(e) => Err(e),
+        },
+    )?;
 
     let name = model_name(path, &probe);
     let device = if on_cpu {

@@ -22,6 +22,7 @@ import { ModelInfoPanel } from "./components/ModelInfoPanel";
 import { WindowControls } from "./components/WindowControls";
 import { useI18n, type Lang, type TKey, detectLang } from "./lib/i18n";
 import { startUpdateDownload, useUpdateDownload } from "./lib/updateDownload";
+import { listen } from "@tauri-apps/api/event";
 import { clampRung, effortLabel } from "./lib/effort";
 import { watchContentHeight } from "./lib/autoGrow";
 /** Ceiling for the chat composer, matching `.input-row textarea` max-height. */
@@ -581,7 +582,7 @@ export default function App() {
     }
   }, []);
   const [showSetup, setShowSetup] = useState(false);
-  const [notice, setNotice] = useState<{ kind: "warn" | "error"; text: string } | null>(null);
+  const [notice, setNotice] = useState<{ kind: "info" | "warn" | "error"; text: string } | null>(null);
   const noticeTimer = useRef<number | null>(null);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const updateDl = useUpdateDownload();
@@ -820,6 +821,17 @@ export default function App() {
       }
     })();
     refreshConversations();
+  }, []);
+
+  // An engine updated by itself in the background says so once.
+  useEffect(() => {
+    const names: Record<string, string> = { sd: "stable-diffusion.cpp", audio: "audio.cpp", mlx: "MLX", llama: "llama.cpp" };
+    let off: (() => void) | undefined;
+    void listen<{ engine: string }>("runtime-updated", (e) =>
+      showNotice("info", t("rtUpdatedToast", { x: names[e.payload.engine] ?? e.payload.engine })),
+    ).then((u) => (off = u));
+    return () => off?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Keep the tray menu labels in sync with the UI language.
@@ -1490,7 +1502,7 @@ export default function App() {
     }
   }
 
-  function showNotice(kind: "warn" | "error", text: string) {
+  function showNotice(kind: "info" | "warn" | "error", text: string) {
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
     setNotice({ kind, text });
     // Long enough to read: a load failure that explains itself runs to a few

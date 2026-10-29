@@ -92,6 +92,10 @@ base64 = "0.22"
 libc = "0.2"
 # .docx text extraction (OOXML is a zip of XML parts).
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Runtime packs: the index's Ed25519 signature and each pack's SHA-256. Both
+# already in the tree (rustls, tauri), so nothing new is compiled.
+ring = "0.17"
+sha2 = "0.10"
 # Embedded-image extraction from PDFs (same lopdf pdf-extract uses).
 lopdf = "0.34"
 flate2 = "1" # inflate PDF image streams ourselves — lopdf's own decompress rejects Chrome-print PDFs

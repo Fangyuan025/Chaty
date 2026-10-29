@@ -1,0 +1,223 @@
+# Runtime packs: newer engines for installed apps, without a Chaty release.
+#
+# Daily, the newest stable-diffusion.cpp and audio.cpp commits are built into
+# chaty-sd / chaty-audio for every platform, each answers its handshake, and
+# the packs are published to the rolling `runtimes` prerelease with a signed
+# index (runtimes.json + runtimes.json.sig) — what Settings → Runtimes reads.
+# By hand, also MLX: chaty-mlx as main pins it, for apps that ship an older one.
+# A pack is published only when it built and answered its handshake; an
+# upstream change our wrapper does not compile against simply fails here.
+name: runtimes
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      engines:
+        description: "Engines to build: sd, audio, mlx (comma-separated)"
+        default: "sd,audio"
+      sd_rev:
+        description: "stable-diffusion.cpp commit (blank: newest master)"
+        default: ""
+      audio_rev:
+        description: "audio.cpp commit (blank: newest main)"
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: runtimes
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENGINES: ${{ github.event.inputs.engines || 'sd,audio' }}
+          SD_REV: ${{ github.event.inputs.sd_rev }}
+          AUDIO_REV: ${{ github.event.inputs.audio_rev }}
+        run: |
+          gh release download runtimes --repo "$GITHUB_REPOSITORY" --pattern runtimes.json --dir published 2>/dev/null || true
+          MATRIX=$(INDEX=published/runtimes.json python3 scripts/runtimes-plan.py)
+          echo "$MATRIX"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      CHATY_SDCPP_REV: ${{ matrix.engine == 'sd' && matrix.rev || '' }}
+      CHATY_AUDIOCPP_REV: ${{ matrix.engine == 'audio' && matrix.rev || '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable # the staged name carries the target triple
+
+      # ---- toolchains, as the release builds them ----
+      - name: Linux deps (Vulkan)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc >/dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update
+          sudo apt-get install -y ninja-build vulkan-sdk
+      - name: Windows Vulkan SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ver = "1.4.328.1"
+          $exe = "$env:RUNNER_TEMP\vulkan_sdk.exe"
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkan_sdk.exe" -OutFile $exe
+          $root = "C:\VulkanSDK\$ver"
+          $p = Start-Process -FilePath $exe -Wait -PassThru -ArgumentList @(
+            "--root", $root, "--accept-licenses", "--default-answer", "--confirm-command", "install")
+          if ($p.ExitCode -ne 0) { throw "Vulkan SDK installer exited $($p.ExitCode)" }
+          "VULKAN_SDK=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$root\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          choco install ninja -y
+      - if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # ---- the engine ----
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          case "${{ matrix.engine }}" in
+            sd) ./scripts/build-sd-sidecar.sh metal ;;
+            audio) ./scripts/build-audio-sidecar.sh metal ;;
+            mlx)
+              SIDE_XCODE=$(ls -d /Applications/Xcode_1[6-9]*.app 2>/dev/null | sort -V | tail -1 || true)
+              [ -n "$SIDE_XCODE" ] || SIDE_XCODE=$(dirname "$(dirname "$(xcode-select -p)")")
+              DEVELOPER_DIR="$SIDE_XCODE/Contents/Developer" ./scripts/build-mlx-sidecar.sh ;;
+          esac
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: ./scripts/build-${{ matrix.engine }}-sidecar.sh vulkan
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\scripts\build-${{ matrix.engine }}-sidecar.ps1 -Backend vulkan
+        env:
+          CMAKE_PREFIX_PATH: ${{ env.VULKAN_SDK }}
+
+      # A pack runs from the data folder, not beside chaty.exe and the Vulkan
+      # loader the app ships there (release.yml): it carries its own, found
+      # the way the release finds it.
+      - name: Vulkan runtime loader (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Recurse $env:VULKAN_SDK -Filter vulkan-1.dll -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '(x64|X64)' } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $dll) {
+            $ver = "1.4.328.1"
+            $zip = "$env:TEMP\VulkanRT.zip"
+            $urls = @(
+              "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanRT-X64-$ver-Components.zip",
+              "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-runtime-components.zip"
+            )
+            $got = $false
+            foreach ($u in $urls) {
+              try { Invoke-WebRequest $u -OutFile $zip; $got = $true; break }
+              catch { Write-Host "Vulkan runtime: $u failed: $($_.Exception.Message)" }
+            }
+            if (-not $got) { throw "no Vulkan runtime download worked" }
+            Expand-Archive $zip -DestinationPath "$env:TEMP\VulkanRT" -Force
+            $dll = Get-ChildItem -Recurse "$env:TEMP\VulkanRT" -Filter vulkan-1.dll |
+              Where-Object { $_.Directory.Name -ieq 'x64' } |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $dll) { throw "vulkan-1.dll not found (SDK + runtime zip)" }
+          Copy-Item $dll "$env:RUNNER_TEMP\vulkan-1.dll"
+          Write-Host "loader: $dll"
+
+      # ---- it answers, then it is packed ----
+      - name: Handshake and pack
+        shell: bash
+        env:
+          ENGINE: ${{ matrix.engine }}
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ matrix.version }}
+          UPSTREAM: ${{ matrix.upstream }}
+          REV: ${{ matrix.rev }}
+          DATE: ${{ matrix.date }}
+        run: |
+          set -euo pipefail
+          case "$ENGINE" in sd) NAME=chaty-sd ;; audio) NAME=chaty-audio ;; mlx) NAME=chaty-mlx ;; esac
+          EXE=$NAME; [ "$RUNNER_OS" = Windows ] && EXE=$NAME.exe
+          BIN=$(ls src-tauri/binaries/$NAME-* | grep -v '\.bundle' | head -1)
+          PACK=pack; rm -rf $PACK; mkdir -p $PACK
+          cp "$BIN" "$PACK/$EXE"
+          if [ "$ENGINE" = mlx ]; then cp -R src-tauri/binaries/*.bundle "$PACK/"; fi
+          if [ "$RUNNER_OS" = Windows ]; then cp "$(cygpath -u "$RUNNER_TEMP")/vulkan-1.dll" "$PACK/"; fi
+          # The handshake is the packed binary's, run from the pack.
+          OUT=$(printf '{"cmd":"quit"}\n' | "$PACK/$EXE" | head -1 || true)
+          echo "ready: $OUT"
+          echo "$OUT" | grep -q '"event":"ready"'
+          PROTOCOL=$(printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("protocol","1"))')
+          ZIP="chaty-$ENGINE-$VERSION-$PLATFORM.zip"
+          mkdir -p out
+          if [ "$RUNNER_OS" = Windows ]; then
+            pwsh -Command "Compress-Archive -Path '$PACK/*' -DestinationPath 'out/$ZIP'"
+          else
+            (cd $PACK && zip -qry "../out/$ZIP" .)
+          fi
+          SIZE=$(python3 -c "import os; print(os.path.getsize('out/$ZIP'))")
+          SHA=$(python3 -c "import hashlib; print(hashlib.sha256(open('out/$ZIP','rb').read()).hexdigest())")
+          MINAPP=$(node -p "require('./package.json').version")
+          python3 - <<PY
+          import json
+          json.dump({"engine": "$ENGINE", "version": "$VERSION", "platform": "$PLATFORM", "protocol": "$PROTOCOL",
+                     "minApp": "$MINAPP", "upstream": "$UPSTREAM", "rev": "$REV", "date": "$DATE",
+                     "size": $SIZE, "sha256": "$SHA"}, open("out/${ZIP%.zip}.json", "w"), indent=2)
+          PY
+          ls -la out
+      - uses: actions/upload-artifact@v5
+        with:
+          name: pack-${{ matrix.engine }}-${{ matrix.platform }}
+          path: out/*
+          if-no-files-found: error
+
+  # Each pack that built and answered is published; one platform's failure
+  # (red on the run) does not hold back the others.
+  publish:
+    needs: [plan, build]
+    if: ${{ !cancelled() && needs.plan.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v5
+        with: { merge-multiple: true, path: packs }
+      - name: Index, sign and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIMES_SIGNING_KEY: ${{ secrets.RUNTIMES_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$RUNTIMES_SIGNING_KEY" ] || { echo "::error::RUNTIMES_SIGNING_KEY is not set"; exit 1; }
+          ls packs/*.zip >/dev/null 2>&1 || { echo "::error::no pack built"; exit 1; }
+          gh release download runtimes --repo "$GITHUB_REPOSITORY" --pattern runtimes.json --dir published 2>/dev/null || true
+          GONE=$(python3 scripts/runtimes-index.py published/runtimes.json packs runtimes.json)
+          cat runtimes.json
+          cargo build --release --manifest-path tools/runtime-sign/Cargo.toml
+          tools/runtime-sign/target/release/runtime-sign sign runtimes.json
+          if ! gh release view runtimes --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create runtimes --repo "$GITHUB_REPOSITORY" --prerelease --title "Runtimes" \
+              --notes "Engine updates for Chaty, used through Settings → Runtimes. Not an app release — download Chaty from the latest release."
+          fi
+          gh release upload runtimes --repo "$GITHUB_REPOSITORY" --clobber packs/*.zip runtimes.json runtimes.json.sig
+          for z in $GONE; do gh release delete-asset runtimes "$z" --repo "$GITHUB_REPOSITORY" -y || true; done

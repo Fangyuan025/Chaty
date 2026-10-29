@@ -8,6 +8,7 @@ pub mod browser;
 pub mod docimg;
 pub mod mic;
 pub mod rag;
+pub mod runtimes;
 mod commands;
 pub mod download;
 pub mod edit_match;
@@ -398,6 +399,8 @@ pub fn run() {
             std::thread::spawn(move || responder.respond(musicgen::serve_media(&app, &path, range.as_deref())));
         })
         .setup(|app| {
+            // Engine updates, when the user has turned them on.
+            crate::runtimes::start_auto_updates(app.handle().clone());
             // A development build started with CHATY_MOCK_REPLY answers from
             // the mock engine, already loaded — the page takes a model the
             // backend holds instead of loading the last one, so rendering can
@@ -580,6 +583,11 @@ pub fn run() {
             download::cancel_download,
             update::check_update,
             update::run_update,
+            runtimes::runtimes_info,
+            runtimes::runtimes_check,
+            runtimes::runtimes_update,
+            runtimes::runtimes_use_bundled,
+            runtimes::runtimes_set_auto,
             commands::list_models,
             commands::delete_model_file,
             commands::open_models_dir,
