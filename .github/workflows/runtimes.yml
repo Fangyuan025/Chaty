@@ -79,9 +79,14 @@ jobs:
       CHATY_MLX_LM_REV: ${{ matrix.engine == 'mlx' && matrix.rev || '' }}
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
-      - name: Allow long paths (Windows)
+      # Long paths, and files as committed: audio.cpp's progress patch, turned
+      # CRLF, applies to the pin (whitespace ignored) but not three-way to a
+      # newer upstream.
+      - name: Long paths and LF (Windows)
         if: runner.os == 'Windows'
-        run: git config --global core.longpaths true
+        run: |
+          git config --global core.longpaths true
+          git config --global core.autocrlf false
       # The release's wrappers, not main's.
       - uses: actions/checkout@v5
         with: { ref: "${{ matrix.source }}" }

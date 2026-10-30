@@ -3,3 +3,5 @@
 # an in-sync bundle into a red build (or ship CRLF scripts into workspaces).
 resources/skills/** text eol=lf
 src/lib/officialSkills.ts text eol=lf
+# Patches apply to upstream files byte for byte: never CRLF.
+*.patch text eol=lf
