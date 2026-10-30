@@ -67,13 +67,17 @@ unsafe extern "C" fn capture(
     record(level, &piece);
 }
 
-/// Route llama.cpp's (and ggml's) log through the ring. Replaces
-/// `LlamaBackend::void_logs`.
+/// Route llama.cpp's (and ggml's, and the vision projector's) log through
+/// the ring. Replaces `LlamaBackend::void_logs`.
 pub fn install() {
     ECHO.store(std::env::var("CHATY_LLAMA_LOG").as_deref() == Ok("1"), Ordering::Relaxed);
     // SAFETY: a plain C callback with no user data; llama_log_set also points
-    // ggml's logger at it.
-    unsafe { llama_cpp_sys_2::llama_log_set(Some(capture), std::ptr::null_mut()) };
+    // ggml's logger at it. mtmd keeps a logger of its own, which otherwise
+    // writes every tensor of an mmproj to stderr as it loads.
+    unsafe {
+        llama_cpp_sys_2::llama_log_set(Some(capture), std::ptr::null_mut());
+        llama_cpp_sys_2::mtmd_log_set(Some(capture), std::ptr::null_mut());
+    }
 }
 
 /// Where the log stands now — pass it to [`since`] after the call to learn
