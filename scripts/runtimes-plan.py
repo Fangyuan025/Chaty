@@ -10,7 +10,7 @@ what users run, not what main has yet) built against a newer upstream engine:
   audio  the newest audio.cpp commit
   mlx    the newest mlx-swift-lm commit
 
-A revision already in the published index, or the one that release ships
+A revision already published for a platform, or the one that release ships
 with, is skipped. Prints the build matrix as JSON.
 
 Env: ENGINES ("llama,sd,audio,mlx" …), LLAMA_REV, SD_REV, AUDIO_REV, MLX_REV
@@ -82,7 +82,9 @@ def main():
     path = os.environ.get("INDEX", "")
     if path and os.path.exists(path):
         index = json.load(open(path, encoding="utf-8"))
-    published = {(p["engine"], p["rev"]) for p in index.get("packs", [])}
+    # By platform: one that failed to build is tried again next time, while
+    # the others of that revision stay published.
+    published = {(p["engine"], p["rev"], p["platform"]) for p in index.get("packs", [])}
     matrix = []
     for engine in engines:
         if engine not in UPSTREAM:
@@ -92,14 +94,14 @@ def main():
         rev = os.environ.get(f"{engine.upper()}_REV", "").strip() or newest(engine)
         commit = gh(f"repos/{repo_up}/commits/{rev}")
         rev, date = commit["sha"], commit["commit"]["committer"]["date"]
-        if (engine, rev) in published:
-            print(f"{engine}: {rev[:7]} is published already", file=sys.stderr)
-            continue
         if ships.get(engine, ("", ""))[1] == rev:
             print(f"{engine}: {rev[:7]} is what {source} ships with", file=sys.stderr)
             continue
         version = f"{date[:10].replace('-', '.')}-{rev[:7]}"
         for platform, runner in PLATFORMS[engine]:
+            if (engine, rev, platform) in published:
+                print(f"{engine}: {rev[:7]} for {platform} is published already", file=sys.stderr)
+                continue
             matrix.append({"engine": engine, "platform": platform, "runner": runner, "source": source,
                            "upstream": repo_up, "rev": rev, "date": date, "version": version})
     print(json.dumps(matrix))

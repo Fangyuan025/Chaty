@@ -147,8 +147,11 @@ jobs:
           else { .\scripts\build-${{ matrix.engine }}-sidecar.ps1 -Backend vulkan }
         env:
           CMAKE_PREFIX_PATH: ${{ env.VULKAN_SDK }}
-          # Short: llama.cpp nests past MAX_PATH (release.yml).
+          # As release.yml builds it: short (llama.cpp nests past MAX_PATH),
+          # and Ninja — under MSBuild the Vulkan shader generator's install
+          # step fails.
           CARGO_TARGET_DIR: C:\ct
+          CMAKE_GENERATOR: Ninja
 
       # A pack runs from the data folder, not beside chaty.exe and the Vulkan
       # loader the app ships there (release.yml): it carries its own, found
@@ -185,15 +188,19 @@ jobs:
       # ---- it answers, then it is packed ----
       - name: Handshake and pack
         shell: bash
+        # PACK_-prefixed: Windows matches names without case, and MSVC's
+        # environment already has a `Platform`.
         env:
-          ENGINE: ${{ matrix.engine }}
-          PLATFORM: ${{ matrix.platform }}
-          VERSION: ${{ matrix.version }}
-          UPSTREAM: ${{ matrix.upstream }}
-          REV: ${{ matrix.rev }}
-          DATE: ${{ matrix.date }}
+          PACK_ENGINE: ${{ matrix.engine }}
+          PACK_PLATFORM: ${{ matrix.platform }}
+          PACK_VERSION: ${{ matrix.version }}
+          PACK_UPSTREAM: ${{ matrix.upstream }}
+          PACK_REV: ${{ matrix.rev }}
+          PACK_DATE: ${{ matrix.date }}
         run: |
           set -euo pipefail
+          ENGINE=$PACK_ENGINE PLATFORM=$PACK_PLATFORM VERSION=$PACK_VERSION
+          UPSTREAM=$PACK_UPSTREAM REV=$PACK_REV DATE=$PACK_DATE
           case "$ENGINE" in llama) NAME=chaty-llama ;; sd) NAME=chaty-sd ;; audio) NAME=chaty-audio ;; mlx) NAME=chaty-mlx ;; esac
           EXE=$NAME; [ "$RUNNER_OS" = Windows ] && EXE=$NAME.exe
           if [ "$ENGINE" = llama ]; then
