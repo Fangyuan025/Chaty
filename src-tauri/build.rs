@@ -16,6 +16,16 @@ fn main() {
         // it); weak, a missing one is no reason not to start.
         println!("cargo:rustc-link-arg-bin=chaty-llama=-Wl,-weak-lsherpa-onnx-c-api");
     }
+    // Windows: the same voice DLLs, delay-loaded — fetched on a first call
+    // that chaty-llama never makes, so a runtime pack starts without them.
+    // (Linux: scripts/llama-standalone.sh.)
+    #[cfg(windows)]
+    {
+        for dll in ["sherpa-onnx-c-api.dll", "sherpa-onnx-cxx-api.dll", "onnxruntime.dll", "cargs.dll"] {
+            println!("cargo:rustc-link-arg-bin=chaty-llama=/DELAYLOAD:{dll}");
+        }
+        println!("cargo:rustc-link-arg-bin=chaty-llama=delayimp.lib");
+    }
 
     tauri_build::build()
 }

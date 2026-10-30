@@ -30,4 +30,6 @@ if [[ -n "${CHATY_LLAMA_REV:-}" ]]; then
 fi
 
 cargo build "${ARGS[@]}"
-echo "built: ${CARGO_TARGET_DIR:-$ROOT/src-tauri/target}/release/chaty-llama"
+BIN="${CARGO_TARGET_DIR:-$ROOT/src-tauri/target}/release/chaty-llama"
+"$ROOT/scripts/llama-standalone.sh" "$BIN"
+echo "built: $BIN"

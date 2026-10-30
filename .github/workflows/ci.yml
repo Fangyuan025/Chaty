@@ -119,6 +119,7 @@ jobs:
         run: |
           cargo build --no-default-features --bin chaty-llama
           D=$(mktemp -d); cp target/debug/chaty-llama "$D/"
+          ../scripts/llama-standalone.sh "$D/chaty-llama"
           OUT=$(printf '{"cmd":"quit"}\n' | "$D/chaty-llama")
           echo "$OUT"
           echo "$OUT" | head -1 | grep -q '"event":"ready"'
@@ -155,15 +156,19 @@ jobs:
       - name: cargo test (no GPU)
         working-directory: src-tauri
         run: cargo test --no-default-features --lib --bins
+      # pwsh, not Git Bash: its coreutils `link` shadows MSVC's link.exe.
       - name: chaty-llama answers on its own
         working-directory: src-tauri
-        shell: bash
+        shell: pwsh
         run: |
           cargo build --no-default-features --bin chaty-llama
-          D=$(mktemp -d); cp /c/ct/debug/chaty-llama.exe "$D/"
-          OUT=$(printf '{"cmd":"quit"}\n' | "$D/chaty-llama.exe")
-          echo "$OUT"
-          echo "$OUT" | head -1 | grep -q '"event":"ready"'
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          $d = Join-Path $env:RUNNER_TEMP "llama-alone"
+          New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item C:\ct\debug\chaty-llama.exe $d
+          $out = '{"cmd":"quit"}' | & "$d\chaty-llama.exe" | Select-Object -First 1
+          Write-Host "ready: $out"
+          if ("$out" -notmatch '"event":"ready"') { throw "chaty-llama did not answer from its own folder" }
 
   sd-sidecar:
     name: Image engine sidecar (build + protocol smoke)

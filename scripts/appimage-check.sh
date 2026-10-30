@@ -28,7 +28,8 @@ fi
 
 LLAMA=$(find "$ROOT/usr/bin" -maxdepth 1 -type f -name chaty-llama | head -1)
 [ -n "$LLAMA" ] || { echo "FAIL: no chaty-llama in the AppImage"; exit 1; }
-ready=$(printf '{"cmd":"quit"}\n' | LD_LIBRARY_PATH="$ROOT/usr/lib" "$LLAMA" 2>/dev/null | head -1 || true)
+# As the app starts it: no library path but the binary's own.
+ready=$(printf '{"cmd":"quit"}\n' | "$LLAMA" 2>/dev/null | head -1 || true)
 if ! printf '%s' "$ready" | grep -q '"event":"ready"'; then
   echo "FAIL: chaty-llama did not answer: $ready"
   exit 1
