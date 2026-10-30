@@ -48,8 +48,9 @@ jobs:
 
   backend:
     name: Lint & unit tests (backend)
-    # Apple Silicon so the default Metal feature builds (mirrors release.yml).
-    runs-on: macos-14
+    # Apple Silicon so the default Metal feature builds (mirrors release.yml;
+    # macos-14 is retired on 2026-11-02).
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
