@@ -152,6 +152,10 @@ struct State {
     /// `engine:version` of packs that failed to start, never offered again.
     #[serde(default)]
     broken: BTreeSet<String>,
+    /// `engine:version` of packs the user went back from: offered by hand
+    /// still, but never put back by an automatic update.
+    #[serde(default)]
+    declined: BTreeSet<String>,
     #[serde(default)]
     last_check: u64,
 }
@@ -611,7 +615,11 @@ pub async fn runtimes_update(engine: String, on_progress: Channel<InstallProgres
 pub fn runtimes_use_bundled(engine: String) -> RuntimesInfo {
     if let Some(e) = Engine::from_id(&engine) {
         let mut state = load_state();
-        state.active.remove(e.id());
+        // Automatic updates would put this same pack back at their next
+        // pass; a newer one they still bring.
+        if let Some(version) = state.active.remove(e.id()) {
+            state.declined.insert(format!("{}:{version}", e.id()));
+        }
         save_state(&state);
     }
     info()
@@ -655,9 +663,12 @@ async fn auto_pass(emit: &std::sync::Arc<Emit>) {
         Ok(()) => emit("runtime-checked", serde_json::json!({})),
         Err(err) => crate::errlog::append_error("runtime-auto-update", &err),
     }
+    let declined = load_state().declined;
     for e in Engine::ALL.into_iter().filter(|e| e.swappable() && e.here()) {
-        if !info().runtimes.iter().any(|r| r.engine == e && r.update.is_some()) {
-            continue;
+        let offered = info().runtimes.into_iter().find(|r| r.engine == e).and_then(|r| r.update);
+        match offered {
+            Some(p) if !declined.contains(&format!("{}:{}", e.id(), p.version)) => {}
+            _ => continue,
         }
         let tick = emit.clone();
         let progress = move |p: InstallProgress| tick("runtime-progress", serde_json::json!({ "engine": e, "progress": p }));
@@ -846,6 +857,25 @@ mod tests {
         eprintln!("{}: {before:?} -> {after:?}", e.id());
         assert!(before.is_some() && after.is_some() && before != after, "{before:?} -> {after:?}");
         assert!(info().runtimes.into_iter().all(|r| r.engine != e || r.update.is_none()));
+    }
+
+    /// Gone back from with automatic updates on: that pack stays out of the
+    /// automatic pass (a newer one would not). Same indexes as above.
+    #[test]
+    #[ignore]
+    fn a_pack_gone_back_from_is_not_put_back() {
+        let e = Engine::from_id(&std::env::var("CHATY_TEST_RUNTIME").expect("set CHATY_TEST_RUNTIME")).unwrap();
+        let mut state = load_state();
+        state.auto_update = true;
+        save_state(&state);
+        let emit: std::sync::Arc<Emit> = std::sync::Arc::new(|_: &str, _: serde_json::Value| {});
+        std::env::set_var("CHATY_RUNTIMES_INDEX", std::env::var("CHATY_TEST_INDEX_AFTER").expect("set CHATY_TEST_INDEX_AFTER"));
+        tauri::async_runtime::block_on(auto_pass(&emit));
+        assert!(load_state().active.contains_key(e.id()), "installed");
+        runtimes_use_bundled(e.id().to_string());
+        tauri::async_runtime::block_on(auto_pass(&emit));
+        assert!(!load_state().active.contains_key(e.id()), "the bundled engine stays");
+        assert!(info().runtimes.into_iter().any(|r| r.engine == e && r.update.is_some()), "still offered by hand");
     }
 
     /// End to end against a real signed index: fetch it, install the newest

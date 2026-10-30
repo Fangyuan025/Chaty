@@ -21,8 +21,9 @@
   a running one is left alone.
 - **A newer engine that will not start is set aside** and the bundled one
   takes over by itself, for that model and from then on. **Use the bundled
-  one** goes back at any time, and an app update that brings a newer engine
-  than the one you chose wins over it.
+  one** goes back at any time, and automatic updates leave that engine alone
+  until a newer one comes; an app update that brings a newer engine than the
+  one you chose wins over it.
 
 ### llama.cpp in a process of its own
 
