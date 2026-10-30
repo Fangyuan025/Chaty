@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "chaty"
-version = "2.3.8"
+version = "2.3.9"
 dependencies = [
  "anyhow",
  "ash",

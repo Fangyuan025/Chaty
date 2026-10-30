@@ -1,5 +1,55 @@
 # Changelog
 
+## v2.3.9 — Keep up (2026-10-30)
+
+### Engines that update without a Chaty release
+
+- **Settings → Runtimes** lists each engine Chaty runs models on —
+  llama.cpp, stable-diffusion.cpp, audio.cpp and MLX — with the build it is
+  on, and a newer one to switch to at a click, or by itself once **Update
+  runtimes automatically** is on (it is off until you turn it on). A new
+  architecture that lands upstream no longer waits for the next Chaty.
+- **Every day, each engine's newest upstream** — llama.cpp's newest build,
+  stable-diffusion.cpp's, audio.cpp's and mlx-swift-lm's newest commits — is
+  built into this release's own engine wrappers for every platform, and
+  published only if it starts and answers. The list of them is signed, and a
+  newer engine is checked before it is used: its SHA-256, then one start of
+  it on your machine. It takes over the next time a model of its kind loads;
+  a running one is left alone.
+- **A newer engine that will not start is set aside** and the bundled one
+  takes over by itself, for that model and from then on. **Use the bundled
+  one** goes back at any time, and an app update that brings a newer engine
+  than the one you chose wins over it.
+
+### llama.cpp in a process of its own
+
+- **GGUF models run in `chaty-llama`**, a helper beside the app, like the
+  image, music and MLX engines already did — chat, pictures, speculative
+  decoding and the knowledge base's embeddings alike. That is what lets it be
+  replaced, and a crash inside llama.cpp — a GPU driver fault, a damaged file
+  — now ends that process instead of the window. Ejecting a model ends it, so
+  its memory comes back by construction.
+- **Loading shows llama.cpp's own progress** instead of an estimate from the
+  memory the app grew by.
+- The vision projector no longer prints every one of its tensors to the
+  terminal as it loads.
+
+### MLX on upstream
+
+- **MLX runs on upstream mlx-swift-lm and mlx-swift 0.33** instead of our
+  fork of it: upstream's own support for Qwen3.5's multi-token-prediction head
+  made the fork's one patch unnecessary. Speculative decoding on an MTPLX
+  checkpoint is as fast as before — Qwen3.5-4B MTPLX draws 69 tokens a second
+  against 40 without it on an M4 Pro — and a Qwen3.5 MTPLX checkpoint that the
+  previous engine answered in garbage now reads properly.
+
+### Building against newer engines
+
+- stable-diffusion.cpp's newer `generate_image`, which hands back a result
+  that owns its pictures, and audio.cpp's code moving around Chaty's progress
+  lines are both taken in stride, so the daily builds compile on either side
+  of those changes.
+
 ## v2.3.8 — Speak my language (2026-10-29)
 
 ### Image: FLUX.2 [klein]

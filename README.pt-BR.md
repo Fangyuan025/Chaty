@@ -168,6 +168,8 @@ Qualquer GGUF roda no llama.cpp (Metal, ou Vulkan em NVIDIA, AMD e Intel); no Ap
 
 Um ajuste fino da comunidade cujo template de chat difere do palpite embutido do llama.cpp roda com o próprio template, como o transformers o rodaria. Modelos de texto para imagem e para música carregam do mesmo lugar; as famílias estão em [Imagem](#imagem) e [Música](#música).
 
+Os motores não esperam uma versão do Chaty. **Configurações → Runtimes** troca o llama.cpp, o stable-diffusion.cpp, o audio.cpp e o MLX por um build do upstream mais recente — com um clique, ou sozinho se você ativar — para que uma arquitetura nova rode assim que o motor dela a tiver. Cada um é verificado e iniciado uma vez antes de ser usado; se não iniciar, o motor incluído no app assume.
+
 ## Privacidade
 
 Modelos, conversas, documentos, imagens e músicas ficam numa pasta no seu disco. Não há conta nem servidor nosso em que confiar — apague a pasta e não sobra nada.
@@ -227,12 +229,13 @@ Os motores MLX, de imagem e de música são auxiliares separados — `scripts/bu
 |---|---|
 | Shell | Tauri 2 — bandeja, atalho global, instância única |
 | Interface | React 19 · Vite · react-markdown · KaTeX · Mermaid |
-| Modelos de linguagem | Rust · `llama-cpp-2` (llama.cpp — Metal / Vulkan) · MLX por um auxiliar `mlx-swift-lm` no Apple Silicon · templates de chat renderizados com minijinja quando o do modelo difere |
+| Modelos de linguagem | llama.cpp (Metal / Vulkan) no auxiliar `chaty-llama`, via `llama-cpp-2` · MLX via `mlx-swift-lm` no auxiliar `chaty-mlx` no Apple Silicon · templates de chat renderizados com minijinja quando o do modelo difere |
 | Modelos de imagem | stable-diffusion.cpp no auxiliar `chaty-sd` · modelos de imagem MLX (pastas do mflux) no auxiliar `chaty-mlx` no Apple Silicon |
 | Modelos de música | audio.cpp no auxiliar `chaty-audio` — YuE2, MiniMax Music 3, ACE-Step 1.5, HeartMuLa, Stable Audio 3, MiDashengLM-Gen |
 | Voz | `sherpa-rs` (ONNX Runtime, CPU) — Whisper, Kokoro-82M e uma voz chinesa VITS |
 | Base de conhecimento | Embeddings bge-m3 + BM25 · busca híbrida RRF / MMR · armazenamento vetorial em SQLite |
 | Armazenamento | SQLite — conversas, sessões, busca em texto completo |
+| Atualização dos motores | O upstream mais recente de cada motor compilado diariamente nos auxiliares da versão · uma lista assinada (Ed25519) · SHA-256 e uma primeira inicialização verificados antes do uso |
 
 ## Contribuindo
 

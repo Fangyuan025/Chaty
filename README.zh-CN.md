@@ -168,6 +168,8 @@
 
 社区微调模型的聊天模板和 llama.cpp 内置的猜测不一致时，Chaty 直接执行模型自己的模板，行为与 transformers 一致。文生图和文生音乐模型也从同一个地方加载，支持的家族见[文生图](#文生图)和[文生音乐](#文生音乐)。
 
+引擎不用等 Chaty 发版。**设置 → 运行时**可以把 llama.cpp、stable-diffusion.cpp、audio.cpp 和 MLX 换成上游最新构建——点一下即可，也可以打开自动更新——新架构只要引擎支持了就能跑。每个新引擎用之前都会先校验、先启动一次；启动不了就自动改回应用自带的版本。
+
 ## 隐私
 
 模型、对话、文档、图片和音乐，都放在你硬盘上的一个文件夹里。没有账号，也没有我们的服务器需要你信任——删掉那个文件夹，就什么都不剩。
@@ -227,12 +229,13 @@ MLX、文生图与文生音乐引擎是单独的辅助程序——`scripts/build
 |---|---|
 | 外壳 | Tauri 2——托盘、全局快捷键、单实例 |
 | 界面 | React 19 · Vite · react-markdown · KaTeX · Mermaid |
-| 语言模型 | Rust · `llama-cpp-2`（llama.cpp——Metal / Vulkan）· Apple Silicon 上通过 `mlx-swift-lm` 辅助进程跑 MLX · 模型自带模板与内置渲染不一致时用 minijinja 渲染 |
+| 语言模型 | llama.cpp（Metal / Vulkan）跑在 `chaty-llama` 辅助进程中，经 `llama-cpp-2` 调用 · Apple Silicon 上 MLX 经 `mlx-swift-lm` 跑在 `chaty-mlx` 辅助进程中 · 模型自带模板与内置渲染不一致时用 minijinja 渲染 |
 | 文生图 | `chaty-sd` 辅助进程中的 stable-diffusion.cpp · Apple Silicon 上 MLX 文生图模型（mflux 存档）跑在 `chaty-mlx` 辅助进程中 |
 | 文生音乐 | `chaty-audio` 辅助进程中的 audio.cpp —— YuE2、MiniMax Music 3、ACE-Step 1.5、HeartMuLa、Stable Audio 3、MiDashengLM-Gen |
 | 语音 | `sherpa-rs`（ONNX Runtime，CPU）——Whisper、Kokoro-82M，以及一个 VITS 中文音色 |
 | 知识库 | bge-m3 向量 + BM25 · RRF / MMR 混合检索 · SQLite 向量库 |
 | 存储 | SQLite——对话、会话、全文搜索 |
+| 引擎更新 | 每天把各引擎上游最新版构建进本版本的辅助进程 · 签名（Ed25519）的列表 · 用前校验 SHA-256 并先启动一次 |
 
 ## 参与贡献
 

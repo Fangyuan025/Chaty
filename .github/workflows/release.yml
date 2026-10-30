@@ -331,36 +331,29 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## FLUX.2 [klein]
+            ## Engines that update without a Chaty release
 
-            FLUX.2 [klein] 4B and 9B, distilled and base, now load and draw. A klein GGUF
-            is the denoiser alone; Chaty recognises it, offers the Qwen3 encoder and the
-            FLUX.2 VAE it needs in the same download, and draws at the settings it was
-            made for — four steps at CFG 1 for the distilled ones. klein 4B draws
-            1024×1024 in about a minute on an M4 Pro.
+            Settings → Runtimes lists llama.cpp, stable-diffusion.cpp, audio.cpp and MLX
+            with the build each is on, and a newer one to switch to at a click — or by
+            itself, once you turn that on. Every day each engine's newest upstream is
+            built into this release's own wrappers and published only if it starts; the
+            list is signed, and a newer engine is checked and started once on your
+            machine before it is used. One that will not start is set aside and the
+            bundled one takes over by itself.
 
-            ## LFM3
+            ## llama.cpp in a process of its own
 
-            llama.cpp moves to v0.8.0: LFM3 and LFM3-VL load, read pictures and call
-            tools, and as hybrid models they now reuse 90–99% of each prompt from the
-            last turn instead of reading the whole conversation again.
+            GGUF models now run in `chaty-llama`, a helper beside the app, as the image,
+            music and MLX engines already did. That is what lets it be replaced, and a
+            crash inside llama.cpp ends that process instead of the window. Loading shows
+            llama.cpp's own progress.
 
-            ## Errors in the language you picked
+            ## MLX on upstream
 
-            Every message from the backend is now in the language the UI is in, from the
-            first one at startup on, instead of Chinese until a coding turn started, or
-            both languages at once. An engine's own words come after a line in yours, and
-            an image model missing a file says which one.
-
-            ## Linux, and the store
-
-            Thanks to @davidecelentano: on Linux Chaty picks one GPU through Vulkan —
-            discrete over integrated — and sizes offload by what the driver says is free;
-            music plays in the AppImage, which also opens on Fedora instead of a gray
-            window and updates itself in place. The download of an update shows how far
-            it has got. The store gains a Text generation filter, links
-            to Hugging Face, and a fit hint that knows whether a model fits the GPU, or,
-            on a Mac, fits in memory with everything it downloads.
+            MLX runs on upstream mlx-swift-lm and mlx-swift 0.33 instead of our fork:
+            upstream's own Qwen3.5 MTP support made it unnecessary. Speculative decoding
+            stays as fast — Qwen3.5-4B MTPLX at 69 tokens a second against 40 without it
+            on an M4 Pro.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

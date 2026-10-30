@@ -168,6 +168,8 @@ Any GGUF runs on llama.cpp (Metal, or Vulkan on NVIDIA, AMD and Intel); on Apple
 
 A community fine-tune whose chat template differs from llama.cpp's built-in guess is run with its own template, as transformers would run it. Text-to-image and text-to-music models load from the same place; their families are listed under [Image](#image) and [Music](#music).
 
+The engines don't wait for a Chaty release. **Settings → Runtimes** moves llama.cpp, stable-diffusion.cpp, audio.cpp and MLX to a build of their newest upstream — at a click, or by itself if you turn that on — so a new architecture can run as soon as its engine has it. Each one is checked and started once before it's used, and if it won't start, the bundled engine takes over.
+
 ## Privacy
 
 Models, conversations, documents, pictures and music live in a folder on your disk. There's no account and no server of ours to trust — delete the folder, and it's gone.
@@ -227,12 +229,13 @@ The MLX, image and music engines are separate helpers — `scripts/build-mlx-sid
 |---|---|
 | Shell | Tauri 2 — tray, global shortcut, single instance |
 | Interface | React 19 · Vite · react-markdown · KaTeX · Mermaid |
-| Language models | Rust · `llama-cpp-2` (llama.cpp — Metal / Vulkan) · MLX through an `mlx-swift-lm` helper on Apple Silicon · chat templates rendered with minijinja where a model's own differs |
+| Language models | llama.cpp (Metal / Vulkan) in the `chaty-llama` helper, through `llama-cpp-2` · MLX through `mlx-swift-lm` in the `chaty-mlx` helper on Apple Silicon · chat templates rendered with minijinja where a model's own differs |
 | Image models | stable-diffusion.cpp in the `chaty-sd` helper · MLX image models (mflux saves) in the `chaty-mlx` helper on Apple Silicon |
 | Music models | audio.cpp in the `chaty-audio` helper — YuE2, MiniMax Music 3, ACE-Step 1.5, HeartMuLa, Stable Audio 3, MiDashengLM-Gen |
 | Voice | `sherpa-rs` (ONNX Runtime, CPU) — Whisper, Kokoro-82M, and a VITS Chinese voice |
 | Knowledge base | bge-m3 embeddings + BM25 · hybrid RRF / MMR retrieval · SQLite vector store |
 | Storage | SQLite — conversations, sessions, full-text search |
+| Engine updates | Each engine's newest upstream built daily into the release's helpers · a signed (Ed25519) list · SHA-256 and a first start checked before use |
 
 ## Contributing
 
