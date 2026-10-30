@@ -41,6 +41,7 @@ import {
   runtimesCheck,
   runtimesInfo,
   runtimesSetAuto,
+  runtimesAutoPass,
   runtimesUpdate,
   runtimesUseBundled,
   type RuntimeEngine,
@@ -502,6 +503,9 @@ function RuntimesPane() {
 
   useEffect(() => {
     runtimesInfo().then(setInfo).catch(() => {});
+    // With automatic updates on, opening the page looks for newer engines:
+    // what it shows is current without a click.
+    void runtimesAutoPass().catch(() => {});
     // An automatic update, shown on its row as it goes: its progress, then
     // the engine it switched to, or why it did not.
     const done = (engine: RuntimeEngine) =>
@@ -517,6 +521,7 @@ function RuntimesPane() {
       setErrors((x) => ({ ...x, [e.payload.engine]: "" }));
       setInstalling((x) => ({ ...x, [e.payload.engine]: e.payload.progress }));
     }).then(keep);
+    void listen("runtime-checked", () => void runtimesInfo().then(setInfo).catch(() => {})).then(keep);
     void listen<{ engine: RuntimeEngine }>("runtime-updated", (e) => {
       done(e.payload.engine);
       void runtimesInfo().then(setInfo).catch(() => {});

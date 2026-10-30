@@ -764,6 +764,12 @@ export async function runtimesSetAuto(on: boolean): Promise<RuntimesInfo> {
   return await invoke<RuntimesInfo>("runtimes_set_auto", { on });
 }
 
+/** With automatic updates on, look for newer engines now (in the background;
+ *  `runtime-checked` / `runtime-progress` / `runtime-updated` follow). */
+export async function runtimesAutoPass(): Promise<void> {
+  await invoke("runtimes_auto_pass");
+}
+
 /** How far the new version's download has got. */
 export interface UpdateProgress {
   downloaded: number;

@@ -27,8 +27,8 @@ const UA: &str = "Chaty-Runtimes";
 const INDEX_URL: &str = "https://github.com/Fangyuan025/Chaty/releases/download/runtimes/runtimes.json";
 /// The key CI signs the index with (`tools/runtime-sign`), raw Ed25519, base64.
 const INDEX_PUBKEY: &str = "d+GUC9VDQCppjsa+H+bE+r7Aq4d78w5nsHNfP4QSJI4=";
-/// An automatic check at most this often.
-const CHECK_EVERY_SECS: u64 = 24 * 3600;
+/// How often automatic updates look for newer engines while the app runs.
+const AUTO_EVERY_SECS: u64 = 3600;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -639,23 +639,21 @@ fn tauri_emitter(app: tauri::AppHandle) -> std::sync::Arc<Emit> {
     })
 }
 
-/// One pass of automatic updates, when they are on: the list is fetched again
-/// once a day, and every engine with a newer usable pack — known from that
-/// list or from a check the user made — is installed for the next time its
-/// engine starts. Its row shows the progress (`runtime-progress`), then
-/// `runtime-updated` or `runtime-failed`.
+/// One pass of automatic updates, when they are on: the list is fetched (a
+/// few KB, signed), and every engine with a newer usable pack is installed for
+/// the next time its engine starts — so every engine stays on its newest
+/// without a click. Its row shows the progress (`runtime-progress`), then
+/// `runtime-updated` or `runtime-failed`; `runtime-checked` once the list is in.
 async fn auto_pass(emit: &std::sync::Arc<Emit>) {
     static PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _one = PASS.lock().await;
-    let state = load_state();
-    if !state.auto_update {
+    if !load_state().auto_update {
         return;
     }
-    if now().saturating_sub(state.last_check) >= CHECK_EVERY_SECS {
-        // Offline is no reason to skip what the last list already offers.
-        if let Err(err) = fetch_index().await {
-            crate::errlog::append_error("runtime-auto-update", &err);
-        }
+    // Offline is no reason to skip what the last list already offers.
+    match fetch_index().await {
+        Ok(()) => emit("runtime-checked", serde_json::json!({})),
+        Err(err) => crate::errlog::append_error("runtime-auto-update", &err),
     }
     for e in Engine::ALL.into_iter().filter(|e| e.swappable() && e.here()) {
         if !info().runtimes.iter().any(|r| r.engine == e && r.update.is_some()) {
@@ -673,18 +671,27 @@ async fn auto_pass(emit: &std::sync::Arc<Emit>) {
     }
 }
 
-/// Automatic updates: a pass a minute after launch and every hour after that
-/// (each fetching the list at most daily), and one at once whenever they are
-/// turned on.
+/// Automatic updates: a pass shortly after launch and every hour after that,
+/// one at once whenever they are turned on, and one when the Runtimes page
+/// opens (`runtimes_auto_pass`).
 pub fn start_auto_updates(app: tauri::AppHandle) {
     let emit = tauri_emitter(app);
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
         loop {
             auto_pass(&emit).await;
-            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(AUTO_EVERY_SECS)).await;
         }
     });
+}
+
+/// A pass now, when automatic updates are on — the Runtimes page asks as it
+/// opens, so what it shows is current.
+#[tauri::command]
+pub fn runtimes_auto_pass(app: tauri::AppHandle) {
+    if load_state().auto_update {
+        tauri::async_runtime::spawn(async move { auto_pass(&tauri_emitter(app)).await });
+    }
 }
 
 #[cfg(test)]
@@ -812,6 +819,32 @@ mod tests {
         assert!(seen.iter().any(|n| n == "runtime-progress"), "{seen:?}");
         assert!(seen.iter().any(|n| n == "runtime-updated"), "{seen:?}");
         assert!(active_binary(e).is_some());
+        assert!(info().runtimes.into_iter().all(|r| r.engine != e || r.update.is_none()));
+    }
+
+    /// The owner's case: automatic updates on and a check just made, then a
+    /// newer pack is published. The next pass — hourly, or the Runtimes page
+    /// opening — finds it and installs it, without a click and without the
+    /// switch turned off and on. Two signed indexes stand for before and after.
+    /// `HOME=/tmp/x CHATY_TEST_INDEX_BEFORE=http://…/a.json CHATY_TEST_INDEX_AFTER=http://…/b.json CHATY_TEST_RUNTIME=sd cargo test … -- --ignored`
+    #[test]
+    #[ignore]
+    fn a_newer_pack_is_installed_without_a_click() {
+        let e = Engine::from_id(&std::env::var("CHATY_TEST_RUNTIME").expect("set CHATY_TEST_RUNTIME")).unwrap();
+        let mut state = load_state();
+        state.auto_update = true;
+        save_state(&state);
+        let emit: std::sync::Arc<Emit> = std::sync::Arc::new(|_: &str, _: serde_json::Value| {});
+        let pass_with = |url: String| {
+            std::env::set_var("CHATY_RUNTIMES_INDEX", url);
+            tauri::async_runtime::block_on(auto_pass(&emit));
+            load_state().active.get(e.id()).cloned()
+        };
+        let before = pass_with(std::env::var("CHATY_TEST_INDEX_BEFORE").expect("set CHATY_TEST_INDEX_BEFORE"));
+        assert!(now() - load_state().last_check < 60, "the pass checked");
+        let after = pass_with(std::env::var("CHATY_TEST_INDEX_AFTER").expect("set CHATY_TEST_INDEX_AFTER"));
+        eprintln!("{}: {before:?} -> {after:?}", e.id());
+        assert!(before.is_some() && after.is_some() && before != after, "{before:?} -> {after:?}");
         assert!(info().runtimes.into_iter().all(|r| r.engine != e || r.update.is_none()));
     }
 

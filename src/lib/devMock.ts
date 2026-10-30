@@ -1078,6 +1078,12 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "runtimes_check":
       MOCK_RUNTIMES.lastCheck = Math.floor(Date.now() / 1000);
       return structuredClone(MOCK_RUNTIMES);
+    case "runtimes_auto_pass":
+      if (MOCK_RUNTIMES.autoUpdate) {
+        MOCK_RUNTIMES.lastCheck = Math.floor(Date.now() / 1000);
+        setTimeout(() => void emit("runtime-checked", {}), 300);
+      }
+      return null;
     case "runtimes_update": {
       const ch = (args as { onProgress?: { onmessage?: (ev: unknown) => void } } | undefined)?.onProgress;
       const total = 38_200_000;

@@ -588,6 +588,7 @@ pub fn run() {
             runtimes::runtimes_update,
             runtimes::runtimes_use_bundled,
             runtimes::runtimes_set_auto,
+            runtimes::runtimes_auto_pass,
             commands::list_models,
             commands::delete_model_file,
             commands::open_models_dir,
