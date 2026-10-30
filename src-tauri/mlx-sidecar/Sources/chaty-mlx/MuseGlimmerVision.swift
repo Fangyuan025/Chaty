@@ -522,12 +522,12 @@ public class MuseGlimmerVLM: Module, VLMModel, KVCacheDimensionProvider {
         return embeddings
     }
 
-    public func prepare(_ input: LMInput, cache: [any KVCache], windowSize: Int?) throws
-        -> PrepareResult
-    {
+    public func prepare(
+        _ input: LMInput, cache: [any KVCache], state: LMOutput.State?, prefill: PrefillParameters
+    ) throws -> PrepareResult {
         let embeddings = inputEmbeddings(input.text.tokens, image: input.image)
         let result = withPreparedCache(cache, lengths: input.text.sequenceLengths) {
-            let step = windowSize ?? 512
+            let step = prefill.stepSize ?? 512
             let total = embeddings.dim(1)
             var done = 0
             while total - done > 1 {

@@ -36,7 +36,7 @@ PLATFORMS = {
     "llama": DESKTOP,
     "sd": DESKTOP,
     "audio": DESKTOP,
-    # The newer mlx-swift manifests need Xcode 26's toolchain.
+    # mlx-swift needs Swift tools 6.3: Xcode 26.4+, on macOS 26 (release.yml).
     "mlx": [("macos-arm64", "macos-26")],
 }
 

@@ -5,8 +5,23 @@
 #   xcodebuild -downloadComponent MetalToolchain
 #
 # Usage: scripts/build-mlx-sidecar.sh [--debug]
+# Env: CHATY_MLX_LM_REV=<ml-explore/mlx-swift-lm commit> builds against that
+#      revision instead of the pin — what a runtime pack is built from
+#      (.github/workflows/runtimes.yml). Package.swift and Package.resolved
+#      are put back afterwards.
 set -euo pipefail
 cd "$(dirname "$0")/../src-tauri/mlx-sidecar"
+
+if [[ -n "${CHATY_MLX_LM_REV:-}" ]]; then
+  mkdir -p .build
+  cp Package.swift .build/Package.swift.pin
+  cp Package.resolved .build/Package.resolved.pin
+  trap 'cp .build/Package.swift.pin Package.swift; cp .build/Package.resolved.pin Package.resolved' EXIT
+  perl -0pi -e 's|(mlx-swift-lm",\s*revision: ")[0-9a-f]+|${1}'"$CHATY_MLX_LM_REV"'|' Package.swift
+  grep -q "revision: \"$CHATY_MLX_LM_REV\"" Package.swift || { echo "error: no mlx-swift-lm revision to move" >&2; exit 1; }
+  rm -f Package.resolved
+  echo "chaty-mlx: mlx-swift-lm $CHATY_MLX_LM_REV"
+fi
 
 CONFIG=Release
 [[ "${1:-}" == "--debug" ]] && CONFIG=Debug

@@ -521,3 +521,57 @@ final class MTPGovernor {
     var summary: String { "naps=\(naps)" }
 }
 
+
+/// What the head needs from the model it drafts for: the hidden state behind
+/// the logits, the projection out of hidden space, and the token embedding.
+///
+/// mlx-swift-lm hands the hidden state back in the output state when asked
+/// (`mtpEmitFlagKey`) — for the families with MTP support of their own, which
+/// is every family these checkpoints come in. The projection and the
+/// embedding are the model's own modules, found by name: they are internal to
+/// the library, and the library's own drafters reach them the same way, from
+/// inside it. A model that hands back no hidden state cannot be drafted for.
+struct MTPTarget {
+    let model: any LanguageModel
+    let embedding: Embedding
+    let lmHead: Linear?
+
+    init?(_ model: any LanguageModel) {
+        // The shortest path: the language model's own, never a component's.
+        let named = model.namedModules().sorted { $0.0.count < $1.0.count }
+        guard
+            let embedding = named.first(where: { $0.0.hasSuffix("embed_tokens") })?.1
+                as? Embedding
+        else { return nil }
+        self.model = model
+        self.embedding = embedding
+        self.lmHead = named.first(where: { $0.0.hasSuffix("lm_head") })?.1 as? Linear
+    }
+
+    /// A trunk pass that also hands back the hidden state of every position.
+    /// The state carried on keeps only what the model keeps for itself.
+    func hiddenStates(_ input: LMInput.Text, cache: [KVCache]?, state: LMOutput.State?) -> (
+        LMOutput, MLXArray
+    )? {
+        var asked = state ?? LMOutput.State()
+        asked[mtpEmitFlagKey] = true
+        let out = model(input, cache: cache, state: asked)
+        guard var carried = out.state, let hidden = carried[mtpLastHiddenStatesKey] else {
+            return nil
+        }
+        carried[mtpEmitFlagKey] = nil
+        carried[mtpLastHiddenStatesKey] = nil
+        carried[mtpSharedKVStatesKey] = nil
+        carried[mtpSharedKVOffsetsKey] = nil
+        carried[mtpSharedKVSourceIndicesKey] = nil
+        carried[mtpPositionDeltasKey] = nil
+        return (LMOutput(logits: out.logits, state: carried), hidden)
+    }
+
+    func logits(fromHidden hidden: MLXArray) -> MLXArray {
+        if let lmHead { return lmHead(hidden) }
+        return embedding.asLinear(hidden)
+    }
+
+    func embed(_ tokens: MLXArray) -> MLXArray { embedding(tokens) }
+}

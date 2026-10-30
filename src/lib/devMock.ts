@@ -652,7 +652,7 @@ const MOCK_RUNTIMES = {
       needsApp: null,
     },
     { engine: "audio", swappable: true, active: "2026.10.21-b7e4410", upstream: "0xShug0/audio.cpp", rev: "b7e44102c9a8d7e6f5a4b3c2d1e0f9a8b7c6d5e4", date: "2026-10-21T19:03:00Z", update: null, needsApp: null },
-    { engine: "mlx", swappable: true, active: "bundled", upstream: "Fangyuan025/mlx-swift-lm", rev: "c11767bc3aa01f33683ef39fa5adb9ad47f214ef", date: "2026-09-05T06:58:53Z", update: null, needsApp: null },
+    { engine: "mlx", swappable: true, active: "bundled", upstream: "ml-explore/mlx-swift-lm", rev: "f5b0677f6b52b81d068871611cfcb82d1e7a0005", date: "2026-10-28T23:27:06Z", update: null, needsApp: null },
   ],
 };
 /** A generation told to stop (cancel_generation) stops streaming. */

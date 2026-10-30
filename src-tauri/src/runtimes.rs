@@ -99,7 +99,7 @@ impl Engine {
             Engine::Llama => Bundled { upstream: "ggml-org/llama.cpp", rev: "8642541b255bfb5dc39cd351a178be09013a55d6", date: "2026-10-28T11:30:38Z" },
             Engine::Sd => Bundled { upstream: "leejet/stable-diffusion.cpp", rev: "88411ef1e0688ff2df1010aeeb5d92b2d8cea2be", date: "2026-09-23T17:45:14Z" },
             Engine::Audio => Bundled { upstream: "0xShug0/audio.cpp", rev: "955c8725c611d511774e6be132aff6609163b2d2", date: "2026-09-25T22:44:03Z" },
-            Engine::Mlx => Bundled { upstream: "Fangyuan025/mlx-swift-lm", rev: "c11767bc3aa01f33683ef39fa5adb9ad47f214ef", date: "2026-09-05T06:58:53Z" },
+            Engine::Mlx => Bundled { upstream: "ml-explore/mlx-swift-lm", rev: "f5b0677f6b52b81d068871611cfcb82d1e7a0005", date: "2026-10-28T23:27:06Z" },
         }
     }
 }

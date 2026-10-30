@@ -118,7 +118,7 @@ jobs:
           choco install ninja -y
       - if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Metal toolchain (MLX)
+      - name: Metal toolchain (MLX, on macOS 26 as the release builds it)
         if: matrix.engine == 'mlx'
         run: xcodebuild -downloadComponent MetalToolchain
 

@@ -1106,6 +1106,11 @@ final class Engine: @unchecked Sendable {
     var pendingBlock: [Int] = []
 
     static let prefillChunk = 512
+    /// What a `prepare` call is given: each model's own chunk boundaries as
+    /// they were before mlx-swift-lm balanced them, and so the outputs (and
+    /// cache) they gave — a conversation resumed from cache must read on as
+    /// it was written.
+    static let legacyPrefill = PrefillParameters(chunking: .remainder)
     /// The smallest a prefill chunk gets when memory is short (see
     /// `nextPrefillChunk`), and the scratch room it keeps clear of the
     /// working set.
@@ -1158,14 +1163,18 @@ final class Engine: @unchecked Sendable {
     /// layers (Qwen3.5/3.6's linear attention, Mamba) hold a fixed state, and
     /// a sliding window grows only to its width.
     static func probeCacheGrowth(_ context: ModelContext) -> (perToken: Int, fixed: Int)? {
-        let cache = context.model.newCache(parameters: nil)
+        guard let cache = try? context.model.newCache(parameters: nil) else { return nil }
         let id = Int32(context.tokenizer.encode(text: " the", addSpecialTokens: false).first ?? 1)
         let step = 64
+        // The second read continues the first, so it carries the first's
+        // state: the M-RoPE families refuse a warm cache without it.
+        var state: LMOutput.State? = nil
         func feed() {
             let text = LMInput.Text(tokens: MLXArray([Int32](repeating: id, count: step)))
             let out = withPreparedCache(cache, lengths: text.sequenceLengths) {
-                context.model(text[text: .newAxis], cache: cache, state: nil)
+                context.model(text[text: .newAxis], cache: cache, state: state)
             }
+            state = out.state
             eval(out.logits)
         }
         func sizes() -> [Int] { cache.map { $0.state.reduce(0) { $0 + $1.nbytes } } }
@@ -2096,7 +2105,7 @@ final class Engine: @unchecked Sendable {
                 }
             }
             if kvCache == nil {
-                kvCache = context.model.newCache(parameters: nil)
+                kvCache = try context.model.newCache(parameters: nil)
             }
             let warm = kvCache!
 
@@ -2183,7 +2192,7 @@ final class Engine: @unchecked Sendable {
                                 tokens: MLXArray(
                                     tokens[pos..<mediaRuns[k].end].map(Int32.init))[.newAxis]),
                             image: perImage[k - perImageFrom], video: nil)
-                        switch try context.model.prepare(head, cache: warm, windowSize: nil) {
+                        switch try context.model.prepare(head, cache: warm, state: state, prefill: Self.legacyPrefill) {
                         case .logits(let headOut):
                             eval(headOut.logits)
                             state = headOut.state
@@ -2206,7 +2215,7 @@ final class Engine: @unchecked Sendable {
                         text: .init(
                             tokens: MLXArray(tokens[pos..<lastMediaEnd].map(Int32.init))[.newAxis]),
                         image: lmInput.image, video: lmInput.video)
-                    switch try context.model.prepare(head, cache: warm, windowSize: nil) {
+                    switch try context.model.prepare(head, cache: warm, state: state, prefill: Self.legacyPrefill) {
                     case .logits(let headOut):
                         eval(headOut.logits)
                         state = headOut.state
@@ -2437,7 +2446,7 @@ final class Engine: @unchecked Sendable {
         // plain decoding would have produced; only the number of forward
         // passes changes, and on this hardware that is what costs time.
         let speculation = self.mtp
-        let hiddenSource = context.model as? HiddenStateProviding
+        let hiddenSource = speculation != nil ? MTPTarget(context.model) : nil
         let mtpCache: [KVCache] = speculation?.head.newCache() ?? []
         let mtpStats = ProcessInfo.processInfo.environment["CHATY_MLX_MTP_STATS"] == "1"
         var mtpRounds = 0
@@ -2472,9 +2481,11 @@ final class Engine: @unchecked Sendable {
         func trunkEval(_ toks: [Int]) -> (logits: MLXArray, hidden: MLXArray)? {
             guard let hiddenSource else { return nil }
             let t = LMInput.Text(tokens: MLXArray(toks.map(Int32.init)))
-            let (out, h) = withPreparedCache(cache, lengths: t.sequenceLengths) {
-                hiddenSource.hiddenStates(t[text: .newAxis], cache: cache, state: state)
-            }
+            guard
+                let (out, h) = withPreparedCache(cache, lengths: t.sequenceLengths, {
+                    hiddenSource.hiddenStates(t[text: .newAxis], cache: cache, state: state)
+                })
+            else { return nil }
             state = out.state
             return (out.logits, h)
         }
@@ -2659,8 +2670,16 @@ final class Engine: @unchecked Sendable {
                 // pass, and only when a run was cut short.
                 let tR0 = Date()
                 for (var c, saved) in zip(recurrent, snapshot) {
-                    c.state = saved.state
-                    c.metaState = saved.metaState
+                    if let arrays = c as? ArraysCache, let was = saved as? ArraysCache {
+                        // A recurrent layer's state is its arrays and its
+                        // offset (one sequence, no padding); mlx-swift-lm
+                        // forbids setting its layout, which never changed.
+                        arrays.state = was.state
+                        arrays.offset = was.offset
+                    } else {
+                        c.state = saved.state
+                        c.metaState = saved.metaState
+                    }
                 }
                 for c in rewindable { _ = c.trim(checked.count) }
                 state = savedState
@@ -2799,15 +2818,18 @@ final class Engine: @unchecked Sendable {
     private func warmSpeculation(_ mtp: MTPSetup) async {
         guard let container else { return }
         await container.perform { context in
-            guard let hiddenSource = context.model as? HiddenStateProviding else { return }
-            let cache = context.model.newCache(parameters: nil)
+            guard let hiddenSource = MTPTarget(context.model),
+                let cache = try? context.model.newCache(parameters: nil)
+            else { return }
             let ids = MLXArray([Int32(0), Int32(0)])
             let t = LMInput.Text(tokens: ids)
             // The widths a round uses: two for the verify pass, one for the
             // ordinary step a declined round falls back to.
-            let (out, h) = withPreparedCache(cache, lengths: t.sequenceLengths) {
-                hiddenSource.hiddenStates(t[text: .newAxis], cache: cache, state: nil)
-            }
+            guard
+                let (out, h) = withPreparedCache(cache, lengths: t.sequenceLengths, {
+                    hiddenSource.hiddenStates(t[text: .newAxis], cache: cache, state: nil)
+                })
+            else { return }
             let e = hiddenSource.embed(ids[0 ..< 1])[.newAxis]
             let hh = mtp.head(
                 embedding: e, hidden: h[0..., 0 ..< 1, 0...], cache: mtp.head.newCache().first)

@@ -34,10 +34,32 @@ jobs:
           [ "$TAG" = "$PKG" ] && [ "$TAG" = "$CONF" ] && [ "$TAG" = "$CARGO" ] \
             || { echo "::error::version mismatch — run scripts/bump-version.sh $TAG"; exit 1; }
 
-  build-macos:
+  # chaty-mlx on its own runner: mlx-swift's manifest declares Swift tools
+  # 6.3, which only Xcode 26.4+ reads, and macos-15 stops at 26.3. The app
+  # itself stays on macos-15; the sidecar and its resource bundles come over
+  # as an artifact.
+  build-mlx:
     needs: check-version
-    # macos-15: mlx-swift-lm needs Swift tools 6.1 (Xcode 16.3+), which the
-    # macos-14 image never gets. Building the app against the macOS 15 SDK is
+    runs-on: macos-26 # Apple Silicon, Xcode 26.6
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build chaty-mlx
+        run: |
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain
+          ./scripts/build-mlx-sidecar.sh
+      - uses: actions/upload-artifact@v5
+        with:
+          name: chaty-mlx
+          path: |
+            src-tauri/binaries/chaty-mlx-aarch64-apple-darwin
+            src-tauri/binaries/*.bundle
+          if-no-files-found: error
+
+  build-macos:
+    needs: [check-version, build-mlx]
+    # macos-15 (chaty-mlx comes from build-mlx). Building the app against the
+    # macOS 15 SDK is
     # fine now — ggml's MTLResidencySet wired-memory balloon is disabled at
     # runtime (GGML_METAL_NO_RESIDENCY=1 set on startup, lib.rs).
     runs-on: macos-15 # Apple Silicon
@@ -54,15 +76,10 @@ jobs:
         # "Library not found: target/release/libonnxruntime.*.dylib".
         with: { workspaces: src-tauri, cache-targets: false }
       - run: npm ci
-      - name: Build MLX sidecar (chaty-mlx)
-        # mlx-swift-lm needs Swift tools 6.1 → pick the newest Xcode 16.x on
-        # the runner (NOT Xcode 26: its Metal toolchain is a separate
-        # multi-hundred-MB download the CI would have to fetch every run).
-        run: |
-          SIDE_XCODE=$(ls -d /Applications/Xcode_1[6-9]*.app 2>/dev/null | sort -V | tail -1 || true)
-          [ -n "$SIDE_XCODE" ] || SIDE_XCODE=$(dirname "$(dirname "$(xcode-select -p)")")
-          echo "sidecar Xcode: $SIDE_XCODE"
-          DEVELOPER_DIR="$SIDE_XCODE/Contents/Developer" ./scripts/build-mlx-sidecar.sh
+      - name: MLX sidecar (chaty-mlx), built on macOS 26
+        uses: actions/download-artifact@v5
+        with: { name: chaty-mlx, path: src-tauri/binaries }
+      - run: chmod +x src-tauri/binaries/chaty-mlx-aarch64-apple-darwin
       - name: Build image engine sidecar (chaty-sd, Metal)
         # stable-diffusion.cpp in its own process (it carries its own ggml,
         # which cannot share a binary with llama.cpp's). Staged into
