@@ -7,8 +7,10 @@
 - **Settings → Runtimes** lists each engine Chaty runs models on —
   llama.cpp, stable-diffusion.cpp, audio.cpp and MLX — with the build it is
   on, and a newer one to switch to at a click, or by itself once **Update
-  runtimes automatically** is on (it is off until you turn it on). A new
-  architecture that lands upstream no longer waits for the next Chaty.
+  runtimes automatically** is on (it is off until you turn it on). Turned
+  on, it installs what is newer at once — its progress on the engine's row —
+  and checks again daily. A new architecture that lands upstream no longer
+  waits for the next Chaty.
 - **Every day, each engine's newest upstream** — llama.cpp's newest build,
   stable-diffusion.cpp's, audio.cpp's and mlx-swift-lm's newest commits — is
   built into this release's own engine wrappers for every platform, and
