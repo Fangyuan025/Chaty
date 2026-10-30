@@ -64,8 +64,10 @@ impl Engine {
     }
 
     /// Runs as its own process, so a pack can stand in for the bundled one.
+    /// Every engine does now (llama.cpp since it moved into chaty-llama); kept
+    /// for an engine that some day cannot.
     pub fn swappable(self) -> bool {
-        !matches!(self, Engine::Llama)
+        true
     }
 
     /// The sidecar protocol this app speaks with the engine. A pack built for
@@ -82,7 +84,8 @@ impl Engine {
             (Engine::Audio, true) => "chaty-audio.exe",
             (Engine::Audio, false) => "chaty-audio",
             (Engine::Mlx, _) => "chaty-mlx",
-            (Engine::Llama, _) => "",
+            (Engine::Llama, true) => "chaty-llama.exe",
+            (Engine::Llama, false) => "chaty-llama",
         }
     }
 
@@ -237,7 +240,7 @@ fn override_var(e: Engine) -> &'static str {
         Engine::Sd => "CHATY_SD_SIDECAR",
         Engine::Audio => "CHATY_AUDIO_SIDECAR",
         Engine::Mlx => "CHATY_MLX_SIDECAR",
-        Engine::Llama => "",
+        Engine::Llama => "CHATY_LLAMA_SIDECAR",
     }
 }
 
@@ -694,6 +697,7 @@ mod tests {
         assert!(read("sd-sidecar/CMakeLists.txt").contains(Engine::Sd.bundled().rev));
         assert!(read("audio-sidecar/CMakeLists.txt").contains(Engine::Audio.bundled().rev));
         assert!(read("mlx-sidecar/Package.swift").contains(Engine::Mlx.bundled().rev));
+        assert!(read("Cargo.toml").contains(Engine::Llama.bundled().rev));
     }
 
     /// A pack's archive cannot write outside its folder.

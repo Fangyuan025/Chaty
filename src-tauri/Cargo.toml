@@ -50,7 +50,8 @@ anyhow = "1"
 # llama.cpp inside can move ahead of the crate's own: new architectures land
 # in llama.cpp weeks before a published binding carries them.
 # Fork branch chaty/lfm3 = utilityai/llama-cpp-rs main (e7af607) with its
-# llama.cpp submodule moved to upstream b11960 (v0.8.0) — LFM3 and LFM3-VL
+# llama.cpp submodule moved to upstream b11960 (v0.8.0,
+# 8642541b255bfb5dc39cd351a178be09013a55d6 — runtimes.rs names it) — LFM3 and LFM3-VL
 # (issue #27); K2 Horizon is upstream now, so the backport is gone — plus one
 # commit for a field that version added.
 llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "694ff005f071d73f5a7afa2cb5f6a682bc198def", features = ["sampler", "mtmd"] }

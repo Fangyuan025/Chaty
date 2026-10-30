@@ -11,7 +11,7 @@ use tauri::ipc::Channel;
 use tauri::menu::{Menu, MenuItem};
 use tauri::{Manager, State};
 
-use crate::inference::llama::LlamaEngine;
+use crate::inference::llama_sidecar::LlamaSidecar;
 use crate::inference::{GenRequest, InferenceBackend, ModelInfo, SaveTarget, StreamEvent};
 use crate::state::AppState;
 
@@ -169,14 +169,16 @@ pub async fn load_model(
     // up resident at once, which on unified memory swap-freezes the machine.
     state.cancel.store(true, Ordering::SeqCst);
     // Size of the model being ejected — used to VERIFY its memory actually
-    // came back before we start the next load. MLX and image models live in
-    // a sidecar process, so killing it *is* the release — nothing to verify
-    // in-process.
+    // came back before we start the next load. Every engine but the mock now
+    // lives in a sidecar process, so its exit *is* the release — nothing to
+    // verify in-process.
     let (old_size_mb, old_was_mlx) = {
         let guard = state.model.read().await;
         (
             guard.as_ref().and_then(|m| m.size_mb).unwrap_or(0),
-            guard.as_ref().is_some_and(|m| m.backend == "mlx" || m.backend == "sd.cpp" || m.backend == "audio.cpp"),
+            guard.as_ref().is_some_and(|m| {
+                m.backend == "mlx" || m.backend == "sd.cpp" || m.backend == "audio.cpp" || m.backend == "llama.cpp"
+            }),
         )
     };
     let old = state.engine.write().await.take();
@@ -243,35 +245,11 @@ pub async fn load_model(
     }
     state.cancel.store(false, Ordering::SeqCst);
 
-    // Progress: llama-cpp-2 doesn't expose llama.cpp's load callback, but on
-    // unified memory the weights stream into the process roughly linearly, so
-    // memory growth over the file size is a good fraction. (GGUF only — the
-    // MLX sidecar loads in its own process and reports progress itself.)
-    let done_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // Shared across the GGUF poller and the MLX callback so the bar the
-    // user sees never moves backwards (see MonotonicProgress).
+    // Progress: every engine reports its own as it loads. Shared through one
+    // gate so the bar the user sees never moves backwards (see
+    // MonotonicProgress) — a llama.cpp load that backs off its GPU offload
+    // starts its count again.
     let gate = Arc::new(MonotonicProgress::new());
-    if !is_mlx && !is_image && !is_music {
-        let expected = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0).max(1);
-        let done = done_flag.clone();
-        let chan = on_progress.clone();
-        let gate = gate.clone();
-        std::thread::spawn(move || {
-            let pid = sysinfo::Pid::from_u32(std::process::id());
-            let mut sys = sysinfo::System::new();
-            sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-            let base = sys.process(pid).map(|p| p.memory()).unwrap_or(0);
-            while !done.load(Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-                let now = sys.process(pid).map(|p| p.memory()).unwrap_or(base);
-                let frac = (now.saturating_sub(base) as f32 / expected as f32).min(0.99);
-                if !done.load(Ordering::Relaxed) && gate.permit(frac) {
-                    let _ = chan.send(LoadProgress { phase: "weights", frac });
-                }
-            }
-        });
-    }
 
     let path_for_log = path.clone();
     let result = if is_music {
@@ -312,13 +290,18 @@ pub async fn load_model(
         })
         .await
     } else {
+        let chan = on_progress.clone();
+        let gate = gate.clone();
         tokio::task::spawn_blocking(move || {
-            LlamaEngine::load(&path, gpu_layers, n_ctx, speculative)
-                .map(|(engine, info)| (Arc::new(engine) as Arc<dyn InferenceBackend>, info))
+            LlamaSidecar::load(&path, gpu_layers, n_ctx, speculative, move |frac| {
+                if gate.permit(frac.min(0.99)) {
+                    let _ = chan.send(LoadProgress { phase: "weights", frac: frac.min(0.99) });
+                }
+            })
+            .map(|(engine, info)| (Arc::new(engine) as Arc<dyn InferenceBackend>, info))
         })
         .await
     };
-    done_flag.store(true, Ordering::Relaxed);
     // Saturate the mark so a straggling poller tick can't undercut "ready".
     gate.saturate();
     let (backend, mut info) = result

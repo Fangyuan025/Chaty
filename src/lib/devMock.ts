@@ -645,7 +645,7 @@ const MOCK_RUNTIMES = {
   autoUpdate: false,
   lastCheck: Math.floor(Date.now() / 1000) - 3600,
   runtimes: [
-    { engine: "llama", swappable: false, active: "bundled", upstream: "ggml-org/llama.cpp", rev: "8642541b255bfb5dc39cd351a178be09013a55d6", date: "2026-10-28T11:30:38Z", update: null, needsApp: null },
+    { engine: "llama", swappable: true, active: "bundled", upstream: "ggml-org/llama.cpp", rev: "8642541b255bfb5dc39cd351a178be09013a55d6", date: "2026-10-28T11:30:38Z", update: null, needsApp: null },
     {
       engine: "sd", swappable: true, active: "bundled", upstream: "leejet/stable-diffusion.cpp", rev: "88411ef1e0688ff2df1010aeeb5d92b2d8cea2be", date: "2026-09-23T17:45:14Z",
       update: { engine: "sd", version: "2026.10.29-3f2a91c", platform: "macos-arm64", protocol: "1", minApp: "2.3.8", upstream: "leejet/stable-diffusion.cpp", rev: "3f2a91c0d4e5b6a7c8d9e0f1a2b3c4d5e6f7a8b9", date: "2026-10-29T08:12:00Z", url: "", size: 38200000, sha256: "" },

@@ -27,7 +27,8 @@ runner.mts  ──(real agentLoop.ts, tsx + mockIPC)──►  ipc.ts invoke()
 ## Quick start
 
 ```bash
-cd src-tauri && cargo build --release --bin chaty-headless
+# chaty-llama too: GGUF models run in it, beside chaty-headless
+cd src-tauri && cargo build --release --bin chaty-headless --bin chaty-llama
 cd bench/coder
 CHATY_BENCH_MODEL="$HOME/Library/Application Support/com.chaty.desktop/models/<MLX-dir>" \
   npx tsx runner.mts --tasks swebench/tasks            # full Coder

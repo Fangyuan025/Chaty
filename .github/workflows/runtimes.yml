@@ -1,12 +1,14 @@
 # Runtime packs: newer engines for installed apps, without a Chaty release.
 #
-# Daily, the newest stable-diffusion.cpp and audio.cpp commits are built into
-# chaty-sd / chaty-audio for every platform, each answers its handshake, and
-# the packs are published to the rolling `runtimes` prerelease with a signed
-# index (runtimes.json + runtimes.json.sig) — what Settings → Runtimes reads.
-# By hand, also MLX: chaty-mlx as main pins it, for apps that ship an older one.
-# A pack is published only when it built and answered its handshake; an
-# upstream change our wrapper does not compile against simply fails here.
+# Daily, each engine's newest upstream — llama.cpp's newest build,
+# stable-diffusion.cpp, audio.cpp and mlx-swift-lm's newest commits — is built
+# into the latest release's engine wrapper (chaty-llama, chaty-sd, chaty-audio,
+# chaty-mlx) for every platform it runs on. Each that answers its handshake is
+# published to the rolling `runtimes` prerelease, with a signed index
+# (runtimes.json + runtimes.json.sig) — what Settings → Runtimes reads.
+# The wrapper is the release's, by tag: what users run, never main's
+# unreleased work. An upstream change the wrapper does not compile against
+# simply fails here, and nothing of it is published.
 name: runtimes
 
 on:
@@ -15,13 +17,22 @@ on:
   workflow_dispatch:
     inputs:
       engines:
-        description: "Engines to build: sd, audio, mlx (comma-separated)"
-        default: "sd,audio"
+        description: "Engines to build: llama, sd, audio, mlx (comma-separated)"
+        default: "llama,sd,audio,mlx"
+      source:
+        description: "Chaty tag whose wrappers to build (blank: the latest release)"
+        default: ""
+      llama_rev:
+        description: "llama.cpp commit (blank: the newest build)"
+        default: ""
       sd_rev:
         description: "stable-diffusion.cpp commit (blank: newest master)"
         default: ""
       audio_rev:
         description: "audio.cpp commit (blank: newest main)"
+        default: ""
+      mlx_rev:
+        description: "mlx-swift-lm commit (blank: newest main)"
         default: ""
 
 permissions:
@@ -41,9 +52,12 @@ jobs:
       - id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-          ENGINES: ${{ github.event.inputs.engines || 'sd,audio' }}
+          ENGINES: ${{ github.event.inputs.engines || 'llama,sd,audio,mlx' }}
+          SOURCE: ${{ github.event.inputs.source }}
+          LLAMA_REV: ${{ github.event.inputs.llama_rev }}
           SD_REV: ${{ github.event.inputs.sd_rev }}
           AUDIO_REV: ${{ github.event.inputs.audio_rev }}
+          MLX_REV: ${{ github.event.inputs.mlx_rev }}
         run: |
           gh release download runtimes --repo "$GITHUB_REPOSITORY" --pattern runtimes.json --dir published 2>/dev/null || true
           MATRIX=$(INDEX=published/runtimes.json python3 scripts/runtimes-plan.py)
@@ -59,10 +73,18 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     env:
+      CHATY_LLAMA_REV: ${{ matrix.engine == 'llama' && matrix.rev || '' }}
       CHATY_SDCPP_REV: ${{ matrix.engine == 'sd' && matrix.rev || '' }}
       CHATY_AUDIOCPP_REV: ${{ matrix.engine == 'audio' && matrix.rev || '' }}
+      CHATY_MLX_LM_REV: ${{ matrix.engine == 'mlx' && matrix.rev || '' }}
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
+      - name: Allow long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --global core.longpaths true
+      # The release's wrappers, not main's.
       - uses: actions/checkout@v5
+        with: { ref: "${{ matrix.source }}" }
       - uses: dtolnay/rust-toolchain@stable # the staged name carries the target triple
 
       # ---- toolchains, as the release builds them ----
@@ -73,6 +95,13 @@ jobs:
           sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
           sudo apt-get update
           sudo apt-get install -y ninja-build vulkan-sdk
+      # chaty-llama is a binary of the app's crate, which needs Tauri's
+      # system libraries to build.
+      - name: Linux deps (Tauri)
+        if: runner.os == 'Linux' && matrix.engine == 'llama'
+        run: |
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libasound2-dev libssl-dev
       - name: Windows Vulkan SDK
         if: runner.os == 'Windows'
         shell: pwsh
@@ -89,28 +118,37 @@ jobs:
           choco install ninja -y
       - if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+      - name: Metal toolchain (MLX)
+        if: matrix.engine == 'mlx'
+        run: xcodebuild -downloadComponent MetalToolchain
 
       # ---- the engine ----
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
           case "${{ matrix.engine }}" in
+            llama) ./scripts/build-llama-sidecar.sh ;;
             sd) ./scripts/build-sd-sidecar.sh metal ;;
             audio) ./scripts/build-audio-sidecar.sh metal ;;
-            mlx)
-              SIDE_XCODE=$(ls -d /Applications/Xcode_1[6-9]*.app 2>/dev/null | sort -V | tail -1 || true)
-              [ -n "$SIDE_XCODE" ] || SIDE_XCODE=$(dirname "$(dirname "$(xcode-select -p)")")
-              DEVELOPER_DIR="$SIDE_XCODE/Contents/Developer" ./scripts/build-mlx-sidecar.sh ;;
+            mlx) ./scripts/build-mlx-sidecar.sh ;;
           esac
       - name: Build (Linux)
         if: runner.os == 'Linux'
-        run: ./scripts/build-${{ matrix.engine }}-sidecar.sh vulkan
+        run: |
+          case "${{ matrix.engine }}" in
+            llama) ./scripts/build-llama-sidecar.sh ;;
+            *) ./scripts/build-${{ matrix.engine }}-sidecar.sh vulkan ;;
+          esac
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: .\scripts\build-${{ matrix.engine }}-sidecar.ps1 -Backend vulkan
+        run: |
+          if ("${{ matrix.engine }}" -eq "llama") { .\scripts\build-llama-sidecar.ps1 }
+          else { .\scripts\build-${{ matrix.engine }}-sidecar.ps1 -Backend vulkan }
         env:
           CMAKE_PREFIX_PATH: ${{ env.VULKAN_SDK }}
+          # Short: llama.cpp nests past MAX_PATH (release.yml).
+          CARGO_TARGET_DIR: C:\ct
 
       # A pack runs from the data folder, not beside chaty.exe and the Vulkan
       # loader the app ships there (release.yml): it carries its own, found
@@ -156,9 +194,14 @@ jobs:
           DATE: ${{ matrix.date }}
         run: |
           set -euo pipefail
-          case "$ENGINE" in sd) NAME=chaty-sd ;; audio) NAME=chaty-audio ;; mlx) NAME=chaty-mlx ;; esac
+          case "$ENGINE" in llama) NAME=chaty-llama ;; sd) NAME=chaty-sd ;; audio) NAME=chaty-audio ;; mlx) NAME=chaty-mlx ;; esac
           EXE=$NAME; [ "$RUNNER_OS" = Windows ] && EXE=$NAME.exe
-          BIN=$(ls src-tauri/binaries/$NAME-* | grep -v '\.bundle' | head -1)
+          if [ "$ENGINE" = llama ]; then
+            T=src-tauri/target; [ "$RUNNER_OS" = Windows ] && T=/c/ct
+            BIN=$T/release/$EXE
+          else
+            BIN=$(ls src-tauri/binaries/$NAME-* | grep -v '\.bundle' | head -1)
+          fi
           PACK=pack; rm -rf $PACK; mkdir -p $PACK
           cp "$BIN" "$PACK/$EXE"
           if [ "$ENGINE" = mlx ]; then cp -R src-tauri/binaries/*.bundle "$PACK/"; fi

@@ -77,6 +77,17 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --lib --release
+      # The chat engine is a binary of its own, and a runtime pack of it runs
+      # from the data folder, away from the app's dylibs: it has to start
+      # there and answer its handshake.
+      - name: chaty-llama answers on its own
+        working-directory: src-tauri
+        run: |
+          cargo build --release --bin chaty-llama
+          D=$(mktemp -d); cp target/release/chaty-llama "$D/"
+          OUT=$(printf '{"cmd":"quit"}\n' | "$D/chaty-llama")
+          echo "$OUT"
+          echo "$OUT" | head -1 | grep -q '"event":"ready"'
 
   linux-check:
     name: Linux compile check (CPU)
@@ -103,6 +114,14 @@ jobs:
       - name: cargo test (no GPU)
         working-directory: src-tauri
         run: cargo test --no-default-features --lib --bins
+      - name: chaty-llama answers on its own
+        working-directory: src-tauri
+        run: |
+          cargo build --no-default-features --bin chaty-llama
+          D=$(mktemp -d); cp target/debug/chaty-llama "$D/"
+          OUT=$(printf '{"cmd":"quit"}\n' | "$D/chaty-llama")
+          echo "$OUT"
+          echo "$OUT" | head -1 | grep -q '"event":"ready"'
 
   windows-check:
     name: Windows compile check (CPU)
@@ -136,6 +155,15 @@ jobs:
       - name: cargo test (no GPU)
         working-directory: src-tauri
         run: cargo test --no-default-features --lib --bins
+      - name: chaty-llama answers on its own
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          cargo build --no-default-features --bin chaty-llama
+          D=$(mktemp -d); cp /c/ct/debug/chaty-llama.exe "$D/"
+          OUT=$(printf '{"cmd":"quit"}\n' | "$D/chaty-llama.exe")
+          echo "$OUT"
+          echo "$OUT" | head -1 | grep -q '"event":"ready"'
 
   sd-sidecar:
     name: Image engine sidecar (build + protocol smoke)

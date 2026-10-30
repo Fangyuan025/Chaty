@@ -7,6 +7,14 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path");
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
         println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path");
+        // chaty-llama links the same library but uses none of the voice code:
+        // without this it would still name the ONNX Runtime and sherpa dylibs,
+        // and a runtime pack of it — run from the data folder, nowhere near
+        // the app's Frameworks — would not start.
+        println!("cargo:rustc-link-arg-bin=chaty-llama=-Wl,-dead_strip_dylibs");
+        // The linker keeps sherpa's dylib all the same (no symbol comes from
+        // it); weak, a missing one is no reason not to start.
+        println!("cargo:rustc-link-arg-bin=chaty-llama=-Wl,-weak-lsherpa-onnx-c-api");
     }
 
     tauri_build::build()

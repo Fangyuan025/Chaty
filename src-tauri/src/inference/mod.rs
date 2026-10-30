@@ -8,7 +8,9 @@ pub mod audio;
 pub mod gguf;
 pub mod jinja;
 pub mod llama;
+pub mod llama_embed;
 pub mod llama_log;
+pub mod llama_sidecar;
 pub use llama::llama_backend_pub;
 pub mod mlx;
 pub mod mock;
@@ -21,8 +23,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
-/// Live sidecar PIDs — the MLX engine, the image engine and the music engine
-/// all run as child processes. The app's quit path exits via `libc::_exit` (dodging a ggml
+/// Live sidecar PIDs — the llama.cpp and MLX engines, the image engine and the
+/// music engine all run as child processes. The app's quit path exits via `libc::_exit` (dodging a ggml
 /// teardown SIGABRT), which skips every destructor — without an explicit reap,
 /// quitting while a model is loaded orphans a sidecar that keeps the entire
 /// model resident. lib.rs calls `kill_sidecars_now` on exit. (On Windows the
@@ -46,7 +48,7 @@ pub fn kill_sidecars_now() {
             .process(sysinfo::Pid::from_u32(pid))
             .map(|p| {
                 let name = p.name().to_string_lossy();
-                name.contains("chaty-mlx") || name.contains("chaty-sd") || name.contains("chaty-audio")
+                name.contains("chaty-mlx") || name.contains("chaty-sd") || name.contains("chaty-audio") || name.contains("chaty-llama")
             })
             .unwrap_or(false);
         if !ours {
@@ -194,9 +196,11 @@ pub struct GenStats {
     pub reused: u32,
 }
 
-/// Metadata about the currently loaded model, surfaced to the UI.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// Metadata about the currently loaded model, surfaced to the UI. The
+/// llama.cpp sidecar sends it back over its pipe, so it reads as leniently as
+/// it is written: a field one side lacks takes its default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ModelInfo {
     pub name: String,
     pub path: String,
@@ -286,10 +290,10 @@ pub struct ModelInfo {
     /// studio, each with only the settings and tools that apply to it.
     pub kind: String,
     /// What the image engine loaded, when `kind` is "image".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", skip_deserializing)]
     pub image: Option<crate::imagegen::ImageModelInfo>,
     /// What the music engine loaded, when `kind` is "music".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", skip_deserializing)]
     pub music: Option<crate::musicgen::MusicModelInfo>,
 }
 

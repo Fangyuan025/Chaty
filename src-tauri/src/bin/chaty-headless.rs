@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{json, Value};
 
 use chaty_lib::agent as ag;
-use chaty_lib::inference::{llama::LlamaEngine, mlx::MlxEngine, mock::MockBackend};
+use chaty_lib::inference::{llama_sidecar::LlamaSidecar, mlx::MlxEngine, mock::MockBackend};
 use chaty_lib::inference::{GenRequest, InferenceBackend, ModelInfo};
 use chaty_lib::search;
 
@@ -102,7 +102,8 @@ fn load_engine(path: &str, n_ctx: Option<u32>, speculative: bool) -> Result<Mode
         let (e, info) = MlxEngine::load(path, n_ctx, speculative, |_| {}).map_err(|e| e.to_string())?;
         (Arc::new(e), info)
     } else {
-        let (e, info) = LlamaEngine::load(path, None, n_ctx, speculative).map_err(|e| e.to_string())?;
+        // The app's own path: llama.cpp in its sidecar (`cargo build --bin chaty-llama`).
+        let (e, info) = LlamaSidecar::load(path, None, n_ctx, speculative, |_| {}).map_err(|e| format!("{e:#}"))?;
         (Arc::new(e), info)
     };
     if let Some(old) = engine_slot().lock().unwrap().replace(engine) {

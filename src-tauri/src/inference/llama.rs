@@ -433,7 +433,7 @@ fn inject_media_markers(messages: &[ChatMessage]) -> Vec<ChatMessage> {
 enum Job {
     Generate {
         req: GenRequest,
-        sink: Channel<StreamEvent>,
+        sink: Box<dyn EventSink + Send>,
         cancel: Arc<AtomicBool>,
         done: tokio::sync::oneshot::Sender<Result<()>>,
     },
@@ -484,6 +484,18 @@ impl LlamaEngine {
         gpu_pref: Option<i32>,
         n_ctx_pref: Option<u32>,
         speculative: bool,
+    ) -> Result<(Self, ModelInfo)> {
+        Self::load_with_progress(path, gpu_pref, n_ctx_pref, speculative, Arc::new(|_| {}))
+    }
+
+    /// `load`, saying how far the weights have got (0.0–1.0, from llama.cpp's
+    /// own loader; a backed-off retry starts again from 0).
+    pub fn load_with_progress(
+        path: &str,
+        gpu_pref: Option<i32>,
+        n_ctx_pref: Option<u32>,
+        speculative: bool,
+        progress: Arc<dyn Fn(f32) + Send + Sync>,
     ) -> Result<(Self, ModelInfo)> {
         let backend = llama_backend()?;
         if !Path::new(path).exists() {
@@ -570,11 +582,16 @@ impl LlamaEngine {
         let mtp =
             has_head && speculative && std::env::var("CHATY_MTP").as_deref() != Ok("0");
         let (model, tx, handle, mtmd_err) = loop {
+            let tick = progress.clone();
             let params = LlamaModelParams::default()
                 .with_n_gpu_layers(layers.max(0) as u32)
                 // The head's layers are extra ones plain decoding never
                 // touches, so llama.cpp leaves them on disk unless asked.
-                .with_load_mtp(mtp);
+                .with_load_mtp(mtp)
+                .with_progress_callback(move |f| {
+                    tick(f);
+                    true
+                });
             // Linux: one GPU per model. The visible Vulkan physical device was
             // pinned at startup; avoid silently spreading layers across iGPU
             // and dGPU (and sizing memory for the wrong adapter).
@@ -968,6 +985,18 @@ impl InferenceBackend for LlamaEngine {
     }
 
     async fn generate(&self, req: GenRequest, sink: Channel<StreamEvent>, cancel: Arc<AtomicBool>) -> Result<()> {
+        self.generate_to(req, Box::new(sink), cancel).await
+    }
+
+    async fn generate_collect(&self, req: GenRequest, cancel: Arc<AtomicBool>) -> Result<String> {
+        self.collect(req, cancel).await
+    }
+}
+
+impl LlamaEngine {
+    /// Stream a completion into any sink: the app's IPC channel, or the
+    /// sidecar's stdout (bin/chaty-llama.rs).
+    pub async fn generate_to(&self, req: GenRequest, sink: Box<dyn EventSink + Send>, cancel: Arc<AtomicBool>) -> Result<()> {
         let req = without_nul(req);
         let tx = self
             .tx
@@ -984,7 +1013,8 @@ impl InferenceBackend for LlamaEngine {
         }
     }
 
-    async fn generate_collect(&self, req: GenRequest, cancel: Arc<AtomicBool>) -> Result<String> {
+    /// One-shot generation, the whole text at once.
+    pub async fn collect(&self, req: GenRequest, cancel: Arc<AtomicBool>) -> Result<String> {
         let req = without_nul(req);
         let tx = self
             .tx
@@ -1279,7 +1309,7 @@ fn worker(
                         &mut scratch_media,
                         scratch_n_ctx,
                         &req,
-                        &sink,
+                        &*sink,
                         &cancel,
                     )
                 } else {
@@ -1291,7 +1321,7 @@ fn worker(
                         &mut media_cache,
                         n_ctx,
                         &req,
-                        &sink,
+                        &*sink,
                         &cancel,
                     )
                 };

@@ -67,6 +67,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#SrcDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+; The chat engine (llama.cpp sidecar) — every GGUF model runs in it. Built by
+; `tauri build` along with the app, as a second binary of the same crate.
+Source: "{#SrcDir}\chaty-llama.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; The image engine (stable-diffusion.cpp sidecar) — text-to-image models run
 ; in it. tauri-build copies it next to the exe from src-tauri/binaries.
 Source: "{#SrcDir}\chaty-sd.exe"; DestDir: "{app}"; Flags: ignoreversion

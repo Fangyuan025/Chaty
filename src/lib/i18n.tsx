@@ -438,7 +438,7 @@ export const T = {
   rtUseBundled: { zh: "改回自带版本", en: "Use the bundled one", pt: "Usar o incluído" },
   rtVerifying: { zh: "校验中…", en: "Checking the download…", pt: "Verificando o download…" },
   rtStarting: { zh: "试运行中…", en: "Trying it out…", pt: "Testando…" },
-  rtNote: { zh: "更新的引擎在下次加载该类模型时启用；如果它启动失败，会自动改回应用自带的版本。llama.cpp 目前随应用一起更新。", en: "A newer engine is used the next time a model of its kind loads; if it fails to start, the bundled one takes over by itself. llama.cpp is updated with the app for now.", pt: "Um motor mais novo é usado na próxima vez que um modelo do seu tipo carregar; se não iniciar, o incluído assume sozinho. Por enquanto o llama.cpp é atualizado com o app." },
+  rtNote: { zh: "更新的引擎在下次加载该类模型时启用；如果它启动失败，会自动改回应用自带的版本。", en: "A newer engine is used the next time a model of its kind loads; if it fails to start, the bundled one takes over by itself.", pt: "Um motor mais novo é usado na próxima vez que um modelo do seu tipo carregar; se não iniciar, o incluído assume sozinho." },
   rtUpdatedToast: { zh: "{x} 已更新，下次加载时启用", en: "{x} was updated — it is used the next time it loads", pt: "{x} foi atualizado — será usado na próxima vez que carregar" },
   setCatAppearance: { zh: "外观", en: "Appearance", pt: "Aparência" },
   setCatKnowledge: { zh: "知识库", en: "Knowledge base", pt: "Base de conhecimento" },

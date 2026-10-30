@@ -67,7 +67,7 @@ nCtx 16384 — the coder-bench envelope adapted to shorter web tasks.
 
 ```bash
 # 1. build the tool server
-cargo build --bin chaty-headless   # in src-tauri/
+cargo build --bin chaty-headless --bin chaty-llama   # in src-tauri/ (GGUF models run in chaty-llama)
 
 # 2. validate fixtures + graders (no model, ~1 min)
 npx tsx bench/web/oracle.mts
