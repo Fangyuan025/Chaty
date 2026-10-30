@@ -17,6 +17,22 @@ edition = "2021"
 name = "chaty_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Every binary named, so `tauri build` bundles each one: left to find them in
+# src/bin by itself, tauri-cli 2.11 bundles only the first file it lists there.
+[[bin]]
+name = "chaty"
+path = "src/main.rs"
+
+# The bench and tool server (bench/lib/bridge.mts).
+[[bin]]
+name = "chaty-headless"
+path = "src/bin/chaty-headless.rs"
+
+# The llama.cpp engine in its own process (inference/llama_sidecar.rs).
+[[bin]]
+name = "chaty-llama"
+path = "src/bin/chaty-llama.rs"
+
 [features]
 # GPU offload. On by default; build with `--no-default-features` for a pureâ€‘CPU
 # build (no Vulkan SDK needed on Windows/Linux). The backend is target-
