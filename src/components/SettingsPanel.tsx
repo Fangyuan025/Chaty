@@ -502,16 +502,32 @@ function RuntimesPane() {
 
   useEffect(() => {
     runtimesInfo().then(setInfo).catch(() => {});
-    // An automatic update finishing while the page is open.
-    let off: (() => void) | null = null;
+    // An automatic update, shown on its row as it goes: its progress, then
+    // the engine it switched to, or why it did not.
+    const done = (engine: RuntimeEngine) =>
+      setInstalling((x) => {
+        const next = { ...x };
+        delete next[engine];
+        return next;
+      });
+    const offs: (() => void)[] = [];
     let gone = false;
-    void listen("runtime-updated", () => void runtimesInfo().then(setInfo).catch(() => {})).then((u) => {
-      if (gone) u();
-      else off = u;
-    });
+    const keep = (u: () => void) => (gone ? u() : offs.push(u));
+    void listen<{ engine: RuntimeEngine; progress: RuntimeInstallProgress }>("runtime-progress", (e) => {
+      setErrors((x) => ({ ...x, [e.payload.engine]: "" }));
+      setInstalling((x) => ({ ...x, [e.payload.engine]: e.payload.progress }));
+    }).then(keep);
+    void listen<{ engine: RuntimeEngine }>("runtime-updated", (e) => {
+      done(e.payload.engine);
+      void runtimesInfo().then(setInfo).catch(() => {});
+    }).then(keep);
+    void listen<{ engine: RuntimeEngine; message: string }>("runtime-failed", (e) => {
+      done(e.payload.engine);
+      setErrors((x) => ({ ...x, [e.payload.engine]: e.payload.message }));
+    }).then(keep);
     return () => {
       gone = true;
-      off?.();
+      offs.forEach((u) => u());
     };
   }, []);
 

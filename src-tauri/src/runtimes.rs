@@ -482,6 +482,9 @@ async fn install(e: Engine, progress: impl Fn(InstallProgress) + Send + Sync + '
     if !e.swappable() {
         return Err(trf!("这个引擎随应用一起更新", "this engine is updated with the app"));
     }
+    // One install of an engine at a time — a click and an automatic pass
+    // would otherwise write the same files.
+    let _busy = Installing::claim(e).ok_or_else(|| trf!("这个引擎正在更新", "this engine is being updated already"))?;
     let state = load_state();
     let index = cached_index();
     let pack = best_pack(&index, e, &state.broken)
@@ -545,6 +548,27 @@ async fn install(e: Engine, progress: impl Fn(InstallProgress) + Send + Sync + '
     Ok(pack)
 }
 
+/// Engines with an install under way.
+static INSTALLING: std::sync::Mutex<BTreeSet<Engine>> = std::sync::Mutex::new(BTreeSet::new());
+
+struct Installing(Engine);
+
+impl Installing {
+    fn claim(e: Engine) -> Option<Self> {
+        // `then`, not `then_some`: a guard made and dropped on a refused
+        // claim would release the one that holds it (and lock this mutex
+        // again from inside its own lock).
+        let fresh = INSTALLING.lock().unwrap().insert(e);
+        fresh.then(|| Self(e))
+    }
+}
+
+impl Drop for Installing {
+    fn drop(&mut self) {
+        INSTALLING.lock().unwrap().remove(&self.0);
+    }
+}
+
 /// Keep the pack in use and the one before it (a running engine may still be
 /// it); remove the rest.
 fn prune(e: Engine, keep: &str, previous: Option<&str>) {
@@ -593,36 +617,71 @@ pub fn runtimes_use_bundled(engine: String) -> RuntimesInfo {
     info()
 }
 
+/// Turned on, it starts at once: an update already known is installed now,
+/// not at the next hourly tick.
 #[tauri::command]
-pub fn runtimes_set_auto(on: bool) -> RuntimesInfo {
+pub fn runtimes_set_auto(app: tauri::AppHandle, on: bool) -> RuntimesInfo {
     let mut state = load_state();
     state.auto_update = on;
     save_state(&state);
+    if on {
+        tauri::async_runtime::spawn(async move { auto_pass(&tauri_emitter(app)).await });
+    }
     info()
 }
 
-/// Automatic updates, when turned on: a check a minute after launch and
-/// daily after that, each newer usable pack installed for the next time its
-/// engine starts. The UI hears of each one (`runtime-updated`).
+/// What an automatic pass tells the UI: an event name and its payload.
+type Emit = dyn Fn(&str, serde_json::Value) + Send + Sync;
+
+fn tauri_emitter(app: tauri::AppHandle) -> std::sync::Arc<Emit> {
+    std::sync::Arc::new(move |name: &str, payload: serde_json::Value| {
+        let _ = app.emit(name, payload);
+    })
+}
+
+/// One pass of automatic updates, when they are on: the list is fetched again
+/// once a day, and every engine with a newer usable pack — known from that
+/// list or from a check the user made — is installed for the next time its
+/// engine starts. Its row shows the progress (`runtime-progress`), then
+/// `runtime-updated` or `runtime-failed`.
+async fn auto_pass(emit: &std::sync::Arc<Emit>) {
+    static PASS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _one = PASS.lock().await;
+    let state = load_state();
+    if !state.auto_update {
+        return;
+    }
+    if now().saturating_sub(state.last_check) >= CHECK_EVERY_SECS {
+        // Offline is no reason to skip what the last list already offers.
+        if let Err(err) = fetch_index().await {
+            crate::errlog::append_error("runtime-auto-update", &err);
+        }
+    }
+    for e in Engine::ALL.into_iter().filter(|e| e.swappable() && e.here()) {
+        if !info().runtimes.iter().any(|r| r.engine == e && r.update.is_some()) {
+            continue;
+        }
+        let tick = emit.clone();
+        let progress = move |p: InstallProgress| tick("runtime-progress", serde_json::json!({ "engine": e, "progress": p }));
+        match install(e, progress).await {
+            Ok(pack) => emit("runtime-updated", serde_json::json!({ "engine": e, "version": pack.version })),
+            Err(err) => {
+                crate::errlog::append_error("runtime-auto-update", &format!("{}: {err}", e.id()));
+                emit("runtime-failed", serde_json::json!({ "engine": e, "message": err }));
+            }
+        }
+    }
+}
+
+/// Automatic updates: a pass a minute after launch and every hour after that
+/// (each fetching the list at most daily), and one at once whenever they are
+/// turned on.
 pub fn start_auto_updates(app: tauri::AppHandle) {
+    let emit = tauri_emitter(app);
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         loop {
-            let state = load_state();
-            if state.auto_update && now().saturating_sub(state.last_check) >= CHECK_EVERY_SECS && fetch_index().await.is_ok() {
-                for e in Engine::ALL.into_iter().filter(|e| e.swappable() && e.here()) {
-                    let has_update = info().runtimes.iter().any(|r| r.engine == e && r.update.is_some());
-                    if !has_update {
-                        continue;
-                    }
-                    match install(e, |_| {}).await {
-                        Ok(pack) => {
-                            let _ = app.emit("runtime-updated", serde_json::json!({ "engine": e, "version": pack.version }));
-                        }
-                        Err(err) => crate::errlog::append_error("runtime-auto-update", &format!("{}: {err}", e.id())),
-                    }
-                }
-            }
+            auto_pass(&emit).await;
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
         }
     });
@@ -719,6 +778,41 @@ mod tests {
         assert!(unpack(&zip_path, &out).is_err());
         assert!(!dir.join("escape.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two installs of one engine never run at once; the second is told why.
+    #[test]
+    fn an_engine_installs_one_at_a_time() {
+        let first = Installing::claim(Engine::Sd).expect("free");
+        assert!(Installing::claim(Engine::Sd).is_none());
+        assert!(Installing::claim(Engine::Audio).is_some(), "another engine is not held up");
+        drop(first);
+        assert!(Installing::claim(Engine::Sd).is_some());
+    }
+
+    /// The owner's case: an update found by a check a moment ago, then
+    /// automatic updates turned on — it is installed by that pass, with
+    /// progress along the way, not a day later.
+    /// `HOME=/tmp/x CHATY_RUNTIMES_INDEX=http://…/runtimes.json CHATY_TEST_RUNTIME=sd cargo test … -- --ignored`
+    #[test]
+    #[ignore]
+    fn turning_on_automatic_updates_installs_what_a_check_found() {
+        let e = Engine::from_id(&std::env::var("CHATY_TEST_RUNTIME").expect("set CHATY_TEST_RUNTIME")).unwrap();
+        tauri::async_runtime::block_on(fetch_index()).expect("fetch");
+        assert!(info().runtimes.into_iter().any(|r| r.engine == e && r.update.is_some()), "an update on offer");
+        let mut state = load_state();
+        assert!(now() - state.last_check < 60, "just checked");
+        state.auto_update = true;
+        save_state(&state);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let into = seen.clone();
+        let emit: std::sync::Arc<Emit> = std::sync::Arc::new(move |name: &str, _: serde_json::Value| into.lock().unwrap().push(name.to_string()));
+        tauri::async_runtime::block_on(auto_pass(&emit));
+        let seen = seen.lock().unwrap().clone();
+        assert!(seen.iter().any(|n| n == "runtime-progress"), "{seen:?}");
+        assert!(seen.iter().any(|n| n == "runtime-updated"), "{seen:?}");
+        assert!(active_binary(e).is_some());
+        assert!(info().runtimes.into_iter().all(|r| r.engine != e || r.update.is_none()));
     }
 
     /// End to end against a real signed index: fetch it, install the newest

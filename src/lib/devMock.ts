@@ -6,6 +6,7 @@
 // (markdown showcase, thinking, code-agent steps with diffs/plan, models,
 // hardware) so screenshots represent real-world density.
 
+import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 
 const now = Date.now();
@@ -1051,7 +1052,24 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "runtimes_info":
     case "runtimes_set_auto":
     case "runtimes_use_bundled":
-      if (cmd === "runtimes_set_auto") MOCK_RUNTIMES.autoUpdate = !!(args as { on?: boolean })?.on;
+      if (cmd === "runtimes_set_auto") {
+        MOCK_RUNTIMES.autoUpdate = !!(args as { on?: boolean })?.on;
+        // Turned on: the pass that starts at once installs a known update,
+        // its progress on the row, then the engine it switched to.
+        const r = MOCK_RUNTIMES.autoUpdate ? MOCK_RUNTIMES.runtimes.find((x) => x.update) : undefined;
+        if (r?.update) {
+          const pack = r.update;
+          const total = pack.size;
+          for (let i = 0; i <= 4; i++) {
+            setTimeout(() => void emit("runtime-progress", { engine: r.engine, progress: { downloaded: (i * total) / 4, total, stage: "download" } }), 400 * i);
+          }
+          setTimeout(() => void emit("runtime-progress", { engine: r.engine, progress: { downloaded: total, total, stage: "start" } }), 2000);
+          setTimeout(() => {
+            Object.assign(r, { active: pack.version, rev: pack.rev, date: pack.date, update: null });
+            void emit("runtime-updated", { engine: r.engine, version: pack.version });
+          }, 2600);
+        }
+      }
       if (cmd === "runtimes_use_bundled") {
         const r = MOCK_RUNTIMES.runtimes.find((x) => x.engine === (args as { engine?: string })?.engine);
         if (r) Object.assign(r, { active: "bundled", rev: "955c8725c611d511774e6be132aff6609163b2d2", date: "2026-09-25T22:44:03Z" });
@@ -1596,7 +1614,7 @@ export function installDevMock() {
       return null;
     }
     return handle(cmd, args as Record<string, unknown> | undefined);
-  });
+  }, { shouldMockEvents: true });
   // getCurrentWebview() wants webview metadata that mockWindows doesn't set.
   const internals = (window as unknown as Record<string, any>).__TAURI_INTERNALS__;
   if (internals?.metadata) {
