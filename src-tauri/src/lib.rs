@@ -22,6 +22,7 @@ pub mod errlog;
 pub mod mcp;
 pub mod ocr;
 pub mod search;
+mod scheme;
 pub mod portal;
 pub mod skillsync;
 #[cfg(target_os = "macos")]
@@ -460,8 +461,11 @@ pub fn run() {
             // ---- chaty:// deep link ----
             // macOS registers the scheme via Info.plist (CFBundleURLTypes from
             // the plugin config) and Windows via the installer; Linux + Windows
-            // dev need a runtime registration.
-            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            // dev need a runtime registration — on Linux, the app's own, so
+            // the tools it runs get the user's environment (scheme.rs).
+            #[cfg(target_os = "linux")]
+            scheme::register(app.handle());
+            #[cfg(all(debug_assertions, windows))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 let _ = app.deep_link().register_all();

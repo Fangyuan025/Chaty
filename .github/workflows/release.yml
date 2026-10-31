@@ -280,7 +280,8 @@ jobs:
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             libasound2-dev libssl-dev ninja-build vulkan-sdk libfuse2 \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad gstreamer1.0-gl xvfb
+            gstreamer1.0-plugins-bad gstreamer1.0-gl xvfb \
+            desktop-file-utils xdg-utils
       - run: npm ci
       - name: Build image engine sidecar (chaty-sd, Vulkan)
         run: ./scripts/build-sd-sidecar.sh vulkan

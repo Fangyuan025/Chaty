@@ -13,6 +13,11 @@
 # libraries. The host's are used; Tauri's bundler stopped shipping them as
 # well (tauri-apps/tauri#15804).
 #
+# .DirIcon, the image's icon for file managers and the AppImage catalog, is a
+# link Tauri before 2.11.4 makes to the build machine's absolute path — broken
+# anywhere else, and the catalog's check fails on it (tauri-apps/tauri#15596).
+# It is pointed at the icon beside it instead.
+#
 # chaty-llama, the chat engine, is a second binary Tauri copies in as it is:
 # it gets the RPATH the app's own binary has, and loses the voice library's
 # entries it never uses (scripts/llama-standalone.sh).
@@ -28,6 +33,10 @@ removed=$(find "$APPDIR" -name 'libwayland-client.so*' -print -delete)
 echo "removed:"
 echo "${removed:-(no bundled libwayland-client)}"
 rm -fv "$APPDIR/usr/bin/xdg-open" "$APPDIR/usr/bin/xdg-mime"
+ICON=$(find "$APPDIR" -maxdepth 1 -name '*.png' | head -1)
+[ -n "$ICON" ] || { echo "error: no icon at the AppDir's top" >&2; exit 1; }
+ln -sfn "$(basename "$ICON")" "$APPDIR/.DirIcon"
+echo ".DirIcon -> $(readlink "$APPDIR/.DirIcon")"
 LLAMA="$APPDIR/usr/bin/chaty-llama"
 [ -f "$LLAMA" ] || { echo "error: no chaty-llama in the AppDir" >&2; exit 1; }
 ./scripts/llama-standalone.sh "$LLAMA" '$ORIGIN/../lib'

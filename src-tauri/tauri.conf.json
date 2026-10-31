@@ -27,6 +27,7 @@
     }
   },
   "bundle": {
+    "category": "Utility",
     "active": true,
     "icon": [
       "icons/32x32.png",
