@@ -79,11 +79,13 @@ if printf '%s\n' "$seen" | grep -F "$ROOT"; then
   exit 1
 fi
 
-# A 24-bit display: at xvfb-run's default 8 bits the window never came up.
-# It is still running after 20 s (124: stopped by the timeout) and has shown
-# its window.
+# As on a desktop: a 24-bit display (at xvfb-run's default 8 bits the window
+# never came up) and a session bus of its own (without one, GLib launches a
+# bus whose services never answer, and GTK's start waits 25 s on it). It is
+# still running after 20 s (124: stopped by the timeout) and has shown its
+# window.
 set +e
-xvfb-run -a -s "-screen 0 1280x800x24" bash -c '
+xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- bash -c '
   timeout 20 "$1/AppRun" > run.log 2>&1 &
   for _ in $(seq 1 18); do
     sleep 1
