@@ -162,7 +162,14 @@ mod linux {
                 Err(e) => Err(e),
             }
         };
-        match sent.and_then(|r| r.response()) {
+        let request = match sent {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[portal] file chooser failed: {e}");
+                return Picked::Unavailable;
+            }
+        };
+        match request.response() {
             Ok(files) => Picked::Paths {
                 paths: files
                     .uris()
@@ -171,10 +178,14 @@ mod linux {
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect(),
             },
-            Err(ashpd::Error::Response(ResponseError::Cancelled)) => Picked::Cancelled,
+            // The chooser was shown, so another one is not: its Cancel button
+            // answers "cancelled", but Escape or closing the window answer
+            // "other" (xdg-desktop-portal-gtk).
             Err(e) => {
-                eprintln!("[portal] file chooser failed: {e}");
-                Picked::Unavailable
+                if !matches!(e, ashpd::Error::Response(ResponseError::Cancelled)) {
+                    eprintln!("[portal] file chooser closed: {e}");
+                }
+                Picked::Cancelled
             }
         }
     }
