@@ -186,6 +186,49 @@ pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
     Ok(Db(Mutex::new(conn)))
 }
 
+/// Rebuild a database's indexes when they no longer match their tables.
+///
+/// A `chaty.db` copied over while the app had it open — the main file
+/// replaced, its write-ahead log left beside it — came back with a Code
+/// session's row in the table but not in the index that finds a row by its
+/// id: the sidebar, which reads the table, listed it, and deleting it, which
+/// looks it up by id, removed nothing. REINDEX builds the indexes again from
+/// the tables. Damage of any other kind is only logged.
+///
+/// On a connection of its own, off the startup path: the check reads the
+/// whole file. Says what it found and did, or `None` when all was well.
+pub fn rebuild_broken_indexes(path: &Path) -> Option<String> {
+    let conn = Connection::open(path).ok()?;
+    let problems = integrity_problems(&conn).ok()?;
+    if problems.is_empty() {
+        return None;
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let found = problems.join("\n");
+    // "wrong # of entries in index …", "row 7 missing from index …",
+    // "non-unique entry in index …".
+    let report = if problems.iter().all(|p| p.contains(" index ")) {
+        match conn.execute_batch("REINDEX;").map_err(|e| e.to_string()).and_then(|_| {
+            integrity_problems(&conn).map_err(|e| e.to_string())
+        }) {
+            Ok(left) if left.is_empty() => format!("{name}: rebuilt its indexes, which did not match their tables:\n{found}"),
+            Ok(left) => format!("{name}: rebuilt its indexes; still wrong:\n{}", left.join("\n")),
+            Err(e) => format!("{name}: could not rebuild its indexes ({e}):\n{found}"),
+        }
+    } else {
+        format!("{name} is damaged beyond its indexes:\n{found}")
+    };
+    eprintln!("store: {report}");
+    crate::errlog::append_error("database", &report);
+    Some(report)
+}
+
+fn integrity_problems(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare("PRAGMA integrity_check")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(rows.into_iter().filter(|r| r != "ok").collect())
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1846,6 +1889,52 @@ pub fn data_stats(app: tauri::AppHandle, db: State<'_, Db>) -> Result<DataStats,
 mod tests {
     use rusqlite::{params, Connection};
     use super::{put_message, search_terms, session_hits, session_mentions, sources_from_json, stats_get, stats_set, stats_table, MsgSource};
+
+    /// What happened on the owner's machine: a copy of `chaty.db` with a Code
+    /// session deleted was put over the file while the app had it open and
+    /// had just saved that session again. The session's row came back from
+    /// the app's write-ahead log, its id did not come back to the index, and
+    /// deleting it removed nothing.
+    #[test]
+    fn a_copy_put_over_the_open_database_gets_its_indexes_rebuilt() {
+        let dir = std::env::temp_dir().join(format!("chaty-reindex-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("chaty.db");
+        let delete = |c: &Connection| c.execute("DELETE FROM code_sessions WHERE id = 'dead'", []).unwrap();
+
+        let app = Connection::open(&path).unwrap();
+        app.execute_batch(super::SCHEMA).unwrap();
+        app.execute(
+            "INSERT INTO code_sessions (id, title, data, created_at, updated_at) VALUES ('dead', 'old', '[]', 1, 1)",
+            [],
+        )
+        .unwrap();
+        app.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        let copy = dir.join("copy.db");
+        std::fs::copy(&path, &copy).unwrap();
+        {
+            let c = Connection::open(&copy).unwrap();
+            assert_eq!(delete(&c), 1);
+        }
+        app.execute("UPDATE code_sessions SET updated_at = 2 WHERE id = 'dead'", []).unwrap();
+        std::fs::write(&path, std::fs::read(&copy).unwrap()).unwrap();
+
+        let next = Connection::open(&path).unwrap();
+        assert!(super::integrity_problems(&next).unwrap().iter().any(|p| p.contains("missing from index")));
+        let listed: i64 = next.query_row("SELECT count(*) FROM code_sessions NOT INDEXED", [], |r| r.get(0)).unwrap();
+        assert_eq!((listed, delete(&next)), (1, 0), "listed, and not deleted");
+        drop(next);
+
+        let report = super::rebuild_broken_indexes(&path).expect("something was wrong");
+        assert!(report.contains("rebuilt its indexes, which did not match"), "{report}");
+        let after = Connection::open(&path).unwrap();
+        assert_eq!(delete(&after), 1);
+        assert!(super::integrity_problems(&after).unwrap().is_empty());
+        assert_eq!(super::rebuild_broken_indexes(&path), None);
+        drop((app, after));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A session as the frontend stores one: messages, and the tool steps
     /// under them.

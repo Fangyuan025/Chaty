@@ -428,6 +428,17 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let db = store::init_db(&dir.join("chaty.db"))?;
             app.manage(db);
+            // Indexes that no longer match their tables are built again, for
+            // this database and the knowledge base's — in the background:
+            // checking reads every page.
+            let data = dir.clone();
+            std::thread::spawn(move || {
+                store::rebuild_broken_indexes(&data.join("chaty.db"));
+                let rag = data.join("rag").join("rag.db");
+                if rag.exists() {
+                    store::rebuild_broken_indexes(&rag);
+                }
+            });
             // Code sessions' background task history, in the same database.
             agent::init_bg_history(&dir.join("chaty.db"));
 

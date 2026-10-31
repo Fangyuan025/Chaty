@@ -64,6 +64,15 @@ Thanks to @davidecelentano for both:
   KDE, for Open workspace, Load from folder and every other picker. The GTK
   dialog stays for a desktop with no portal.
 
+### Also
+
+- **A Code session that would not delete now does.** A `chaty.db` copied
+  over while Chaty had it open can come back with a session in its table but
+  not in the index that finds it by id: the sidebar listed it, and deleting
+  it removed nothing. Chaty checks its databases in the background at launch
+  and rebuilds indexes that no longer match their tables; damage of any other
+  kind goes to the error log.
+
 ### Building against newer engines
 
 - stable-diffusion.cpp's newer `generate_image`, which hands back a result
