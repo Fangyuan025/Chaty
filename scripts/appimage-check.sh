@@ -82,7 +82,12 @@ fi
 # As it started, it made itself the handler of chaty:// links, with the
 # user's tools in the user's environment (src-tauri/src/scheme.rs).
 HANDLER="${XDG_DATA_HOME:-$HOME/.local/share}/applications/chaty-handler.desktop"
-[ -f "$HANDLER" ] || { echo "FAIL: no $HANDLER"; exit 1; }
+if [ ! -f "$HANDLER" ]; then
+  echo "FAIL: no $HANDLER"
+  ls -la "$(dirname "$HANDLER")" 2>&1 || true
+  grep -iE "scheme|panic|error" run.log | tail -20 || true
+  exit 1
+fi
 desktop-file-validate "$HANDLER" || { echo "FAIL: desktop-file-validate on the link handler"; exit 1; }
 if command -v xdg-mime >/dev/null; then
   said=$(xdg-mime query default x-scheme-handler/chaty)
