@@ -89,6 +89,7 @@ xvfb-run -a -s "-screen 0 1280x800x24" bash -c '
     sleep 1
     xdotool search --onlyvisible --name "^Chaty$" >/dev/null 2>&1 && { touch shown; break; }
   done
+  [ -e shown ] || xwininfo -root -tree > windows.txt 2>&1
   wait $!' _ "$ROOT"
 code=$?
 set -e
@@ -105,6 +106,8 @@ if [ "$code" -ne 124 ]; then
 fi
 if [ ! -e shown ]; then
   echo "FAIL: no Chaty window within 18 s"
+  echo "windows on the display:"
+  grep -E '"[^"]+"' windows.txt | head -20 || true
   tail -40 run.log
   exit 1
 fi
