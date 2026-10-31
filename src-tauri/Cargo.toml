@@ -138,6 +138,9 @@ chardetng = "1"
 # The loader is opened dynamically, so Vulkan is optional at app startup.
 [target.'cfg(target_os = "linux")'.dependencies]
 ash = "0.38"
+# The desktop's file chooser through the XDG Desktop Portal (src/portal.rs).
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "file_chooser"] }
+raw-window-handle = "0.6"
 
 # GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers â€” cross-vendor on Windows.
 [target.'cfg(windows)'.dependencies]

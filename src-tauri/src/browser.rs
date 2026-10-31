@@ -12,6 +12,7 @@
 //! No heavyweight browser crate: CDP is line-oriented JSON over a localhost
 //! WebSocket, so `tungstenite` + `serde_json` is all it takes.
 
+use crate::hostenv::HostEnv;
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -538,7 +539,7 @@ pub fn sweep_orphan_browsers() {
         #[cfg(unix)]
         {
             let pat = dir.to_string_lossy().to_string();
-            let _ = std::process::Command::new("pkill").args(["-9", "-f", &pat]).status();
+            let _ = std::process::Command::new("pkill").host_env().args(["-9", "-f", &pat]).status();
         }
         // Windows: no safe kill-by-cmdline; a live Chrome holds the profile
         // lock so the remove fails and the dir simply waits for the next try.
@@ -555,7 +556,7 @@ pub fn sweep_orphan_browsers() {
 #[cfg(unix)]
 fn browsers_holding(profile: &std::path::Path) -> Vec<u32> {
     let needle = format!("--user-data-dir={}", profile.display());
-    let Ok(out) = std::process::Command::new("ps").args(["-Ao", "pid,args"]).output() else {
+    let Ok(out) = std::process::Command::new("ps").host_env().args(["-Ao", "pid,args"]).output() else {
         return Vec::new();
     };
     String::from_utf8_lossy(&out.stdout)
@@ -613,7 +614,7 @@ fn chrome_path() -> Option<PathBuf> {
         }
         // bare name on PATH (Linux)
         if !c.contains('/') && !c.contains('\\') {
-            if let Ok(out) = std::process::Command::new("which").arg(c).output() {
+            if let Ok(out) = std::process::Command::new("which").host_env().arg(c).output() {
                 if out.status.success() {
                     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
                     if !s.is_empty() {
@@ -1030,6 +1031,7 @@ impl BrowserSession {
         }
 
         let mut cmd = std::process::Command::new(&exe);
+        cmd.host_env();
         if headless {
             cmd.arg("--headless=new").arg("--hide-scrollbars");
         } else {

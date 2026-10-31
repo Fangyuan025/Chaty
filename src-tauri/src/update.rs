@@ -187,7 +187,9 @@ pub async fn run_update(app: tauri::AppHandle, url: String, on_progress: Channel
             .map_err(|e| trf!("无法设置新版本的执行权限:{e}", "could not make the new version executable: {e}"))?;
         std::fs::rename(&dest, &appimage)
             .map_err(|e| trf!("无法替换当前的 AppImage:{e}", "could not replace the running AppImage: {e}"))?;
+        use crate::hostenv::HostEnv;
         std::process::Command::new(&appimage)
+            .host_env()
             .spawn()
             .map_err(|e| trf!("无法启动新版本:{e}", "could not start the new version: {e}"))?;
     }

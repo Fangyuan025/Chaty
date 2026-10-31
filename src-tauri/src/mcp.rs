@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use crate::hostenv::HostEnv;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Mutex;
@@ -303,7 +304,8 @@ async fn notify(server: &mut Server, method: &str) -> Result<(), String> {
 
 fn spawn_stdio(command: &str, args: &[String], env: &HashMap<String, String>) -> Result<StdioConn, String> {
     let mut cmd = Command::new(command);
-    cmd.args(args)
+    cmd.host_env()
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         // stderr passes through to the app log — server diagnostics stay visible.

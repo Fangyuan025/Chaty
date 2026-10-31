@@ -874,8 +874,9 @@ pub(crate) fn open_default(target: &str) -> Result<(), String> {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        use crate::hostenv::HostEnv;
         cmd = std::process::Command::new("xdg-open");
-        cmd.arg(target);
+        cmd.arg(target).host_env();
     }
     match cmd.spawn() {
         Ok(mut child) => {

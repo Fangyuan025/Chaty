@@ -1,7 +1,7 @@
 // Typed bridge to the Rust backend. Keep this the single source of truth for
 // the IPC contract so the UI never touches `invoke` string names directly.
 import { invoke, Channel, convertFileSrc } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "./dialog";
 import { voiceError } from "./voiceError";
 
 export type Role = "system" | "user" | "assistant" | "tool";

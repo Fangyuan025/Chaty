@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "../lib/dialog";
 import { useI18n } from "../lib/i18n";
 import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { IconKb, IconDoc, IconMic, IconResearch } from "./icons";

@@ -39,7 +39,8 @@ pub struct PtyProcess {
 }
 
 /// Start `program args…` in a fresh terminal, with the environment changes
-/// `envs` (`None` removes a variable) on top of this process's own.
+/// `envs` (`None` removes a variable) on top of the one a program of the
+/// user's system starts with (`hostenv`).
 pub fn spawn_pty(
     program: &std::ffi::OsStr,
     args: &[std::ffi::OsString],
@@ -52,6 +53,7 @@ pub fn spawn_pty(
         .map_err(|e| format!("pty: {e:#}"))?;
     let mut cmd = portable_pty::CommandBuilder::new(program);
     cmd.args(args);
+    crate::hostenv::HostEnv::host_env(&mut cmd);
     for (k, v) in envs {
         match v {
             Some(v) => cmd.env(k, v),

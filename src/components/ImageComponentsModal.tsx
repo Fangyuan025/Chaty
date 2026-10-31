@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "../lib/dialog";
 
 import { etaSeconds as dlEta, fmtTime, type EtaSample } from "../lib/eta";
 import { fmtBytes, fmtGbFromMb } from "../lib/fmt";

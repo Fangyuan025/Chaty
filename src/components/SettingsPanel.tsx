@@ -27,7 +27,7 @@ import {
   synthesize,
   type UpdateInfo,
 } from "../lib/ipc";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "../lib/dialog";
 import { decodeAudio, playAudio, primeAudioPlayback } from "../lib/audio";
 import { CODE_THEMES, type CodeTheme } from "../lib/codeTheme";
 import { useConfirm } from "./ConfirmModal";

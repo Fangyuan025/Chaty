@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { RECENCY_LABEL, recencyGroups } from "../lib/recency";
 import { ImagePreview } from "./ImagePreview";
 import { resolveToolFormat, type CallFormat } from "../lib/callFormat";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "../lib/dialog";
 import { agentLang, useI18n, type TKey } from "../lib/i18n";
 import { watchContentHeight } from "../lib/autoGrow";
 /** Matches `.cm-input` max-height. */

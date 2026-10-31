@@ -13,6 +13,7 @@ mod commands;
 pub mod download;
 pub mod edit_match;
 pub mod gpu;
+pub mod hostenv;
 pub mod http;
 pub mod imagegen;
 pub mod inference;
@@ -21,6 +22,7 @@ pub mod errlog;
 pub mod mcp;
 pub mod ocr;
 pub mod search;
+pub mod portal;
 pub mod skillsync;
 #[cfg(target_os = "macos")]
 mod smooth_wheel;
@@ -601,6 +603,7 @@ pub fn run() {
             commands::canvas_session_save,
             commands::canvas_session_load,
             commands::open_external,
+            portal::portal_pick,
             commands::set_ui_zoom,
             commands::set_tray_language,
             commands::generate,

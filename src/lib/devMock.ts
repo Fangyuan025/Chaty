@@ -1125,6 +1125,8 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     // kept on `window.__lastExport` for the preview to inspect.
     case "plugin:dialog|save":
       return "/tmp/chaty-preview-export";
+    case "portal_pick":
+      return { kind: "unavailable" };
     case "write_text_file":
       (window as unknown as { __lastExport?: string }).__lastExport = String(args?.content ?? "");
       return null;

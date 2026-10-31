@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use crate::hostenv::HostEnv;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1029,7 +1030,7 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
             c.arg(flag).stdout(Stdio::null()).stderr(Stdio::null());
             hide_console(&mut c);
             #[cfg(unix)]
-            c.env("PATH", augmented_path());
+            c.host_env().env("PATH", augmented_path());
             c.status().map(|s| s.success()).unwrap_or(false)
         };
         let xcodeproj: Option<PathBuf> = walkdir::WalkDir::new(&root)
@@ -1140,7 +1141,7 @@ pub(crate) fn syntax_check(abs: &Path) -> Option<Result<(), String>> {
         // augmented_path is unix-only (GUI launches lack brew/nvm paths);
         // Windows inherits the parent environment as-is.
         #[cfg(unix)]
-        cmd.env("PATH", augmented_path());
+        cmd.host_env().env("PATH", augmented_path());
         let out = cmd.output().ok()?; // binary missing → no checker
         if out.status.success() {
             Some(Ok(()))
@@ -1260,7 +1261,7 @@ fn py_undefined_names(abs: &Path) -> Vec<(String, usize)> {
     cmd.args(["-c", PY_NAME_SCAN, &p]).stdout(Stdio::piped()).stderr(Stdio::null());
     hide_console(&mut cmd);
     #[cfg(unix)]
-    cmd.env("PATH", augmented_path());
+    cmd.host_env().env("PATH", augmented_path());
     let Ok(out) = cmd.output() else { return Vec::new() };
     String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -3474,7 +3475,9 @@ fn augmented_path() -> String {
         }
     }
     let mut path: Vec<String> = dirs.into_iter().filter(|d| Path::new(d).is_dir()).collect();
-    if let Ok(cur) = std::env::var("PATH") {
+    // The user's own PATH: an AppImage's start script puts its own folders
+    // ahead of it (`hostenv`).
+    if let Some(cur) = crate::hostenv::var("PATH") {
         for p in cur.split(':') {
             if !path.iter().any(|x| x == p) {
                 path.push(p.to_string());
@@ -3611,6 +3614,7 @@ fn listening_socket(pgid: u32) -> bool {
     #[cfg(unix)]
     {
         std::process::Command::new("lsof")
+            .host_env()
             .args(["-t", "-a", "-g", &pgid.to_string(), "-iTCP", "-sTCP:LISTEN"])
             .stdin(Stdio::null())
             .output()
@@ -4168,7 +4172,7 @@ fn build_command(root: &Path, command: &str, sandboxed: bool) -> Command {
         c
     };
     clear_startup_files(&mut cmd);
-    cmd.env("PATH", augmented_path());
+    cmd.host_env().env("PATH", augmented_path());
     redirect_tool_caches(&mut cmd);
     cmd
 }
@@ -4180,7 +4184,7 @@ fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
     let mut cmd = Command::new(sh);
     cmd.args(flags).arg(command);
     clear_startup_files(&mut cmd);
-    cmd.env("PATH", augmented_path());
+    cmd.host_env().env("PATH", augmented_path());
     redirect_tool_caches(&mut cmd);
     cmd
 }
@@ -4223,7 +4227,7 @@ fn build_command(_root: &Path, command: &str, _sandboxed: bool) -> Command {
         None => (windows_shell(), shell_flags("cmd")),
     };
     let mut cmd = Command::new(program);
-    cmd.args(&flags).arg(command);
+    cmd.args(&flags).arg(command).host_env();
     hide_console(&mut cmd); // every agent step would flash a console otherwise
     // Same cache redirect the unix variants apply — Windows was the one
     // platform that forgot, caught the first time this test actually RAN on
@@ -4603,7 +4607,7 @@ fn command_key(command: &str) -> String {
 /// Every process as (pid, process group, command line).
 #[cfg(unix)]
 fn process_table() -> Vec<(i32, i32, String)> {
-    let Ok(out) = std::process::Command::new("ps").args(["-A", "-o", "pid=,pgid=,command="]).output() else {
+    let Ok(out) = std::process::Command::new("ps").host_env().args(["-A", "-o", "pid=,pgid=,command="]).output() else {
         return Vec::new();
     };
     String::from_utf8_lossy(&out.stdout)
@@ -4714,6 +4718,7 @@ fn port_candidates(text: &str, command: &str) -> Vec<u16> {
 #[cfg(unix)]
 fn port_holder(port: u16) -> Option<(i32, String)> {
     let out = std::process::Command::new("lsof")
+        .host_env()
         .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"])
         .output()
         .ok()?;
