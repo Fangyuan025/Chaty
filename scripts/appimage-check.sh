@@ -3,8 +3,9 @@
 # or xdg-open of its own, its icon and desktop file pass what the AppImage
 # catalog checks, every library its binary needs resolves, its chat engine
 # (chaty-llama) answers, a program it starts sees none of the image's paths,
-# and it starts — still running after 20 s under a virtual display, with no
-# missing library said, and handling chaty:// links.
+# its files are open to every user, and it starts — its window shown and
+# still running after 20 s under a virtual display, with no missing library
+# said, and handling chaty:// links.
 #
 # Usage: scripts/appimage-check.sh path/to/Chaty_x.y.z_amd64.AppImage
 set -euo pipefail
@@ -18,6 +19,20 @@ ROOT="$WORK/squashfs-root"
 
 if find "$ROOT" -name 'libwayland-client.so*' | grep -q .; then
   echo "FAIL: the AppImage still carries libwayland-client"
+  exit 1
+fi
+
+# Readable by everyone, and runnable where it is a program: firejail and
+# others mount the image themselves, owned by root, and a file only its
+# owner may run (AppRun.wrapped was) stopped the app before it started. Read
+# from the image, as it is stored: extracting does not keep folders' modes.
+closed=$(unsquashfs -o "$("$IMG" --appimage-offset)" -lls "$IMG" | awk '
+  length($1) == 10 && $1 ~ /^[-dcbps][-rwxsStT]+$/ {
+    if (substr($1, 8, 1) != "r" || (substr($1, 4, 1) == "x" && substr($1, 10, 1) != "x")) print $1, $NF
+  }' | head -5)
+if [ -n "$closed" ]; then
+  echo "FAIL: not open to every user:"
+  echo "$closed"
   exit 1
 fi
 
@@ -64,8 +79,17 @@ if printf '%s\n' "$seen" | grep -F "$ROOT"; then
   exit 1
 fi
 
+# A 24-bit display: at xvfb-run's default 8 bits the window never came up.
+# It is still running after 20 s (124: stopped by the timeout) and has shown
+# its window.
 set +e
-xvfb-run -a timeout 20 "$ROOT/AppRun" > run.log 2>&1
+xvfb-run -a -s "-screen 0 1280x800x24" bash -c '
+  timeout 20 "$1/AppRun" > run.log 2>&1 &
+  for _ in $(seq 1 18); do
+    sleep 1
+    xdotool search --onlyvisible --name "^Chaty$" >/dev/null 2>&1 && { touch shown; break; }
+  done
+  wait $!' _ "$ROOT"
 code=$?
 set -e
 if grep -q "error while loading shared libraries" run.log; then
@@ -76,6 +100,11 @@ fi
 # 124: still running when the timeout stopped it — it started.
 if [ "$code" -ne 124 ]; then
   echo "FAIL: exited with $code within 20 s"
+  tail -40 run.log
+  exit 1
+fi
+if [ ! -e shown ]; then
+  echo "FAIL: no Chaty window within 18 s"
   tail -40 run.log
   exit 1
 fi
@@ -93,4 +122,4 @@ if command -v xdg-mime >/dev/null; then
   said=$(xdg-mime query default x-scheme-handler/chaty)
   [ "$said" = chaty-handler.desktop ] || { echo "FAIL: chaty:// opens with '$said'"; exit 1; }
 fi
-echo "OK: no bundled libwayland-client or xdg-open, its icon and desktop file pass, every library resolves, the chat engine answers, programs it starts see the host's environment, and it starts and handles chaty:// links"
+echo "OK: no bundled libwayland-client or xdg-open, its icon and desktop file pass, its files are open to every user, every library resolves, the chat engine answers, programs it starts see the host's environment, and it shows its window and handles chaty:// links"

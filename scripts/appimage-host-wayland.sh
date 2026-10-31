@@ -18,6 +18,10 @@
 # anywhere else, and the catalog's check fails on it (tauri-apps/tauri#15596).
 # It is pointed at the icon beside it instead.
 #
+# Every file is made readable by all, and every program runnable by all:
+# AppRun.wrapped was its owner's alone, and firejail (the catalog's test runs
+# the app in it) mounts the image as root's, so the app did not start.
+#
 # chaty-llama, the chat engine, is a second binary Tauri copies in as it is:
 # it gets the RPATH the app's own binary has, and loses the voice library's
 # entries it never uses (scripts/llama-standalone.sh).
@@ -37,6 +41,7 @@ ICON=$(find "$APPDIR" -maxdepth 1 -name '*.png' | head -1)
 [ -n "$ICON" ] || { echo "error: no icon at the AppDir's top" >&2; exit 1; }
 ln -sfn "$(basename "$ICON")" "$APPDIR/.DirIcon"
 echo ".DirIcon -> $(readlink "$APPDIR/.DirIcon")"
+chmod -R a+rX "$APPDIR"
 LLAMA="$APPDIR/usr/bin/chaty-llama"
 [ -f "$LLAMA" ] || { echo "error: no chaty-llama in the AppDir" >&2; exit 1; }
 ./scripts/llama-standalone.sh "$LLAMA" '$ORIGIN/../lib'
