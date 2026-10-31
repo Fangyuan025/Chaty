@@ -63,6 +63,10 @@ Thanks to @davidecelentano for both:
   #29): through the XDG Desktop Portal, Nautilus's on GNOME and Dolphin's on
   KDE, for Open workspace, Load from folder and every other picker. The GTK
   dialog stays for a desktop with no portal.
+- **The AppImage starts under firejail** and other launchers that mount it
+  themselves — one of its files could only be run by its owner — its icon
+  shows in file managers, it is listed under Utilities, and `chaty://` links
+  are registered with your system's own tools.
 
 ### Also
 
