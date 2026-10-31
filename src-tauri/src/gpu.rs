@@ -517,18 +517,26 @@ pub struct GpuUsage {
     pub total_mb: u64,
 }
 
-/// Live VRAM usage of the primary GPU (DXGI 1.4 `QueryVideoMemoryInfo`).
+/// Live VRAM usage of the primary GPU: what every process has in its
+/// dedicated memory, as Task Manager shows it.
+///
+/// It used to be DXGI's `QueryVideoMemoryInfo`, whose `CurrentUsage` is the
+/// calling process's alone. Models run in `chaty-llama` and the window in
+/// WebView2's processes, so this one held next to nothing: the hardware panel
+/// read 0, and offload planning took the whole card for free. That figure is
+/// kept only for a system without the performance counter.
 #[cfg(windows)]
 pub fn gpu_usage() -> Option<GpuUsage> {
     use windows::core::Interface;
     use windows::Win32::Graphics::Dxgi::{
-        CreateDXGIFactory1, IDXGIAdapter3, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+        CreateDXGIFactory1, IDXGIAdapter1, IDXGIAdapter3, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
         DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
     };
 
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
-        let mut best: Option<(u64, IDXGIAdapter3)> = None;
+        // The GPU with the most dedicated memory, as detect_gpu picks it.
+        let mut best: Option<(u64, (i32, u32), IDXGIAdapter1)> = None;
         let mut i = 0u32;
         while let Ok(adapter) = factory.EnumAdapters1(i) {
             i += 1;
@@ -540,22 +548,98 @@ pub fn gpu_usage() -> Option<GpuUsage> {
                 continue;
             }
             let vram = desc.DedicatedVideoMemory as u64;
-            if let Ok(a3) = adapter.cast::<IDXGIAdapter3>() {
-                if best.as_ref().map_or(true, |(v, _)| vram > *v) {
-                    best = Some((vram, a3));
-                }
+            if best.as_ref().map_or(true, |(v, _, _)| vram > *v) {
+                best = Some((vram, (desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart), adapter));
             }
         }
-        let (total, adapter) = best?;
-        let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
-        adapter
-            .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
-            .ok()?;
+        let (total, luid, adapter) = best?;
+        let used = match dedicated_usage_by_adapter() {
+            Some(by_adapter) => by_adapter.iter().filter(|(l, _)| *l == luid).map(|(_, b)| *b).sum(),
+            None => {
+                let a3 = adapter.cast::<IDXGIAdapter3>().ok()?;
+                let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+                a3.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info).ok()?;
+                info.CurrentUsage
+            }
+        };
         Some(GpuUsage {
-            used_mb: info.CurrentUsage / (1024 * 1024),
+            used_mb: used / (1024 * 1024),
             total_mb: total / (1024 * 1024),
         })
     }
+}
+
+/// Bytes of dedicated memory in use on each GPU, by every process, keyed by
+/// the adapter's LUID (high, low): the `GPU Adapter Memory` performance
+/// counter. `None` where the counter cannot be read.
+#[cfg(windows)]
+fn dedicated_usage_by_adapter() -> Option<Vec<((i32, u32), u64)>> {
+    use std::sync::Mutex;
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::System::Performance::{
+        PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
+        PdhOpenQueryW, PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_LARGE, PDH_HCOUNTER,
+        PDH_HQUERY, PDH_MORE_DATA,
+    };
+
+    // One query for the life of the app: the panel asks every 1.5 s.
+    struct Query(PDH_HQUERY, PDH_HCOUNTER);
+    // SAFETY: PDH handles may be used from any thread; the mutex keeps the
+    // calls one at a time.
+    unsafe impl Send for Query {}
+    static QUERY: Mutex<Option<Query>> = Mutex::new(None);
+
+    let mut slot = QUERY.lock().ok()?;
+    unsafe {
+        if slot.is_none() {
+            let mut query = PDH_HQUERY::default();
+            if PdhOpenQueryW(PCWSTR::null(), 0, &mut query) != 0 {
+                return None;
+            }
+            let mut counter = PDH_HCOUNTER::default();
+            if PdhAddEnglishCounterW(query, w!("\\GPU Adapter Memory(*)\\Dedicated Usage"), 0, &mut counter) != 0 {
+                PdhCloseQuery(query);
+                return None;
+            }
+            *slot = Some(Query(query, counter));
+        }
+        let Query(query, counter) = slot.as_ref()?;
+        if PdhCollectQueryData(*query) != 0 {
+            return None;
+        }
+        let (mut size, mut count) = (0u32, 0u32);
+        if PdhGetFormattedCounterArrayW(*counter, PDH_FMT_LARGE, &mut size, &mut count, None) != PDH_MORE_DATA {
+            return None;
+        }
+        // The items, then the instance names they point into; u64s for the
+        // items' alignment.
+        let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+        let items = buf.as_mut_ptr().cast::<PDH_FMT_COUNTERVALUE_ITEM_W>();
+        if PdhGetFormattedCounterArrayW(*counter, PDH_FMT_LARGE, &mut size, &mut count, Some(items)) != 0 {
+            return None;
+        }
+        let mut out = Vec::new();
+        for item in std::slice::from_raw_parts(items, count as usize) {
+            if item.FmtValue.CStatus != PDH_CSTATUS_VALID_DATA {
+                continue;
+            }
+            let Ok(name) = item.szName.to_string() else { continue };
+            if let Some(luid) = adapter_luid(&name) {
+                out.push((luid, item.FmtValue.Anonymous.largeValue.max(0) as u64));
+            }
+        }
+        Some(out)
+    }
+}
+
+/// The adapter a `GPU Adapter Memory` instance is: "luid_0x00000000_0x0000C6E4_phys_0"
+/// is LUID (high 0x0, low 0xC6E4), one of its physical parts.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn adapter_luid(instance: &str) -> Option<(i32, u32)> {
+    let rest = instance.strip_prefix("luid_0x")?;
+    let (high, rest) = rest.split_once("_0x")?;
+    let low = rest.split('_').next()?;
+    Some((u32::from_str_radix(high, 16).ok()? as i32, u32::from_str_radix(low, 16).ok()?))
 }
 
 /// macOS unified memory: "VRAM" is shared system memory, so report the WHOLE
@@ -693,6 +777,16 @@ pub fn embed_free_bytes(vram_mb: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// Windows names each GPU's memory counter after its adapter's LUID.
+    #[test]
+    fn a_counter_instance_names_its_adapter() {
+        assert_eq!(super::adapter_luid("luid_0x00000000_0x0000C6E4_phys_0"), Some((0, 0xC6E4)));
+        assert_eq!(super::adapter_luid("luid_0x00000001_0x0001a2b3_phys_1"), Some((1, 0x1A2B3)));
+        assert_eq!(super::adapter_luid("luid_0xFFFFFFFF_0x00000010_phys_0"), Some((-1, 0x10)));
+        assert_eq!(super::adapter_luid("_Total"), None);
+        assert_eq!(super::adapter_luid("luid_0xzz_0x1_phys_0"), None);
+    }
+
     /// One sizing rule for every GPU load. Pinned on the embedder's own numbers
     /// (bge-m3 Q8_0: 634 MB, 24 blocks) because that is the load issue #13 was
     /// about, and on a chat model to show the extraction changed nothing there.

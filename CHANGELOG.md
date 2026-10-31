@@ -72,6 +72,11 @@ Thanks to @davidecelentano for both:
   it removed nothing. Chaty checks its databases in the background at launch
   and rebuilds indexes that no longer match their tables; damage of any other
   kind goes to the error log.
+- **On Windows, the hardware panel shows the VRAM in use** — what every app
+  holds, as Task Manager counts it — where it read 0: the figure was Chaty's
+  own window's, and the models run in a process of their own. Loading a model
+  now also leaves room for what other apps already hold, instead of planning
+  for the whole card.
 
 ### Building against newer engines
 
