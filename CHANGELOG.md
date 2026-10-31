@@ -47,6 +47,23 @@
   against 40 without it on an M4 Pro — and a Qwen3.5 MTPLX checkpoint that the
   previous engine answered in garbage now reads properly.
 
+### Linux
+
+Thanks to @davidecelentano for both:
+
+- **Open models folder works on Fedora**, and so does every other folder or
+  link the app opens (issue #28). The AppImage no longer carries its own
+  `xdg-open`, and the programs Chaty starts — the file manager, the browser a
+  link opens in, agent commands and terminals, the automation browser, MCP
+  servers — get your system's environment instead of the image's library
+  paths, with which Firefox, Epiphany or git loaded the image's older
+  libnss3, libssl or libgnutls and did not start. Each release now checks
+  that a program the app starts sees nothing of the image.
+- **Folders and files are picked with your desktop's own chooser** (issue
+  #29): through the XDG Desktop Portal, Nautilus's on GNOME and Dolphin's on
+  KDE, for Open workspace, Load from folder and every other picker. The GTK
+  dialog stays for a desktop with no portal.
+
 ### Building against newer engines
 
 - stable-diffusion.cpp's newer `generate_image`, which hands back a result

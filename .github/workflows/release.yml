@@ -356,6 +356,15 @@ jobs:
             stays as fast — Qwen3.5-4B MTPLX at 69 tokens a second against 40 without it
             on an M4 Pro.
 
+            ## Linux
+
+            Open models folder works on Fedora: the AppImage no longer carries its own
+            `xdg-open`, and the programs Chaty starts get your system's environment
+            instead of the image's library paths (#28). Folders and files are picked with
+            your desktop's own chooser through the XDG Desktop Portal — Nautilus's on
+            GNOME, Dolphin's on KDE — with the GTK dialog kept for a desktop with no
+            portal (#29). Thanks to @davidecelentano for both.
+
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
                  model's name land, and a bare install table tells them
