@@ -18,6 +18,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # The commit every build here is made from, written into the app: a version
+  # built again under the same number is told apart by it (src-tauri/src/update.rs).
+  CHATY_BUILD: ${{ github.sha }}
+
 jobs:
   # Fail fast if the tag doesn't match the versions in the repo.
   check-version:
@@ -392,3 +397,12 @@ jobs:
             **System Settings → Privacy & Security → Open Anyway**.)
 
             ---
+      - name: Name the build the installers are, after them
+        # The in-app updater offers this version built again by it
+        # (src-tauri/src/update.rs). Uploaded last, so it never names a build
+        # whose installers are still on their way.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '{"version":"%s","build":"%s"}\n' "${GITHUB_REF_NAME#v}" "$GITHUB_SHA" > chaty-build.json
+          gh release upload "$GITHUB_REF_NAME" chaty-build.json --clobber --repo "$GITHUB_REPOSITORY"

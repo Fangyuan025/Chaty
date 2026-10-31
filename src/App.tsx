@@ -4228,7 +4228,7 @@ export default function App() {
       <ContextMenu />
       {update?.available && (
         <div className="update-banner">
-          <span className="update-text">{t("updateAvailable", { v: update.latest })}</span>
+          <span className="update-text">{t(update.rebuilt ? "updateRebuilt" : "updateAvailable", { v: update.latest })}</span>
           <button className="update-btn primary" onClick={applyUpdate} disabled={updating}>
             {updating
               ? updateProgress

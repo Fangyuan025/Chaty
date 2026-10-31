@@ -639,7 +639,8 @@ const RICH_README = [
 /** `?sources=web` / `?sources=kb`: the last answer of the showcase chat cites
  *  web pages / knowledge-base passages, to look at the sources under it. */
 const DEMO_SOURCES = new URLSearchParams(window.location.search).get("sources");
-const DEMO_UPDATE = new URLSearchParams(window.location.search).get("update") === "1";
+// ?update=1: a newer version; ?update=rebuilt: this version built again.
+const DEMO_UPDATE = new URLSearchParams(window.location.search).get("update");
 
 /** Settings → Runtimes: one engine with an update, one on a pack, one current. */
 const MOCK_RUNTIMES = {
@@ -1093,7 +1094,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "check_update":
       // ?update=1: a newer version, to see the banner and its download.
       return DEMO_UPDATE
-        ? { available: true, current: "2.3.8", latest: "2.3.9", url: "https://example.invalid/Chaty_2.3.9_aarch64.dmg" }
+        ? DEMO_UPDATE === "rebuilt"
+          ? { available: true, rebuilt: true, current: "2.3.9", latest: "2.3.9", url: "https://example.invalid/Chaty_2.3.9_aarch64.dmg" }
+          : { available: true, current: "2.3.8", latest: "2.3.9", url: "https://example.invalid/Chaty_2.3.9_aarch64.dmg" }
         : { available: false, current: "1.5.0", latest: "1.5.0" };
     // The download, told in steps (it never finishes: the app would exit).
     case "run_update": {

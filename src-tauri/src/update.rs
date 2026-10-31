@@ -35,10 +35,42 @@ pub struct UpdateProgress {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
     pub available: bool,
+    /// The same version as this one, built again: offered all the same.
+    pub rebuilt: bool,
     pub current: String,
     pub latest: String,
     pub url: Option<String>,
     pub notes: Option<String>,
+}
+
+/// The commit a release build was made from, which the release workflow
+/// sets; a local build has none. A version can be built again under the same
+/// number, and this is how an installed copy tells the builds apart.
+const BUILD: Option<&str> = option_env!("CHATY_BUILD");
+
+/// The release asset that names the commit its installers were built from.
+/// The release workflow uploads it after them, so it never names a build
+/// whose installers are still on their way.
+const BUILD_ASSET: &str = "chaty-build.json";
+
+/// What the latest release is to this copy.
+#[derive(Debug, PartialEq)]
+enum Offer {
+    Newer,
+    /// Its version, from another commit.
+    Rebuilt,
+    Nothing,
+}
+
+fn offer(latest: &str, current: &str, latest_build: Option<&str>, own_build: Option<&str>) -> Offer {
+    let (l, c) = (ver_tuple(latest), ver_tuple(current));
+    if l > c {
+        return Offer::Newer;
+    }
+    match (latest_build, own_build) {
+        (Some(theirs), Some(ours)) if l == c && !theirs.is_empty() && theirs != ours => Offer::Rebuilt,
+        _ => Offer::Nothing,
+    }
 }
 
 /// A release asset this machine can install: the platform's kind of file and,
@@ -97,17 +129,33 @@ async fn fetch_latest() -> anyhow::Result<UpdateInfo> {
 
     let latest_tag = json["tag_name"].as_str().unwrap_or("").to_string();
     let notes = json["body"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
-    let url = json["assets"]
-        .as_array()
-        .and_then(|arr| arr.iter().find(|a| a["name"].as_str().is_some_and(asset_fits)))
-        .and_then(|a| a["browser_download_url"].as_str())
-        .map(str::to_string);
+    let asset_url = |fits: &dyn Fn(&str) -> bool| {
+        json["assets"]
+            .as_array()
+            .and_then(|arr| arr.iter().find(|a| a["name"].as_str().is_some_and(fits)))
+            .and_then(|a| a["browser_download_url"].as_str())
+            .map(str::to_string)
+    };
+    let url = asset_url(&asset_fits);
 
-    let available =
-        !latest_tag.is_empty() && url.is_some() && ver_tuple(&latest_tag) > ver_tuple(&current);
+    // Only worth asking when the version is this one's.
+    let mut latest_build = None;
+    if BUILD.is_some() && ver_tuple(&latest_tag) == ver_tuple(&current) {
+        if let Some(u) = asset_url(&|n: &str| n == BUILD_ASSET) {
+            latest_build = async {
+                let text = client.get(u).send().await.ok()?.error_for_status().ok()?.text().await.ok()?;
+                let said: serde_json::Value = serde_json::from_str(&text).ok()?;
+                said["build"].as_str().map(str::to_string)
+            }
+            .await;
+        }
+    }
+    let offered = offer(&latest_tag, &current, latest_build.as_deref(), BUILD);
+    let available = !latest_tag.is_empty() && url.is_some() && offered != Offer::Nothing;
 
     Ok(UpdateInfo {
         available,
+        rebuilt: available && offered == Offer::Rebuilt,
         current,
         latest: latest_tag.trim_start_matches('v').to_string(),
         url,
@@ -211,7 +259,20 @@ async fn download(url: &str, dest: &std::path::Path, on_progress: &Channel<Updat
 
 #[cfg(test)]
 mod tests {
-    use super::{asset_fits, download, ver_tuple, UpdateProgress};
+    use super::{asset_fits, download, offer, ver_tuple, Offer, UpdateProgress};
+
+    #[test]
+    fn the_same_version_built_again_is_offered() {
+        let (a, b) = (Some("ffd7671aaaa"), Some("86d7801bbbb"));
+        assert_eq!(offer("v2.3.9", "2.3.9", a, b), Offer::Rebuilt);
+        assert_eq!(offer("v2.3.9", "2.3.9", a, a), Offer::Nothing, "this very build");
+        // A local build names no commit, and an older release names none.
+        assert_eq!(offer("v2.3.9", "2.3.9", a, None), Offer::Nothing);
+        assert_eq!(offer("v2.3.9", "2.3.9", None, b), Offer::Nothing);
+        assert_eq!(offer("v2.3.9", "2.3.9", Some(""), b), Offer::Nothing);
+        assert_eq!(offer("v2.4.0", "2.3.9", a, a), Offer::Newer);
+        assert_eq!(offer("v2.3.8", "2.3.9", a, b), Offer::Nothing, "never back to an older version");
+    }
     use std::sync::{Arc, Mutex};
     use tauri::ipc::Channel;
 

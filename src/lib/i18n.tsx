@@ -465,6 +465,7 @@ export const T = {
   aboutCheckUpdate: { zh: "检查更新", en: "Check for updates", pt: "Procurar atualizações" },
   aboutUpdateNow: { zh: "立即更新", en: "Update now", pt: "Atualizar agora" },
   aboutNewVersion: { zh: "发现新版本", en: "New version available", pt: "Nova versão disponível" },
+  aboutNewBuild: { zh: "发现新的构建", en: "New build available", pt: "Nova compilação disponível" },
   aboutUpToDate: { zh: "已是最新版本", en: "You're up to date", pt: "Você está atualizado" },
   cmWelcomeNoModel: { zh: "先在顶部加载一个模型，再开始编码任务。", en: "Load a model from the titlebar to start coding.", pt: "Carregue um modelo pelo topo para começar a programar." },
   cmPlaceholderNoModel: { zh: "请先加载模型…", en: "Load a model first…", pt: "Carregue um modelo primeiro…" },
@@ -618,6 +619,7 @@ export const T = {
   thinkUnsupported: { zh: "当前模型不支持思考模式", en: "This model doesn't support thinking", pt: "Este modelo não suporta modo de raciocínio" },
   // update banner
   updateAvailable: { zh: "发现新版本 v{v}", en: "Update available — v{v}", pt: "Atualização disponível — v{v}" },
+  updateRebuilt: { zh: "v{v} 有新的构建", en: "A new build of v{v} is available", pt: "Nova compilação da v{v} disponível" },
   updateNow: { zh: "立即更新", en: "Update now", pt: "Atualizar agora" },
   updateLater: { zh: "稍后", en: "Later", pt: "Mais tarde" },
   updateDownloading: { zh: "下载中…", en: "Downloading…", pt: "Baixando…" },

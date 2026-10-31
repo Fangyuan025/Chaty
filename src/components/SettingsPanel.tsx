@@ -2863,7 +2863,7 @@ export function SettingsPanel({
               {upd && (
                 <div className="about-status">
                   {upd.available
-                    ? `${t("aboutNewVersion")}: v${upd.latest}`
+                    ? `${t(upd.rebuilt ? "aboutNewBuild" : "aboutNewVersion")}: v${upd.latest}`
                     : t("aboutUpToDate")}
                 </div>
               )}

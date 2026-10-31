@@ -678,6 +678,8 @@ export async function getGpuUsage(): Promise<GpuUsage | null> {
 
 export interface UpdateInfo {
   available: boolean;
+  /** The same version as this one, built again. */
+  rebuilt?: boolean;
   current: string;
   latest: string;
   url?: string | null;
