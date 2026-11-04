@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { open as openDialog } from "../lib/dialog";
+import { pastedFile } from "../lib/paste";
 
 import { useI18n, type TKey } from "../lib/i18n";
 import { watchContentHeight } from "../lib/autoGrow";
@@ -662,6 +663,16 @@ export function ImageStudio({
             value={studio.prompt}
             onChange={(e) => studio.setPrompt(e.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={(e) => {
+              // A picture pasted in is the one to start from, as one dropped is.
+              void pastedFile(e)
+                .then((path) => {
+                  if (!path) return;
+                  if (/\.(png|jpe?g|webp|bmp)$/i.test(path)) studio.setReference({ path, parentId: null });
+                  else notify("warn", t("imgDropNotImage"));
+                })
+                .catch((err) => notify("error", String(err)));
+            }}
             placeholder={sendKey === "modEnter" ? t("imgPromptPhMod") : t("imgPromptPh")}
             rows={1}
           />

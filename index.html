@@ -5,6 +5,33 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Chaty</title>
+    <script>
+      // The stored theme, before the app's code has loaded: the window comes
+      // up in its colours rather than a flash of the other ones. App.tsx owns
+      // the theme from then on (this mirrors its loadSettings migration).
+      (function () {
+        try {
+          var s = JSON.parse(localStorage.getItem("chaty.settings") || "{}");
+          var t = s.theme || "system";
+          if (t === "dark" && !localStorage.getItem("chaty.themeFollowsSystem")) t = "system";
+          var d = document.documentElement;
+          d.dataset.theme = t;
+          d.dataset.dark = s.darkScheme || "warm";
+          d.dataset.light = s.lightScheme || "paper";
+        } catch (e) {}
+      })();
+    </script>
+    <style>
+      /* No specificity: App.css's own background takes over once loaded. */
+      :where(html) { background: #201f1d; }
+      :where(html[data-dark="cool"]) { background: #0e0f12; }
+      :where(html[data-theme="light"]) { background: #faf9f7; }
+      :where(html[data-theme="light"][data-light="cream"]) { background: #f3eee4; }
+      @media (prefers-color-scheme: light) {
+        :where(html[data-theme="system"]) { background: #faf9f7; }
+        :where(html[data-theme="system"][data-light="cream"]) { background: #f3eee4; }
+      }
+    </style>
   </head>
 
   <body>

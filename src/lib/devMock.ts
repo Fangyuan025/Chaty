@@ -1130,6 +1130,10 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return "/tmp/chaty-preview-export";
     case "portal_pick":
       return { kind: "unavailable" };
+    case "keep_awake":
+      return null;
+    case "save_pasted_file":
+      return `/tmp/chaty-preview/${String(args?.name || "pasted.png")}`;
     case "write_text_file":
       (window as unknown as { __lastExport?: string }).__lastExport = String(args?.content ?? "");
       return null;

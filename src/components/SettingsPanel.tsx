@@ -189,7 +189,7 @@ export interface GenSettings extends ImageSettings, MusicSettings {
 export const defaultSettings: GenSettings = {
   ...IMAGE_SETTINGS_DEFAULTS,
   ...MUSIC_SETTINGS_DEFAULTS,
-  theme: "dark",
+  theme: "system",
   systemPrompt: "",
   temperature: 0.7,
   topP: 0.95,

@@ -2,6 +2,7 @@
 // the IPC contract so the UI never touches `invoke` string names directly.
 import { invoke, Channel, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "./dialog";
+import { asJob, type Job } from "./busy";
 import { voiceError } from "./voiceError";
 
 export type Role = "system" | "user" | "assistant" | "tool";
@@ -311,9 +312,16 @@ export async function musicModelProbe(path: string): Promise<MusicProbe | null> 
 }
 
 export async function musicGenerate(request: MusicRequest, onEvent: (ev: MusicEvent) => void): Promise<MusicRecord | null> {
-  const channel = new Channel<MusicEvent>();
-  channel.onmessage = onEvent;
-  return await invoke<MusicRecord | null>("music_generate", { request, onEvent: channel });
+  return asJob(async (job) => {
+    const channel = new Channel<MusicEvent>();
+    channel.onmessage = (ev) => {
+      if (ev.type === "engine" && ev.event.type === "progress" && ev.event.total > 0) {
+        job.update(ev.event.done / ev.event.total);
+      }
+      onEvent(ev);
+    };
+    return await invoke<MusicRecord | null>("music_generate", { request, onEvent: channel });
+  });
 }
 
 export async function musicCancel(): Promise<void> {
@@ -571,9 +579,25 @@ export async function imageGenerate(
   request: ImageRequest,
   onEvent: (ev: ImageEvent) => void,
 ): Promise<ImageRecord | null> {
-  const channel = new Channel<ImageEvent>();
-  channel.onmessage = onEvent;
-  return await invoke<ImageRecord | null>("image_generate", { request, onEvent: channel });
+  return asJob(async (job) => {
+    // Pictures done so far, and of how many: one bar over the whole batch.
+    let index = 0;
+    let count = 1;
+    const channel = new Channel<ImageEvent>();
+    channel.onmessage = (ev) => {
+      if (ev.type === "engine") {
+        const e = ev.event;
+        if (e.type === "stage" && e.count > 0) {
+          index = e.index;
+          count = e.count;
+        } else if (e.type === "progress" && e.steps > 0 && e.stage === "sample") {
+          job.update((index + e.step / e.steps) / count);
+        }
+      }
+      onEvent(ev);
+    };
+    return await invoke<ImageRecord | null>("image_generate", { request, onEvent: channel });
+  });
 }
 
 /** Stop the running generation: now, or once the current picture is done. */
@@ -753,9 +777,14 @@ export async function runtimesUpdate(
   engine: RuntimeEngine,
   onProgress?: (p: RuntimeInstallProgress) => void,
 ): Promise<RuntimesInfo> {
-  const ch = new Channel<RuntimeInstallProgress>();
-  ch.onmessage = (p) => onProgress?.(p);
-  return await invoke<RuntimesInfo>("runtimes_update", { engine, onProgress: ch });
+  return asJob(async (job) => {
+    const ch = new Channel<RuntimeInstallProgress>();
+    ch.onmessage = (p) => {
+      job.update(p.stage === "download" && p.total ? p.downloaded / p.total : null);
+      onProgress?.(p);
+    };
+    return await invoke<RuntimesInfo>("runtimes_update", { engine, onProgress: ch });
+  });
 }
 
 export async function runtimesUseBundled(engine: RuntimeEngine): Promise<RuntimesInfo> {
@@ -782,9 +811,14 @@ export interface UpdateProgress {
 /** Download the installer — reporting how far it has got — and launch it
  *  (the app will exit). */
 export async function runUpdate(url: string, onProgress?: (p: UpdateProgress) => void): Promise<void> {
-  const onProgressCh = new Channel<UpdateProgress>();
-  onProgressCh.onmessage = (p) => onProgress?.(p);
-  await invoke("run_update", { url, onProgress: onProgressCh });
+  await asJob(async (job) => {
+    const onProgressCh = new Channel<UpdateProgress>();
+    onProgressCh.onmessage = (p) => {
+      job.update(p.total ? p.downloaded / p.total : null);
+      onProgress?.(p);
+    };
+    await invoke("run_update", { url, onProgress: onProgressCh });
+  });
 }
 
 /** The words for an update's download so far: "42%", or the megabytes when
@@ -1281,9 +1315,9 @@ export async function codeStepTextGet(sessionId: string, stepId: string): Promis
 export async function ragDownloadModel(
   onProgress: (p: DownloadProgress) => void,
 ): Promise<void> {
-  const channel = new Channel<DownloadProgress>();
-  channel.onmessage = onProgress;
-  await invoke("rag_download_model", { endpoint: hfBase(), onProgress: channel });
+  await asJob(async (job) => {
+    await invoke("rag_download_model", { endpoint: hfBase(), onProgress: downloadChannel(job, onProgress) });
+  });
 }
 
 /** Reveal the writable models folder in Finder/Explorer (creates it if needed). */
@@ -1373,7 +1407,7 @@ export async function pickModelFolder(): Promise<string | null> {
 
 /**
  * Load a GGUF. `gpuLayers`: omit/-1 = auto‑tune by VRAM, 0 = CPU, n = n layers.
- * `nCtx`: omit = memory-friendly default (≤8192), n = desired context window
+ * `nCtx`: omit = as long as memory holds (up to the trained length), n = desired context window
  * (clamped to the model's trained length).
  */
 export interface LoadProgress {
@@ -1398,16 +1432,22 @@ export async function loadModel(
   /** How a music model is loaded; ignored for every other kind. */
   music?: MusicLoadOptions,
 ): Promise<ModelInfo> {
-  const channel = new Channel<LoadProgress>();
-  if (onProgress) channel.onmessage = onProgress;
-  return await invoke<ModelInfo>("load_model", {
-    path,
-    gpuLayers,
-    nCtx,
-    speculative,
-    image: image ?? null,
-    music: music ?? null,
-    onProgress: channel,
+  return asJob(async (job) => {
+    const channel = new Channel<LoadProgress>();
+    channel.onmessage = (p) => {
+      // The weights are the long part; ejecting the old model is not counted.
+      job.update(p.phase === "weights" ? p.frac : null);
+      onProgress?.(p);
+    };
+    return await invoke<ModelInfo>("load_model", {
+      path,
+      gpuLayers,
+      nCtx,
+      speculative,
+      image: image ?? null,
+      music: music ?? null,
+      onProgress: channel,
+    });
   });
 }
 
@@ -1488,9 +1528,25 @@ export async function downloadModel(
    *  companions go beside it). Must be inside a models root. */
   dir?: string,
 ): Promise<void> {
+  await asJob(async (job) => {
+    await invoke("download_model", {
+      url,
+      filename,
+      subdir: subdir ?? null,
+      dir: dir ?? null,
+      onProgress: downloadChannel(job, onProgress),
+    });
+  });
+}
+
+/** A download's progress, to its caller and onto the Dock icon. */
+function downloadChannel(job: Job, onProgress: (p: DownloadProgress) => void): Channel<DownloadProgress> {
   const channel = new Channel<DownloadProgress>();
-  channel.onmessage = onProgress;
-  await invoke("download_model", { url, filename, subdir: subdir ?? null, dir: dir ?? null, onProgress: channel });
+  channel.onmessage = (p) => {
+    if (p.type === "progress") job.update(p.total > 0 ? p.downloaded / p.total : null);
+    onProgress(p);
+  };
+  return channel;
 }
 
 /** Sentinel rejection message of a user-cancelled download. */
@@ -1614,13 +1670,13 @@ export async function downloadMlxRepo(
   repo: string,
   onProgress: (p: DownloadProgress) => void,
 ): Promise<string> {
-  const channel = new Channel<DownloadProgress>();
-  channel.onmessage = onProgress;
-  return await invoke<string>("download_mlx_repo", {
-    repo,
-    endpoint: hfEndpoint,
-    onProgress: channel,
-  });
+  return asJob(async (job) =>
+    invoke<string>("download_mlx_repo", {
+      repo,
+      endpoint: hfEndpoint,
+      onProgress: downloadChannel(job, onProgress),
+    }),
+  );
 }
 
 /** True when an HF GGUF filename is a vision encoder (mmproj), not a chat model. */
@@ -1680,9 +1736,14 @@ export async function generate(
    *  the stream up where it left off. */
   save?: { conversationId: string; messageId: string },
 ): Promise<void> {
-  const channel = new Channel<StreamEvent>();
-  channel.onmessage = onEvent;
-  await invoke("generate", { request, save: save ?? null, onEvent: channel });
+  await asJob(
+    async () => {
+      const channel = new Channel<StreamEvent>();
+      channel.onmessage = onEvent;
+      await invoke("generate", { request, save: save ?? null, onEvent: channel });
+    },
+    { show: false },
+  );
 }
 
 /** A turn that was still generating when this page loaded. */

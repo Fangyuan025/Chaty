@@ -936,8 +936,8 @@ export const T = {
     zh: "关闭界面过渡与弹出动画",
     en: "Disable UI transitions and pop-in animations", pt: "Desativa transições de interface e animações de pop-in"
   },
-  setAnswerSize: { zh: "回答字号", en: "Answer text size", pt: "Tamanho do texto de resposta" },
-  setAnswerSizeHint: { zh: "模型回答的阅读字号", en: "Reading size for model answers", pt: "Tamanho de leitura para as respostas do modelo" },
+  setAnswerSize: { zh: "文字大小", en: "Text size", pt: "Tamanho do texto" },
+  setAnswerSizeHint: { zh: "对话和编程模式里的消息、回答与输入框", en: "Messages, answers and the input box, in chat and in Code mode", pt: "Mensagens, respostas e a caixa de texto, no chat e no modo Código" },
   sizeSm: { zh: "紧凑", en: "Compact", pt: "Compacto" },
   sizeMd: { zh: "标准", en: "Standard", pt: "Padrão" },
   sizeLg: { zh: "舒适", en: "Comfortable", pt: "Confortável" },
@@ -1160,8 +1160,8 @@ export const T = {
     en: "How many layers run on the GPU; Auto fills as many as memory allows", pt: "Quantas camadas rodam na GPU; Auto preenche o quanto a memória permitir"
   },
   tipCtxLength: {
-    zh: "模型能“记住”的对话长度（token）；越大越耗内存",
-    en: "How much conversation the model can hold (tokens); larger uses more memory", pt: "Quanto da conversa o modelo pode reter (tokens); valores maiores usam mais memória"
+    zh: "模型能“记住”的对话长度（token）；越大越耗内存。自动：按显存（或 Mac 的统一内存）能放下的长度，最多到模型训练时的长度",
+    en: "How much conversation the model can hold (tokens); larger uses more memory. Auto: as long as the GPU's memory (a Mac's unified memory) holds, up to what the model was trained for", pt: "Quanto da conversa o modelo pode reter (tokens); valores maiores usam mais memória. Automático: o quanto couber na memória da GPU (a memória unificada de um Mac), até o que o modelo foi treinado"
   },
   ejectingModel: { zh: "正在卸载旧模型…", en: "Ejecting old model…", pt: "Descarregando o modelo antigo…" },
   noLimit: { zh: "不限制", en: "No limit", pt: "Sem limite" },

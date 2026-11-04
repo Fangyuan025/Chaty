@@ -4,6 +4,8 @@ import { RECENCY_LABEL, recencyGroups } from "../lib/recency";
 import { ImagePreview } from "./ImagePreview";
 import { resolveToolFormat, type CallFormat } from "../lib/callFormat";
 import { open } from "../lib/dialog";
+import { pastedFile } from "../lib/paste";
+import { askAttention, holdAwake } from "../lib/busy";
 import { agentLang, useI18n, type TKey } from "../lib/i18n";
 import { watchContentHeight } from "../lib/autoGrow";
 /** Matches `.cm-input` max-height. */
@@ -885,7 +887,7 @@ export function CodeMode({
    *  while this mode is showing a session with turns, null otherwise. */
   onExportable?: (exportTrace: (() => Promise<boolean>) | null) => void;
   /** What the command palette does here: "New" is a new Code session. */
-  actionsRef?: React.MutableRefObject<{ newSession: () => void } | null>;
+  actionsRef?: React.MutableRefObject<{ newSession: () => void; attachPath: (path: string) => void } | null>;
 }) {
   const { t, lang } = useI18n();
   const confirm = useConfirm();
@@ -970,6 +972,18 @@ export function CodeMode({
   /** Directories granted beyond the workspace this session (header chips). */
   const [dirGrants, setDirGrants] = useState<string[]>([]);
   const [ask, setAsk] = useState<{ question: string; options: string[]; resolve: (choice: string) => void } | null>(null);
+  // A run keeps the machine awake; one that stops to ask, or a long one that
+  // ends, nudges a window in the background (Dock bounce / taskbar flash).
+  const runStarted = useRef(0);
+  useEffect(() => {
+    holdAwake("code-agent", running);
+    if (running) runStarted.current = Date.now();
+    else if (runStarted.current && Date.now() - runStarted.current > 15_000) askAttention();
+    if (!running) runStarted.current = 0;
+  }, [running]);
+  useEffect(() => {
+    if (approval || ask || dirAsk || sudoAsk) askAttention();
+  }, [approval, ask, dirAsk, sudoAsk]);
   const [askText, setAskText] = useState("");
   const [slashSel, setSlashSel] = useState(0);
   const [atFiles, setAtFiles] = useState<string[]>([]);
@@ -1439,7 +1453,7 @@ export function CodeMode({
     setDirGrants([]);
   }
 
-  if (actionsRef) actionsRef.current = { newSession };
+  if (actionsRef) actionsRef.current = { newSession, attachPath: (path) => void attachCodePath(path) };
 
   async function openSession(id: string) {
     if (running || id === sid) return;
@@ -1858,9 +1872,13 @@ export function CodeMode({
 
   /** Attach a document or image to the next Code turn (mirrors chat). */
   async function attachCodeFile() {
-    setAttachErr("");
     const path = await pickAttachmentFile();
-    if (!path) return;
+    if (path) await attachCodePath(path);
+  }
+
+  /** A file picked, dropped on the window or pasted into the input. */
+  async function attachCodePath(path: string) {
+    setAttachErr("");
     try {
       if (model?.visionReady && isVisionImagePath(path)) {
         const name = path.split(/[/\\]/).pop() ?? "image";
@@ -2978,6 +2996,13 @@ export function CodeMode({
             <textarea
               ref={inputRef}
               className="cm-input"
+              onPaste={(e) => {
+                void pastedFile(e)
+                  .then((path) => {
+                    if (path) void attachCodePath(path);
+                  })
+                  .catch((err) => setAttachErr(String(err)));
+              }}
               placeholder={
                 !model
                   ? t("cmPlaceholderNoModel")

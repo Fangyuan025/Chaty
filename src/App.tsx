@@ -3,6 +3,7 @@ import { applyCodeTheme } from "./lib/codeTheme";
 import { platform } from "@tauri-apps/plugin-os";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { pastedFile } from "./lib/paste";
 import { getCurrent as getDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextRing } from "./components/ContextRing";
@@ -173,9 +174,17 @@ const OS_PLATFORM = (() => {
   }
 })();
 const IS_MACOS = OS_PLATFORM === "macos";
+/** How the shortcut modifier is written: "⌘N" on macOS, "Ctrl+N" elsewhere. */
+const MOD = IS_MACOS ? "⌘" : "Ctrl+";
+/** Whatever lies over the app and has its own Esc: a dialog, a panel, a menu. */
+const OVERLAYS =
+  ".preview-overlay, .popover-backdrop, .settings-overlay, .confirm-overlay, .cmdk-overlay, .canvas-overlay, .dl-backdrop, .live-overlay, .cm-approve-backdrop, [role=dialog]";
 
 const uid = () => Math.random().toString(36).slice(2);
 const SETTINGS_KEY = "chaty.settings";
+/** Set once a stored dark theme has been moved to the system's (index.html
+ *  reads it too, to paint the right colour before the app has loaded). */
+const THEME_FOLLOWS_SYSTEM_KEY = "chaty.themeFollowsSystem";
 /** A stable "nothing picked by hand" for an image model's companions. */
 const NO_OVERRIDES: Record<string, string> = {};
 const LAST_MODEL_KEY = "chaty.lastModel";
@@ -278,6 +287,13 @@ function loadSettings(): GenSettings {
       // and the new default exists because 32 starved app-scale deliveries),
       // so drop it and let the new default through.
       if (stored.codeMaxSteps === 32) delete stored.codeMaxSteps;
+      // The theme used to start dark whatever the system was, and a stored
+      // "dark" is that default far more often than a choice: once, it follows
+      // the system instead. Dark stays one click away in Settings.
+      if (!localStorage.getItem(THEME_FOLLOWS_SYSTEM_KEY)) {
+        if (stored.theme === "dark") stored.theme = "system";
+        localStorage.setItem(THEME_FOLLOWS_SYSTEM_KEY, "1");
+      }
       // "Auto-approve file edits" became the permission mode each Code
       // session keeps for itself (under its input), so it is no setting.
       delete stored.codeAutoApproveEdits;
@@ -562,7 +578,7 @@ export default function App() {
    *  shows one with turns. */
   const [codeExport, setCodeExport] = useState<(() => Promise<boolean>) | null>(null);
   const onCodeExportable = useCallback((fn: (() => Promise<boolean>) | null) => setCodeExport(() => fn), []);
-  const codeActions = useRef<{ newSession: () => void } | null>(null);
+  const codeActions = useRef<{ newSession: () => void; attachPath: (path: string) => void } | null>(null);
   const [showDownload, setShowDownload] = useState(false);
   const [deepLink, setDeepLink] = useState<{ repo: string; file?: string } | null>(null);
 
@@ -858,13 +874,54 @@ export default function App() {
     return () => window.clearTimeout(id);
   }, []);
 
-  // Global ⌘K / Ctrl+K toggles the command palette. (DOM KeyboardEvent — the
-  // bare name is React's here, imported above for composer key handling.)
+  // Global shortcuts, ⌘ on macOS and Ctrl elsewhere: K the command palette,
+  // N new, comma Settings, 1 / 2 chat / Code, F the sidebar's search — and Esc
+  // stops a chat reply when nothing else is open to take it. What they run is
+  // the latest render's (shortcutsRef, set beside the palette's commands).
+  // (DOM KeyboardEvent — the bare name is React's here, for the composer.)
+  const shortcutsRef = useRef<{
+    newItem: () => void;
+    settings: () => void;
+    mode: (m: "chat" | "code") => void;
+    stop: (() => void) | null;
+  }>({ newItem: () => {}, settings: () => {}, mode: () => {}, stop: null });
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      const k = e.key.toLowerCase();
+      if ((e.metaKey || e.ctrlKey) && k === "k") {
         e.preventDefault();
         setShowCmdk((v) => !v);
+        return;
+      }
+      const s = shortcutsRef.current;
+      if ((IS_MACOS ? e.metaKey : e.ctrlKey) && !e.altKey && !e.shiftKey && !e.isComposing) {
+        if (k === "n") {
+          e.preventDefault();
+          s.newItem();
+        } else if (k === ",") {
+          e.preventDefault();
+          s.settings();
+        } else if (k === "1" || k === "2") {
+          e.preventDefault();
+          s.mode(k === "1" ? "chat" : "code");
+        } else if (k === "f") {
+          const box = [...document.querySelectorAll<HTMLInputElement>(".conv-search input")].find((el) => el.offsetParent);
+          if (box) {
+            e.preventDefault();
+            box.focus();
+            box.select();
+          }
+        }
+        return;
+      }
+      if (e.key === "Escape" && !e.defaultPrevented && s.stop) {
+        // Not from a field with an Esc of its own, nor under a dialog.
+        const t = e.target as HTMLElement | null;
+        const field = t?.closest?.("input, textarea, select, [contenteditable]");
+        if (field && !field.closest(".input-row")) return;
+        if (document.querySelector(OVERLAYS)) return;
+        e.preventDefault();
+        s.stop();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1066,7 +1123,33 @@ export default function App() {
     el.dataset.theme = settings.theme;
     el.dataset.dark = settings.darkScheme;
     el.dataset.light = settings.lightScheme;
+    // The native parts follow too — menus, file dialogs, the scrollbars the
+    // system draws, the macOS window frame — or they kept the system's look
+    // under an app set the other way.
+    try {
+      void getCurrentWindow()
+        .setTheme(settings.theme === "system" ? null : settings.theme)
+        .catch(() => {});
+    } catch {
+      /* no native window (preview) */
+    }
   }, [settings.theme, settings.darkScheme, settings.lightScheme]);
+
+  // The window's title is the conversation open in it — what the taskbar, the
+  // window switcher and Mission Control show — and just "Chaty" otherwise.
+  const openTitle =
+    appMode === "chat" && !imageMode && !musicMode
+      ? conversations.find((c) => c.id === conversationId)?.title?.trim()
+      : undefined;
+  useEffect(() => {
+    try {
+      void getCurrentWindow()
+        .setTitle(openTitle ? `${openTitle} — Chaty` : "Chaty")
+        .catch(() => {});
+    } catch {
+      /* no native window (preview) */
+    }
+  }, [openTitle]);
 
   // Keep each reply's canvas session current (cheap: refs into state), and
   // mirror it to disk — the in-memory map alone lost every iteration on app
@@ -1185,8 +1268,7 @@ export default function App() {
         } else if (p.type === "drop") {
           setDragging(false);
           const path = p.paths?.[0];
-          if (path && imageDropRef.current) imageDropRef.current(path);
-          else if (path) void loadAttachmentPath(path);
+          if (path) attachDropped.current(path);
         }
       })
       .then((fn) => {
@@ -1808,6 +1890,16 @@ export default function App() {
     if (!path) return;
     await loadAttachmentPath(path);
   }
+
+  /** A file dropped on the window, or pasted into an input, goes to what is in
+   *  front: the image or music studio, Code mode's input — dropped there it
+   *  used to land on the chat's, out of sight — or the chat's. */
+  const attachDropped = useRef<(path: string) => void>(() => {});
+  attachDropped.current = (path: string) => {
+    if (imageDropRef.current) imageDropRef.current(path);
+    else if (appMode === "code" && codeActions.current) codeActions.current.attachPath(path);
+    else void loadAttachmentPath(path);
+  };
 
   /** Which conversation the user last asked for — two reads can come back in
    *  either order, and the slower first pick used to land on top of the second. */
@@ -2842,17 +2934,19 @@ export default function App() {
     // Code mode's "New" is a new Code session: a new chat behind it changed
     // nothing that could be seen.
     appMode === "code" && !studioMode
-      ? { id: "new", label: t("cmNewSession"), keywords: "new session 新会话 新建", run: () => codeActions.current?.newSession() }
-      : { id: "new", label: imageMode ? t("imgNew") : musicMode ? t("musNew") : t("newChat"), keywords: "new chat 新对话 新建", run: handleNewChat },
+      ? { id: "new", label: t("cmNewSession"), hint: `${MOD}N`, keywords: "new session 新会话 新建", run: () => codeActions.current?.newSession() }
+      : { id: "new", label: imageMode ? t("imgNew") : musicMode ? t("musNew") : t("newChat"), hint: `${MOD}N`, keywords: "new chat 新对话 新建", run: handleNewChat },
     {
       id: "mode",
       label: appMode === "code" ? t("cmdkGoChat") : t("cmdkGoCode"),
+      hint: `${MOD}${appMode === "code" ? "1" : "2"}`,
       keywords: "code chat mode agent 切换 模式 编码",
       run: () => setAppMode((m) => (m === "code" ? "chat" : "code")),
     },
     {
       id: "settings",
       label: t("settingsTitle"),
+      hint: `${MOD},`,
       keywords: "settings 设置 偏好",
       run: () => setShowSettings(true),
     },
@@ -2956,6 +3050,12 @@ export default function App() {
           },
         }))),
   ].filter((c) => !(studioMode && chatOnly.has(c.id)));
+  shortcutsRef.current = {
+    newItem: commands.find((c) => c.id === "new")?.run ?? (() => {}),
+    settings: () => setShowSettings(true),
+    mode: (m) => setAppMode(m),
+    stop: streamingId && appMode === "chat" && !studioMode ? () => void handleStop() : null,
+  };
 
   return (
     <CanvasOpenContext.Provider value={openInCanvas}>
@@ -3038,7 +3138,7 @@ export default function App() {
             <MusicSidebar studio={music} busy={busy} notify={showNotice} />
           ) : (
           <>
-          <button className="new-chat" onClick={handleNewChat} disabled={busy}>
+          <button className="new-chat" onClick={handleNewChat} disabled={busy} title={`${t("newChat")} (${MOD}N)`}>
             <Icon name="plus" size={13} strokeWidth={2} /> {t("newChat")}
           </button>
           {conversations.length > 0 && (
@@ -3763,6 +3863,13 @@ export default function App() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={onKeyDown}
+                onPaste={(e) => {
+                  void pastedFile(e)
+                    .then((path) => {
+                      if (path) attachDropped.current(path);
+                    })
+                    .catch((err) => setAttachError(String(err)));
+                }}
                 placeholder={
                   !model
                     ? t("inputPhNoModel")
@@ -4146,7 +4253,8 @@ export default function App() {
           <button
             className={`icon-btn ${showSettings ? "active" : ""}`}
             onClick={() => setShowSettings((v) => !v)}
-            title={t("settingsTitle")}
+            aria-label={t("settingsTitle")}
+            title={`${t("settingsTitle")} (${MOD},)`}
           >
             <svg
               width="17"
