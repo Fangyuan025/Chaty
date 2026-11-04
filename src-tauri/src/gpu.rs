@@ -672,6 +672,25 @@ pub fn gpu_usage() -> Option<GpuUsage> {
     None
 }
 
+/// MiB of GPU memory free right now, what this process holds included — on
+/// Windows every process's dedicated usage (`gpu_usage`), on Linux the Vulkan
+/// budget left to this process. `None` where it cannot be read, and on macOS,
+/// whose memory is the system's (see `mem_safe_n_ctx`).
+pub fn gpu_free_mb() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        gpu_usage().filter(|u| u.total_mb > 0).map(|u| u.total_mb.saturating_sub(u.used_mb))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        detect_gpu().map(|g| g.vram_mb).filter(|&mb| mb > 0)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        None
+    }
+}
+
 /// How many layers (incl. the output layer) to offload to fill VRAM.
 ///
 /// `n_layer` is the model's transformer block count; `vram_mb` the GPU's total

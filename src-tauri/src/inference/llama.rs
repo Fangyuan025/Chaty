@@ -572,6 +572,9 @@ impl LlamaEngine {
         // of memory, return a clear error instead of a cryptic crash.
         let mut layers = requested.max(0);
         let mut oom_fallback = false;
+        // An automatic context that the GPU turned out not to hold is halved
+        // before any layer comes off it: a shorter context keeps the speed.
+        let mut ctx_cap = u32::MAX;
         // Whether this file carries an MTP head, decided from metadata before
         // the weights are read — `load_mtp` has to be set on the load itself.
         // Whether the FILE has a head, and whether it will be used. The first
@@ -581,7 +584,7 @@ impl LlamaEngine {
         let has_head = probe_mtp_layers(backend, path) > 0;
         let mtp =
             has_head && speculative && std::env::var("CHATY_MTP").as_deref() != Ok("0");
-        let (model, tx, handle, mtmd_err) = loop {
+        let (model, tx, handle, mtmd_err, n_ctx, n_ctx_wanted) = loop {
             let tick = progress.clone();
             let params = LlamaModelParams::default()
                 .with_n_gpu_layers(layers.max(0) as u32)
@@ -651,7 +654,10 @@ impl LlamaEngine {
 
             // Create the context in the worker and wait for the result, so a
             // KV/compute-buffer OOM is caught here and folded into the back-off.
-            let n_ctx = mem_safe_n_ctx(&model, clamp_n_ctx(model.n_ctx_train(), n_ctx_pref));
+            let n_ctx_wanted = clamp_n_ctx(model.n_ctx_train(), n_ctx_pref);
+            let all_on_gpu = layers > 0 && layers as u32 > model.n_layer();
+            let auto_ctx = !matches!(n_ctx_pref, Some(n) if n > 0);
+            let n_ctx = fit_n_ctx(&model, n_ctx_wanted, auto_ctx, all_on_gpu).min(ctx_cap);
             let (tx, rx) = std::sync::mpsc::channel::<Job>();
             // Init result: Err = fatal context failure; Ok(Some(msg)) = context
             // fine but the mmproj failed to load (vision off, non-fatal).
@@ -670,9 +676,14 @@ impl LlamaEngine {
                 .context(trf!("无法启动推理线程", "failed to start the inference thread"))?;
 
             match init_rx.recv() {
-                Ok(Ok(mtmd_err)) => break (model, tx, handle, mtmd_err),
+                Ok(Ok(mtmd_err)) => break (model, tx, handle, mtmd_err, n_ctx, n_ctx_wanted),
                 Ok(Err(msg)) => {
                     drop(tx); // the worker already exited; release this attempt
+                    if auto_ctx && n_ctx > AUTO_N_CTX {
+                        ctx_cap = (n_ctx / 2).max(AUTO_N_CTX);
+                        eprintln!("context init failed at n_ctx {n_ctx} ({msg}); trying {ctx_cap}");
+                        continue;
+                    }
                     // A failed context allocation (incl. a null return from
                     // llama.cpp) is almost always memory pressure — back off the
                     // GPU offload and retry rather than giving up.
@@ -706,8 +717,6 @@ impl LlamaEngine {
             None
         };
         let n_ctx_train = model.n_ctx_train();
-        let n_ctx_wanted = clamp_n_ctx(n_ctx_train, n_ctx_pref);
-        let n_ctx = mem_safe_n_ctx(&model, n_ctx_wanted);
         // If we had to drop below the requested offload to fit memory, flag it;
         // a context window clamped to fit unified memory is worth a note too.
         // A paired mmproj that failed to load degrades to text-only — surfaced
@@ -734,7 +743,10 @@ impl LlamaEngine {
             Some("gpu-oom".to_string())
         } else if mtmd_err.is_some() {
             Some("mmproj-failed".to_string())
-        } else if n_ctx < n_ctx_wanted {
+        } else if n_ctx < n_ctx_wanted && (cfg!(target_os = "macos") || matches!(n_ctx_pref, Some(n) if n > 0)) {
+            // A context the user set, made smaller to fit — or on macOS, the
+            // unified-memory fit it has always said. An automatic one elsewhere
+            // fits the GPU by design and says nothing.
             Some("ctx-clamped".to_string())
         } else if conversion_suspect(
             &format!(
@@ -3573,20 +3585,68 @@ fn backoff_layers(layers: i32) -> i32 {
 }
 
 /// Resolve the context window to load with. Honours a user preference (clamped to
-/// the model's trained length and never below 512); otherwise defaults to a
-/// memory-friendly 8192 cap even when the model was trained far longer.
+/// the model's trained length and never below 512); otherwise asks for the
+/// model's full trained length, which `fit_n_ctx` then fits to the memory there
+/// is — the meaningful "auto".
 fn clamp_n_ctx(trained: u32, pref: Option<u32>) -> u32 {
     let ceiling = trained.max(512);
     match pref {
         Some(n) if n > 0 => n.clamp(512, ceiling),
-        // Auto: on macOS ask for the model's full trained length — the KV
-        // memory clamp (mem_safe_n_ctx) then fits it to unified memory, which
-        // is the meaningful "auto". Elsewhere keep the conservative default.
-        #[cfg(target_os = "macos")]
         _ => ceiling,
-        #[cfg(not(target_os = "macos"))]
-        _ => trained.clamp(512, 8192),
     }
+}
+
+/// The context an automatic load gets where it cannot be measured against a
+/// GPU's free memory: the CPU, or a model only partly on the GPU.
+const AUTO_N_CTX: u32 = 8192;
+
+/// The context window a load opens with, from what `clamp_n_ctx` asked for.
+///
+/// macOS fits it to unified memory (`mem_safe_n_ctx`). Elsewhere a context the
+/// user set is kept, and an automatic one is sized to the GPU when every layer
+/// is on it: what the card has free once the weights are there, less room for
+/// compute buffers, as KV cache — never under the old 8192 and never over the
+/// trained length. It was 8192 on every Windows and Linux machine, a 24 GB
+/// card's included.
+fn fit_n_ctx(model: &LlamaModel, wanted: u32, auto: bool, all_on_gpu: bool) -> u32 {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (auto, all_on_gpu);
+        mem_safe_n_ctx(model, wanted)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if !auto {
+            return wanted;
+        }
+        if !all_on_gpu {
+            return wanted.min(AUTO_N_CTX);
+        }
+        let free = crate::gpu::gpu_free_mb().unwrap_or(0) * 1024 * 1024;
+        let fit = ctx_for_free_vram(wanted, kv_bytes_per_token(model), free);
+        eprintln!(
+            "[llama] auto context {fit} (trained {wanted}, KV {} KiB/token, {} MiB free on the GPU)",
+            kv_bytes_per_token(model) / 1024,
+            free / (1024 * 1024)
+        );
+        fit
+    }
+}
+
+/// How many tokens of KV cache `free` bytes of GPU memory hold, past room for
+/// compute buffers and the rest of the desktop: between 8192 (or the trained
+/// length, if shorter) and the trained length, in steps of 1024.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn ctx_for_free_vram(trained: u32, kv_per_token: u64, free: u64) -> u32 {
+    let floor = AUTO_N_CTX.min(trained);
+    if kv_per_token == 0 {
+        return floor;
+    }
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let headroom = (free / 6).max(3 * GIB / 2);
+    let tokens = free.saturating_sub(headroom) / kv_per_token;
+    let tokens = (tokens.min(trained as u64) as u32) / 1024 * 1024;
+    tokens.clamp(floor, trained.max(floor))
 }
 
 /// Estimated KV-cache bytes per context token (K + V, f16), from the model's
@@ -3614,6 +3674,7 @@ fn kv_bytes_per_token(model: &LlamaModel) -> u64 {
 /// back-off never fires, so we must clamp *proactively* here. On discrete GPUs
 /// allocations fail fast and the existing back-off handles it, so this is a
 /// no-op off macOS.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn mem_safe_n_ctx(model: &LlamaModel, n_ctx: u32) -> u32 {
     #[cfg(target_os = "macos")]
     {
@@ -3718,6 +3779,29 @@ fn build_sampler(model: &LlamaModel, params: &GenParams) -> LlamaSampler {
 
 #[cfg(test)]
 mod tests {
+
+    /// An automatic context on a GPU holding the whole model: as much KV cache
+    /// as the free memory takes past the headroom, in 1024 steps, between 8192
+    /// and the trained length. It was 8192 whatever the card.
+    #[test]
+    fn an_automatic_context_fills_the_gpu_memory_left() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // Qwen3-8B-like: 144 KiB a token. 16 GiB free: 16 - 2.67 headroom.
+        let per = 144 * 1024;
+        let got = super::ctx_for_free_vram(131_072, per, 16 * GIB);
+        assert_eq!(got, 96_256);
+        assert_eq!(got % 1024, 0);
+        // Never past the trained length, nor under 8192.
+        assert_eq!(super::ctx_for_free_vram(32_768, per, 64 * GIB), 32_768);
+        assert_eq!(super::ctx_for_free_vram(131_072, per, 2 * GIB), 8192);
+        // A model trained shorter than 8192 keeps its own length.
+        assert_eq!(super::ctx_for_free_vram(4096, per, 2 * GIB), 4096);
+        // Nothing known about the cache: the old default.
+        assert_eq!(super::ctx_for_free_vram(131_072, 0, 64 * GIB), 8192);
+        // A user's own number is the user's.
+        assert_eq!(super::clamp_n_ctx(131_072, Some(20_000)), 20_000);
+        assert_eq!(super::clamp_n_ctx(131_072, None), 131_072);
+    }
 
     /// Issue #20, end to end through the real loader: a file whose weights use
     /// a quantization type this build lacks. The header is well-formed and its

@@ -43,6 +43,23 @@ for tool in xdg-open xdg-mime; do
   fi
 done
 
+# The color emoji font WebKitGTK falls back on where the system's is COLRv1
+# (issue #30): there, and a CBDT bitmap font, not a COLR one.
+python3 -I - "$ROOT/usr/share/chaty/fonts/NotoColorEmoji.ttf" <<'PY' || { echo "FAIL: no CBDT emoji font in the image"; exit 1; }
+import struct, sys
+data = open(sys.argv[1], "rb").read(4096)
+n = struct.unpack(">H", data[4:6])[0]
+tags = {data[12 + 16 * i:16 + 16 * i] for i in range(n)}
+sys.exit(0 if b"CBDT" in tags and b"COLR" not in tags else 1)
+PY
+
+# Update information for AppImage managers, and its .zsync beside the image.
+case "$("$IMG" --appimage-updateinformation 2>/dev/null)" in
+  gh-releases-zsync\|Fangyuan025\|Chaty\|latest\|*) ;;
+  *) echo "FAIL: no update information in the image"; exit 1 ;;
+esac
+[ -f "$IMG.zsync" ] || { echo "FAIL: no $IMG.zsync beside the image"; exit 1; }
+
 # What the AppImage catalog (appimage.github.io) checks first.
 [ -e "$ROOT/.DirIcon" ] || { echo "FAIL: .DirIcon does not lead to an icon: $(readlink "$ROOT/.DirIcon")"; exit 1; }
 DESKTOP=$(find "$ROOT" -maxdepth 1 -name '*.desktop' | head -1)

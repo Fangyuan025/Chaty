@@ -72,7 +72,17 @@ pub fn var(name: &str) -> Option<String> {
 fn changes() -> &'static [(OsString, Option<OsString>)] {
     static CHANGES: OnceLock<Vec<(OsString, Option<OsString>)>> = OnceLock::new();
     CHANGES.get_or_init(|| match image_dir() {
-        Some(dir) => scrubbed(std::env::vars_os(), &dir),
+        Some(dir) => {
+            let mut out = scrubbed(std::env::vars_os(), &dir);
+            // The fontconfig file that keeps COLRv1 emoji from this app's
+            // WebKit (`fonts`) is not the user's programs' business.
+            if let Some(ours) = crate::fonts::ours() {
+                if std::env::var_os("FONTCONFIG_FILE").is_some_and(|v| Path::new(&v) == ours) {
+                    out.push(("FONTCONFIG_FILE".into(), None));
+                }
+            }
+            out
+        }
         None => Vec::new(),
     })
 }

@@ -889,6 +889,59 @@ pub(crate) fn open_default(target: &str) -> Result<(), String> {
     }
 }
 
+/// A file pasted into an input — a screenshot, a picture copied from a page, a
+/// file copied in Finder or Explorer — written where an attachment can point
+/// at it for good: a message keeps the path of its picture. Returns the path.
+#[tauri::command]
+pub fn save_pasted_file(app: tauri::AppHandle, name: String, data: String) -> Result<String, String> {
+    use tauri::Manager;
+    const MAX: usize = 100 * 1024 * 1024;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|e| trf!("粘贴的文件无法读取:{e}", "the pasted file could not be read: {e}"))?;
+    if bytes.is_empty() || bytes.len() > MAX {
+        return Err(trf!("粘贴的文件为空或超过 100 MB", "the pasted file is empty or over 100 MB"));
+    }
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("attachments");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(pasted_name(&name, &bytes, chrono::Local::now()));
+    std::fs::write(&path, &bytes).map_err(|e| trf!("无法保存粘贴的文件:{e}", "could not save the pasted file: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// The name a pasted file is saved under: its own, made safe, after the time
+/// it was pasted — a screenshot's own name is the same every time
+/// ("image.png"), and two must not take each other's place.
+fn pasted_name(name: &str, bytes: &[u8], now: chrono::DateTime<chrono::Local>) -> String {
+    let own = std::path::Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut safe: String = own
+        .chars()
+        .map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    if safe.trim_matches(|c| c == '.' || c == '_').is_empty() {
+        // A picture with no name of its own: named for what it is.
+        let ext = if bytes.starts_with(b"\x89PNG") {
+            "png"
+        } else if bytes.starts_with(&[0xFF, 0xD8]) {
+            "jpg"
+        } else if bytes.len() > 12 && &bytes[8..12] == b"WEBP" {
+            "webp"
+        } else {
+            "bin"
+        };
+        safe = format!("pasted.{ext}");
+    }
+    let tail: String = safe.chars().rev().take(80).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("{}-{}", now.format("%Y%m%d-%H%M%S%3f"), tail)
+}
+
 /// Open a URL (or local file) in the user's default browser/app. Used by the
 /// frontend for source links and previews; fork-free (see `open_default`).
 #[tauri::command]
@@ -2560,5 +2613,25 @@ mod tests {
         assert!(super::dir_has_models(&d), "a model folder counts");
         std::fs::create_dir_all(d.join("empty-folder")).unwrap();
         assert!(super::dir_has_models(&d), "unrelated empty folders don't break it");
+    }
+}
+
+#[cfg(test)]
+mod pasted_tests {
+    use super::pasted_name;
+    use chrono::TimeZone;
+
+    #[test]
+    fn a_pasted_file_keeps_its_name_after_the_time_it_came() {
+        let at = chrono::Local.with_ymd_and_hms(2026, 11, 4, 9, 30, 5).unwrap();
+        assert_eq!(pasted_name("report Q3.pdf", b"%PDF", at), "20261104-093005000-report_Q3.pdf");
+        // A path is never a place: only its last part is a name.
+        assert_eq!(pasted_name("../../etc/passwd", b"x", at), "20261104-093005000-passwd");
+        // A screenshot comes with no name: one for what it is.
+        assert_eq!(pasted_name("", b"\x89PNG\r\n", at), "20261104-093005000-pasted.png");
+        assert_eq!(pasted_name("", &[0xFF, 0xD8, 0xFF], at), "20261104-093005000-pasted.jpg");
+        let long = "a".repeat(200) + ".png";
+        assert!(pasted_name(&long, b"x", at).ends_with(".png"));
+        assert!(pasted_name(&long, b"x", at).len() <= 19 + 80);
     }
 }

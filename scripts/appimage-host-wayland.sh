@@ -18,6 +18,9 @@
 # anywhere else, and the catalog's check fails on it (tauri-apps/tauri#15596).
 # It is pointed at the icon beside it instead.
 #
+# It carries a color emoji font in CBDT, which WebKitGTK draws, for systems
+# whose own is COLRv1, which it cannot (issue #30).
+#
 # Every file is made readable by all, and every program runnable by all:
 # AppRun.wrapped was its owner's alone, and firejail (the catalog's test runs
 # the app in it) mounts the image as root's, so the app did not start.
@@ -25,6 +28,8 @@
 # chaty-llama, the chat engine, is a second binary Tauri copies in as it is:
 # it gets the RPATH the app's own binary has, and loses the voice library's
 # entries it never uses (scripts/llama-standalone.sh).
+#
+# It also carries update information, with the .zsync file beside it.
 #
 # Usage: scripts/appimage-host-wayland.sh   (after `tauri build --bundles appimage`)
 set -euo pipefail
@@ -41,6 +46,13 @@ ICON=$(find "$APPDIR" -maxdepth 1 -name '*.png' | head -1)
 [ -n "$ICON" ] || { echo "error: no icon at the AppDir's top" >&2; exit 1; }
 ln -sfn "$(basename "$ICON")" "$APPDIR/.DirIcon"
 echo ".DirIcon -> $(readlink "$APPDIR/.DirIcon")"
+# Color emoji WebKitGTK's Skia can draw — CBDT bitmaps — for a system whose
+# own emoji font is COLRv1, which it cannot (issue #30; src-tauri/src/fonts.rs).
+EMOJI=/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf
+[ -f "$EMOJI" ] || { echo "error: $EMOJI is missing (apt install fonts-noto-color-emoji)" >&2; exit 1; }
+mkdir -p "$APPDIR/usr/share/chaty/fonts"
+cp "$EMOJI" "$APPDIR/usr/share/chaty/fonts/"
+cp /usr/share/doc/fonts-noto-color-emoji/copyright "$APPDIR/usr/share/chaty/fonts/NotoColorEmoji.LICENSE"
 chmod -R a+rX "$APPDIR"
 LLAMA="$APPDIR/usr/bin/chaty-llama"
 [ -f "$LLAMA" ] || { echo "error: no chaty-llama in the AppDir" >&2; exit 1; }
@@ -53,5 +65,13 @@ if [ ! -x "$TOOL" ]; then
     https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
   chmod +x "$TOOL"
 fi
-ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream "$APPDIR" "$IMG"
+# Update information, and the .zsync file published beside the image: AppImage
+# managers (Gear Lever, AppImageLauncher, AppImageUpdate) update it with it.
+UPDATE="gh-releases-zsync|Fangyuan025|Chaty|latest|Chaty_*_amd64.AppImage.zsync"
+ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream -u "$UPDATE" "$APPDIR" "$IMG"
+# appimagetool writes the .zsync into the current folder.
+if [ -f "$(basename "$IMG").zsync" ] && [ "$(dirname "$IMG")" != . ]; then
+  mv -f "$(basename "$IMG").zsync" "$IMG.zsync"
+fi
+[ -f "$IMG.zsync" ] || { echo "error: no $IMG.zsync (is zsyncmake installed?)" >&2; exit 1; }
 echo "repacked $IMG"

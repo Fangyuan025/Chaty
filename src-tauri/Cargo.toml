@@ -133,13 +133,14 @@ toml = "0.8"
 portable-pty = "0.9"
 vt100 = "0.16"
 chardetng = "1"
+tauri-plugin-window-state = "=2.4.1"
 
 # Linux: enumerate AMD/Intel/NVIDIA compute devices through Vulkan.
 # The loader is opened dynamically, so Vulkan is optional at app startup.
 [target.'cfg(target_os = "linux")'.dependencies]
 ash = "0.38"
 # The desktop's file chooser through the XDG Desktop Portal (src/portal.rs).
-ashpd = { version = "0.13", default-features = false, features = ["tokio", "file_chooser"] }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "file_chooser", "inhibit"] }
 raw-window-handle = "0.6"
 
 # GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers â€” cross-vendor on Windows.
@@ -150,6 +151,7 @@ windows = { version = "0.61", features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_System_Performance",
+    "Win32_System_Power",
 ] }
 # Windows code page number → encoding, for console output that is not UTF-8
 # (already in the tree through calamine).

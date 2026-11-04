@@ -281,7 +281,7 @@ jobs:
             libasound2-dev libssl-dev ninja-build vulkan-sdk libfuse2 \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad gstreamer1.0-gl xvfb \
-            desktop-file-utils xdg-utils xdotool squashfs-tools
+            desktop-file-utils xdg-utils xdotool squashfs-tools fonts-noto-color-emoji zsync
       - run: npm ci
       - name: Build image engine sidecar (chaty-sd, Vulkan)
         run: ./scripts/build-sd-sidecar.sh vulkan
@@ -322,7 +322,9 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: linux-appimage
-          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          path: |
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.zsync
           if-no-files-found: error
 
   publish:
