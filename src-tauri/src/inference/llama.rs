@@ -656,7 +656,7 @@ impl LlamaEngine {
             // KV/compute-buffer OOM is caught here and folded into the back-off.
             let n_ctx_wanted = clamp_n_ctx(model.n_ctx_train(), n_ctx_pref);
             let auto_ctx = !matches!(n_ctx_pref, Some(n) if n > 0);
-            let n_ctx = fit_n_ctx(&model, n_ctx_wanted, auto_ctx, layers).min(ctx_cap);
+            let n_ctx = fit_n_ctx(&model, Path::new(path), n_ctx_wanted, auto_ctx, layers).min(ctx_cap);
             let (tx, rx) = std::sync::mpsc::channel::<Job>();
             // Init result: Err = fatal context failure; Ok(Some(msg)) = context
             // fine but the mmproj failed to load (vision off, non-fatal).
@@ -3609,11 +3609,11 @@ const AUTO_N_CTX: u32 = 8192;
 /// length. A model only partly on the GPU got 8192 whatever was left, and so
 /// did one whose every block was there but not its output layer — which the
 /// panel shows as all of its layers.
-fn fit_n_ctx(model: &LlamaModel, wanted: u32, auto: bool, gpu_layers: i32) -> u32 {
+fn fit_n_ctx(model: &LlamaModel, path: &Path, wanted: u32, auto: bool, gpu_layers: i32) -> u32 {
     #[cfg(target_os = "macos")]
     {
         let _ = (auto, gpu_layers);
-        mem_safe_n_ctx(model, wanted)
+        mem_safe_n_ctx(model, path, wanted)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -3627,7 +3627,7 @@ fn fit_n_ctx(model: &LlamaModel, wanted: u32, auto: bool, gpu_layers: i32) -> u3
         if on_gpu == 0 {
             return wanted.min(AUTO_N_CTX);
         }
-        let kv = kv_bytes_per_token(model);
+        let kv = kv_bytes_per_token(model, path);
         let kv_gpu = kv * on_gpu / n_layer as u64;
         let free_vram = crate::gpu::gpu_free_mb().unwrap_or(0) * 1024 * 1024;
         let free_ram = {
@@ -3659,11 +3659,7 @@ fn ctx_for_free_memory(trained: u32, kv_gpu: u64, free_vram: u64, kv_cpu: u64, f
         return floor;
     }
     let holds = |kv: u64, free: u64, headroom: u64| -> u64 {
-        if kv == 0 {
-            u64::MAX
-        } else {
-            free.saturating_sub(headroom) / kv
-        }
+        free.saturating_sub(headroom).checked_div(kv).unwrap_or(u64::MAX)
     };
     let on_gpu = holds(kv_gpu, free_vram, (free_vram / 6).max(3 * GIB / 2));
     let on_cpu = holds(kv_cpu, free_ram, (free_ram / 4).max(4 * GIB));
@@ -3671,22 +3667,94 @@ fn ctx_for_free_memory(trained: u32, kv_gpu: u64, free_vram: u64, kv_cpu: u64, f
     tokens.clamp(floor, trained.max(floor))
 }
 
-/// Estimated KV-cache bytes per context token (K + V, f16), from the model's
-/// GQA geometry. 0 if the metadata is missing.
-fn kv_bytes_per_token(model: &LlamaModel) -> u64 {
+/// Bytes of KV cache each context token costs (K + V, f16), from the model's
+/// metadata — its arrays read from the file at `path`, since llama.cpp keeps
+/// none of them. 0 if the metadata is missing.
+fn kv_bytes_per_token(model: &LlamaModel, path: &Path) -> u64 {
     let arch = model.meta_val_str("general.architecture").unwrap_or_default();
-    let meta_u64 = |key: &str| -> Option<u64> {
-        model
-            .meta_val_str(key)
-            .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok())
+    let arrays = super::gguf::read_number_arrays(
+        path,
+        &["attention.head_count", "attention.head_count_kv", "attention.recurrent_layers", "attention.sliding_window_pattern"]
+            .map(|k| format!("{arch}.{k}")),
+    );
+    kv_bytes_from_meta(model.n_layer(), model.n_embd().max(0) as u32, |key| {
+        let key = format!("{arch}.{key}");
+        model.meta_val_str(&key).ok().or_else(|| arrays.get(&key).cloned())
+    })
+}
+
+/// The KV cache a context token costs, counted the way llama.cpp lays it out:
+/// only the layers that keep one — not a hybrid model's recurrent layers
+/// (Qwen3.5/3.6: three in four), not layers with no KV heads (LFM's
+/// convolutions) — each at its own KV heads times the K and V head sizes,
+/// which need not be n_embd / n_head (Qwen3.5: 256, not 160), nor the same on
+/// sliding-window layers (Gemma 4: 64 there, 128 elsewhere); not the last
+/// layers of a model that shares their cache with earlier ones (Gemma 4's
+/// `shared_kv_layers`). Sliding-window layers count in full: llama.cpp gives
+/// them a full-size cache by default.
+/// Counting every layer at n_embd / n_head made Qwen3.5's cache 2.5 times what
+/// it is and LFM3's 9 times, and an automatic context that much shorter than
+/// the memory held. Checked against llama.cpp's own allocation on real files
+/// (`kv_estimate_matches_llama`).
+///
+/// What the metadata does not say is counted as a full cache — too much, never
+/// too little. `meta` reads `{arch}.{key}`; llama.cpp writes arrays "[0, 4, …]".
+fn kv_bytes_from_meta(n_layer: u32, n_embd: u32, meta: impl Fn(&str) -> Option<String>) -> u64 {
+    let n = n_layer as usize;
+    if n == 0 {
+        return 0;
+    }
+    // One value per layer, from a list or a single number for all of them.
+    let per_layer = |key: &str| -> Option<Vec<String>> {
+        let v = meta(key)?;
+        let v = v.trim();
+        let items: Vec<String> = match v.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+            Some(inner) => inner.split(',').map(|x| x.trim().to_string()).collect(),
+            None => vec![v.to_string(); n],
+        };
+        // Lists may run past the trunk (an MTP head's layers): those are not
+        // the context's.
+        (items.len() >= n).then(|| items[..n].to_vec())
     };
-    let n_layer = model.n_layer() as u64;
-    let n_embd = model.n_embd() as u64;
-    let n_head = meta_u64(&format!("{arch}.attention.head_count")).unwrap_or(1).max(1);
-    let n_head_kv = meta_u64(&format!("{arch}.attention.head_count_kv")).unwrap_or(n_head);
-    let n_embd_gqa = n_embd / n_head * n_head_kv;
-    n_layer * n_embd_gqa * 2 /* K+V */ * 2 /* f16 bytes */
+    let nums = |key: &str| -> Option<Vec<u64>> {
+        per_layer(key)?.iter().map(|x| x.parse::<u64>().ok()).collect()
+    };
+    let flags = |key: &str| -> Option<Vec<bool>> {
+        per_layer(key)?
+            .iter()
+            .map(|x| match x.as_str() {
+                "true" | "1" => Some(true),
+                "false" | "0" => Some(false),
+                _ => None,
+            })
+            .collect()
+    };
+    let scalar = |key: &str| meta(key).and_then(|v| v.trim().parse::<u64>().ok());
+
+    let heads = nums("attention.head_count").unwrap_or_else(|| vec![1; n]);
+    let kv_heads = nums("attention.head_count_kv").unwrap_or_else(|| heads.clone());
+    let head = heads.iter().copied().max().unwrap_or(1).max(1);
+    let k_len = scalar("attention.key_length").unwrap_or(n_embd as u64 / head);
+    let v_len = scalar("attention.value_length").unwrap_or(k_len);
+    // Recurrent layers: said outright, or every layer but each interval's last.
+    let recurrent = flags("attention.recurrent_layers").or_else(|| {
+        let every = scalar("full_attention_interval").filter(|&i| i > 1)?;
+        Some((0..n).map(|i| !(i as u64 + 1).is_multiple_of(every)).collect())
+    });
+    // Sliding-window layers may have heads of their own size.
+    let sliding = flags("attention.sliding_window_pattern").filter(|_| scalar("attention.sliding_window").is_some_and(|w| w > 0));
+    let k_swa = scalar("attention.key_length_swa").unwrap_or(k_len);
+    let v_swa = scalar("attention.value_length_swa").unwrap_or(v_len);
+    // The last layers may read an earlier layer's cache instead of their own.
+    let own_kv = n - (scalar("attention.shared_kv_layers").unwrap_or(0) as usize).min(n);
+
+    (0..own_kv)
+        .filter(|&i| !recurrent.as_ref().is_some_and(|r| r[i]))
+        .map(|i| {
+            let (k, v) = if sliding.as_ref().is_some_and(|s| s[i]) { (k_swa, v_swa) } else { (k_len, v_len) };
+            kv_heads[i] * (k + v) * 2 /* f16 bytes */
+        })
+        .sum()
 }
 
 /// Cap the context length so weights + KV cache fit in the memory budget.
@@ -3697,10 +3765,10 @@ fn kv_bytes_per_token(model: &LlamaModel) -> u64 {
 /// allocations fail fast and the existing back-off handles it, so this is a
 /// no-op off macOS.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn mem_safe_n_ctx(model: &LlamaModel, n_ctx: u32) -> u32 {
+fn mem_safe_n_ctx(model: &LlamaModel, path: &Path, n_ctx: u32) -> u32 {
     #[cfg(target_os = "macos")]
     {
-        let per_tok = kv_bytes_per_token(model);
+        let per_tok = kv_bytes_per_token(model, path);
         let Some(gpu) = crate::gpu::detect_gpu() else { return n_ctx };
         if per_tok == 0 {
             return n_ctx;
@@ -3726,6 +3794,7 @@ fn mem_safe_n_ctx(model: &LlamaModel, n_ctx: u32) -> u32 {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = (model, path);
         n_ctx
     }
 }
@@ -3843,6 +3912,83 @@ mod tests {
         assert_eq!(super::ctx_for_free_memory(131_072, 40 * KIB, 6 * GIB, 280 * KIB, 8 * GIB), 14_336);
         // A card with nothing left past the headroom: the old 8192.
         assert_eq!(super::ctx_for_free_memory(131_072, 30 * KIB, GIB, 10 * KIB, 24 * GIB), 8192);
+    }
+
+    /// The estimate against llama.cpp's own allocation, on real files: each
+    /// model in `CHATY_KV_PROBE` (paths joined by `|`) gets an 8192-token
+    /// context, and llama.cpp logs the cache it made (`CHATY_LLAMA_LOG=1`).
+    /// Run: CHATY_LLAMA_LOG=1 CHATY_KV_PROBE='a.gguf|b.gguf' cargo test --lib kv_estimate_matches_llama -- --ignored --nocapture --test-threads=1
+    #[test]
+    #[ignore]
+    fn kv_estimate_matches_llama() {
+        let Ok(paths) = std::env::var("CHATY_KV_PROBE") else {
+            eprintln!("SKIP: set CHATY_KV_PROBE");
+            return;
+        };
+        let backend = llama_backend().unwrap();
+        for path in paths.split('|') {
+            let model = LlamaModel::load_from_file(backend, path, &LlamaModelParams::default().with_n_gpu_layers(999)).expect("load");
+            let per = kv_bytes_per_token(&model, Path::new(path));
+            eprintln!("PROBE {} estimate {} B/token = {:.2} MiB at 8192", path.rsplit('/').next().unwrap_or(path), per, per as f64 * 8192.0 / 1048576.0);
+            let ctx = model.new_context(backend, LlamaContextParams::default().with_n_ctx(NonZeroU32::new(8192))).expect("ctx");
+            drop(ctx);
+            drop(model);
+        }
+    }
+
+    /// The KV cache a token costs, from the metadata of real GGUFs (as
+    /// llama.cpp hands it out): only the layers that keep a full cache, at
+    /// their own KV heads and head sizes.
+    #[test]
+    fn the_kv_cache_counts_only_the_layers_that_keep_one() {
+        let meta = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(key, _)| *key == k).map(|(_, v)| v.to_string())
+        };
+        // Qwen3-8B: every layer, 8 KV heads of 128.
+        let qwen3 = meta(&[("attention.head_count", "32"), ("attention.head_count_kv", "8"), ("attention.key_length", "128"), ("attention.value_length", "128")]);
+        assert_eq!(super::kv_bytes_from_meta(36, 4096, qwen3), 36 * 8 * 256 * 2);
+        // Qwen3.5-4B: a full-attention layer in every four, heads of 256.
+        let qwen35 = meta(&[
+            ("attention.head_count", "16"),
+            ("attention.head_count_kv", "4"),
+            ("attention.key_length", "256"),
+            ("attention.value_length", "256"),
+            ("full_attention_interval", "4"),
+        ]);
+        assert_eq!(super::kv_bytes_from_meta(32, 2560, qwen35), 8 * 4 * 512 * 2);
+        // LFM3-VL-2B: KV heads only on its attention layers (sliding ones too:
+        // llama.cpp gives those a full-size cache).
+        let lfm3 = meta(&[
+            ("attention.head_count", "16"),
+            ("attention.head_count_kv", "[0, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0, 4, 0]"),
+            ("attention.key_length", "128"),
+            ("attention.value_length", "128"),
+            ("attention.sliding_window", "256"),
+            ("attention.sliding_window_pattern", "[false, false, false, false, true, false, false, false, true, false, false, false, true, false, false, false, true, false, false, false, true, false, false, false]"),
+        ]);
+        assert_eq!(super::kv_bytes_from_meta(24, 2048, lfm3), 11 * 4 * 256 * 2);
+        // Nothing but the basics: every layer, heads from n_embd / n_head.
+        let plain = meta(&[("attention.head_count", "32"), ("attention.head_count_kv", "8")]);
+        assert_eq!(super::kv_bytes_from_meta(32, 4096, plain), 32 * 8 * 256 * 2);
+        // Gemma 4 (Gargi, 270M): one global layer in four, heads of 64 on the
+        // sliding ones; with shared layers, the last ones keep no cache.
+        let gemma4 = meta(&[
+            ("attention.head_count", "16"),
+            ("attention.head_count_kv", "4"),
+            ("attention.key_length", "128"),
+            ("attention.value_length", "128"),
+            ("attention.key_length_swa", "64"),
+            ("attention.value_length_swa", "64"),
+            ("attention.sliding_window", "512"),
+            ("attention.shared_kv_layers", "0"),
+            ("attention.sliding_window_pattern", "[1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0]"),
+        ]);
+        assert_eq!(super::kv_bytes_from_meta(20, 1024, gemma4), 5 * 4 * 256 * 2 + 15 * 4 * 128 * 2);
+        let shared = meta(&[("attention.head_count", "16"), ("attention.head_count_kv", "4"), ("attention.key_length", "128"), ("attention.shared_kv_layers", "8")]);
+        assert_eq!(super::kv_bytes_from_meta(20, 1024, shared), 12 * 4 * 256 * 2);
+        // Recurrent layers listed outright (booleans as llama.cpp's arrays read).
+        let listed = meta(&[("attention.head_count", "8"), ("attention.head_count_kv", "2"), ("attention.key_length", "128"), ("attention.recurrent_layers", "[1, 1, 1, 0, 1, 1, 1, 0]")]);
+        assert_eq!(super::kv_bytes_from_meta(8, 1024, listed), 2 * 2 * 256 * 2);
     }
 
     /// Issue #20, end to end through the real loader: a file whose weights use

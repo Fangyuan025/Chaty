@@ -79,6 +79,66 @@ fn skip_value<R: Read>(r: &mut R, t: u32) -> Option<()> {
     }
 }
 
+/// The integer and boolean arrays among `wanted` (full key names), read from a
+/// GGUF's metadata as `[a, b, …]` with booleans as 0 and 1 — llama.cpp's own
+/// metadata accessor leaves every array out. The read stops at the first
+/// `tokenizer.*` key: a model's parameters come before its vocabulary.
+pub fn read_number_arrays(
+    path: &std::path::Path,
+    wanted: &[String],
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(f) = std::fs::File::open(path) else { return out };
+    let mut r = std::io::BufReader::with_capacity(1 << 16, f);
+    let _ = (|| -> Option<()> {
+        if take(&mut r, 4)? != b"GGUF" {
+            return None;
+        }
+        let _version = u32le(&mut r)?;
+        let _n_tensors = u64le(&mut r)?;
+        let n_kv = u64le(&mut r)?;
+        for _ in 0..n_kv.min(100_000) {
+            if out.len() == wanted.len() {
+                break;
+            }
+            let key = string(&mut r)?;
+            if key.starts_with("tokenizer.") {
+                break;
+            }
+            let t = u32le(&mut r)?;
+            if t != 9 || !wanted.contains(&key) {
+                skip_value(&mut r, t)?;
+                continue;
+            }
+            let et = u32le(&mut r)?;
+            let n = u64le(&mut r)?;
+            let Some(size) = fixed_size(et).filter(|_| n <= 4096 && !matches!(et, 6 | 12)) else {
+                // Not a short list of integers: not one of ours.
+                skip_bytes(&mut r, n.checked_mul(fixed_size(et).unwrap_or(0))?)?;
+                continue;
+            };
+            let mut items = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                let b = take(&mut r, size as usize)?;
+                let v: i64 = match et {
+                    0 | 7 => b[0] as i64,
+                    1 => b[0] as i8 as i64,
+                    2 => u16::from_le_bytes([b[0], b[1]]) as i64,
+                    3 => i16::from_le_bytes([b[0], b[1]]) as i64,
+                    4 => u32::from_le_bytes(b[..4].try_into().ok()?) as i64,
+                    5 => i32::from_le_bytes(b[..4].try_into().ok()?) as i64,
+                    10 => u64::from_le_bytes(b[..8].try_into().ok()?) as i64,
+                    _ => i64::from_le_bytes(b[..8].try_into().ok()?),
+                };
+                items.push(v.to_string());
+            }
+            out.insert(key, format!("[{}]", items.join(", ")));
+        }
+        Some(())
+    })();
+    out
+}
+
 /// One entry of the tensor table.
 #[derive(Debug, Clone)]
 pub struct Tensor {
