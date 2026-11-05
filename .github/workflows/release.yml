@@ -361,16 +361,19 @@ jobs:
 
             ## More context on a big GPU
 
-            An automatic context window on Windows and Linux now fills the memory the GPU has
-            left after the weights, up to what the model was trained for. It was 8192 tokens
-            whatever the card.
+            An automatic context window on Windows and Linux now fills the memory left after the
+            weights — the GPU's for the layers on it, RAM for any on the CPU — up to what the model
+            was trained for. It was 8192 tokens whatever the card. Hybrid and sliding-window
+            models (Qwen3.5/3.6, LFM, Gemma 4) are counted by the layers that keep a cache, and
+            get several times the context they did.
 
             ## Windows and Linux
 
-            The icon fills its tile like other apps' (#25). Fedora no longer opens to a gray
-            window: Chaty keeps WebKitGTK away from the COLRv1 emoji font it cannot draw, and
-            draws emoji in colour with its own (#30 — thanks @davidecelentano). AppImage
-            managers can update Chaty from the update information and `.zsync` it now carries.
+            The icon fills its tile like other apps' and is sharp at every size, the taskbar's
+            included (#25). Fedora no longer opens to a gray window: Chaty keeps WebKitGTK away
+            from the COLRv1 emoji font it cannot draw, and draws emoji in colour with its own
+            (#30 — thanks @davidecelentano). AppImage managers can update Chaty from the update
+            information and `.zsync` it now carries.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

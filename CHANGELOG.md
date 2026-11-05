@@ -48,17 +48,28 @@
 ### More context on a big GPU
 
 - **An automatic context window on Windows and Linux fills the GPU.** It was
-  8192 tokens whatever the card; with the whole model on the GPU it is now as
-  long as the memory left after the weights holds, up to what the model was
-  trained for. A context the card turns out not to hold is halved before a
-  layer comes off the GPU, so speed is kept first. A context you set yourself
-  is used as set.
+  8192 tokens whatever the card. It is now as long as the memory left once the
+  weights are in holds, measured then — on the card for the layers there, in
+  RAM for any left on the CPU, so a model too big for the card gets more than
+  8192 too — up to what the model was trained for. A context the card turns
+  out not to hold is halved before a layer comes off the GPU, so speed is kept
+  first. A context you set yourself is used as set.
+- **Hybrid and sliding-window models get the context their cache allows.** The
+  cache a token costs is counted the way llama.cpp lays it out: only the layers
+  that keep one, at their own head sizes. Qwen3.5 and Qwen3.6, LFM and Gemma 4
+  were counted as if every layer kept a full one — two and a half to nine
+  times their real cost — and got that much less context, on a Mac as well.
 
 ### Windows and Linux
 
 - **The icon fills its tile** on the Windows desktop, taskbar and Start menu
   and in Linux launchers, like other apps' (issue #25). It kept macOS's
   margins and looked a size smaller.
+- **The icon is sharp at every size on Windows.** The taskbar, title bar and
+  Alt-Tab take the frame made for their size from the app, at the screen's
+  scale, instead of one small picture stretched; and the small frames, 16 to
+  48 px, are drawn for their size, their lines whole pixels instead of a grey
+  haze.
 - **Canvas in fullscreen keeps its buttons clear** of the window's own
   minimize, maximize and close.
 - **Fedora no longer opens to a gray window** (issue #30, thanks
