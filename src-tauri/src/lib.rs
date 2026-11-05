@@ -38,6 +38,7 @@ mod terminal;
 pub mod update;
 pub mod voice;
 pub mod webx;
+pub mod winicon;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -216,6 +217,11 @@ fn open_main_window<R: tauri::Runtime>(app: &tauri::App<R>) {
         let _ = w.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
     }
     let _ = w.show();
+    // Its icons from the executable, sized for this screen — see winicon.rs.
+    #[cfg(windows)]
+    if let Ok(hwnd) = w.hwnd() {
+        crate::winicon::apply(hwnd);
+    }
 }
 
 #[cfg(test)]
@@ -568,6 +574,13 @@ pub fn run() {
         })
         // Closing the window hides it to the tray instead of quitting.
         .on_window_event(|window, event| {
+            // On a screen of another scale the icons are loaded again at its sizes.
+            #[cfg(windows)]
+            if let tauri::WindowEvent::ScaleFactorChanged { .. } = event {
+                if let Ok(hwnd) = window.hwnd() {
+                    crate::winicon::apply(hwnd);
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 // Out of fullscreen first when it is in it — see hide_main_window.

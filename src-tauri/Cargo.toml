@@ -149,8 +149,11 @@ windows = { version = "0.61", features = [
     "Win32_Globalization",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_System_LibraryLoader",
     "Win32_System_Performance",
     "Win32_System_Power",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 # Windows code page number → encoding, for console output that is not UTF-8
 # (already in the tree through calamine).

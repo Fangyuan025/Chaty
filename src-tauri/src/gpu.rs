@@ -569,6 +569,39 @@ pub fn gpu_usage() -> Option<GpuUsage> {
     }
 }
 
+/// MiB of the primary GPU's dedicated memory this process may still use: the
+/// budget Windows gives it, which leaves out what other processes hold, less
+/// what it holds itself.
+#[cfg(windows)]
+fn dxgi_budget_left_mb() -> Option<u64> {
+    use windows::core::Interface;
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIAdapter1, IDXGIAdapter3, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+        DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
+    };
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
+        let mut best: Option<(u64, IDXGIAdapter1)> = None;
+        let mut i = 0u32;
+        while let Ok(adapter) = factory.EnumAdapters1(i) {
+            i += 1;
+            let Ok(desc) = adapter.GetDesc1() else { continue };
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0 {
+                continue;
+            }
+            let vram = desc.DedicatedVideoMemory as u64;
+            if best.as_ref().map_or(true, |(v, _)| vram > *v) {
+                best = Some((vram, adapter));
+            }
+        }
+        let (_, adapter) = best?;
+        let a3 = adapter.cast::<IDXGIAdapter3>().ok()?;
+        let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+        a3.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info).ok()?;
+        (info.Budget > 0).then(|| info.Budget.saturating_sub(info.CurrentUsage) / (1024 * 1024))
+    }
+}
+
 /// Bytes of dedicated memory in use on each GPU, by every process, keyed by
 /// the adapter's LUID (high, low): the `GPU Adapter Memory` performance
 /// counter. `None` where the counter cannot be read.
@@ -679,7 +712,16 @@ pub fn gpu_usage() -> Option<GpuUsage> {
 pub fn gpu_free_mb() -> Option<u64> {
     #[cfg(windows)]
     {
-        gpu_usage().filter(|u| u.total_mb > 0).map(|u| u.total_mb.saturating_sub(u.used_mb))
+        // Without the performance counter `gpu_usage` counts only this
+        // process, and every other program's memory would look free — and
+        // Windows answers a card asked for too much by spilling into shared
+        // memory, slowly, not with a failure. DXGI's budget for this process
+        // already takes the others out.
+        if dedicated_usage_by_adapter().is_some() {
+            gpu_usage().filter(|u| u.total_mb > 0).map(|u| u.total_mb.saturating_sub(u.used_mb))
+        } else {
+            dxgi_budget_left_mb()
+        }
     }
     #[cfg(target_os = "linux")]
     {

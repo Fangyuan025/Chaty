@@ -655,9 +655,8 @@ impl LlamaEngine {
             // Create the context in the worker and wait for the result, so a
             // KV/compute-buffer OOM is caught here and folded into the back-off.
             let n_ctx_wanted = clamp_n_ctx(model.n_ctx_train(), n_ctx_pref);
-            let all_on_gpu = layers > 0 && layers as u32 > model.n_layer();
             let auto_ctx = !matches!(n_ctx_pref, Some(n) if n > 0);
-            let n_ctx = fit_n_ctx(&model, n_ctx_wanted, auto_ctx, all_on_gpu).min(ctx_cap);
+            let n_ctx = fit_n_ctx(&model, n_ctx_wanted, auto_ctx, layers).min(ctx_cap);
             let (tx, rx) = std::sync::mpsc::channel::<Job>();
             // Init result: Err = fatal context failure; Ok(Some(msg)) = context
             // fine but the mmproj failed to load (vision off, non-fatal).
@@ -3596,22 +3595,24 @@ fn clamp_n_ctx(trained: u32, pref: Option<u32>) -> u32 {
     }
 }
 
-/// The context an automatic load gets where it cannot be measured against a
-/// GPU's free memory: the CPU, or a model only partly on the GPU.
+/// The context an automatic load gets on the CPU, and the least it gets on a
+/// GPU: what every Windows and Linux load had before it was measured.
 const AUTO_N_CTX: u32 = 8192;
 
 /// The context window a load opens with, from what `clamp_n_ctx` asked for.
 ///
 /// macOS fits it to unified memory (`mem_safe_n_ctx`). Elsewhere a context the
-/// user set is kept, and an automatic one is sized to the GPU when every layer
-/// is on it: what the card has free once the weights are there, less room for
-/// compute buffers, as KV cache — never under the old 8192 and never over the
-/// trained length. It was 8192 on every Windows and Linux machine, a 24 GB
-/// card's included.
-fn fit_n_ctx(model: &LlamaModel, wanted: u32, auto: bool, all_on_gpu: bool) -> u32 {
+/// user set is kept, and an automatic one is as long as the memory left once
+/// the weights are in holds, measured then: the KV cache of the layers on the
+/// GPU in what the card has free, that of any left on the CPU in free RAM —
+/// past room for compute buffers, never under 8192, never over the trained
+/// length. A model only partly on the GPU got 8192 whatever was left, and so
+/// did one whose every block was there but not its output layer — which the
+/// panel shows as all of its layers.
+fn fit_n_ctx(model: &LlamaModel, wanted: u32, auto: bool, gpu_layers: i32) -> u32 {
     #[cfg(target_os = "macos")]
     {
-        let _ = (auto, all_on_gpu);
+        let _ = (auto, gpu_layers);
         mem_safe_n_ctx(model, wanted)
     }
     #[cfg(not(target_os = "macos"))]
@@ -3619,33 +3620,54 @@ fn fit_n_ctx(model: &LlamaModel, wanted: u32, auto: bool, all_on_gpu: bool) -> u
         if !auto {
             return wanted;
         }
-        if !all_on_gpu {
+        let n_layer = model.n_layer().max(1);
+        // Blocks on the GPU: llama.cpp offloads the last `gpu_layers` of them,
+        // the output layer only past n_layer; a block's KV cache lives with it.
+        let on_gpu = gpu_layers.clamp(0, n_layer as i32) as u64;
+        if on_gpu == 0 {
             return wanted.min(AUTO_N_CTX);
         }
-        let free = crate::gpu::gpu_free_mb().unwrap_or(0) * 1024 * 1024;
-        let fit = ctx_for_free_vram(wanted, kv_bytes_per_token(model), free);
+        let kv = kv_bytes_per_token(model);
+        let kv_gpu = kv * on_gpu / n_layer as u64;
+        let free_vram = crate::gpu::gpu_free_mb().unwrap_or(0) * 1024 * 1024;
+        let free_ram = {
+            let mut sys = sysinfo::System::new();
+            sys.refresh_memory();
+            sys.available_memory()
+        };
+        let fit = ctx_for_free_memory(wanted, kv_gpu, free_vram, kv - kv_gpu, free_ram);
         eprintln!(
-            "[llama] auto context {fit} (trained {wanted}, KV {} KiB/token, {} MiB free on the GPU)",
-            kv_bytes_per_token(model) / 1024,
-            free / (1024 * 1024)
+            "[llama] auto context {fit} (trained {wanted}; {on_gpu}/{n_layer} blocks on the GPU; KV {} KiB/token, {} on the GPU; {} MiB free on the GPU, {} MiB of RAM)",
+            kv / 1024,
+            kv_gpu / 1024,
+            free_vram / (1024 * 1024),
+            free_ram / (1024 * 1024)
         );
         fit
     }
 }
 
-/// How many tokens of KV cache `free` bytes of GPU memory hold, past room for
-/// compute buffers and the rest of the desktop: between 8192 (or the trained
-/// length, if shorter) and the trained length, in steps of 1024.
+/// How many tokens of KV cache fit: `kv_gpu` bytes a token in `free_vram` past
+/// room for compute buffers and the rest of the desktop, `kv_cpu` bytes in
+/// `free_ram` past room for the system — whichever holds fewer, between 8192
+/// (or the trained length, if shorter) and the trained length, in steps of 1024.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
-fn ctx_for_free_vram(trained: u32, kv_per_token: u64, free: u64) -> u32 {
+fn ctx_for_free_memory(trained: u32, kv_gpu: u64, free_vram: u64, kv_cpu: u64, free_ram: u64) -> u32 {
+    const GIB: u64 = 1024 * 1024 * 1024;
     let floor = AUTO_N_CTX.min(trained);
-    if kv_per_token == 0 {
+    if kv_gpu + kv_cpu == 0 {
         return floor;
     }
-    const GIB: u64 = 1024 * 1024 * 1024;
-    let headroom = (free / 6).max(3 * GIB / 2);
-    let tokens = free.saturating_sub(headroom) / kv_per_token;
-    let tokens = (tokens.min(trained as u64) as u32) / 1024 * 1024;
+    let holds = |kv: u64, free: u64, headroom: u64| -> u64 {
+        if kv == 0 {
+            u64::MAX
+        } else {
+            free.saturating_sub(headroom) / kv
+        }
+    };
+    let on_gpu = holds(kv_gpu, free_vram, (free_vram / 6).max(3 * GIB / 2));
+    let on_cpu = holds(kv_cpu, free_ram, (free_ram / 4).max(4 * GIB));
+    let tokens = on_gpu.min(on_cpu).min(trained as u64) as u32 / 1024 * 1024;
     tokens.clamp(floor, trained.max(floor))
 }
 
@@ -3780,27 +3802,47 @@ fn build_sampler(model: &LlamaModel, params: &GenParams) -> LlamaSampler {
 #[cfg(test)]
 mod tests {
 
-    /// An automatic context on a GPU holding the whole model: as much KV cache
-    /// as the free memory takes past the headroom, in 1024 steps, between 8192
-    /// and the trained length. It was 8192 whatever the card.
+    /// An automatic context: as much KV cache as the memory left once the
+    /// weights are in holds, in 1024 steps, between 8192 and the trained
+    /// length. It was 8192 whatever the card.
     #[test]
     fn an_automatic_context_fills_the_gpu_memory_left() {
         const GIB: u64 = 1024 * 1024 * 1024;
-        // Qwen3-8B-like: 144 KiB a token. 16 GiB free: 16 - 2.67 headroom.
-        let per = 144 * 1024;
-        let got = super::ctx_for_free_vram(131_072, per, 16 * GIB);
+        const KIB: u64 = 1024;
+        // The whole model on the GPU — Qwen3-8B-like, 144 KiB a token, 16 GiB
+        // free: 16 - 2.67 headroom. Nothing of the cache in RAM.
+        let per = 144 * KIB;
+        let got = super::ctx_for_free_memory(131_072, per, 16 * GIB, 0, 64 * GIB);
         assert_eq!(got, 96_256);
         assert_eq!(got % 1024, 0);
         // Never past the trained length, nor under 8192.
-        assert_eq!(super::ctx_for_free_vram(32_768, per, 64 * GIB), 32_768);
-        assert_eq!(super::ctx_for_free_vram(131_072, per, 2 * GIB), 8192);
+        assert_eq!(super::ctx_for_free_memory(32_768, per, 64 * GIB, 0, 64 * GIB), 32_768);
+        assert_eq!(super::ctx_for_free_memory(131_072, per, 2 * GIB, 0, 64 * GIB), 8192);
         // A model trained shorter than 8192 keeps its own length.
-        assert_eq!(super::ctx_for_free_vram(4096, per, 2 * GIB), 4096);
+        assert_eq!(super::ctx_for_free_memory(4096, per, 2 * GIB, 0, 64 * GIB), 4096);
         // Nothing known about the cache: the old default.
-        assert_eq!(super::ctx_for_free_vram(131_072, 0, 64 * GIB), 8192);
+        assert_eq!(super::ctx_for_free_memory(131_072, 0, 64 * GIB, 0, 64 * GIB), 8192);
         // A user's own number is the user's.
         assert_eq!(super::clamp_n_ctx(131_072, Some(20_000)), 20_000);
         assert_eq!(super::clamp_n_ctx(131_072, None), 131_072);
+    }
+
+    /// A model only partly on the GPU — a 35B MoE on a 16 GB card — gets the
+    /// context the card's leftover holds for the blocks on it, not 8192; the
+    /// blocks left on the CPU keep their cache in RAM, which can bind instead.
+    #[test]
+    fn a_partly_offloaded_model_gets_the_context_its_memory_holds() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        const KIB: u64 = 1024;
+        // 30 of 40 blocks on the GPU at 40 KiB a token: 30 KiB of it on the
+        // card. 3 GiB free there, past 1.5 GiB of headroom; RAM is plenty.
+        let got = super::ctx_for_free_memory(262_144, 30 * KIB, 3 * GIB, 10 * KIB, 24 * GIB);
+        assert_eq!(got, 52_224);
+        // A big dense model mostly on the CPU: the RAM binds (8 GiB free,
+        // 4 GiB kept back, 280 KiB a token there).
+        assert_eq!(super::ctx_for_free_memory(131_072, 40 * KIB, 6 * GIB, 280 * KIB, 8 * GIB), 14_336);
+        // A card with nothing left past the headroom: the old 8192.
+        assert_eq!(super::ctx_for_free_memory(131_072, 30 * KIB, GIB, 10 * KIB, 24 * GIB), 8192);
     }
 
     /// Issue #20, end to end through the real loader: a file whose weights use
