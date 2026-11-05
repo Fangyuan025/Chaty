@@ -3,7 +3,7 @@ import { applyCodeTheme } from "./lib/codeTheme";
 import { platform } from "@tauri-apps/plugin-os";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { pastedFile } from "./lib/paste";
+import { attachmentName, pastedFile } from "./lib/paste";
 import { getCurrent as getDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextRing } from "./components/ContextRing";
@@ -1870,13 +1870,13 @@ export default function App() {
     // Vision-ready model + image file → attach the pixels themselves (the
     // model sees the image); otherwise images fall back to the OCR text path.
     if (model?.visionReady && isVisionImagePath(path)) {
-      const name = path.split(/[/\\]/).pop() ?? "image";
-      setAttachment({ name, kind: "vision", text: "", chars: 0, truncated: false, path });
+      setAttachment({ name: attachmentName(path), kind: "vision", text: "", chars: 0, truncated: false, path });
       return;
     }
     try {
       setAttaching(true);
-      setAttachment(await readAttachment(path));
+      const att = await readAttachment(path);
+      setAttachment({ ...att, name: attachmentName(att.name) });
     } catch (e) {
       setAttachment(null);
       setAttachError(typeof e === "string" ? e : t("readAttachFailed"));

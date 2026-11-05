@@ -133,7 +133,6 @@ toml = "0.8"
 portable-pty = "0.9"
 vt100 = "0.16"
 chardetng = "1"
-tauri-plugin-window-state = "=2.4.1"
 
 # Linux: enumerate AMD/Intel/NVIDIA compute devices through Vulkan.
 # The loader is opened dynamically, so Vulkan is optional at app startup.

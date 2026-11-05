@@ -185,29 +185,13 @@ fn default_window_size(work_w: f64, work_h: f64) -> (f64, f64) {
     (w.round(), h.round())
 }
 
-/// What of the main window is kept between runs: where it was, how big, and
-/// whether it was maximized. Not fullscreen — a launch into a macOS fullscreen
-/// Space is a surprise — and not whether it was showing (`open_main_window`).
-fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
-    use tauri_plugin_window_state::StateFlags;
-    StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED
-}
-
-/// Put the main window back where it was last time, and show it; the first
-/// time, or when that no longer fits the screen it lands on, size it for the
-/// screen and centre it. It is created hidden (tauri.conf.json) so it never
-/// appears at one size and then jumps to another — and whatever happens here,
-/// it ends up shown.
+/// Size the main window for the screen it opens on, centre it, and show it.
+/// It is created hidden (tauri.conf.json) so it never appears at one size and
+/// then jumps to another — and whatever happens here, it ends up shown.
 fn open_main_window<R: tauri::Runtime>(app: &tauri::App<R>) {
-    use tauri_plugin_window_state::{WindowExt, DEFAULT_FILENAME};
     let Some(w) = app.get_webview_window("main") else {
         return;
     };
-    let saved = app.path().app_config_dir().is_ok_and(|d| d.join(DEFAULT_FILENAME).is_file());
-    if saved && w.restore_state(window_state_flags()).is_ok() && fits_its_screen(&w) {
-        let _ = w.show();
-        return;
-    }
     let monitor = w
         .current_monitor()
         .ok()
@@ -232,19 +216,6 @@ fn open_main_window<R: tauri::Runtime>(app: &tauri::App<R>) {
         let _ = w.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
     }
     let _ = w.show();
-}
-
-/// Whether a restored window sits on a screen it fits: a size kept from a
-/// larger display, since unplugged, is not.
-fn fits_its_screen<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) -> bool {
-    if w.is_maximized().unwrap_or(false) {
-        return true;
-    }
-    let (Ok(Some(m)), Ok(size)) = (w.current_monitor(), w.outer_size()) else {
-        return false;
-    };
-    let area = m.work_area();
-    size.width <= area.size.width + 2 && size.height <= area.size.height + 2
 }
 
 #[cfg(test)]
@@ -410,14 +381,6 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
-        // Where the window was and how big, kept between runs; put back by
-        // `open_main_window` itself, which sizes a first run for the screen.
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(window_state_flags())
-                .skip_initial_state("main")
-                .build(),
-        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_os::init())
@@ -835,19 +798,6 @@ pub fn run() {
                 // which skips ExitRequested and was still reaching ggml's
                 // teardown (ggml_metal_rsets_free → ggml_abort → SIGABRT).
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-                    // The window's place and size, which the plugin would only
-                    // write on a teardown the `_exit` below skips. Not while
-                    // fullscreen: the size then is the screen's, and last time's
-                    // stays.
-                    {
-                        use tauri_plugin_window_state::AppHandleExt;
-                        let fullscreen = app
-                            .get_webview_window("main")
-                            .is_some_and(|w| w.is_fullscreen().unwrap_or(false));
-                        if !fullscreen {
-                            let _ = app.save_window_state(window_state_flags());
-                        }
-                    }
                     // Background jobs run in process groups of their own, so
                     // they would outlive the app: stop them, and write down
                     // what became of each in its session's history.

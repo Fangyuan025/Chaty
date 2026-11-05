@@ -4,7 +4,7 @@ import { RECENCY_LABEL, recencyGroups } from "../lib/recency";
 import { ImagePreview } from "./ImagePreview";
 import { resolveToolFormat, type CallFormat } from "../lib/callFormat";
 import { open } from "../lib/dialog";
-import { pastedFile } from "../lib/paste";
+import { attachmentName, pastedFile } from "../lib/paste";
 import { askAttention, holdAwake } from "../lib/busy";
 import { agentLang, useI18n, type TKey } from "../lib/i18n";
 import { watchContentHeight } from "../lib/autoGrow";
@@ -1881,15 +1881,14 @@ export function CodeMode({
     setAttachErr("");
     try {
       if (model?.visionReady && isVisionImagePath(path)) {
-        const name = path.split(/[/\\]/).pop() ?? "image";
         setCodeAttachments((cur) => [
           ...cur,
-          { name, kind: "vision", text: "", chars: 0, truncated: false, path },
+          { name: attachmentName(path), kind: "vision", text: "", chars: 0, truncated: false, path },
         ]);
       } else {
         // Documents (extracted) and non-vision images (OCR) both go here.
         const att = await readAttachment(path);
-        setCodeAttachments((cur) => [...cur, { ...att, path }]);
+        setCodeAttachments((cur) => [...cur, { ...att, name: attachmentName(att.name), path }]);
       }
     } catch (e) {
       setAttachErr(typeof e === "string" ? e : t("readAttachFailed"));
