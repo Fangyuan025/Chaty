@@ -340,38 +340,37 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## Engines that update without a Chaty release
+            ## Looks like your system
 
-            Settings → Runtimes lists llama.cpp, stable-diffusion.cpp, audio.cpp and MLX
-            with the build each is on, and a newer one to switch to at a click — or by
-            itself, once you turn that on. Every day each engine's newest upstream is
-            built into this release's own wrappers and published only if it starts; the
-            list is signed, and a newer engine is checked and started once on your
-            machine before it is used. One that will not start is set aside and the
-            bundled one takes over by itself.
+            The theme follows your system's light or dark by default and switches with it,
+            the native menus and dialogs follow the app's theme, and the window opens in its
+            colours. The text size setting now reaches Code mode too.
 
-            ## llama.cpp in a process of its own
+            ## Long work, in the background
 
-            GGUF models now run in `chaty-llama`, a helper beside the app, as the image,
-            music and MLX engines already did. That is what lets it be replaced, and a
-            crash inside llama.cpp ends that process instead of the window. Loading shows
-            llama.cpp's own progress.
+            Downloads, model loads, pictures and music show their progress on the Dock icon /
+            taskbar button, and the machine does not idle into sleep while they run. When the
+            coding agent stops to ask, or a long job finishes while you are elsewhere, the
+            Dock icon bounces once / the taskbar button flashes.
 
-            ## MLX on upstream
+            ## Keyboard and clipboard
 
-            MLX runs on upstream mlx-swift-lm and mlx-swift 0.33 instead of our fork:
-            upstream's own Qwen3.5 MTP support made it unnecessary. Speculative decoding
-            stays as fast — Qwen3.5-4B MTPLX at 69 tokens a second against 40 without it
-            on an M4 Pro.
+            Shortcuts for a new chat (⌘N / Ctrl+N), Settings (⌘,), chat and Code (⌘1 / ⌘2),
+            search (⌘F) and stopping a reply (Esc). Paste a screenshot or a file into the
+            input and it attaches — in chat, in Code mode and in the image studio.
 
-            ## Linux
+            ## More context on a big GPU
 
-            Open models folder works on Fedora: the AppImage no longer carries its own
-            `xdg-open`, and the programs Chaty starts get your system's environment
-            instead of the image's library paths (#28). Folders and files are picked with
-            your desktop's own chooser through the XDG Desktop Portal — Nautilus's on
-            GNOME, Dolphin's on KDE — with the GTK dialog kept for a desktop with no
-            portal (#29). Thanks to @davidecelentano for both.
+            An automatic context window on Windows and Linux now fills the memory the GPU has
+            left after the weights, up to what the model was trained for. It was 8192 tokens
+            whatever the card.
+
+            ## Windows and Linux
+
+            The icon fills its tile like other apps' (#25). Fedora no longer opens to a gray
+            window: Chaty keeps WebKitGTK away from the COLRv1 emoji font it cannot draw, and
+            draws emoji in colour with its own (#30 — thanks @davidecelentano). AppImage
+            managers can update Chaty from the update information and `.zsync` it now carries.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

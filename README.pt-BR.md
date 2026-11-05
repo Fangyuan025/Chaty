@@ -58,7 +58,7 @@ Um chat que mostra o raciocínio. O pensamento aparece num painel que você pode
 - **Imagens também** — qualquer modelo com visão: um GGUF com seu projetor, ou uma versão MLX.
 - **Canvas** — peça uma página e veja-a ganhar forma numa prévia ao vivo ao lado do código; as mudanças seguintes entram como patches.
 - **Busca na web sem chave**, busca em texto completo no histórico e exportação para Markdown ou JSON.
-- **Do seu jeito** — escuro quente ou frio, claro papel ou creme, quatro temas de código, English · 简体中文 · Português.
+- **Do seu jeito** — segue o claro ou escuro do sistema; escuro quente ou frio, claro papel ou creme, quatro temas de código, um tamanho de texto para o chat e o código, atalhos de teclado, English · 简体中文 · Português.
 
 ## Code
 

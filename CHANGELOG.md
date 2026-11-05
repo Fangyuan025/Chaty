@@ -1,5 +1,75 @@
 # Changelog
 
+## v2.4.0 — Feel at home (2026-11-04)
+
+### Looks like your system
+
+- **The theme follows your system's light or dark** by default, and switches
+  with it. Chaty used to start dark whatever the system was; a dark theme
+  you had never changed now follows the system too, once — Dark is one click
+  away in Settings → General if you want it back.
+- **The native parts follow the app's theme**: menus, file dialogs, the
+  system's scrollbars and the macOS window frame no longer keep the system's
+  look under an app set the other way.
+- **The window opens in its colours** instead of a flash of the other theme
+  before the app has loaded.
+- **Text size reaches Code mode.** The setting (now *Text size*) scales every
+  message, answer, step, code block and the input, in chat and in Code mode
+  alike. Code mode kept its own size before, and *Small* made it bigger.
+
+### Long work, in the background
+
+- **Progress shows on the Dock icon / taskbar button** while a model, a voice
+  or an engine downloads, a model loads, or pictures and music are made.
+- **The machine does not idle into sleep** while long work runs — a model
+  downloading overnight, a picture batch, an agent's run, a long answer.
+  Closing the lid or choosing Sleep still sleeps. On Linux it goes through
+  the desktop portal, which says so and lets you override it.
+- **Chaty asks for your attention when it needs you**: the Dock icon bounces
+  once / the taskbar button flashes when the coding agent stops to ask for
+  approval, a choice, a folder or a password, and when a long job or a long
+  answer finishes while you are in another app.
+
+### Keyboard and clipboard
+
+- **Shortcuts**: ⌘N / Ctrl+N new chat (a new session in Code mode and the
+  studios), ⌘, Settings, ⌘1 / ⌘2 chat / Code, ⌘F the sidebar's search, and
+  Esc stops a reply. The command palette shows them, and so do the buttons'
+  tooltips.
+- **Paste a picture or a file into the input** — a screenshot, an image
+  copied from a page, a file copied in Finder or Explorer — and it attaches,
+  as a dropped one does: in chat, in Code mode, and as the image studio's
+  starting picture.
+- A file dropped on the window in Code mode attaches there. It went to the
+  chat's input, out of sight.
+- **The window's title is the conversation open in it**, so the taskbar, the
+  window switcher and Mission Control tell your windows apart.
+
+### More context on a big GPU
+
+- **An automatic context window on Windows and Linux fills the GPU.** It was
+  8192 tokens whatever the card; with the whole model on the GPU it is now as
+  long as the memory left after the weights holds, up to what the model was
+  trained for. A context the card turns out not to hold is halved before a
+  layer comes off the GPU, so speed is kept first. A context you set yourself
+  is used as set.
+
+### Windows and Linux
+
+- **The icon fills its tile** on the Windows desktop, taskbar and Start menu
+  and in Linux launchers, like other apps' (issue #25). It kept macOS's
+  margins and looked a size smaller.
+- **Canvas in fullscreen keeps its buttons clear** of the window's own
+  minimize, maximize and close.
+- **Fedora no longer opens to a gray window** (issue #30, thanks
+  @davidecelentano). WebKitGTK's Skia aborts on the COLRv1 Noto Color Emoji
+  Fedora ships; Chaty leaves emoji fonts of that kind out of its own font
+  setup and draws emoji with the CBDT Noto Color Emoji the AppImage now
+  carries — still in colour. Your other programs keep your fonts as they are.
+- **AppImage managers can update Chaty**: the AppImage carries update
+  information, with a `.zsync` beside it on the release, for Gear Lever,
+  AppImageLauncher and AppImageUpdate.
+
 ## v2.3.9 — Keep up (2026-10-30)
 
 ### Engines that update without a Chaty release
