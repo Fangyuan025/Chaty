@@ -60,7 +60,22 @@
   were counted as if every layer kept a full one — two and a half to nine
   times their real cost — and got that much less context, on a Mac as well.
 
+### Engine updates
+
+- **An engine update is always built for the Chaty that runs it.** A runtime
+  pack carries Chaty's own code around its engine — for llama.cpp, the whole
+  of how a model is loaded and run — so one built for an older release would
+  bring that older code back. A pack is now used only by the release it was
+  built for, and each release gets packs of its own within a day; until then
+  the engine it came with runs.
+
 ### Windows and Linux
+
+- **Downloads go to the models folder Settings shows.** On Windows that is the
+  `models` folder beside the program when your models are there — an install
+  on another drive keeps them on it — where downloads used to go to the app's
+  data on the system drive. A folder you chose that is not connected stops a
+  download with a message instead of filling the system drive.
 
 - **The icon fills its tile** on the Windows desktop, taskbar and Start menu
   and in Linux launchers, like other apps' (issue #25). It kept macOS's

@@ -233,10 +233,13 @@ jobs:
           SIZE=$(python3 -c "import os; print(os.path.getsize('out/$ZIP'))")
           SHA=$(python3 -c "import hashlib; print(hashlib.sha256(open('out/$ZIP','rb').read()).hexdigest())")
           MINAPP=$(node -p "require('./package.json').version")
+          # The wrapper's commit: an app uses only packs of its own build
+          # (runtimes.rs, built_for_this_app).
+          SOURCE_SHA=$(git rev-parse HEAD)
           python3 - <<PY
           import json
           json.dump({"engine": "$ENGINE", "version": "$VERSION", "platform": "$PLATFORM", "protocol": "$PROTOCOL",
-                     "minApp": "$MINAPP", "upstream": "$UPSTREAM", "rev": "$REV", "date": "$DATE",
+                     "minApp": "$MINAPP", "source": "$SOURCE_SHA", "upstream": "$UPSTREAM", "rev": "$REV", "date": "$DATE",
                      "size": $SIZE, "sha256": "$SHA"}, open("out/${ZIP%.zip}.json", "w"), indent=2)
           PY
           ls -la out

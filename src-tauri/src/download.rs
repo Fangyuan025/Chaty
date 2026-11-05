@@ -1462,7 +1462,7 @@ pub async fn download_mlx_repo(
     on_progress: Channel<DownloadProgress>,
 ) -> Result<String, String> {
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let models = crate::commands::models_write_dir(&app)?;
+    let models = crate::commands::models_download_dir(&app)?;
     download_mlx_repo_inner(&root, &models, repo, endpoint, on_progress).await
 }
 
@@ -1649,7 +1649,7 @@ pub async fn download_model(
             // A subfolder of it — where a music package keeps its configs.
             (canon, subdir)
         }
-        None => (crate::commands::models_write_dir(&app)?, subdir),
+        None => (crate::commands::models_download_dir(&app)?, subdir),
     };
     let cancel = register_cancel(&filename);
     let result =

@@ -3629,7 +3629,12 @@ fn fit_n_ctx(model: &LlamaModel, path: &Path, wanted: u32, auto: bool, gpu_layer
         }
         let kv = kv_bytes_per_token(model, path);
         let kv_gpu = kv * on_gpu / n_layer as u64;
-        let free_vram = crate::gpu::gpu_free_mb().unwrap_or(0) * 1024 * 1024;
+        // What the card has free; where that cannot be read, its size less
+        // the weights (all of them, so on the safe side when only some are there).
+        let free_vram = crate::gpu::gpu_free_mb()
+            .map(|mb| mb * 1024 * 1024)
+            .or_else(|| crate::gpu::detect_gpu().map(|g| (g.vram_mb * 1024 * 1024).saturating_sub(model.size())))
+            .unwrap_or(0);
         let free_ram = {
             let mut sys = sysinfo::System::new();
             sys.refresh_memory();

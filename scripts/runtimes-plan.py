@@ -10,8 +10,11 @@ what users run, not what main has yet) built against a newer upstream engine:
   audio  the newest audio.cpp commit
   mlx    the newest mlx-swift-lm commit
 
-A revision already published for a platform, or the one that release ships
-with, is skipped. Prints the build matrix as JSON.
+A revision already published for a platform from this release's own commit,
+or the one that release ships with, is skipped — one published from an older
+release, or from this release before a re-cut moved its tag, is built again:
+an app runs only packs of its own build (runtimes.rs, built_for_this_app).
+Prints the build matrix as JSON.
 
 Env: ENGINES ("llama,sd,audio,mlx" …), LLAMA_REV, SD_REV, AUDIO_REV, MLX_REV
      (blank = newest upstream), SOURCE (a tag; blank = the latest release),
@@ -72,6 +75,7 @@ def main():
     repo = os.environ.get("GITHUB_REPOSITORY", "Fangyuan025/Chaty")
     source = os.environ.get("SOURCE", "").strip() or gh(f"repos/{repo}/releases/latest")["tag_name"]
     ships = bundled(source)
+    source_sha = gh(f"repos/{repo}/commits/{source}")["sha"]
     if ships is None:
         # A release from before runtime packs: nothing to build them from.
         print(f"{source} has no runtime packs", file=sys.stderr)
@@ -84,7 +88,7 @@ def main():
         index = json.load(open(path, encoding="utf-8"))
     # By platform: one that failed to build is tried again next time, while
     # the others of that revision stay published.
-    published = {(p["engine"], p["rev"], p["platform"]) for p in index.get("packs", [])}
+    published = {(p["engine"], p["rev"], p["platform"], p.get("source", "")) for p in index.get("packs", [])}
     matrix = []
     for engine in engines:
         if engine not in UPSTREAM:
@@ -99,8 +103,8 @@ def main():
             continue
         version = f"{date[:10].replace('-', '.')}-{rev[:7]}"
         for platform, runner in PLATFORMS[engine]:
-            if (engine, rev, platform) in published:
-                print(f"{engine}: {rev[:7]} for {platform} is published already", file=sys.stderr)
+            if (engine, rev, platform, source_sha) in published:
+                print(f"{engine}: {rev[:7]} for {platform} is published from {source} already", file=sys.stderr)
                 continue
             matrix.append({"engine": engine, "platform": platform, "runner": runner, "source": source,
                            "upstream": repo_up, "rev": rev, "date": date, "version": version})

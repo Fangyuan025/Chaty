@@ -590,18 +590,57 @@ pub(crate) fn models_root(app: &tauri::AppHandle) -> Option<PathBuf> {
     models_root_at(&app.path().app_data_dir().ok()?)
 }
 
-/// Where new models are written — downloaded, imported, or created. The chosen
-/// folder when there is one, otherwise the app-data `models/` that has always
-/// been the answer.
+/// Where new models are written — downloaded, imported, or created: the
+/// folder Settings shows as the models folder.
+///
+/// That is the chosen folder when there is one. Without a choice, Settings
+/// shows — and "Open models folder" opens — the first default root that has
+/// models in it, which on Windows is the `models` folder beside the program
+/// (an install on D: keeps its models on D:); downloads went to app-data
+/// `models/` on C: all the same, into a folder Settings never named. They go
+/// where Settings points now, when that folder takes a file; app-data
+/// otherwise, as before.
 pub(crate) fn models_write_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Some(root) = models_root(app) {
         return Ok(root);
     }
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("models"))
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?.join("models");
+    Ok(write_dir_for(model_dirs(app), data))
+}
+
+/// Without a chosen folder: the first default root holding models, when it can
+/// be written to, else `data`. Not on macOS, whose other roots are inside the
+/// app bundle (writing there breaks its signature).
+fn write_dir_for(roots: Vec<PathBuf>, data: PathBuf) -> PathBuf {
+    #[cfg(not(target_os = "macos"))]
+    if let Some(shown) = roots.into_iter().find(|d| dir_has_models(d)) {
+        if shown == data || check_models_root(&shown).is_ok() {
+            return shown;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let _ = roots;
+    data
+}
+
+/// Where a download goes: `models_write_dir`, but never instead of a chosen
+/// folder that is not there right now (a disk not plugged in) — the weights
+/// would land on the system drive, in a folder the user never picked.
+pub(crate) fn models_download_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    if let Some(chosen) = std::fs::read_to_string(base.join(MODELS_ROOT_FILE))
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+    {
+        if !Path::new(&chosen).is_dir() {
+            return Err(trf!(
+                "模型文件夹 {chosen} 现在不可用(磁盘未连接?),没有下载。连上后再试,或在设置里换一个文件夹。",
+                "the models folder {chosen} is not available right now (a disk not connected?), so nothing was downloaded. Try again once it is, or choose another folder in Settings."
+            ));
+        }
+    }
+    models_write_dir(app)
 }
 
 /// Which roots are scanned, given a choice and the defaults.
@@ -2613,6 +2652,33 @@ mod tests {
         assert!(super::dir_has_models(&d), "a model folder counts");
         std::fs::create_dir_all(d.join("empty-folder")).unwrap();
         assert!(super::dir_has_models(&d), "unrelated empty folders don't break it");
+    }
+
+    /// With no folder chosen, downloads go to the folder Settings shows: the
+    /// first default root that has models — the one beside the program on
+    /// Windows — not app-data on the system drive. An empty one, or one that
+    /// cannot be written to, leaves app-data. macOS keeps app-data: its other
+    /// roots are inside the app bundle.
+    #[test]
+    fn downloads_go_to_the_models_folder_settings_shows() {
+        let beside = tmp("beside-exe");
+        let data = tmp("app-data");
+        let roots = vec![beside.clone(), data.clone()];
+        assert_eq!(super::write_dir_for(roots.clone(), data.clone()), data, "no models anywhere yet");
+        mk(&beside, "Qwen3.5-2B-F16.gguf");
+        migrate_models_dir(&beside);
+        let expected = if cfg!(target_os = "macos") { data.clone() } else { beside.clone() };
+        assert_eq!(super::write_dir_for(roots.clone(), data.clone()), expected);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let unwritable = std::fs::write(beside.join(".probe"), b"x").is_err();
+            if unwritable {
+                assert_eq!(super::write_dir_for(roots, data.clone()), data, "a folder that takes no file");
+            }
+            std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
 }
 

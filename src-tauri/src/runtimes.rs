@@ -123,9 +123,14 @@ pub struct Pack {
     pub version: String,
     pub platform: String,
     pub protocol: String,
-    /// Oldest app version the pack was built for.
+    /// The app version whose wrapper the pack carries (the release it was
+    /// built from).
     #[serde(default)]
     pub min_app: String,
+    /// The commit of Chaty that wrapper was built from: the release tag's.
+    /// Absent in packs from before v2.4.0.
+    #[serde(default)]
+    pub source: String,
     pub upstream: String,
     pub rev: String,
     pub date: String,
@@ -193,6 +198,38 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// This app's version and, in a release build, the commit it was built from.
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const APP_BUILD: Option<&str> = option_env!("CHATY_BUILD");
+
+/// Was this pack built for this app — its wrapper this release's own?
+///
+/// A pack is the engine *and* Chaty's code around it; for llama.cpp that is
+/// all of chaty-llama — loading a model, the context it opens with,
+/// generating. One built from an older release swaps that code back for the
+/// older one, every fix since gone, and nothing in the protocol shows it: a
+/// fix does not change the protocol. v2.4.0's automatic context never ran for
+/// anyone with automatic updates on — their llama.cpp pack was built from
+/// v2.3.9, which opened every model at 8192. So a pack is used only when it
+/// was built from this release, and in a release build from this very build
+/// of it (a release re-cut moves its tag); otherwise the bundled engine runs,
+/// which is always this build's own.
+fn built_for_this_app(p: &Pack) -> bool {
+    built_for(p, APP_VERSION, APP_BUILD)
+}
+
+fn built_for(p: &Pack, version: &str, build: Option<&str>) -> bool {
+    p.min_app == version && build.is_none_or(|b| p.source == b)
+}
+
+/// Is version `a` newer than `b` ("2.4.10" > "2.4.9")?
+fn version_newer(a: &str, b: &str) -> bool {
+    let key = |v: &str| -> Vec<u64> {
+        v.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).map(|s| s.parse().unwrap_or(0)).collect()
+    };
+    key(a) > key(b)
+}
+
 /// The engine binary to start: the pack in use when there is a sound one,
 /// else None — the bundled engine.
 pub fn active_binary(e: Engine) -> Option<PathBuf> {
@@ -200,8 +237,9 @@ pub fn active_binary(e: Engine) -> Option<PathBuf> {
 }
 
 /// The pack in use and its manifest, when it can run here: not set aside,
-/// speaking this app's protocol, and newer than the engine the app came with
-/// (an app update can bring a newer one than the pack chosen before it).
+/// speaking this app's protocol, built for this app (see
+/// `built_for_this_app`), and newer than the engine the app came with (an app
+/// update can bring a newer one than the pack chosen before it).
 fn active_pack(e: Engine) -> Option<(PathBuf, Pack)> {
     if !e.swappable() {
         return None;
@@ -213,7 +251,7 @@ fn active_pack(e: Engine) -> Option<(PathBuf, Pack)> {
     }
     let dir = pack_dir(e, version);
     let manifest: Pack = serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).ok()?).ok()?;
-    if manifest.protocol != e.protocol() || manifest.date.as_str() <= e.bundled().date {
+    if manifest.protocol != e.protocol() || manifest.date.as_str() <= e.bundled().date || !built_for_this_app(&manifest) {
         return None;
     }
     dir.join(e.exe()).is_file().then_some((dir, manifest))
@@ -280,18 +318,20 @@ fn best_pack<'a>(index: &'a Index, e: Engine, broken: &BTreeSet<String>) -> Opti
         .packs
         .iter()
         .filter(|p| p.engine == e && p.platform == platform() && p.protocol == e.protocol())
+        .filter(|p| built_for_this_app(p))
         .filter(|p| p.date.as_str() > e.bundled().date)
         .filter(|p| !broken.contains(&format!("{}:{}", e.id(), p.version)))
         .max_by(|a, b| (a.date.as_str(), a.version.as_str()).cmp(&(b.date.as_str(), b.version.as_str())))
 }
 
-/// A newer pack exists, but for a protocol this app does not speak: the user
-/// needs a newer Chaty to use it.
+/// A newer pack exists, but for a protocol this app does not speak or built
+/// for a newer release: the user needs a newer Chaty to use it.
 fn newer_needs_app(index: &Index, e: Engine, current_date: &str) -> Option<String> {
     index
         .packs
         .iter()
-        .filter(|p| p.engine == e && p.platform == platform() && p.protocol != e.protocol())
+        .filter(|p| p.engine == e && p.platform == platform())
+        .filter(|p| p.protocol != e.protocol() || version_newer(&p.min_app, APP_VERSION))
         .filter(|p| p.date.as_str() > current_date)
         .map(|p| p.min_app.clone())
         .max()
@@ -495,7 +535,11 @@ async fn install(e: Engine, progress: impl Fn(InstallProgress) + Send + Sync + '
         .cloned()
         .ok_or_else(|| trf!("没有可用的新版本", "there is no newer version to install"))?;
     let dir = pack_dir(e, &pack.version);
-    if dir.join("manifest.json").is_file() {
+    // Already here — the same build of it. A pack rebuilt for a newer release
+    // keeps its engine's version name, so the name alone does not say so.
+    let installed: Option<Pack> =
+        std::fs::read_to_string(dir.join("manifest.json")).ok().and_then(|j| serde_json::from_str(&j).ok());
+    if installed.is_some_and(|m| m.sha256.eq_ignore_ascii_case(&pack.sha256)) {
         let mut state = load_state();
         state.active.insert(e.id().to_string(), pack.version.clone());
         save_state(&state);
@@ -715,7 +759,8 @@ mod tests {
             version: version.into(),
             platform: platform().into(),
             protocol: protocol.into(),
-            min_app: "2.3.8".into(),
+            min_app: APP_VERSION.into(),
+            source: APP_BUILD.unwrap_or("").into(),
             upstream: "x/y".into(),
             rev: "abc".into(),
             date: date.into(),
@@ -741,11 +786,38 @@ mod tests {
         assert_eq!(best_pack(&index, Engine::Sd, &none).unwrap().version, "2026.10.20");
         let broken: BTreeSet<String> = ["sd:2026.10.20".to_string()].into();
         assert_eq!(best_pack(&index, Engine::Sd, &broken).unwrap().version, "2026.10.01");
-        assert_eq!(newer_needs_app(&index, Engine::Sd, "2026-10-20T00:00:00Z").as_deref(), Some("2.3.8"));
+        assert_eq!(newer_needs_app(&index, Engine::Sd, "2026-10-20T00:00:00Z").as_deref(), Some(APP_VERSION));
         assert!(best_pack(&index, Engine::Mlx, &none).is_none());
         // Nothing older than the engine the app came with.
         let old = Index { packs: vec![pack(Engine::Sd, "2020.01.01", "1", "2020-01-01T00:00:00Z")] };
         assert!(best_pack(&old, Engine::Sd, &none).is_none());
+    }
+
+    /// A pack is this app's only when built from its release — this build of
+    /// it, when the app knows its build. One from an older release is not
+    /// offered (its wrapper would undo the fixes since); one for a newer
+    /// release says a newer Chaty is needed.
+    #[test]
+    fn only_a_pack_built_for_this_app_is_used() {
+        let mut p = pack(Engine::Llama, "2026.11.04-abc1234", "1", "2099-01-01T00:00:00Z");
+        p.min_app = "2.4.0".into();
+        p.source = "d7e1871".into();
+        assert!(built_for(&p, "2.4.0", Some("d7e1871")));
+        assert!(built_for(&p, "2.4.0", None), "a local build knows only its version");
+        assert!(!built_for(&p, "2.4.0", Some("503690e")), "the same release, re-cut");
+        assert!(!built_for(&p, "2.4.1", Some("d7e1871")));
+        let mut old = p.clone();
+        old.min_app = "2.3.9".into();
+        old.source = String::new();
+        assert!(!built_for(&old, "2.4.0", None), "v2.3.9's wrapper");
+        // In the index: the older release's pack is passed over; a newer
+        // release's says what Chaty it needs.
+        let mut newer = p.clone();
+        newer.min_app = "9.9.9".into();
+        let index = Index { packs: vec![old, newer] };
+        assert!(best_pack(&index, Engine::Llama, &BTreeSet::new()).is_none());
+        assert_eq!(newer_needs_app(&index, Engine::Llama, "2026-01-01T00:00:00Z").as_deref(), Some("9.9.9"));
+        assert!(version_newer("2.4.10", "2.4.9") && !version_newer("2.4.0", "2.4.0") && !version_newer("2.3.9", "2.4.0"));
     }
 
     /// A signature over the exact bytes, by the right key, and nothing else.

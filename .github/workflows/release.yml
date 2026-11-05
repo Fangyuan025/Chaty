@@ -373,7 +373,14 @@ jobs:
             included (#25). Fedora no longer opens to a gray window: Chaty keeps WebKitGTK away
             from the COLRv1 emoji font it cannot draw, and draws emoji in colour with its own
             (#30 — thanks @davidecelentano). AppImage managers can update Chaty from the update
-            information and `.zsync` it now carries.
+            information and `.zsync` it now carries. Downloads go to the models folder Settings
+            shows — on Windows the one beside the program when your models are there.
+
+            ## Engine updates
+
+            An engine update is used only by the Chaty release it was built for: a runtime pack
+            carries Chaty's own code around its engine, and one built for an older release would
+            bring that code back.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
