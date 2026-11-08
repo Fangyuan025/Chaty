@@ -1440,6 +1440,14 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       // Typing 长回答 / long answer streams a long mixed reply at a model's
       // pace — paragraphs, a list, code — for looking at streaming itself.
       const wantsLong = /长回答|long answer/i.test(last);
+      // 富文本 / rich markdown streams every kind of block at once — a list
+      // right under a paragraph, a rule, a table, code, math, a diagram — to
+      // look for what flashes while it streams; with 快 / fast, very fast.
+      const wantsRich = /富文本|rich markdown/i.test(last);
+      const wantsFast = /快|fast/i.test(last);
+      // With 坏图 / bad diagram, the diagram's last line is wrong: it should
+      // build while it streams and say so only once it is finished.
+      const wantsBadDiagram = /坏图|bad diagram/i.test(last);
       const fast = wantsOutside || wantsSudo || wantsDate;
       // Thinking first, so the preview exercises the think panel (and stopping
       // a turn mid-thought, which is where its spinner used to stay turning).
@@ -1463,7 +1471,23 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         "<think>都通过了。</think>\n完成:新增 `src/tokens.ts`,`parser.ts` 改为调用它,4 个测试全部通过。",
       ];
       if (wantsDemo && !isTitleReq) reply = DEMO[Math.min(demoStep, DEMO.length - 1)];
-      else if (wantsLong && !isTitleReq) {
+      else if (wantsRich && !isTitleReq) {
+        reply =
+          "先说结论:这件事分三步。\n" +
+          "- 第一步,读懂**现有结构**,别急着改;\n" +
+          "- 第二步,用 `cargo test` 守住行为;\n" +
+          "- 第三步,再动手重构。\n\n" +
+          "---\n\n" +
+          "## 对比\n\n" +
+          "| 方案 | 速度 | 风险 |\n|---|---|---|\n| 原地改 | 快 | 高 |\n| 先测后改 | 稍慢 | 低 |\n\n" +
+          "```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\n" +
+          "面积公式:\n\n$$\nA = \\pi r^2\n$$\n\n" +
+          "```mermaid\ngraph TD\n  A[读代码] --> B[写测试]\n  B --> C[重构]\n" +
+          (wantsBadDiagram ? "  C -->|未闭合 D[\n" : "") +
+          "```\n\n" +
+          "***\n\n" +
+          "**小结**:先测后改,稳。";
+      } else if (wantsLong && !isTitleReq) {
         reply =
           "Rust 的生命周期(lifetime)是编译器用来保证**引用始终有效**的标注。它不改变值活多久,只是把引用之间的关系写清楚,让借用检查器能证明不会出现悬垂引用。\n\n" +
           "A lifetime names the span during which a borrow is valid. Most of the time the compiler infers it; you write one when a function returns a reference and the compiler cannot tell which input it came from.\n\n" +
@@ -1512,13 +1536,14 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           emit({ type: "prefill", processed: Math.min(done, total), total });
           await new Promise((r) => setTimeout(r, fast ? 15 : 140));
         }
-        for (const piece of reply.match(wantsLong ? /[\s\S]{1,3}/g : /.{1,6}/g) ?? []) {
+        const pieceRe = wantsRich && wantsFast ? /[\s\S]{1,12}/g : wantsLong || wantsRich ? /[\s\S]{1,3}/g : /.{1,6}/g;
+        for (const piece of reply.match(pieceRe) ?? []) {
           // Told to stop, it stops, as the engines do.
           if (mockGenStop) break;
           // `__mockPause` holds the stream mid-reply, to look at a frame of it.
           while ((globalThis as { __mockPause?: boolean }).__mockPause) await new Promise((r) => setTimeout(r, 50));
           emit({ type: "token", text: piece });
-          await new Promise((r) => setTimeout(r, wantsLong ? 28 : 30));
+          await new Promise((r) => setTimeout(r, wantsRich && wantsFast ? 16 : wantsLong || wantsRich ? 28 : 30));
         }
         emit({
           type: "done",

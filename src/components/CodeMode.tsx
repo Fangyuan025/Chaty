@@ -612,6 +612,20 @@ function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label
   );
 }
 
+/** What the model is saying in the turn being written: rendered block by
+ *  block, its words fading in (see Markdown), and kept block by block once
+ *  the turn is over — rendered whole at the end, the text was rebuilt from
+ *  scratch, a diagram in it drawn again. */
+function TurnMarkdown({ text, live }: { text: string; live: boolean }) {
+  const streamed = useRef(false);
+  if (live) streamed.current = true;
+  return (
+    <Markdown blocks={streamed.current} streaming={live}>
+      {text}
+    </Markdown>
+  );
+}
+
 /** Lines a step's diff adds and removes — the card's own count when the
  *  contents were capped, else counted once per diff and kept. */
 const diffCountCache = new WeakMap<object, { added: number; removed: number }>();
@@ -2743,7 +2757,7 @@ export function CodeMode({
                           ...(m.text.trim()
                             ? [
                                 <div key="said-pending" className="cm-asst-text answer cm-said">
-                                  <Markdown blocks={live} streaming={live}>{m.text}</Markdown>
+                                  <TurnMarkdown text={m.text} live={live} />
                                 </div>,
                               ]
                             : []),
@@ -2802,7 +2816,7 @@ export function CodeMode({
                   {!f && m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />}
                   {m.text && !f?.bottom && (
                     <div className="cm-asst-text answer" data-copy={m.text}>
-                      <Markdown blocks={live} streaming={live}>{m.text}</Markdown>
+                      <TurnMarkdown text={m.text} live={live} />
                       {!running && (
                         <button
                           className="cm-copy"

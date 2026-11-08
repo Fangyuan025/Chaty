@@ -782,6 +782,7 @@ export const T = {
   storeAgoHour: { zh: "{n} 小时前", en: "{n} h ago", pt: "há {n} h" },
   storeAgoDay: { zh: "{n} 天前", en: "{n} d ago", pt: "há {n} d" },
   mermaidFailed: { zh: "图表没能画出来", en: "The diagram could not be drawn", pt: "Não foi possível desenhar o diagrama" },
+  mermaidDrawing: { zh: "正在绘制图表", en: "Drawing the diagram", pt: "Desenhando o diagrama" },
   storePickModel: { zh: "从左侧选择一个模型查看详情", en: "Pick a model on the left to see details", pt: "Escolha um modelo à esquerda para ver detalhes" },
   storeOpenHf: { zh: "在 Hugging Face 上打开模型", en: "Open on Hugging Face", pt: "Abrir no Hugging Face" },
   // GPU details in the hardware panel.

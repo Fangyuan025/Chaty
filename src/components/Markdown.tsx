@@ -22,7 +22,8 @@ import { mdBlocks, type BlockCache } from "../lib/mdBlocks";
 import { useI18n } from "../lib/i18n";
 import { copyToClipboard } from "../lib/clipboard";
 import { fitPop } from "../lib/popFit";
-import { fadeDelay, rehypeStreamFade } from "../lib/streamFade";
+import { fadeTiming, rehypeStreamFade } from "../lib/streamFade";
+import { stabilizeTail } from "../lib/streamMarkdown";
 
 const remarkPlugins = [remarkGfm, remarkMath];
 // `throwOnError: false` keeps partial LaTeX from crashing mid-stream;
@@ -154,55 +155,104 @@ function codeText(children: ReactNode): string {
 let mermaidReady: Promise<typeof import("mermaid").default> | null = null;
 let mermaidSeq = 0;
 
-/** Lazily-loaded Mermaid diagram. Falls back to the raw code on parse errors
- *  (e.g. while the block is still streaming in). */
-function Mermaid({ code }: { code: string }) {
+/** The longest start of `lines` (at least `min` of them) that Mermaid
+ *  parses, by dropping lines from the end — a diagram being written is whole
+ *  up to its last good line. Null when not even that parses. */
+async function longestParsable(
+  mermaid: { parse: (text: string) => Promise<unknown> },
+  lines: string[],
+  min: number,
+): Promise<string | null> {
+  for (let n = lines.length; n >= min && n > lines.length - 4; n--) {
+    const text = lines.slice(0, n).join("\n");
+    try {
+      await mermaid.parse(text);
+      return text;
+    } catch {
+      // a line not finished saying what it means; one fewer
+    }
+  }
+  return null;
+}
+
+function loadMermaid() {
+  if (!mermaidReady) {
+    const dark = !document.documentElement.dataset.theme?.includes("light");
+    mermaidReady = import("mermaid").then((m) => {
+      // "loose" — strict rejects common model-generated labels (e.g. with
+      // HTML entities) and silently blanked the diagram. We render into our
+      // own sandboxed context, and the SVG is inert markup.
+      m.default.initialize({
+        startOnLoad: false,
+        theme: dark ? "dark" : "default",
+        securityLevel: "loose",
+      });
+      return m.default;
+    });
+  }
+  return mermaidReady;
+}
+
+/** A Mermaid diagram, lazily loaded.
+ *
+ *  While its fence is still being written (`building`) it is drawn as far as
+ *  it goes: every time a line is completed, the longest start of it that
+ *  parses is drawn, so the flowchart is seen being put together node by node
+ *  — and a line half-written is never an error, never a fall back to the
+ *  code: the last drawing stays until the next one is ready. Once the fence
+ *  closes it is drawn whole, and only a diagram that is wrong as written
+ *  falls back to its source, with the reason. */
+function Mermaid({ code, building = false }: { code: string; building?: boolean }) {
   const { t } = useI18n();
   const [svg, setSvg] = useState("");
   const [error, setError] = useState("");
+  // While building: only completed lines, so a diagram is redrawn once a line,
+  // not once a character.
+  const source = building ? code.slice(0, Math.max(0, code.lastIndexOf("\n"))).trim() : code.trim();
 
   useEffect(() => {
     let alive = true;
-    const trimmed = code.trim();
-    if (!trimmed) return;
-    if (!mermaidReady) {
-      const dark = !document.documentElement.dataset.theme?.includes("light");
-      mermaidReady = import("mermaid").then((m) => {
-        // "loose" — strict rejects common model-generated labels (e.g. with
-        // HTML entities) and silently blanked the diagram. We render into our
-        // own sandboxed context, and the SVG is inert markup.
-        m.default.initialize({
-          startOnLoad: false,
-          theme: dark ? "dark" : "default",
-          securityLevel: "loose",
-        });
-        return m.default;
-      });
-    }
-    mermaidReady
+    if (!source) return;
+    loadMermaid()
       .then(async (mermaid) => {
         try {
-          await mermaid.parse(trimmed);
-          const { svg: out } = await mermaid.render(`mmd-${mermaidSeq++}`, trimmed);
+          let text = source;
+          if (building) {
+            const found = await longestParsable(mermaid, source.split("\n"), 1);
+            if (!found) return;
+            text = found;
+          } else {
+            await mermaid.parse(text);
+          }
+          const { svg: out } = await mermaid.render(`mmd-${mermaidSeq++}`, text);
           if (alive) {
             setSvg(out);
             setError("");
           }
         } catch (e) {
-          // Expected while the block is still streaming in; the final code
-          // triggers another attempt. Keep the message for the fallback.
-          if (alive) setError((e as Error)?.message ?? String(e));
+          // Building, a failed drawing keeps the last one; written, it is the
+          // diagram's own fault, said under its source.
+          if (alive && !building) setError((e as Error)?.message ?? String(e));
         }
       })
       .catch((e) => {
-        if (alive) setError(`mermaid: ${(e as Error)?.message ?? e}`);
+        if (alive && !building) setError(`mermaid: ${(e as Error)?.message ?? e}`);
       });
     return () => {
       alive = false;
     };
-  }, [code]);
+  }, [source, building]);
 
-  if (svg && !error) {
+  // Nothing drawn yet: being written, or drawing for the first time — the
+  // source shows only for a diagram that failed as written.
+  if (!svg && (building || !error)) {
+    return (
+      <div className="mermaid-diagram mermaid-pending">
+        <span className="mermaid-pending-label">{t("mermaidDrawing")}</span>
+      </div>
+    );
+  }
+  if (svg && (building || !error)) {
     return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
   }
   return (
@@ -267,6 +317,7 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   const openCanvas = useContext(CanvasOpenContext);
   const collapseEnabled = useContext(CodeCollapseContext);
   const streaming = useContext(StreamingContext);
+  const fenceOpen = useContext(FenceOpen);
 
   const lang = codeLang(children);
 
@@ -297,9 +348,12 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
     }
   });
 
-  // Mermaid diagrams render in place of the code block.
+  // Mermaid diagrams render in place of the code block — drawn as far as they
+  // go while the fence is still open and the reply still coming (see Mermaid).
+  // A reply that ended inside the fence ended the diagram there: that is what
+  // the model wrote, and it is judged as written.
   if (lang === "mermaid") {
-    return <Mermaid code={codeText(children)} />;
+    return <Mermaid code={codeText(children)} building={fenceOpen && streaming} />;
   }
 
   const copy = (e?: { stopPropagation: () => void }) => {
@@ -422,7 +476,14 @@ const FadeShown = createContext<{ upTo: number } | null>(null);
  *  past what the block has shown, and then never again; its node is keyed by
  *  where it starts, so a component React hands another word gets a fresh node
  *  for it. Any other span (KaTeX's) renders as it is. */
-function FadeSpan({
+const FadeSpan = memo(FadeSpanInner, (a, b) => {
+  // react-markdown hands every element a fresh `node`; the word itself is
+  // what matters. Unchanged, a word does not render again as the text grows.
+  const ra = a as Record<string, unknown>;
+  const rb = b as Record<string, unknown>;
+  return a.className === b.className && ra["data-o"] === rb["data-o"] && a.children === b.children && a.style === b.style;
+});
+function FadeSpanInner({
   node: _node,
   className,
   style,
@@ -434,7 +495,8 @@ function FadeSpan({
   const at = raw == null ? -1 : Number(raw);
   const word = className === "sw" && at >= 0 && shown != null;
   const fresh = useMemo(() => word && at >= shown!.upTo, [word, at, shown]);
-  const delay = useMemo(() => (fresh ? fadeDelay() : 0), [fresh, at]);
+  const timing = useMemo(() => (fresh ? fadeTiming() : null), [fresh, at]);
+  const delay = timing?.delay ?? 0;
   const length = typeof children === "string" ? children.length : 0;
   useLayoutEffect(() => {
     if (word) shown!.upTo = Math.max(shown!.upTo, at + length);
@@ -450,7 +512,7 @@ function FadeSpan({
   return (
     <span
       key={at}
-      className={fresh ? "sw" : undefined}
+      className={fresh ? (timing?.quick ? "sw quick" : "sw") : undefined}
       style={fresh && delay > 0 ? { ...style, animationDelay: `${delay}ms` } : style}
       {...rest}
     >
@@ -502,6 +564,19 @@ function StreamLinesCode({ className, children }: ComponentPropsWithoutRef<"code
 const streamingComponents = { pre: CodeBlock, sup: SupRenderer, code: StreamLinesCode } as const;
 const fadeStreamingComponents = { ...streamingComponents, span: FadeSpan } as const;
 
+/** The block being written, as it is shown while it comes in: a fence whose
+ *  opening line is not finished waits for it (`\`\`\`mer` was a code block of
+ *  the language "mer" until "mermaid" came, and a diagram's place showed an
+ *  empty code box first); any other block is held back where its markdown has
+ *  not yet decided what it is (streamMarkdown). */
+function liveSrc(b: { src: string; openFence?: unknown }): string {
+  return b.openFence ? (b.src.includes("\n") ? b.src : "") : stabilizeTail(b.src);
+}
+
+/** The fenced block being rendered is still being written (no closing fence
+ *  yet): a diagram's source is not parsed until it is whole. */
+const FenceOpen = createContext(false);
+
 /** One top-level block, rendered on its own and re-rendered only when its own
  *  source changes. */
 const Block = memo(function Block({
@@ -519,6 +594,7 @@ const Block = memo(function Block({
   const base = (openFence ? rehypeStreamingPlugins : plugins) as unknown[];
   const shown = useRef({ upTo: 0 }).current;
   return (
+    <FenceOpen.Provider value={openFence}>
     <FadeShown.Provider value={fade ? shown : null}>
     <ReactMarkdown
       remarkPlugins={remarkPlugins}
@@ -536,6 +612,7 @@ const Block = memo(function Block({
       {src}
     </ReactMarkdown>
     </FadeShown.Provider>
+    </FenceOpen.Provider>
   );
 });
 
@@ -559,7 +636,8 @@ export function Markdown({
   streaming?: boolean;
 }) {
   const inStream = useContext(StreamingContext);
-  const live = (streaming ?? inStream) && !!blocks;
+  const isStreaming = streaming ?? inStream;
+  const live = isStreaming && !!blocks;
   const count = cites?.length ?? 0;
   const plugins = useMemo(
     () => (count > 0 ? [...rehypePlugins, [rehypeCites, { count }]] : rehypePlugins),
@@ -578,12 +656,15 @@ export function Markdown({
     }
   }, [blocks, children]);
   return (
+    <StreamingContext.Provider value={isStreaming}>
     <CitesContext.Provider value={cites ?? []}>
       {parts ? (
         parts.map((b, i) => (
           <Block
             key={b.start}
-            src={b.src}
+            // The block being written, held back where its markdown has not
+            // yet decided what it is (see streamMarkdown).
+            src={live && i === parts.length - 1 ? liveSrc(b) : b.src}
             plugins={plugins}
             openFence={!!b.openFence}
             fade={live && i === parts.length - 1}
@@ -599,5 +680,6 @@ export function Markdown({
         </ReactMarkdown>
       )}
     </CitesContext.Provider>
+    </StreamingContext.Provider>
   );
 }

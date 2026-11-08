@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fadeDelay, fadePieces, rehypeStreamFade, resetFadeSchedule } from "./streamFade";
+import { fadePieces, fadeTiming, rehypeStreamFade, resetFadeSchedule } from "./streamFade";
 
 type Node = { type: string; tagName?: string; value?: string; properties?: Record<string, unknown>; children?: Node[] };
 const text = (value: string): Node => ({ type: "text", value });
@@ -44,17 +44,45 @@ describe("the block being written, as words", () => {
   });
 });
 
+describe("only plain text fades", () => {
+  it("a table's cells, a list's words and a heading: the table streams as it always has", () => {
+    const tree = el("root", [
+      el("h2", [text("小结")]),
+      el("ul", [el("li", [text("one")])]),
+      el("table", [el("tbody", [el("tr", [el("td", [text("cell")])])])]),
+    ]);
+    rehypeStreamFade()(tree as never);
+    const swCount = (n: Node): number =>
+      (n.children ?? []).reduce((k, c) => k + ((c.properties?.className as string[] | undefined)?.includes("sw") ? 1 : 0) + swCount(c), 0);
+    expect(swCount(tree.children![0])).toBe(2);
+    expect(swCount(tree.children![1])).toBe(1);
+    expect(swCount(tree.children![2])).toBe(0);
+    expect(tree.children![2].children![0].children![0].children![0].children).toEqual([text("cell")]);
+  });
+});
+
 describe("when each new word starts", () => {
   it("in order, a step apart, never more than a little behind the text", () => {
     resetFadeSchedule();
-    const now = 1000;
-    const burst = Array.from({ length: 30 }, () => fadeDelay(now));
-    expect(burst.slice(0, 3)).toEqual([0, 12, 24]);
-    // Each no earlier than the one before it…
+    // A model's pace: a word every 30 ms, two arriving in one frame.
+    expect(fadeTiming(1000)).toEqual({ delay: 0, quick: false });
+    expect(fadeTiming(1000)).toEqual({ delay: 8, quick: false });
+    expect(fadeTiming(1030)).toEqual({ delay: 0, quick: false });
+    // A burst after a pause: in order, capped at 60 ms behind.
+    resetFadeSchedule();
+    const burst = Array.from({ length: 10 }, () => fadeTiming(5000).delay);
     for (let i = 1; i < burst.length; i++) expect(burst[i]).toBeGreaterThanOrEqual(burst[i - 1]);
-    // …and never more than 220 ms behind.
-    expect(Math.max(...burst)).toBe(220);
-    // Later, with the schedule caught up, a word starts at once.
-    expect(fadeDelay(now + 2000)).toBe(0);
+    expect(Math.max(...burst)).toBe(60);
+  });
+
+  it("a stream faster than the fade lets each word in at once, quickly", () => {
+    resetFadeSchedule();
+    let last = { delay: 0, quick: false };
+    // Twenty words in 40 ms.
+    for (let i = 0; i < 20; i++) last = fadeTiming(9000 + i * 2);
+    expect(last).toEqual({ delay: 0, quick: true });
+    // Back to a usual pace, the fade comes back.
+    for (let i = 0; i < 20; i++) last = fadeTiming(20000 + i * 40);
+    expect(last.quick).toBe(false);
   });
 });

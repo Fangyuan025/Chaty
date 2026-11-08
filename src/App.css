@@ -1891,6 +1891,42 @@ body.resizing-x {
 }
 
 /* ---------- Mermaid diagrams ---------- */
+/* A diagram whose first lines have not yet made a drawing: the light every
+   "going on" uses, where the drawing will be. */
+.mermaid-pending {
+  display: flex;
+  align-items: center;
+  min-height: 56px;
+  padding: 0 4px;
+}
+.mermaid-pending-label {
+  font-size: 13px;
+  background: linear-gradient(
+    90deg,
+    var(--text-dim) 0%,
+    var(--text-dim) 42%,
+    var(--text) 50%,
+    var(--text-dim) 58%,
+    var(--text-dim) 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: cmrunlight 2.6s ease-in-out infinite;
+}
+html[data-motion="reduce"] .mermaid-pending-label {
+  animation: none;
+  background: none;
+  color: var(--text-dim);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mermaid-pending-label {
+    animation: none;
+    background: none;
+    color: var(--text-dim);
+  }
+}
 .mermaid-diagram {
   margin: 12px 0;
   padding: 14px;
@@ -2082,14 +2118,14 @@ body.resizing-x {
    newest words still faint, the ones before them settled. Opacity and blur
    only: nothing moves, so the text being read never shifts under the eye. */
 .sw {
-  animation: sw-in 560ms cubic-bezier(0.2, 0.6, 0.25, 1) both;
+  animation: sw-in 420ms cubic-bezier(0.2, 0.6, 0.25, 1) both;
 }
 @keyframes sw-in {
   from {
     opacity: 0;
-    filter: blur(4px);
+    filter: blur(1.5px);
   }
-  60% {
+  45% {
     filter: blur(0);
   }
   to {
@@ -2097,11 +2133,23 @@ body.resizing-x {
     filter: blur(0);
   }
 }
-html[data-motion="reduce"] .sw {
+/* A stream faster than the fade (lib/streamFade, fadeTiming): each word in
+   at once, briefly, without the blur. */
+.sw.quick {
+  animation: sw-quick 200ms ease-out both;
+}
+@keyframes sw-quick {
+  from {
+    opacity: 0;
+  }
+}
+html[data-motion="reduce"] .sw,
+html[data-motion="reduce"] .sw.quick {
   animation: none;
 }
 @media (prefers-reduced-motion: reduce) {
-  .sw {
+  .sw,
+  .sw.quick {
     animation: none;
   }
 }
