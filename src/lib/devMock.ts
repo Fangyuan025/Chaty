@@ -1437,6 +1437,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       // then reads and a search; words, then a file created and one edited;
       // words, then the tests — the folded view's runs and their summaries.
       const wantsDemo = msgs.some((m) => m.role === "user" && /演示|demo/i.test(m.content));
+      // Typing 长回答 / long answer streams a long mixed reply at a model's
+      // pace — paragraphs, a list, code — for looking at streaming itself.
+      const wantsLong = /长回答|long answer/i.test(last);
       const fast = wantsOutside || wantsSudo || wantsDate;
       // Thinking first, so the preview exercises the think panel (and stopping
       // a turn mid-thought, which is where its spinner used to stay turning).
@@ -1460,6 +1463,17 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         "<think>都通过了。</think>\n完成:新增 `src/tokens.ts`,`parser.ts` 改为调用它,4 个测试全部通过。",
       ];
       if (wantsDemo && !isTitleReq) reply = DEMO[Math.min(demoStep, DEMO.length - 1)];
+      else if (wantsLong && !isTitleReq) {
+        reply =
+          "Rust 的生命周期(lifetime)是编译器用来保证**引用始终有效**的标注。它不改变值活多久,只是把引用之间的关系写清楚,让借用检查器能证明不会出现悬垂引用。\n\n" +
+          "A lifetime names the span during which a borrow is valid. Most of the time the compiler infers it; you write one when a function returns a reference and the compiler cannot tell which input it came from.\n\n" +
+          "常见的三种情况:\n\n" +
+          "1. **省略规则能推断**——只有一个引用参数时,返回值自动沿用它的生命周期;\n" +
+          "2. **多个引用参数**——需要显式写 `'a`,说明返回值借自哪一个;\n" +
+          "3. **结构体持有引用**——结构体本身也要带上生命周期参数,表示它不能比所借的数据活得更久。\n\n" +
+          "```rust\nfn longest<'a>(x: &'a str, y: &'a str) -> &'a str {\n    if x.len() > y.len() { x } else { y }\n}\n```\n\n" +
+          "Here `'a` says the result lives no longer than the shorter of the two inputs, which is exactly what the caller can rely on. 如果确实需要一个活到程序结束的引用,用 `'static`——字符串字面量就是这样存在二进制只读段里的。";
+      }
       else if (isTitleReq) {
         reply = /dataset manifest/i.test(last) ? "Summarize dataset manifest" : "读取数据集清单";
       } else if (wantsDate && dateEcho) {
@@ -1498,11 +1512,13 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           emit({ type: "prefill", processed: Math.min(done, total), total });
           await new Promise((r) => setTimeout(r, fast ? 15 : 140));
         }
-        for (const piece of reply.match(/.{1,6}/g) ?? []) {
+        for (const piece of reply.match(wantsLong ? /[\s\S]{1,3}/g : /.{1,6}/g) ?? []) {
           // Told to stop, it stops, as the engines do.
           if (mockGenStop) break;
+          // `__mockPause` holds the stream mid-reply, to look at a frame of it.
+          while ((globalThis as { __mockPause?: boolean }).__mockPause) await new Promise((r) => setTimeout(r, 50));
           emit({ type: "token", text: piece });
-          await new Promise((r) => setTimeout(r, 30));
+          await new Promise((r) => setTimeout(r, wantsLong ? 28 : 30));
         }
         emit({
           type: "done",

@@ -102,38 +102,67 @@ export interface WorkItem {
 
 /** Lines a step's diff adds and removes. */
 export type DiffCounter = (step: ToolStep) => { added: number; removed: number } | null;
+/** Lines a file gained and lost from before `first` to after `last` — its net
+ *  change over the steps between; null when either step's contents were cut
+ *  for the card, and the net cannot be told. */
+export type NetCounter = (first: ToolStep, last: ToolStep) => { added: number; removed: number } | null;
 
 const FILE_KINDS: WorkKind[] = ["read", "create", "edit"];
 
 /** What a run of steps did, kind by kind in the order each first came up.
  *  Files are counted once however often they were touched, and only where
- *  the step went through — a file written where none was is created, any
- *  other write or edit an edit, each with the lines it gained and lost.
- *  Everything else counts its calls. A run whose steps all failed sums up
- *  as the tools it used. */
-export function workSummary(steps: ToolStep[], countDiff?: DiffCounter): WorkItem[] {
+ *  the step went through. A file the run brought into being is created, any
+ *  other it wrote or edited is edited — once, under the kind its first step
+ *  gave it — with the lines it gained and lost over the whole run: from
+ *  before its first change to after its last, as the turn's changes card
+ *  counts a file (`netCount`), not each step's change added up — a line
+ *  written and then rewritten is one line, not two. Where that net cannot be
+ *  told, the steps' own counts (`countDiff`) are added instead. Everything
+ *  else counts its calls. A run whose steps all failed sums up as the tools
+ *  it used. */
+export function workSummary(steps: ToolStep[], countDiff?: DiffCounter, netCount?: NetCounter): WorkItem[] {
   const order: WorkKind[] = [];
   const files = new Map<WorkKind, Set<string>>();
   const calls = new Map<WorkKind, number>();
   const lines = new Map<WorkKind, { added: number; removed: number }>();
+  // Files changed with a diff: their kind, first and last step, and the
+  // steps' own counts summed, in case the net cannot be told.
+  const changed = new Map<string, { kind: WorkKind; first: ToolStep; last: ToolStep; sum: { added: number; removed: number } | null }>();
   for (const s of steps) {
     // Not run — the user said no, or plan mode held it back: counted apart.
     if (s.status === "denied") continue;
     let k = kindOf(s.call.name);
     if (FILE_KINDS.includes(k)) {
       if (s.status !== "done") continue;
-      if (s.call.name === "write_file" && s.diff && s.diff.before === "") k = "create";
-      const set = files.get(k) ?? new Set<string>();
-      for (const p of pathsOf(s)) set.add(p);
-      files.set(k, set);
-      const d = k === "read" ? null : countDiff?.(s);
-      if (d) {
-        const sum = lines.get(k) ?? { added: 0, removed: 0 };
-        lines.set(k, { added: sum.added + d.added, removed: sum.removed + d.removed });
+      if (k !== "read" && s.diff) {
+        const path = s.diff.path || pathsOf(s)[0] || s.id;
+        const d = countDiff?.(s) ?? null;
+        const c = changed.get(path);
+        if (c) {
+          c.last = s;
+          c.sum = c.sum && d ? { added: c.sum.added + d.added, removed: c.sum.removed + d.removed } : (c.sum ?? d);
+          k = c.kind;
+        } else {
+          if (s.call.name === "write_file" && s.diff.before === "") k = "create";
+          changed.set(path, { kind: k, first: s, last: s, sum: d });
+        }
+        const set = files.get(k) ?? new Set<string>();
+        set.add(path);
+        files.set(k, set);
+      } else {
+        const set = files.get(k) ?? new Set<string>();
+        for (const p of pathsOf(s)) set.add(p);
+        files.set(k, set);
       }
     }
     if (!order.includes(k)) order.push(k);
     calls.set(k, (calls.get(k) ?? 0) + 1);
+  }
+  for (const c of changed.values()) {
+    const d = netCount?.(c.first, c.last) ?? c.sum;
+    if (!d) continue;
+    const sum = lines.get(c.kind) ?? { added: 0, removed: 0 };
+    lines.set(c.kind, { added: sum.added + d.added, removed: sum.removed + d.removed });
   }
   const out: WorkItem[] = order.map((k) => {
     const distinct = files.get(k)?.size ?? 0;

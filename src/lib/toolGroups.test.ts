@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import type { ToolStep } from "./agentLoop";
 import { activityOf, deniedCount, failedCount, segmentsOf, workSummary } from "./toolGroups";
+import { changeCounts } from "./diff";
+import { toTurnChange } from "./turnChanges";
 
 const step = (id: string, name: string, args: Record<string, unknown> = {}, extra: Partial<ToolStep> = {}): ToolStep => ({
   id,
@@ -61,7 +63,7 @@ describe("what a run did", () => {
     ]);
   });
 
-  test("a file written where none was is created; lines summed; failed file steps not counted", () => {
+  test("a file written where none was is created — once, edits after included; failed file steps not counted", () => {
     const counts: Record<string, { added: number; removed: number }> = {
       w1: { added: 40, removed: 0 },
       w2: { added: 12, removed: 0 },
@@ -78,9 +80,42 @@ describe("what a run did", () => {
       ],
       (s) => counts[s.id] ?? null,
     );
+    // a.py was created and then edited: one file, created, its steps' lines
+    // together (no net counter given); c.py alone was edited.
     expect(sum).toEqual([
-      { kind: "create", n: 2, added: 52, removed: 0 },
-      { kind: "edit", n: 2, added: 8, removed: 10 },
+      { kind: "create", n: 2, added: 55, removed: 1 },
+      { kind: "edit", n: 1, added: 5, removed: 9 },
+    ]);
+  });
+
+  test("a file's lines are its net change over the run — what the turn's changes card shows", () => {
+    const v1 = "a\nb\nc\n";
+    const v2 = "a\nB\nc\nd\n";
+    const v3 = "a\nB2\nc\nd\n";
+    const steps = [
+      step("w", "write_file", { path: "new.ts" }, { diff: { path: "new.ts", before: "", after: v1 } }),
+      step("e1", "edit_file", { path: "new.ts" }, { diff: { path: "new.ts", before: v1, after: v2 } }),
+      step("e2", "edit_file", { path: "new.ts" }, { diff: { path: "new.ts", before: v2, after: v3 } }),
+      step("o1", "edit_file", { path: "old.ts" }, { diff: { path: "old.ts", before: v1, after: v2 } }),
+      step("o2", "edit_file", { path: "old.ts" }, { diff: { path: "old.ts", before: v2, after: v1 } }),
+    ];
+    const perStep = (x: ToolStep) => (x.diff ? changeCounts(x.diff.before, x.diff.after) : null);
+    const net = (first: ToolStep, last: ToolStep) => changeCounts(first.diff!.before, last.diff!.after);
+    const sum = workSummary(steps, perStep, net);
+    // The card, for the same turn: each file from before to after.
+    const card = [toTurnChange({ path: "/w/new.ts", rel: "new.ts", before: "", after: v3, created: true } as never), toTurnChange({ path: "/w/old.ts", rel: "old.ts", before: v1, after: v1 } as never)];
+    expect(sum).toEqual([
+      { kind: "create", n: 1, added: card[0].added, removed: card[0].removed },
+      { kind: "edit", n: 1, added: card[1].added, removed: card[1].removed },
+    ]);
+    // A new four-line file is +4 (not +5 for the empty line after its closing
+    // newline); a change undone within the run is no change.
+    expect(sum[0]).toMatchObject({ added: 4, removed: 0 });
+    expect(sum[1]).toMatchObject({ added: 0, removed: 0 });
+    // Added step by step, the same run would have read +6 −2 and +3 −3.
+    expect(workSummary(steps, perStep)).toEqual([
+      { kind: "create", n: 1, added: 3 + 2 + 1, removed: 1 + 1 },
+      { kind: "edit", n: 1, added: 3, removed: 3 },
     ]);
   });
 

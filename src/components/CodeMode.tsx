@@ -11,14 +11,14 @@ import { watchContentHeight } from "../lib/autoGrow";
 /** Matches `.cm-input` max-height. */
 const CM_COMPOSER_MAX_H = 200;
 import { effortLabel, intensityOf, thinkTabActive } from "../lib/effort";
-import { diffLines } from "../lib/diff";
+import { changeCounts, diffLines } from "../lib/diff";
 import {
   activityOf,
   deniedCount,
   failedCount,
   segmentsOf,
   workSummary,
-  type DiffCounter,
+  type NetCounter,
   type WorkKind,
 } from "../lib/toolGroups";
 import { liveScan, type LiveScan } from "../lib/liveCall";
@@ -103,6 +103,8 @@ import { homeDir } from "@tauri-apps/api/path";
 import { fmtBytes } from "../lib/fmt";
 import { JumpBottom } from "./JumpBottom";
 import { PrefillRing } from "./PrefillRing";
+import { DiffStat } from "./DiffStat";
+import { prefillPct } from "../lib/prefill";
 import { ContextRing } from "./ContextRing";
 
 interface CodeMsg {
@@ -480,13 +482,11 @@ function StepCard({
   // the model) but visually a failure — a green check here read as "ls
   // worked" when cmd.exe had actually rejected the command.
   const cmdFailed = step.status === "done" && meta?.tone === "warn";
-  // Compute the diff once; the +N/−M badge uses the EXACT totals, never the
-  // render-capped rows, so big edits are counted correctly.
-  const d = useMemo(() => (diff ? diffLines(diff.before, diff.after) : null), [diff]);
-  // Exact totals when the contents were capped for the card; otherwise the
-  // ones just computed, which are exact anyway.
-  const added = step.diffCounts?.added ?? d?.added ?? 0;
-  const removed = step.diffCounts?.removed ?? d?.removed ?? 0;
+  // The +N/−M badge: the step's count as every place counts a change
+  // (countStepDiff → changeCounts), exact even when the contents were capped.
+  const counts = useMemo(() => countStepDiff(step), [step]);
+  const added = counts?.added ?? 0;
+  const removed = counts?.removed ?? 0;
   // Clicking an image step opens the preview directly; otherwise toggle the body.
   const onHead = () => {
     if (hasImage && step.image) onPreview?.(step.image);
@@ -504,15 +504,14 @@ function StepCard({
         <span className="cm-step-sum">{stepSummary(step)}</span>
         {liveS ? (
           <span className="cm-step-diffstat">
-            <em className="plus">+{liveS.added}</em>
-            <em className="minus">-{liveS.removed}</em>
+            <DiffStat added={liveS.added} removed={liveS.removed} />
           </span>
         ) : (
-          d &&
-          step.status === "done" && (
+          counts &&
+          step.status === "done" &&
+          (added > 0 || removed > 0) && (
             <span className="cm-step-diffstat">
-              <em className="plus">+{added}</em>
-              <em className="minus">-{removed}</em>
+              <DiffStat added={added} removed={removed} />
             </span>
           )
         )}
@@ -530,7 +529,7 @@ function StepCard({
       {open && hasBody && liveS && <LiveScanView scan={liveS} />}
       {open && hasBody && !liveS && (
         <div className="cm-step-body">
-          {d && diff ? (
+          {diff ? (
             <DiffView
               before={diff.before}
               after={diff.after}
@@ -616,15 +615,32 @@ function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label
 /** Lines a step's diff adds and removes — the card's own count when the
  *  contents were capped, else counted once per diff and kept. */
 const diffCountCache = new WeakMap<object, { added: number; removed: number }>();
-const countStepDiff: DiffCounter = (s) => {
+function countStepDiff(s: ToolStep): { added: number; removed: number } | null {
   if (s.diffCounts) return s.diffCounts;
   if (!s.diff) return null;
-  let c = diffCountCache.get(s.diff);
-  if (!c) {
-    const d = diffLines(s.diff.before, s.diff.after);
-    c = { added: d.added, removed: d.removed };
-    diffCountCache.set(s.diff, c);
+  const kept = diffCountCache.get(s.diff);
+  if (kept) return kept;
+  const c = changeCounts(s.diff.before, s.diff.after);
+  diffCountCache.set(s.diff, c);
+  return c;
+}
+
+/** A file's net change over a folded run: before its first step to after its
+ *  last, counted once per pair and kept. Not where either step's contents
+ *  were capped — the net of cut text is not the file's. */
+const netCountCache = new WeakMap<object, WeakMap<object, { added: number; removed: number }>>();
+const countRunNet: NetCounter = (first, last) => {
+  if (!first.diff || !last.diff || first.diffCounts || last.diffCounts) return null;
+  if (first === last) return countStepDiff(first);
+  let byLast = netCountCache.get(first.diff);
+  if (!byLast) {
+    byLast = new WeakMap();
+    netCountCache.set(first.diff, byLast);
   }
+  const kept = byLast.get(last.diff);
+  if (kept) return kept;
+  const c = changeCounts(first.diff.before, last.diff.after);
+  byLast.set(last.diff, c);
   return c;
 };
 
@@ -677,7 +693,7 @@ function ToolRun({
   } else if (doneLabel) {
     label = <span className="cm-run-label">{doneLabel}</span>;
   } else {
-    const items = workSummary(steps, countStepDiff);
+    const items = workSummary(steps, countStepDiff, countRunNet);
     const failed = failedCount(steps);
     const denied = deniedCount(steps);
     const sep = lang === "zh" ? "，" : ", ";
@@ -698,8 +714,7 @@ function ToolRun({
               {words}
               {(it.added || it.removed) ? (
                 <span className="cm-step-diffstat cm-run-diff">
-                  {it.added ? <em className="plus">+{it.added}</em> : null}
-                  {it.removed ? <em className="minus">-{it.removed}</em> : null}
+                  <DiffStat added={it.added ?? 0} removed={it.removed ?? 0} />
                 </span>
               ) : null}
             </span>
@@ -2350,7 +2365,7 @@ export function CodeMode({
         : lastStep?.status === "running"
           ? activityOf(lastStep)
           : prefill != null
-            ? { key: "actPrefill", x: `${Math.round(Math.min(1, Math.max(0, prefill)) * 100)}%` }
+            ? { key: "actPrefill", x: `${prefillPct(prefill)}%` }
             : callingTool !== null
               ? callingTool
                 ? activityOf({ id: "", call: { name: callingTool as never, args: {} }, status: "running" })
@@ -2640,6 +2655,9 @@ export function CodeMode({
             <div className="cm-thread" ref={threadRef}>
             {msgs.map((m, mi) => {
               const f = collapseTools && m.role !== "user" ? foldOf(m, mi === msgs.length - 1) : null;
+              // The turn being written: its words fade in as they come (see
+              // lib/streamFade), rendered block by block like a chat reply.
+              const live = running && mi === msgs.length - 1;
               return m.role === "user" ? (
                 <div key={m.id} className="cm-user-row">
                   {m.checkpointId != null && !running && (
@@ -2725,7 +2743,7 @@ export function CodeMode({
                           ...(m.text.trim()
                             ? [
                                 <div key="said-pending" className="cm-asst-text answer cm-said">
-                                  <Markdown>{m.text}</Markdown>
+                                  <Markdown blocks={live} streaming={live}>{m.text}</Markdown>
                                 </div>,
                               ]
                             : []),
@@ -2784,7 +2802,7 @@ export function CodeMode({
                   {!f && m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />}
                   {m.text && !f?.bottom && (
                     <div className="cm-asst-text answer" data-copy={m.text}>
-                      <Markdown>{m.text}</Markdown>
+                      <Markdown blocks={live} streaming={live}>{m.text}</Markdown>
                       {!running && (
                         <button
                           className="cm-copy"

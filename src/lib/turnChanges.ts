@@ -1,4 +1,4 @@
-import { diffLines } from "./diff";
+import { changeCounts } from "./diff";
 import type { CpChange } from "./ipc";
 
 /** One file a turn changed, as the card under its answer keeps it. */
@@ -25,24 +25,11 @@ export interface TurnChange {
  *  step card's diff. */
 export const KEEP_CHARS = 200_000;
 
-/** Lines in a file, its closing newline not counted as one more. */
-function lineCount(s: string): number {
-  return s ? s.split("\n").length - (s.endsWith("\n") ? 1 : 0) : 0;
-}
-
 export function toTurnChange(c: CpChange): TurnChange {
   const before = c.before ?? "";
   const after = c.after ?? "";
-  // A file that appeared or went away is all added or all removed. Diffed
-  // against nothing, the empty line after its closing newline would count as
-  // one more — a one-line file read +2.
-  const counts = c.binary
-    ? { added: 0, removed: 0 }
-    : !before
-      ? { added: lineCount(after), removed: 0 }
-      : !after
-        ? { added: 0, removed: lineCount(before) }
-        : diffLines(before, after, 0);
+  // Counted as a step's card and a folded run count it (changeCounts).
+  const counts = c.binary ? { added: 0, removed: 0 } : changeCounts(before, after);
   const keep = !c.binary && before.length + after.length <= KEEP_CHARS;
   return {
     path: c.path,

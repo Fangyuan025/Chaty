@@ -100,7 +100,7 @@ import {
   loadedUrlFrom,
 } from "./wrapupGate";
 import { isReadOnlyCommand, isSymbolicCheck } from "./readOnlyCmd";
-import { diffLines } from "./diff";
+import { changeCounts } from "./diff";
 import {
   compactValue,
   callAt,
@@ -963,7 +963,7 @@ function capDiffForCard(
   // totals rather than the render-capped rows, and truncating the contents
   // underneath it would have quietly made that a lie on the very files where
   // the number matters most.
-  const { added, removed } = diffLines(diff.before, diff.after);
+  const { added, removed } = changeCounts(diff.before, diff.after);
   const half = Math.floor(CARD_DIFF_CHARS / 2);
   const note = lang === "zh" ? "\n…(文件过大,差异视图已截断)" : "\n…(file too large; diff view truncated)";
   return {

@@ -117,3 +117,21 @@ export function diffLines(
     truncated,
   };
 }
+
+/** Lines in a file, its closing newline not counted as one more. */
+export function lineCount(s: string): number {
+  return s ? s.split("\n").length - (s.endsWith("\n") ? 1 : 0) : 0;
+}
+
+/** Lines a change to a file added and removed — the one count every place
+ *  that shows it uses: a step's card, the folded run's line, the turn's
+ *  changes card. A file that appeared or went away is all added or all
+ *  removed; diffed against nothing, the empty line after its closing newline
+ *  would count as one more, and a new file read one line longer on its step
+ *  than on the card under the answer. */
+export function changeCounts(before: string, after: string): { added: number; removed: number } {
+  if (!before) return { added: lineCount(after), removed: 0 };
+  if (!after) return { added: 0, removed: lineCount(before) };
+  const d = diffLines(before, after, 0);
+  return { added: d.added, removed: d.removed };
+}

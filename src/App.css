@@ -2077,6 +2077,35 @@ body.resizing-x {
   }
 }
 
+/* Words arriving while a reply streams (lib/streamFade): each comes in out
+   of a soft blur, so the end of the line being written is a gradient — the
+   newest words still faint, the ones before them settled. Opacity and blur
+   only: nothing moves, so the text being read never shifts under the eye. */
+.sw {
+  animation: sw-in 560ms cubic-bezier(0.2, 0.6, 0.25, 1) both;
+}
+@keyframes sw-in {
+  from {
+    opacity: 0;
+    filter: blur(4px);
+  }
+  60% {
+    filter: blur(0);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+html[data-motion="reduce"] .sw {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sw {
+    animation: none;
+  }
+}
+
 /* ---------- Thinking panel ---------- */
 .think {
   margin-bottom: 12px;
@@ -2089,7 +2118,7 @@ body.resizing-x {
   align-items: center;
   gap: 6px;
   padding: 3px 0;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--read-scale, 1));
   color: var(--faint);
   background: transparent;
   border: none;
@@ -2110,14 +2139,10 @@ body.resizing-x {
   transform: rotate(90deg);
 }
 
-.think-label.is-thinking {
-  color: var(--text-dim);
-}
-
 .think-body {
   margin-top: 8px;
   padding: 12px 14px;
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--read-scale, 1));
   line-height: 1.7;
   color: var(--text-dim);
   border-left: 1.5px solid var(--border-strong);
@@ -2127,41 +2152,6 @@ body.resizing-x {
 
 .think-body p:last-child {
   margin-bottom: 0;
-}
-
-.dots {
-  display: inline-flex;
-  gap: 3px;
-  margin-left: 6px;
-}
-
-.dots i {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: dotPulse 1.2s infinite;
-}
-
-.dots i:nth-child(2) {
-  animation-delay: 0.18s;
-}
-
-.dots i:nth-child(3) {
-  animation-delay: 0.36s;
-}
-
-@keyframes dotPulse {
-  0%,
-  60%,
-  100% {
-    opacity: 0.25;
-    transform: translateY(0);
-  }
-  30% {
-    opacity: 1;
-    transform: translateY(-2px);
-  }
 }
 
 /* ---------- Settings popover ---------- */
@@ -6542,7 +6532,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   align-self: flex-end;
   max-width: 82%;
   padding: 10px 14px;
-  font-size: calc(14px * var(--read-scale, 1));
+  font-size: calc(15px * var(--read-scale, 1));
   line-height: 1.5;
   color: var(--text);
   background: var(--surface-2);
@@ -6556,14 +6546,14 @@ body:has(.live-overlay) .win-btn.close:hover {
   flex-direction: column;
   gap: 7px;
 }
-/* Code's answers: the app's own sans at the size of the work around it, not
-   the chat's reading serif — next to monospace step cards the serif read as
+/* Code's answers: the app's own sans, at the size chat sets its answers (one
+   Text size for both, the same at every step of it), not the chat's reading serif — next to monospace step cards the serif read as
    a different document. The chat's markdown rules are scoped to its bubbles,
    so everything a summary uses is set here, kept quiet: small headings,
    hairline tables, rules and quotes. */
 .cm-asst-text.answer {
   font-family: var(--font-body);
-  font-size: calc(14.5px * var(--read-scale, 1));
+  font-size: calc(16.5px * var(--read-scale, 1));
   line-height: 1.65;
   color: var(--text);
   overflow-wrap: anywhere;
@@ -6588,7 +6578,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   background: transparent;
   border: none;
   cursor: pointer;
-  font-size: calc(13px * var(--read-scale, 1));
+  font-size: calc(13.5px * var(--read-scale, 1));
   line-height: 1.5;
   color: var(--text-dim);
   text-align: left;
@@ -6635,8 +6625,12 @@ body:has(.live-overlay) .win-btn.close:hover {
    gradient is three times the words' width, so the light comes in from past
    the left edge and leaves past the right one — at two times it sat half on
    at both ends and jumped from one to the other. Gone, it rests a moment
-   before the next pass. The cards inside keep their own spinner. */
-.cm-run.active .cm-run-label {
+   before the next pass. The cards inside keep their own spinner. The same
+   light is every "going on" in the app: the status line over Code's
+   composer, and chat's "Thinking" — where three bouncing dots were. */
+.cm-run.active .cm-run-label,
+.cm-runbar-label,
+.think-label.is-thinking {
   background: linear-gradient(
     90deg,
     var(--text-dim) 0%,
@@ -6666,11 +6660,20 @@ body:has(.live-overlay) .win-btn.close:hover {
   .cm-run-state {
     animation: none;
   }
-  .cm-run.active .cm-run-label {
+  .cm-run.active .cm-run-label,
+  .cm-runbar-label,
+  .think-label.is-thinking {
     animation: none;
     background: none;
     color: var(--text-dim);
   }
+}
+html[data-motion="reduce"] .cm-run.active .cm-run-label,
+html[data-motion="reduce"] .cm-runbar-label,
+html[data-motion="reduce"] .think-label.is-thinking {
+  animation: none;
+  background: none;
+  color: var(--text-dim);
 }
 .cm-run-body {
   display: flex;
@@ -6776,7 +6779,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   margin: 10px 0 12px;
   overflow-x: auto;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 0.85em;
 }
 .cm-asst-text th,
 .cm-asst-text td {
@@ -6887,7 +6890,6 @@ body:has(.live-overlay) .win-btn.close:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text);
   font-weight: 500;
 }
 .cm-runbar-stats {
@@ -7031,7 +7033,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   text-align: left;
   font-family: var(--font-mono);
   font-variant-ligatures: none;
-  font-size: calc(12px * var(--read-scale, 1));
+  font-size: calc(12.5px * var(--read-scale, 1));
   color: var(--text);
   transition: background var(--t-fast);
 }
@@ -7105,7 +7107,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   padding: 10px 12px;
   font-family: var(--font-mono);
   font-variant-ligatures: none;
-  font-size: calc(12px * var(--read-scale, 1));
+  font-size: calc(12.5px * var(--read-scale, 1));
   line-height: 1.55;
   color: var(--text-dim);
   white-space: pre-wrap;
@@ -7125,21 +7127,27 @@ body:has(.live-overlay) .win-btn.close:hover {
   opacity: 0.7;
   user-select: none;
 }
+/* Added and removed lines: the code in its own colour on a light tint, a
+   hairline at the edge and the mark in the change's colour. Whole lines of
+   green or red text on a green or red band read as an alarm, and were hard
+   to read as code. */
 .cm-dl.add {
-  background: var(--ok-soft);
-  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ok) 60%, transparent);
+  color: var(--text);
 }
 .cm-dl.del {
-  background: var(--danger-soft);
-  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--danger) 55%, transparent);
+  color: var(--text-dim);
 }
-:root[data-theme="dark"] .cm-dl.add,
-:root[data-theme="system"] .cm-dl.add {
+.cm-dl.add .cm-dl-mark {
   color: var(--ok);
+  opacity: 1;
 }
-:root[data-theme="dark"] .cm-dl.del,
-:root[data-theme="system"] .cm-dl.del {
+.cm-dl.del .cm-dl-mark {
   color: var(--danger);
+  opacity: 1;
 }
 .cm-dl.ctx {
   color: var(--faint);
@@ -7289,7 +7297,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   border: none;
   padding: 2px 0;
   cursor: pointer;
-  font-size: 12px;
+  font-size: calc(12.5px * var(--read-scale, 1));
   color: var(--faint);
   transition: color var(--t-fast);
 }
@@ -7307,7 +7315,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   margin: 6px 0 2px;
   padding-left: 12px;
   border-left: 2px solid var(--border);
-  font-size: 12.5px;
+  font-size: calc(13.5px * var(--read-scale, 1));
   line-height: 1.6;
   color: var(--text-dim);
   font-style: italic;
@@ -7858,7 +7866,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   align-items: center;
   justify-content: space-between;
   padding: 9px 12px;
-  font-size: 13px;
+  font-size: calc(13px * var(--read-scale, 1));
   color: var(--text);
   border-bottom: 1px solid var(--border);
 }
@@ -7921,7 +7929,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: calc(13px * var(--read-scale, 1));
   color: inherit;
   background: none;
   border: none;
@@ -7936,7 +7944,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   overflow: hidden;
   font-family: var(--font-mono);
   font-variant-ligatures: none;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--read-scale, 1));
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -8112,7 +8120,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  font-size: calc(13.5px * var(--read-scale, 1));
+  font-size: calc(14.5px * var(--read-scale, 1));
   line-height: 1.5;
   color: var(--text);
 }

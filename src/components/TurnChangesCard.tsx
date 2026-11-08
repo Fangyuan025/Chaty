@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { DiffStat } from "./DiffStat";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { DiffView } from "./DiffView";
@@ -37,8 +38,7 @@ export function TurnChangesCard({
           </span>
           <span>{t("cmChangesTitle", { n: String(changes.length) })}</span>
           <span className="cm-step-diffstat">
-            <em className="plus">+{total.added}</em>
-            <em className="minus">-{total.removed}</em>
+            <DiffStat added={total.added} removed={total.removed} />
           </span>
         </button>
         {expanded && pending.length > 1 && (
@@ -68,8 +68,7 @@ export function TurnChangesCard({
                 <span className="cm-change-tag">{t("cmChangeBinary")}</span>
               ) : (
                 <span className="cm-step-diffstat">
-                  <em className="plus">+{c.added}</em>
-                  <em className="minus">-{c.removed}</em>
+                  <DiffStat added={c.added} removed={c.removed} />
                 </span>
               )}
             </button>

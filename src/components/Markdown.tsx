@@ -3,6 +3,7 @@ import {
   memo,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -21,6 +22,7 @@ import { mdBlocks, type BlockCache } from "../lib/mdBlocks";
 import { useI18n } from "../lib/i18n";
 import { copyToClipboard } from "../lib/clipboard";
 import { fitPop } from "../lib/popFit";
+import { fadeDelay, rehypeStreamFade } from "../lib/streamFade";
 
 const remarkPlugins = [remarkGfm, remarkMath];
 // `throwOnError: false` keeps partial LaTeX from crashing mid-stream;
@@ -412,6 +414,52 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
 
 const components = { pre: CodeBlock, sup: SupRenderer } as const;
 
+/** How far into the block being written its text has been shown (see
+ *  streamFade): a word starting before this is not new. One per block. */
+const FadeShown = createContext<{ upTo: number } | null>(null);
+
+/** A span of the block being written. A word (`.sw`) fades in when it starts
+ *  past what the block has shown, and then never again; its node is keyed by
+ *  where it starts, so a component React hands another word gets a fresh node
+ *  for it. Any other span (KaTeX's) renders as it is. */
+function FadeSpan({
+  node: _node,
+  className,
+  style,
+  children,
+  ...rest
+}: ComponentPropsWithoutRef<"span"> & { node?: unknown }) {
+  const shown = useContext(FadeShown);
+  const raw = (rest as Record<string, unknown>)["data-o"];
+  const at = raw == null ? -1 : Number(raw);
+  const word = className === "sw" && at >= 0 && shown != null;
+  const fresh = useMemo(() => word && at >= shown!.upTo, [word, at, shown]);
+  const delay = useMemo(() => (fresh ? fadeDelay() : 0), [fresh, at]);
+  const length = typeof children === "string" ? children.length : 0;
+  useLayoutEffect(() => {
+    if (word) shown!.upTo = Math.max(shown!.upTo, at + length);
+  }, [word, at, length, shown]);
+  if (!word) {
+    return (
+      <span className={className} style={style} {...rest}>
+        {children}
+      </span>
+    );
+  }
+  delete (rest as Record<string, unknown>)["data-o"];
+  return (
+    <span
+      key={at}
+      className={fresh ? "sw" : undefined}
+      style={fresh && delay > 0 ? { ...style, animationDelay: `${delay}ms` } : style}
+      {...rest}
+    >
+      {children}
+    </span>
+  );
+}
+const fadeComponents = { ...components, span: FadeSpan } as const;
+
 /** One line of a code block still being written, highlighted on its own and
  *  never again: the lines above it do not change, so they do not re-render,
  *  and the block's DOM grows at its end instead of being rebuilt — which is
@@ -452,6 +500,7 @@ function StreamLinesCode({ className, children }: ComponentPropsWithoutRef<"code
 }
 
 const streamingComponents = { pre: CodeBlock, sup: SupRenderer, code: StreamLinesCode } as const;
+const fadeStreamingComponents = { ...streamingComponents, span: FadeSpan } as const;
 
 /** One top-level block, rendered on its own and re-rendered only when its own
  *  source changes. */
@@ -459,19 +508,34 @@ const Block = memo(function Block({
   src,
   plugins,
   openFence,
+  fade,
 }: {
   src: string;
   plugins: unknown;
   openFence: boolean;
+  /** The block being written while the reply streams: its words fade in. */
+  fade?: boolean;
 }) {
+  const base = (openFence ? rehypeStreamingPlugins : plugins) as unknown[];
+  const shown = useRef({ upTo: 0 }).current;
   return (
+    <FadeShown.Provider value={fade ? shown : null}>
     <ReactMarkdown
       remarkPlugins={remarkPlugins}
-      rehypePlugins={(openFence ? rehypeStreamingPlugins : plugins) as never}
-      components={openFence ? streamingComponents : components}
+      rehypePlugins={(fade ? [...base, rehypeStreamFade] : base) as never}
+      components={
+        openFence
+          ? fade
+            ? fadeStreamingComponents
+            : streamingComponents
+          : fade
+            ? fadeComponents
+            : components
+      }
     >
       {src}
     </ReactMarkdown>
+    </FadeShown.Provider>
   );
 });
 
@@ -485,11 +549,17 @@ export function Markdown({
   children,
   cites,
   blocks,
+  streaming,
 }: {
   children: string;
   cites?: CiteSource[];
   blocks?: boolean;
+  /** The text is still coming in: the block being written fades its words in
+   *  (see streamFade). Defaults to the surrounding StreamingContext. */
+  streaming?: boolean;
 }) {
+  const inStream = useContext(StreamingContext);
+  const live = (streaming ?? inStream) && !!blocks;
   const count = cites?.length ?? 0;
   const plugins = useMemo(
     () => (count > 0 ? [...rehypePlugins, [rehypeCites, { count }]] : rehypePlugins),
@@ -510,7 +580,15 @@ export function Markdown({
   return (
     <CitesContext.Provider value={cites ?? []}>
       {parts ? (
-        parts.map((b) => <Block key={b.start} src={b.src} plugins={plugins} openFence={!!b.openFence} />)
+        parts.map((b, i) => (
+          <Block
+            key={b.start}
+            src={b.src}
+            plugins={plugins}
+            openFence={!!b.openFence}
+            fade={live && i === parts.length - 1}
+          />
+        ))
       ) : (
         <ReactMarkdown
           remarkPlugins={remarkPlugins}

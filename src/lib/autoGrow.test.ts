@@ -21,7 +21,15 @@ describe("a width change refits outside the observation pass", () => {
     const g = globalThis as Record<string, unknown>;
     const prevDoc = g.document;
     const prevWin = g.window;
-    g.document = { fonts: undefined } as never;
+    g.document = { fonts: undefined, documentElement: {} } as never;
+    const prevMO = g.MutationObserver;
+    let mutated: null | (() => void) = null;
+    let watchedAttrs: string[] = [];
+    g.MutationObserver = class {
+      constructor(fn: () => void) { mutated = fn; }
+      observe(_: unknown, o: { attributeFilter?: string[] }) { watchedAttrs = o.attributeFilter ?? []; }
+      disconnect() {}
+    } as never;
     g.window = { addEventListener: () => {}, removeEventListener: () => {} } as never;
     const prevRaf = g.requestAnimationFrame;
     const prevCancel = g.cancelAnimationFrame;
@@ -46,7 +54,13 @@ describe("a width change refits outside the observation pass", () => {
     fire();
     // Nothing fitted yet — a frame was asked for instead.
     expect(frames.length).toBe(fits + 1);
+    // The text size changing (an attribute on <html>) refits too, though no
+    // width changed: the box would keep the old size's height, a line short.
+    expect(watchedAttrs).toContain("data-answer");
+    (mutated as null | (() => void))?.();
+    expect(frames.length).toBe(fits + 2);
     stop();
+    g.MutationObserver = prevMO as never;
     g.requestAnimationFrame = prevRaf as never;
     g.cancelAnimationFrame = prevCancel as never;
     g.ResizeObserver = prevRO as never;

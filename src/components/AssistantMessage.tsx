@@ -138,14 +138,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           >
             <span className={`think-caret ${expanded ? "open" : ""}`}><Icon name="chevron-right" size={11} strokeWidth={2} /></span>
             {thinking ? (
-              <span className="think-label is-thinking">
-                {t("thinking")}
-                <span className="dots">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-              </span>
+              <span className="think-label is-thinking">{t("thinking")}</span>
             ) : (
               <span className="think-label">
                 {expanded ? t("thoughtCollapse") : t("thoughtExpand")}

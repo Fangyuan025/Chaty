@@ -66,9 +66,23 @@ export function watchContentHeight(
   });
   ro.observe(box);
   window.addEventListener("resize", fit);
+  // A third: the text size. Settings → Text size scales the composer's font
+  // through an attribute on <html>; its width does not change, so neither
+  // trigger above fires, and the box kept the height of the old size — a
+  // line taller than it, under a scrollbar, until something was typed.
+  const root = document.documentElement;
+  const mo =
+    typeof MutationObserver === "undefined" || !root
+      ? null
+      : new MutationObserver(() => {
+          cancelAnimationFrame(frame);
+          frame = requestAnimationFrame(fit);
+        });
+  mo?.observe(root, { attributes: true, attributeFilter: ["data-answer", "data-theme", "style", "class"] });
   return () => {
     cancelAnimationFrame(frame);
     ro.disconnect();
+    mo?.disconnect();
     window.removeEventListener("resize", fit);
   };
 }
