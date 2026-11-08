@@ -15,7 +15,36 @@
   before the app has loaded.
 - **Text size reaches Code mode.** The setting (now *Text size*) scales every
   message, answer, step, code block and the input, in chat and in Code mode
-  alike. Code mode kept its own size before, and *Small* made it bigger.
+  alike. Code mode kept its own size before, and *Small* made it bigger. Its
+  text is now the size of chat's at each setting — it was a size smaller — and
+  the input refits when you change it, without a scrollbar.
+
+### Reading as it streams
+
+- **Answers fade in as they are written**, word by word — a character at a
+  time in Chinese, Japanese and Korean — out of a soft blur, in chat and in Code mode.
+  A model writing faster than the fade has its words come in at once. Only
+  prose fades: tables, code, math and diagrams stream as they did. *Reduce
+  motion* turns it off.
+- **Nothing flashes while an answer is written.** A line that has not yet said
+  what it is — a heading's underline or a rule being typed, a table before its
+  divider row, display math not yet closed, a code fence's first backticks —
+  waits for the next characters instead of showing for a moment as something
+  else, at another size; bold, struck-through and inline-code text shows as
+  such from its first word.
+- **A Mermaid diagram is drawn as it is written**, growing line by line, where
+  it waited for the end or showed an error halfway. An error shows only when
+  the finished diagram is wrong.
+- **Prompt processing reads the same everywhere**: the folded line and the ring
+  show the engine's own percent, and the ring no longer flickers between 99%
+  and 100% — in chat as well as Code mode.
+- **A folded run's line counts match the changes card**: a run counts each
+  file's net change, a file made and then edited counts as made, and a new
+  file's lines are its lines (one more was counted).
+- **Quieter diffs**: a changed line keeps the text's colour on a faint tint
+  with a thin bar, only its + or − coloured, and counts show only what is not
+  zero, with a true minus sign. Thinking shows the same soft light as a running
+  step, instead of three bouncing dots.
 
 ### Long work, in the background
 

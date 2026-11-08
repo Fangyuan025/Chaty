@@ -344,7 +344,15 @@ jobs:
 
             The theme follows your system's light or dark by default and switches with it,
             the native menus and dialogs follow the app's theme, and the window opens in its
-            colours. The text size setting now reaches Code mode too.
+            colours. The text size setting now reaches Code mode too, at chat's size.
+
+            ## Reading as it streams
+
+            Answers fade in word by word as they are written, in chat and Code mode, and
+            nothing flashes on the way: a heading, rule or table being typed waits until it
+            says what it is. Mermaid diagrams are drawn as they are written, and show an error
+            only if the finished one is wrong. Prompt processing reads the same percent in the
+            folded line and the ring, and a run's line counts match the changes card.
 
             ## Long work, in the background
 
