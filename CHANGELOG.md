@@ -17,7 +17,8 @@
   message, answer, step, code block and the input, in chat and in Code mode
   alike. Code mode kept its own size before, and *Small* made it bigger. Its
   text is now the size of chat's at each setting — it was a size smaller — and
-  the input refits when you change it, without a scrollbar.
+  the input refits when you change it, without a scrollbar. Your own messages
+  are the size of the replies too, and so is the box that edits one.
 
 ### Reading as it streams
 
@@ -47,7 +48,8 @@
   jumped to the picture's height; one that cannot be opened says so.
 - **Prompt processing reads the same everywhere**: the folded line and the ring
   show the engine's own percent, and the ring no longer flickers between 99%
-  and 100% — in chat as well as Code mode.
+  and 100% — in chat as well as Code mode, where its label now carries the
+  same soft light as thinking.
 - **A folded run's line counts match the changes card**: a run counts each
   file's net change, a file made and then edited counts as made, and a new
   file's lines are its lines (one more was counted).
