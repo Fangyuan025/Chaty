@@ -43,6 +43,8 @@
 - **Code is coloured as it streams**: an HTML page's script and style, and a
   comment or string over several lines, show as what they are while the block
   is written, not once it closes.
+- **A screenshot's preview opens at its size** instead of a small box that
+  jumped to the picture's height; one that cannot be opened says so.
 - **Prompt processing reads the same everywhere**: the folded line and the ring
   show the engine's own percent, and the ring no longer flickers between 99%
   and 100% — in chat as well as Code mode.
