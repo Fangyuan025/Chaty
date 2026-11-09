@@ -123,24 +123,71 @@ FetchContent_MakeAvailable(audiocpp)
 # nothing while a song is made, and these lines — a count of music tokens, a
 # rendering step, a decoded tile — are what the studio's percentage is made
 # from (see main.cpp, on_log_line).
+#
+# One patch per file, so a file that moves upstream stops only its own lines.
+# A runtime pack builds from a newer audio.cpp than the pin: where the code
+# around a line has drifted, a three-way apply still places it; where a file
+# has moved, a variant for its new place goes beside the old one, named
+# `<name>.<variant>.patch` — the first variant whose file is there is used.
+# A part with no variant that applies stops the build: a pack whose
+# percentage would sit still is not published.
+#
+# Whether a part is in already is read from the files themselves — each one
+# patched includes chaty_progress.h, which audio.cpp never does. (A reverse
+# three-way `git apply --check` is no test: it passes on an untouched file
+# whose code has drifted, and the lines would be left out.)
 find_package(Git REQUIRED)
 file(GLOB CHATY_AUDIOCPP_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch")
 list(SORT CHATY_AUDIOCPP_PATCHES)
-# A runtime pack builds from a newer audio.cpp than the pin, where the code
-# around these lines may have moved: a three-way apply still places them, and
-# where it cannot, the build stops.
+set(CHATY_PATCH_PARTS "")
 foreach(patch IN LISTS CHATY_AUDIOCPP_PATCHES)
-    execute_process(
-        COMMAND ${GIT_EXECUTABLE} apply --check --reverse --ignore-whitespace "${patch}"
-        WORKING_DIRECTORY "${audiocpp_SOURCE_DIR}"
-        RESULT_VARIABLE already OUTPUT_QUIET ERROR_QUIET)
-    if (NOT already EQUAL 0)
-        execute_process(
-            COMMAND ${GIT_EXECUTABLE} apply --check --reverse --3way "${patch}"
-            WORKING_DIRECTORY "${audiocpp_SOURCE_DIR}"
-            RESULT_VARIABLE already OUTPUT_QUIET ERROR_QUIET)
-    endif()
-    if (NOT already EQUAL 0)
+    get_filename_component(part "${patch}" NAME_WE)
+    list(APPEND CHATY_PATCH_PARTS "${part}")
+endforeach()
+list(REMOVE_DUPLICATES CHATY_PATCH_PARTS)
+foreach(part IN LISTS CHATY_PATCH_PARTS)
+    set(part_done FALSE)
+    set(part_why "")
+    foreach(patch IN LISTS CHATY_AUDIOCPP_PATCHES)
+        get_filename_component(this_part "${patch}" NAME_WE)
+        if (part_done OR NOT this_part STREQUAL part)
+            continue()
+        endif()
+        get_filename_component(patch_name "${patch}" NAME)
+        # The files the patch changes or makes.
+        file(STRINGS "${patch}" plus_lines REGEX "^\\+\\+\\+ b/")
+        set(targets "")
+        foreach(line IN LISTS plus_lines)
+            string(REGEX REPLACE "^\\+\\+\\+ b/" "" target "${line}")
+            list(APPEND targets "${target}")
+        endforeach()
+        file(STRINGS "${patch}" new_files REGEX "^new file mode")
+        set(missing "")
+        set(in_already TRUE)
+        foreach(target IN LISTS targets)
+            set(path "${audiocpp_SOURCE_DIR}/${target}")
+            if (new_files)
+                # A file the patch makes: in once it exists.
+                if (NOT EXISTS "${path}")
+                    set(in_already FALSE)
+                endif()
+            elseif (NOT EXISTS "${path}")
+                list(APPEND missing "${target}")
+            else()
+                file(STRINGS "${path}" marker REGEX "chaty_progress\\.h")
+                if (NOT marker)
+                    set(in_already FALSE)
+                endif()
+            endif()
+        endforeach()
+        if (missing)
+            string(APPEND part_why "  ${patch_name}: not in this audio.cpp: ${missing}\n")
+            continue()
+        endif()
+        if (in_already)
+            set(part_done TRUE)
+            continue()
+        endif()
         execute_process(
             COMMAND ${GIT_EXECUTABLE} apply --ignore-whitespace --whitespace=nowarn "${patch}"
             WORKING_DIRECTORY "${audiocpp_SOURCE_DIR}"
@@ -150,11 +197,24 @@ foreach(patch IN LISTS CHATY_AUDIOCPP_PATCHES)
                 COMMAND ${GIT_EXECUTABLE} apply --3way --whitespace=nowarn "${patch}"
                 WORKING_DIRECTORY "${audiocpp_SOURCE_DIR}"
                 RESULT_VARIABLE applied ERROR_VARIABLE why)
+            if (NOT applied EQUAL 0)
+                # A three-way apply that conflicts leaves its markers in the
+                # file: put it back as it was.
+                execute_process(
+                    COMMAND ${GIT_EXECUTABLE} checkout HEAD -- ${targets}
+                    WORKING_DIRECTORY "${audiocpp_SOURCE_DIR}"
+                    OUTPUT_QUIET ERROR_QUIET)
+            endif()
         endif()
-        if (NOT applied EQUAL 0)
-            message(FATAL_ERROR "chaty-audio: ${patch} does not apply to audio.cpp at ${CHATY_AUDIOCPP_REV}:\n${why}")
+        if (applied EQUAL 0)
+            set(part_done TRUE)
+            message(STATUS "chaty-audio: applied ${patch_name}")
+        else()
+            string(APPEND part_why "  ${patch_name}:\n${why}\n")
         endif()
-        message(STATUS "chaty-audio: applied ${patch}")
+    endforeach()
+    if (NOT part_done)
+        message(FATAL_ERROR "chaty-audio: Chaty's ${part} lines do not apply to audio.cpp at ${CHATY_AUDIOCPP_REV}:\n${part_why}")
     endif()
 endforeach()
 

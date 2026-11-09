@@ -1,0 +1,18 @@
+diff --git a/src/models/stable_audio/rf_dit.cpp b/src/models/stable_audio/rf_dit.cpp
+index 1903a074..8cd046b6 100644
+--- a/src/models/stable_audio/rf_dit.cpp
++++ b/src/models/stable_audio/rf_dit.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/stable_audio/rf_dit.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend_weight_store.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -624,6 +625,7 @@ public:
+         std::vector<float> dt_values(static_cast<size_t>(batch_));
+         std::vector<float> timestep_features(static_cast<size_t>(graph_batch() * kTimestepFeaturesDim));
+         for (int step = 0; step < static_cast<int>(sampling.schedule_points) - 1; ++step) {
++            CHATY_PROGRESS("render", step, sampling.schedule_points - 1);
+             write_latent_input(latent, graph_x);
+             for (int64_t b = 0; b < batch_; ++b) {
+                 const size_t base = static_cast<size_t>(b * sampling.schedule_points);

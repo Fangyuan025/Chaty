@@ -1,0 +1,26 @@
+diff --git a/src/community_models/minimax_music3/pipeline.cpp b/src/community_models/minimax_music3/pipeline.cpp
+index 259ebd13..bad6d2eb 100644
+--- a/src/community_models/minimax_music3/pipeline.cpp
++++ b/src/community_models/minimax_music3/pipeline.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/community_models/minimax_music3/pipeline.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -286,6 +287,7 @@ struct MiniMaxMusic3PipelineRuntime::Impl {
+             auto & condition_runtime = ensure_condition();
+             auto & flow_runtime = ensure_flow();
+             for (size_t chunk_index = 0; chunk_index < starts.size(); ++chunk_index) {
++                CHATY_PROGRESS("render", chunk_index, starts.size());
+                 const int64_t start = starts[chunk_index];
+                 const int64_t end = std::min(start + assets->config.chunk_frames, generated_frames);
+                 const int64_t frame_count = end - start;
+@@ -347,6 +349,7 @@ struct MiniMaxMusic3PipelineRuntime::Impl {
+         {
+             auto & vocoder_runtime = ensure_vocoder();
+             for (size_t chunk_index = 0; chunk_index < denoised.size(); ++chunk_index) {
++                CHATY_PROGRESS("decode", chunk_index, denoised.size());
+                 auto chunk = std::move(denoised[chunk_index]);
+                 const auto vocoder_start = Clock::now();
+                 const auto audio = vocoder_runtime.decode(chunk.latents, chunk.latent_frames);

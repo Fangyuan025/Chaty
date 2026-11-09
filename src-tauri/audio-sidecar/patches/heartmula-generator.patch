@@ -1,0 +1,20 @@
+diff --git a/src/models/heartmula/generator.cpp b/src/models/heartmula/generator.cpp
+index e272c7c1..696a95e7 100644
+--- a/src/models/heartmula/generator.cpp
++++ b/src/models/heartmula/generator.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/heartmula/generator.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/sampling/torch_random.h"
+ 
+@@ -399,6 +400,9 @@ HeartMuLaGeneratedFrames generate_heartmula_frames(
+ 
+     const int64_t max_audio_frames = static_cast<int64_t>(request.options.duration_seconds * 1000.0F) / 80;
+     for (int64_t frame_index = 0; frame_index < max_audio_frames; ++frame_index) {
++        if (frame_index % 10 == 0) {
++            CHATY_PROGRESS("tokens", frame_index, max_audio_frames);
++        }
+         auto next_embeddings = mula.merge_frame_embeddings(next_frame_embedding_inputs(current_frame, encoding.batch_size, config));
+         auto next_backbone = mula.backbone_cached_step(
+             next_embeddings.values,

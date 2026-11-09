@@ -1,0 +1,20 @@
+diff --git a/src/models/ace_step/planner.cpp b/src/models/ace_step/planner.cpp
+index 74f400c4..b33bb078 100644
+--- a/src/models/ace_step/planner.cpp
++++ b/src/models/ace_step/planner.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/ace_step/planner.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/assets/tensor_source.h"
+ #include "engine/framework/core/backend.h"
+@@ -2973,6 +2974,9 @@ AceStepPlan AceStepPlannerRuntime::generate(const AceStepRequest & request, bool
+             decode_graph_->import_state(conditional_prefill.kv_state);
+         }
+         for (int64_t step = 0; step < max_new_tokens; ++step) {
++            if (step % 10 == 0) {
++                CHATY_PROGRESS("tokens", step, max_new_tokens);
++            }
+             const auto sampling_start = Clock::now();
+             if (use_cfg) {
+                 phase2_sampler.write_cfg_logits(

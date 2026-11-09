@@ -1,0 +1,24 @@
+diff --git a/include/engine/framework/debug/chaty_progress.h b/include/engine/framework/debug/chaty_progress.h
+new file mode 100644
+index 00000000..55900665
+--- /dev/null
++++ b/include/engine/framework/debug/chaty_progress.h
+@@ -0,0 +1,18 @@
++#pragma once
++
++// Chaty's progress lines (added by chaty-audio's patch). audio.cpp reports
++// nothing while a song is made; these log lines are how Chaty's sidecar knows
++// how far along one is. Log lines only: nothing else changes.
++
++#include "engine/framework/debug/trace.h"
++
++#include <string>
++
++#define CHATY_PROGRESS(stage, done, total)                                                          \
++    ::engine::debug::timing_log_scalar(                                                              \
++        "chaty.progress",                                                                            \
++        std::string(stage) + " " + std::to_string(static_cast<long long>(done)) + "/" +              \
++            std::to_string(static_cast<long long>(total)))
++
++#define CHATY_INFO(key, value) \
++    ::engine::debug::timing_log_scalar("chaty.info", std::string(key) + " " + std::to_string(value))

@@ -1,0 +1,28 @@
+diff --git a/src/framework/codecs/heartcodec_runtime.cpp b/src/framework/codecs/heartcodec_runtime.cpp
+index 2036b686..6498b7a0 100644
+--- a/src/framework/codecs/heartcodec_runtime.cpp
++++ b/src/framework/codecs/heartcodec_runtime.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/framework/codecs/heartcodec_runtime.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend_weight_store.h"
+ #include "engine/framework/core/execution_context.h"
+@@ -1743,7 +1744,9 @@ HeartCodecDecodedAudio HeartCodecRuntime::detokenize_codes(
+     }
+     const int64_t latent_length = static_cast<int64_t>(options.chunk_duration_seconds * 25.0F);
+     std::vector<std::vector<float>> latent_list;
++    const int64_t chaty_chunks = frames >= hop_code_samples ? (frames - hop_code_samples) / hop_code_samples + 1 : 0;
+     for (int64_t sinx = 0; sinx < frames - hop_code_samples + 1; sinx += hop_code_samples) {
++        CHATY_PROGRESS("render", sinx / hop_code_samples, chaty_chunks);
+         const auto chunk_codes = slice_codes_bqt(working_codes, codebooks, frames, sinx, min_code_samples);
+         int64_t incontext_length = first_latent_length;
+         std::vector<float> true_latent(static_cast<size_t>(latent_length * config.out_channels), 0.0F);
+@@ -1787,6 +1790,7 @@ HeartCodecDecodedAudio HeartCodecRuntime::detokenize_codes(
+     std::vector<float> output;
+     int64_t output_samples = 0;
+     for (size_t chunk = 0; chunk < latent_list.size(); ++chunk) {
++        CHATY_PROGRESS("decode", chunk, latent_list.size());
+         const int64_t chunk_latent_frames = static_cast<int64_t>(latent_list[chunk].size()) / config.out_channels;
+         auto scalar_input = latent_btc_to_scalar_bct(latent_list[chunk], chunk_latent_frames);
+         auto decoded = decode_scalar_latents(scalar_input, 2, chunk_latent_frames);

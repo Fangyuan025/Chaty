@@ -25,7 +25,7 @@
 // The app stops one by ending this process, and starts another for the next.
 //
 // Progress: audio.cpp reports nothing while it works. Chaty patches it
-// (patches/chaty-progress.patch) to write `chaty.progress <stage> <done>/<total>`
+// (patches/*.patch, one per file) to write `chaty.progress <stage> <done>/<total>`
 // and `chaty.info <key> <value>` lines to its log as a song is made; the log is
 // std::cout, captured below, and those lines become events.
 

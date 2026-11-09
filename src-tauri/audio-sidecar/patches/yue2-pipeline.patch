@@ -1,0 +1,35 @@
+diff --git a/src/models/yue2/pipeline.cpp b/src/models/yue2/pipeline.cpp
+index bc49fdd3..65356d84 100644
+--- a/src/models/yue2/pipeline.cpp
++++ b/src/models/yue2/pipeline.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/yue2/pipeline.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/debug/profiler.h"
+ #include "engine/framework/debug/trace.h"
+@@ -295,6 +296,7 @@ public:
+                 }
+             }
+             ++tiles;
++            CHATY_PROGRESS("decode", end, frames);
+         }
+         engine::debug::timing_log_scalar("yue2.vae_decode.tiles", tiles);
+         engine::debug::timing_log_scalar("yue2.vae_decode.tile_decode_ms", tile_decode_ms);
+@@ -345,6 +347,8 @@ public:
+         const auto semantic_start = Clock::now();
+         auto semantic = generate_semantic(request, std::move(planned));
+         engine::debug::timing_log_scalar("yue2.semantic_ms", engine::debug::elapsed_ms(semantic_start, Clock::now()));
++        CHATY_INFO("seconds", static_cast<double>(semantic.tokens.size()) / 25.0);
++        CHATY_PROGRESS("render", 0, 1);
+         if (request.export_semantic) {
+             out.semantic_codes = codec_from_semantic_tokens(semantic.tokens);
+             out.semantic_truncated = semantic.truncated;
+@@ -364,6 +368,7 @@ public:
+         ar.reset();
+         nar.reset();
+         const auto vae_start = Clock::now();
++        CHATY_PROGRESS("decode", 0, frames);
+         auto audio = decode_audio(latents, frames);
+         engine::debug::timing_log_scalar("yue2.vae_decode_ms", engine::debug::elapsed_ms(vae_start, Clock::now()));
+         if (vae) {

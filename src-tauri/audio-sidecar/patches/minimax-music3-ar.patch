@@ -1,0 +1,30 @@
+diff --git a/src/community_models/minimax_music3/ar_runtime.cpp b/src/community_models/minimax_music3/ar_runtime.cpp
+index 1b09aaab..2ca34d90 100644
+--- a/src/community_models/minimax_music3/ar_runtime.cpp
++++ b/src/community_models/minimax_music3/ar_runtime.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/community_models/minimax_music3/ar_runtime.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/debug/profiler.h"
+ #include "engine/framework/modules/transformers/qwen_causal_decode_runtime.h"
+@@ -390,6 +391,9 @@ struct MiniMaxMusic3ArRuntime::Impl {
+         double feedback_ms = 0.0;
+         double lm_ms = 0.0;
+         for (int64_t frame = 0; frame <= target_frames; ++frame) {
++            if (frame % 10 == 0) {
++                CHATY_PROGRESS("tokens", frame, target_frames + 1);
++            }
+             const auto t_sem = Clock::now();
+             const int32_t token = sample_semantic_token(
+                 prompt,
+@@ -632,6 +636,9 @@ struct MiniMaxMusic3ArRuntime::Impl {
+         std::vector<uint64_t> depth_offsets(static_cast<size_t>(takes));
+ 
+         for (int64_t frame = forked_at; frame <= target_frames; ++frame) {
++            if (frame % 10 == 0) {
++                CHATY_PROGRESS("tokens", frame, target_frames + 1);
++            }
+             for (int64_t take = 0; take < takes; ++take) {
+                 auto & ts = take_states[static_cast<size_t>(take)];
+                 assign_batch_row(batch_hidden, 2 * take, hidden_size, ts.cond_hidden);

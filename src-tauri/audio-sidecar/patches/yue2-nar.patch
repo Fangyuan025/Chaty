@@ -1,0 +1,39 @@
+diff --git a/src/models/yue2/nar_runtime.cpp b/src/models/yue2/nar_runtime.cpp
+index 1acbeb80..cb25315f 100644
+--- a/src/models/yue2/nar_runtime.cpp
++++ b/src/models/yue2/nar_runtime.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/yue2/nar_runtime.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -693,6 +694,7 @@ struct Yue2NarRuntime::Impl {
+             for (size_t i = 0; i < state.size(); ++i) {
+                 state[i] -= second[i] * dt;
+             }
++            CHATY_PROGRESS("render", chaty_done * ode_steps + frames * (step + 1), chaty_total * ode_steps);
+         }
+         return state;
+     }
+@@ -728,7 +730,10 @@ struct Yue2NarRuntime::Impl {
+         out.reserve(full_noise.size());
+         double prefill_ms = 0.0;
+         double solve_ms = 0.0;
++        chaty_total = static_cast<int64_t>(codec.size());
++        chaty_done = 0;
+         for (const auto & [begin, end] : ranges) {
++            chaty_done = begin;
+             std::vector<int32_t> ar_tokens = prefix;
+             ar_tokens.reserve(prefix.size() + static_cast<size_t>(end - begin) + 1);
+             for (int64_t i = begin; i < end; ++i) {
+@@ -757,6 +762,9 @@ struct Yue2NarRuntime::Impl {
+ 
+     core::ExecutionContext & execution;
+     std::shared_ptr<const Yue2Assets> assets;
++    // Chaty's progress: frames of the song, and those before the chunk.
++    int64_t chaty_total = 0;
++    int64_t chaty_done = 0;
+     size_t graph_arena_bytes = 0;
+     bool allow_flash_attention = true;
+     int64_t attention_tile_rows = 0;

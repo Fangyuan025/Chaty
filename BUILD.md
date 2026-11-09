@@ -183,11 +183,15 @@ audio.cpp vendors its own ggml. It speaks JSON lines over stdin/stdout (`load`,
 
 CMake fetches the pinned audio.cpp revision, compiles only the families Chaty
 drives (`CHATY_AUDIO_MODELS`, with their model specs embedded, so the binary
-ships alone) and applies `patches/*.patch` to the checkout once. The patch only
-adds progress log lines — a music token counted, a rendering step, a decoded
-tile — which the sidecar turns into the studio's percentage; bumping the
-revision means checking that it still applies (the configure step fails
-loudly if not).
+ships alone) and applies `patches/*.patch` to the checkout once — one patch per
+file, each only adding progress log lines (a music token counted, a rendering
+step, a decoded tile) that the sidecar turns into the studio's percentage. A
+runtime pack builds a newer audio.cpp than the pin: drifted code is placed by a
+three-way apply, and a file that moved upstream gets a variant for its new
+place beside the old one (`<name>.<variant>.patch`; the first whose file exists
+is used). A part with no variant that applies stops the configure step, so
+bumping the revision, or a pack's build, fails loudly rather than ship a
+percentage that sits still.
 
 ```bash
 scripts/build-audio-sidecar.sh [cpu|vulkan|metal|cuda]  # → src-tauri/binaries/chaty-audio-<triple>

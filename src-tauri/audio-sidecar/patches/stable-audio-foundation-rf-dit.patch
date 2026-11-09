@@ -1,0 +1,34 @@
+diff --git a/src/models/stable_audio/foundation/rf_dit.cpp b/src/models/stable_audio/foundation/rf_dit.cpp
+index 594d515d..e622c266 100644
+--- a/src/models/stable_audio/foundation/rf_dit.cpp
++++ b/src/models/stable_audio/foundation/rf_dit.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/stable_audio/foundation/rf_dit.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend_weight_store.h"
+ #include "engine/framework/core/execution_context.h"
+@@ -544,6 +545,7 @@ private:
+         std::vector<float> next_sigma_values(static_cast<size_t>(batch_));
+         std::vector<float> timestep_features(static_cast<size_t>(graph_batch() * kTimestepFeaturesDim));
+         for (int step = 0; step < static_cast<int>(sampling.schedule_points) - 1; ++step) {
++            CHATY_PROGRESS("render", step, sampling.schedule_points - 1);
+             write_latent_input(latent, graph_x);
+             for (int64_t b = 0; b < batch_; ++b) {
+                 const size_t base = static_cast<size_t>(b * sampling.schedule_points);
+@@ -707,6 +709,7 @@ private:
+         bool has_h_2 = false;
+         core::set_backend_threads(backend_, threads_);
+         for (int step = 0; step < static_cast<int>(steps); ++step) {
++            CHATY_PROGRESS("render", step, steps);
+             const float sigma = sigmas[static_cast<size_t>(step)];
+             const float sigma_next = sigmas[static_cast<size_t>(step + 1)];
+             const float c_in = 1.0F / std::sqrt(sigma * sigma + 1.0F);
+@@ -818,6 +821,7 @@ private:
+         bool has_old_denoised = false;
+         core::set_backend_threads(backend_, threads_);
+         for (int step = 0; step < static_cast<int>(steps); ++step) {
++            CHATY_PROGRESS("render", step, steps);
+             const float sigma = sigmas[static_cast<size_t>(step)];
+             const float sigma_next = sigmas[static_cast<size_t>(step + 1)];
+             const float c_in = 1.0F / std::sqrt(sigma * sigma + 1.0F);

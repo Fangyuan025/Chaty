@@ -1,0 +1,18 @@
+diff --git a/src/models/midashenglm_gen/ar_runtime.cpp b/src/models/midashenglm_gen/ar_runtime.cpp
+index a61bb7ed..58842cdf 100644
+--- a/src/models/midashenglm_gen/ar_runtime.cpp
++++ b/src/models/midashenglm_gen/ar_runtime.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/midashenglm_gen/ar_runtime.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -444,6 +445,7 @@ MiDashengLmGenAROutput MiDashengLmGenARRuntime::generate(
+         auto hidden = last_hidden_row(prefill.hidden, valid_tokens, config.hidden_size);
+         std::vector<float> latent_history(static_cast<size_t>(config.patch_size * config.target_embedding_size), 0.0F);
+         for (int64_t step = 0; step < num_iter; ++step) {
++            CHATY_PROGRESS("tokens", step, num_iter);
+             MiDashengLmGenFlowInput flow_input;
+             flow_input.x.clear();
+             flow_input.latent_history = latent_history;

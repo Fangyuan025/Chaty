@@ -1,0 +1,30 @@
+diff --git a/src/models/yue2/ar_runtime.cpp b/src/models/yue2/ar_runtime.cpp
+index d21f381b..b876352f 100644
+--- a/src/models/yue2/ar_runtime.cpp
++++ b/src/models/yue2/ar_runtime.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/yue2/ar_runtime.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/core/backend.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -721,6 +722,9 @@ struct Yue2ArRuntime::Impl {
+                 return emitted;
+             }
+             emitted.push_back(token);
++            if (emitted.size() % 10 == 0) {
++                CHATY_PROGRESS(compact_semantic ? "tokens" : "score", emitted.size(), window.max_tokens);
++            }
+             if (static_cast<int64_t>(emitted.size()) >= window.max_tokens) {
+                 break;
+             }
+@@ -829,6 +833,9 @@ struct Yue2ArRuntime::Impl {
+                 return emitted;
+             }
+             emitted.push_back(token);
++            if (emitted.size() % 10 == 0) {
++                CHATY_PROGRESS("tokens", emitted.size(), window.max_tokens);
++            }
+             if (static_cast<int64_t>(emitted.size()) >= window.max_tokens) {
+                 break;
+             }

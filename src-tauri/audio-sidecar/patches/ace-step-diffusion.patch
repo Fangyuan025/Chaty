@@ -1,0 +1,18 @@
+diff --git a/src/models/ace_step/diffusion.cpp b/src/models/ace_step/diffusion.cpp
+index 103ab916..374e16b6 100644
+--- a/src/models/ace_step/diffusion.cpp
++++ b/src/models/ace_step/diffusion.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/models/ace_step/diffusion.h"
++#include "engine/framework/debug/chaty_progress.h"
+ #include "engine/framework/core/backend.h"
+ #include "engine/framework/io/binary.h"
+ #include "engine/framework/debug/profiler.h"
+@@ -1728,6 +1729,7 @@ public:
+         bool switched_to_non_cover = false;
+         const auto sampling_loop_start = Clock::now();
+         for (size_t i = 0; i < schedule.size(); ++i) {
++            CHATY_PROGRESS("render", i, schedule.size());
+             if (!switched_to_non_cover &&
+                 options.audio_cover_strength < 1.0F &&
+                 static_cast<int64_t>(i) >= cover_steps) {
