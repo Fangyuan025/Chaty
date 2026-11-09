@@ -32,9 +32,17 @@
   waits for the next characters instead of showing for a moment as something
   else, at another size; bold, struck-through and inline-code text shows as
   such from its first word.
-- **A Mermaid diagram is drawn as it is written**, growing line by line, where
-  it waited for the end or showed an error halfway. An error shows only when
-  the finished diagram is wrong.
+- **A Mermaid diagram is drawn as it is written**, growing line by line —
+  inside a subgraph too — where it waited for the end or showed an error
+  halfway. An error shows only when the finished diagram is wrong. It is drawn
+  once a line and no more often than its drawing allows, so a large diagram
+  no longer stalls the reply as it streams, and one already drawn shows at
+  once when you come back to it.
+- **Diagrams follow the theme**, the system's included: under *System* on a
+  light Mac they were drawn dark, their arrows hard to see.
+- **Code is coloured as it streams**: an HTML page's script and style, and a
+  comment or string over several lines, show as what they are while the block
+  is written, not once it closes.
 - **Prompt processing reads the same everywhere**: the folded line and the ring
   show the engine's own percent, and the ring no longer flickers between 99%
   and 100% — in chat as well as Code mode.

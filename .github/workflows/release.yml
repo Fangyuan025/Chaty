@@ -350,8 +350,9 @@ jobs:
 
             Answers fade in word by word as they are written, in chat and Code mode, and
             nothing flashes on the way: a heading, rule or table being typed waits until it
-            says what it is. Mermaid diagrams are drawn as they are written, and show an error
-            only if the finished one is wrong. Prompt processing reads the same percent in the
+            says what it is. Mermaid diagrams are drawn as they are written without stalling the
+            reply, follow the theme, and show an error only if the finished one is wrong. Code is
+            coloured while it streams — an HTML page's script and style included. Prompt processing reads the same percent in the
             folded line and the ring, and a run's line counts match the changes card.
 
             ## Long work, in the background
