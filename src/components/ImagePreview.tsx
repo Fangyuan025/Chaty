@@ -17,14 +17,26 @@ export function ImagePreview({
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const [src, setSrc] = useState<string | null>(null);
+  // The picture, decoded, with its size — or "failed". The window opens once
+  // it is ready, at its size: it opened as a spinner and then grew to the
+  // picture's height, both ways from the middle, which read as a jolt.
+  const [img, setImg] = useState<{ src: string; w: number; h: number } | "failed" | null>(null);
   const [saved, setSaved] = useState(false);
   useEffect(() => {
     let live = true;
     // Full-resolution (crisp) — not a downscaled thumbnail.
     imageDataUrl(path)
-      .then((d) => live && setSrc(d))
-      .catch(() => live && setSrc(""));
+      .then(async (src) => {
+        const el = new Image();
+        el.src = src;
+        try {
+          await el.decode();
+        } catch {
+          /* drawn as it comes, then */
+        }
+        if (live) setImg(el.naturalWidth ? { src, w: el.naturalWidth, h: el.naturalHeight } : "failed");
+      })
+      .catch(() => live && setImg("failed"));
     return () => {
       live = false;
     };
@@ -43,6 +55,14 @@ export function ImagePreview({
       console.error(e);
     }
   };
+  if (img === null) {
+    return createPortal(
+      <div className="preview-overlay" onMouseDown={onClose}>
+        <span className="cm-spin" />
+      </div>,
+      document.body,
+    );
+  }
   return createPortal(
     <div className="preview-overlay" onMouseDown={onClose}>
       <div className="cm-preview" onMouseDown={(e) => e.stopPropagation()}>
@@ -57,7 +77,11 @@ export function ImagePreview({
           </button>
         </div>
         <div className="cm-preview-stage">
-          {src ? <img src={src} alt="" /> : <span className="cm-spin" />}
+          {img === "failed" ? (
+            <span className="muted">{t("imagePreviewFailed")}</span>
+          ) : (
+            <img src={img.src} width={img.w} height={img.h} alt="" />
+          )}
         </div>
       </div>
     </div>,
