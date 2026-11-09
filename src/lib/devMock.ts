@@ -1448,6 +1448,12 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       // With 坏图 / bad diagram, the diagram's last line is wrong: it should
       // build while it streams and say so only once it is finished.
       const wantsBadDiagram = /坏图|bad diagram/i.test(last);
+      // With 大图 / big diagram, a diagram the size models draw: thirty nodes
+      // in three subgraphs, labels of a few words.
+      const wantsBigDiagram = /大图|big diagram/i.test(last);
+      // 网页 / web page streams a single-file page — a style, a comment over
+      // two lines, a script — to look at its highlighting as it streams.
+      const wantsPage = /网页|web page/i.test(last);
       const fast = wantsOutside || wantsSudo || wantsDate;
       // Thinking first, so the preview exercises the think panel (and stopping
       // a turn mid-thought, which is where its spinner used to stay turning).
@@ -1471,6 +1477,22 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         "<think>都通过了。</think>\n完成:新增 `src/tokens.ts`,`parser.ts` 改为调用它,4 个测试全部通过。",
       ];
       if (wantsDemo && !isTitleReq) reply = DEMO[Math.min(demoStep, DEMO.length - 1)];
+      else if (wantsPage && !isTitleReq) {
+        reply =
+          "一个单文件页面:\n\n```html\n<!DOCTYPE html>\n<html lang=\"zh\">\n<head>\n  <meta charset=\"utf-8\">\n  <style>\n" +
+          "    body { margin: 0; font-family: system-ui, sans-serif; background: #111; }\n" +
+          "    .card { display: grid; padding: 24px; border-radius: 12px; color: #eee; }\n" +
+          "    .card:hover { transform: translateY(-2px); }\n" +
+          "  </style>\n</head>\n<body>\n  <!-- 卡片列表:\n       由下面的脚本填充 -->\n  <main id=\"list\"></main>\n  <script>\n" +
+          "    const items = [\"读代码\", \"写测试\", \"重构\"];\n" +
+          "    const list = document.getElementById(\"list\");\n" +
+          "    for (const [i, name] of items.entries()) {\n" +
+          "      const el = document.createElement(\"div\");\n" +
+          "      el.className = \"card\";\n" +
+          "      el.textContent = `${i + 1}. ${name}`;\n" +
+          "      list.appendChild(el);\n" +
+          "    }\n  </script>\n</body>\n</html>\n```\n\n保存成 .html 直接打开即可。";
+      }
       else if (wantsRich && !isTitleReq) {
         reply =
           "先说结论:这件事分三步。\n" +
@@ -1482,7 +1504,18 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           "| 方案 | 速度 | 风险 |\n|---|---|---|\n| 原地改 | 快 | 高 |\n| 先测后改 | 稍慢 | 低 |\n\n" +
           "```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\n" +
           "面积公式:\n\n$$\nA = \\pi r^2\n$$\n\n" +
-          "```mermaid\ngraph TD\n  A[读代码] --> B[写测试]\n  B --> C[重构]\n" +
+          (wantsBigDiagram
+            ? "```mermaid\nflowchart TD\n" +
+              ["输入", "处理", "输出"]
+                .map(
+                  (g, gi) =>
+                    `  subgraph S${gi}[${g}阶段]\n` +
+                    Array.from({ length: 10 }, (_, i) => `    N${gi}_${i}[${g}步骤 ${i + 1}:读取配置并校验参数] --> N${gi}_${i + 1}{检查 ${i + 1} 是否通过}\n`).join("") +
+                    "  end\n",
+                )
+                .join("") +
+              "  N0_10 --> N1_0\n  N1_10 --> N2_0\n"
+            : "```mermaid\ngraph TD\n  A[读代码] --> B[写测试]\n  B --> C[重构]\n") +
           (wantsBadDiagram ? "  C -->|未闭合 D[\n" : "") +
           "```\n\n" +
           "***\n\n" +
@@ -1536,14 +1569,14 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           emit({ type: "prefill", processed: Math.min(done, total), total });
           await new Promise((r) => setTimeout(r, fast ? 15 : 140));
         }
-        const pieceRe = wantsRich && wantsFast ? /[\s\S]{1,12}/g : wantsLong || wantsRich ? /[\s\S]{1,3}/g : /.{1,6}/g;
+        const pieceRe = wantsRich && wantsFast ? /[\s\S]{1,12}/g : wantsLong || wantsRich || wantsPage ? /[\s\S]{1,3}/g : /.{1,6}/g;
         for (const piece of reply.match(pieceRe) ?? []) {
           // Told to stop, it stops, as the engines do.
           if (mockGenStop) break;
           // `__mockPause` holds the stream mid-reply, to look at a frame of it.
           while ((globalThis as { __mockPause?: boolean }).__mockPause) await new Promise((r) => setTimeout(r, 50));
           emit({ type: "token", text: piece });
-          await new Promise((r) => setTimeout(r, wantsRich && wantsFast ? 16 : wantsLong || wantsRich ? 28 : 30));
+          await new Promise((r) => setTimeout(r, wantsRich && wantsFast ? 16 : wantsLong || wantsRich || wantsPage ? 28 : 30));
         }
         emit({
           type: "done",

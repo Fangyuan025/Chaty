@@ -16,7 +16,6 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
-import hljs from "highlight.js/lib/common";
 import "katex/dist/katex.min.css";
 import { mdBlocks, type BlockCache } from "../lib/mdBlocks";
 import { useI18n } from "../lib/i18n";
@@ -24,6 +23,8 @@ import { copyToClipboard } from "../lib/clipboard";
 import { fitPop } from "../lib/popFit";
 import { fadeTiming, rehypeStreamFade } from "../lib/streamFade";
 import { stabilizeTail } from "../lib/streamMarkdown";
+import { GrowingHighlight, highlightTyping, splitTyping } from "../lib/highlightLines";
+import { diagramCandidates, finishedDiagram } from "../lib/mermaidStream";
 
 const remarkPlugins = [remarkGfm, remarkMath];
 // `throwOnError: false` keeps partial LaTeX from crashing mid-stream;
@@ -154,94 +155,187 @@ function codeText(children: ReactNode): string {
 
 let mermaidReady: Promise<typeof import("mermaid").default> | null = null;
 let mermaidSeq = 0;
+let mermaidTheme = "";
 
-/** The longest start of `lines` (at least `min` of them) that Mermaid
- *  parses, by dropping lines from the end — a diagram being written is whole
- *  up to its last good line. Null when not even that parses. */
-async function longestParsable(
-  mermaid: { parse: (text: string) => Promise<unknown> },
-  lines: string[],
-  min: number,
-): Promise<string | null> {
-  for (let n = lines.length; n >= min && n > lines.length - 4; n--) {
-    const text = lines.slice(0, n).join("\n");
-    try {
-      await mermaid.parse(text);
-      return text;
-    } catch {
-      // a line not finished saying what it means; one fewer
-    }
+/** Mermaid, loaded once and set to the theme the page is in. */
+async function mermaidIn(dark: boolean) {
+  mermaidReady ??= import("mermaid").then((m) => m.default);
+  const mermaid = await mermaidReady;
+  const theme = dark ? "dark" : "default";
+  if (mermaidTheme !== theme) {
+    // "loose" — strict rejects common model-generated labels (e.g. with
+    // HTML entities) and silently blanked the diagram. We render into our
+    // own sandboxed context, and the SVG is inert markup.
+    mermaid.initialize({ startOnLoad: false, theme, securityLevel: "loose" });
+    mermaidTheme = theme;
   }
-  return null;
+  return mermaid;
 }
 
-function loadMermaid() {
-  if (!mermaidReady) {
-    const dark = !document.documentElement.dataset.theme?.includes("light");
-    mermaidReady = import("mermaid").then((m) => {
-      // "loose" — strict rejects common model-generated labels (e.g. with
-      // HTML entities) and silently blanked the diagram. We render into our
-      // own sandboxed context, and the SVG is inert markup.
-      m.default.initialize({
-        startOnLoad: false,
-        theme: dark ? "dark" : "default",
-        securityLevel: "loose",
-      });
-      return m.default;
-    });
+/** One drawing at a time: Mermaid measures its text in the page and is not
+ *  safe to run twice at once, and a drawing gone out of date while it waited
+ *  (a newer line of its diagram, a diagram scrolled away and unmounted) is
+ *  dropped when its turn comes. */
+let mermaidQueue: Promise<unknown> = Promise.resolve();
+function mermaidTurn(job: () => Promise<void>): Promise<void> {
+  const turn = mermaidQueue.then(job, job);
+  mermaidQueue = turn.catch(() => {});
+  return turn;
+}
+
+/** A diagram being written is drawn again at most this often: six times what
+ *  its last drawing cost (parsing, drawing, putting it on the page), and a
+ *  quarter second at least — a small diagram still grows a line at a time, a
+ *  large one, whose drawing takes a frame or three, every few lines, and the
+ *  frames between are the reply's. */
+let buildingCost = 0;
+let buildingDone = 0;
+const nextFrame = () => new Promise<void>((r) => setTimeout(r, 0));
+
+/** Diagrams already drawn, by theme and source: a conversation opened again,
+ *  or a reply's diagram once the reply is stored, shows at once instead of
+ *  being drawn again. */
+const mermaidDrawn = new Map<string, string>();
+function drawnSvg(key: string): string | undefined {
+  const svg = mermaidDrawn.get(key);
+  if (svg !== undefined) {
+    mermaidDrawn.delete(key);
+    mermaidDrawn.set(key, svg);
   }
-  return mermaidReady;
+  return svg;
+}
+function keepSvg(key: string, svg: string) {
+  mermaidDrawn.set(key, svg);
+  if (mermaidDrawn.size > 64) mermaidDrawn.delete(mermaidDrawn.keys().next().value as string);
+}
+
+/** Whether the page is dark: the theme set, or under "system" the system's.
+ *  (Read as "anything but light", a light system got dark diagrams.) */
+function pageIsDark(): boolean {
+  const theme = document.documentElement.dataset.theme ?? "";
+  if (theme.includes("light")) return false;
+  if (theme.includes("dark")) return true;
+  return !window.matchMedia?.("(prefers-color-scheme: light)").matches;
+}
+
+function usePageDark(): boolean {
+  const [dark, setDark] = useState(pageIsDark);
+  useEffect(() => {
+    const update = () => setDark(pageIsDark());
+    const mo = new MutationObserver(update);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    const mq = window.matchMedia?.("(prefers-color-scheme: light)");
+    mq?.addEventListener?.("change", update);
+    return () => {
+      mo.disconnect();
+      mq?.removeEventListener?.("change", update);
+    };
+  }, []);
+  return dark;
 }
 
 /** A Mermaid diagram, lazily loaded.
  *
  *  While its fence is still being written (`building`) it is drawn as far as
- *  it goes: every time a line is completed, the longest start of it that
- *  parses is drawn, so the flowchart is seen being put together node by node
- *  — and a line half-written is never an error, never a fall back to the
- *  code: the last drawing stays until the next one is ready. Once the fence
- *  closes it is drawn whole, and only a diagram that is wrong as written
- *  falls back to its source, with the reason. */
+ *  it goes, once a line (see mermaidStream): the longest start of its
+ *  finished lines that parses, open subgraphs closed — so the flowchart is
+ *  seen being put together node by node — and a line half-written is never an
+ *  error, never a fall back to the code: the last drawing stays until the
+ *  next one is ready. Once the fence closes it is drawn whole, and only a
+ *  diagram that is wrong as written falls back to its source, with the
+ *  reason. It follows the page's theme. */
 function Mermaid({ code, building = false }: { code: string; building?: boolean }) {
   const { t } = useI18n();
-  const [svg, setSvg] = useState("");
+  const dark = usePageDark();
+  const source = building ? finishedDiagram(code) : code.trim();
+  const tag = dark ? "d" : "l";
+  // What is on screen, by key: a drawing the same as it is not drawn again.
+  const shown = useRef("");
+  const [svg, setSvg] = useState(() => {
+    const hit = !building && source ? drawnSvg(`${tag}\n${source}`) : undefined;
+    if (hit !== undefined) shown.current = `${tag}\n${source}`;
+    return hit ?? "";
+  });
   const [error, setError] = useState("");
-  // While building: only completed lines, so a diagram is redrawn once a line,
-  // not once a character.
-  const source = building ? code.slice(0, Math.max(0, code.lastIndexOf("\n"))).trim() : code.trim();
 
   useEffect(() => {
-    let alive = true;
     if (!source) return;
-    loadMermaid()
-      .then(async (mermaid) => {
-        try {
-          let text = source;
-          if (building) {
-            const found = await longestParsable(mermaid, source.split("\n"), 1);
-            if (!found) return;
-            text = found;
-          } else {
-            await mermaid.parse(text);
-          }
-          const { svg: out } = await mermaid.render(`mmd-${mermaidSeq++}`, text);
-          if (alive) {
-            setSvg(out);
-            setError("");
-          }
-        } catch (e) {
-          // Building, a failed drawing keeps the last one; written, it is the
-          // diagram's own fault, said under its source.
-          if (alive && !building) setError((e as Error)?.message ?? String(e));
+    let alive = true;
+    if (!building) {
+      const key = `${tag}\n${source}`;
+      const hit = drawnSvg(key);
+      if (hit !== undefined) {
+        if (shown.current !== key) {
+          shown.current = key;
+          setSvg(hit);
         }
-      })
-      .catch((e) => {
-        if (alive && !building) setError(`mermaid: ${(e as Error)?.message ?? e}`);
-      });
+        setError("");
+        return;
+      }
+    }
+    void mermaidTurn(async () => {
+      if (!alive) return;
+      if (building) {
+        const wait = buildingDone + Math.max(250, buildingCost * 6) - performance.now();
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        // Lines that came in meanwhile: the newest of them is drawn instead.
+        if (!alive) return;
+      }
+      const began = performance.now();
+      try {
+        const mermaid = await mermaidIn(dark);
+        let text = source;
+        if (building) {
+          let found: string | null = null;
+          for (const candidate of diagramCandidates(source)) {
+            try {
+              await mermaid.parse(candidate);
+              found = candidate;
+              break;
+            } catch {
+              // a line Mermaid does not take; one fewer
+            }
+            if (!alive) return;
+          }
+          if (!found) return;
+          text = found;
+        } else {
+          await mermaid.parse(text);
+        }
+        const key = `${tag}\n${text}`;
+        if (!alive) return;
+        if (shown.current === key) {
+          setError("");
+          return;
+        }
+        let out = drawnSvg(key);
+        if (out === undefined) {
+          // Parsing and drawing in tasks of their own: a frame between them.
+          await nextFrame();
+          if (!alive) return;
+          out = (await mermaid.render(`mmd-${mermaidSeq++}`, text)).svg;
+          if (!building) keepSvg(key, out);
+        }
+        if (alive) {
+          shown.current = key;
+          setSvg(out);
+          setError("");
+        }
+        if (building) {
+          // What putting it on the page costs is about half the drawing again.
+          buildingCost = (performance.now() - began) * 1.5;
+          buildingDone = performance.now();
+        }
+      } catch (e) {
+        // Building, a failed drawing keeps the last one; written, it is the
+        // diagram's own fault, said under its source.
+        if (alive && !building) setError((e as Error)?.message ?? String(e));
+      }
+    });
     return () => {
       alive = false;
     };
-  }, [source, building]);
+  }, [source, building, dark, tag]);
 
   // Nothing drawn yet: being written, or drawing for the first time — the
   // source shows only for a diagram that failed as written.
@@ -522,23 +616,11 @@ function FadeSpanInner({
 }
 const fadeComponents = { ...components, span: FadeSpan } as const;
 
-/** One line of a code block still being written, highlighted on its own and
- *  never again: the lines above it do not change, so they do not re-render,
- *  and the block's DOM grows at its end instead of being rebuilt — which is
- *  what WebKit could not repaint fast enough. A construct spanning lines (a
- *  block comment, a template string) is coloured line by line until the fence
- *  closes; the block is then highlighted whole, once. */
-const CodeLine = memo(function CodeLine({ text, lang, nl }: { text: string; lang: string; nl: boolean }) {
-  const html = useMemo(() => {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
-      } catch {
-        /* plain below */
-      }
-    }
-    return text.replace(/[&<>]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"));
-  }, [text, lang]);
+/** One line of a code block still being written, as markup: re-rendered only
+ *  when its markup changes — the lines above the one being written do not,
+ *  so the block's DOM grows at its end instead of being rebuilt, which is
+ *  what WebKit could not repaint fast enough. */
+const CodeLine = memo(function CodeLine({ html, nl }: { html: string; nl: boolean }) {
   return (
     <>
       <span dangerouslySetInnerHTML={{ __html: html }} />
@@ -547,16 +629,26 @@ const CodeLine = memo(function CodeLine({ text, lang, nl }: { text: string; lang
   );
 });
 
-/** The `code` of a fenced block still being written (see CodeLine). */
+/** The `code` of a fenced block still being written: its finished lines
+ *  highlighted together — once a line while that is cheap, less often for a
+ *  long page (GrowingHighlight) — and the line being typed as they leave it,
+ *  so an HTML page's script and style, or a comment over several lines, are
+ *  coloured as they are while they stream (see highlightLines). */
 function StreamLinesCode({ className, children }: ComponentPropsWithoutRef<"code">) {
   const text = typeof children === "string" ? children : Array.isArray(children) ? children.join("") : "";
   const lang = /language-([\w+#.-]+)/.exec(className ?? "")?.[1]?.toLowerCase() ?? "";
-  const lines = text.split("\n");
+  const { finished, typing, trailing } = splitTyping(text);
+  const growing = useRef<GrowingHighlight | null>(null);
+  if (growing.current?.lang !== lang) growing.current = new GrowingHighlight(lang);
+  const g = growing.current;
+  const done = useMemo(() => g.update(finished), [g, finished]);
+  const typingHtml = useMemo(() => highlightTyping(typing, done), [typing, done]);
   return (
     <code className={`${className ?? ""} hljs`.trim()}>
-      {lines.map((l, i) => (
-        <CodeLine key={i} text={l} lang={lang} nl={i < lines.length - 1} />
+      {done.lines.map((html, i) => (
+        <CodeLine key={i} html={html} nl />
       ))}
+      <CodeLine key={done.lines.length} html={typingHtml} nl={trailing} />
     </code>
   );
 }
