@@ -1638,10 +1638,14 @@ body.resizing-x {
   width: 100%;
 }
 
-/* User: subtle raised bubble with a tail, defined against the deep canvas */
+/* User: subtle raised bubble with a tail, defined against the deep canvas.
+   Your words at the size of the reply's (one Text size for the conversation),
+   a touch more room around them so the larger line does not crowd the edge. */
 .msg.user .bubble {
   max-width: 72%;
-  padding: 10px 16px;
+  padding: 11px 17px;
+  font-size: calc(16.5px * var(--read-scale, 1));
+  line-height: 1.6;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
@@ -5879,9 +5883,11 @@ body:has(.live-overlay) .win-btn.close:hover {
 }
 .edit-box textarea {
   width: 100%;
-  padding: 11px 14px;
+  /* As the bubble it replaces: editing does not change the text's size. */
+  padding: 11px 17px;
   font: inherit;
-  font-size: 15px;
+  font-size: calc(16.5px * var(--read-scale, 1));
+  line-height: 1.6;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border-strong);
@@ -6579,9 +6585,9 @@ body:has(.live-overlay) .win-btn.close:hover {
 .cm-user {
   align-self: flex-end;
   max-width: 82%;
-  padding: 10px 14px;
-  font-size: calc(15px * var(--read-scale, 1));
-  line-height: 1.5;
+  padding: 11px 16px;
+  font-size: calc(16.5px * var(--read-scale, 1));
+  line-height: 1.6;
   color: var(--text);
   background: var(--surface-2);
   border-radius: var(--r-lg) var(--r-lg) var(--r-sm) var(--r-lg);
@@ -6678,7 +6684,8 @@ body:has(.live-overlay) .win-btn.close:hover {
    composer, and chat's "Thinking" — where three bouncing dots were. */
 .cm-run.active .cm-run-label,
 .cm-runbar-label,
-.think-label.is-thinking {
+.think-label.is-thinking,
+.prefill-label {
   background: linear-gradient(
     90deg,
     var(--text-dim) 0%,
@@ -6710,7 +6717,8 @@ body:has(.live-overlay) .win-btn.close:hover {
   }
   .cm-run.active .cm-run-label,
   .cm-runbar-label,
-  .think-label.is-thinking {
+  .think-label.is-thinking,
+  .prefill-label {
     animation: none;
     background: none;
     color: var(--text-dim);
@@ -6718,7 +6726,8 @@ body:has(.live-overlay) .win-btn.close:hover {
 }
 html[data-motion="reduce"] .cm-run.active .cm-run-label,
 html[data-motion="reduce"] .cm-runbar-label,
-html[data-motion="reduce"] .think-label.is-thinking {
+html[data-motion="reduce"] .think-label.is-thinking,
+html[data-motion="reduce"] .prefill-label {
   animation: none;
   background: none;
   color: var(--text-dim);

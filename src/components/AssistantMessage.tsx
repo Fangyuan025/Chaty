@@ -106,7 +106,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         ) : streaming && !answer && prefill != null ? (
           <span className="searching-hint">
             <PrefillRing frac={prefill} />
-            {t("cmPrefill")}
+            <span className="prefill-label">{t("cmPrefill")}</span>
           </span>
         ) : streaming && !answer ? (
           <span className="cursor" />
@@ -167,7 +167,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       ) : opening && prefill != null ? (
         <span className="searching-hint">
           <PrefillRing frac={prefill} />
-          {t("cmPrefill")}
+          <span className="prefill-label">{t("cmPrefill")}</span>
         </span>
       ) : streaming && !cleanAnswer && (!thinking || opening) ? (
         <span className="cursor" />
