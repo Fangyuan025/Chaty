@@ -127,8 +127,10 @@ FetchContent_MakeAvailable(audiocpp)
 # One patch per file, so a file that moves upstream stops only its own lines.
 # A runtime pack builds from a newer audio.cpp than the pin: where the code
 # around a line has drifted, a three-way apply still places it; where a file
-# has moved, a variant for its new place goes beside the old one, named
-# `<name>.<variant>.patch` — the first variant whose file is there is used.
+# has moved or been rewritten, a variant for the newer audio.cpp goes beside
+# the old one, named `<name>.<variant>.patch` — tried in name order, the
+# first that applies is used. The plain `<name>.patch` is the pin's and sorts
+# first as long as the variant's name starts after "p" (`upstream-<date>`).
 # A part with no variant that applies stops the build: a pack whose
 # percentage would sit still is not published.
 #

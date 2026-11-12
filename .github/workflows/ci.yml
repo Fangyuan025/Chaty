@@ -103,8 +103,10 @@ jobs:
         with: { workspaces: src-tauri, cache-targets: false }
       - name: System deps (Tauri v2 webkit + audio)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+          # apt-get, tried again when the mirror cannot be reached.
+          apt() { for i in 1 2 3 4; do sudo apt-get -o Acquire::Retries=3 "$@" && return 0; echo "apt-get $1 failed (try $i of 4)" >&2; sleep $((i * 20)); sudo apt-get update || true; done; return 1; }
+          apt update
+          apt install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
             librsvg2-dev patchelf libasound2-dev libssl-dev
       # Same guard the Windows job gives cfg(windows) code: catch cfg(unix) /
       # cfg(target_os="linux") paths the macOS jobs compile differently (and
@@ -182,7 +184,9 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable # the staged name carries the target triple
       - name: System deps
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        run: |
+          apt() { for i in 1 2 3 4; do sudo apt-get -o Acquire::Retries=3 "$@" && return 0; echo "apt-get $1 failed (try $i of 4)" >&2; sleep $((i * 20)); sudo apt-get update || true; done; return 1; }
+          apt update && apt install -y ninja-build
       - name: Build chaty-sd (CPU)
         run: ./scripts/build-sd-sidecar.sh cpu
       - name: Protocol smoke
@@ -205,7 +209,9 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable # the staged name carries the target triple
       - name: System deps
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        run: |
+          apt() { for i in 1 2 3 4; do sudo apt-get -o Acquire::Retries=3 "$@" && return 0; echo "apt-get $1 failed (try $i of 4)" >&2; sleep $((i * 20)); sudo apt-get update || true; done; return 1; }
+          apt update && apt install -y ninja-build
       - name: Build chaty-audio (CPU)
         run: ./scripts/build-audio-sidecar.sh cpu
       - name: Protocol smoke

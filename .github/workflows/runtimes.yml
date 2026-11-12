@@ -98,14 +98,19 @@ jobs:
         run: |
           wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc >/dev/null
           sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
-          sudo apt-get update
-          sudo apt-get install -y ninja-build vulkan-sdk
+          # apt-get, tried again when the mirror cannot be reached: "Temporary
+          # failure resolving azure.archive.ubuntu.com" failed three runtime-pack
+          # builds in one run, none of them about the build.
+          apt() { for i in 1 2 3 4; do sudo apt-get -o Acquire::Retries=3 "$@" && return 0; echo "apt-get $1 failed (try $i of 4)" >&2; sleep $((i * 20)); sudo apt-get update || true; done; return 1; }
+          apt update
+          apt install -y ninja-build vulkan-sdk
       # chaty-llama is a binary of the app's crate, which needs Tauri's
       # system libraries to build.
       - name: Linux deps (Tauri)
         if: runner.os == 'Linux' && matrix.engine == 'llama'
         run: |
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+          apt() { for i in 1 2 3 4; do sudo apt-get -o Acquire::Retries=3 "$@" && return 0; echo "apt-get $1 failed (try $i of 4)" >&2; sleep $((i * 20)); sudo apt-get update || true; done; return 1; }
+          apt install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
             librsvg2-dev patchelf libasound2-dev libssl-dev
       - name: Windows Vulkan SDK
         if: runner.os == 'Windows'

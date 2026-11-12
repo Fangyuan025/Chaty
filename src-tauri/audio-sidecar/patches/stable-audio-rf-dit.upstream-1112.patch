@@ -1,0 +1,18 @@
+diff --git a/src/framework/sampling/device_denoiser_runtime.cpp b/src/framework/sampling/device_denoiser_runtime.cpp
+index d54a0c60..efca9521 100644
+--- a/src/framework/sampling/device_denoiser_runtime.cpp
++++ b/src/framework/sampling/device_denoiser_runtime.cpp
+@@ -1,4 +1,5 @@
+ #include "engine/framework/sampling/device_denoiser_runtime.h"
++#include "engine/framework/debug/chaty_progress.h"
+ 
+ #include "engine/framework/debug/profiler.h"
+ #include "engine/framework/modules/activation_modules.h"
+@@ -93,6 +94,7 @@ std::vector<float> DeviceFlowSamplerRuntime::run(
+     try {
+         const auto started = std::chrono::steady_clock::now();
+         for (size_t step = 0; step < sequence.steps; ++step) {
++            CHATY_PROGRESS("render", step, sequence.steps);
+             for (const auto & binding : sequence.step_bindings)
+                 ggml_backend_tensor_set_async(backend, binding.target.tensor,
+                     static_cast<const std::byte *>(binding.data) + step * binding.bytes_per_step,
