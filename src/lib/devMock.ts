@@ -1451,6 +1451,10 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       // With 大图 / big diagram, a diagram the size models draw: thirty nodes
       // in three subgraphs, labels of a few words.
       const wantsBigDiagram = /大图|big diagram/i.test(last);
+      // With 错字图 / misspelt diagram, a diagram right in what it says and
+      // wrong in how its labels are spelt (brackets and quotes unquoted, a
+      // node named end): drawn all the same.
+      const wantsMisspelt = /错字图|misspelt diagram/i.test(last);
       // 网页 / web page streams a single-file page — a style, a comment over
       // two lines, a script — to look at its highlighting as it streams.
       const wantsPage = /网页|web page/i.test(last);
@@ -1515,7 +1519,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
                 )
                 .join("") +
               "  N0_10 --> N1_0\n  N1_10 --> N2_0\n"
-            : "```mermaid\ngraph TD\n  A[读代码] --> B[写测试]\n  B --> C[重构]\n") +
+            : wantsMisspelt
+              ? '```mermaid\nflowchart TD\n  A[调用 foo(bar)] --> B{价格 > 5?}\n  B -->|是(通过)| C[say "hi"]\n  C --> end[结束: 完成]\n'
+              : "```mermaid\ngraph TD\n  A[读代码] --> B[写测试]\n  B --> C[重构]\n") +
           (wantsBadDiagram ? "  C -->|未闭合 D[\n" : "") +
           "```\n\n" +
           "***\n\n" +

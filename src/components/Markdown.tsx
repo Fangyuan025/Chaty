@@ -24,7 +24,7 @@ import { fitPop } from "../lib/popFit";
 import { fadeTiming, rehypeStreamFade } from "../lib/streamFade";
 import { stabilizeTail } from "../lib/streamMarkdown";
 import { GrowingHighlight, highlightTyping, splitTyping } from "../lib/highlightLines";
-import { diagramCandidates, finishedDiagram } from "../lib/mermaidStream";
+import { diagramCandidates, finishedDiagram, repairDiagram } from "../lib/mermaidStream";
 
 const remarkPlugins = [remarkGfm, remarkMath];
 // `throwOnError: false` keeps partial LaTeX from crashing mid-stream;
@@ -288,19 +288,39 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
         if (building) {
           let found: string | null = null;
           for (const candidate of diagramCandidates(source)) {
-            try {
-              await mermaid.parse(candidate);
-              found = candidate;
-              break;
-            } catch {
-              // a line Mermaid does not take; one fewer
+            // As written, or with its labels' spelling put right (see
+            // repairDiagram); failing both, one line fewer.
+            const fixed = repairDiagram(candidate);
+            for (const attempt of fixed === candidate ? [candidate] : [candidate, fixed]) {
+              try {
+                await mermaid.parse(attempt);
+                found = attempt;
+                break;
+              } catch {
+                // not this spelling
+              }
             }
+            if (found) break;
             if (!alive) return;
           }
           if (!found) return;
           text = found;
         } else {
-          await mermaid.parse(text);
+          try {
+            await mermaid.parse(text);
+          } catch (e) {
+            // Right but misspelt — a label with brackets or quotes in it and
+            // no quotes round it: drawn with the spelling put right. Wrong
+            // either way: the error of the diagram as it was written.
+            const fixed = repairDiagram(text);
+            if (fixed === text) throw e;
+            try {
+              await mermaid.parse(fixed);
+            } catch {
+              throw e;
+            }
+            text = fixed;
+          }
         }
         const key = `${tag}\n${text}`;
         if (!alive) return;
