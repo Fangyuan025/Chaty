@@ -707,13 +707,15 @@ export function ImageStudio({
                   const k = 16 / Math.max(w, h);
                   return (
                     <button key={a} className={settings.imgAspect === a ? "on" : ""} onClick={() => onSettings({ imgAspect: a })}>
-                      <span className="is-aspect-box" style={{ width: w * k, height: h * k }} />
+                      {/* Each shape in the same 16 px of height, so the labels under
+                          a wide one and a tall one sit on one line (issue #25). */}
+                      <span className="is-aspect-box" style={{ width: w * k, height: h * k, marginBlock: (16 - h * k) / 2 }} />
                       {a}
                     </button>
                   );
                 })}
                 <button className={settings.imgAspect === "custom" ? "on" : ""} onClick={() => onSettings({ imgAspect: "custom", imgCustomW: eff.width, imgCustomH: eff.height })}>
-                  <span className="is-aspect-box dashed" style={{ width: 14, height: 14 }} />
+                  <span className="is-aspect-box dashed" style={{ width: 14, height: 14, marginBlock: 1 }} />
                   {t("imgAspectCustom")}
                 </button>
               </div>

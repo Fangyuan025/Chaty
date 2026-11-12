@@ -3172,7 +3172,72 @@ where
 pub fn navigate(url: &str) -> Result<String, String> {
     let ws = crate::agent::agent_get_workspace().map(std::path::PathBuf::from);
     let url = normalize_url(url, ws.as_deref())?;
-    dispatch(|reply| BrowserCmd::Navigate { url, reply })
+    let target = url.clone();
+    dispatch(|reply| BrowserCmd::Navigate { url, reply }).map_err(|e| nothing_listening(e, &target, ws.as_deref()))
+}
+
+/// A local address nothing is listening on: say so, and that a page in the
+/// workspace opens from its file. The bare "navigation failed:
+/// net::ERR_CONNECTION_REFUSED" sent models off to start a server — and where
+/// none would start (no Python, no Node: issue #25, on Windows) they spent
+/// the whole turn on it, for a page that never needed one.
+fn nothing_listening(err: String, url: &str, ws: Option<&std::path::Path>) -> String {
+    let local = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .is_some_and(is_local_host);
+    if !local || !err.contains("ERR_CONNECTION_REFUSED") {
+        return err;
+    }
+    let pages = ws.map(workspace_pages).unwrap_or_default();
+    let example = pages.first().cloned().unwrap_or_else(|| "index.html".to_string());
+    let found = if pages.is_empty() {
+        String::new()
+    } else {
+        trf!("工作区里的页面:{}。", "Pages in the workspace: {}. ", pages.join(", "))
+    };
+    format!(
+        "{err}\n{}",
+        trf!(
+            "这个地址上没有服务在监听。{found}查看工作区里的页面不需要服务器:直接用文件路径打开,例如 browser_navigate {{\"url\": \"{example}\"}}。只有页面必须经 HTTP 才能运行时才需要服务器(用 bash_bg 启动,bg_output 确认它已在监听,再打开)。",
+            "Nothing is listening at this address. {found}A page in the workspace needs no server: open it by its file path, e.g. browser_navigate {{\"url\": \"{example}\"}}. A server is needed only when the page cannot run from a file (start it with bash_bg, confirm with bg_output that it is listening, then open it)."
+        )
+    )
+}
+
+/// Up to three HTML pages in the workspace, by path from its root: index.html
+/// first, the shallowest first — what `nothing_listening` offers to open.
+fn workspace_pages(ws: &std::path::Path) -> Vec<String> {
+    const SKIP: &[&str] = &[".git", "node_modules", ".venv", "__pycache__", "target"];
+    let mut pages: Vec<String> = Vec::new();
+    let mut stack = vec![(ws.to_path_buf(), 0u8)];
+    let mut visited = 0usize;
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            visited += 1;
+            if visited > 5_000 {
+                break;
+            }
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if p.is_dir() {
+                if depth < 2 && !name.starts_with('.') && !SKIP.contains(&name.as_str()) {
+                    stack.push((p, depth + 1));
+                }
+            } else if name.to_ascii_lowercase().ends_with(".html") || name.to_ascii_lowercase().ends_with(".htm") {
+                if let Ok(rel) = p.strip_prefix(ws) {
+                    pages.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    pages.sort_by_key(|p| {
+        let name = p.rsplit('/').next().unwrap_or(p).to_ascii_lowercase();
+        (!name.starts_with("index."), p.matches('/').count(), p.clone())
+    });
+    pages.truncate(3);
+    pages
 }
 
 pub fn refresh() -> Result<String, String> {
@@ -3536,6 +3601,30 @@ mod tests {
     /// resolve against the WORKSPACE (the agent's world), never the app
     /// process's cwd — the old rule turned `index.html` into
     /// `https://index.html` and looped the model on a DNS error.
+    #[test]
+    fn a_refused_local_address_points_at_the_page_file() {
+        let ws = std::env::temp_dir().join(format!("chaty-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(ws.join("docs")).unwrap();
+        std::fs::create_dir_all(ws.join("node_modules/x")).unwrap();
+        std::fs::write(ws.join("docs/about.html"), "x").unwrap();
+        std::fs::write(ws.join("index.html"), "x").unwrap();
+        std::fs::write(ws.join("node_modules/x/demo.html"), "x").unwrap();
+        let refused = "navigation failed: net::ERR_CONNECTION_REFUSED".to_string();
+        let got = nothing_listening(refused.clone(), "http://localhost:8000/", Some(&ws));
+        assert!(got.starts_with(&refused), "{got}");
+        // The page there is, index first; a dependency's demo is not one.
+        assert!(got.contains("index.html, docs/about.html"), "{got}");
+        assert!(got.contains("\"url\": \"index.html\""), "{got}");
+        assert!(!got.contains("demo.html"), "{got}");
+        // A website that refuses, or another failure on a local address, is
+        // reported as it is.
+        assert_eq!(nothing_listening(refused.clone(), "https://example.com/", Some(&ws)), refused);
+        let dns = "navigation failed: net::ERR_NAME_NOT_RESOLVED".to_string();
+        assert_eq!(nothing_listening(dns.clone(), "http://127.0.0.1:3000/", Some(&ws)), dns);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
     #[test]
     fn normalize_url_resolves_files_hosts_and_teaches() {
         let ws = std::env::temp_dir().join(format!("chaty-navtest-{}", std::process::id()));

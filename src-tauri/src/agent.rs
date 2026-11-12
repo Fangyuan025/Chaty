@@ -4304,6 +4304,9 @@ pub async fn agent_bash(
             res.stderr.push_str(&note);
         }
     }
+    if let Some(note) = nothing_listening_note(&port_command) {
+        res.stderr.push_str(&note);
+    }
     Ok(res)
 }
 
@@ -4660,6 +4663,41 @@ pub fn install_termination_cleanup() {
             libc::signal(sig, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t);
         }
     }
+}
+
+/// A command that talks to a local port nothing is listening on is told so.
+/// `curl -s localhost:8080 | grep …` prints nothing whether the page lacks the
+/// word or the server never started, and a model whose server had died
+/// without a word (no Python on the machine: issue #25) spent a turn
+/// rewording the grep.
+fn nothing_listening_note(command: &str) -> Option<String> {
+    let re = regex::Regex::new(r"(?i)(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):(\d{2,5})\b").unwrap();
+    let mut ports: Vec<u16> = Vec::new();
+    for c in re.captures_iter(command) {
+        if let Ok(port) = c[1].parse::<u16>() {
+            if port > 0 && !ports.contains(&port) && ports.len() < 3 {
+                ports.push(port);
+            }
+        }
+    }
+    let dead: Vec<String> = ports.into_iter().filter(|p| !port_is_listening(*p)).map(|p| p.to_string()).collect();
+    if dead.is_empty() {
+        return None;
+    }
+    let which = dead.join(", ");
+    Some(trf!(
+        "\n[Chaty] 本机端口 {which} 上没有服务在监听——服务器没有在运行(没启动成功,或已经退出;用 bg_output 看它的输出)。只是查看工作区里的页面不需要服务器:browser_navigate 直接打开文件路径。",
+        "\n[Chaty] Nothing is listening on local port {which} — the server is not running (it did not start, or has exited; bg_output shows what it said). Just looking at a page in the workspace needs no server: browser_navigate takes its file path."
+    ))
+}
+
+/// Whether anything accepts connections on a local TCP port, v4 or v6.
+fn port_is_listening(port: u16) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+    let wait = Duration::from_millis(250);
+    [SocketAddr::from((Ipv4Addr::LOCALHOST, port)), SocketAddr::from((Ipv6Addr::LOCALHOST, port))]
+        .iter()
+        .any(|addr| TcpStream::connect_timeout(addr, wait).is_ok())
 }
 
 /// A command that failed because its port is taken says who has it — a job of
@@ -7225,6 +7263,16 @@ mod tests {
         assert_eq!(command_key("[detached] python3 -m http.server 18762 > /dev/null 2>&1 &"), "python3 -m");
         assert_eq!(command_key("npm run dev"), "npm run");
         assert_eq!(port_candidates("OSError: [Errno 48] Address already in use", "python3 -m http.server 8000"), vec![8000]);
+        // A local port nothing listens on is said to be dead; one that is
+        // served, and a command naming no local port, say nothing.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let curl = format!("curl -s http://localhost:{port}/index.html | grep title");
+        assert!(nothing_listening_note(&curl).is_none());
+        drop(listener);
+        let note = nothing_listening_note(&curl).expect("a dead port is named");
+        assert!(note.contains(&port.to_string()), "{note}");
+        assert!(nothing_listening_note("curl -s https://example.com:8443/ && ls").is_none());
         assert_eq!(
             port_candidates("Error: listen EADDRINUSE: address already in use :::3000", "npm run dev"),
             vec![3000]

@@ -155,6 +155,7 @@ import {
   UNTRUSTED_TOOLS,
 } from "./toolRegistry";
 import { callMcpTool } from "./mcp";
+import { commandPrograms, missingProgram, missingProgramNote } from "./missingProgram";
 import { officialSkillSupport, skillBody, skillIndex, skillRoot, type SkillFile } from "./skillFiles";
 import { MEMORY_DIR, memoryIndexDoc, memoryWriteNudge, rememberFact } from "./memoryFiles";
 export type { AgentToolName } from "./toolRegistry";
@@ -397,6 +398,17 @@ export interface AgentOptions {
    *  list that would stand in for the plan ("planAsk", "planTodo") — stopped
    *  as soon as the name is written, not after the whole call. */
   blocked?: (name: string) => Blocked | null;
+  /** A change to a file, asked about as soon as the file is known — while
+   *  the model is still writing what goes in it — where the permission mode
+   *  asks at all (null: it does not). The answer stands for the call once it
+   *  is whole (`approve` is still called with it, and is where the host hands
+   *  the same answer back); a "no" given meanwhile stops the writing there.
+   *  Asked only when the call was whole, a manual-mode user sat through a
+   *  file being written out before they could say they did not want it. */
+  approveEarly?: (call: ToolCall) => Promise<boolean | "plan"> | null;
+  /** The call asked about early never came to be approved — it was cut, or
+   *  ended as something else: take the question down. */
+  approveEarlyGone?: () => void;
   /** Send the turn's first call back once when it says nothing to the user
    *  (see the first-call note guard). Code mode turns it on. */
   askFirstNote?: boolean;
@@ -2393,7 +2405,11 @@ async function execTool(
       }
       // A tool call written as a shell command — `bg_input(id=3, text="y")` —
       // is a syntax error to the shell and a mystery to a small model.
-      const asTool = /^\s*([a-z_]+)\s*[({]/.exec(cmd);
+      // …written as a call, `read_file({…})`, or as a command with words
+      // after it, `browser_navigate file:///…` — a name with an underscore
+      // that is one of the tools is not a program (a 4B "ran" that one in
+      // bash and took "command not found" for the browser being missing).
+      const asTool = /^\s*([a-z_]+)\s*[({]/.exec(cmd) ?? /^\s*([a-z]+_[a-z_]+)(?:\s|$)/.exec(cmd);
       if (asTool && NATIVE_TOOL_NAMES.includes(asTool[1] as AgentToolName) && asTool[1] !== "bash") {
         return {
           result: isZh()
@@ -3654,7 +3670,12 @@ export async function runAgentTurn(
   // arriving right after a "continue" is the SECOND one, not the first — it
   // meets the soft lock immediately instead of buying six more free steps.
   let lastCallKey = opts.resume?.kind === "repeat" ? opts.resume.key : "";
-  let repeatCount = opts.resume?.kind === "repeat" ? 1 : 0;
+  // …seeded with the key only. Counted as one already made, the first
+  // identical call after "continue" paused the turn again on the spot — no
+  // note, nothing run, the user back where they pressed the button (issue
+  // #25). With the key alone it is intercepted and told why, and the turn
+  // goes on; a second one pauses.
+  let repeatCount = 0;
   // Resume hot. Replaying at base temperature is what made "continue" produce
   // the same call again: the transcript's most likely continuation IS the
   // thing that got the turn paused.
@@ -3698,6 +3719,47 @@ export async function runAgentTurn(
   // tool's counter. Slip 5 pauses — guarded calls never reach the repeat
   // breaker, so the ladder carries its own backstop.
   const argSlips = new Map<string, { n: number; atStep: number; total: number }>();
+  /** Programs a command this turn showed the machine not to have (see
+   *  missingProgram): told once, and a command that starts one again is
+   *  answered without being run. */
+  const missingPrograms = new Set<string>();
+  /** A turn pausing because the model keeps making the same call: its own
+   *  few lines on what is done, what stands in the way and what the user can
+   *  do, to go above the notice. The notice alone ("issued the same call 3
+   *  times — paused") told the user nothing about the work or the obstacle,
+   *  and "Continue" was a guess. The exchange is recorded, so the next turn's
+   *  prompt still extends this one; a reply that calls a tool anyway, or says
+   *  nothing, is dropped and the transcript left as it was. */
+  const sayWhatBlocks = async (tool: string): Promise<string> => {
+    if (opts.signal.cancelled) return "";
+    const before = messages.length;
+    pushUser(
+      toolResultMsg(
+        tool,
+        lang === "zh"
+          ? "这个调用没有执行,本轮在这里暂停。这一条回复不要调用任何工具,用三四句话直接告诉用户:已经完成了什么;卡在哪一步、原因是什么;需要用户做什么,或者你接下来打算换什么做法。"
+          : "This call was not run; the turn pauses here. In this reply call no tool: tell the user in three or four sentences what is done, which step is stuck and why, and what they need to do — or what you would try differently next.",
+      ),
+    );
+    let raw = "";
+    try {
+      await generate(
+        { messages, params: { temperature: 0.3, topP: opts.sampling?.topP ?? 0.9, maxTokens: 400, think: false } },
+        (ev) => {
+          if (ev.type === "token") raw += ev.text;
+        },
+      );
+    } catch {
+      raw = "";
+    }
+    const text = stripThink(raw).trim();
+    if (opts.signal.cancelled || !text || callStart(text) !== -1) {
+      messages.length = before;
+      return "";
+    }
+    storeAssistantTurn(messages, raw.trim(), opts.reasoningField);
+    return text;
+  };
   if (opts.resume?.kind === "argslip") {
     // The rung carries over — the model earns the strongest wording on its
     // first slip after a resume, not the gentlest — while `total` starts over,
@@ -3933,7 +3995,12 @@ export async function runAgentTurn(
             status: j.code === 0 ? "done" : "error",
             result: `${head}\n${j.tail}`,
           });
-          pushUser(toolResultMsg("bash_bg", `${head}\n${isZh() ? "--- 输出尾部 ---" : "--- output tail ---"}\n${j.tail}`), {
+          // A job that died because the machine has no such program: said
+          // as what it is, and remembered (see missingProgram).
+          const gone = missingProgram(j.tail, j.command);
+          const goneNote = gone && !missingPrograms.has(gone) ? `\n\n${missingProgramNote(gone, lang === "zh")}` : "";
+          if (gone) missingPrograms.add(gone);
+          pushUser(toolResultMsg("bash_bg", `${head}\n${isZh() ? "--- 输出尾部 ---" : "--- output tail ---"}\n${j.tail}${goneNote}`), {
             name: "bash_bg",
             args: { command: j.command, id: j.id },
           });
@@ -4028,6 +4095,10 @@ export async function runAgentTurn(
       // on a long block a small model misses again the same way. Stopped at
       // the first line that cannot be in the file, the round costs what was
       // written up to there.
+      // The early question for this step's file change, if one was put (see
+      // approveEarly), and whether the answer was no while it was written.
+      opts.approveEarlyGone?.();
+      const earlyAsk = { asked: false, open: true, name: "", path: "", denied: false };
       const editProbe = { open: true, busy: false, key: "", cut: false, miss: "" };
       const probeEdit = () => {
         if (editProbe.busy || editProbe.cut) return;
@@ -4155,6 +4226,22 @@ export async function runAgentTurn(
             if (cb.onLiveStep && performance.now() - liveShownAt >= LIVE_CARD_MS) {
               liveShownAt = performance.now();
               showLive(raw);
+              // The file is known: ask now, where the mode asks.
+              const view = (live as Live | null)?.view;
+              if (opts.approveEarly && !earlyAsk.asked && view?.path && !blockedCall) {
+                earlyAsk.asked = true;
+                earlyAsk.name = view.name;
+                earlyAsk.path = view.path;
+                const answer = opts.approveEarly({ name: view.name as ToolCall["name"], args: { path: view.path } });
+                if (answer) {
+                  void answer.then((ok) => {
+                    if (ok !== true && earlyAsk.open) {
+                      earlyAsk.denied = true;
+                      void cancelGeneration().catch(() => {});
+                    }
+                  });
+                }
+              }
             }
             // ── Think gate (mid-stream) ── stop a runaway before it fills the
             // whole budget: too much uninterrupted reasoning with no output, or
@@ -4208,6 +4295,7 @@ export async function runAgentTurn(
         overflowAt = n;
       });
       editProbe.open = false;
+      earlyAsk.open = false;
       // Safety: a cancelled/errored step may end mid-prefill — clear the ring.
       cb.onPrefill?.(null);
       if (opts.signal.cancelled) return;
@@ -4297,6 +4385,36 @@ export async function runAgentTurn(
       }
       emptyStreak = 0;
       const thinking = shownThought(raw);
+
+      // ── Refused while it was being written ── (see approveEarly). Recorded
+      // as generated, closed so the call reads as one, and answered as any
+      // refused change is.
+      if (earlyAsk.denied && !opts.signal.cancelled) {
+        const call: ToolCall = { name: earlyAsk.name as ToolCall["name"], args: { path: earlyAsk.path } };
+        storeAssistantTurn(messages, raw, opts.reasoningField);
+        const said = proseAfter(raw).trim();
+        const stepObj: ToolStep = {
+          id: uid(),
+          call,
+          status: "denied",
+          thinking,
+          ...(said ? { said } : {}),
+          result: lang === "zh" ? "已被用户拒绝" : "denied by the user",
+        };
+        const shown = live as Live | null;
+        if (shown && !shown.claimed && sameFileTool(shown.view.name, earlyAsk.name)) stepObj.id = shown.id;
+        cb.onStep(stepObj);
+        pushUser(
+          toolResultMsg(
+            call.name,
+            lang === "zh"
+              ? "用户拒绝了此操作(内容还没写完就拒绝了,文件没有改动)。请调整方案或询问用户。"
+              : "The user denied this action (before its content was finished; the file is unchanged). Adjust the plan or ask the user.",
+          ),
+          call,
+        );
+        continue;
+      }
 
       // ── Edit stopped mid-call ── its old_string could not be in the file
       // (see the edit probe above). Recorded like any failed tool step: the
@@ -4961,11 +5079,15 @@ export async function runAgentTurn(
         return;
       }
       if (repeatCount >= pauseAt) {
-        // One past the warning — pause instead of spinning to the step limit.
-        cb.onFinal(
+        // One past the warning — pause instead of spinning to the step limit,
+        // under the model's own account of where things stand.
+        const notice =
           lang === "zh"
-            ? `检测到模型连续 ${repeatCount + 1} 次发出完全相同的调用,已暂停以免空转。可点「继续」重试,或换一种说法明确指出要看的子目录/文件。`
-            : `The model issued the exact same call ${repeatCount + 1} times in a row — paused to avoid spinning. Hit "Continue" to retry, or rephrase with the specific subdirectory/file to look at.`,
+            ? `模型连续 ${repeatCount + 1} 次发出完全相同的 ${call.name} 调用,已暂停以免空转。可以点「继续」让它换个做法再试,或者直接告诉它该怎么做。`
+            : `The model issued the exact same ${call.name} call ${repeatCount + 1} times in a row — paused instead of spinning. "Continue" lets it try another way; or tell it what to do instead.`;
+        const said = await sayWhatBlocks(call.name);
+        cb.onFinal(
+          said ? `${said}\n\n${notice}` : notice,
           undefined,
           "steps",
           { kind: "repeat", tool: call.name, key: callKey, count: repeatCount + 1 },
@@ -5230,6 +5352,20 @@ export async function runAgentTurn(
         continue;
       }
 
+      // A program this turn already showed the machine not to have: not run
+      // again, under any spelling of the command.
+      if (call.name === "bash" || call.name === "bash_bg") {
+        const gone = commandPrograms(asStr(call.args.command)).find((prog) => missingPrograms.has(prog));
+        if (gone) {
+          const note = missingProgramNote(gone, lang === "zh", true);
+          stepObj.status = "error";
+          stepObj.result = note;
+          cb.onStep(stepObj);
+          pushUser(toolResultMsg(call.name, note));
+          continue;
+        }
+      }
+
       // ── sudo: a privileged command always needs explicit permission, with an
       // optional secure password entry — even under bypass/allowlist. ──
       let sudoPassword: string | undefined;
@@ -5328,6 +5464,16 @@ export async function runAgentTurn(
         // (e.g. a backend read that resolved null) can't crash the whole turn
         // at the .startsWith/.slice below.
         resultText = out.result ?? "";
+        // The machine has no such program: said once, as what it is, and
+        // remembered for the turn.
+        if (call.name === "bash" || call.name === "bash_bg" || call.name === "bg_output") {
+          const gone = missingProgram(resultText, call.name === "bg_output" ? undefined : asStr(call.args.command));
+          if (gone && !missingPrograms.has(gone)) {
+            missingPrograms.add(gone);
+            resultText += `\n\n${missingProgramNote(gone, lang === "zh")}`;
+            out = { ...out, result: resultText };
+          }
+        }
         // A call that did part of its job (multi_read with a file it could not
         // read) hands back what it has AND says it failed.
         stepObj.status = out.failed ? "error" : "done";
@@ -5709,6 +5855,7 @@ export async function runAgentTurn(
     if (!opts.signal.cancelled) cb.onError(e instanceof Error ? e.message : String(e));
   } finally {
     withdrawLive();
+    opts.approveEarlyGone?.();
     // However the turn ended — answered, out of steps, cancelled, or thrown —
     // hand back what was actually sent. A turn that stopped halfway still did
     // real work, and the next one should continue from it rather than rediscover

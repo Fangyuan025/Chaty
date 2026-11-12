@@ -988,7 +988,15 @@ export function CodeMode({
     if (mapped && effortLevels.includes(mapped)) return mapped;
     return effortLevels[Math.min(1, effortLevels.length - 1)] ?? "";
   }, [effortLevels, codeEffort, thinkMode]);
-  const [approval, setApproval] = useState<{ call: ToolCall; resolve: (ok: boolean | "plan") => void } | null>(null);
+  const [approval, setApproval] = useState<{
+    call: ToolCall;
+    resolve: (ok: boolean | "plan") => void;
+    /** Asked while the call is still being written: only its file is known. */
+    early?: boolean;
+  } | null>(null);
+  /** The question put early for the file change being written, and its
+   *  answer — handed back when the whole call comes to be approved. */
+  const earlyAskRef = useRef<{ key: string; answer: Promise<boolean | "plan"> } | null>(null);
   /** The model is writing a tool call: the tool's name once it shows, "" until
    *  then, null when it is not (see onCalling). */
   const [callingTool, setCallingTool] = useState<string | null>(null);
@@ -2181,10 +2189,33 @@ export function CodeMode({
       // The permission mode decides, as it stands when the call comes —
       // with the allowlist, read-only commands and "always allow" in it.
       approve: (call: ToolCall) => {
+        // Already asked, while it was being written: the same answer — and
+        // if there is none yet, the question now shows the whole change.
+        const early = earlyAskRef.current;
+        earlyAskRef.current = null;
+        if (early && early.key === `${call.name}:${argPath(call.args)}`) {
+          setApproval((cur) => (cur?.early ? { ...cur, call, early: false } : cur));
+          return early.answer;
+        }
+        if (early) setApproval((cur) => (cur?.early ? null : cur));
         const v = verdictFor(modesRef.current[runSid] ?? "auto", call);
         if (v === "allow") return Promise.resolve(true);
         if (v === "plan") return Promise.resolve("plan" as const);
         return new Promise<boolean | "plan">((resolve) => setApproval({ call, resolve }));
+      },
+      // A file change is asked about as soon as its file is known, where the
+      // mode asks: no waiting for the whole file to be written before
+      // saying no to it.
+      approveEarly: (call: ToolCall) => {
+        if (verdictFor(modesRef.current[runSid] ?? "auto", call) !== "ask") return null;
+        const answer = new Promise<boolean | "plan">((resolve) => setApproval({ call, resolve, early: true }));
+        earlyAskRef.current = { key: `${call.name}:${argPath(call.args)}`, answer };
+        return answer;
+      },
+      approveEarlyGone: () => {
+        if (!earlyAskRef.current) return;
+        earlyAskRef.current = null;
+        setApproval((cur) => (cur?.early ? null : cur));
       },
       planMode: (modesRef.current[runSid] ?? "auto") === "plan",
       // While planning, a change is known not to run from its name — as the
@@ -3204,7 +3235,7 @@ export function CodeMode({
         </div>
       )}
       {approval && (
-        <div className="cm-approve-backdrop">
+        <div className={`cm-approve-backdrop${approval.early ? " early" : ""}`}>
           <div className="cm-approve" onMouseDown={(e) => e.stopPropagation()}>
             <div className="cm-approve-title">
               {approval.call.name === "bash" || approval.call.name === "bash_bg" || approval.call.name === "bg_input"
@@ -3215,10 +3246,11 @@ export function CodeMode({
                 followed by the command again, which read as an explanation
                 that said nothing (issue #18). */}
             <pre className="cm-approve-cmd">{toolSummary(approval.call)}</pre>
+            {approval.early && <div className="cm-approve-detail">{t("cmApproveWriting")}</div>}
             {approval.call.name === "web_download" && (
               <div className="cm-approve-detail">{String(approval.call.args.url ?? "")}</div>
             )}
-            {(approval.call.name === "edit_file" || approval.call.name === "multi_edit") && (() => {
+            {!approval.early && (approval.call.name === "edit_file" || approval.call.name === "multi_edit") && (() => {
               const edits = argEdits(approval.call.args);
               // Multi-spot edit → group each change; single edit → one diff.
               const groups =
@@ -3246,7 +3278,7 @@ export function CodeMode({
                 </pre>
               );
             })()}
-            {approval.call.name === "write_file" && (
+            {!approval.early && approval.call.name === "write_file" && (
               <pre className="cm-diff cm-approve-diff">
                 {argContent(approval.call.args).split("\n").slice(0, 40).map((text, i) => (
                   <div key={i} className="cm-dl add">

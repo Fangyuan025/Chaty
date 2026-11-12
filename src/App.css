@@ -3436,7 +3436,11 @@ html[data-motion="reduce"] .sw.quick {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 3vh 3vw;
+  /* Clear of the window's top row: its buttons (the traffic lights on a Mac,
+     minimize / maximize / close elsewhere) stay above every overlay, and in
+     a short or narrow window the studio's own top-right buttons sat under
+     them, both clickable (issue #25). */
+  padding: max(3vh, 52px) 3vw 3vh;
   background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(3px);
 }
@@ -8225,6 +8229,19 @@ html[data-motion="reduce"] .prefill-label {
   background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(3px);
 }
+/* Asked while the change is still being written: at the foot of the window
+   and over nothing, so the writing stays in view behind it. */
+.cm-approve-backdrop.early {
+  align-items: flex-end;
+  /* Above the composer and the status line over it. */
+  padding-bottom: 176px;
+  background: none;
+  backdrop-filter: none;
+  pointer-events: none;
+}
+.cm-approve-backdrop.early .cm-approve {
+  pointer-events: auto;
+}
 .cm-approve {
   width: min(560px, 92vw);
   /* A long command or a whole file in the preview used to push the card past
@@ -9035,7 +9052,8 @@ body,
   display: flex;
   flex-direction: column;
   width: min(1100px, 92vw);
-  max-height: 90vh;
+  /* Under the window's top row at any window height (see .canvas-overlay). */
+  max-height: min(90vh, calc(100vh - 104px));
   background: var(--surface);
   border: 1px solid var(--border-strong, var(--border-2));
   border-radius: var(--r-lg);

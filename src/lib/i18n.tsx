@@ -80,6 +80,7 @@ export const T = {
   cmPlaceholderNoWs: { zh: "先在上方打开工作区", en: "Open a workspace first (top)", pt: "Abra um workspace primeiro (topo)" },
   cmApproveBash: { zh: "允许执行命令？", en: "Run this command?", pt: "Executar este comando?" },
   cmApproveWrite: { zh: "允许改动文件？", en: "Apply this change?", pt: "Aplicar esta alteração?" },
+  cmApproveWriting: { zh: "内容还在写入中——现在就可以决定;等它写完,这里会显示完整的改动。", en: "Still being written — decide now, or wait and the whole change shows here.", pt: "Ainda sendo escrito — decida agora, ou espere e a alteração completa aparece aqui." },
   cmDeny: { zh: "拒绝", en: "Deny", pt: "Negar" },
   cmAllow: { zh: "允许", en: "Allow", pt: "Permitir" },
   cmAllowAlwaysCmd: { zh: "总是允许 “{cmd}”", en: "Always allow \"{cmd}\"", pt: "Sempre permitir \"{cmd}\"" },
