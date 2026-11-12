@@ -342,56 +342,43 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## Looks like your system
-
-            The theme follows your system's light or dark by default and switches with it,
-            the native menus and dialogs follow the app's theme, and the window opens in its
-            colours. The text size setting now reaches Code mode too, at chat's size.
-
             ## Reading as it streams
 
             Answers fade in word by word as they are written, in chat and Code mode, and
             nothing flashes on the way: a heading, rule or table being typed waits until it
             says what it is. Mermaid diagrams are drawn as they are written without stalling the
-            reply, follow the theme, and show an error only if the finished one is wrong. Code is
-            coloured while it streams — an HTML page's script and style included. Prompt processing reads the same percent in the
-            folded line and the ring, and a run's line counts match the changes card.
+            reply, follow the theme, and one that is right but misspelt — a label with brackets
+            or quotes and no quotes round it — is drawn all the same. Code is coloured while it
+            streams, an HTML page's script and style included. Your own messages are the size
+            of the replies, and Code mode's text the size of chat's.
 
-            ## Long work, in the background
+            ## Code mode that says where it stands
 
-            Downloads, model loads, pictures and music show their progress on the Dock icon /
-            taskbar button, and the machine does not idle into sleep while they run. When the
-            coding agent stops to ask, or a long job finishes while you are elsewhere, the
-            Dock icon bounces once / the taskbar button flashes.
+            A program the machine does not have is said to be that, once, and not run again
+            under another spelling; a local address nothing is listening on says so, and that a
+            page opens from its file (#25). A turn paused on a repeated call pauses under the
+            model's own account of what is done and what is stuck, and Continue is a real second
+            try. Manual mode asks about a file change as it begins, not once the whole file is
+            written: Deny stops the writing there.
 
-            ## Keyboard and clipboard
+            ## A card that is nearly full
 
-            Shortcuts for a new chat (⌘N / Ctrl+N), Settings (⌘,), chat and Code (⌘1 / ⌘2),
-            search (⌘F) and stopping a reply (Esc). Paste a screenshot or a file into the
-            input and it attaches — in chat, in Code mode and in the image studio.
-
-            ## More context on a big GPU
-
-            An automatic context window on Windows and Linux now fills the memory left after the
-            weights — the GPU's for the layers on it, RAM for any on the CPU — up to what the model
-            was trained for. It was 8192 tokens whatever the card. Hybrid and sliding-window
-            models (Qwen3.5/3.6, LFM, Gemma 4) are counted by the layers that keep a cache, and
-            get several times the context they did.
+            On Windows and Linux an automatic context now takes half of what the card has free
+            after the weights, 2 GiB kept at the least, and a model the card does not hold whole
+            keeps 8192. It took nearly all of it, and a card that full could have its driver
+            reset in the middle of a chat (#25). Hybrid and sliding-window models (Qwen3.5/3.6,
+            LFM, Gemma 4) are counted by the layers that keep a cache.
 
             ## Windows and Linux
 
-            The icon fills its tile like other apps' and is sharp at every size, the taskbar's
-            included (#25). Fedora no longer opens to a gray window: Chaty keeps WebKitGTK away
-            from the COLRv1 emoji font it cannot draw, and draws emoji in colour with its own
-            (#30 — thanks @davidecelentano). AppImage managers can update Chaty from the update
-            information and `.zsync` it now carries. Downloads go to the models folder Settings
-            shows — on Windows the one beside the program when your models are there.
+            Downloads go to the models folder Settings shows. The icon is sharp at every size,
+            the taskbar's included. Canvas and previews keep clear of the window's buttons at
+            any window size, and the picture studio's ratio labels sit on one line (#25).
 
             ## Engine updates
 
-            An engine update is used only by the Chaty release it was built for: a runtime pack
-            carries Chaty's own code around its engine, and one built for an older release would
-            bring that code back.
+            An engine update is used only by the Chaty release it was built for, and the daily
+            updates build again against the newest llama.cpp and audio.cpp.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

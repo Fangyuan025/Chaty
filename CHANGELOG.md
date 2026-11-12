@@ -1,24 +1,6 @@
 # Changelog
 
-## v2.4.0 — Feel at home (2026-11-04)
-
-### Looks like your system
-
-- **The theme follows your system's light or dark** by default, and switches
-  with it. Chaty used to start dark whatever the system was; a dark theme
-  you had never changed now follows the system too, once — Dark is one click
-  away in Settings → General if you want it back.
-- **The native parts follow the app's theme**: menus, file dialogs, the
-  system's scrollbars and the macOS window frame no longer keep the system's
-  look under an app set the other way.
-- **The window opens in its colours** instead of a flash of the other theme
-  before the app has loaded.
-- **Text size reaches Code mode.** The setting (now *Text size*) scales every
-  message, answer, step, code block and the input, in chat and in Code mode
-  alike. Code mode kept its own size before, and *Small* made it bigger. Its
-  text is now the size of chat's at each setting — it was a size smaller — and
-  the input refits when you change it, without a scrollbar. Your own messages
-  are the size of the replies too, and so is the box that edits one.
+## v2.4.1 — Read along (2026-11-12)
 
 ### Reading as it streams
 
@@ -39,6 +21,11 @@
   once a line and no more often than its drawing allows, so a large diagram
   no longer stalls the reply as it streams, and one already drawn shows at
   once when you come back to it.
+- **A diagram that is right and misspelt is drawn.** What stops a diagram is
+  almost always a label — `A[call foo(bar)]`, `B{price > 5?}`, a quote inside
+  quotes, a subgraph's title with a space in it, a node named `end`. One that
+  does not parse as written is tried again with its spelling put right, the
+  text of every label kept; a diagram that is wrong either way still says so.
 - **Diagrams follow the theme**, the system's included: under *System* on a
   light Mac they were drawn dark, their arrows hard to see.
 - **Code is coloured as it streams**: an HTML page's script and style, and a
@@ -57,6 +44,95 @@
   with a thin bar, only its + or − coloured, and counts show only what is not
   zero, with a true minus sign. Thinking shows the same soft light as a running
   step, instead of three bouncing dots.
+- **One text size for the conversation.** Code mode's text is the size of
+  chat's at each setting — it was a size smaller — and your own messages are
+  the size of the replies, in chat and in Code mode, as is the box that edits
+  one. The input refits when you change the size, without a scrollbar.
+
+### Code mode that says where it stands
+
+- **A program the machine does not have is said to be that.** `python: command
+  not found` is not a mistake in the command, but a model reads it as one more
+  failed try and reaches for the next spelling — on a machine with neither
+  Python nor Node, a whole turn of failed commands for a page that needed no
+  server to be looked at (issue #25). The first such failure now says it is
+  the machine, once, and a command that starts that program again is answered
+  without being run.
+- **A local address nothing is listening on says so** — in the browser, and
+  after a command that talks to it (`curl -s localhost:8080 | grep …` prints
+  nothing either way) — and that a page in the workspace opens from its file.
+- **A paused turn says where things stand.** When the model keeps making the
+  same call, the turn pauses under the model's own few lines: what is done,
+  what is stuck and why, what you can do. And **Continue** is a real second
+  try — the first repeat after it is sent back with the reason, where it
+  paused the turn again on the spot without a word.
+- **Manual mode asks as a change begins**, as soon as the file is known,
+  instead of once the model has written the whole file out. *Deny* stops the
+  writing there; *Allow* lets it land when it is written; wait, and the whole
+  change shows as it did.
+- A tool written as a shell command (`browser_navigate file://…` in bash) is
+  sent back as what it is.
+
+### A card that is nearly full
+
+- **An automatic context leaves the card room.** On Windows and Linux it took
+  all the card had free after the weights but a sixth — and a card that full
+  is one program away from the driver resetting it: a black screen in the
+  middle of a chat, the model gone, and every reload after it slower (issue
+  #25). It now takes half of what is free, 2 GiB kept at the least, and a
+  model the card does not hold whole keeps 8192 — a load the crash guard had
+  cut to half its layers used to ask for *more* context than the one that
+  crashed. A context you set yourself is used as set.
+- **Hybrid and sliding-window models get the context their cache allows.** The
+  cache a token costs is counted the way llama.cpp lays it out: only the layers
+  that keep one, at their own head sizes. Qwen3.5 and Qwen3.6, LFM and Gemma 4
+  were counted as if every layer kept a full one — two and a half to nine
+  times their real cost — and got that much less context, on a Mac as well.
+
+### Engine updates
+
+- **An engine update is always built for the Chaty that runs it.** A runtime
+  pack carries Chaty's own code around its engine — for llama.cpp, the whole
+  of how a model is loaded and run — so one built for an older release would
+  bring that older code back. A pack is now used only by the release it was
+  built for, and each release gets packs of its own within a day; until then
+  the engine it came with runs.
+- Daily engine updates build again against the newest llama.cpp and audio.cpp,
+  both of which had moved the code Chaty's wrappers stand on.
+
+### Windows and Linux
+
+- **Downloads go to the models folder Settings shows.** On Windows that is the
+  `models` folder beside the program when your models are there — an install
+  on another drive keeps them on it — where downloads used to go to the app's
+  data on the system drive. A folder you chose that is not connected stops a
+  download with a message instead of filling the system drive.
+- **The icon is sharp at every size on Windows.** The taskbar, title bar and
+  Alt-Tab take the frame made for their size from the app, at the screen's
+  scale, instead of one small picture stretched; and the small frames, 16 to
+  48 px, are drawn for their size, their lines whole pixels instead of a grey
+  haze.
+- **Canvas and previews keep clear of the window's buttons** at any window
+  size (issue #25); v2.4.0 did it for fullscreen only, and a docked canvas's
+  close button sat under the window's.
+- **The picture studio's ratio labels sit on one line** (issue #25).
+
+## v2.4.0 — Feel at home (2026-11-04)
+
+### Looks like your system
+
+- **The theme follows your system's light or dark** by default, and switches
+  with it. Chaty used to start dark whatever the system was; a dark theme
+  you had never changed now follows the system too, once — Dark is one click
+  away in Settings → General if you want it back.
+- **The native parts follow the app's theme**: menus, file dialogs, the
+  system's scrollbars and the macOS window frame no longer keep the system's
+  look under an app set the other way.
+- **The window opens in its colours** instead of a flash of the other theme
+  before the app has loaded.
+- **Text size reaches Code mode.** The setting (now *Text size*) scales every
+  message, answer, step, code block and the input, in chat and in Code mode
+  alike. Code mode kept its own size before, and *Small* made it bigger.
 
 ### Long work, in the background
 
@@ -89,43 +165,17 @@
 ### More context on a big GPU
 
 - **An automatic context window on Windows and Linux fills the GPU.** It was
-  8192 tokens whatever the card. It is now as long as the memory left once the
-  weights are in holds, measured then — on the card for the layers there, in
-  RAM for any left on the CPU, so a model too big for the card gets more than
-  8192 too — up to what the model was trained for. A context the card turns
-  out not to hold is halved before a layer comes off the GPU, so speed is kept
-  first. A context you set yourself is used as set.
-- **Hybrid and sliding-window models get the context their cache allows.** The
-  cache a token costs is counted the way llama.cpp lays it out: only the layers
-  that keep one, at their own head sizes. Qwen3.5 and Qwen3.6, LFM and Gemma 4
-  were counted as if every layer kept a full one — two and a half to nine
-  times their real cost — and got that much less context, on a Mac as well.
-
-### Engine updates
-
-- **An engine update is always built for the Chaty that runs it.** A runtime
-  pack carries Chaty's own code around its engine — for llama.cpp, the whole
-  of how a model is loaded and run — so one built for an older release would
-  bring that older code back. A pack is now used only by the release it was
-  built for, and each release gets packs of its own within a day; until then
-  the engine it came with runs.
+  8192 tokens whatever the card; with the whole model on the GPU it is now as
+  long as the memory left after the weights holds, up to what the model was
+  trained for. A context the card turns out not to hold is halved before a
+  layer comes off the GPU, so speed is kept first. A context you set yourself
+  is used as set.
 
 ### Windows and Linux
-
-- **Downloads go to the models folder Settings shows.** On Windows that is the
-  `models` folder beside the program when your models are there — an install
-  on another drive keeps them on it — where downloads used to go to the app's
-  data on the system drive. A folder you chose that is not connected stops a
-  download with a message instead of filling the system drive.
 
 - **The icon fills its tile** on the Windows desktop, taskbar and Start menu
   and in Linux launchers, like other apps' (issue #25). It kept macOS's
   margins and looked a size smaller.
-- **The icon is sharp at every size on Windows.** The taskbar, title bar and
-  Alt-Tab take the frame made for their size from the app, at the screen's
-  scale, instead of one small picture stretched; and the small frames, 16 to
-  48 px, are drawn for their size, their lines whole pixels instead of a grey
-  haze.
 - **Canvas in fullscreen keeps its buttons clear** of the window's own
   minimize, maximize and close.
 - **Fedora no longer opens to a gray window** (issue #30, thanks
