@@ -754,17 +754,24 @@ export default function App() {
         applied = next;
         setTbFit(next);
         // Laid out the new way, a name may still be cut: look again.
-        requestAnimationFrame(() => requestAnimationFrame(fit));
+        requestAnimationFrame(later);
       }
     };
-    const ro = new ResizeObserver(() => requestAnimationFrame(fit));
+    // Once a frame at most: the row's text can change with every token (a
+    // progress figure), and each look reads the layout.
+    let queued = 0;
+    const later = () => {
+      if (!queued) queued = requestAnimationFrame(() => ((queued = 0), fit()));
+    };
+    const ro = new ResizeObserver(later);
     ro.observe(el);
     // A name changing (another model, another workspace) can cut it too.
-    const mo = new MutationObserver(() => requestAnimationFrame(fit));
+    const mo = new MutationObserver(later);
     mo.observe(el, { subtree: true, childList: true, characterData: true });
     return () => {
       ro.disconnect();
       mo.disconnect();
+      cancelAnimationFrame(queued);
     };
   }, []);
   // The sidebar gives way in a narrow window, so the panel keeps room for its
