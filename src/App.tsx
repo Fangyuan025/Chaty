@@ -3302,7 +3302,17 @@ export default function App() {
                     />
                   ) : (
                     <>
-                      <span className="conv-title">{c.title}</span>
+                      <span
+                        className="conv-title"
+                        title={`${c.title}\n${t("renameHint")}`}
+                        onDoubleClick={(e) => {
+                          if (convSel.selecting) return;
+                          e.stopPropagation();
+                          startRename(c);
+                        }}
+                      >
+                        {c.title}
+                      </span>
                       {!convSel.selecting && <div className="conv-actions">
                         <button
                           className={`conv-act ${c.pinned ? "on" : ""}`}
@@ -3981,7 +3991,7 @@ export default function App() {
                       : webEnabled
                         ? t("inputPhWeb")
                         : settings.sendKey === "modEnter"
-                          ? t("inputPhMod")
+                          ? t("inputPhMod", { mod: MOD })
                           : t("inputPh")
                 }
                 rows={1}

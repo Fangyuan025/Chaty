@@ -284,11 +284,13 @@ export function KnowledgePanel({
                 </div>
               ) : (
                 <>
+                  {/* Icons as the two below have them — the first had a "+"
+                      typed into its label, the second none. */}
                   <button className="setup-dl" onClick={() => void addDocuments()}>
-                    + {t("kbAdd")}
+                    <Icon name="plus" size={15} strokeWidth={1.8} style={{ marginRight: 6 }} /> {t("kbAdd")}
                   </button>
                   <button className="setup-dl" onClick={() => void addFolder()}>
-                    {t("kbAddFolder")}
+                    <Icon name="folder" size={15} strokeWidth={1.7} style={{ marginRight: 6 }} /> {t("kbAddFolder")}
                   </button>
                 </>
               )}

@@ -1234,6 +1234,10 @@ export async function codeSessionLoad(id: string): Promise<string | null> {
 export async function codeSessionFind(query: string): Promise<string[]> {
   return (await invoke<string[]>("code_session_find", { query })) ?? [];
 }
+/** Name a Code session by hand (its place in the list stays). */
+export async function codeSessionRename(id: string, title: string): Promise<void> {
+  await invoke("code_session_rename", { id, title });
+}
 export async function codeSessionDelete(id: string): Promise<void> {
   await invoke("code_session_delete", { id });
 }

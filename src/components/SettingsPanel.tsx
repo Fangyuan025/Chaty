@@ -2112,7 +2112,7 @@ export function SettingsPanel({
                         <span className="skill-row-desc" title={lang === "zh" ? en.permNote.zh : en.permNote.en}>
                           {lang === "zh" ? en.desc.zh : en.desc.en}
                         </span>
-                        {en.probe != null && <span className="mcp-cert">✓ {t("cmMcpCertified")}</span>}
+                        {en.probe != null && <span className="mcp-cert"><Icon name="check" size={11} strokeWidth={2.2} /> {t("cmMcpCertified")}</span>}
                         <button
                           type="button"
                           className="preset-apply"

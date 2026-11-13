@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { MOD } from "../lib/modKey";
 import { open as openDialog } from "../lib/dialog";
 import { pastedFile } from "../lib/paste";
 
@@ -673,7 +674,7 @@ export function ImageStudio({
                 })
                 .catch((err) => notify("error", String(err)));
             }}
-            placeholder={sendKey === "modEnter" ? t("imgPromptPhMod") : t("imgPromptPh")}
+            placeholder={sendKey === "modEnter" ? t("imgPromptPhMod", { mod: MOD }) : t("imgPromptPh")}
             rows={1}
           />
           {busy ? (

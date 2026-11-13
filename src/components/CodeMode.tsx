@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { MOD } from "../lib/modKey";
 import { imeEnter } from "../lib/ime";
 import { createPortal } from "react-dom";
 import { RECENCY_LABEL, recencyGroups } from "../lib/recency";
@@ -63,6 +64,7 @@ import {
   type Attachment,
   type AgentBgInfo,
   codeSessionDelete,
+  codeSessionRename,
   codeSessionFind,
   codeStepTextGet,
   codeStepTextPut,
@@ -1066,6 +1068,8 @@ export function CodeMode({
   /** The sidebar's search: titles as typed, the sessions' words from the
    *  database (debounced), as the chat's sidebar does. */
   const [sessQuery, setSessQuery] = useState("");
+  /** The session whose title is being typed over (double-click a title). */
+  const [renaming, setRenaming] = useState<{ id: string; draft: string } | null>(null);
   const [sessMatches, setSessMatches] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     const q = sessQuery.trim();
@@ -1502,6 +1506,11 @@ export function CodeMode({
     if (raw == null) return;
     try {
       const parsed = forDisk(JSON.parse(raw) as CodeMsg[]);
+      // Its title as kept — the model's, or one given by hand. Held only in
+      // memory, it was gone after a restart, and the session's next save put
+      // the first message's opening words back in its place.
+      const kept = sessions.find((x) => x.id === id)?.title;
+      if (kept) titlesRef.current.set(id, kept);
       stuckRef.current = null;
       sidRef.current = id;
       setSid(id);
@@ -2460,6 +2469,15 @@ export function CodeMode({
     onExportable?.(active && hasTurns ? exportTrace : null);
   }, [active, hasTurns, exportTrace, onExportable]);
 
+  const commitRename = () => {
+    const r = renaming;
+    setRenaming(null);
+    const title = r?.draft.replace(/\s+/g, " ").trim();
+    if (!r || !title) return;
+    // Every later save of the session keeps it.
+    titlesRef.current.set(r.id, title);
+    void codeSessionRename(r.id, title).then(refreshSessions).catch(console.error);
+  };
   const sessionRow = (s: (typeof sessions)[number]) => (
     <div
       key={s.id}
@@ -2472,8 +2490,40 @@ export function CodeMode({
       }}
     >
       {sessSel.selecting && <SelectCheck on={sessSel.selected.has(s.id)} />}
-      <span className="cm-session-title">{s.title}</span>
-      {!sessSel.selecting && (
+      {renaming?.id === s.id ? (
+        <input
+          className="conv-rename"
+          autoFocus
+          value={renaming.draft}
+          onChange={(e) => setRenaming({ id: s.id, draft: e.target.value })}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !imeEnter(e)) {
+              e.preventDefault();
+              commitRename();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              setRenaming(null);
+            }
+          }}
+          onBlur={commitRename}
+        />
+      ) : (
+        <span
+          className="cm-session-title"
+          title={`${s.title}\n${t("renameHint")}`}
+          onDoubleClick={(e) => {
+            if (sessSel.selecting) return;
+            e.stopPropagation();
+            setRenaming({ id: s.id, draft: s.title });
+          }}
+        >
+          {s.title}
+        </span>
+      )}
+      {!sessSel.selecting && renaming?.id !== s.id && (
         <button
           className="cm-session-del"
           title={t("deleteConv")}
@@ -3079,7 +3129,7 @@ export function CodeMode({
                       : keptPlanning && keptPlanning === msgs[msgs.length - 1]?.id && mode === "plan"
                         ? t("planKeepHint")
                         : sendKey === "modEnter"
-                        ? t("cmPlaceholderMod")
+                        ? t("cmPlaceholderMod", { mod: MOD })
                         : t("cmPlaceholder")
               }
               value={input}

@@ -1139,6 +1139,16 @@ pub fn code_session_find(db: State<'_, Db>, query: String) -> Result<Vec<String>
     code_session_find_conn(&conn, &query)
 }
 
+/// A Code session named by hand. Its place in the list stays where it was:
+/// renaming is not activity.
+#[tauri::command]
+pub fn code_session_rename(db: State<'_, Db>, id: String, title: String) -> Result<(), String> {
+    let conn = lock(&db)?;
+    conn.execute("UPDATE code_sessions SET title = ?2 WHERE id = ?1", params![id, title.trim()])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn code_session_delete(db: State<'_, Db>, id: String) -> Result<(), String> {
     // Its background jobs go with it: the running ones stopped, the history dropped.

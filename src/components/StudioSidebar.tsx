@@ -177,7 +177,18 @@ export function StudioSidebar<S extends StudioSessionItem>({
                 />
               ) : (
                 <>
-                  <span className="conv-title">{s.title}</span>
+                  <span
+                    className="conv-title"
+                    title={`${s.title}\n${t("renameHint")}`}
+                    onDoubleClick={(e) => {
+                      if (sel.selecting) return;
+                      e.stopPropagation();
+                      setRenamingId(s.id);
+                      setRenameDraft(s.title);
+                    }}
+                  >
+                    {s.title}
+                  </span>
                   {!sel.selecting && <div className="conv-actions">
                     <button
                       className={`conv-act ${s.pinned ? "on" : ""}`}

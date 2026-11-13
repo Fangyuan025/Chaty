@@ -152,7 +152,14 @@
 - The model menu and the command palette name models as the title bar does,
   without ".gguf" on some and not others; the engines page's "last checked"
   reads in the window's language and the shape of the dates beside it.
-- The music studio's Chinese text is punctuated as the rest of the app is.
+- **Code sessions can be renamed** — double-click a title, as chats and the
+  studios' sessions now can too. And a Code session keeps the title the model
+  gave it: after a restart, the next turn in an older session put its first
+  message's opening words back in its place.
+- The music studio's Chinese text is punctuated as the rest of the app is;
+  the boxes that send with a key combination name the one this computer has
+  (⌘ Enter on a Mac, Ctrl+Enter elsewhere), not "⌘/Ctrl"; the knowledge
+  base's buttons all carry icons.
 - **A page is checked by opening it.** Asked to check a web page it wrote, the
   agent is told to open it once in the browser, where it used to be told to
   find the project's tests and went round servers, curl and grep.

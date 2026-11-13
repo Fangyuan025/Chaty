@@ -1299,6 +1299,12 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     }
     case "code_step_text_get":
       return "(preview: the model's own copy of that step's result)";
+    case "code_session_rename": {
+      const id = String(args?.id ?? "");
+      const s = SAVED_CODE_SESSIONS.find((x) => x.id === id) ?? (CODE_SESSIONS as { id: string; title: string }[]).find((x) => x.id === id);
+      if (s) s.title = String(args?.title ?? "").trim();
+      return null;
+    }
     case "code_session_delete": {
       const id = String(args?.id ?? "");
       const i = SAVED_CODE_SESSIONS.findIndex((s) => s.id === id);
