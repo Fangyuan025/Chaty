@@ -129,6 +129,34 @@
   close button sat under the window's.
 - **The picture studio's ratio labels sit on one line** (issue #25).
 
+### Small things
+
+- **The sidebar folds away.** ⌘\ (Ctrl+\ elsewhere), the button beside the
+  mode switch, or the command palette: the panel takes the window, for
+  reading or a half-screen window, and stays that way until you bring it back.
+- **↑ in an empty box.** In a chat it edits the last message you sent; in
+  Code mode it brings back the last task you gave, to change a word and send
+  it again.
+- **An input method's Enter is its own.** Committing pinyin or picking a
+  candidate with Enter no longer sends the half-typed message, renames a chat
+  to its pinyin, answers the agent's question or runs a palette command
+  mid-word. Editing a sent message sends with the key you chose in Settings,
+  where it always took a plain Enter.
+- **Code mode's header in a narrow window.** The model's size figures and the
+  jobs badge's words give way first, then the model's name, and the
+  workspace's name last — at half a screen it read "par…", with the jobs
+  badge running under the model's chip and the + for another folder cut to a
+  dash.
+- **"Reload model to apply" appears when there is something to apply** — a
+  load setting changed since the model was loaded — instead of always.
+- The model menu and the command palette name models as the title bar does,
+  without ".gguf" on some and not others; the engines page's "last checked"
+  reads in the window's language and the shape of the dates beside it.
+- The music studio's Chinese text is punctuated as the rest of the app is.
+- **A page is checked by opening it.** Asked to check a web page it wrote, the
+  agent is told to open it once in the browser, where it used to be told to
+  find the project's tests and went round servers, curl and grep.
+
 ## v2.4.0 — Feel at home (2026-11-04)
 
 ### Looks like your system

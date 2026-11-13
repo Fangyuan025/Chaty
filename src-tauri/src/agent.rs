@@ -1123,10 +1123,24 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
     }
 
     if !ran_any {
-        out.push_str(&tr(
-            "\n没有发现与改动相关的测试(按 test_*.py / *.test.* / *.spec.* / cargo 约定查找)。如果项目有自己的测试命令,请直接用 bash 运行。",
-            "\nno tests related to the change were found (looked for test_*.py / *.test.* / *.spec.* / cargo conventions) — if the project has its own test command, run it via bash.",
-        ));
+        // A page has no tests to find, and "run its own test command" sent a
+        // 35B writing one through a dozen steps of servers, curl and grep.
+        // What checks a page is opening it once.
+        let page = targets
+            .iter()
+            .find(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("html") || x.eq_ignore_ascii_case("htm")));
+        if let Some(page) = page {
+            let url = crate::browser::file_url(page);
+            out.push_str(&trf!(
+                "\n这是页面文件,没有测试可跑。验证它只要用 browser_navigate 打开 {url} 看一次渲染和控制台报错;不需要起服务器,也不需要 curl 或 grep 检查。",
+                "\nthis is a page — there are no tests to run. To check it, open {url} once with browser_navigate and look at what renders and at the console's errors; no server, curl or grep is needed."
+            ));
+        } else {
+            out.push_str(&tr(
+                "\n没有发现与改动相关的测试(按 test_*.py / *.test.* / *.spec.* / cargo 约定查找)。如果项目有自己的测试命令,请直接用 bash 运行。",
+                "\nno tests related to the change were found (looked for test_*.py / *.test.* / *.spec.* / cargo conventions) — if the project has its own test command, run it via bash.",
+            ));
+        }
     }
     Ok(out)
 }
@@ -7170,6 +7184,8 @@ mod tests {
         let out = rt.block_on(agent_validate_change(None)).expect("validate");
         assert!(!out.contains("没有记录到文件改动"), "{out}");
         assert!(out.contains("page.html"), "{out}");
+        // A page is checked by opening it, not by hunting for tests.
+        assert!(out.contains("browser_navigate") && out.contains("file://"), "{out}");
         cp_clear();
         let out = rt.block_on(agent_validate_change(None)).expect("validate empty");
         assert!(out.contains("没有记录到文件改动"), "{out}");

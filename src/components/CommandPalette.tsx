@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { imeEnter } from "../lib/ime";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
@@ -75,7 +76,7 @@ export function CommandPalette({
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setActive((a) => Math.max(a - 1, 0));
-    } else if (e.key === "Enter") {
+    } else if (e.key === "Enter" && !imeEnter(e)) {
       e.preventDefault();
       run(filtered[active]);
     } else if (e.key === "Escape") {

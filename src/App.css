@@ -484,6 +484,48 @@ body {
   display: none;
 }
 
+/* The sidebar folded away: the panel takes the window; the top row's side
+   keeps the window buttons, the fold button and the mode switch, over the
+   panel rather than in a strip of the sidebar's colour. */
+.sidebar.folded,
+.code-rail.folded {
+  display: none;
+}
+.tb-side.folded {
+  position: relative;
+  background: linear-gradient(
+    to bottom,
+    var(--bg) 0%,
+    var(--bg) 66%,
+    color-mix(in srgb, var(--bg) 72%, transparent) 100%
+  );
+}
+.tb-side.folded::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 20px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--bg) 72%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 28%, transparent) 45%,
+    color-mix(in srgb, var(--bg) 0%, transparent) 100%
+  );
+  pointer-events: none;
+}
+/* No sidebar to edge against: the row is one piece. */
+.tb-side.folded + .tb-main {
+  border-left-color: transparent;
+}
+.tb-side.folded .brand {
+  display: none;
+}
+.side-toggle[aria-pressed="false"] {
+  color: var(--text);
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -513,6 +555,14 @@ body {
   align-self: stretch;
   display: flex;
   align-items: center;
+}
+/* Code mode's header never narrower than what it holds at its smallest (the
+   workspace's few letters, the +, the jobs badge's icon): the model's chip
+   shortens instead, where the badge used to run under it. A width, not
+   min-content: that counts the workspace's whole name, and a long one left
+   the model's chip a sliver. */
+.tb-slot:has(> .code-head) {
+  min-width: 180px;
 }
 
 .model-wrap {
@@ -6372,7 +6422,10 @@ body:has(.live-overlay) .win-btn.close:hover {
 /* Code mode's header, in the window's top row over the panel: the workspace
    as the panel's title, the jobs badge at its end. */
 .code-head {
-  flex: 1;
+  /* Sized by what is in it, so that in a narrow row the model's chip shares
+     the squeeze: from nothing, it took all it was left, its jobs badge ran
+     under the model's chip, and the workspace's name was cut to "par…". */
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -6982,7 +7035,8 @@ html[data-motion="reduce"] .prefill-label {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
+  /* Never narrower than its + : squeezed, the button was cut to a dash. */
+  min-width: 24px;
   overflow-x: auto;
   scrollbar-width: none;
 }

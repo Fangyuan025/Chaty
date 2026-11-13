@@ -3389,7 +3389,7 @@ fn is_local_host(u: &str) -> bool {
 }
 
 /// file:// URL with the handful of characters that break URL parsing escaped.
-fn file_url(p: &std::path::Path) -> String {
+pub(crate) fn file_url(p: &std::path::Path) -> String {
     let s = p
         .display()
         .to_string()

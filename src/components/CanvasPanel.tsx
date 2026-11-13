@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { imeEnter } from "../lib/ime";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
 import { useConfirm } from "./ConfirmModal";
@@ -1282,7 +1283,7 @@ export function CanvasPanel({
             disabled={busy || editing}
             onChange={(e) => setInstruction(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
+              if (e.key === "Enter" && !imeEnter(e)) {
                 e.preventDefault();
                 submit();
               }

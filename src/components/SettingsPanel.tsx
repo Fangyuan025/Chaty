@@ -1,4 +1,5 @@
 import { cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { imeEnter } from "../lib/ime";
 import { createPortal } from "react-dom";
 import { LANGS, useI18n } from "../lib/i18n";
 import { startUpdateDownload, useUpdateDownload } from "../lib/updateDownload";
@@ -565,7 +566,22 @@ function RuntimesPane() {
     }
     return p.stage === "verify" ? t("rtVerifying") : t("rtStarting");
   };
-  const when = (secs: number) => (secs ? new Date(secs * 1000).toLocaleString() : "");
+  // As the engines' own dates read (2026-10-28), to the minute, and today or
+  // yesterday by name. It was the system's locale with seconds — another
+  // language than the window's when they differ, and a different shape from
+  // every date beside it.
+  const when = (secs: number) => {
+    if (!secs) return "";
+    const d = new Date(secs * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const day = (x: Date) => `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`;
+    const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const now = new Date();
+    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    const name = day(d) === day(now) ? t("recencyToday") : day(d) === day(yesterday) ? t("recencyYesterday") : day(d);
+    // Mid-sentence: "Last checked today 17:30".
+    return `${name.toLowerCase()} ${time}`;
+  };
 
   if (!info) return null;
   return (
@@ -1392,7 +1408,7 @@ export function SettingsPanel({
                     value={presetName}
                     onChange={(e) => setPresetName(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") {
+                      if (e.key === "Enter" && !imeEnter(e)) {
                         e.preventDefault();
                         savePreset();
                       }
@@ -1854,7 +1870,7 @@ export function SettingsPanel({
                     value={allowInput}
                     onChange={(e) => setAllowInput(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") {
+                      if (e.key === "Enter" && !imeEnter(e)) {
                         e.preventDefault();
                         addAllow();
                       }

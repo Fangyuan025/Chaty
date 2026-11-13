@@ -380,6 +380,13 @@ jobs:
             An engine update is used only by the Chaty release it was built for, and the daily
             updates build again against the newest llama.cpp and audio.cpp.
 
+            ## Small things
+
+            The sidebar folds away (⌘\\ or the button by the mode switch). ↑ in an empty box edits
+            the last message, or brings back the last Code task. An input method's Enter no longer
+            sends a half-typed message or renames a chat to its pinyin. Code mode's header keeps
+            the workspace's name in a narrow window.
+
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a
                  model's name land, and a bare install table tells them

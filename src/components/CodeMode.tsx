@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { imeEnter } from "../lib/ime";
 import { createPortal } from "react-dom";
 import { RECENCY_LABEL, recencyGroups } from "../lib/recency";
 import { ImagePreview } from "./ImagePreview";
@@ -838,6 +839,7 @@ export function CodeMode({
   active,
   headSlot,
   railW,
+  railHidden,
   onRailResize,
   onRailReset,
   maxSteps,
@@ -869,6 +871,8 @@ export function CodeMode({
   /** The sidebar's width, shared with chat and the image studio so the
    *  top row's mode switch stays put when the mode changes. */
   railW: number;
+  /** The sidebar folded away (the window's ⌘\\): the rail goes with it. */
+  railHidden?: boolean;
   onRailResize: (e: React.PointerEvent) => void;
   onRailReset: () => void;
   /** Generate a session title with the model after the first turn (Settings → General). */
@@ -2506,7 +2510,7 @@ export function CodeMode({
 
   return (
     <div className="code-mode" style={active ? undefined : { display: "none" }}>
-      <aside className="code-rail" style={{ width: railW }}>
+      <aside className={`code-rail ${railHidden ? "folded" : ""}`} style={{ width: railW }}>
         <button className="cm-new" onClick={newSession} disabled={running}>
           <Icon name="plus" size={13} strokeWidth={2} /> {t("cmNewSession")}
         </button>
@@ -3108,10 +3112,32 @@ export function CodeMode({
                   }
                   if (e.key === "Escape") { setInput(""); return; }
                 }
+                // ↑ in an empty box brings back the last task you gave (not
+                // a "continue"), to change a word and send it again — after
+                // stopping a turn that went the wrong way, say.
+                if (
+                  e.key === "ArrowUp" &&
+                  !input &&
+                  !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey &&
+                  !e.nativeEvent.isComposing
+                ) {
+                  const last = [...msgs]
+                    .reverse()
+                    .find((m) => m.role === "user" && !/^(继续|continue)$/i.test(m.text.trim()));
+                  if (last) {
+                    e.preventDefault();
+                    setInput(last.text);
+                    const box = e.currentTarget;
+                    requestAnimationFrame(() => box.setSelectionRange(box.value.length, box.value.length));
+                  }
+                  return;
+                }
                 // Send combo per Settings → General; with ⌘/Ctrl+Enter chosen,
                 // plain Enter falls through and inserts a newline.
                 const sends =
                   e.key === "Enter" &&
+                  !e.nativeEvent.isComposing &&
+                  e.keyCode !== 229 &&
                   (sendKey === "modEnter" ? e.metaKey || e.ctrlKey : !e.shiftKey);
                 if (sends) {
                   e.preventDefault();
@@ -3332,7 +3358,7 @@ export function CodeMode({
                 value={askText}
                 onChange={(e) => setAskText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && askText.trim()) { ask.resolve(askText.trim()); setAsk(null); }
+                  if (e.key === "Enter" && !imeEnter(e) && askText.trim()) { ask.resolve(askText.trim()); setAsk(null); }
                 }}
               />
               <button

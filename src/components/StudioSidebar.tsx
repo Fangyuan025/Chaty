@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { imeEnter } from "../lib/ime";
 
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
@@ -164,7 +165,7 @@ export function StudioSidebar<S extends StudioSessionItem>({
                   onChange={(e) => setRenameDraft(e.target.value)}
                   onClick={(e) => e.stopPropagation()}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
+                    if (e.key === "Enter" && !imeEnter(e)) {
                       e.preventDefault();
                       void commitRename();
                     } else if (e.key === "Escape") {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { imeEnter } from "../lib/ime";
 import { platform } from "@tauri-apps/plugin-os";
 import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
 import { useI18n } from "../lib/i18n";
@@ -384,7 +385,7 @@ export function DownloadModal({
                 autoFocus
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") onSearchEnter();
+                  if (e.key === "Enter" && !imeEnter(e)) onSearchEnter();
                 }}
               />
             </div>

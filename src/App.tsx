@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, useLayoutEffect } from "react";
+import { imeEnter } from "./lib/ime";
 import { applyCodeTheme } from "./lib/codeTheme";
 import { platform } from "@tauri-apps/plugin-os";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -187,6 +188,10 @@ const SETTINGS_KEY = "chaty.settings";
 const THEME_FOLLOWS_SYSTEM_KEY = "chaty.themeFollowsSystem";
 /** A stable "nothing picked by hand" for an image model's companions. */
 const NO_OVERRIDES: Record<string, string> = {};
+/** The settings a model is loaded with, as one comparable string. */
+function loadSig(s: GenSettings, imagePath: string): string {
+  return JSON.stringify([s.gpuLayers, s.contextLength || 0, s.speculative, imageLoadOptions(s, imagePath), musicLoadOptions(s)]);
+}
 const LAST_MODEL_KEY = "chaty.lastModel";
 /** Boot auto-load must run once per page load, not once per (Strict)mount. */
 let bootLoadStarted = false;
@@ -711,17 +716,57 @@ export default function App() {
    *  container query: containment would make the row the containing block
    *  of the menus and panels that open from it. */
   const tbMainRef = useRef<HTMLDivElement>(null);
+  /** What the model in memory was loaded with — the settings a reload would
+   *  change. "Reload model to apply" is offered only when one of them has
+   *  changed since: always there, it reloaded the model for nothing. */
+  const [loadedWith, setLoadedWith] = useState<{ sig: string; imagePath: string } | null>(null);
   const [tbFit, setTbFit] = useState<"" | "narrow" | "tight">("");
   useLayoutEffect(() => {
     const el = tbMainRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
+    const FITS = ["", "narrow", "tight"] as const;
+    // How far the row has stepped down because a name in it was being cut
+    // short, and the width at which each step was taken. The fixed widths
+    // alone left Code mode, whose row also holds the workspace and the jobs
+    // badge, at full size in a half-screen window: the model's name and the
+    // workspace's were both cut ("par…") with the size figures still shown,
+    // and the jobs badge ran under the model's chip.
+    let level = 0;
+    let applied: (typeof FITS)[number] = "";
+    const enteredAt = [0, 0, 0];
+    const cut = () =>
+      [...el.querySelectorAll<HTMLElement>(".cm-ws-name, .model-chip .chip-name")].some(
+        (n) => n.offsetParent && n.scrollWidth > n.clientWidth + 1,
+      );
+    const fit = () => {
       // What the controls have, past Windows' and Linux's window buttons.
       const w = el.clientWidth - (el.querySelector<HTMLElement>(".win-controls")?.offsetWidth ?? 0);
-      setTbFit(w < 560 ? "tight" : w < 640 ? "narrow" : "");
-    });
+      const floor = w < 560 ? 2 : w < 640 ? 1 : 0;
+      // Room again: take a step back up once the row is clearly wider than
+      // where the step was taken — and step down again if a name is cut.
+      while (level > 0 && w >= enteredAt[level] + 48) level--;
+      const now = Math.max(level, floor);
+      if (now < 2 && cut()) {
+        for (let k = level + 1; k <= now + 1; k++) enteredAt[k] = w;
+        level = now + 1;
+      }
+      const next = FITS[Math.max(level, floor)];
+      if (next !== applied) {
+        applied = next;
+        setTbFit(next);
+        // Laid out the new way, a name may still be cut: look again.
+        requestAnimationFrame(() => requestAnimationFrame(fit));
+      }
+    };
+    const ro = new ResizeObserver(() => requestAnimationFrame(fit));
     ro.observe(el);
-    return () => ro.disconnect();
+    // A name changing (another model, another workspace) can cut it too.
+    const mo = new MutationObserver(() => requestAnimationFrame(fit));
+    mo.observe(el, { subtree: true, childList: true, characterData: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
   }, []);
   // The sidebar gives way in a narrow window, so the panel keeps room for its
   // header: a wide sidebar in a small window left the model menu a sliver.
@@ -741,6 +786,20 @@ export default function App() {
     return SIDEBAR_DEFAULT;
   });
   const shownSidebarW = Math.max(SIDEBAR_MIN, Math.min(sidebarW, winW - MAIN_MIN));
+  /** The sidebar folded away (⌘\\ or the button by the mode switch): the
+   *  panel takes the window, for reading or a half-screen window. */
+  const [sideHidden, setSideHidden] = useState(() => {
+    try {
+      return localStorage.getItem("chaty.sideHidden") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSide = () =>
+    setSideHidden((v) => {
+      localSave("chaty.sideHidden", v ? "0" : "1");
+      return !v;
+    });
 
   // Drag the sidebar's right edge to resize. The width is driven through state
   // (rAF-throttled to one update per frame) so a concurrent re-render — e.g. a
@@ -820,6 +879,7 @@ export default function App() {
         setLoadingModel(true);
         try {
           const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, target), musicLoadOptions(settings));
+          setLoadedWith({ sig: loadSig(settings, target), imagePath: target });
           // A different tokenizer charges differently — start the ratio over.
           resetCalibration();
           setModel(info);
@@ -884,7 +944,8 @@ export default function App() {
     settings: () => void;
     mode: (m: "chat" | "code") => void;
     stop: (() => void) | null;
-  }>({ newItem: () => {}, settings: () => {}, mode: () => {}, stop: null });
+    side: () => void;
+  }>({ newItem: () => {}, settings: () => {}, mode: () => {}, stop: null, side: () => {} });
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       const k = e.key.toLowerCase();
@@ -901,6 +962,9 @@ export default function App() {
         } else if (k === ",") {
           e.preventDefault();
           s.settings();
+        } else if (k === "\\") {
+          e.preventDefault();
+          s.side();
         } else if (k === "1" || k === "2") {
           e.preventDefault();
           s.mode(k === "1" ? "chat" : "code");
@@ -1698,6 +1762,7 @@ export default function App() {
     setLoadingModel(true);
     try {
       const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, path), musicLoadOptions(settings));
+      setLoadedWith({ sig: loadSig(settings, path), imagePath: path });
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -1718,6 +1783,7 @@ export default function App() {
     setLoadingModel(true);
     try {
       const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, model.path), musicLoadOptions(settings));
+      setLoadedWith({ sig: loadSig(settings, model.path), imagePath: model.path });
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -1799,6 +1865,7 @@ export default function App() {
       }
       setLoadingModel(true);
       const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, probe?.path ?? path), musicLoadOptions(settings));
+      setLoadedWith({ sig: loadSig(settings, probe?.path ?? path), imagePath: probe?.path ?? path });
       // A different tokenizer charges differently — start the ratio over.
       resetCalibration();
       setModel(info);
@@ -2904,7 +2971,27 @@ export default function App() {
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key !== "Enter") return;
+    // ↑ in an empty composer edits the last thing you sent, as in most chat
+    // apps: a typo noticed after sending is one key away.
+    if (
+      e.key === "ArrowUp" &&
+      !input &&
+      !busy &&
+      !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey &&
+      !e.nativeEvent.isComposing
+    ) {
+      const last = [...messages].reverse().find((m) => m.role === "user");
+      if (last) {
+        e.preventDefault();
+        setEditingText(last.content);
+        setEditingId(last.id);
+      }
+      return;
+    }
+    // The Enter that commits an input method's composition (pinyin typed as
+    // letters, a candidate picked) is the IME's, not a send: as the image
+    // and music studios already had it. 229 is WebKit's code for that key.
+    if (e.key !== "Enter" || e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (settings.sendKey === "modEnter") {
       // Combo sends; plain Enter falls through and inserts a newline.
       if (e.metaKey || e.ctrlKey) {
@@ -2951,6 +3038,13 @@ export default function App() {
       run: () => setShowSettings(true),
     },
     {
+      id: "side",
+      label: sideHidden ? t("sideShow") : t("sideHide"),
+      hint: `${MOD}\\`,
+      keywords: "sidebar 侧栏 隐藏 显示 focus",
+      run: toggleSide,
+    },
+    {
       id: "download",
       label: t("dlTitle"),
       keywords: "download model 下载 模型",
@@ -2995,7 +3089,7 @@ export default function App() {
       .filter((m) => m.path !== model?.path)
       .map((m) => ({
         id: `model:${m.path}`,
-        label: t("cmdkLoadModel", { name: m.name }),
+        label: t("cmdkLoadModel", { name: m.name.replace(/\.gguf$/i, "") }),
         hint: m.sizeMb ? fmtGbFromMb(m.sizeMb) : undefined,
         keywords: `model 模型 ${m.name}`,
         run: () => void switchModel(m.path),
@@ -3051,6 +3145,7 @@ export default function App() {
         }))),
   ].filter((c) => !(studioMode && chatOnly.has(c.id)));
   shortcutsRef.current = {
+    side: toggleSide,
     newItem: commands.find((c) => c.id === "new")?.run ?? (() => {}),
     settings: () => setShowSettings(true),
     mode: (m) => setAppMode(m),
@@ -3106,6 +3201,7 @@ export default function App() {
         actionsRef={codeActions}
         headSlot={headSlot}
         railW={shownSidebarW}
+        railHidden={sideHidden}
         onRailResize={startSidebarResize}
         onRailReset={resetSidebarW}
         maxSteps={settings.codeMaxSteps}
@@ -3131,7 +3227,7 @@ export default function App() {
       />
 
       <div className="body" style={appMode === "code" && !studioMode ? { display: "none" } : undefined}>
-        <aside className="sidebar" ref={asideRef} style={{ width: shownSidebarW }}>
+        <aside className={`sidebar ${sideHidden ? "folded" : ""}`} ref={asideRef} style={{ width: shownSidebarW }}>
           {imageMode ? (
             <ImageSidebar studio={studio} busy={busy} notify={showNotice} />
           ) : musicMode ? (
@@ -3194,7 +3290,7 @@ export default function App() {
                       onChange={(e) => setRenameDraft(e.target.value)}
                       onClick={(e) => e.stopPropagation()}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") {
+                        if (e.key === "Enter" && !imeEnter(e)) {
                           e.preventDefault();
                           void commitRename();
                         } else if (e.key === "Escape") {
@@ -3410,7 +3506,14 @@ export default function App() {
                           rows={Math.min(8, editingText.split("\n").length + 1)}
                           onChange={(e) => setEditingText(e.target.value)}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey) {
+                            // Sent the way the composer sends: with "⌘ Enter"
+                            // chosen, a plain Enter here is a new line too.
+                            const sends =
+                              e.key === "Enter" &&
+                              !e.nativeEvent.isComposing &&
+                              e.keyCode !== 229 &&
+                              (settings.sendKey === "modEnter" ? e.metaKey || e.ctrlKey : !e.shiftKey);
+                            if (sends) {
                               e.preventDefault();
                               editUser(i, editingText);
                             } else if (e.key === "Escape") {
@@ -3945,8 +4048,21 @@ export default function App() {
           without a stacking context of its own (the window buttons must
           stay above Live mode and every dialog). */}
       <header className="titlebar">
-        <div className="tb-side" data-tauri-drag-region style={{ width: shownSidebarW }}>
+        <div
+          className={`tb-side ${sideHidden ? "folded" : ""}`}
+          data-tauri-drag-region
+          style={sideHidden ? undefined : { width: shownSidebarW }}
+        >
           <div className="brand" data-tauri-drag-region>Chaty</div>
+          <button
+            className="mode-tab side-toggle"
+            onClick={toggleSide}
+            title={`${sideHidden ? t("sideShow") : t("sideHide")} (${MOD}\\)`}
+            aria-label={sideHidden ? t("sideShow") : t("sideHide")}
+            aria-pressed={!sideHidden}
+          >
+            <Icon name="sidebar" size={15} strokeWidth={1.7} />
+          </button>
           {imageMode ? (
             // Loading an image model IS the mode switch: chat and Code need a
             // language model, so the studio is the one mode there is.
@@ -4064,7 +4180,8 @@ export default function App() {
                           disabled={busy || loadingModel}
                           title={m.path}
                         >
-                          <span className="mm-name">{m.name}</span>
+                          {/* As the chip names it: the file's extension says nothing the list doesn't. */}
+                          <span className="mm-name">{m.name.replace(/\.gguf$/i, "")}</span>
                           {m.format === "mlx" ? (
                             <span className="mm-fmt" title={t("mlxBadgeTip")}>
                               MLX
@@ -4306,7 +4423,11 @@ export default function App() {
             ctxTrainLimit={model?.nCtxTrain}
             layersLimit={model?.nLayer}
             specSupported={model?.speculative}
-            onReloadModel={model ? () => void reloadModel() : undefined}
+            onReloadModel={
+              model && (!loadedWith || loadSig(settings, loadedWith.imagePath) !== loadedWith.sig)
+                ? () => void reloadModel()
+                : undefined
+            }
             onModelsChanged={() => void refreshModels()}
             reloading={loadingModel}
             onDataCleared={() => {
