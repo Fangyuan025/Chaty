@@ -90,7 +90,7 @@ jobs:
       # The release's wrappers, not main's.
       - uses: actions/checkout@v5
         with: { ref: "${{ matrix.source }}" }
-      - uses: dtolnay/rust-toolchain@stable # the staged name carries the target triple
+      - uses: dtolnay/rust-toolchain@1.99.1 # the staged name carries the target triple
 
       # ---- toolchains, as the release builds them ----
       - name: Linux deps (Vulkan)
@@ -262,7 +262,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: actions/download-artifact@v5
         with: { merge-multiple: true, path: packs }
       - name: Index, sign and publish

@@ -53,7 +53,12 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      # A Rust release, not "stable": 1.100 lays the target directory out
+      # anew and sherpa-rs-sys's build script, which finds target/<profile>/
+      # by walking up from OUT_DIR, cannot place its libraries — every backend
+      # job failed the day stable moved, on code that had not changed. The
+      # release and runtime workflows pin the same one; move them together.
+      - uses: dtolnay/rust-toolchain@1.99.1
         with: { components: clippy }
       - uses: Swatinem/rust-cache@v2
         # Don't cache target/: rust-cache prunes the ONNX Runtime dylib that
@@ -98,7 +103,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri, cache-targets: false }
       - name: System deps (Tauri v2 webkit + audio)
@@ -145,7 +150,7 @@ jobs:
       # git, and cargo's fetch handed to that git rather than to libgit2.
       - name: Allow long paths for the llama.cpp checkout
         run: git config --global core.longpaths true
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri, cache-targets: false }
       - name: Install Ninja
@@ -182,7 +187,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable # the staged name carries the target triple
+      - uses: dtolnay/rust-toolchain@1.99.1 # the staged name carries the target triple
       - name: System deps
         run: |
           apt() { for i in 1 2 3 4; do sudo apt-get -o Acquire::Retries=3 "$@" && return 0; echo "apt-get $1 failed (try $i of 4)" >&2; sleep $((i * 20)); sudo apt-get update || true; done; return 1; }
@@ -207,7 +212,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable # the staged name carries the target triple
+      - uses: dtolnay/rust-toolchain@1.99.1 # the staged name carries the target triple
       - name: System deps
         run: |
           apt() { for i in 1 2 3 4; do sudo apt-get -o Acquire::Retries=3 "$@" && return 0; echo "apt-get $1 failed (try $i of 4)" >&2; sleep $((i * 20)); sudo apt-get update || true; done; return 1; }
