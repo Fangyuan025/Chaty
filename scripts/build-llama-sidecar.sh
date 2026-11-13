@@ -27,6 +27,11 @@ if [[ -n "${CHATY_LLAMA_REV:-}" ]]; then
   echo "chaty-llama: bindings $PIN, llama.cpp $(git -C "$SRC/llama-cpp-sys-2/llama.cpp" rev-parse HEAD)"
   ARGS+=(--config "patch.\"$URL\".llama-cpp-2.path=\"$SRC/llama-cpp-2\""
          --config "patch.\"$URL\".llama-cpp-sys-2.path=\"$SRC/llama-cpp-sys-2\"")
+  # The patch makes the bindings path dependencies, and cargo writes that into
+  # Cargo.lock (their `source` lines go). Put the lock back afterwards, so a
+  # local build against another llama.cpp leaves nothing to commit by mistake.
+  cp Cargo.lock "$SRC.Cargo.lock"
+  trap 'cp "$SRC.Cargo.lock" "$ROOT/src-tauri/Cargo.lock"' EXIT
 fi
 
 cargo build "${ARGS[@]}"

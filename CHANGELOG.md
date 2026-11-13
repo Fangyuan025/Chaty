@@ -80,6 +80,10 @@
   the slip it is, never run: it used to be told, by the third try, that the
   same file was "already on disk", and went looking for a file that had never
   been written.
+- After **Continue**, checking the work checks what was written before it.
+  Every message starts a new record of changes, Continue too, and a check
+  with no files named looked only at that one — "nothing has been changed
+  this turn", about a page written a minute before.
 
 ### A card that is nearly full
 

@@ -810,8 +810,12 @@ pub async fn agent_validate_change(files: Option<Vec<String>>) -> Result<String,
             }
         }
         _ => {
+            // The newest checkpoint that changed a file still there. Every
+            // message opens one, "Continue" too: a page written, a pause for
+            // a repeat, Continue, and validate_change was told nothing had
+            // been changed, about a file it had just written.
             let cps = CHECKPOINTS.lock().unwrap();
-            if let Some(cp) = cps.last() {
+            if let Some(cp) = cps.iter().rev().find(|cp| cp.entries.iter().any(|e| e.path.is_file())) {
                 for e in &cp.entries {
                     targets.push(e.path.clone());
                 }
@@ -7147,6 +7151,29 @@ mod tests {
         assert!(cut.starts_with(&format!("{}→", anchor_of(2, &long))), "{}", &cut[..40]);
         assert_eq!(raw.unwrap(), text, "the snapshot has no anchors and nothing cut");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Written, then Continue (a new message, a new checkpoint), then
+    /// validate_change with no files: what it validates is what was written,
+    /// not "nothing was changed".
+    #[test]
+    fn validate_after_continue_still_sees_the_write() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-vcc-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        set_ws(&tmp);
+        cp_clear();
+        agent_checkpoint_begin();
+        agent_write_file("page.html".into(), "<!DOCTYPE html>\n<p>hi</p>\n".into()).unwrap();
+        agent_checkpoint_begin();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let out = rt.block_on(agent_validate_change(None)).expect("validate");
+        assert!(!out.contains("没有记录到文件改动"), "{out}");
+        assert!(out.contains("page.html"), "{out}");
+        cp_clear();
+        let out = rt.block_on(agent_validate_change(None)).expect("validate empty");
+        assert!(out.contains("没有记录到文件改动"), "{out}");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
