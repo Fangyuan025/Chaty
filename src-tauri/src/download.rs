@@ -109,15 +109,13 @@ pub(crate) fn is_official_hf(base: &str) -> bool {
     matches!(base, HF_OFFICIAL | "https://hf.co")
 }
 
-/// Bilingual error for a 403/failure on a mirror endpoint, where the xet
-/// fallback is not available by design.
+/// A 403/failure on a mirror endpoint, where the xet fallback is not
+/// available by design — in the window's language, like every error (it was
+/// both languages at once).
 pub(crate) fn mirror_403_message(status: reqwest::StatusCode) -> String {
-    format!(
-        "镜像端点拒绝了该文件（HTTP {status}）。该镜像不支持 xet 回退 — \
-         请在设置中切回官方 HuggingFace 端点（可能需要 VPN/代理）后重试 \
-         (the mirror endpoint rejected this file and does not support the xet \
-         fallback; switch back to the official HuggingFace endpoint in Settings — \
-         possibly with a VPN/proxy — and retry)"
+    trf!(
+        "镜像端点拒绝了该文件（HTTP {status}），它不支持 xet 回退下载。请在 设置 → 模型 → Hugging Face 端点 切回官方端点（可能需要 VPN 或代理）后重试。",
+        "The mirror endpoint rejected this file (HTTP {status}), and it does not support the xet fallback. Switch back to the official endpoint in Settings → Model → Hugging Face endpoint (possibly with a VPN or proxy) and try again."
     )
 }
 
@@ -160,15 +158,13 @@ fn glob_escape(path: &str) -> String {
     out
 }
 
-/// The bilingual "your network blocks the HF CDN" error shown when the plain
+/// The "your network blocks the HF CDN" error (in the window's language) shown when the plain
 /// GET got a 403 and the xet fallback failed too. Advice precedes the detail —
 /// some surfaces truncate long messages.
 pub(crate) fn cdn_blocked_message(detail: &str) -> String {
-    format!(
-        "当前网络封锁了 HuggingFace 的下载 CDN（HTTP 403），xet 回退下载也失败了 — \
-         这不是应用故障，请更换网络或启用 VPN/代理后重试 \
-         (this network blocks the HF CDN and the xet fallback failed too; \
-         try another network or a VPN/proxy)。详情: {detail}"
+    trf!(
+        "这个网络封锁了 Hugging Face 的下载 CDN（HTTP 403），xet 回退下载也失败了。这不是应用的问题，请换一个网络或开启 VPN/代理后重试。详情：{detail}",
+        "This network blocks Hugging Face's download CDN (HTTP 403), and the xet fallback failed too. It is not the app: try another network or a VPN/proxy. Details: {detail}"
     )
 }
 

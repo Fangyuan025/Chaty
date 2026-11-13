@@ -569,9 +569,8 @@ export default function App() {
     void logAppError("chat-save-failed", `conversation ${convId}\n${String((e as Error)?.stack ?? e)}`).catch(() => {});
     if (!chatSaveFailWarnedRef.current.has(convId)) {
       chatSaveFailWarnedRef.current.add(convId);
-      alert(
-        "对话保存失败——这条对话没有写入磁盘,重启后会丢失。请检查磁盘空间/权限。\n(Saving this conversation FAILED — it will not survive a restart.)",
-      );
+      // In the window's language, as every error is (it was both at once).
+      alert(t("chatSaveFailed"));
     }
   };
   const [canvasStream, setCanvasStream] = useState<string | null>(null);

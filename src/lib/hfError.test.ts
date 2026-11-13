@@ -12,8 +12,8 @@ describe("hfErrorText", () => {
     expect(hfErrorText("HF_ERROR\tserver\t500", pt)).toContain("HTTP 500");
     expect(hfErrorText("HF_ERROR\tstatus\t400", pt)).toContain("HTTP 400");
     expect(hfErrorText("HF_ERROR\tlimited\t429", zh)).toContain("429");
-    expect(hfErrorText("HF_ERROR\tunreachable\t", zh)).toContain("HuggingFace 端点");
-    expect(hfErrorText("HF_ERROR\ttimeout\t", pt)).toContain("Endpoint HuggingFace");
+    expect(hfErrorText("HF_ERROR\tunreachable\t", zh)).toContain("Hugging Face 端点");
+    expect(hfErrorText("HF_ERROR\ttimeout\t", pt)).toContain("Endpoint Hugging Face");
   });
 
   it("leaves other errors as they are", () => {

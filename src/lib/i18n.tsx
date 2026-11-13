@@ -563,6 +563,8 @@ export const T = {
   imagePreview: { zh: "图片", en: "Image", pt: "Imagem" },
   noConversations: { zh: "暂无历史会话", en: "No conversations yet", pt: "Nenhuma conversa ainda" },
   recencyPinned: { zh: "置顶", en: "Pinned", pt: "Fixadas" },
+  chatSaveFailed: { zh: "这条对话保存失败，没有写入磁盘，重启后会丢失。请检查磁盘空间和权限。", en: "Saving this conversation failed: it is not on disk and will not survive a restart. Check the disk's free space and permissions.", pt: "Falha ao salvar esta conversa: ela não está no disco e não sobreviverá a um reinício. Verifique o espaço livre e as permissões do disco." },
+  codeSaveFailed: { zh: "这个会话保存失败，记录没有写入磁盘，重启后会丢失。请检查磁盘空间和权限。", en: "Saving this session failed: its transcript is not on disk and will not survive a restart. Check the disk's free space and permissions.", pt: "Falha ao salvar esta sessão: a transcrição não está no disco e não sobreviverá a um reinício. Verifique o espaço livre e as permissões do disco." },
   renameHint: { zh: "双击改名", en: "Double-click to rename", pt: "Clique duas vezes para renomear" },
   sideHide: { zh: "隐藏侧栏", en: "Hide sidebar", pt: "Ocultar barra lateral" },
   sideShow: { zh: "显示侧栏", en: "Show sidebar", pt: "Mostrar barra lateral" },
@@ -772,14 +774,14 @@ export const T = {
   },
   hfErrStatus: { zh: "Hugging Face 返回了 HTTP {code}。", en: "Hugging Face answered HTTP {code}.", pt: "O Hugging Face respondeu HTTP {code}." },
   hfErrTimeout: {
-    zh: "Hugging Face 没有及时响应。检查网络，或在 设置 → 模型 → HuggingFace 端点 里换一个。",
-    en: "Hugging Face did not answer in time. Check the connection, or pick another in Settings → Model → HuggingFace endpoint.",
-    pt: "O Hugging Face não respondeu a tempo. Verifique a conexão ou escolha outro em Configurações → Modelo → Endpoint HuggingFace.",
+    zh: "Hugging Face 没有及时响应。检查网络，或在 设置 → 模型 → Hugging Face 端点 里换一个。",
+    en: "Hugging Face did not answer in time. Check the connection, or pick another in Settings → Model → Hugging Face endpoint.",
+    pt: "O Hugging Face não respondeu a tempo. Verifique a conexão ou escolha outro em Configurações → Modelo → Endpoint Hugging Face.",
   },
   hfErrUnreachable: {
-    zh: "连不上 Hugging Face。检查网络，或在 设置 → 模型 → HuggingFace 端点 里换一个。",
-    en: "Could not reach Hugging Face. Check the connection, or pick another in Settings → Model → HuggingFace endpoint.",
-    pt: "Não foi possível alcançar o Hugging Face. Verifique a conexão ou escolha outro em Configurações → Modelo → Endpoint HuggingFace.",
+    zh: "连不上 Hugging Face。检查网络，或在 设置 → 模型 → Hugging Face 端点 里换一个。",
+    en: "Could not reach Hugging Face. Check the connection, or pick another in Settings → Model → Hugging Face endpoint.",
+    pt: "Não foi possível alcançar o Hugging Face. Verifique a conexão ou escolha outro em Configurações → Modelo → Endpoint Hugging Face.",
   },
   storeAgoNow: { zh: "刚才", en: "just now", pt: "agora há pouco" },
   storeAgoMin: { zh: "{n} 分钟前", en: "{n} min ago", pt: "há {n} min" },
@@ -829,8 +831,8 @@ export const T = {
   exportFailed: { zh: "导出失败", en: "Export failed", pt: "Falha na exportação" },
   dlTitle: { zh: "下载模型", en: "Download model", pt: "Baixar modelo" },
   dlHint: {
-    zh: "输入 HuggingFace 仓库（owner/name）或其网址，列出其中的模型文件（GGUF / MLX）后下载到模型文件夹。",
-    en: "Enter a HuggingFace repo (owner/name) or URL to list its model files (GGUF / MLX) and download into your models folder.", pt: "Insira um repositório HuggingFace (owner/name) ou URL para listar os arquivos (GGUF / MLX) e baixar para sua pasta de modelos."
+    zh: "输入 Hugging Face 仓库（owner/name）或其网址，列出其中的模型文件（GGUF / MLX）后下载到模型文件夹。",
+    en: "Enter a Hugging Face repo (owner/name) or URL to list its model files (GGUF / MLX) and download into your models folder.", pt: "Insira um repositório Hugging Face (owner/name) ou URL para listar os arquivos (GGUF / MLX) e baixar para sua pasta de modelos."
   },
   dlGet: { zh: "下载", en: "Download", pt: "Baixar" },
   dlSearchFailed: { zh: "查找失败", en: "Lookup failed", pt: "Falha na busca" },
@@ -966,7 +968,7 @@ export const T = {
     zh: "将模型文件放入此文件夹后，重新打开模型选择器即可看到",
     en: "Drop model files into this folder, then reopen the model picker to see them", pt: "Arraste arquivos de modelo para esta pasta, depois reabra o seletor de modelos para vê-los"
   },
-  hfEndpoint: { zh: "HuggingFace 端点", en: "HuggingFace endpoint", pt: "Endpoint HuggingFace" },
+  hfEndpoint: { zh: "Hugging Face 端点", en: "Hugging Face endpoint", pt: "Endpoint Hugging Face" },
   hfEndpointOfficial: { zh: "官方", en: "Official", pt: "Oficial" },
   hfEndpointCustom: { zh: "自定义", en: "Custom", pt: "Personalizado" },
   hfEndpointHint: {
@@ -1129,8 +1131,8 @@ export const T = {
   setupNotFound: { zh: "未找到合适的 GGUF 文件", en: "No suitable GGUF file found", pt: "Nenhum arquivo GGUF adequado encontrado" },
   setupStoreLink: { zh: "想用社区的其他模型？去模型商店逛逛", en: "Want other community models? Browse the model store", pt: "Procurando modelos da comunidade? Explore a loja de modelos" },
   setupFoot: {
-    zh: "推荐按本机内存自动匹配规模与量化，下载自 HuggingFace，存入应用的 models 文件夹。",
-    en: "Sized & quantized for your memory, downloaded from HuggingFace into the app's models folder.", pt: "Dimensionado e quantizado para a sua memória, baixado do HuggingFace diretamente na pasta de modelos."
+    zh: "推荐按本机内存自动匹配规模与量化，下载自 Hugging Face，存入应用的 models 文件夹。",
+    en: "Sized & quantized for your memory, downloaded from Hugging Face into the app's models folder.", pt: "Dimensionado e quantizado para a sua memória, baixado do Hugging Face diretamente na pasta de modelos."
   },
   // parameter tooltips
   tipTemperature: {
@@ -1185,9 +1187,9 @@ export const T = {
     pt: "Não foi possível baixar o modelo de voz ({reason}).",
   },
   voiceDlMirror: {
-    zh: "可以到「设置 → 模型 → HuggingFace 端点」换一个源（中国大陆推荐 hf-mirror.com）后再试。",
-    en: "You can switch Settings → Model → HuggingFace endpoint to another source (hf-mirror.com in mainland China) and try again.",
-    pt: "Você pode trocar Configurações → Modelo → Endpoint HuggingFace para outra fonte (hf-mirror.com na China continental) e tentar de novo.",
+    zh: "可以到「设置 → 模型 → Hugging Face 端点」换一个源（中国大陆推荐 hf-mirror.com）后再试。",
+    en: "You can switch Settings → Model → Hugging Face endpoint to another source (hf-mirror.com in mainland China) and try again.",
+    pt: "Você pode trocar Configurações → Modelo → Endpoint Hugging Face para outra fonte (hf-mirror.com na China continental) e tentar de novo.",
   },
   voiceDlManual: {
     zh: "也可以手动下载：打开 {url}，下载 {files}，放进文件夹 {dir}，然后再试一次。",

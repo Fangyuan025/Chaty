@@ -1359,12 +1359,10 @@ export function CodeMode({
         console.error("code session save FAILED", id, e);
         if (!saveFailWarnedRef.current.has(id)) {
           saveFailWarnedRef.current.add(id);
-          alert(
-            "会话保存失败——当前对话记录没有写入磁盘,重启后会丢失。请检查磁盘空间/权限。\n(Session save failed — this transcript is NOT persisting to disk.)",
-          );
+          alert(t("codeSaveFailed"));
         }
       });
-  }, [refreshSessions]);
+  }, [refreshSessions, t]);
 
   /** Debounced mid-run persist: trailing 2s, drops when the session moved. */
   const persistTimerRef = useRef<number | null>(null);

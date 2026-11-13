@@ -159,6 +159,11 @@
   studios' sessions now can too. And a Code session keeps the title the model
   gave it: after a restart, the next turn in an older session put its first
   message's opening words back in its place.
+- **Errors in one language.** A download refused by a mirror or by a network
+  that blocks Hugging Face's CDN, and a chat or Code session that could not
+  be saved, said so in Chinese and English at once; they now speak the
+  window's language, as every other error does. And Hugging Face is spelt
+  as Hugging Face spells it.
 - The music studio's Chinese text is punctuated as the rest of the app is;
   the boxes that send with a key combination name the one this computer has
   (⌘ Enter on a Mac, Ctrl+Enter elsewhere), not "⌘/Ctrl"; the knowledge
