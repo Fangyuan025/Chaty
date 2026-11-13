@@ -72,12 +72,12 @@ anyhow = "1"
 # commit for a field that version added, and one so the fit wrapper compiles
 # against a newer llama.cpp too (a runtime pack builds these bindings with
 # upstream's newest, whose common_fit_params takes a list of paths).
-llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "89a1dba08c5ce48fa267f1232e123b9cf4c1c151", features = ["sampler", "mtmd"] }
+llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "1f4ea63438fd245d92726001a30b3c26becbc496", features = ["sampler", "mtmd"] }
 # The same crate llama-cpp-2 is built on (same revision, so nothing extra is
 # compiled): reached directly for `llama_log_set`, so llama.cpp's own reason
 # for refusing a model can be kept instead of discarded with the rest of its
 # log.
-llama-cpp-sys-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "89a1dba08c5ce48fa267f1232e123b9cf4c1c151" }
+llama-cpp-sys-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "1f4ea63438fd245d92726001a30b3c26becbc496" }
 # A real Jinja engine for GGUF chat templates. llama.cpp's own
 # `llama_chat_apply_template` does not run Jinja: it recognises a template by
 # substrings and prints its built-in version of that family, so anything the
