@@ -188,7 +188,10 @@ export function jitHintFor(
     shown.add("browser");
     return BROWSER_HINT[lang];
   }
-  if (name === "understand_repo" && !shown.has("afterOrient")) {
+  // Not after an empty workspace: there is nothing to search or read, and
+  // "e.g. search_code / read_file src/app.ts" pointed a model starting a page
+  // from nothing at files that do not exist.
+  if (name === "understand_repo" && !shown.has("afterOrient") && !/^\s*\[(?:工作区是空的|the workspace is empty)\]/m.test(resultText)) {
     shown.add("afterOrient");
     return AFTER_ORIENT_HINT[lang];
   }

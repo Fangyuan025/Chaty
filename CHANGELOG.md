@@ -163,6 +163,10 @@
   the boxes that send with a key combination name the one this computer has
   (⌘ Enter on a Mac, Ctrl+Enter elsewhere), not "⌘/Ctrl"; the knowledge
   base's buttons all carry icons.
+- **An empty workspace is called empty.** The agent's first look at a new
+  folder said "directory" over nothing, then suggested searching and reading
+  files that did not exist; it now hears there are no files yet and to start
+  from scratch.
 - **A page is checked by opening it.** Asked to check a web page it wrote, the
   agent is told to open it once in the browser, where it used to be told to
   find the project's tests and went round servers, curl and grep.

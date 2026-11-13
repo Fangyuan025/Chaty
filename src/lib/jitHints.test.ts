@@ -121,6 +121,12 @@ describe("jitHintFor", () => {
     expect(h).not.toMatch(/[一-鿿]/);
     expect(jitHintFor("understand_repo", "…", "en", shown)).toBe("");
   });
+
+  test("an empty workspace gets no nudge to search files that are not there", () => {
+    const shown = new Set<Parameters<typeof jitHintFor>[3] extends Set<infer K> ? K : never>();
+    expect(jitHintFor("understand_repo", "\n[工作区是空的] 还没有任何文件", "zh", shown)).toBe("");
+    expect(jitHintFor("understand_repo", "\n[the workspace is empty] there are no files yet", "en", new Set())).toBe("");
+  });
 });
 
 describe("missingArgLadder", () => {

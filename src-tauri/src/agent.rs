@@ -759,6 +759,15 @@ pub fn agent_understand_repo() -> Result<String, String> {
         .collect::<Vec<_>>()
         .join(" · ");
 
+    // An empty workspace says so: a heading with nothing under it, and the
+    // model was left to wonder whether the listing had failed.
+    if tree.is_empty() {
+        out.push_str(&tr(
+            "\n[工作区是空的] 还没有任何文件——要做的东西从头新建即可(用 write_file 写第一个文件)。",
+            "\n[the workspace is empty] there are no files yet — create what the task needs from scratch (write_file for the first one).",
+        ));
+        return Ok(out);
+    }
     out.push_str(&trf!("\n[目录 (top 2 levels)]\n{tree}", "\n[directory, top 2 levels]\n{tree}"));
     if !census_str.is_empty() {
         out.push_str(&trf!("\n[语言构成] {census_str}\n", "\n[language mix] {census_str}\n"));
@@ -7165,6 +7174,24 @@ mod tests {
         assert!(cut.starts_with(&format!("{}→", anchor_of(2, &long))), "{}", &cut[..40]);
         assert_eq!(raw.unwrap(), text, "the snapshot has no anchors and nothing cut");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An empty workspace is said to be empty, not shown as a heading with
+    /// nothing under it.
+    #[test]
+    fn an_empty_workspace_says_so() {
+        let _g = serial();
+        let tmp = std::env::temp_dir().join(format!("chaty-agent-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".git")).unwrap();
+        set_ws(&tmp);
+        let out = agent_understand_repo().unwrap();
+        assert!(out.contains("工作区是空的"), "{out}");
+        assert!(!out.contains("top 2 levels"), "{out}");
+        std::fs::write(tmp.join("index.html"), "<p>hi</p>").unwrap();
+        let out = agent_understand_repo().unwrap();
+        assert!(out.contains("index.html") && !out.contains("工作区是空的"), "{out}");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// Written, then Continue (a new message, a new checkpoint), then
