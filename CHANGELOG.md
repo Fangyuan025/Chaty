@@ -72,6 +72,14 @@
   change shows as it did.
 - A tool written as a shell command (`browser_navigate file://…` in bash) is
   sent back as what it is.
+- **A long page is no longer cut off mid-write.** A guard that stops a call
+  running on after its last argument took a page's own closing tags
+  (`</div></section></main>`) for the call's, when the content had been opened
+  in a less common spelling, and cut the file there — the call went out with
+  no content, again and again. And a write without its content is answered as
+  the slip it is, never run: it used to be told, by the third try, that the
+  same file was "already on disk", and went looking for a file that had never
+  been written.
 
 ### A card that is nearly full
 

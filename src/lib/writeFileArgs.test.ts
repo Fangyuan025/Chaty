@@ -68,10 +68,14 @@ async function run(rounds: string[]) {
 
 describe("write_file without content", () => {
   it("does not empty the file, and says what is missing", async () => {
+    // A format slip, answered without being run (see agentLoopWriteContent):
+    // no card for the first two, one from the third.
     const { wrote, steps } = await run([call({ path: "src/app.ts" }), "Understood."]);
     expect(wrote).toEqual([]);
-    expect(steps[0].status).toBe("error");
-    expect(steps[0].result).toContain("content");
+    expect(steps.some((s) => s.name === "write_file" && s.status === "done")).toBe(false);
+    const three = await run([call({ path: "src/app.ts" }), call({ path: "src/app.ts" }), call({ path: "src/app.ts" }), "Understood."]);
+    expect(three.wrote).toEqual([]);
+    expect(three.steps.find((s) => s.name === "write_file")?.result).toContain("content");
   });
 
   it("still writes an empty file when that is what was asked", async () => {

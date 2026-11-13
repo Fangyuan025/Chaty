@@ -103,6 +103,20 @@ export function missingArgLadder(
       ? `ERROR: 没读到 "${arg}" 参数——你写的 \`${seen}\` 不是参数的写法,所以这次调用等于没带 ${arg}。按下面的格式重发 ${name}:\n${argsExample(example)}`
       : `ERROR: no "${arg}" argument was read — \`${seen}\` is not how an argument is written, so the call went out without ${arg}. Re-issue ${name} in this form:\n${argsExample(example)}`;
   }
+  // A write without its content: the model knows what goes in it — it is
+  // the page it has been planning — so "use list_dir instead" is no help.
+  // What helps is where the text goes, and, once it has failed twice, a
+  // shorter first version to grow by edits.
+  if (arg === "content" && name === "write_file") {
+    if (attempt <= 1) {
+      return zh
+        ? `ERROR: 这次 write_file 没有 content 参数,文件没有写入。文件的全部内容必须放在 content 参数里,和 path 在同一个调用中:\n${argsExample(example)}`
+        : `ERROR: this write_file had no content argument, so nothing was written. The file's whole text goes in the content argument, in the same call as path:\n${argsExample(example)}`;
+    }
+    return zh
+      ? `ERROR: 连续 ${attempt} 次 write_file 都没有 content,文件仍未写入。换个做法:先写一个精简的完整版本(一次写得完的长度),写进 content;之后用 edit_file 分段补充细节。格式:\n${argsExample(example)}`
+      : `ERROR: ${attempt} write_file calls in a row without content — the file is still not written. Do it another way: write a short but complete first version, one you can write in a single call, as the content; then add the detail with edit_file, a part at a time. Format:\n${argsExample(example)}`;
+  }
   if (attempt <= 1) {
     return zh
       ? `ERROR: 缺少 "${arg}" 参数——请带上它重发 ${name},例如:\n${argsExample(example)}`

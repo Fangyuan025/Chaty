@@ -150,7 +150,8 @@ export function xmlOpenTag(tag: "function" | "parameter"): string {
   // it so — a closing slash on an opener, never on a plain `</parameter>` —
   // and the note was read as missing, three times running.
   const slash = tag === "parameter" ? "(?:\\/(?=(?:parameter|param)\\s*=))?" : "";
-  return `<${slash}${name}(?:\\s*=\\s*|>|\\s+name\\s*=\\s*|\\s+)["']?([A-Za-z_][\\w.-]*)["']?\\s*>`;
+  // `<parameter:content>` too: the colon some templates name a value with.
+  return `<${slash}${name}(?:\\s*[=:]\\s*|>|\\s+name\\s*=\\s*|\\s+)["']?([A-Za-z_][\\w.-]*)["']?\\s*>`;
 }
 
 /** A value wrapped in CDATA — MiniCPM5's template wraps any that holds `<`,

@@ -3168,7 +3168,18 @@ export function xmlRunsOn(raw: string): boolean {
   // and a page ending in `</div></body></html>` was cut off mid-write.
   const opened = [...body.matchAll(new RegExp(xmlOpenTag("parameter"), "g"))].length;
   if (opened > body.split(/<\/param(?:eter)?>/).length - 1) return false;
-  return TRAILING_CLOSERS.test(body.slice(-600));
+  const tail = TRAILING_CLOSERS.exec(body.slice(-600));
+  if (!tail) return false;
+  // Every closer in the run is the call's own: its scaffolding, or a name
+  // nothing in the call ever opened (`</path>` after a list_dir). A page's
+  // `</div></section></main></html>` closes what the page opened — it is a
+  // value being written, opened in a spelling the count above does not know
+  // (`<parameter:content>`, `<arg=content>`), and cutting it there sent a
+  // call with no content at all, again and again (a 35B, writing a page).
+  const names = [...tail[0].matchAll(/<\/([A-Za-z_][\w-]*)>/g)].map((m) => m[1]);
+  return names.every(
+    (n) => XML_SCAFFOLD.has(n.toLowerCase()) || !new RegExp(`<${n}[\\s>]`, "i").test(body),
+  );
 }
 
 /** The prompt size llama.cpp reports when it refuses a prompt too long for the
@@ -4817,6 +4828,12 @@ export async function runAgentTurn(
       const missing = (REQUIRED_ARGS[call.name] ?? []).filter(
         (k) => !k.split("|").some((alt) => asStr(call.args?.[alt])),
       );
+      // A write with no content at all — not an empty one, which is a real
+      // instruction — is the same slip. Run, it came back "missing content",
+      // was sent again unchanged and met the repeat breaker, whose word for a
+      // repeated write is "already on disk": a 35B went looking for a file
+      // that had never been written.
+      if (call.name === "write_file" && !hasContent(call.args ?? {})) missing.push("content|text|contents|body|file_text");
       if (missing.length) {
         // Cooldown re-arm (owner call, dev walkthrough): a hard "disabled for
         // this turn" punished models that recovered and did real work with
@@ -4964,10 +4981,13 @@ export async function runAgentTurn(
         call.name === "bash" && /\[exit (?!0\])-?\d+/.test(lastResultText);
       // Re-reading an unchanged file is a no-op too (wave 9: read_file ×3
       // killed the turn right before packaging).
+      // A write or a read repeated after it FAILED is not a no-op on
+      // something already there: the file was never written ("this exact
+      // content is already on disk" sent a 35B looking for a file that did
+      // not exist), so it takes the error's own path below.
       const softLockable =
         call.name === "update_plan" ||
-        call.name === "write_file" ||
-        call.name === "read_file" ||
+        ((call.name === "write_file" || call.name === "read_file") && !lastResultErrored) ||
         failedBashRepeat;
       // A click or type whose page keeps changing is not spinning, however
       // many times it repeats: pressing CONTINUE through a story, Next through
@@ -4979,7 +4999,7 @@ export async function runAgentTurn(
         ? Number.POSITIVE_INFINITY
         : call.name === "update_plan"
           ? 8
-          : call.name === "write_file" || call.name === "read_file" || failedBashRepeat
+          : ((call.name === "write_file" || call.name === "read_file") && !lastResultErrored) || failedBashRepeat
             ? 6
             : 2;
       const warnAt = uiRepeatOk ? -1 : 1;

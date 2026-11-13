@@ -345,6 +345,18 @@ describe("an XML call written loosely", () => {
     expect(xmlRunsOn("<tool_call>\n<function=read_file>\n<parameter=path>\na.py\n</parameter>\n</function>\n")).toBe(false);
   });
 
+  it("a page's own closing tags are not the call running on, however its content was opened", () => {
+    const page = "<!DOCTYPE html>\n<html>\n<body>\n<main>\n<section>\n<div>\n<p>hi</p>\n</div>\n</section>\n</main>\n</body>\n</html>\n";
+    const head = "<tool_call>\n<function=write_file>\n<parameter=path>\nindex.html\n</parameter>\n";
+    // Spellings the open-value count does not know: the page was cut at its
+    // first run of four closers and the call went out with no content.
+    for (const open of ["<parameter:content>\n", "<Parameter=content>\n", "<arg=content>\n", '<argument name="content">\n', "<content>\n"]) {
+      expect(xmlRunsOn(head + open + page), open).toBe(false);
+    }
+    // Still cut: closers of names the call never opened.
+    expect(xmlRunsOn(head + "</parameter>\n</path>\n</path>\n</content>\n</function>\n")).toBe(true);
+  });
+
   it("lists names without quotes in the docs", () => {
     expect(plainArgs('- edit_file: replace text. args: { "path", "old_string", "new_string", "replace_all"?: boolean }')).toBe(
       "- edit_file: replace text. args: path, old_string, new_string, replace_all?: boolean",
