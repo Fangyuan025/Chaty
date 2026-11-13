@@ -152,6 +152,7 @@
 - **"Reload model to apply" appears when there is something to apply** — a
   load setting changed since the model was loaded — instead of always.
 - A long chat title shows whole when you hover it in the title bar.
+- Several files dropped on Code mode are all attached; only the first was.
 - The model menu and the command palette name models as the title bar does,
   without ".gguf" on some and not others; the engines page's "last checked"
   reads in the window's language and the shape of the dates beside it.

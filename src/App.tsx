@@ -1330,8 +1330,11 @@ export default function App() {
           setDragging(false);
         } else if (p.type === "drop") {
           setDragging(false);
-          const path = p.paths?.[0];
-          if (path) attachDropped.current(path);
+          // Every file dropped, where more than one can be attached (Code
+          // mode): only the first was taken, and the rest went without a word.
+          for (const path of p.paths ?? []) {
+            if (!attachDropped.current(path)) break;
+          }
         }
       })
       .then((fn) => {
@@ -1970,11 +1973,16 @@ export default function App() {
   /** A file dropped on the window, or pasted into an input, goes to what is in
    *  front: the image or music studio, Code mode's input — dropped there it
    *  used to land on the chat's, out of sight — or the chat's. */
-  const attachDropped = useRef<(path: string) => void>(() => {});
+  const attachDropped = useRef<(path: string) => boolean>(() => false);
+  /** Attach a dropped file; whether the next of several may follow (only
+   *  Code mode holds more than one). */
   attachDropped.current = (path: string) => {
     if (imageDropRef.current) imageDropRef.current(path);
-    else if (appMode === "code" && codeActions.current) codeActions.current.attachPath(path);
-    else void loadAttachmentPath(path);
+    else if (appMode === "code" && codeActions.current) {
+      codeActions.current.attachPath(path);
+      return true;
+    } else void loadAttachmentPath(path);
+    return false;
   };
 
   /** Which conversation the user last asked for — two reads can come back in
