@@ -1881,6 +1881,15 @@ export default function App() {
     }
   }
 
+  /** What was typed and not sent, per conversation ("" = a new chat). One
+   *  box for all of them carried a half-written message into whichever chat
+   *  was opened next, and lost it for the one it was meant for. */
+  const draftsRef = useRef(new Map<string, string>());
+  function swapDraft(to: string | null) {
+    draftsRef.current.set(conversationId ?? "", input);
+    setInput(draftsRef.current.get(to ?? "") ?? "");
+  }
+
   function handleNewChat() {
     if (busy) return;
     if (imageMode) {
@@ -1891,6 +1900,7 @@ export default function App() {
       music.startNew();
       return;
     }
+    if (conversationId !== null) swapDraft(null);
     setConversationId(null);
     setMessages([]);
     setStats(null);
@@ -1992,6 +2002,7 @@ export default function App() {
           sources: m.sources?.length ? m.sources : undefined,
         })),
       );
+      swapDraft(id);
       setConversationId(id);
       let last: (GenStats & { nCtx?: number }) | null = null;
       try {
@@ -4118,13 +4129,19 @@ export default function App() {
         {/* What's open, as the panel's title: the conversation, the image or
             music session. Code puts its workspace here instead (headSlot). */}
         {!(appMode === "code" && !studioMode) && (
-          <div className="tb-title" data-tauri-drag-region>
-            {imageMode
+          (() => {
+            const title = imageMode
               ? studio.session?.title ?? ""
               : musicMode
                 ? music.session?.title ?? ""
-                : conversations.find((c) => c.id === conversationId)?.title ?? ""}
-          </div>
+                : conversations.find((c) => c.id === conversationId)?.title ?? "";
+            // The whole of a long title on hover: the row cuts it short.
+            return (
+              <div className="tb-title" data-tauri-drag-region title={title || undefined}>
+                {title}
+              </div>
+            );
+          })()
         )}
         <div className="tb-slot" ref={setHeadSlot} data-tauri-drag-region />
 

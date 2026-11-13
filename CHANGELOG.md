@@ -134,6 +134,8 @@
 - **The sidebar folds away.** ⌘\ (Ctrl+\ elsewhere), the button beside the
   mode switch, or the command palette: the panel takes the window, for
   reading or a half-screen window, and stays that way until you bring it back.
+- **A draft stays with its chat.** What you typed and did not send waits in
+  that chat; it used to follow you into whichever chat you opened next.
 - **↑ in an empty box.** In a chat it edits the last message you sent; in
   Code mode it brings back the last task you gave, to change a word and send
   it again.
@@ -149,6 +151,7 @@
   dash.
 - **"Reload model to apply" appears when there is something to apply** — a
   load setting changed since the model was loaded — instead of always.
+- A long chat title shows whole when you hover it in the title bar.
 - The model menu and the command palette name models as the title bar does,
   without ".gguf" on some and not others; the engines page's "last checked"
   reads in the window's language and the shape of the dates beside it.
