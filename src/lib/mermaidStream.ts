@@ -17,16 +17,231 @@ export function finishedDiagram(code: string): string {
 }
 
 const OPENS = /^\s*(subgraph|loop|alt|opt|par|critical|break|rect|box)\b/;
-const END = /^\s*end\s*$/;
+/** A flowchart's only block is a subgraph: a node called "loop" or "box" at
+ *  the start of a line opens nothing. */
+const FLOW_OPENS = /^\s*subgraph\b/;
+const END = /^\s*end\s*;?\s*$/;
+const COMMENT = /^\s*%%(?!\{)/;
 
-/** `lines` with an `end` for each block still open. */
-export function closeBlocks(lines: string[]): string[] {
-  let depth = 0;
-  for (const l of lines) {
-    if (END.test(l)) depth = Math.max(0, depth - 1);
-    else if (OPENS.test(l)) depth++;
+/** What opens a block in the diagram these lines are: its first real line
+ *  says which kind it is. */
+function opensOf(lines: string[]): RegExp {
+  const head = lines.find((l) => l.trim() !== "" && !COMMENT.test(l)) ?? "";
+  return /^\s*(?:graph|flowchart)\b/i.test(head) ? FLOW_OPENS : OPENS;
+}
+
+const indentOf = (l: string) => {
+  let n = 0;
+  for (const c of l) {
+    if (c === " ") n++;
+    else if (c === "\t") n += 4;
+    else break;
   }
-  return depth ? [...lines, ...Array<string>(depth).fill("end")] : lines;
+  return n;
+};
+
+/**
+ * Lines with their blocks balanced: an `end` that closes nothing taken out,
+ * and an `end` put in for each block left open — where the indentation says
+ * it ends, when the block's lines are indented deeper than its opening line
+ * and a later line comes back out to that depth (a model that forgot one
+ * `end` meant the lines it wrote after the block to be outside it); else at
+ * the end.
+ */
+function balanceBlocks<T>(lines: T[], textOf: (l: T) => string, make: (text: string) => T, opens: RegExp): { out: T[]; dropped: T[] } {
+  const out: T[] = [];
+  const dropped: T[] = [];
+  const stack: { indent: number; deeper: boolean | null }[] = [];
+  lines.forEach((l, i) => {
+    const text = textOf(l);
+    if (text.trim() === "") {
+      out.push(l);
+      return;
+    }
+    const ind = indentOf(text);
+    const isEnd = END.test(text);
+    for (;;) {
+      const top = stack[stack.length - 1];
+      if (!top) break;
+      if (top.deeper === null) {
+        // The block's first line: deeper than its opener, or not indented.
+        top.deeper = ind > top.indent;
+        break;
+      }
+      // Back out to the opener's depth (or past it, for an `end` that closes
+      // a block further out) without an `end`: the block ended here.
+      if (top.deeper && (isEnd ? ind < top.indent && stack.length > 1 : ind <= top.indent)) {
+        out.push(make(`${" ".repeat(top.indent)}end`));
+        stack.pop();
+        continue;
+      }
+      break;
+    }
+    if (isEnd) {
+      if (!stack.length) {
+        dropped.push(l);
+        return;
+      }
+      stack.pop();
+    } else if (i > 0 && opens.test(text)) stack.push({ indent: ind, deeper: null });
+    out.push(l);
+  });
+  while (stack.length) out.push(make(`${" ".repeat(stack.pop()!.indent)}end`));
+  return { out, dropped };
+}
+
+/** `lines` with an `end` for each block still open (where the indentation
+ *  says it ends), and none that closes nothing. */
+export function closeBlocks(lines: string[]): string[] {
+  return balanceBlocks(lines, (l) => l, (t) => t, opensOf(lines)).out;
+}
+
+/** A diagram drawn without the lines that stop it, and those lines. */
+export interface Salvaged {
+  text: string;
+  /** The lines left out, as written. */
+  skipped: string[];
+}
+
+/** The line a Mermaid parse error names (1-based), if it names one. */
+export function errorLine(message: string): number | null {
+  const m = /\bline (\d+)/i.exec(message);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * As much of a diagram as can be drawn, when it cannot be drawn whole.
+ *
+ * A diagram a model wrote is right almost everywhere and wrong in a line or
+ * two — a subgraph never closed, an arrow with nothing after it, a label
+ * Mermaid cannot read. Wrong anywhere, Mermaid draws none of it; so the
+ * lines it stops at are left out, one at a time, until the rest draws: an
+ * `end` that closes nothing goes, a block still open is closed, and a line a
+ * parse error names is left out (or the one before it, when that gets
+ * further — an error is often only noticed on the line after the mistake).
+ * Mermaid takes comments, leading blank lines and front matter off before
+ * it numbers lines, so they are taken off here too: the line an error names
+ * is the line it means.
+ *
+ * `parse` is Mermaid's; null when not even the diagram's first line draws.
+ */
+export async function salvageDiagram(
+  code: string,
+  parse: (text: string) => Promise<unknown>,
+  budget = 48,
+): Promise<Salvaged | null> {
+  const all = code.split("\n");
+  // Front matter is kept whole and is not counted (Mermaid numbers after it).
+  let start = 0;
+  if (/^---\s*$/.test(all[0] ?? "")) {
+    const close = all.findIndex((l, i) => i > 0 && /^---\s*$/.test(l));
+    if (close > 0) start = close + 1;
+  }
+  const front = all.slice(0, start);
+  const body = all.slice(start).filter((l) => !COMMENT.test(l));
+  while (body.length && body[0].trim() === "") body.shift();
+  if (!body.length) return null;
+  const opens = opensOf(body);
+  const skipped = new Set<number>();
+
+  /** The text with what is skipped left out and its blocks balanced, and
+   *  for each of its lines the body line it is (-1: an `end` put in). */
+  const build = () =>
+    balanceBlocks(
+      body.map((text, at) => ({ text, at })).filter((l) => !skipped.has(l.at)),
+      (l) => l.text,
+      (text) => ({ text, at: -1 }),
+      opens,
+    ).out;
+  const textOf = (lines: { text: string }[]) => [...front, ...lines.map((l) => l.text)].join("\n");
+  /** Where a try stops: the body line the error names, or Infinity drawn. */
+  const tryParse = async (lines: { text: string; at: number }[]): Promise<{ ok: true } | { ok: false; at: number | null }> => {
+    try {
+      await parse(textOf(lines));
+      return { ok: true };
+    } catch (e) {
+      const n = errorLine((e as Error)?.message ?? String(e));
+      const hit = n != null ? lines[n - 1] : undefined;
+      return { ok: false, at: hit && hit.at >= 0 ? hit.at : null };
+    }
+  };
+  /** The last line still in, not the first (which names the diagram). */
+  const lastKept = () => {
+    for (let i = body.length - 1; i > 0; i--) if (!skipped.has(i) && body[i].trim() !== "") return i;
+    return -1;
+  };
+  const done = (lines: { text: string; at: number }[]): Salvaged => ({
+    text: textOf(lines),
+    skipped: body.filter((l, i) => (skipped.has(i) || (END.test(l) && !lines.some((x) => x.at === i))) && l.trim() !== ""),
+  });
+
+  let lines = build();
+  let res = await tryParse(lines);
+  for (let n = 0; n < budget && !res.ok; n++) {
+    if (res.at == null || res.at === 0) {
+      // No line named, or the first: the last line in goes.
+      const at = lastKept();
+      if (at < 0) return null;
+      skipped.add(at);
+    } else {
+      // The named line, or the one before it if leaving that out gets
+      // further (or draws).
+      const named = res.at;
+      skipped.add(named);
+      const a = build();
+      const ra = await tryParse(a);
+      if (ra.ok) return done(a);
+      let prev = named - 1;
+      while (prev > 0 && (skipped.has(prev) || body[prev].trim() === "")) prev--;
+      if (prev > 0) {
+        skipped.delete(named);
+        skipped.add(prev);
+        const b = build();
+        const rb = await tryParse(b);
+        if (rb.ok) return done(b);
+        const further = (rb.at ?? -1) > (ra.at ?? -1);
+        if (!further) {
+          skipped.delete(prev);
+          skipped.add(named);
+          lines = a;
+          res = ra;
+          continue;
+        }
+        lines = b;
+        res = rb;
+        continue;
+      }
+      lines = a;
+      res = ra;
+      continue;
+    }
+    lines = build();
+    res = await tryParse(lines);
+  }
+  return res.ok ? done(lines) : null;
+}
+
+/** The longest start of a diagram that draws, its open blocks closed and its
+ *  spelling put right where that is what stops it — what a diagram being
+ *  written shows. Null when none does. */
+export async function longestDrawableStart(
+  code: string,
+  parse: (text: string) => Promise<unknown>,
+): Promise<{ text: string; lines: number } | null> {
+  const lines = code.split("\n");
+  for (let n = lines.length; n >= 1; n--) {
+    const candidate = closeBlocks(lines.slice(0, n)).join("\n");
+    const fixed = repairDiagram(candidate);
+    for (const attempt of fixed === candidate ? [candidate] : [candidate, fixed]) {
+      try {
+        await parse(attempt);
+        return { text: attempt, lines: n };
+      } catch {
+        // not this one
+      }
+    }
+  }
+  return null;
 }
 
 /** What to try drawing, best first: all the finished lines, then one fewer at
@@ -116,8 +331,10 @@ function repairFlowLine(line: string): string {
   const sub = /^(\s*subgraph\s+)(.+?)\s*$/.exec(line);
   if (sub) {
     const title = sub[2];
-    if (/^[\w-]+$/.test(title) || /^[\w-]+\s*\[.*\]$/.test(title) || /^".*"$/.test(title)) {
-      const m = /^([\w-]+\s*)\[(.*)\]$/.exec(title);
+    // An id in any script (`subgraph 上升期 [Plateau Phase]`): read as one
+    // spaced title, the brackets were drawn as part of it.
+    if (/^[\p{L}\p{N}_-]+$/u.test(title) || /^[\p{L}\p{N}_-]+\s*\[.*\]$/u.test(title) || /^".*"$/.test(title)) {
+      const m = /^([\p{L}\p{N}_-]+\s*)\[(.*)\]$/u.exec(title);
       return m && labelNeedsQuoting(m[2]) ? `${sub[1]}${m[1]}[${quoteLabel(m[2])}]` : line;
     }
     return `${sub[1]}${quoteLabel(title)}`;

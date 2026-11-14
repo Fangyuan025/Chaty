@@ -348,7 +348,9 @@ jobs:
             nothing flashes on the way: a heading, rule or table being typed waits until it
             says what it is. Mermaid diagrams are drawn as they are written without stalling the
             reply, follow the theme, and one that is right but misspelt — a label with brackets
-            or quotes and no quotes round it — is drawn all the same. Code is coloured while it
+            or quotes and no quotes round it — is drawn all the same; one wrong in a line or two
+            (a subgraph never closed, an arrow to nothing) is drawn without those lines, never
+            turned into its source once finished. Code is coloured while it
             streams, an HTML page's script and style included. Your own messages are the size
             of the replies, and Code mode's text the size of chat's.
 

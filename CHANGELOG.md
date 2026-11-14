@@ -17,15 +17,21 @@
   such from its first word.
 - **A Mermaid diagram is drawn as it is written**, growing line by line —
   inside a subgraph too — where it waited for the end or showed an error
-  halfway. An error shows only when the finished diagram is wrong. It is drawn
-  once a line and no more often than its drawing allows, so a large diagram
-  no longer stalls the reply as it streams, and one already drawn shows at
-  once when you come back to it.
+  halfway. It is drawn once a line and no more often than its drawing allows,
+  so a large diagram no longer stalls the reply as it streams, and one
+  already drawn shows at once when you come back to it.
+- **A diagram wrong in a line or two is drawn without them.** A diagram a
+  model writes is right almost everywhere: a subgraph never closed is closed
+  where its indentation ends, an `end` that closes nothing is dropped, and a
+  line Mermaid cannot read is left out — with a quiet note under the drawing
+  saying how many (which ones on hover). A diagram drawn while it streamed
+  never turns into its source and an error once it is finished; only one of
+  which nothing at all can be drawn shows its source and Mermaid's reason.
 - **A diagram that is right and misspelt is drawn.** What stops a diagram is
   almost always a label — `A[call foo(bar)]`, `B{price > 5?}`, a quote inside
   quotes, a subgraph's title with a space in it, a node named `end`. One that
   does not parse as written is tried again with its spelling put right, the
-  text of every label kept; a diagram that is wrong either way still says so.
+  text of every label kept.
 - **Diagrams follow the theme**, the system's included: under *System* on a
   light Mac they were drawn dark, their arrows hard to see.
 - **Code is coloured as it streams**: an HTML page's script and style, and a

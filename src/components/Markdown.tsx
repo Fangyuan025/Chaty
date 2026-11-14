@@ -24,7 +24,7 @@ import { fitPop } from "../lib/popFit";
 import { fadeTiming, rehypeStreamFade } from "../lib/streamFade";
 import { stabilizeTail } from "../lib/streamMarkdown";
 import { GrowingHighlight, highlightTyping, splitTyping } from "../lib/highlightLines";
-import { diagramCandidates, finishedDiagram, repairDiagram } from "../lib/mermaidStream";
+import { diagramCandidates, finishedDiagram, longestDrawableStart, repairDiagram, salvageDiagram, type Salvaged } from "../lib/mermaidStream";
 
 const remarkPlugins = [remarkGfm, remarkMath];
 // `throwOnError: false` keeps partial LaTeX from crashing mid-stream;
@@ -209,6 +209,66 @@ function keepSvg(key: string, svg: string) {
   if (mermaidDrawn.size > 64) mermaidDrawn.delete(mermaidDrawn.keys().next().value as string);
 }
 
+/** What a finished diagram's source is drawn as — itself, its spelling put
+ *  right, or what of it draws — by source: worked out once, not again each
+ *  time the reply is shown. */
+const mermaidResolved = new Map<string, Salvaged>();
+
+/**
+ * The diagram a finished fence is drawn as. As written; else with its
+ * labels' spelling put right; else without the lines that stop it
+ * (salvageDiagram) — or, when that leaves out more, the longest start of it
+ * that draws, which is what was seen being built: a diagram drawn while it
+ * streamed never turns into its source and an error once it is finished.
+ * Throws the diagram's own error only when nothing of it draws at all.
+ */
+async function resolveDiagram(parse: (text: string) => Promise<unknown>, source: string): Promise<Salvaged> {
+  const memo = mermaidResolved.get(source);
+  if (memo) return memo;
+  const remember = (r: Salvaged) => {
+    mermaidResolved.set(source, r);
+    if (mermaidResolved.size > 64) mermaidResolved.delete(mermaidResolved.keys().next().value as string);
+    return r;
+  };
+  let first: unknown;
+  try {
+    await parse(source);
+    return remember({ text: source, skipped: [] });
+  } catch (e) {
+    first = e;
+  }
+  const fixed = repairDiagram(source);
+  if (fixed !== source) {
+    try {
+      await parse(fixed);
+      return remember({ text: fixed, skipped: [] });
+    } catch {
+      // wrong in more than its spelling
+    }
+  }
+  // What of it draws: as written first — a subgraph left open is closed and
+  // nothing else touched — and with its spelling put right only when that
+  // leaves out fewer lines (the spelling put right can read what was right
+  // otherwise).
+  let pick = await salvageDiagram(source, parse);
+  if (fixed !== source && (!pick || pick.skipped.length)) {
+    const other = await salvageDiagram(fixed, parse);
+    if (other && (!pick || other.skipped.length < pick.skipped.length)) pick = other;
+  }
+  if (!pick || pick.skipped.length > 3) {
+    const start = await longestDrawableStart(source, parse);
+    if (start) {
+      const rest = source
+        .split("\n")
+        .slice(start.lines)
+        .filter((l) => l.trim() !== "" && !/^\s*%%/.test(l) && !/^\s*end\s*;?\s*$/.test(l));
+      if (!pick || rest.length < pick.skipped.length) pick = { text: start.text, skipped: rest };
+    }
+  }
+  if (!pick) throw first;
+  return remember(pick);
+}
+
 /** Whether the page is dark: the theme set, or under "system" the system's.
  *  (Read as "anything but light", a light system got dark diagrams.) */
 function pageIsDark(): boolean {
@@ -252,11 +312,16 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
   // What is on screen, by key: a drawing the same as it is not drawn again.
   const shown = useRef("");
   const [svg, setSvg] = useState(() => {
-    const hit = !building && source ? drawnSvg(`${tag}\n${source}`) : undefined;
-    if (hit !== undefined) shown.current = `${tag}\n${source}`;
+    // A finished diagram already worked out is drawn as it was, at once —
+    // not "drawing…" again each time its reply is shown.
+    const text = !building && source ? mermaidResolved.get(source)?.text ?? source : "";
+    const hit = text ? drawnSvg(`${tag}\n${text}`) : undefined;
+    if (hit !== undefined) shown.current = `${tag}\n${text}`;
     return hit ?? "";
   });
   const [error, setError] = useState("");
+  /** Lines of a finished diagram left out because they stopped it. */
+  const [skipped, setSkipped] = useState<string[]>(() => (!building && source ? mermaidResolved.get(source)?.skipped ?? [] : []));
 
   useEffect(() => {
     if (!source) return;
@@ -270,6 +335,7 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
           setSvg(hit);
         }
         setError("");
+        setSkipped([]);
         return;
       }
     }
@@ -303,24 +369,23 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
             if (found) break;
             if (!alive) return;
           }
-          if (!found) return;
+          // A line wrong further up: drawn without it, so the diagram goes
+          // on growing past it instead of standing still there.
+          if (!found) {
+            const parse = (t: string) => mermaid.parse(t);
+            const asIs = await salvageDiagram(source, parse, 8);
+            const fixed = repairDiagram(source);
+            const other = fixed !== source && (!asIs || asIs.skipped.length) ? await salvageDiagram(fixed, parse, 8) : null;
+            found = (other && (!asIs || other.skipped.length < asIs.skipped.length) ? other : asIs)?.text ?? null;
+          }
+          if (!found || !alive) return;
           text = found;
         } else {
-          try {
-            await mermaid.parse(text);
-          } catch (e) {
-            // Right but misspelt — a label with brackets or quotes in it and
-            // no quotes round it: drawn with the spelling put right. Wrong
-            // either way: the error of the diagram as it was written.
-            const fixed = repairDiagram(text);
-            if (fixed === text) throw e;
-            try {
-              await mermaid.parse(fixed);
-            } catch {
-              throw e;
-            }
-            text = fixed;
-          }
+          // As written, its spelling put right, or what of it draws — see
+          // resolveDiagram. Only a diagram of which nothing draws is an error.
+          const r = await resolveDiagram((t) => mermaid.parse(t), text);
+          text = r.text;
+          if (alive) setSkipped(r.skipped);
         }
         const key = `${tag}\n${text}`;
         if (!alive) return;
@@ -347,9 +412,12 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
           buildingDone = performance.now();
         }
       } catch (e) {
-        // Building, a failed drawing keeps the last one; written, it is the
-        // diagram's own fault, said under its source.
-        if (alive && !building) setError((e as Error)?.message ?? String(e));
+        // Building, a failed drawing keeps the last one; and so does a
+        // finished diagram that was drawn while it was written — never the
+        // drawing taken away for its source. Only a diagram of which nothing
+        // could be drawn is shown as its source, with Mermaid's reason.
+        if (alive && !building && !shown.current) setError((e as Error)?.message ?? String(e));
+        else console.warn("mermaid:", e);
       }
     });
     return () => {
@@ -367,6 +435,17 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
     );
   }
   if (svg && (building || !error)) {
+    // What was left out, said quietly under the drawing — the lines on hover.
+    if (!building && skipped.length) {
+      return (
+        <div className="mermaid-wrap">
+          <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />
+          <div className="mermaid-skipped" title={skipped.join("\n")}>
+            {t("mermaidSkipped", { n: skipped.length })}
+          </div>
+        </div>
+      );
+    }
     return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
   }
   return (

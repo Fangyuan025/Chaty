@@ -5447,6 +5447,22 @@ body:has(.live-overlay) .win-btn.close:hover {
 }
 
 /* Context-usage meter in the stats line */
+/* A diagram drawn with lines left out: a quiet line under it says how many
+   (which ones on hover). */
+.mermaid-wrap {
+  margin: 12px 0;
+}
+.mermaid-wrap > .mermaid-diagram {
+  margin: 0;
+}
+.mermaid-skipped {
+  margin-top: 5px;
+  font-family: var(--font-body);
+  font-size: 11.5px;
+  color: var(--faint);
+  cursor: help;
+  width: fit-content;
+}
 .mermaid-err {
   margin-top: 6px;
   font-size: 11.5px;

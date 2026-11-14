@@ -788,6 +788,7 @@ export const T = {
   storeAgoHour: { zh: "{n} 小时前", en: "{n} h ago", pt: "há {n} h" },
   storeAgoDay: { zh: "{n} 天前", en: "{n} d ago", pt: "há {n} d" },
   mermaidFailed: { zh: "图表没能画出来", en: "The diagram could not be drawn", pt: "Não foi possível desenhar o diagrama" },
+  mermaidSkipped: { zh: "有 {n} 行写法有误，已略过", en: "{n} line(s) written wrong, left out", pt: "{n} linha(s) com erro, omitida(s)" },
   mermaidDrawing: { zh: "正在绘制图表", en: "Drawing the diagram", pt: "Desenhando o diagrama" },
   imagePreviewFailed: { zh: "图片打不开", en: "The image could not be opened", pt: "Não foi possível abrir a imagem" },
   storePickModel: { zh: "从左侧选择一个模型查看详情", en: "Pick a model on the left to see details", pt: "Escolha um modelo à esquerda para ver detalhes" },

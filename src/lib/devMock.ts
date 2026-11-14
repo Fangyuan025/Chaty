@@ -1451,8 +1451,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       // look for what flashes while it streams; with 快 / fast, very fast.
       const wantsRich = /富文本|rich markdown/i.test(last);
       const wantsFast = /快|fast/i.test(last);
-      // With 坏图 / bad diagram, the diagram's last line is wrong: it should
-      // build while it streams and say so only once it is finished.
+      // With 坏图 / bad diagram, the diagram's last line is wrong: it builds
+      // while it streams and, finished, is drawn without that line, a quiet
+      // note under it saying one was left out — never turned into its source.
       const wantsBadDiagram = /坏图|bad diagram/i.test(last);
       // With 大图 / big diagram, a diagram the size models draw: thirty nodes
       // in three subgraphs, labels of a few words.
@@ -1461,6 +1462,12 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       // wrong in how its labels are spelt (brackets and quotes unquoted, a
       // node named end): drawn all the same.
       const wantsMisspelt = /错字图|misspelt diagram/i.test(last);
+      // 缺尾图: a diagram as a model sent it — its last subgraph never
+      // closed, comments, a dotted arrow — drawn whole, nothing left out.
+      // 中坏图: a line wrong in the middle and right lines after it — drawn
+      // without that line, the rest growing past it as it streams.
+      const wantsUnclosed = /缺尾图|unclosed diagram/i.test(last);
+      const wantsMidBad = /中坏图|broken middle/i.test(last);
       // 网页 / web page streams a single-file page — a style, a comment over
       // two lines, a script — to look at its highlighting as it streams.
       const wantsPage = /网页|web page/i.test(last);
@@ -1514,7 +1521,16 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           "| 方案 | 速度 | 风险 |\n|---|---|---|\n| 原地改 | 快 | 高 |\n| 先测后改 | 稍慢 | 低 |\n\n" +
           "```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\n" +
           "面积公式:\n\n$$\nA = \\pi r^2\n$$\n\n" +
-          (wantsBigDiagram
+          (wantsUnclosed
+            ? "```mermaid\ngraph TD\n    Start[开始：唤起] --> Arousal[兴奋期 Arousal<br/>生理/心理刺激]\n    \n" +
+              "    subgraph 准备阶段 [Preparation]\n        A1[感官接触/心理预期] --> A2[分泌润滑]\n        A2 --> A3[充血扩张]\n    end\n\n" +
+              "    subgraph 上升期 [Plateau Phase<br/>平台与前奏]\n        A3 --> Build[刺激强度增加]\n        Build --> B1[肌肉收缩加快]\n        B1 --> B2[心跳加速/呼吸急促]\n    end\n\n" +
+              "    subgraph 高潮期 [Peak Phase<br/>峰值]\n        B2 --> Peak[收缩波峰]\n        Peak --> P1[肌肉剧烈收缩]\n        P1 --> P2[内啡肽/多巴胺释放<br/>强烈愉悦]\n    end\n\n" +
+              "    subgraph 消退期 [Resolution Phase<br/>恢复]\n        P2 --> Relax[肌肉放松/心率平缓]\n        Relax --> End[平静或睡意]\n        \n" +
+              "    %% 分支说明\n    Note1[个体差异<br/>并非每次都有] -.-> Start\n    Type1[刺激类型：<br/>A/B/混合] -.-> Arousal\n"
+            : wantsMidBad
+              ? "```mermaid\nflowchart LR\n  A[需求] --> B[设计]\n  B --> C[实现]\n  C -->|未闭合 X[\n  C --> D[测试]\n  D --> E[上线]\n  E --> F[复盘]\n"
+              : wantsBigDiagram
             ? "```mermaid\nflowchart TD\n" +
               ["输入", "处理", "输出"]
                 .map(
