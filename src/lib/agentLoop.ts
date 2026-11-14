@@ -98,6 +98,7 @@ import {
   runCheckAboveBar,
   isLocalPageUrl,
   loadedUrlFrom,
+  LOOKING,
 } from "./wrapupGate";
 import { isReadOnlyCommand, isSymbolicCheck } from "./readOnlyCmd";
 import { changeCounts } from "./diff";
@@ -2148,6 +2149,46 @@ let turnSessionId = "";
  *  (which has no access to opts) can serve use_skill bodies. */
 let turnSkills: SkillFile[] = [];
 
+/** The call that starts a plan item: a look for an item about looking, a
+ *  file for one about making something, a directory otherwise. */
+function planKick(item: string | undefined): string {
+  // Each with its note, the … for the model's own words (see planEcho).
+  if (item && LOOKING.test(item)) return renderCall("understand_repo", { note: "…" });
+  if (item && /写|创建|新建|实现|编写|制作|搭建|生成|\b(write|create|build|implement|make|add)\b/i.test(item))
+    return renderCall("write_file", { note: "…", path: "index.html", content: "<!doctype html>…" });
+  return renderCall("bash", { note: "…", command: "mkdir -p <项目目录>" });
+}
+
+/** Tools a model names in its thinking, with the call that starts each. */
+const THOUGHT_TOOLS: Record<string, Record<string, unknown>> = {
+  understand_repo: {},
+  list_dir: { path: "." },
+  read_file: { path: "README.md" },
+  write_file: { path: "index.html", content: "<!doctype html>…" },
+  bash: { command: "mkdir -p <项目目录>" },
+};
+
+/** "You said in your thinking you'd use X": the model sending one call while
+ *  reasoning its way to another is answered with the other one. */
+function thoughtTool(thinking: string, lang: "zh" | "en", looked = false): string {
+  // The one it reaches first: "first understand_repo, then write_file".
+  let named = "";
+  let at = Infinity;
+  for (const n of Object.keys(THOUGHT_TOOLS)) {
+    if (looked && (n === "understand_repo" || n === "list_dir")) continue;
+    const i = thinking.search(new RegExp(`\\b${n}\\b`));
+    if (i >= 0 && i < at) {
+      at = i;
+      named = n;
+    }
+  }
+  if (!named) return "";
+  const call = renderCall(named, { note: "…", ...THOUGHT_TOOLS[named] });
+  return lang === "zh"
+    ? `\n你在思考里已经说了要用 ${named}——那就发 ${named},不是 update_plan:${call}`
+    : `\nYour own thinking says to use ${named} — so send ${named}, not update_plan: ${call}`;
+}
+
 /** Execute a tool call → a text result for the model, plus optional diff data. */
 async function execTool(
   call: ToolCall,
@@ -3631,6 +3672,10 @@ export async function runAgentTurn(
   };
   // Tool calls run this turn, and how many were sent back for a note.
   let stepsThisTurn = 0;
+  /** Tools that actually ran this turn (not refused, not intercepted). */
+  let ranTools = 0;
+  /** understand_repo was run on the model's behalf this turn. */
+  let oriented = false;
   let noteAsks = 0;
   /** The call last sent back for a note — made again as it was, it runs. */
   let lastAsked = "";
@@ -5003,6 +5048,53 @@ export async function runAgentTurn(
             ? 6
             : 2;
       const warnAt = uiRepeatOk ? -1 : 1;
+      // The plan's next item, past a look at the workspace already done for
+      // the model below — pointing it back at "了解当前工作区状态" once the
+      // overview is in its context is pointing at something finished.
+      const nextItem = (): string | undefined => {
+        const open = currentPlan.filter((t) => t.status !== "done").map((t) => t.content);
+        return oriented && open.length > 1 && LOOKING.test(open[0]) ? open[1] : open[0];
+      };
+      // ── The plan sent again before anything was looked at ── a Qwen3.5 4B
+      // that made "了解当前工作区状态" its first item, and thought "I'll use
+      // understand_repo" at every step, sent the plan it had just sent nine
+      // times over and was paused. Each refusal left its context as it was,
+      // so the next sample was the same one. What it set out to do reads and
+      // changes nothing: done for it, once, the context has something new in
+      // it — the workspace — and the plan's first item has its answer.
+      if (
+        call.name === "update_plan" &&
+        repeatCount >= 1 &&
+        repeatCount < pauseAt &&
+        !oriented &&
+        ranTools === 0 &&
+        !opts.signal.cancelled
+      ) {
+        const first = currentPlan.find((t) => t.status !== "done")?.content ?? "";
+        if (LOOKING.test(first) || /\b(understand_repo|list_dir)\b/.test(thinking)) {
+          oriented = true;
+          let overview = "";
+          try {
+            overview = (await agentUnderstandRepo()) ?? "";
+          } catch {
+            // No overview: the refusal below says what to do instead.
+          }
+          if (overview.trim() && !opts.signal.cancelled) {
+            hotNext = true;
+            const next = nextItem();
+            stepObj.call = { name: "understand_repo", args: {} };
+            stepObj.status = "done";
+            stepObj.result = overview;
+            cb.onStep(stepObj);
+            const note =
+              lang === "zh"
+                ? `这份计划刚刚已经记录过,不再重复受理。${first ? `第一项是「${first}」,` : ""}你要的工作区速览已经替你取来(understand_repo):\n\n${overview}\n\n这一项有结果了,不要再发同一份计划。${next && next !== first ? `现在做下一项「${next}」:` : "现在直接动手:"}要写文件就发 write_file,要建目录就发 bash。`
+                : `This exact plan was already recorded and is not taken again. ${first ? `Its first item is "${first}": ` : ""}the workspace overview you wanted has been fetched for you (understand_repo):\n\n${overview}\n\nThat item has its answer — do not send the same plan again. ${next && next !== first ? `Do the next item now, "${next}": ` : "Act now: "}write_file to write a file, bash to make a directory.`;
+            pushUser(toolResultMsg("update_plan", note));
+            continue;
+          }
+        }
+      }
       if (softLockable && repeatCount >= 2 && repeatCount < pauseAt) {
         hotNext = true;
         // Heat only — NOT the think flag. Turning thinking off for one step
@@ -5014,12 +5106,12 @@ export async function runAgentTurn(
         // was a step where this flag changed, and nothing else was. A repeated
         // call is usually legitimate here anyway — re-running the tests after
         // an edit is the same call and real progress.
-        const first = currentPlan.find((t) => t.status !== "done")?.content;
+        const first = call.name === "update_plan" ? nextItem() : currentPlan.find((t) => t.status !== "done")?.content;
         const note =
           call.name === "update_plan"
             ? lang === "zh"
-              ? `update_plan 已锁定:这份计划已重复发送 ${repeatCount + 1} 次,在你执行一个实质动作(write_file / bash / read_file)之前它不会再被受理。${first ? `现在就做:「${first}」。` : ""}`
-              : `update_plan is LOCKED: this identical plan has now been sent ${repeatCount + 1} times — it will not be accepted again until you perform a concrete action (write_file / bash / read_file).${first ? ` Do this now: "${first}".` : ""}`
+              ? `update_plan 已锁定:这份计划已重复发送 ${repeatCount + 1} 次,在你执行一个实质动作(${first && LOOKING.test(first) && !oriented ? "understand_repo / list_dir / read_file" : "write_file / bash / read_file"})之前它不会再被受理。${first ? `现在就做:「${first}」(note 的 … 换成你对用户说的一句话),格式如:${planKick(first)}` : ""}${thoughtTool(thinking, lang, oriented)}`
+              : `update_plan is LOCKED: this identical plan has now been sent ${repeatCount + 1} times — it will not be accepted again until you perform a concrete action (${first && LOOKING.test(first) && !oriented ? "understand_repo / list_dir / read_file" : "write_file / bash / read_file"}).${first ? ` Do this now: "${first}" (the note's … a sentence of your own to the user), e.g.: ${planKick(first)}` : ""}${thoughtTool(thinking, lang, oriented)}`
             : call.name === "write_file"
               ? lang === "zh"
                 ? `这份文件内容已经原样写入过了(第 ${repeatCount + 1} 次重复,一字未变)——它已经在磁盘上,重写不会有任何变化。继续下一步:写下一个文件,或用 validate_change 验证已写的代码。${first ? `计划里的下一项:「${first}」。` : ""}`
@@ -5153,10 +5245,13 @@ export async function runAgentTurn(
                 ? (() => {
                     // Name the concrete next move — "go execute" alone did not
                     // break the plan→plan→plan loop (rounds 13/14).
-                    const first = currentPlan.find((t) => t.status !== "done")?.content;
+                    // And the move named fits the item: "write a file, or mkdir"
+                    // for an item that says "look at the workspace first" was
+                    // two instructions at once (Qwen3.5 4B, nine plans).
+                    const first = nextItem();
                     return lang === "zh"
-                      ? `调用被拦截:这份计划刚刚已经记录过,原样重发没有意义。不要再发 update_plan——现在就动手执行第一件未完成的事${first ? `:「${first}」` : ""}。第一步通常是 write_file 写出第一个文件,或 bash 建目录;直接发那个工具调用。`
-                      : `Intercepted: this exact plan was already recorded — re-sending it does nothing. Do NOT call update_plan again; start executing the first unfinished item now${first ? `: "${first}"` : ""}. The first move is usually write_file for the first file, or bash to create directories — issue that tool call directly.`;
+                      ? `调用被拦截:这份计划刚刚已经记录过,原样重发没有意义。不要再发 update_plan——现在就动手执行第一件未完成的事${first ? `:「${first}」` : ""}。直接发那个工具调用(note 的 … 换成你对用户说的一句话),格式如:${planKick(first)}${thoughtTool(thinking, lang, oriented)}`
+                      : `Intercepted: this exact plan was already recorded — re-sending it does nothing. Do NOT call update_plan again; start executing the first unfinished item now${first ? `: "${first}"` : ""}. Issue that tool call directly (the note's … a sentence of your own to the user), e.g.: ${planKick(first)}${thoughtTool(thinking, lang, oriented)}`;
                   })()
               : call.name === "bg_kill"
                 ? lang === "zh"
@@ -5479,6 +5574,7 @@ export async function runAgentTurn(
           cb.onDirGrants?.(await agentListGrants());
           out = await execTool(call, opts.bashTimeout, readChars, opts.ragTopK, sudoPassword);
         }
+        ranTools++;
         stepObj.live = undefined;
         // A tool must return a string; guard anyway so a stray undefined
         // (e.g. a backend read that resolved null) can't crash the whole turn

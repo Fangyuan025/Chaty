@@ -64,6 +64,22 @@
   its flowchart and sequence drawing, Chinese labels' measuring and KaTeX's
   fonts are made ready while nothing moves, where the first diagram or
   formula in a reply paid for them in long frames as it streamed.
+- **A diagram wrong in many lines, or a page of many parts, no longer holds
+  the window.** Finding which lines of a badly broken diagram can be drawn is
+  done a little at a time, between frames, and given up past a budget for
+  what was found by then; a long page's picture is cut to what shows in one
+  pass, where it used to measure the page part by part — either could freeze
+  the app for seconds, with nothing in the log to say why.
+
+### Code mode
+
+- **A plan sent again and again is answered with the look it was for.** A
+  small model whose plan starts by looking at the workspace, and that sends
+  the plan again instead of looking, is handed the workspace's overview, once
+  — something new in its context where every refusal had left it as it was —
+  and pointed at the plan's next item. The move a refused plan is shown fits
+  the plan's first item — a look, a file, a directory — and a tool the
+  model's own thinking settled on is the one it is told to send.
 
 ### Taking a chat elsewhere
 

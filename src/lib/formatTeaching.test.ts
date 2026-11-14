@@ -93,7 +93,7 @@ describe("a turn that teaches another format", () => {
     for (const f of NATIVE) {
       setCallFormat(f);
       const echo = planEcho(todos, "zh");
-      expect(echo, f).toContain(renderCall("bash", { command: "mkdir -p <项目目录>" }, f));
+      expect(echo, f).toContain(renderCall("bash", { note: "…", command: "mkdir -p <项目目录>" }, f));
       expect(echo, f).not.toContain("<tool_call>{");
       const err = await rememberFact(noFs, "", "", "en");
       expect(err, f).toContain("remember");
@@ -107,7 +107,7 @@ describe("a turn that teaches another format", () => {
     }
     // A JSON turn reads exactly as it always did.
     setCallFormat("json");
-    expect(planEcho(todos, "zh")).toContain('<tool_call>{"name":"bash","arguments":{"command":"mkdir -p <项目目录>"}}</tool_call>');
+    expect(planEcho(todos, "zh")).toContain('<tool_call>{"name":"bash","arguments":{"note":"…","command":"mkdir -p <项目目录>"}}</tool_call>');
     expect(await rememberFact(noFs, "", "", "en")).toContain('e.g. {"title":"build rule"');
     expect(fullDoc("mcp_search", mcp)).toContain('args schema: {"type":"object"');
     expect(callTag(true)).toBe("一行 <tool_call>");

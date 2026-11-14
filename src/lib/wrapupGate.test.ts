@@ -197,6 +197,16 @@ describe("planEcho", () => {
     expect(s).toContain("不要再调 update_plan");
   });
 
+  it("shows the first move its first item names, with a note to fill in", () => {
+    const look = planEcho([{ content: "了解当前工作区状态", status: "in_progress" }, { content: "写首页", status: "pending" }], "zh");
+    expect(look).toContain("先看工作区");
+    expect(look).toContain("understand_repo");
+    expect(look).not.toContain("mkdir");
+    const make = planEcho([{ content: "创建主页面 HTML", status: "in_progress" }], "zh");
+    expect(make).toContain("mkdir -p");
+    for (const s of [look, make]) expect(s).toContain("把 note 的 … 换成你对用户说的一句话");
+  });
+
   it("plain when everything is done", () => {
     expect(planEcho([{ content: "a", status: "done" }], "en")).toBe(
       "Plan updated (recorded — no need to re-send): 1/1 done.",

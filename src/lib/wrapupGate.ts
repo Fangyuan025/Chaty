@@ -118,6 +118,10 @@ export function loadedUrlFrom(result: string): string | null {
   return m ? m[1] : null;
 }
 
+/** A plan item that is about looking before doing: the workspace, the code. */
+export const LOOKING =
+  /了解|查看|看看|看一下|分析|梳理|调研|阅读|熟悉|摸清|检查(现有|工作区|项目|目录|代码)|\b(explore|understand|inspect|investigate|survey|review|look (at|into|around)|read (the|through)|check the (repo|workspace|project|code))\b/i;
+
 /** Compact, model-facing echo of the plan. The old update_plan result was a
  *  bare "计划已更新" — the plan went to a UI panel and NEVER re-entered the
  *  model's context, which is exactly how todos became decoration. */
@@ -130,9 +134,17 @@ export function planEcho(todos: TodoLike[], lang: "zh" | "en"): string {
   // strongest known steering for small models (missing-args ladder lesson);
   // "go execute" prose alone left them re-sending the plan (rounds 14/21).
   const first = todos.find((t) => t.status !== "done");
+  // The example fits what the first item is: "了解当前工作区状态" answered with
+  // "mkdir, or write the first file" told a 4B two things at once, and it
+  // sent the plan again nine times while thinking "use understand_repo".
+  const looking = !!first && LOOKING.test(first.content);
+  // With its note: a model that copies the example exactly (a Qwen3.5 4B did)
+  // copied its silence too, and the calls after went on without a word.
   const kick =
     done === 0 && first
-      ? renderCall("bash", { command: "mkdir -p <项目目录>" })
+      ? looking
+        ? renderCall("understand_repo", { note: "…" })
+        : renderCall("bash", { note: "…", command: "mkdir -p <项目目录>" })
       : "";
   if (lang === "zh") {
     let s = `计划已更新(已记录,无需重发):${done}/${todos.length} 完成`;
@@ -140,7 +152,7 @@ export function planEcho(todos: TodoLike[], lang: "zh" | "en"): string {
     if (pending.length) s += `;待办 ${pending.length} 项`;
     s += "。";
     if (unfinished > 0) s += "下一步:直接用具体工具执行未完成事项,不要再调 update_plan,除非状态有变化。";
-    if (kick) s += `现在就发第一个动作调用(建目录/写文件),格式如:${kick}`;
+    if (kick) s += `现在就发第一个动作调用(${looking ? "先看工作区" : "建目录/写文件"}),把 note 的 … 换成你对用户说的一句话,格式如:${kick}`;
     return s;
   }
   let s = `Plan updated (recorded — no need to re-send): ${done}/${todos.length} done`;
@@ -148,7 +160,7 @@ export function planEcho(todos: TodoLike[], lang: "zh" | "en"): string {
   if (pending.length) s += `; ${pending.length} pending`;
   s += ".";
   if (unfinished > 0) s += " Next: execute the unfinished items with concrete tools; only call update_plan again when a status changes.";
-  if (kick) s += ` Issue the first action call now (mkdir / write the first file), e.g.: ${kick}`;
+  if (kick) s += ` Issue the first action call now (${looking ? "look at the workspace" : "mkdir / write the first file"}), with the note's … replaced by a sentence to the user, e.g.: ${kick}`;
   return s;
 }
 

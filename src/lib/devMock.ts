@@ -1488,6 +1488,12 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       // a cursor follower, scroll reveals — to measure what its picture costs
       // the frames (served by the dev server from bench/ui/probe).
       const wantsHeavy = /重网页|heavy page/i.test(last);
+      // 长网页 / long page: a page with thousands of elements below its first
+      // screen; 大坏图 / big bad diagram: 150 nodes with a wrong line early —
+      // what froze the app when pictured and drawn.
+      const wantsLongPage = /长网页|long page/i.test(last);
+      const wantsBigBad = /大坏图|big bad diagram/i.test(last);
+      const wantsVeryBad = /很坏图|very bad diagram/i.test(last);
       const fast = wantsOutside || wantsSudo || wantsDate;
       // Thinking first, so the preview exercises the think panel (and stopping
       // a turn mid-thought, which is where its spinner used to stay turning).
@@ -1511,7 +1517,16 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         "<think>都通过了。</think>\n完成:新增 `src/tokens.ts`,`parser.ts` 改为调用它,4 个测试全部通过。",
       ];
       if (wantsDemo && !isTitleReq) reply = DEMO[Math.min(demoStep, DEMO.length - 1)];
-      else if (wantsHeavy && !isTitleReq) {
+      else if (wantsLongPage && !isTitleReq) {
+        const items = Array.from({ length: 600 }, (_, i) => `    <li class="item"><b>第 ${i + 1} 项</b> <span>说明文字 ${i}</span></li>`).join("\n");
+        reply = "做好了:\n\n```html\n<!DOCTYPE html>\n<html lang=\"zh\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>长清单</title>\n  <style>body{font-family:system-ui;margin:0;padding:40px} .item{padding:8px;border-bottom:1px solid #ddd}</style>\n</head>\n<body>\n  <h1>长清单</h1>\n  <ul>\n" + items + "\n  </ul>\n</body>\n</html>\n```\n\n完成。";
+      } else if (wantsVeryBad && !isTitleReq) {
+        const lines = ["flowchart TD", ...Array.from({ length: 200 }, (_, i) => (i % 5 === 2 ? `  B${i} -->|坏 Y[` : `  B${i}[第 ${i} 步] --> B${i + 1}[第 ${i + 1} 步]`))];
+        reply = "图:\n\n```mermaid\n" + lines.join("\n") + "\n```\n\n完。";
+      } else if (wantsBigBad && !isTitleReq) {
+        const lines = ["flowchart TD", "  A0[开始] --> A1[第 1 步]", "  A1 -->|未闭合 X[", ...Array.from({ length: 150 }, (_, i) => `  A${i + 1}[第 ${i + 1} 步] --> A${i + 2}[第 ${i + 2} 步]`)];
+        reply = "图:\n\n```mermaid\n" + lines.join("\n") + "\n```\n\n完。";
+      } else if (wantsHeavy && !isTitleReq) {
         reply = "做好了:\n\n```html\n" + HEAVY_PAGE + "\n```\n\n直接用浏览器打开即可。";
       } else if (wantsDesign && !isTitleReq) {
         reply =
@@ -1635,14 +1650,14 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           emit({ type: "prefill", processed: Math.min(done, total), total });
           await new Promise((r) => setTimeout(r, fast ? 15 : 140));
         }
-        const pieceRe = wantsHeavy ? /[\s\S]{1,24}/g : wantsRich && wantsFast ? /[\s\S]{1,12}/g : wantsLong || wantsRich || wantsPage ? /[\s\S]{1,3}/g : /.{1,6}/g;
+        const pieceRe = wantsHeavy || wantsLongPage || wantsBigBad || wantsVeryBad ? /[\s\S]{1,24}/g : wantsRich && wantsFast ? /[\s\S]{1,12}/g : wantsLong || wantsRich || wantsPage ? /[\s\S]{1,3}/g : /.{1,6}/g;
         for (const piece of reply.match(pieceRe) ?? []) {
           // Told to stop, it stops, as the engines do.
           if (mockGenStop) break;
           // `__mockPause` holds the stream mid-reply, to look at a frame of it.
           while ((globalThis as { __mockPause?: boolean }).__mockPause) await new Promise((r) => setTimeout(r, 50));
           emit({ type: "token", text: piece });
-          await new Promise((r) => setTimeout(r, wantsHeavy || (wantsRich && wantsFast) ? 16 : wantsLong || wantsRich || wantsPage ? 28 : 30));
+          await new Promise((r) => setTimeout(r, wantsHeavy || wantsLongPage || wantsBigBad || wantsVeryBad || (wantsRich && wantsFast) ? 16 : wantsLong || wantsRich || wantsPage ? 28 : 30));
         }
         emit({
           type: "done",

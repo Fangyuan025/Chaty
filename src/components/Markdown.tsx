@@ -223,6 +223,26 @@ function keepSvg(key: string, svg: string) {
   if (mermaidDrawn.size > 64) mermaidDrawn.delete(mermaidDrawn.keys().next().value as string);
 }
 
+/** Mermaid's parse, one a task, within a budget. A diagram wrong in places is
+ *  tried many ways (resolveDiagram, salvageDiagram), and each parse, though
+ *  awaited, is done at once: hundreds of them ran back to back without a
+ *  frame between — a large diagram with a mistake early held the app for
+ *  seconds. Each now waits its turn behind a frame, and past the budget the
+ *  tries stop where they are. */
+function paced(parse: (t: string) => Promise<unknown>, budgetMs: number): (t: string) => Promise<unknown> {
+  let spent = 0;
+  return async (t: string) => {
+    await new Promise((r) => setTimeout(r, 0));
+    if (spent > budgetMs) throw new Error("diagram: out of tries");
+    const t0 = performance.now();
+    try {
+      return await parse(t);
+    } finally {
+      spent += performance.now() - t0;
+    }
+  };
+}
+
 /** What a finished diagram's source is drawn as — itself, its spelling put
  *  right, or what of it draws — by source: worked out once, not again each
  *  time the reply is shown. */
@@ -422,13 +442,15 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
         let text = source;
         if (building) {
           let found: string | null = null;
+          // One frame's worth of tries for each line drawn, at most.
+          const parse = paced((t: string) => mermaid.parse(t), 200);
           for (const candidate of diagramCandidates(source)) {
             // As written, or with its labels' spelling put right (see
             // repairDiagram); failing both, one line fewer.
             const fixed = repairDiagram(candidate);
             for (const attempt of fixed === candidate ? [candidate] : [candidate, fixed]) {
               try {
-                await mermaid.parse(attempt);
+                await parse(attempt);
                 found = attempt;
                 break;
               } catch {
@@ -441,7 +463,6 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
           // A line wrong further up: drawn without it, so the diagram goes
           // on growing past it instead of standing still there.
           if (!found) {
-            const parse = (t: string) => mermaid.parse(t);
             const asIs = await salvageDiagram(source, parse, 8);
             const fixed = repairDiagram(source);
             const other = fixed !== source && (!asIs || asIs.skipped.length) ? await salvageDiagram(fixed, parse, 8) : null;
@@ -452,7 +473,7 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
         } else {
           // As written, its spelling put right, or what of it draws — see
           // resolveDiagram. Only a diagram of which nothing draws is an error.
-          const r = await resolveDiagram((t) => mermaid.parse(t), text);
+          const r = await resolveDiagram(paced((t) => mermaid.parse(t), 1500), text);
           text = r.text;
           if (alive) setSkipped(r.skipped);
         }
@@ -634,9 +655,11 @@ function pageTitleOf(html: string): string {
 /** Run once in the page being pictured: when it has loaded and its scripts
  *  have had a moment to build it (a loader gone, a list filled in), its
  *  canvases become pictures, its scripts go, what lies below its first
- *  screen goes (only that is pictured, and a long page laid out whole made
- *  putting its picture on screen cost frames), and what it then is goes to
- *  the app — a still of the page, shown from then on instead of the page
+ *  screen goes — every place read first, then what is below taken out at
+ *  once (read one, remove one, and each read laid the page out again: a
+ *  page of thousands of elements, a diagram in it, held the app for seconds,
+ *  the page running on the app's own thread) — and what it then is goes to
+ *  the app: a still of the page, shown from then on instead of the page
  *  running. Its frame loop is slowed to a few a second first: the still
  *  needs one frame, and a page's particles at full rate cost the app's. */
 const STILL_SCRIPT = (token: string) => `<script>(function(){
@@ -645,8 +668,9 @@ window.cancelAnimationFrame=function(id){clearTimeout(id);};
 var T=${JSON.stringify(token)};function snap(){try{
 document.querySelectorAll("canvas").forEach(function(c){try{var r=c.getBoundingClientRect();var i=document.createElement("img");i.src=c.toDataURL();i.className=c.className;i.id=c.id;i.setAttribute("style",c.getAttribute("style")||"");i.style.width=r.width+"px";i.style.height=r.height+"px";c.replaceWith(i);}catch(e){}});
 document.querySelectorAll("script,noscript").forEach(function(s){s.remove();});
-var H=innerHeight+80,all=document.body?document.body.querySelectorAll("*"):[];
-for(var i=all.length-1;i>=0;i--){var el=all[i];if(!el.isConnected)continue;var p=el.parentElement;if(el.getBoundingClientRect().top>H&&p&&p.getBoundingClientRect().top<=H)el.remove();}
+var H=innerHeight+80,all=document.body?Array.prototype.slice.call(document.body.querySelectorAll("*")):[];
+if(all.length<30000){var tops=new Map();all.forEach(function(el){tops.set(el,el.getBoundingClientRect().top);});
+all.filter(function(el){var p=el.parentElement;return tops.get(el)>H&&p&&(p===document.body||tops.get(p)<=H);}).forEach(function(el){el.remove();});}
 parent.postMessage({chatyStill:T,html:"<!DOCTYPE html>"+document.documentElement.outerHTML},"*");}catch(e){}}
 if(document.readyState==="complete")setTimeout(snap,1500);else addEventListener("load",function(){setTimeout(snap,1500);});})()</script>`;
 
