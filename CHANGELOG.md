@@ -138,7 +138,8 @@
   that chat; it used to follow you into whichever chat you opened next.
 - **↑ in an empty box.** In a chat it edits the last message you sent; in
   Code mode it brings back the last task you gave, to change a word and send
-  it again.
+  it again; in the picture and music studios, the last round's prompt and
+  settings.
 - **An input method's Enter is its own.** Committing pinyin or picking a
   candidate with Enter no longer sends the half-typed message, renames a chat
   to its pinyin, answers the agent's question or runs a palette command

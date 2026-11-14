@@ -693,6 +693,24 @@ export function MusicStudio({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // ↑ in an empty style box (lyrics empty too) brings back the last piece's
+    // description, lyrics and settings, as ↑ does in a chat.
+    if (
+      e.key === "ArrowUp" &&
+      e.currentTarget === promptRef.current &&
+      !d.prompt &&
+      !d.lyrics &&
+      !busy &&
+      !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey &&
+      !e.nativeEvent.isComposing
+    ) {
+      const last = rounds[rounds.length - 1];
+      if (last) {
+        e.preventDefault();
+        reuse(last);
+      }
+      return;
+    }
     if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
     // Lyrics are lines: Enter is a new line there, and only the send
     // shortcut sends.

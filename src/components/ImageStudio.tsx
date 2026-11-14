@@ -437,6 +437,23 @@ export function ImageStudio({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // ↑ in an empty box brings back the last round — prompt, settings and
+    // all — as ↑ does in a chat: the next picture is usually the last one,
+    // said a little differently.
+    if (
+      e.key === "ArrowUp" &&
+      !studio.prompt &&
+      !busy &&
+      !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey &&
+      !e.nativeEvent.isComposing
+    ) {
+      const last = rounds[rounds.length - 1];
+      if (last) {
+        e.preventDefault();
+        reuse(last);
+      }
+      return;
+    }
     if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
     if (sendKey === "modEnter") {
       if (e.metaKey || e.ctrlKey) {
