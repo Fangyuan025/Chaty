@@ -323,6 +323,8 @@ export default function App() {
   const [model, setModel] = useState<ModelInfo | null>(null);
   const [availableModels, setAvailableModels] = useState<ModelEntry[]>([]);
   const [showModelMenu, setShowModelMenu] = useState(false);
+  /** Typed into the model menu to find a model among many. */
+  const [modelFilter, setModelFilter] = useState("");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   /** The conversation on screen, for a reply's callbacks that outlive a render. */
@@ -700,6 +702,16 @@ export default function App() {
   const prevMsgCount = useRef(0);
   const prevConvId = useRef<string | null>(null);
   const followRef = useRef(true);
+  /** Where each chat was being read when it was left, if not at its end. */
+  const readAt = useRef(new Map<string, number>());
+  /** Note where the open chat is being read, before another one opens. */
+  const keepReadingPlace = () => {
+    const el = scrollRef.current;
+    if (!el || !conversationId) return;
+    const fromEnd = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (fromEnd > 240) readAt.current.set(conversationId, el.scrollTop);
+    else readAt.current.delete(conversationId);
+  };
   /** When the last wheel-up released following, and until when a smooth
    *  follow-scroll may still be moving the view. */
   const releasedAt = useRef(0);
@@ -1049,7 +1061,10 @@ export default function App() {
 
   // Close the model picker when clicking outside it.
   useEffect(() => {
-    if (!showModelMenu) return;
+    if (!showModelMenu) {
+      setModelFilter("");
+      return;
+    }
     const close = (e: MouseEvent) => {
       if (!(e.target as HTMLElement).closest(".model-wrap")) setShowModelMenu(false);
     };
@@ -1169,12 +1184,66 @@ export default function App() {
     // to its last every time (issue #18).
     // A new message glides into view; a reply growing under it is pinned
     // instantly, so there is never an animation for a wheel-up to fight.
+    // A chat left part-way through reading opens where it was left; one left
+    // at its end (or never opened) at its end, as before.
+    const kept = switched && conversationId ? readAt.current.get(conversationId) : undefined;
+    if (kept !== undefined) {
+      followRef.current = false;
+      el.scrollTo({ top: kept, behavior: "instant" });
+      return;
+    }
     if (followRef.current) {
       const smooth = structural && !switched;
       if (smooth) pinAnimUntil.current = performance.now() + 600;
       el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "instant" });
     }
   }, [messages, conversationId]);
+
+  // Searching the sidebar finds a chat by what was said in it; opened, the
+  // chat shows where — every match marked (the CSS highlight API: nothing in
+  // the transcript's markup changes), and the first one in sight scrolled to,
+  // where it used to open at its end with the match somewhere above.
+  const findJumpRef = useRef<string | null>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    const css = globalThis.CSS as unknown as { highlights?: Map<string, unknown> } | undefined;
+    const HighlightCtor = (globalThis as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+    const reg = css?.highlights;
+    if (!el || !reg || !HighlightCtor) return;
+    const q = convQuery.trim().toLowerCase();
+    if (q.length < 2 || !conversationId || appMode !== "chat") {
+      reg.delete("chaty-find");
+      return;
+    }
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        const ranges: Range[] = [];
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+          acceptNode: (n) => (n.parentElement?.closest(".msg") && !n.parentElement.closest("button") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT),
+        });
+        for (let n = walker.nextNode(); n && ranges.length < 400; n = walker.nextNode()) {
+          const text = (n.textContent ?? "").toLowerCase();
+          for (let i = text.indexOf(q); i >= 0 && ranges.length < 400; i = text.indexOf(q, i + q.length)) {
+            const r = document.createRange();
+            r.setStart(n, i);
+            r.setEnd(n, i + q.length);
+            ranges.push(r);
+          }
+        }
+        reg.set("chaty-find", new HighlightCtor(...ranges));
+        if (findJumpRef.current !== conversationId) return;
+        findJumpRef.current = null;
+        // The first match on screen — one inside a folded thought or block
+        // has no place to scroll to.
+        const first = ranges.find((r) => r.getClientRects().length > 0);
+        if (!first) return;
+        followRef.current = false;
+        const top = first.getBoundingClientRect().top - el.getBoundingClientRect().top;
+        el.scrollTo({ top: el.scrollTop + top - el.clientHeight / 3, behavior: "instant" });
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [convQuery, conversationId, messages, appMode]);
 
   useEffect(() => {
     localSave(SETTINGS_KEY, JSON.stringify(settings));
@@ -1910,6 +1979,7 @@ export default function App() {
       return;
     }
     if (conversationId !== null) swapDraft(null);
+    keepReadingPlace();
     setConversationId(null);
     setMessages([]);
     setStats(null);
@@ -1997,6 +2067,9 @@ export default function App() {
   const openSeq = useRef(0);
   async function openConversation(id: string) {
     if (busy || id === conversationId) return;
+    // Opened from a search: shown at the first place it matched.
+    if (convQuery.trim().length >= 2) findJumpRef.current = id;
+    keepReadingPlace();
     const mine = ++openSeq.current;
     try {
       // The last reply's numbers come back with the conversation — its context
@@ -4194,7 +4267,30 @@ export default function App() {
           {showModelMenu && (
             <div className="model-menu">
               <div className="model-menu-head">
-                <span>{t("modelsHeader")}</span>
+                {/* Many models: typed to find one, Enter loads the first that
+                    matches. A few: the folder's name, as before. */}
+                {availableModels.length > 6 ? (
+                  <input
+                    className="model-menu-filter"
+                    autoFocus
+                    value={modelFilter}
+                    placeholder={t("modelFilterPh")}
+                    onChange={(e) => setModelFilter(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !imeEnter(e)) {
+                        const f = modelFilter.trim().toLowerCase();
+                        const hit = availableModels.find((m) => m.path !== model?.path && (!f || m.name.toLowerCase().includes(f)));
+                        if (hit && f && !busy && !loadingModel) switchModel(hit.path);
+                      } else if (e.key === "Escape") {
+                        e.stopPropagation();
+                        if (modelFilter) setModelFilter("");
+                        else setShowModelMenu(false);
+                      }
+                    }}
+                  />
+                ) : (
+                  <span>{t("modelsHeader")}</span>
+                )}
                 <button
                   className="model-menu-refresh"
                   onClick={() => void refreshModels()}
@@ -4207,8 +4303,10 @@ export default function App() {
               <div className="model-menu-list">
                 {availableModels.length === 0 ? (
                   <div className="model-menu-empty">{t("noModelsFound")}</div>
+                ) : !availableModels.some((m) => m.name.toLowerCase().includes(modelFilter.trim().toLowerCase())) ? (
+                  <div className="model-menu-empty">{t("modelFilterNone")}</div>
                 ) : (
-                  availableModels.map((m) => {
+                  availableModels.filter((m) => m.name.toLowerCase().includes(modelFilter.trim().toLowerCase())).map((m) => {
                     const active = model?.path === m.path;
                     return (
                       <div

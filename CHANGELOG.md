@@ -137,6 +137,20 @@
 
 ### Small things
 
+- **A finished page folds to what it looks like.** With long code blocks
+  folded (Settings → Chat), a single-file page whose fence has closed shows a
+  picture of itself and its title instead of its first lines of code — run
+  once in a sandbox until its scripts have built it, then kept as a still, so
+  a conversation full of pages is not a conversation full of pages running.
+  Open it for the code, as before.
+- **Searching finds the place, not only the chat.** A chat opened from the
+  sidebar's search opens at the first match, every match marked.
+- **A chat opens where you left it** when you left it part-way through; at
+  its end otherwise.
+- **A finished diagram keeps its code to hand** — its source and a copy
+  button over its corner.
+- With many models, typing in the model menu finds one; Enter loads it.
+
 - **The sidebar folds away.** ⌘\ (Ctrl+\ elsewhere), the button beside the
   mode switch, or the command palette: the panel takes the window, for
   reading or a half-screen window, and stays that way until you bring it back.

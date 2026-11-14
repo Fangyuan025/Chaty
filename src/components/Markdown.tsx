@@ -19,6 +19,7 @@ import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import { mdBlocks, type BlockCache } from "../lib/mdBlocks";
 import { useI18n } from "../lib/i18n";
+import { Icon } from "./Icon";
 import { copyToClipboard } from "../lib/clipboard";
 import { fitPop } from "../lib/popFit";
 import { fadeTiming, rehypeStreamFade } from "../lib/streamFade";
@@ -151,6 +152,16 @@ function codeText(children: ReactNode): string {
   if (typeof inner === "string") return inner;
   if (Array.isArray(inner)) return inner.filter((c) => typeof c === "string").join("");
   return "";
+}
+
+/** All the text under a node — through the spans a highlighted block is
+ *  made of, which codeText does not look inside. */
+function nodeText(node: ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join("");
+  const el = node as ReactElement<{ children?: ReactNode }>;
+  return nodeText(el?.props?.children);
 }
 
 let mermaidReady: Promise<typeof import("mermaid").default> | null = null;
@@ -320,6 +331,8 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
     return hit ?? "";
   });
   const [error, setError] = useState("");
+  const [showSrc, setShowSrc] = useState(false);
+  const [copied, setCopied] = useState(false);
   /** Lines of a finished diagram left out because they stopped it. */
   const [skipped, setSkipped] = useState<string[]>(() => (!building && source ? mermaidResolved.get(source)?.skipped ?? [] : []));
 
@@ -435,18 +448,45 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
     );
   }
   if (svg && (building || !error)) {
-    // What was left out, said quietly under the drawing — the lines on hover.
-    if (!building && skipped.length) {
-      return (
-        <div className="mermaid-wrap">
+    if (building) return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
+    // A finished diagram keeps its source to hand: copied, or shown in place
+    // of the drawing — once drawn, the code it was written in was gone.
+    return (
+      <div className="mermaid-wrap">
+        <div className="mermaid-actions">
+          <button className="code-btn" type="button" onClick={() => setShowSrc((v) => !v)}>
+            {showSrc ? t("mermaidShowDiagram") : t("mermaidShowSource")}
+          </button>
+          <button
+            className={`code-btn icon ${copied ? "done" : ""}`}
+            type="button"
+            title={t("copyCode")}
+            aria-label={t("copyCode")}
+            onClick={() =>
+              void copyToClipboard(code.trim()).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+              })
+            }
+          >
+            <Icon name={copied ? "check" : "copy"} size={14} strokeWidth={1.8} />
+          </button>
+        </div>
+        {showSrc ? (
+          <pre className="mermaid-src">
+            <code>{code.trim()}</code>
+          </pre>
+        ) : (
           <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />
+        )}
+        {/* What was left out, said quietly under the drawing — the lines on hover. */}
+        {!showSrc && skipped.length > 0 && (
           <div className="mermaid-skipped" title={skipped.join("\n")}>
             {t("mermaidSkipped", { n: skipped.length })}
           </div>
-        </div>
-      );
-    }
-    return <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />;
+        )}
+      </div>
+    );
   }
   return (
     <pre className="mermaid-src">
@@ -493,6 +533,104 @@ export function withStorageShim(html: string): string {
 }
 
 
+/** Pages already frozen into a still (see PageThumb), by their source. */
+const pageStills = new Map<string, string>();
+
+/** The page's own name: its <title>, else its first heading. */
+function pageTitleOf(html: string): string {
+  try {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const title = doc.title.trim() || doc.querySelector("h1")?.textContent?.replace(/\s+/g, " ").trim() || "";
+    return title.slice(0, 120);
+  } catch {
+    return "";
+  }
+}
+
+/** Run once in the page being pictured: when it has loaded and its scripts
+ *  have had a moment to build it (a loader gone, a list filled in), its
+ *  canvases become pictures, its scripts go, and what it then is goes to
+ *  the app — a still of the page, shown from then on instead of the page
+ *  running. */
+const STILL_SCRIPT = (token: string) => `<script>(function(){var T=${JSON.stringify(token)};function snap(){try{
+document.querySelectorAll("canvas").forEach(function(c){try{var r=c.getBoundingClientRect();var i=document.createElement("img");i.src=c.toDataURL();i.className=c.className;i.id=c.id;i.setAttribute("style",c.getAttribute("style")||"");i.style.width=r.width+"px";i.style.height=r.height+"px";c.replaceWith(i);}catch(e){}});
+document.querySelectorAll("script,noscript").forEach(function(s){s.remove();});
+parent.postMessage({chatyStill:T,html:"<!DOCTYPE html>"+document.documentElement.outerHTML},"*");}catch(e){}}
+if(document.readyState==="complete")setTimeout(snap,1800);else addEventListener("load",function(){setTimeout(snap,1800);});})()</script>`;
+
+/** A still is a page without scripts, its animations stopped where they end
+ *  (a fade-in shows faded in) and nothing moving. */
+const STILL_STYLE =
+  "<style>*,*::before,*::after{animation-delay:-60s!important;animation-play-state:paused!important;transition:none!important;caret-color:transparent!important}html,body{overflow:hidden!important}</style>";
+
+function intoHead(html: string, insert: string): string {
+  const head = html.match(/<head[^>]*>/i);
+  if (head?.index !== undefined) return html.slice(0, head.index + head[0].length) + insert + html.slice(head.index + head[0].length);
+  return insert + html;
+}
+
+/**
+ * A page pictured small: run in a sandbox while it is on screen, until it
+ * has built itself; then a still of it, which is all that is shown after —
+ * here and every time the reply is shown again — so a conversation with
+ * pages in it does not keep them all running.
+ */
+function PageThumb({ html }: { html: string }) {
+  const [still, setStill] = useState(() => pageStills.get(html) ?? null);
+  const [onScreen, setOnScreen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const frame = useRef<HTMLIFrameElement>(null);
+  const token = useMemo(() => Math.random().toString(36).slice(2), [html]);
+
+  useEffect(() => {
+    const el = box.current;
+    if (!el || still) return;
+    const io = new IntersectionObserver(([e]) => setOnScreen(e.isIntersecting), { rootMargin: "200px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [still]);
+
+  useEffect(() => {
+    if (still || !onScreen) return;
+    const onMessage = (e: MessageEvent) => {
+      const d = e.data as { chatyStill?: string; html?: string } | null;
+      if (e.source !== frame.current?.contentWindow || !d || d.chatyStill !== token || typeof d.html !== "string") return;
+      const frozen = intoHead(d.html, STILL_STYLE);
+      pageStills.set(html, frozen);
+      if (pageStills.size > 48) pageStills.delete(pageStills.keys().next().value as string);
+      setStill(frozen);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [still, onScreen, html, token]);
+
+  return (
+    <div ref={box} className="page-thumb" aria-hidden="true">
+      {still ? (
+        <iframe sandbox="" srcDoc={still} tabIndex={-1} title="" />
+      ) : onScreen ? (
+        <iframe ref={frame} sandbox="allow-scripts" srcDoc={intoHead(withStorageShim(html), STILL_SCRIPT(token))} tabIndex={-1} title="" />
+      ) : null}
+    </div>
+  );
+}
+
+/** A finished page, folded: what it looks like and what it is called, in
+ *  place of its first lines of code. */
+function PageCard({ html, lines }: { html: string; lines: number }) {
+  const { t } = useI18n();
+  const title = useMemo(() => pageTitleOf(html), [html]);
+  return (
+    <div className="page-card">
+      <PageThumb html={html} />
+      <div className="page-meta">
+        <span className="page-title">{title || t("pageUntitled")}</span>
+        <span className="page-sub">{t("pageCardSub", { n: lines })}</span>
+      </div>
+    </div>
+  );
+}
+
 /** A fenced code block with copy + (for HTML) live-preview buttons, a
  *  language label, and (optional, Settings → Chat) think-panel-style collapse
  *  for long blocks: while the block streams in it shows a small focus window
@@ -525,10 +663,13 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
 
   const foldable = collapseEnabled && lines >= COLLAPSE_MIN_LINES;
   const expanded = override ?? false;
+  // A page whose fence has closed folds to what it looks like — a picture of
+  // it and its title — instead of its first lines of code.
+  const pageMode = foldable && !expanded && isHtml && !(fenceOpen && streaming);
   // Folded blocks are never fully hidden: while the message streams they show
   // a window pinned to the NEWEST lines (focus-follow); once finished they
   // show the FIRST few lines as a preview. Clicking either expands.
-  const focusMode = foldable && !expanded && streaming && override === null;
+  const focusMode = foldable && !expanded && streaming && override === null && !pageMode;
   useEffect(() => {
     if (!focusRef.current) return;
     if (focusMode) {
@@ -589,7 +730,8 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
         <button
           className={`code-btn icon ${copied ? "done" : ""}`}
           onClick={copy}
-          title="Copy code"
+          title={t("copyCode")}
+          aria-label={t("copyCode")}
           type="button"
         >
           {copied ? (
@@ -648,9 +790,10 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
       </div>
       <div
         ref={focusRef}
-        className={`code-fold-body ${foldable && !expanded ? (focusMode ? "focus" : "preview") : ""}`}
+        className={`code-fold-body ${foldable && !expanded ? (pageMode ? "page" : focusMode ? "focus" : "preview") : ""}`}
         onClick={foldable && !expanded ? () => setOverride(true) : undefined}
       >
+        {pageMode && <PageCard html={nodeText(children)} lines={lines} />}
         <pre ref={ref} {...props}>
           {children}
         </pre>

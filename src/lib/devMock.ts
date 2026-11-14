@@ -1471,6 +1471,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       // 网页 / web page streams a single-file page — a style, a comment over
       // two lines, a script — to look at its highlighting as it streams.
       const wantsPage = /网页|web page/i.test(last);
+      // 设计网页 / design page: a page as models make them — a title, a nav, a
+      // hero, cards — for looking at the folded page's picture.
+      const wantsDesign = /设计网页|design page/i.test(last);
       const fast = wantsOutside || wantsSudo || wantsDate;
       // Thinking first, so the preview exercises the think panel (and stopping
       // a turn mid-thought, which is where its spinner used to stay turning).
@@ -1494,7 +1497,26 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         "<think>都通过了。</think>\n完成:新增 `src/tokens.ts`,`parser.ts` 改为调用它,4 个测试全部通过。",
       ];
       if (wantsDemo && !isTitleReq) reply = DEMO[Math.min(demoStep, DEMO.length - 1)];
-      else if (wantsPage && !isTitleReq) {
+      else if (wantsDesign && !isTitleReq) {
+        reply =
+          "做好了，一个单文件页面:\n\n```html\n<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>Aurora Studio — 光的工作室</title>\n  <style>\n" +
+          "    * { box-sizing: border-box; margin: 0; }\n" +
+          "    body { font-family: -apple-system, 'PingFang SC', sans-serif; background: linear-gradient(135deg, #0f172a, #312e81 60%, #7c3aed); color: #f8fafc; min-height: 100vh; }\n" +
+          "    nav { display: flex; justify-content: space-between; align-items: center; padding: 24px 56px; }\n" +
+          "    nav b { font-size: 20px; letter-spacing: 1px; }\n" +
+          "    nav a { color: #c7d2fe; margin-left: 28px; text-decoration: none; font-size: 15px; }\n" +
+          "    .hero { padding: 72px 56px 40px; max-width: 760px; }\n" +
+          "    .hero h1 { font-size: 56px; line-height: 1.1; }\n" +
+          "    .hero p { margin-top: 18px; font-size: 18px; color: #cbd5e1; line-height: 1.6; }\n" +
+          "    .cta { display: inline-block; margin-top: 28px; padding: 14px 26px; border-radius: 999px; background: #f472b6; color: #111; font-weight: 600; }\n" +
+          "    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; padding: 24px 56px; }\n" +
+          "    .card { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); border-radius: 16px; padding: 22px; }\n" +
+          "    .card h3 { font-size: 18px; } .card p { margin-top: 8px; color: #cbd5e1; font-size: 14px; line-height: 1.5; }\n" +
+          "  </style>\n</head>\n<body>\n  <nav><b>AURORA</b><div><a href=\"#\">作品</a><a href=\"#\">服务</a><a href=\"#\">关于</a></div></nav>\n" +
+          "  <section class=\"hero\">\n    <h1>让光成为你的<br>第一种材料</h1>\n    <p>我们为品牌设计会呼吸的数字体验:动效、排版与色彩,一起讲一个故事。</p>\n    <a class=\"cta\" href=\"#\">开始合作</a>\n  </section>\n" +
+          "  <section class=\"cards\">\n    <div class=\"card\"><h3>品牌视觉</h3><p>从标志到整套视觉语言。</p></div>\n    <div class=\"card\"><h3>交互动效</h3><p>每一次点击都有回应。</p></div>\n    <div class=\"card\"><h3>网站开发</h3><p>快速、可访问、易维护。</p></div>\n  </section>\n" +
+          "</body>\n</html>\n```\n\n用浏览器直接打开即可。";
+      } else if (wantsPage && !isTitleReq) {
         reply =
           "一个单文件页面:\n\n```html\n<!DOCTYPE html>\n<html lang=\"zh\">\n<head>\n  <meta charset=\"utf-8\">\n  <style>\n" +
           "    body { margin: 0; font-family: system-ui, sans-serif; background: #111; }\n" +

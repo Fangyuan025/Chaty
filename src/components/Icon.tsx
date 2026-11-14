@@ -33,6 +33,8 @@ const PATHS: Record<string, string> = {
   eject: "M12 5l7 8H5l7-8zM5 18.5h14",
   // The music studio: a note, and a voice.
   music: "M9 18V5.5l11-2V16M9 18a3 3 0 11-6 0 3 3 0 016 0zM20 16a3 3 0 11-6 0 3 3 0 016 0z",
+  // Copy: two sheets, as the code blocks draw it.
+  copy: "M11 9h7a2 2 0 012 2v7a2 2 0 01-2 2h-7a2 2 0 01-2-2v-7a2 2 0 012-2zM5 15V5a2 2 0 012-2h8",
   // The sidebar, shown or folded away.
   sidebar: "M5 4.5h14A1.5 1.5 0 0120.5 6v12a1.5 1.5 0 01-1.5 1.5H5A1.5 1.5 0 013.5 18V6A1.5 1.5 0 015 4.5zM9.5 4.5v15",
   mic: "M12 3.5a2.75 2.75 0 012.75 2.75v5.5a2.75 2.75 0 01-5.5 0v-5.5A2.75 2.75 0 0112 3.5zM18 11.5a6 6 0 01-12 0M12 17.5v3",

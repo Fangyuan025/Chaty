@@ -7340,8 +7340,20 @@ mod tests {
         let curl = format!("curl -s http://localhost:{port}/index.html | grep title");
         assert!(nothing_listening_note(&curl).is_none());
         drop(listener);
-        let note = nothing_listening_note(&curl).expect("a dead port is named");
-        assert!(note.contains(&port.to_string()), "{note}");
+        // A port just let go can be taken at once by a test running beside
+        // this one (CI runs them in parallel): try fresh ones until one is
+        // found free, and that one must be named.
+        let dead = std::iter::once(port)
+            .chain((0..20).filter_map(|_| {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+                l.local_addr().ok().map(|a| a.port())
+            }))
+            .find_map(|p| {
+                nothing_listening_note(&format!("curl -s http://localhost:{p}/index.html | grep title"))
+                    .map(|note| (p, note))
+            });
+        let (p, note) = dead.expect("a dead port is named");
+        assert!(note.contains(&p.to_string()), "{note}");
         assert!(nothing_listening_note("curl -s https://example.com:8443/ && ls").is_none());
         assert_eq!(
             port_candidates("Error: listen EADDRINUSE: address already in use :::3000", "npm run dev"),
