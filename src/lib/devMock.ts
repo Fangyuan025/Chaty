@@ -572,6 +572,13 @@ function mockWavUrl(path: string): string {
   return url;
 }
 
+/** The heavy page fixture (重网页), fetched from the dev server when there is one. */
+let HEAVY_PAGE = "<!DOCTYPE html><title>heavy</title><p>(dev server only)</p>";
+void fetch("/bench/ui/probe/heavy-page.html")
+  .then((r) => (r.ok ? r.text() : Promise.reject()))
+  .then((t) => (HEAVY_PAGE = t.trimEnd()))
+  .catch(() => {});
+
 // Which model the preview has "loaded": ?model=image starts in the image
 // studio, ?model=music in the music studio.
 const START_MODEL = new URLSearchParams(window.location.search).get("model");
@@ -1477,6 +1484,10 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       // 设计网页 / design page: a page as models make them — a title, a nav, a
       // hero, cards — for looking at the folded page's picture.
       const wantsDesign = /设计网页|design page/i.test(last);
+      // 重网页 / heavy page: a page a 35B wrote — a loader, canvas particles,
+      // a cursor follower, scroll reveals — to measure what its picture costs
+      // the frames (served by the dev server from bench/ui/probe).
+      const wantsHeavy = /重网页|heavy page/i.test(last);
       const fast = wantsOutside || wantsSudo || wantsDate;
       // Thinking first, so the preview exercises the think panel (and stopping
       // a turn mid-thought, which is where its spinner used to stay turning).
@@ -1500,7 +1511,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         "<think>都通过了。</think>\n完成:新增 `src/tokens.ts`,`parser.ts` 改为调用它,4 个测试全部通过。",
       ];
       if (wantsDemo && !isTitleReq) reply = DEMO[Math.min(demoStep, DEMO.length - 1)];
-      else if (wantsDesign && !isTitleReq) {
+      else if (wantsHeavy && !isTitleReq) {
+        reply = "做好了:\n\n```html\n" + HEAVY_PAGE + "\n```\n\n直接用浏览器打开即可。";
+      } else if (wantsDesign && !isTitleReq) {
         reply =
           "做好了，一个单文件页面:\n\n```html\n<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>Aurora Studio — 光的工作室</title>\n  <style>\n" +
           "    * { box-sizing: border-box; margin: 0; }\n" +
@@ -1622,14 +1635,14 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           emit({ type: "prefill", processed: Math.min(done, total), total });
           await new Promise((r) => setTimeout(r, fast ? 15 : 140));
         }
-        const pieceRe = wantsRich && wantsFast ? /[\s\S]{1,12}/g : wantsLong || wantsRich || wantsPage ? /[\s\S]{1,3}/g : /.{1,6}/g;
+        const pieceRe = wantsHeavy ? /[\s\S]{1,24}/g : wantsRich && wantsFast ? /[\s\S]{1,12}/g : wantsLong || wantsRich || wantsPage ? /[\s\S]{1,3}/g : /.{1,6}/g;
         for (const piece of reply.match(pieceRe) ?? []) {
           // Told to stop, it stops, as the engines do.
           if (mockGenStop) break;
           // `__mockPause` holds the stream mid-reply, to look at a frame of it.
           while ((globalThis as { __mockPause?: boolean }).__mockPause) await new Promise((r) => setTimeout(r, 50));
           emit({ type: "token", text: piece });
-          await new Promise((r) => setTimeout(r, wantsRich && wantsFast ? 16 : wantsLong || wantsRich || wantsPage ? 28 : 30));
+          await new Promise((r) => setTimeout(r, wantsHeavy || (wantsRich && wantsFast) ? 16 : wantsLong || wantsRich || wantsPage ? 28 : 30));
         }
         emit({
           type: "done",

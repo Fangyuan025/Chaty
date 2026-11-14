@@ -46,6 +46,25 @@
 - **Every shortcut on one sheet** — ⌘/ (Ctrl+/), or the command palette.
 - With many models, typing in the model menu finds one; Enter loads it.
 
+### Nothing stutters
+
+- **A page's picture appears without a hitch.** It is made out of sight, one
+  page at a time, only once no reply is being written and nothing has been
+  touched for a moment — any scroll or keystroke, and it stops to be made
+  again later — with the page's own animation slowed to a few frames a second
+  while it builds; it is put on screen when nothing moves, one at a time; and
+  it is kept across restarts, so a conversation opened again shows its pages
+  without running them. Made in the open, beside a reply still streaming, a
+  page cost the app its frames as its picture came.
+- **A long code reply no longer hitches as its block closes.** The code stays
+  drawn line by line, as it streamed, where it used to be highlighted and
+  built again whole the moment its fence closed — the stutter at the end of
+  every long page or script.
+- **The first diagram or formula of a session no longer hitches.** Mermaid,
+  its flowchart and sequence drawing, Chinese labels' measuring and KaTeX's
+  fonts are made ready while nothing moves, where the first diagram or
+  formula in a reply paid for them in long frames as it streamed.
+
 ### Taking a chat elsewhere
 
 - **Export a chat as a web page** — the replies as Chaty draws them, code

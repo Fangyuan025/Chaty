@@ -361,6 +361,12 @@ jobs:
             A chat opened from the sidebar's search opens at the match, and one left part-way
             through opens where you left it. Every shortcut is on one sheet, ⌘/ (Ctrl+/).
 
+            ## Nothing stutters
+
+            A page's picture is made out of sight while nothing moves, and kept across restarts;
+            a long code reply no longer hitches as its block closes; the first diagram or formula
+            of a session no longer hitches as it is drawn.
+
             ## Taking a chat elsewhere
 
             Export a chat as a web page: the replies as Chaty draws them, in your theme, one

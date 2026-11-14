@@ -16,6 +16,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
+import katex from "katex";
 import "katex/dist/katex.min.css";
 import { mdBlocks, type BlockCache } from "../lib/mdBlocks";
 import { detectLang, lookup, useI18n } from "../lib/i18n";
@@ -632,14 +633,22 @@ function pageTitleOf(html: string): string {
 
 /** Run once in the page being pictured: when it has loaded and its scripts
  *  have had a moment to build it (a loader gone, a list filled in), its
- *  canvases become pictures, its scripts go, and what it then is goes to
+ *  canvases become pictures, its scripts go, what lies below its first
+ *  screen goes (only that is pictured, and a long page laid out whole made
+ *  putting its picture on screen cost frames), and what it then is goes to
  *  the app — a still of the page, shown from then on instead of the page
- *  running. */
-const STILL_SCRIPT = (token: string) => `<script>(function(){var T=${JSON.stringify(token)};function snap(){try{
+ *  running. Its frame loop is slowed to a few a second first: the still
+ *  needs one frame, and a page's particles at full rate cost the app's. */
+const STILL_SCRIPT = (token: string) => `<script>(function(){
+window.requestAnimationFrame=function(cb){return setTimeout(function(){cb(performance.now());},120);};
+window.cancelAnimationFrame=function(id){clearTimeout(id);};
+var T=${JSON.stringify(token)};function snap(){try{
 document.querySelectorAll("canvas").forEach(function(c){try{var r=c.getBoundingClientRect();var i=document.createElement("img");i.src=c.toDataURL();i.className=c.className;i.id=c.id;i.setAttribute("style",c.getAttribute("style")||"");i.style.width=r.width+"px";i.style.height=r.height+"px";c.replaceWith(i);}catch(e){}});
 document.querySelectorAll("script,noscript").forEach(function(s){s.remove();});
+var H=innerHeight+80,all=document.body?document.body.querySelectorAll("*"):[];
+for(var i=all.length-1;i>=0;i--){var el=all[i];if(!el.isConnected)continue;var p=el.parentElement;if(el.getBoundingClientRect().top>H&&p&&p.getBoundingClientRect().top<=H)el.remove();}
 parent.postMessage({chatyStill:T,html:"<!DOCTYPE html>"+document.documentElement.outerHTML},"*");}catch(e){}}
-if(document.readyState==="complete")setTimeout(snap,1800);else addEventListener("load",function(){setTimeout(snap,1800);});})()</script>`;
+if(document.readyState==="complete")setTimeout(snap,1500);else addEventListener("load",function(){setTimeout(snap,1500);});})()</script>`;
 
 /** A still is a page without scripts, its animations stopped where they end
  *  (a fade-in shows faded in) and nothing moving. */
@@ -652,48 +661,278 @@ function intoHead(html: string, insert: string): string {
   return insert + html;
 }
 
-/**
- * A page pictured small: run in a sandbox while it is on screen, until it
- * has built itself; then a still of it, which is all that is shown after —
- * here and every time the reply is shown again — so a conversation with
- * pages in it does not keep them all running.
+/*
+ * Pictures of pages are made one at a time, out of sight, and only while
+ * nothing on screen moves. A page laid out and run in the app's own web view
+ * (WebKit runs a frame on the app's thread) costs the app frames — a reply
+ * streaming beside it, a scroll, stuttered as one appeared. So: no reply being
+ * written and no input for a moment before one starts; any input while it
+ * builds, and it is dropped to be made again later; and what is shown is only
+ * ever the still, never the page running.
  */
+let lastActivity = 0;
+let watchingActivity = false;
+let stillHost: HTMLDivElement | null = null;
+function watchActivity() {
+  if (watchingActivity || typeof window === "undefined") return;
+  watchingActivity = true;
+  const mark = () => {
+    lastActivity = performance.now();
+  };
+  // Watched from now: what happened before is not known to have been quiet.
+  mark();
+  for (const ev of ["wheel", "scroll", "keydown", "pointerdown", "pointermove", "touchmove"]) {
+    window.addEventListener(ev, mark, { capture: true, passive: true });
+  }
+  // A reply being written changes the page all the time.
+  new MutationObserver((records) => {
+    if (records.some((r) => !stillHost?.contains(r.target) && !(r.target as Element).closest?.(".page-thumb"))) mark();
+  }).observe(document.body, { subtree: true, childList: true, characterData: true });
+}
+const quietFor = (ms: number) => performance.now() - lastActivity >= ms;
+const waitQuiet = async (ms: number) => {
+  while (!quietFor(ms)) await new Promise((r) => setTimeout(r, 200));
+};
+
+/** Make a still of one page: null when it could not be made, "again" when it
+ *  was dropped for input and is to be made later. */
+function makeStill(html: string): Promise<string | null | "again"> {
+  return new Promise((resolve) => {
+    if (!stillHost) {
+      stillHost = document.createElement("div");
+      // Laid out at the size it is pictured at, never painted.
+      stillHost.style.cssText = "position:fixed;left:0;top:0;width:1024px;height:640px;visibility:hidden;pointer-events:none;contain:strict;z-index:-1;";
+      stillHost.setAttribute("aria-hidden", "true");
+      document.body.appendChild(stillHost);
+    }
+    const token = Math.random().toString(36).slice(2);
+    const frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("tabindex", "-1");
+    frame.style.cssText = "width:1024px;height:640px;border:0;";
+    const began = performance.now();
+    let done = false;
+    const finish = (v: string | null | "again") => {
+      if (done) return;
+      done = true;
+      window.removeEventListener("message", onMessage);
+      clearInterval(watch);
+      frame.remove();
+      resolve(v);
+    };
+    const onMessage = (e: MessageEvent) => {
+      const d = e.data as { chatyStill?: string; html?: string } | null;
+      if (e.source !== frame.contentWindow || !d || d.chatyStill !== token || typeof d.html !== "string") return;
+      finish(intoHead(d.html, STILL_STYLE));
+    };
+    window.addEventListener("message", onMessage);
+    const watch = setInterval(() => {
+      if (lastActivity > began) finish("again");
+      else if (performance.now() - began > 8000) finish(null);
+    }, 100);
+    frame.srcdoc = intoHead(withStorageShim(html), STILL_SCRIPT(token));
+    stillHost.appendChild(frame);
+  });
+}
+
+/** Stills kept across restarts (IndexedDB): a conversation opened again, or
+ *  the app started again, shows its pages' pictures without running them. */
+const STILL_DB = "chaty-page-stills-2";
+let stillDb: Promise<IDBDatabase | null> | null = null;
+function openStillDb(): Promise<IDBDatabase | null> {
+  stillDb ??= new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(STILL_DB, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore("stills");
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+  return stillDb;
+}
+/** A short key for a page's source (FNV-1a, with its length). */
+function stillKey(html: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < html.length; i++) {
+    h ^= html.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${html.length}:${h.toString(36)}`;
+}
+async function storedStill(html: string): Promise<string | null> {
+  const db = await openStillDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const req = db.transaction("stills").objectStore("stills").get(stillKey(html));
+      req.onsuccess = () => resolve(typeof req.result === "string" ? req.result : null);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+async function storeStill(html: string, still: string) {
+  const db = await openStillDb();
+  if (!db) return;
+  try {
+    const store = db.transaction("stills", "readwrite").objectStore("stills");
+    store.put(still, stillKey(html));
+    // Keep the last couple of hundred.
+    const count = store.count();
+    count.onsuccess = () => {
+      if (count.result <= 240) return;
+      const cur = store.openCursor();
+      let drop = count.result - 200;
+      cur.onsuccess = () => {
+        const c = cur.result;
+        if (!c || drop-- <= 0) return;
+        c.delete();
+        c.continue();
+      };
+    };
+  } catch {
+    /* not kept, made again next time */
+  }
+}
+
+const stillQueue: string[] = [];
+const stillWaiters = new Map<string, ((s: string | null) => void)[]>();
+let stillRunning = false;
+async function pumpStills() {
+  if (stillRunning) return;
+  stillRunning = true;
+  try {
+    for (let html = stillQueue.shift(); html !== undefined; html = stillQueue.shift()) {
+      let made: string | null | "again" = "again";
+      for (let tries = 0; made === "again" && tries < 20; tries++) {
+        await waitQuiet(700);
+        made = await makeStill(html);
+      }
+      const still = made === "again" ? null : made;
+      if (still) {
+        pageStills.set(html, still);
+        if (pageStills.size > 48) pageStills.delete(pageStills.keys().next().value as string);
+        void storeStill(html, still);
+      }
+      for (const w of stillWaiters.get(html) ?? []) w(still);
+      stillWaiters.delete(html);
+    }
+  } finally {
+    stillRunning = false;
+  }
+}
+async function requestStill(html: string): Promise<string | null> {
+  const have = pageStills.get(html);
+  if (have) return have;
+  const kept = await storedStill(html);
+  if (kept) {
+    pageStills.set(html, kept);
+    return kept;
+  }
+  watchActivity();
+  return new Promise((resolve) => {
+    const waiting = stillWaiters.get(html);
+    if (waiting) waiting.push(resolve);
+    else {
+      stillWaiters.set(html, [resolve]);
+      stillQueue.push(html);
+      void pumpStills();
+    }
+  });
+}
+
+/** Mermaid and KaTeX made ready while nothing moves: Mermaid loaded and a
+ *  flowchart and a sequence diagram drawn once out of sight, a formula set
+ *  out of sight so KaTeX's fonts are in. The first diagram or formula in a
+ *  session used to pay for all of it — a library, each diagram kind's own
+ *  code and layout, the math fonts — in long frames while its reply
+ *  streamed. */
+if (typeof window !== "undefined") {
+  setTimeout(async () => {
+    watchActivity();
+    await waitQuiet(1500);
+    try {
+      const host = document.createElement("div");
+      host.style.cssText = "position:fixed;left:-9999px;top:0;visibility:hidden;pointer-events:none;";
+      host.setAttribute("aria-hidden", "true");
+      host.innerHTML = katex.renderToString("A=\\pi r^2+\\sum_{i=1}^{n}\\frac{\\alpha_i}{\\sqrt{x}}\\int_0^1 \\mathbb{R}\\,\\mathrm{d}t", {
+        displayMode: true,
+        throwOnError: false,
+      });
+      document.body.appendChild(host);
+      await document.fonts?.ready;
+      host.remove();
+    } catch {
+      // ready enough
+    }
+    // With labels in Chinese and in English, a decision and a labelled link:
+    // a label's text is measured on the page, and the first in a script
+    // finds its font then.
+    for (const warm of [
+      "graph TD\n  A[读取 config] -->|是 yes| B{检查 check?}\n  B --> C((完成))",
+      "sequenceDiagram\n  用户->>Chaty: 你好 hi\n  Chaty-->>用户: 好的",
+    ]) {
+      await waitQuiet(1500);
+      await mermaidTurn(async () => {
+        try {
+          const mermaid = await mermaidIn(pageIsDark());
+          await mermaid.render(`mmd-warm-${mermaidSeq++}`, warm);
+        } catch {
+          // ready enough
+        }
+      });
+    }
+  }, 4000);
+}
+
+/** Stills go on screen one at a time, each when nothing has moved for a
+ *  moment, with a frame between them. */
+let swapChain: Promise<void> = Promise.resolve();
+function swapTurn(): Promise<void> {
+  const turn = swapChain.then(async () => {
+    watchActivity();
+    await waitQuiet(300);
+    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 60)));
+  });
+  swapChain = turn.catch(() => {});
+  return turn;
+}
+
+/** A page pictured small — its still, made out of sight (see above) once the
+ *  card comes near the screen; until then the card's ground. */
 function PageThumb({ html }: { html: string }) {
   const [still, setStill] = useState(() => pageStills.get(html) ?? null);
-  const [onScreen, setOnScreen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
-  const frame = useRef<HTMLIFrameElement>(null);
-  const token = useMemo(() => Math.random().toString(36).slice(2), [html]);
-
   useEffect(() => {
     const el = box.current;
     if (!el || still) return;
-    const io = new IntersectionObserver(([e]) => setOnScreen(e.isIntersecting), { rootMargin: "200px" });
+    let alive = true;
+    const io = new IntersectionObserver(
+      ([e]) => {
+        if (!e.isIntersecting) return;
+        io.disconnect();
+        // Put on screen when nothing moves there, too — and one at a time:
+        // a conversation scrolled back to with several pages in it put all
+        // their pictures up in the same frame.
+        void requestStill(html).then(async (s) => {
+          await swapTurn();
+          if (alive && s) setStill(s);
+        });
+      },
+      { rootMargin: "300px" },
+    );
     io.observe(el);
-    return () => io.disconnect();
-  }, [still]);
-
-  useEffect(() => {
-    if (still || !onScreen) return;
-    const onMessage = (e: MessageEvent) => {
-      const d = e.data as { chatyStill?: string; html?: string } | null;
-      if (e.source !== frame.current?.contentWindow || !d || d.chatyStill !== token || typeof d.html !== "string") return;
-      const frozen = intoHead(d.html, STILL_STYLE);
-      pageStills.set(html, frozen);
-      if (pageStills.size > 48) pageStills.delete(pageStills.keys().next().value as string);
-      setStill(frozen);
+    return () => {
+      alive = false;
+      io.disconnect();
     };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [still, onScreen, html, token]);
-
+  }, [html, still]);
   return (
     <div ref={box} className="page-thumb" aria-hidden="true">
-      {still ? (
-        <iframe sandbox="" srcDoc={still} tabIndex={-1} title="" />
-      ) : onScreen ? (
-        <iframe ref={frame} sandbox="allow-scripts" srcDoc={intoHead(withStorageShim(html), STILL_SCRIPT(token))} tabIndex={-1} title="" />
-      ) : null}
+      {still && <iframe sandbox="" srcDoc={still} tabIndex={-1} title="" />}
     </div>
   );
 }
@@ -738,7 +977,7 @@ function codeFileName(lang: string, text: string, html: boolean): { name: string
  *  for long blocks: while the block streams in it shows a small focus window
  *  pinned to the newest lines; finished blocks fold to a one-line header;
  *  clicking toggles the full code at any time. */
-function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
+function CodeBlock({ children, node: _node, ...props }: ComponentPropsWithoutRef<"pre"> & { node?: unknown }) {
   const ref = useRef<HTMLPreElement>(null);
   const focusRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
@@ -1076,8 +1315,28 @@ function StreamLinesCode({ className, children }: ComponentPropsWithoutRef<"code
   );
 }
 
-const streamingComponents = { pre: CodeBlock, sup: SupRenderer, code: StreamLinesCode } as const;
-const fadeStreamingComponents = { ...streamingComponents, span: FadeSpan } as const;
+
+/** A fenced block's code in a reply that streamed here, once its fence has
+ *  closed: still line by line, as it was drawn while it came in. Highlighted
+ *  whole again (rehype-highlight) the moment it closed, a long page's
+ *  thousands of spans were built anew in one frame — the hitch at the end of
+ *  every long code reply; this way only its last line changes. Inline code
+ *  (no newline at its end — a fence's code always has one) stays plain. */
+function ClosedLinesCode({ node: _node, ...props }: ComponentPropsWithoutRef<"code"> & { node?: unknown }) {
+  const open = useContext(FenceOpen);
+  const text = typeof props.children === "string" ? props.children : "";
+  // react-markdown's `node` is not an attribute: passed on, it was written
+  // into the page as node="[object Object]".
+  if (!open && !props.className && !text.endsWith("\n")) return <code {...props} />;
+  return <StreamLinesCode {...props} />;
+}
+const closedLineComponents = { pre: CodeBlock, sup: SupRenderer, table: TableBlock, code: ClosedLinesCode } as const;
+const fadeClosedLineComponents = { ...closedLineComponents, span: FadeSpan } as const;
+// The same components while the fence is open: the same component for the
+// code on both sides of its closing, so React keeps the lines it drew — a
+// different one there and the whole block was taken down and built again.
+const streamingComponents = closedLineComponents;
+const fadeStreamingComponents = fadeClosedLineComponents;
 
 /** The block being written, as it is shown while it comes in: a fence whose
  *  opening line is not finished waits for it (`\`\`\`mer` was a code block of
@@ -1099,14 +1358,24 @@ const Block = memo(function Block({
   plugins,
   openFence,
   fade,
+  lineCode,
 }: {
   src: string;
   plugins: unknown;
   openFence: boolean;
   /** The block being written while the reply streams: its words fade in. */
   fade?: boolean;
+  /** A reply that streamed here: its code stays drawn line by line once its
+   *  fence closes (see ClosedLinesCode). */
+  lineCode?: boolean;
 }) {
-  const base = (openFence ? rehypeStreamingPlugins : plugins) as unknown[];
+  const base = (
+    openFence
+      ? rehypeStreamingPlugins
+      : lineCode
+        ? (plugins as unknown[]).filter((p) => !(Array.isArray(p) && p[0] === rehypeHighlight))
+        : plugins
+  ) as unknown[];
   const shown = useRef({ upTo: 0 }).current;
   return (
     <FenceOpen.Provider value={openFence}>
@@ -1119,9 +1388,13 @@ const Block = memo(function Block({
           ? fade
             ? fadeStreamingComponents
             : streamingComponents
-          : fade
-            ? fadeComponents
-            : components
+          : lineCode
+            ? fade
+              ? fadeClosedLineComponents
+              : closedLineComponents
+            : fade
+              ? fadeComponents
+              : components
       }
     >
       {src}
@@ -1183,6 +1456,7 @@ export function Markdown({
             plugins={plugins}
             openFence={!!b.openFence}
             fade={live && i === parts.length - 1}
+            lineCode
           />
         ))
       ) : (

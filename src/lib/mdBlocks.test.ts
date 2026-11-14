@@ -85,7 +85,11 @@ describe("markdown blocks", () => {
           const code = (html: string) => [...html.matchAll(/<pre[^>]*>([\s\S]*?)<\/pre>/g)].map((m) => plain(m[1]));
           expect(code(raw(prefix, true)), at).toEqual(code(raw(prefix, false)));
         } else {
-          expect(split, JSON.stringify(prefix.slice(-30))).toBe(whole);
+          // A closed fence in a reply that streamed is still drawn line by
+          // line (see ClosedLinesCode): its markup differs, what it says and
+          // everything around it do not.
+          const pres = (html: string) => html.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/g, (_m, inner: string) => `<pre>${plain(inner).replace(/\s+/g, "")}</pre>`);
+          expect(pres(split), JSON.stringify(prefix.slice(-30))).toBe(pres(whole));
         }
       }
     }
