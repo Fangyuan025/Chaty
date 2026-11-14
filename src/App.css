@@ -2206,6 +2206,42 @@ html[data-motion="reduce"] .mermaid-pending-label {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* A table and its actions, on hover over its top corner. */
+.table-wrap {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  margin: 10px 0;
+}
+.table-wrap > table {
+  margin: 0 !important;
+}
+.table-actions {
+  position: absolute;
+  top: -15px;
+  right: 6px;
+  z-index: 1;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast);
+}
+.table-actions .code-btn {
+  height: 22px;
+  padding: 0 7px;
+  font-size: 11.5px;
+}
+.table-wrap:hover .table-actions,
+.table-actions:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
 .bubble table {
   border-collapse: collapse;
   margin: 10px 0;
@@ -2232,6 +2268,45 @@ html[data-motion="reduce"] .mermaid-pending-label {
 }
 .bubble .katex {
   font-size: 1.04em;
+}
+/* A formula copies its LaTeX on a click (see Markdown): it says so on hover,
+   and that it did. */
+.katex {
+  position: relative;
+  cursor: copy;
+  border-radius: 4px;
+  transition: background var(--t-fast);
+}
+.katex:hover {
+  background: var(--ink-faint);
+}
+.katex[data-copied]::after {
+  content: attr(data-copied);
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translate(-50%, -6px);
+  padding: 3px 7px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  color: var(--bg);
+  background: var(--text);
+  border-radius: 6px;
+  pointer-events: none;
+  animation: tex-copied 1.3s ease forwards;
+}
+@keyframes tex-copied {
+  0%,
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 .cursor {
@@ -11249,4 +11324,256 @@ body,
 ::highlight(chaty-find) {
   background-color: color-mix(in srgb, #f2b630 42%, transparent);
   color: inherit;
+}
+
+/* ---- diagram viewer: a diagram on its own, zoomed and moved freely ---- */
+.mermaid-diagram.openable {
+  cursor: zoom-in;
+}
+.dv-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  background: color-mix(in srgb, var(--bg) 98%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  animation: dv-in var(--t-med) var(--ease-out);
+}
+@keyframes dv-in {
+  from {
+    opacity: 0;
+  }
+}
+.dv-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+.dv-stage:active {
+  cursor: grabbing;
+}
+.dv-art {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  transform-origin: 0 0;
+}
+.dv-art svg {
+  display: block;
+}
+.dv-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow-2, 0 8px 28px rgba(0, 0, 0, 0.18));
+}
+.dv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.dv-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--ink-faint);
+}
+.dv-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.dv-pct {
+  min-width: 52px;
+  font-variant-numeric: tabular-nums;
+}
+.dv-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--border);
+}
+@media (prefers-reduced-motion: reduce) {
+  .dv-overlay {
+    animation: none;
+  }
+}
+
+/* ---- find in the open chat (⌘F) ---- */
+.find-bar {
+  position: absolute;
+  top: 56px;
+  right: 22px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 10px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-2);
+  animation: find-in var(--t-fast) var(--ease-out);
+}
+@keyframes find-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.find-bar input {
+  width: 200px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  outline: none;
+}
+.find-count {
+  min-width: 44px;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+.find-count.none {
+  color: var(--danger);
+}
+.find-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.find-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--ink-faint);
+}
+.find-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+::highlight(chaty-find-now) {
+  background-color: #f2b630;
+  color: #1a1a1a;
+}
+@media (prefers-reduced-motion: reduce) {
+  .find-bar {
+    animation: none;
+  }
+}
+
+/* ---- keyboard shortcuts sheet (⌘/) ---- */
+.kb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(0, 0, 0, 0.42);
+  animation: dv-in var(--t-fast) var(--ease-out);
+}
+.kb-sheet {
+  width: min(680px, 100%);
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  padding: 18px 22px 22px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: var(--shadow-2);
+}
+.kb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.kb-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.kb-close:hover {
+  color: var(--text);
+  background: var(--ink-faint);
+}
+.kb-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 6px 28px;
+}
+.kb-group h4 {
+  margin: 12px 0 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+}
+.kb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.kb-keys {
+  display: inline-flex;
+  gap: 3px;
+  flex: none;
+}
+.kb-keys kbd {
+  min-width: 22px;
+  padding: 2px 6px;
+  font-family: var(--font-body);
+  font-size: 11.5px;
+  text-align: center;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 6px;
 }

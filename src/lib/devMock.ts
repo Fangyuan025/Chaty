@@ -1137,6 +1137,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "write_text_file":
       (window as unknown as { __lastExport?: string }).__lastExport = String(args?.content ?? "");
       return null;
+    case "write_base64_file":
+      (window as unknown as { __lastExport?: string }).__lastExport = String(args?.data ?? "");
+      return null;
     case "session_stats_get":
       return SESSION_STATS.get(`${args?.kind}:${args?.id}`) ?? "";
     case "session_stats_set":

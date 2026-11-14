@@ -8,6 +8,7 @@ const PATHS: Record<string, string> = {
   check: "M4.5 12.5l5 5L19.5 7",
   plus: "M12 5v14M5 12h14",
   "chevron-down": "M6 9.5l6 6 6-6",
+  "chevron-up": "M6 14.5l6-6 6 6",
   "chevron-right": "M9.5 6l6 6-6 6",
   ban: "M12 3a9 9 0 100 18 9 9 0 000-18zM5.8 5.8l12.4 12.4",
   pin: "M12 3l1.8 5.4H19l-4.3 3.4 1.7 5.5-4.4-3.4-4.4 3.4 1.7-5.5L5 8.4h5.2z",
@@ -33,6 +34,11 @@ const PATHS: Record<string, string> = {
   eject: "M12 5l7 8H5l7-8zM5 18.5h14",
   // The music studio: a note, and a voice.
   music: "M9 18V5.5l11-2V16M9 18a3 3 0 11-6 0 3 3 0 016 0zM20 16a3 3 0 11-6 0 3 3 0 016 0z",
+  minus: "M5 12h14",
+  // Fit to the window: four corners.
+  fit: "M4 9V5a1 1 0 011-1h4M15 4h4a1 1 0 011 1v4M20 15v4a1 1 0 01-1 1h-4M9 20H5a1 1 0 01-1-1v-4",
+  // Open larger: two arrows out to the corners.
+  expand: "M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7",
   // Copy: two sheets, as the code blocks draw it.
   copy: "M11 9h7a2 2 0 012 2v7a2 2 0 01-2 2h-7a2 2 0 01-2-2v-7a2 2 0 012-2zM5 15V5a2 2 0 012-2h8",
   // The sidebar, shown or folded away.

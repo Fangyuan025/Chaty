@@ -1,5 +1,57 @@
 # Changelog
 
+## v2.4.2 — Look closer (2026-11-14)
+
+### Diagrams that always draw
+
+- **A diagram wrong in a line or two is drawn without them.** A diagram a
+  model writes is right almost everywhere: a subgraph never closed is closed
+  where its indentation ends, an `end` that closes nothing is dropped, and a
+  line Mermaid cannot read is left out — with a quiet note under the drawing
+  saying how many (which ones on hover). A diagram drawn while it streamed
+  never turns into its source and an error once it is finished, and one being
+  written grows past a wrong line instead of standing still at it; only a
+  diagram of which nothing at all can be drawn shows its source and
+  Mermaid's reason. A subgraph's id in any script keeps its bracketed title.
+- **Open a diagram larger.** Click it: it fills the window, fitted at first,
+  zoomed with a pinch, ⌘/Ctrl + scroll or the buttons, moved by dragging, a
+  double-click between fitted and actual size — and saved as SVG or PNG, its
+  labels as real text other programs read.
+- **A finished diagram keeps its code to hand** — its source, shown in place
+  of the drawing, and a copy button, over its corner.
+
+### What replies are made of
+
+- **A finished page folds to what it looks like.** With long code blocks
+  folded (Settings → Chat), a single-file page whose fence has closed shows a
+  picture of itself and its title instead of its first lines of code — run
+  once in a sandbox until its scripts have built it, then kept as a still, so
+  a conversation full of pages is not a conversation full of pages running.
+  Open it for the code, as before.
+- **Tables copy as tables.** Over a table's corner: copied as cells, it pastes
+  into a spreadsheet as one; or saved as CSV that Excel opens with its Chinese
+  intact.
+- **Code saves as a file** of its language — a page by its title.
+- **A formula copies its LaTeX** when clicked.
+
+### Finding your way
+
+- **Find in the chat (⌘/Ctrl F).** Every match marked, the current one
+  stronger, Enter and ⇧Enter (or the arrows) between them, a count of where
+  you are. ⌘⇧F is the sidebar's search, as ⌘F is outside a chat.
+- **Searching finds the place, not only the chat.** A chat opened from the
+  sidebar's search opens at the first match, every match marked.
+- **A chat opens where you left it** when you left it part-way through; at
+  its end otherwise.
+- **Every shortcut on one sheet** — ⌘/ (Ctrl+/), or the command palette.
+- With many models, typing in the model menu finds one; Enter loads it.
+
+### Taking a chat elsewhere
+
+- **Export a chat as a web page** — the replies as Chaty draws them, code
+  coloured, tables, formulas and diagrams, in the theme you use, without the
+  app's buttons: one file any browser opens.
+
 ## v2.4.1 — Read along (2026-11-12)
 
 ### Reading as it streams
@@ -17,21 +69,15 @@
   such from its first word.
 - **A Mermaid diagram is drawn as it is written**, growing line by line —
   inside a subgraph too — where it waited for the end or showed an error
-  halfway. It is drawn once a line and no more often than its drawing allows,
-  so a large diagram no longer stalls the reply as it streams, and one
-  already drawn shows at once when you come back to it.
-- **A diagram wrong in a line or two is drawn without them.** A diagram a
-  model writes is right almost everywhere: a subgraph never closed is closed
-  where its indentation ends, an `end` that closes nothing is dropped, and a
-  line Mermaid cannot read is left out — with a quiet note under the drawing
-  saying how many (which ones on hover). A diagram drawn while it streamed
-  never turns into its source and an error once it is finished; only one of
-  which nothing at all can be drawn shows its source and Mermaid's reason.
+  halfway. An error shows only when the finished diagram is wrong. It is drawn
+  once a line and no more often than its drawing allows, so a large diagram
+  no longer stalls the reply as it streams, and one already drawn shows at
+  once when you come back to it.
 - **A diagram that is right and misspelt is drawn.** What stops a diagram is
   almost always a label — `A[call foo(bar)]`, `B{price > 5?}`, a quote inside
   quotes, a subgraph's title with a space in it, a node named `end`. One that
   does not parse as written is tried again with its spelling put right, the
-  text of every label kept.
+  text of every label kept; a diagram that is wrong either way still says so.
 - **Diagrams follow the theme**, the system's included: under *System* on a
   light Mac they were drawn dark, their arrows hard to see.
 - **Code is coloured as it streams**: an HTML page's script and style, and a
@@ -136,20 +182,6 @@
 - **The picture studio's ratio labels sit on one line** (issue #25).
 
 ### Small things
-
-- **A finished page folds to what it looks like.** With long code blocks
-  folded (Settings → Chat), a single-file page whose fence has closed shows a
-  picture of itself and its title instead of its first lines of code — run
-  once in a sandbox until its scripts have built it, then kept as a still, so
-  a conversation full of pages is not a conversation full of pages running.
-  Open it for the code, as before.
-- **Searching finds the place, not only the chat.** A chat opened from the
-  sidebar's search opens at the first match, every match marked.
-- **A chat opens where you left it** when you left it part-way through; at
-  its end otherwise.
-- **A finished diagram keeps its code to hand** — its source and a copy
-  button over its corner.
-- With many models, typing in the model menu finds one; Enter loads it.
 
 - **The sidebar folds away.** ⌘\ (Ctrl+\ elsewhere), the button beside the
   mode switch, or the command palette: the panel takes the window, for

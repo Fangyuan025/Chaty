@@ -342,52 +342,29 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## Reading as it streams
+            ## Diagrams that always draw
 
-            Answers fade in word by word as they are written, in chat and Code mode, and
-            nothing flashes on the way: a heading, rule or table being typed waits until it
-            says what it is. Mermaid diagrams are drawn as they are written without stalling the
-            reply, follow the theme, and one that is right but misspelt — a label with brackets
-            or quotes and no quotes round it — is drawn all the same; one wrong in a line or two
-            (a subgraph never closed, an arrow to nothing) is drawn without those lines, never
-            turned into its source once finished. Code is coloured while it
-            streams, an HTML page's script and style included. Your own messages are the size
-            of the replies, and Code mode's text the size of chat's.
+            A Mermaid diagram wrong in a line or two — a subgraph never closed, an arrow to
+            nothing — is drawn without those lines, a quiet note under it saying how many; one
+            drawn while it streamed never turns into its source once finished. Click a diagram
+            to open it larger: zoom, move it, save it as SVG or PNG.
 
-            ## Code mode that says where it stands
+            ## What replies are made of
 
-            A program the machine does not have is said to be that, once, and not run again
-            under another spelling; a local address nothing is listening on says so, and that a
-            page opens from its file (#25). A turn paused on a repeated call pauses under the
-            model's own account of what is done and what is stuck, and Continue is a real second
-            try. Manual mode asks about a file change as it begins, not once the whole file is
-            written: Deny stops the writing there.
+            A finished single-file page folds to a picture of itself and its title. Tables copy
+            as cells that paste into a spreadsheet, or save as CSV. Code saves as a file of its
+            language, and a formula copies its LaTeX when clicked.
 
-            ## A card that is nearly full
+            ## Finding your way
 
-            On Windows and Linux an automatic context now takes half of what the card has free
-            after the weights, 2 GiB kept at the least, and a model the card does not hold whole
-            keeps 8192. It took nearly all of it, and a card that full could have its driver
-            reset in the middle of a chat (#25). Hybrid and sliding-window models (Qwen3.5/3.6,
-            LFM, Gemma 4) are counted by the layers that keep a cache.
+            Find in the chat with ⌘F (Ctrl+F): every match marked, a count, Enter between them.
+            A chat opened from the sidebar's search opens at the match, and one left part-way
+            through opens where you left it. Every shortcut is on one sheet, ⌘/ (Ctrl+/).
 
-            ## Windows and Linux
+            ## Taking a chat elsewhere
 
-            Downloads go to the models folder Settings shows. The icon is sharp at every size,
-            the taskbar's included. Canvas and previews keep clear of the window's buttons at
-            any window size, and the picture studio's ratio labels sit on one line (#25).
-
-            ## Engine updates
-
-            An engine update is used only by the Chaty release it was built for, and the daily
-            updates build again against the newest llama.cpp and audio.cpp.
-
-            ## Small things
-
-            The sidebar folds away (⌘\\ or the button by the mode switch). ↑ in an empty box edits
-            the last message, or brings back the last Code task. An input method's Enter no longer
-            sends a half-typed message or renames a chat to its pinyin. Code mode's header keeps
-            the workspace's name in a narrow window.
+            Export a chat as a web page: the replies as Chaty draws them, in your theme, one
+            file any browser opens.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

@@ -485,6 +485,15 @@ pub fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| trf!("写入文件失败:{e}", "failed to write file: {e}"))
 }
 
+/// Write base64 bytes to `path` (a diagram exported as a PNG).
+#[tauri::command(async)]
+pub fn write_base64_file(path: String, data: String) -> Result<(), String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|e| trf!("数据解码失败:{e}", "could not decode the data: {e}"))?;
+    std::fs::write(&path, bytes).map_err(|e| trf!("写入文件失败:{e}", "failed to write file: {e}"))
+}
+
 /// Write base64 little-endian f32 mono PCM to `path` as a 16-bit PCM WAV file
 /// (used to export the generated deep-dive podcast audio).
 #[tauri::command(async)]

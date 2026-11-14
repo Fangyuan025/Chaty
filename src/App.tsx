@@ -12,6 +12,8 @@ import { maybeAutorun } from "./lib/debugProbe";
 import { RECENCY_LABEL, recencyGroups } from "./lib/recency";
 
 import { ContextMenu } from "./components/ContextMenu";
+import { FindBar } from "./components/FindBar";
+import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { ImagePreview } from "./components/ImagePreview";
 import { ImageThumb } from "./components/ImageThumb";
 import { UserCopy, UserText } from "./components/UserText";
@@ -177,6 +179,8 @@ const OS_PLATFORM = (() => {
 const IS_MACOS = OS_PLATFORM === "macos";
 /** How the shortcut modifier is written: "⌘N" on macOS, "Ctrl+N" elsewhere. */
 const MOD = IS_MACOS ? "⌘" : "Ctrl+";
+/** The KaTeX the exported page's formulas are styled by (its fonts with it). */
+const KATEX_VERSION = "0.19.0";
 /** Whatever lies over the app and has its own Esc: a dialog, a panel, a menu. */
 const OVERLAYS =
   ".preview-overlay, .popover-backdrop, .settings-overlay, .confirm-overlay, .cmdk-overlay, .canvas-overlay, .dl-backdrop, .live-overlay, .cm-approve-backdrop, [role=dialog]";
@@ -323,6 +327,7 @@ export default function App() {
   const [model, setModel] = useState<ModelInfo | null>(null);
   const [availableModels, setAvailableModels] = useState<ModelEntry[]>([]);
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [showKeys, setShowKeys] = useState(false);
   /** Typed into the model menu to find a model among many. */
   const [modelFilter, setModelFilter] = useState("");
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -963,7 +968,9 @@ export default function App() {
     mode: (m: "chat" | "code") => void;
     stop: (() => void) | null;
     side: () => void;
-  }>({ newItem: () => {}, settings: () => {}, mode: () => {}, stop: null, side: () => {} });
+    find: () => boolean;
+    keys: () => void;
+  }>({ newItem: () => {}, settings: () => {}, mode: () => {}, stop: null, side: () => {}, find: () => false, keys: () => {} });
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       const k = e.key.toLowerCase();
@@ -973,6 +980,16 @@ export default function App() {
         return;
       }
       const s = shortcutsRef.current;
+      // ⌘⇧F: the sidebar's search, from an open chat too.
+      if ((IS_MACOS ? e.metaKey : e.ctrlKey) && e.shiftKey && !e.altKey && k === "f") {
+        const box = [...document.querySelectorAll<HTMLInputElement>(".conv-search input")].find((el) => el.offsetParent);
+        if (box) {
+          e.preventDefault();
+          box.focus();
+          box.select();
+        }
+        return;
+      }
       if ((IS_MACOS ? e.metaKey : e.ctrlKey) && !e.altKey && !e.shiftKey && !e.isComposing) {
         if (k === "n") {
           e.preventDefault();
@@ -980,6 +997,9 @@ export default function App() {
         } else if (k === ",") {
           e.preventDefault();
           s.settings();
+        } else if (k === "/") {
+          e.preventDefault();
+          s.keys();
         } else if (k === "\\") {
           e.preventDefault();
           s.side();
@@ -987,6 +1007,11 @@ export default function App() {
           e.preventDefault();
           s.mode(k === "1" ? "chat" : "code");
         } else if (k === "f") {
+          // In an open chat, find in it; elsewhere, the sidebar's search.
+          if (s.find()) {
+            e.preventDefault();
+            return;
+          }
           const box = [...document.querySelectorAll<HTMLInputElement>(".conv-search input")].find((el) => el.offsetParent);
           if (box) {
             e.preventDefault();
@@ -1202,17 +1227,25 @@ export default function App() {
   // Searching the sidebar finds a chat by what was said in it; opened, the
   // chat shows where — every match marked (the CSS highlight API: nothing in
   // the transcript's markup changes), and the first one in sight scrolled to,
-  // where it used to open at its end with the match somewhere above.
+  // where it used to open at its end with the match somewhere above. The find
+  // bar (⌘F) marks its own query the same way, the current match stronger.
   const findJumpRef = useRef<string | null>(null);
+  const [find, setFind] = useState<{ open: boolean; q: string; at: number; n: number }>({ open: false, q: "", at: -1, n: 0 });
+  const findRanges = useRef<Range[]>([]);
+  /** Bumped by ⌘F with the bar already open: it takes the focus again. */
+  const [findKey, setFindKey] = useState(0);
   useEffect(() => {
     const el = scrollRef.current;
     const css = globalThis.CSS as unknown as { highlights?: Map<string, unknown> } | undefined;
     const HighlightCtor = (globalThis as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
     const reg = css?.highlights;
     if (!el || !reg || !HighlightCtor) return;
-    const q = convQuery.trim().toLowerCase();
-    if (q.length < 2 || !conversationId || appMode !== "chat") {
+    const q = (find.open ? find.q : convQuery).trim().toLowerCase();
+    if (q.length < (find.open ? 1 : 2) || !conversationId || appMode !== "chat") {
       reg.delete("chaty-find");
+      reg.delete("chaty-find-now");
+      findRanges.current = [];
+      if (find.open && find.n) setFind((f) => ({ ...f, at: -1, n: 0 }));
       return;
     }
     let frame = requestAnimationFrame(() => {
@@ -1221,21 +1254,28 @@ export default function App() {
         const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
           acceptNode: (n) => (n.parentElement?.closest(".msg") && !n.parentElement.closest("button") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT),
         });
-        for (let n = walker.nextNode(); n && ranges.length < 400; n = walker.nextNode()) {
+        for (let n = walker.nextNode(); n && ranges.length < 1000; n = walker.nextNode()) {
           const text = (n.textContent ?? "").toLowerCase();
-          for (let i = text.indexOf(q); i >= 0 && ranges.length < 400; i = text.indexOf(q, i + q.length)) {
+          for (let i = text.indexOf(q); i >= 0 && ranges.length < 1000; i = text.indexOf(q, i + q.length)) {
             const r = document.createRange();
             r.setStart(n, i);
             r.setEnd(n, i + q.length);
             ranges.push(r);
           }
         }
+        // Only what can be seen counts: a match inside a folded thought or
+        // block has no place on screen.
+        const seen = ranges.filter((r) => r.getClientRects().length > 0);
+        findRanges.current = seen;
         reg.set("chaty-find", new HighlightCtor(...ranges));
+        if (find.open) {
+          setFind((f) => (f.n === seen.length && f.at < seen.length ? f : { ...f, n: seen.length, at: seen.length ? Math.max(0, Math.min(f.at, seen.length - 1)) : -1 }));
+          return;
+        }
+        reg.delete("chaty-find-now");
         if (findJumpRef.current !== conversationId) return;
         findJumpRef.current = null;
-        // The first match on screen — one inside a folded thought or block
-        // has no place to scroll to.
-        const first = ranges.find((r) => r.getClientRects().length > 0);
+        const first = seen[0];
         if (!first) return;
         followRef.current = false;
         const top = first.getBoundingClientRect().top - el.getBoundingClientRect().top;
@@ -1243,7 +1283,32 @@ export default function App() {
       });
     });
     return () => cancelAnimationFrame(frame);
-  }, [convQuery, conversationId, messages, appMode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convQuery, conversationId, messages, appMode, find.open, find.q]);
+  // The current match: marked more strongly and brought into view.
+  useEffect(() => {
+    const el = scrollRef.current;
+    const css = globalThis.CSS as unknown as { highlights?: Map<string, unknown> } | undefined;
+    const HighlightCtor = (globalThis as unknown as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+    if (!el || !css?.highlights || !HighlightCtor || !find.open) return;
+    const r = findRanges.current[find.at];
+    if (!r) {
+      css.highlights.delete("chaty-find-now");
+      return;
+    }
+    css.highlights.set("chaty-find-now", new HighlightCtor(r));
+    const box = el.getBoundingClientRect();
+    const at = r.getBoundingClientRect();
+    if (at.top < box.top + 60 || at.bottom > box.bottom - 120) {
+      followRef.current = false;
+      el.scrollTo({ top: el.scrollTop + at.top - box.top - el.clientHeight / 3, behavior: "instant" });
+    }
+  }, [find.open, find.at, find.n]);
+  const stepFind = (dir: 1 | -1) => setFind((f) => (f.n ? { ...f, at: (f.at + dir + f.n) % f.n } : f));
+  const closeFind = () => {
+    setFind({ open: false, q: "", at: -1, n: 0 });
+    (globalThis.CSS as unknown as { highlights?: Map<string, unknown> })?.highlights?.delete("chaty-find-now");
+  };
 
   useEffect(() => {
     localSave(SETTINGS_KEY, JSON.stringify(settings));
@@ -1985,6 +2050,75 @@ export default function App() {
     setStats(null);
     setAttachment(null);
     setAttachError("");
+  }
+
+  /** The open chat as a page of its own: what is on screen — the replies as
+   *  they are drawn, code coloured, formulas, diagrams — with the app's
+   *  styles and theme, and none of its buttons. Opens in any browser. */
+  async function exportConversationPage() {
+    setShowExport(false);
+    const src = scrollRef.current;
+    if (!src || !messages.length) return;
+    const conv = conversations.find((c) => c.id === conversationId);
+    const title = conv?.title ?? "Chaty";
+    const body = src.cloneNode(true) as HTMLElement;
+    // What is for using the app, not for reading the chat.
+    body
+      .querySelectorAll(
+        "button, .msg-actions, .user-actions, .stats, .think, .code-actions, .mermaid-actions, .table-actions, .page-card, .jump-bottom, .searching-hint, .cursor, .flags, iframe",
+      )
+      .forEach((n) => n.remove());
+    // Code folded in the app is whole on the page.
+    body.querySelectorAll(".code-fold-body").forEach((n) => (n.className = "code-fold-body"));
+    body.querySelectorAll(".code-fold-toggle").forEach((n) => n.remove());
+    let css = "";
+    for (const sheet of Array.from(document.styleSheets)) {
+      try {
+        for (const rule of Array.from(sheet.cssRules)) {
+          // The app's own fonts do not travel; the stacks fall back to the system's.
+          if (rule instanceof CSSFontFaceRule) continue;
+          css += `${rule.cssText}\n`;
+        }
+      } catch {
+        // a sheet from elsewhere
+      }
+    }
+    const root = document.documentElement;
+    const when = new Date().toLocaleString(lang === "zh" ? "zh-CN" : lang === "pt" ? "pt-BR" : "en-US", { dateStyle: "long", timeStyle: "short" });
+    const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+    const html = `<!DOCTYPE html>
+<html lang="${lang === "zh" ? "zh-CN" : lang}" data-theme="${root.dataset.theme ?? ""}" data-dark="${root.dataset.dark ?? ""}" data-light="${root.dataset.light ?? ""}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)}</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/katex.min.css">
+<style>${css}
+html, body { height: auto; overflow: auto; background: var(--bg); }
+body { margin: 0; }
+.export-page { max-width: 860px; margin: 0 auto; padding: 48px 28px 72px; }
+.export-page > header { margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.export-page > header h1 { margin: 0 0 6px; font-family: var(--font-display); font-size: 28px; color: var(--text); }
+.export-page > header p { margin: 0; font-family: var(--font-body); font-size: 13px; color: var(--faint); }
+.export-page .chat { overflow: visible !important; height: auto !important; padding: 0 !important; }
+.export-page .katex { cursor: auto; }
+.export-page .katex:hover { background: none; }
+</style>
+</head>
+<body>
+<div class="export-page">
+<header><h1>${esc(title)}</h1><p>${esc(when)} · Chaty${model ? ` · ${esc(model.name.replace(/\.gguf$/i, ""))}` : ""}</p></header>
+${body.outerHTML}
+</div>
+</body>
+</html>`;
+    const safe = title.replace(/[\\/:*?"<>|\n]+/g, "_").slice(0, 60) || "chat";
+    try {
+      await exportHtmlFile(`${safe}.html`, html);
+    } catch (e) {
+      console.error(e);
+      showNotice("error", t("exportFailed"));
+    }
   }
 
   function exportConversation(fmt: "md" | "json") {
@@ -3136,6 +3270,13 @@ export default function App() {
       run: () => setShowSettings(true),
     },
     {
+      id: "keys",
+      label: t("skTitle"),
+      hint: `${MOD}/`,
+      keywords: "shortcuts keyboard keys 快捷键 键盘",
+      run: () => setShowKeys(true),
+    },
+    {
       id: "side",
       label: sideHidden ? t("sideShow") : t("sideHide"),
       hint: `${MOD}\\`,
@@ -3244,6 +3385,13 @@ export default function App() {
   ].filter((c) => !(studioMode && chatOnly.has(c.id)));
   shortcutsRef.current = {
     side: toggleSide,
+    keys: () => setShowKeys((v) => !v),
+    find: () => {
+      if (appMode !== "chat" || studioMode || !conversationId) return false;
+      setFind((f) => ({ ...f, open: true }));
+      setFindKey((k) => k + 1);
+      return true;
+    },
     newItem: commands.find((c) => c.id === "new")?.run ?? (() => {}),
     settings: () => setShowSettings(true),
     mode: (m) => setAppMode(m),
@@ -3255,6 +3403,7 @@ export default function App() {
     <CodeCollapseContext.Provider value={settings.chatCollapseCode}>
     <div className="app">
       <CommandPalette open={showCmdk} onClose={() => setShowCmdk(false)} commands={commands} />
+      {showKeys && <ShortcutsSheet mac={IS_MACOS} onClose={() => setShowKeys(false)} />}
       <CanvasPanel
         open={canvasOpen}
         versions={canvasVersions}
@@ -3513,6 +3662,17 @@ export default function App() {
             />
           )}
           <div className="chat-wrap">
+          {find.open && appMode === "chat" && conversationId && (
+            <FindBar
+              key={findKey}
+              query={find.q}
+              onQuery={(q) => setFind((f) => ({ ...f, q, at: 0 }))}
+              index={find.at}
+              count={find.n}
+              onStep={stepFind}
+              onClose={closeFind}
+            />
+          )}
           <main className="chat" ref={scrollRef}>
             {messages.length === 0 ? (
               <div className="empty">
@@ -4470,6 +4630,7 @@ export default function App() {
                     <>
                       <button onClick={() => exportConversation("md")}>{t("exportMd")}</button>
                       <button onClick={() => exportConversation("json")}>{t("exportJson")}</button>
+                      <button onClick={() => void exportConversationPage()}>{t("exportPage")}</button>
                     </>
                   )}
                 </div>

@@ -1878,11 +1878,12 @@ export async function searchConversations(query: string): Promise<string[]> {
 export async function exportTextFile(
   defaultName: string,
   content: string,
-  ext: "md" | "json" | "jsonl",
+  ext: "md" | "json" | "jsonl" | "csv" | "txt",
 ): Promise<boolean> {
+  const name = { md: "Markdown", json: "JSON", jsonl: "JSON Lines", csv: "CSV", txt: "Text" }[ext];
   const path = await save({
     defaultPath: defaultName,
-    filters: [{ name: ext === "md" ? "Markdown" : ext === "jsonl" ? "JSON Lines" : "JSON", extensions: [ext] }],
+    filters: [{ name, extensions: [ext] }],
   });
   if (!path) return false;
   await invoke("write_text_file", { path, content });
@@ -1907,6 +1908,26 @@ export async function renameConversation(id: string, title: string): Promise<voi
 /** Pin/unpin a conversation (pinned ones sort to the top of the sidebar). */
 export async function setConversationPinned(id: string, pinned: boolean): Promise<void> {
   await invoke("set_conversation_pinned", { id, pinned });
+}
+
+/** Show a save dialog and write a code block as a file of its language. */
+export async function exportCodeFile(defaultName: string, ext: string, content: string): Promise<boolean> {
+  const path = await save({ defaultPath: defaultName, filters: ext ? [{ name: ext.toUpperCase(), extensions: [ext] }] : undefined });
+  if (!path) return false;
+  await invoke("write_text_file", { path, content });
+  return true;
+}
+
+/** Show a save dialog and write a diagram: SVG text, or PNG bytes (base64). */
+export async function exportDiagramFile(defaultName: string, kind: "svg" | "png", content: string): Promise<boolean> {
+  const path = await save({
+    defaultPath: defaultName,
+    filters: [{ name: kind.toUpperCase(), extensions: [kind] }],
+  });
+  if (!path) return false;
+  if (kind === "svg") await invoke("write_text_file", { path, content });
+  else await invoke("write_base64_file", { path, data: content });
+  return true;
 }
 
 /** Save base64 f32 mono PCM as a .wav (16-bit) via a native save dialog. */

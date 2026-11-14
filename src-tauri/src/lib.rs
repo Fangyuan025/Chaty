@@ -608,6 +608,7 @@ pub fn run() {
             commands::reset_gpu_layer_cap,
             commands::write_text_file,
             commands::write_wav_file,
+            commands::write_base64_file,
             download::list_hf_ggufs,
             download::list_hf_mlx,
             download::hf_search,

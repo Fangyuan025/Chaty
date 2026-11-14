@@ -18,8 +18,10 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import { mdBlocks, type BlockCache } from "../lib/mdBlocks";
-import { useI18n } from "../lib/i18n";
+import { detectLang, lookup, useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
+import { DiagramViewer } from "./DiagramViewer";
+import { exportCodeFile, exportDiagramFile, exportTextFile } from "../lib/ipc";
 import { copyToClipboard } from "../lib/clipboard";
 import { fitPop } from "../lib/popFit";
 import { fadeTiming, rehypeStreamFade } from "../lib/streamFade";
@@ -225,6 +227,55 @@ function keepSvg(key: string, svg: string) {
  *  time the reply is shown. */
 const mermaidResolved = new Map<string, Salvaged>();
 
+/** A diagram drawn again for saving: its labels as SVG text, not the HTML
+ *  Mermaid puts in by default — which other programs do not read, and which
+ *  stops WebKit from turning the drawing into a picture. The page's own
+ *  settings are put back at once. */
+async function diagramForSaving(text: string, dark: boolean): Promise<string> {
+  let out = "";
+  await mermaidTurn(async () => {
+    const mermaid = await mermaidIn(dark);
+    const theme = dark ? "dark" : "default";
+    mermaid.initialize({ startOnLoad: false, theme, securityLevel: "loose", htmlLabels: false, flowchart: { htmlLabels: false } } as Parameters<typeof mermaid.initialize>[0]);
+    try {
+      out = (await mermaid.render(`mmd-save-${mermaidSeq++}`, text)).svg;
+    } finally {
+      mermaid.initialize({ startOnLoad: false, theme, securityLevel: "loose" });
+    }
+  });
+  // Its own size, not its container's.
+  const doc = new DOMParser().parseFromString(out, "image/svg+xml");
+  const el = doc.documentElement;
+  const vb = (el.getAttribute("viewBox") ?? "").split(/[\s,]+/).map(Number);
+  if (vb[2] > 0 && vb[3] > 0) {
+    el.setAttribute("width", String(vb[2]));
+    el.setAttribute("height", String(vb[3]));
+  }
+  el.removeAttribute("style");
+  el.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  return new XMLSerializer().serializeToString(el);
+}
+
+/** The diagram as a PNG (base64), at twice its size, on the page's ground. */
+async function diagramPng(svg: string): Promise<string> {
+  const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
+  const w = Number(doc.documentElement.getAttribute("width")) || 800;
+  const h = Number(doc.documentElement.getAttribute("height")) || 600;
+  const img = new Image();
+  img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  await img.decode();
+  const k = 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(w * k);
+  canvas.height = Math.round(h * k);
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.scale(k, k);
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL("image/png").split(",")[1] ?? "";
+}
+
 /**
  * The diagram a finished fence is drawn as. As written; else with its
  * labels' spelling put right; else without the lines that stop it
@@ -332,6 +383,9 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
   });
   const [error, setError] = useState("");
   const [showSrc, setShowSrc] = useState(false);
+  const [viewing, setViewing] = useState(false);
+  /** The text the drawing on screen was drawn from (the diagram as it drew). */
+  const drawnText = useRef("");
   const [copied, setCopied] = useState(false);
   /** Lines of a finished diagram left out because they stopped it. */
   const [skipped, setSkipped] = useState<string[]>(() => (!building && source ? mermaidResolved.get(source)?.skipped ?? [] : []));
@@ -347,6 +401,7 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
           shown.current = key;
           setSvg(hit);
         }
+        drawnText.current = source;
         setError("");
         setSkipped([]);
         return;
@@ -403,6 +458,7 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
         const key = `${tag}\n${text}`;
         if (!alive) return;
         if (shown.current === key) {
+          drawnText.current = text;
           setError("");
           return;
         }
@@ -416,6 +472,7 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
         }
         if (alive) {
           shown.current = key;
+          drawnText.current = text;
           setSvg(out);
           setError("");
         }
@@ -454,6 +511,17 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
     return (
       <div className="mermaid-wrap">
         <div className="mermaid-actions">
+          {!showSrc && (
+            <button
+              className="code-btn icon"
+              type="button"
+              title={t("diagramOpen")}
+              aria-label={t("diagramOpen")}
+              onClick={() => setViewing(true)}
+            >
+              <Icon name="expand" size={13} strokeWidth={1.8} />
+            </button>
+          )}
           <button className="code-btn" type="button" onClick={() => setShowSrc((v) => !v)}>
             {showSrc ? t("mermaidShowDiagram") : t("mermaidShowSource")}
           </button>
@@ -477,7 +545,22 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
             <code>{code.trim()}</code>
           </pre>
         ) : (
-          <div className="mermaid-diagram" dangerouslySetInnerHTML={{ __html: svg }} />
+          <div
+            className="mermaid-diagram openable"
+            title={t("diagramOpen")}
+            onClick={() => setViewing(true)}
+            dangerouslySetInnerHTML={{ __html: svg }}
+          />
+        )}
+        {viewing && (
+          <DiagramViewer
+            svg={svg}
+            onClose={() => setViewing(false)}
+            onExport={async (kind) => {
+              const pure = await diagramForSaving(drawnText.current || code.trim(), dark);
+              return exportDiagramFile(`diagram.${kind}`, kind, kind === "svg" ? pure : await diagramPng(pure));
+            }}
+          />
         )}
         {/* What was left out, said quietly under the drawing — the lines on hover. */}
         {!showSrc && skipped.length > 0 && (
@@ -631,6 +714,25 @@ function PageCard({ html, lines }: { html: string; lines: number }) {
   );
 }
 
+/** The extension a block of this language is saved with. */
+const LANG_EXT: Record<string, string> = {
+  python: "py", py: "py", javascript: "js", js: "js", typescript: "ts", ts: "ts", tsx: "tsx", jsx: "jsx",
+  html: "html", htm: "html", css: "css", scss: "scss", json: "json", rust: "rs", rs: "rs", go: "go",
+  java: "java", c: "c", cpp: "cpp", "c++": "cpp", csharp: "cs", cs: "cs", swift: "swift", kotlin: "kt",
+  ruby: "rb", php: "php", bash: "sh", sh: "sh", shell: "sh", zsh: "sh", powershell: "ps1", ps1: "ps1",
+  sql: "sql", yaml: "yaml", yml: "yaml", toml: "toml", markdown: "md", md: "md", xml: "xml", svg: "svg",
+  vue: "vue", svelte: "svelte", lua: "lua", r: "r", dart: "dart", scala: "scala", dockerfile: "Dockerfile",
+  makefile: "Makefile", ini: "ini", csv: "csv", tex: "tex", latex: "tex",
+};
+
+/** A name to save a block as: a page by its title, anything else by its kind. */
+function codeFileName(lang: string, text: string, html: boolean): { name: string; ext: string } {
+  const ext = html ? "html" : LANG_EXT[lang] ?? "txt";
+  if (ext === "Dockerfile" || ext === "Makefile") return { name: ext, ext: "" };
+  const title = html ? pageTitleOf(text).replace(/[\\/:*?"<>|\n]+/g, " ").trim().slice(0, 60) : "";
+  return { name: `${title || (html ? "page" : "snippet")}.${ext}`, ext };
+}
+
 /** A fenced code block with copy + (for HTML) live-preview buttons, a
  *  language label, and (optional, Settings → Chat) think-panel-style collapse
  *  for long blocks: while the block streams in it shows a small focus window
@@ -640,6 +742,7 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   const ref = useRef<HTMLPreElement>(null);
   const focusRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
+  const [savedFile, setSavedFile] = useState(false);
   const [isHtml, setIsHtml] = useState(false);
   const [lines, setLines] = useState(0);
   // null = automatic (focus while streaming, folded when done); user clicks pin it.
@@ -728,6 +831,26 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
           </button>
         )}
         <button
+          className={`code-btn icon ${savedFile ? "done" : ""}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            const text = ref.current?.textContent ?? "";
+            const { name, ext } = codeFileName(lang, text, isHtml);
+            void exportCodeFile(name, ext, text)
+              .then((ok) => {
+                if (!ok) return;
+                setSavedFile(true);
+                setTimeout(() => setSavedFile(false), 1400);
+              })
+              .catch(console.error);
+          }}
+          title={t("saveCodeFile")}
+          aria-label={t("saveCodeFile")}
+          type="button"
+        >
+          <Icon name={savedFile ? "check" : "download"} size={14} strokeWidth={1.8} />
+        </button>
+        <button
           className={`code-btn icon ${copied ? "done" : ""}`}
           onClick={copy}
           title={t("copyCode")}
@@ -802,7 +925,65 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   );
 }
 
-const components = { pre: CodeBlock, sup: SupRenderer } as const;
+/** A formula in a reply copies its LaTeX when clicked (KaTeX keeps the
+ *  source beside what it draws) — what a formula is wanted for elsewhere.
+ *  One listener for the page, installed once. */
+if (typeof document !== "undefined" && !(globalThis as { __chatyTex?: boolean }).__chatyTex) {
+  (globalThis as { __chatyTex?: boolean }).__chatyTex = true;
+  document.addEventListener("click", (e) => {
+    const target = e.target as Element | null;
+    const k = target?.closest?.(".katex");
+    if (!k || target?.closest("a, button") || window.getSelection()?.toString()) return;
+    const tex = k.querySelector('annotation[encoding="application/x-tex"]')?.textContent?.trim();
+    if (!tex) return;
+    void copyToClipboard(tex).then(() => {
+      k.setAttribute("data-copied", lookup("formulaCopied", detectLang()));
+      setTimeout(() => k.removeAttribute("data-copied"), 1300);
+    });
+  });
+  document.addEventListener("mouseover", (e) => {
+    const k = (e.target as Element | null)?.closest?.(".katex");
+    if (k && !k.hasAttribute("title")) k.setAttribute("title", lookup("formulaCopyTip", detectLang()));
+  });
+}
+
+/** A table in a reply, with what people do with tables to hand: copied as
+ *  cells (tab-separated — it pastes into a spreadsheet as a table), or saved
+ *  as CSV (with a BOM, so Excel reads its Chinese). */
+function TableBlock({ node: _node, ...props }: ComponentPropsWithoutRef<"table"> & { node?: unknown }) {
+  const { t } = useI18n();
+  const ref = useRef<HTMLTableElement>(null);
+  const [done, setDone] = useState<"" | "copy" | "csv">("");
+  const flash = (what: "copy" | "csv") => {
+    setDone(what);
+    setTimeout(() => setDone(""), 1400);
+  };
+  const rows = () =>
+    [...(ref.current?.rows ?? [])].map((r) => [...r.cells].map((c) => (c.innerText || c.textContent || "").replace(/\s+/g, " ").trim()));
+  const copy = () => void copyToClipboard(rows().map((r) => r.join("\t")).join("\n")).then(() => flash("copy"));
+  const csv = async () => {
+    const cell = (c: string) => (/[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c);
+    const text = `\ufeff${rows().map((r) => r.map(cell).join(",")).join("\r\n")}`;
+    if (await exportTextFile("table.csv", text, "csv").catch(() => false)) flash("csv");
+  };
+  return (
+    <div className="table-wrap">
+      <div className="table-actions">
+        <button className="code-btn" type="button" title={t("tableCopyTip")} onClick={copy}>
+          {done === "copy" ? <Icon name="check" size={12} strokeWidth={2.2} /> : <Icon name="copy" size={12} strokeWidth={1.8} />}
+          {t("tableCopy")}
+        </button>
+        <button className="code-btn" type="button" title={t("tableCsvTip")} onClick={() => void csv()}>
+          {done === "csv" ? <Icon name="check" size={12} strokeWidth={2.2} /> : <Icon name="download" size={12} strokeWidth={1.8} />}
+          CSV
+        </button>
+      </div>
+      <table ref={ref} {...props} />
+    </div>
+  );
+}
+
+const components = { pre: CodeBlock, sup: SupRenderer, table: TableBlock } as const;
 
 /** How far into the block being written its text has been shown (see
  *  streamFade): a word starting before this is not new. One per block. */
