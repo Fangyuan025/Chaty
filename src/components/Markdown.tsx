@@ -661,18 +661,86 @@ function pageTitleOf(html: string): string {
  *  the page running on the app's own thread) — and what it then is goes to
  *  the app: a still of the page, shown from then on instead of the page
  *  running. Its frame loop is slowed to a few a second first: the still
- *  needs one frame, and a page's particles at full rate cost the app's. */
+ *  needs one frame, and a page's particles at full rate cost the app's.
+ *
+ *  Its clock runs four times fast — a loader that goes 600ms after load goes
+ *  in 150 — and it is pictured 450ms after load, 1.5s after its HTML is in
+ *  when something it loads never answers (load waits for every font and
+ *  image), and at 3s whatever happens: a page asking Google Fonts for its
+ *  fonts, somewhere that cannot reach them, never loaded, and its picture
+ *  was never made. A stylesheet still not in by then is left out of the
+ *  still — one that never answers kept the still from being painted at all.
+ *  A page with nothing in its body by then (a script it waits for never
+ *  came) says so, and is pictured from its source instead. */
 const STILL_SCRIPT = (token: string) => `<script>(function(){
-window.requestAnimationFrame=function(cb){return setTimeout(function(){cb(performance.now());},120);};
+var sT=window.setTimeout.bind(window);
+window.setTimeout=function(f,d){var a=Array.prototype.slice.call(arguments,2);d=+d||0;return sT.apply(null,[f,d>100?Math.max(100,d/4):d].concat(a));};
+window.requestAnimationFrame=function(cb){return sT(function(){cb(performance.now());},120);};
 window.cancelAnimationFrame=function(id){clearTimeout(id);};
-var T=${JSON.stringify(token)};function snap(){try{
+var T=${JSON.stringify(token)},fired=false;function snap(){if(fired)return;fired=true;try{
+if(!document.body||!document.body.children.length){parent.postMessage({chatyStill:T,fail:true},"*");return;}
 document.querySelectorAll("canvas").forEach(function(c){try{var r=c.getBoundingClientRect();var i=document.createElement("img");i.src=c.toDataURL();i.className=c.className;i.id=c.id;i.setAttribute("style",c.getAttribute("style")||"");i.style.width=r.width+"px";i.style.height=r.height+"px";c.replaceWith(i);}catch(e){}});
 document.querySelectorAll("script,noscript").forEach(function(s){s.remove();});
+document.querySelectorAll('link[rel~="stylesheet"]').forEach(function(l){if(!l.sheet)l.remove();else if(l.hasAttribute("data-chaty-aside")){l.removeAttribute("onload");l.removeAttribute("data-chaty-aside");l.media="all";}});
 var H=innerHeight+80,all=document.body?Array.prototype.slice.call(document.body.querySelectorAll("*")):[];
 if(all.length<30000){var tops=new Map();all.forEach(function(el){tops.set(el,el.getBoundingClientRect().top);});
 all.filter(function(el){var p=el.parentElement;return tops.get(el)>H&&p&&(p===document.body||tops.get(p)<=H);}).forEach(function(el){el.remove();});}
-parent.postMessage({chatyStill:T,html:"<!DOCTYPE html>"+document.documentElement.outerHTML},"*");}catch(e){}}
-if(document.readyState==="complete")setTimeout(snap,1500);else addEventListener("load",function(){setTimeout(snap,1500);});})()</script>`;
+parent.postMessage({chatyStill:T,html:"<!DOCTYPE html>"+document.documentElement.outerHTML},"*");}catch(e){parent.postMessage({chatyStill:T,fail:true},"*");}}
+addEventListener("load",function(){sT(snap,450);});
+document.addEventListener("DOMContentLoaded",function(){sT(snap,1500);});
+sT(snap,3000);})()</script>`;
+
+/** A page's stylesheets from elsewhere, made not to hold it up: a stylesheet
+ *  link waits no script, an @import in a style becomes such a link. Either,
+ *  from a host that never answers, kept the page's scripts from ever running
+ *  — and so its picture from ever being made. */
+const IMPORT_RULE = /@import\s+(?:url\(\s*(["']?)([^"')]+)\1\s*\)|(["'])(.*?)\3)[^;]*;/gi;
+
+export function sheetsAside(html: string): string {
+  const external = /^(https?:)?\/\//i;
+  let out = html.replace(/<style([^>]*)>([\s\S]*?)<\/style>/gi, (all, attrs: string, css: string) => {
+    const links: string[] = [];
+    // A URL may hold semicolons (Google Fonts: wght@400;600): one quoted
+    // ends at its quote, one in url() at its parenthesis.
+    const rest = css.replace(IMPORT_RULE, (rule, _q, inUrl?: string, _q2?: string, quoted?: string) => {
+      const url = (inUrl ?? quoted ?? "").trim();
+      if (!external.test(url)) return rule;
+      links.push(`<link rel="stylesheet" href="${url.replace(/"/g, "&quot;")}" media="print" onload="this.media='all'" data-chaty-aside>`);
+      return "";
+    });
+    return links.length ? links.join("") + `<style${attrs}>${rest}</style>` : all;
+  });
+  out = out.replace(/<link\b[^>]*>/gi, (tag) => {
+    if (!/\brel\s*=\s*["']?[^"'>]*stylesheet/i.test(tag) || /\bmedia\s*=/i.test(tag) || /\bonload\s*=/i.test(tag)) return tag;
+    const href = tag.match(/\bhref\s*=\s*["']?([^"'\s>]+)/i)?.[1] ?? "";
+    if (!external.test(href)) return tag;
+    return tag.replace(/\s*\/?>$/, ` media="print" onload="this.media='all'" data-chaty-aside>`);
+  });
+  return out;
+}
+
+/** A page pictured from its source, without running it: what a page whose
+ *  picture could not be made is shown as — never the card's grey ground for
+ *  good. Its stylesheets from elsewhere are left out (it is here because
+ *  something it loads did not come). */
+function plainStill(html: string): string | null {
+  try {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    doc.querySelectorAll("script,noscript").forEach((el) => el.remove());
+    doc.querySelectorAll('link[rel~="stylesheet"]').forEach((el) => {
+      if (/^(https?:)?\/\//i.test(el.getAttribute("href") ?? "")) el.remove();
+    });
+    doc.querySelectorAll("style").forEach((el) => {
+      el.textContent = (el.textContent ?? "").replace(IMPORT_RULE, (rule, _q, inUrl?: string, _q2?: string, quoted?: string) =>
+        /^(https?:)?\/\//i.test((inUrl ?? quoted ?? "").trim()) ? "" : rule,
+      );
+    });
+    if (!doc.body?.children.length && !doc.body?.textContent?.trim()) return null;
+    return intoHead("<!DOCTYPE html>" + doc.documentElement.outerHTML, STILL_STYLE);
+  } catch {
+    return null;
+  }
+}
 
 /** A still is a page without scripts, its animations stopped where they end
  *  (a fade-in shows faded in) and nothing moving. */
@@ -695,6 +763,14 @@ function intoHead(html: string, insert: string): string {
  * ever the still, never the page running.
  */
 let lastActivity = 0;
+/** The last time the user did something: scrolled, pressed, dragged, typed.
+ *  Pictures are made and put up around this, not around everything that
+ *  changes on the page: a reply still being written under a finished page
+ *  held its picture back until the reply ended — half a minute of grey for
+ *  a page with its explanation after it — and anything on screen that ticks
+ *  (a timer, a counter) kept it grey for good. A mouse moving over the
+ *  window is not scrolling; one dragging, a scrollbar say, is. */
+let lastInput = 0;
 let watchingActivity = false;
 let stillHost: HTMLDivElement | null = null;
 function watchActivity() {
@@ -703,11 +779,17 @@ function watchActivity() {
   const mark = () => {
     lastActivity = performance.now();
   };
+  const input = (e: Event) => {
+    if (e.type === "pointermove" && !(e as PointerEvent).buttons) return;
+    lastInput = lastActivity = performance.now();
+  };
   // Watched from now: what happened before is not known to have been quiet.
   mark();
-  for (const ev of ["wheel", "scroll", "keydown", "pointerdown", "pointermove", "touchmove"]) {
-    window.addEventListener(ev, mark, { capture: true, passive: true });
+  lastInput = lastActivity;
+  for (const ev of ["wheel", "keydown", "pointerdown", "pointermove", "touchmove"]) {
+    window.addEventListener(ev, input, { capture: true, passive: true });
   }
+  window.addEventListener("scroll", mark, { capture: true, passive: true });
   // A reply being written changes the page all the time.
   new MutationObserver((records) => {
     if (records.some((r) => !stillHost?.contains(r.target) && !(r.target as Element).closest?.(".page-thumb"))) mark();
@@ -716,6 +798,9 @@ function watchActivity() {
 const quietFor = (ms: number) => performance.now() - lastActivity >= ms;
 const waitQuiet = async (ms: number) => {
   while (!quietFor(ms)) await new Promise((r) => setTimeout(r, 200));
+};
+const waitStill = async (ms: number) => {
+  while (performance.now() - lastInput < ms) await new Promise((r) => setTimeout(r, 50));
 };
 
 /** Make a still of one page: null when it could not be made, "again" when it
@@ -745,16 +830,17 @@ function makeStill(html: string): Promise<string | null | "again"> {
       resolve(v);
     };
     const onMessage = (e: MessageEvent) => {
-      const d = e.data as { chatyStill?: string; html?: string } | null;
-      if (e.source !== frame.contentWindow || !d || d.chatyStill !== token || typeof d.html !== "string") return;
-      finish(intoHead(d.html, STILL_STYLE));
+      const d = e.data as { chatyStill?: string; html?: string; fail?: boolean } | null;
+      if (e.source !== frame.contentWindow || !d || d.chatyStill !== token) return;
+      if (d.fail) finish(null);
+      else if (typeof d.html === "string") finish(intoHead(d.html, STILL_STYLE));
     };
     window.addEventListener("message", onMessage);
     const watch = setInterval(() => {
-      if (lastActivity > began) finish("again");
-      else if (performance.now() - began > 8000) finish(null);
-    }, 100);
-    frame.srcdoc = intoHead(withStorageShim(html), STILL_SCRIPT(token));
+      if (lastInput > began) finish("again");
+      else if (performance.now() - began > 5000) finish(null);
+    }, 50);
+    frame.srcdoc = intoHead(withStorageShim(sheetsAside(html)), STILL_SCRIPT(token));
     stillHost.appendChild(frame);
   });
 }
@@ -832,14 +918,17 @@ async function pumpStills() {
     for (let html = stillQueue.shift(); html !== undefined; html = stillQueue.shift()) {
       let made: string | null | "again" = "again";
       for (let tries = 0; made === "again" && tries < 20; tries++) {
-        await waitQuiet(700);
+        await waitStill(300);
         made = await makeStill(html);
       }
-      const still = made === "again" ? null : made;
+      const real = made === "again" ? null : made;
+      // Not made: pictured from its source, for this session (kept on disk
+      // only a real picture, so the next start tries again).
+      const still = real ?? plainStill(html);
       if (still) {
         pageStills.set(html, still);
         if (pageStills.size > 48) pageStills.delete(pageStills.keys().next().value as string);
-        void storeStill(html, still);
+        if (real) void storeStill(html, real);
       }
       for (const w of stillWaiters.get(html) ?? []) w(still);
       stillWaiters.delete(html);
@@ -918,8 +1007,8 @@ let swapChain: Promise<void> = Promise.resolve();
 function swapTurn(): Promise<void> {
   const turn = swapChain.then(async () => {
     watchActivity();
-    await waitQuiet(300);
-    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 60)));
+    await waitStill(200);
+    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 30)));
   });
   swapChain = turn.catch(() => {});
   return turn;

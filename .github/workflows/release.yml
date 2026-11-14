@@ -351,7 +351,9 @@ jobs:
 
             ## What replies are made of
 
-            A finished single-file page folds to a picture of itself and its title. Tables copy
+            A finished single-file page folds to a picture of itself and its title, up about half
+            a second after the page is written — even when its fonts come from somewhere that
+            does not answer. Tables copy
             as cells that paste into a spreadsheet, or save as CSV. Code saves as a file of its
             language, and a formula copies its LaTeX when clicked.
 
@@ -363,7 +365,7 @@ jobs:
 
             ## Nothing stutters
 
-            A page's picture is made out of sight while nothing moves, and kept across restarts;
+            A page's picture is made out of sight while you are not scrolling, and kept across restarts;
             a long code reply no longer hitches as its block closes; the first diagram or formula
             of a session no longer hitches as it is drawn; and a diagram wrong in many lines, or a
             long page, no longer freezes the window while it is worked out.

@@ -1516,6 +1516,11 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
         "<think>验证。</think>\n" + call("bash", { note: "改完了,跑一下测试确认没破坏原有行为。", command: "npm test" }),
         "<think>都通过了。</think>\n完成:新增 `src/tokens.ts`,`parser.ts` 改为调用它,4 个测试全部通过。",
       ];
+      // 长说明: the explanation a model writes after a page, for as long as
+      // it takes — the page's picture is not to wait for it.
+      const longTail = /长说明|long explanation/i.test(last)
+        ? "\n\n" + Array.from({ length: 16 }, (_, i) => `${i + 1}. 这一段说明页面里的第 ${i + 1} 处设计:配色、间距、字号与交互,以及为什么这样安排更适合阅读。`).join("\n")
+        : "";
       if (wantsDemo && !isTitleReq) reply = DEMO[Math.min(demoStep, DEMO.length - 1)];
       else if (wantsLongPage && !isTitleReq) {
         const items = Array.from({ length: 600 }, (_, i) => `    <li class="item"><b>第 ${i + 1} 项</b> <span>说明文字 ${i}</span></li>`).join("\n");
@@ -1547,6 +1552,14 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           "  <section class=\"hero\">\n    <h1>让光成为你的<br>第一种材料</h1>\n    <p>我们为品牌设计会呼吸的数字体验:动效、排版与色彩,一起讲一个故事。</p>\n    <a class=\"cta\" href=\"#\">开始合作</a>\n  </section>\n" +
           "  <section class=\"cards\">\n    <div class=\"card\"><h3>品牌视觉</h3><p>从标志到整套视觉语言。</p></div>\n    <div class=\"card\"><h3>交互动效</h3><p>每一次点击都有回应。</p></div>\n    <div class=\"card\"><h3>网站开发</h3><p>快速、可访问、易维护。</p></div>\n  </section>\n" +
           "</body>\n</html>\n```\n\n用浏览器直接打开即可。";
+        // 连不上: its fonts asked of a host that never answers (a
+        // non-routable address), as Google Fonts is where it cannot be
+        // reached — what kept a page's picture grey for good.
+        if (/连不上|unreachable/i.test(last)) {
+          reply = reply
+            .replace("<style>\n", "<link href=\"http://10.255.255.1/css2?family=Inter:wght@400;600&display=swap\" rel=\"stylesheet\">\n  <style>\n    @import url('http://10.255.255.1/x?family=A:wght@3;4');\n")
+            .replace("</body>", "  <script>document.querySelector('.cta').textContent = '开始合作 →';</script>\n</body>");
+        }
       } else if (wantsPage && !isTitleReq) {
         reply =
           "一个单文件页面:\n\n```html\n<!DOCTYPE html>\n<html lang=\"zh\">\n<head>\n  <meta charset=\"utf-8\">\n  <style>\n" +
@@ -1641,7 +1654,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       // goes out as a token before the prompt is read.
       const thinkOn = (args?.request as { params?: { think?: boolean } } | undefined)?.params?.think;
       const opened = thinkOn && reply.startsWith("<think>\n") ? "<think>\n" : "";
-      reply = reply.slice(opened.length);
+      reply = reply.slice(opened.length) + longTail;
       mockGenStop = false;
       return (async () => {
         emit({ type: "started" });

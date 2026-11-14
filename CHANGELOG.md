@@ -27,7 +27,11 @@
   picture of itself and its title instead of its first lines of code — run
   once in a sandbox until its scripts have built it, then kept as a still, so
   a conversation full of pages is not a conversation full of pages running.
-  Open it for the code, as before.
+  Open it for the code, as before. The picture is up about half a second
+  after the page is written, while the rest of the reply is still coming —
+  and a page whose fonts or scripts come from somewhere that does not answer
+  (Google Fonts, where it cannot be reached) is pictured all the same,
+  within a couple of seconds, where it used to stay grey.
 - **Tables copy as tables.** Over a table's corner: copied as cells, it pastes
   into a spreadsheet as one; or saved as CSV that Excel opens with its Chinese
   intact.
@@ -49,13 +53,12 @@
 ### Nothing stutters
 
 - **A page's picture appears without a hitch.** It is made out of sight, one
-  page at a time, only once no reply is being written and nothing has been
-  touched for a moment — any scroll or keystroke, and it stops to be made
-  again later — with the page's own animation slowed to a few frames a second
-  while it builds; it is put on screen when nothing moves, one at a time; and
-  it is kept across restarts, so a conversation opened again shows its pages
-  without running them. Made in the open, beside a reply still streaming, a
-  page cost the app its frames as its picture came.
+  page at a time, while you are not scrolling or typing — any scroll or
+  keystroke, and it stops to be made again a moment later — with the page's
+  own animation slowed to a few frames a second while it builds; it is put
+  on screen one at a time; and it is kept across restarts, so a conversation
+  opened again shows its pages without running them. Made in the open, a page
+  cost the app its frames as its picture came.
 - **A long code reply no longer hitches as its block closes.** The code stays
   drawn line by line, as it streamed, where it used to be highlighted and
   built again whole the moment its fence closed — the stutter at the end of
