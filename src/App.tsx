@@ -3946,7 +3946,8 @@ ${body.outerHTML}
                         </button>
                       </div>
                     )}
-                    {m.model && (
+                    {/* Once it is written, like the actions beside it. */}
+                    {m.model && streamingId !== m.id && (
                       <span className="msg-model" title={m.model}>
                         {m.model}
                       </span>
