@@ -2690,18 +2690,17 @@ export function CodeMode({
                 ? activityOf({ id: "", call: { name: callingTool as never, args: {} }, status: "running" })
                 : { key: "actUsingTools" }
               : speaking
-                ? null
+                ? { key: "actReplying" }
                 : { key: "actThinking" };
-    const activeKey = turnLive && !speaking && tail?.kind === "tools" ? tail.key : null;
+    // Thinking or replying after a run is that run going on: its line says
+    // so, over the words. A call written after words is the next run's, under
+    // them.
+    const activeKey = turnLive && tail?.kind === "tools" && (!speaking || activity?.key === "actReplying") ? tail.key : null;
     // The thinking that is not a step's — before the answer, or before a call
     // still being written — goes in the last run, out of sight like the rest.
     // A turn with no run shows it as any reply does.
     const lastRun = [...segs].reverse().find((s) => s.kind === "tools")?.key ?? null;
-    // While it speaks, the line under its words says so: the line the call
-    // it may be speaking before then carries on — where it went with every
-    // sentence before a call, and came back.
-    const bottom: Activity | null = activity && !activeKey ? activity : turnLive && speaking ? { key: "actReplying" } : null;
-    return { segs, activeKey, activity, bottom, lastRun, nextRun: `run-${runs}`, turnLive };
+    return { segs, activeKey, activity, bottom: activity && !activeKey ? activity : null, lastRun, nextRun: `run-${runs}`, turnLive };
   };
 
   // Either separator: split on "/" alone, a Windows workspace showed its whole
@@ -3132,22 +3131,27 @@ export function CodeMode({
                         </div>
                       ) : null;
                       if (f.turnLive) {
-                        return [
-                          ...(words ? [words] : []),
-                          f.bottom ? (
-                            <ToolRun
-                              key={f.nextRun}
-                              steps={[]}
-                              activity={f.bottom}
-                              thinking={f.bottom.key === "actThinking" ? m.liveThinking : undefined}
-                            >
-                              <Exit ms={260} collapse>{m.liveThinking ? <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} /> : null}</Exit>
-                            </ToolRun>
-                          ) : (
-                            // Thinking in the run going on: no line of its own.
-                            <ToolRun key={f.nextRun} steps={[]} hidden />
-                          ),
-                        ];
+                        const line = f.bottom ? (
+                          <ToolRun
+                            key={f.nextRun}
+                            steps={[]}
+                            activity={f.bottom}
+                            thinking={f.bottom.key === "actThinking" ? m.liveThinking : undefined}
+                          >
+                            <Exit ms={260} collapse>{m.liveThinking ? <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} /> : null}</Exit>
+                          </ToolRun>
+                        ) : (
+                          // Thinking or replying in the run going on: no line
+                          // of its own.
+                          <ToolRun key={f.nextRun} steps={[]} hidden />
+                        );
+                        // Replying with no run before it: the line over the
+                        // words, as a run's line is when it replies after one —
+                        // and, the turn over with no call, the thought's line
+                        // there. A call the words come before is under them.
+                        return f.bottom?.key === "actReplying"
+                          ? [line, ...(words ? [words] : [])]
+                          : [...(words ? [words] : []), line];
                       }
                       // A turn that called no tool keeps its thought in a run
                       // of its own, over its answer: one line, opened by hand.

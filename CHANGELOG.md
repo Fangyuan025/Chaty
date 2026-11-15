@@ -138,10 +138,11 @@
   that goes on past three seconds opens under its run's line — its newest
   words in a short window, as they are written — and folds away as the model
   moves on; the run opened shows its steps as before. While the model
-  speaks, the line under its words says so and carries on as the call it
-  speaks before begins, the words staying where they are — the line went
-  and came back with every sentence before a call, and the words moved
-  under the runs and came in again.
+  speaks, the line over its words says so — the last run's, as when it
+  thinks after one — and the run a call begins comes in under them as a
+  note does; the words stay where they are. The line went and came back
+  with every sentence before a call, and the words moved under the runs and
+  came in again.
 - **Reduce motion in Settings stills all of it**, as the system's setting
   did: the heights and widths moved from script went on moving with only the
   app's own setting on.
