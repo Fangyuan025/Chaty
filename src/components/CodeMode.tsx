@@ -112,6 +112,7 @@ import { ContextRing } from "./ContextRing";
 import { Exit } from "./Exit";
 import { UserCopy } from "./UserText";
 import { prefersStill, shrinking, useHeightOnChange } from "../lib/smoothHeight";
+import { BeforeCommit, Hold, movedByCommit, watchScrollInput } from "../lib/followEnd";
 
 interface CodeMsg {
   id: string;
@@ -814,7 +815,7 @@ function ToolRun({
 }
 
 /** How long a run's thought goes on before it is shown under the run's line. */
-const PEEK_AFTER_MS = 3000;
+const PEEK_AFTER_MS = 2000;
 
 /** The thought being written, under a folded run's line: a short window kept
  *  at its newest words, faded above, each word fading in (see ThinkPanel). */
@@ -832,8 +833,8 @@ function ThinkPeek({ text }: { text: string }) {
   );
 }
 
-/** A run's line from one state to the next: the new words out of a soft
- *  blur as the last ones go into one, over each other, and the line's width
+/** A run's line from one state to the next: the new words fading in as the
+ *  last ones fade out, over each other, and the line's width
  *  going to the new one's — so the caret after it moves there rather than
  *  jumping. Measured while the run goes on (`measure`) and as its state
  *  changes; a run that is over does not change. */
@@ -1368,28 +1369,81 @@ export function CodeMode({
   const followRef = useRef(true);
   /** Where the last pin left the view (see pinEnd). */
   const pinnedTop = useRef(-1);
+  /** The user's input that can scroll the transcript (see followEnd). */
+  const scrollInput = useRef<ReturnType<typeof watchScrollInput> | null>(null);
+  const pinNow = useCallback((el: HTMLElement) => {
+    el.scrollTop = el.scrollHeight;
+    pinnedTop.current = el.scrollTop;
+  }, []);
+  const hold = useRef<Hold | null>(null);
+  if (!hold.current) {
+    hold.current = new Hold(() => {
+      const el = scrollRef.current;
+      if (el && followRef.current) pinNow(el);
+    });
+  }
+  const letGo = useCallback(() => {
+    followRef.current = false;
+    pinnedTop.current = -1;
+    hold.current?.clear();
+  }, []);
+  /** The view found higher than the last pin left it, not at the end, and
+   *  not by the page folding something away on its own (which moves a view
+   *  kept at the end up with it). */
+  const movedUp = (el: HTMLElement) =>
+    pinnedTop.current >= 0 &&
+    !shrinking() &&
+    el.scrollTop < pinnedTop.current - 12 &&
+    el.scrollHeight - el.scrollTop - el.clientHeight > 12;
+  /** Moved up with no change of React's to blame: the user's, if they did
+   *  something that scrolls — and if nothing yet, held for their wheel's
+   *  event to arrive (see followEnd). */
+  const judgeMove = useCallback(
+    (el: HTMLElement) => {
+      if (scrollInput.current?.recent()) letGo();
+      else hold.current?.start(el);
+    },
+    [letGo],
+  );
   /** Keep the view at the end while following — unless it was moved up since
    *  the last pin and is not at the end: the user scrolled, and their wheel's
    *  event, handled behind the turn being drawn, has not arrived yet. Pinned
    *  anyway, a turn of the wheel during a run moved the view a line, or not
    *  at all. (Content that shrinks leaves the view at the end: not this.) */
-  const pinEnd = useCallback((el: HTMLElement) => {
-    if (
-      followRef.current &&
-      pinnedTop.current >= 0 &&
-      !shrinking() &&
-      el.scrollTop < pinnedTop.current - 12 &&
-      el.scrollHeight - el.scrollTop - el.clientHeight > 12
-    ) {
-      followRef.current = false;
-    }
-    if (followRef.current) {
-      el.scrollTop = el.scrollHeight;
-      pinnedTop.current = el.scrollTop;
-    } else {
-      pinnedTop.current = -1;
-    }
+  const pinEnd = useCallback(
+    (el: HTMLElement) => {
+      if (!followRef.current) {
+        pinnedTop.current = -1;
+        return;
+      }
+      const h = hold.current;
+      if (h?.active) {
+        if (h.further(el)) letGo();
+        return;
+      }
+      if (movedUp(el)) {
+        judgeMove(el);
+        return;
+      }
+      pinNow(el);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [letGo, judgeMove, pinNow],
+  );
+  /** Where the view was as React began changing the page (see BeforeCommit). */
+  const commitTop = useRef<number | null>(null);
+  const noteCommit = useCallback(() => {
+    commitTop.current = scrollRef.current ? scrollRef.current.scrollTop : null;
   }, []);
+  // First of the layout effects: a view the change itself moved up (see
+  // movedByCommit) goes back to the end before anything reads it as the
+  // user's scroll, and before it is drawn.
+  useLayoutEffect(() => {
+    const before = commitTop.current;
+    commitTop.current = null;
+    const el = scrollRef.current;
+    if (el && followRef.current && !hold.current?.active && movedByCommit(el, before, pinnedTop.current)) pinNow(el);
+  });
   /** How far the end is from view, and whether that is far enough to offer the
    *  way back. Recomputed from the CONTENT as well as from scrolling: a
    *  transcript shrinks — a thinking panel folds itself away, a live card is
@@ -1407,21 +1461,29 @@ export function CodeMode({
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    const input = watchScrollInput(el);
+    scrollInput.current = input;
     const dist = () => el.scrollHeight - el.scrollTop - el.clientHeight;
     const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) followRef.current = false;
+      if (e.deltaY < 0) letGo();
       else if (dist() < 40) followRef.current = true;
     };
     const onScroll = () => {
       // Covers scrollbar drags and keyboard scrolling; programmatic pins land
-      // at the bottom, so they only ever re-arm.
+      // at the bottom, so they only ever re-arm. Far from the end, or moved
+      // up since the last pin, it is the user's only if they did something
+      // (see judgeMove) — WebKit moves it too.
       const d = dist();
-      if (followRef.current && pinnedTop.current >= 0 && !shrinking() && el.scrollTop < pinnedTop.current - 12 && d > 12) {
-        followRef.current = false;
-        pinnedTop.current = -1;
+      const h = hold.current;
+      if (followRef.current) {
+        if (h?.active) {
+          if (h.further(el)) letGo();
+        } else if (movedUp(el) || (d > 240 && pinnedTop.current >= 0)) judgeMove(el);
       }
-      if (d < 4) followRef.current = true;
-      else if (d > 240) followRef.current = false;
+      if (d < 4) {
+        followRef.current = true;
+        h?.clear();
+      }
       syncJump();
     };
     el.addEventListener("wheel", onWheel, { passive: true });
@@ -1429,8 +1491,12 @@ export function CodeMode({
     return () => {
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("scroll", onScroll);
+      input.dispose();
+      scrollInput.current = null;
+      hold.current?.clear();
     };
-  }, [syncJump]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncJump, letGo, judgeMove]);
 
   // BEFORE the browser paints: a session that opens at its end must never be
   // drawn anywhere else first. Done after the paint (useEffect), switching
@@ -1446,6 +1512,7 @@ export function CodeMode({
     if (switched) {
       followRef.current = true;
       pinnedTop.current = -1;
+      hold.current?.clear();
       showJumpRef.current = false;
       setShowJump(false);
     }
@@ -2900,6 +2967,7 @@ export function CodeMode({
 
         <div className="code-wrap">
         <div className="code-scroll" ref={scrollRef}>
+          <BeforeCommit onBefore={noteCommit}>
           {msgs.length === 0 ? (
             <div className="cm-welcome">
               <div className="cm-welcome-title">{t("cmWelcome")}</div>
@@ -3163,6 +3231,7 @@ export function CodeMode({
             })}
             </div>
           )}
+          </BeforeCommit>
         </div>
         <JumpBottom
           shown={showJump && msgs.length > 0}

@@ -10,6 +10,7 @@ import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextRing } from "./components/ContextRing";
 import { Exit } from "./components/Exit";
 import { prefersStill, shrinking } from "./lib/smoothHeight";
+import { BeforeCommit, Hold, movedByCommit, watchScrollInput } from "./lib/followEnd";
 import { maybeAutorun } from "./lib/debugProbe";
 import { RECENCY_LABEL, recencyGroups } from "./lib/recency";
 
@@ -807,6 +808,23 @@ export default function App() {
   /** Where the last pin to the bottom left the view. Above it, and not at
    *  the bottom, the user moved it: nothing else scrolls the transcript up. */
   const pinnedTop = useRef(-1);
+  /** The user's input that can scroll the transcript, the view held while it
+   *  is learned whether they moved it, and where it was as React began
+   *  changing the page (see followEnd). */
+  const scrollInput = useRef<ReturnType<typeof watchScrollInput> | null>(null);
+  const followHold = useRef<Hold | null>(null);
+  if (!followHold.current) {
+    followHold.current = new Hold(() => {
+      const el = scrollRef.current;
+      if (!el || !followRef.current) return;
+      el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+      pinnedTop.current = el.scrollTop;
+    });
+  }
+  const commitTop = useRef<number | null>(null);
+  const noteCommit = useCallback(() => {
+    commitTop.current = scrollRef.current ? scrollRef.current.scrollTop : null;
+  }, []);
   /** The running chat turn's stop state — see handleStop. */
   const turnStopRef = useRef<{ stopped: boolean; wake: () => void } | null>(null);
   const showJumpRef = useRef(false);
@@ -1260,9 +1278,13 @@ export default function App() {
     const el = scrollRef.current;
     if (!el) return;
     const dist = () => el.scrollHeight - el.scrollTop - el.clientHeight;
+    const input = watchScrollInput(el);
+    scrollInput.current = input;
+    const hold = followHold.current;
     const onWheel = (e: WheelEvent) => {
       if (e.deltaY < 0) {
         followRef.current = false;
+        hold?.clear();
         releasedAt.current = performance.now();
         // A smooth pin still on its way down would carry the view back to
         // the bottom under the user's wheel: stop it where it is.
@@ -1278,14 +1300,28 @@ export default function App() {
       // a wheel-up, when the bottom is where an animation left the view.
       const d = dist();
       // Moved up from where it was pinned, and not by content shrinking (that
-      // leaves it at the bottom): the user's doing, whatever brought it here.
-      if (followRef.current && pinnedTop.current >= 0 && !shrinking() && el.scrollTop < pinnedTop.current - 12 && d > 12) {
-        followRef.current = false;
-        releasedAt.current = performance.now();
-      }
-      if (d < 4) {
-        if (performance.now() - releasedAt.current > 800) followRef.current = true;
+      // leaves it at the bottom), or far from the end: the user's doing if
+      // they did something that scrolls — WebKit moves it too, and with
+      // nothing done it is held a moment for their wheel's event, then put
+      // back (see followEnd).
+      if (followRef.current && pinnedTop.current >= 0) {
+        if (hold?.active) {
+          if (hold.further(el)) {
+            followRef.current = false;
+            hold.clear();
+            releasedAt.current = performance.now();
+          }
+        } else if ((!shrinking() && el.scrollTop < pinnedTop.current - 12 && d > 12) || d > 240) {
+          if (input.recent()) {
+            followRef.current = false;
+            releasedAt.current = performance.now();
+          } else hold?.start(el);
+        }
       } else if (d > 240) followRef.current = false;
+      if (d < 4) {
+        hold?.clear();
+        if (performance.now() - releasedAt.current > 800) followRef.current = true;
+      }
       const jump = d > 320;
       if (jump !== showJumpRef.current) {
         showJumpRef.current = jump;
@@ -1297,8 +1333,25 @@ export default function App() {
     return () => {
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("scroll", onScroll);
+      input.dispose();
+      scrollInput.current = null;
+      hold?.clear();
     };
   }, []);
+
+  // Before it is drawn: a view kept at the end that the change React just
+  // made moved up (WebKit clamping it to the page without a block taken
+  // out before what replaces it is put in — a code block folding as its
+  // fence closes) goes back to the end, where after the paint it was read
+  // as the user's scroll and the following ended (see followEnd).
+  useLayoutEffect(() => {
+    const before = commitTop.current;
+    commitTop.current = null;
+    const el = scrollRef.current;
+    if (!el || !followRef.current || followHold.current?.active || !movedByCommit(el, before, pinnedTop.current)) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+    pinnedTop.current = el.scrollTop;
+  });
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -1342,6 +1395,18 @@ export default function App() {
     // the end away from it in the same frame — read as a scroll, that ended
     // the following as a thought folded (the answer then streamed out of
     // sight). A few pixels are the page's own small reflows, not a wheel.
+    // Not either with nothing done that scrolls: WebKit moves the view too.
+    // Held a moment for the wheel's event, then put back (see followEnd).
+    const hold = followHold.current;
+    if (structural) hold?.clear();
+    if (!structural && followRef.current && hold?.active) {
+      if (hold.further(el)) {
+        followRef.current = false;
+        hold.clear();
+        releasedAt.current = performance.now();
+      }
+      return;
+    }
     if (
       !structural &&
       followRef.current &&
@@ -1350,8 +1415,13 @@ export default function App() {
       el.scrollTop < pinnedTop.current - 12 &&
       el.scrollHeight - el.scrollTop - el.clientHeight > 12
     ) {
-      followRef.current = false;
-      releasedAt.current = performance.now();
+      if (scrollInput.current?.recent()) {
+        followRef.current = false;
+        releasedAt.current = performance.now();
+      } else {
+        hold?.start(el);
+        return;
+      }
     }
     if (followRef.current) {
       const smooth = structural && !switched;
@@ -3862,6 +3932,7 @@ ${body.outerHTML}
             />
           )}</Exit>
           <main className="chat" ref={scrollRef}>
+            <BeforeCommit onBefore={noteCommit}>
             {messages.length === 0 ? (
               <div className="empty">
                 <div className="empty-hero">
@@ -4033,6 +4104,7 @@ ${body.outerHTML}
                 ),
               )
             )}
+            </BeforeCommit>
           </main>
           <JumpBottom
             shown={showJump && messages.length > 0}

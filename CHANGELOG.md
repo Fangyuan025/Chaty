@@ -94,6 +94,13 @@
   picture the engine cannot take is left out instead of ending the turn. In
   chat, a conversation whose pictures no longer fit leaves its earlier ones
   out of what the model is given.
+- **The end of a run stays in view.** With tool calls folded, the view
+  stopped following the turn — every time the model went from speaking to
+  calling a tool, the words it had said moved under the run's line, and
+  WebKit, taking them out before putting them back, moved the view up, which
+  was read as you scrolling away. The view is now let go only when you move
+  it — the wheel, a key, the scrollbar — and anything else that moves it is
+  put back before it is drawn; in chat too.
 - **A file read again for something not in it is told where that is.** The
   function or name the model said it was after is looked up across the
   workspace — on these lines, in another file, or nowhere yet — where it was
@@ -127,8 +134,8 @@
 - **Code mode's thought is written as chat's is**: its words fade in as
   they come, set as Markdown where it was plain text. A folded run's line
   goes from one state to the next — "Reading…" to "Read 3 files" — the new
-  words out of a soft blur as the old ones go, the line's width, and the
-  caret after it, moving to the new one's. With tool calls folded, a thought
+  words fading in as the old ones fade out, the line's width, and the caret
+  after it, moving to the new one's. With tool calls folded, a thought
   that goes on past three seconds opens under its run's line — its newest
   words in a short window, as they are written — and folds away as the model
   moves on; the run opened shows its steps as before. The line for the next
