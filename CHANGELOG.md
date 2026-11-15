@@ -133,14 +133,15 @@
   reply was done.
 - **Code mode's thought is written as chat's is**: its words fade in as
   they come, set as Markdown where it was plain text. A folded run's line
-  goes from one state to the next — "Reading…" to "Read 3 files" — its
-  width, and the caret after it, moving quickly to the new words' where
-  they jumped. With tool calls folded, a thought
+  goes from one state to the next — "Reading…" to "Read 3 files" — the new
+  words whole at once, the caret after them gliding to where they now end. With tool calls folded, a thought
   that goes on past three seconds opens under its run's line — its newest
   words in a short window, as they are written — and folds away as the model
-  moves on; the run opened shows its steps as before. The line for the next
-  run fades away while the model speaks and comes back as its call begins,
-  as a note does, where it went and came in a frame.
+  moves on; the run opened shows its steps as before. While the model
+  speaks, the line under its words says so and carries on as the call it
+  speaks before begins, the words staying where they are — the line went
+  and came back with every sentence before a call, and the words moved
+  under the runs and came in again.
 - **Reduce motion in Settings stills all of it**, as the system's setting
   did: the heights and widths moved from script went on moving with only the
   app's own setting on.

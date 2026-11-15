@@ -9458,6 +9458,11 @@ body,
 .cm-run {
   animation: pane-in var(--t-med) var(--ease-out) both;
 }
+/* Words that came in word by word, settled in their place before a step:
+   not brought in again there (see CodeMode, settled). */
+.cm-asst-text.settled {
+  animation: none;
+}
 
 /* ---------- Vision: image attachments & thumbnails ---------- */
 .msg-images {

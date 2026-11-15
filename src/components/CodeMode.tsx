@@ -802,9 +802,8 @@ function ToolRun({
         aria-expanded={openable ? open : undefined}
         disabled={!openable}
       >
-        {/* The state, not its words, is what it measures by: a new state
-            and the same one updating — a path arriving, the prompt's percent
-            — both change in place, the width following. */}
+        {/* A new state and the same one updating — a path arriving, the
+            prompt's percent — both change in place, the caret gliding. */}
         <RunState k={activity ? `a:${activity.key}` : doneLabel ? "done:thought" : "done"} measure={active}>
           {label}
         </RunState>
@@ -819,6 +818,14 @@ function ToolRun({
     </div>
     </Exit>
   );
+}
+
+/** The same words, give or take spacing, or one the start of the other: words
+ *  streamed, then kept as said before a step (trimmed, or cut at the call). */
+function sameWords(a: string, b: string): boolean {
+  const x = a.replace(/\s+/g, "");
+  const y = b.replace(/\s+/g, "");
+  return x === y || (Math.min(x.length, y.length) >= 8 && (x.startsWith(y) || y.startsWith(x)));
 }
 
 /** How long a run's thought goes on before it is shown under the run's line. */
@@ -840,67 +847,64 @@ function ThinkPeek({ text }: { text: string }) {
   );
 }
 
-/** A run's line from one state to the next: the words change at once, and
- *  the line's width goes quickly to the new one's — so the caret after it
- *  moves there rather than jumping. Measured while the run goes on
- *  (`measure`) and as its state changes; a run that is over does not change. */
+/** A run's line from one state to the next: the words change at once, whole,
+ *  and the caret after them goes quickly from where it was to where they now
+ *  end. Its width was drawn out instead, the words cut short in it and shown
+ *  a letter at a time. Measured while the run goes on (`measure`) and as its
+ *  state changes; a run that is over does not change. */
 function RunState({ k, measure, children }: { k: string; measure: boolean; children: React.ReactNode }) {
   const box = useRef<HTMLSpanElement>(null);
   const shownK = useRef(k);
   const width = useRef(0);
-  // Followed, not tweened (as heights are, see animateHeight): the words can
-  // change every frame — the prompt's percent — and each change only moves
-  // where the width is going, where a tween begun again each frame stood
-  // still at its start.
-  const follow = useRef<{ target: number; w: number; raf: number; last: number; t0: number } | null>(null);
+  // The caret's offset from its place, going to none — followed, not tweened
+  // (as heights are, see animateHeight): the words can change every frame
+  // (the prompt's percent), each change only moving where it starts from.
+  const glide = useRef<{ x: number; raf: number; last: number; t0: number } | null>(null);
   useLayoutEffect(() => {
     const changed = shownK.current !== k;
     shownK.current = k;
     const el = box.current;
     if (!el || !(measure || changed)) return;
-    // What the words take, all of them — the box may be held narrower than
-    // they are, and they cut short in it.
-    const inner = el.firstElementChild as HTMLElement | null;
-    const to = inner ? Array.from(inner.children).reduce((a, c) => a + (c as HTMLElement).scrollWidth, 0) : 0;
-    const f = follow.current;
-    // No words (a line folding away while the model speaks): nothing to go
-    // to — back, it is drawn as wide as its words at once, not drawn out
-    // from nothing.
-    if (!to) {
-      if (f) cancelAnimationFrame(f.raf);
-      follow.current = null;
-      el.style.width = "";
-      width.current = 0;
-      return;
-    }
-    const from = f ? f.w : width.current;
+    const caret = el.nextElementSibling as HTMLElement | null;
+    const to = el.getBoundingClientRect().width;
+    const from = width.current;
     width.current = to;
-    if (f) {
-      f.target = to;
+    const g = glide.current;
+    // No words (a line going while the model speaks), or nothing to glide:
+    // where it is.
+    if (!to || !caret || prefersStill()) {
+      if (g) cancelAnimationFrame(g.raf);
+      glide.current = null;
+      if (caret) caret.style.translate = "";
       return;
     }
-    if (!from || Math.abs(to - from) < 1 || prefersStill()) return;
+    if (!from || Math.abs(to - from) < 1) return;
+    const x = (g ? g.x : 0) + (from - to);
+    if (g) {
+      g.x = x;
+      return;
+    }
     const now0 = performance.now();
-    const run = { target: to, w: from, raf: 0, last: now0, t0: now0 };
-    follow.current = run;
-    el.style.width = `${from}px`;
+    const run = { x, raf: 0, last: now0, t0: now0 };
+    glide.current = run;
+    caret.style.translate = `${x}px 0`;
     const step = (now: number) => {
       const dt = Math.min(20, Math.max(0, now - run.last));
       run.last = now;
-      run.w += (run.target - run.w) * (1 - Math.exp(-dt / 45));
-      if (Math.abs(run.target - run.w) < 0.5 || now - run.t0 > 1200) {
-        el.style.width = "";
-        follow.current = null;
+      run.x -= run.x * (1 - Math.exp(-dt / 45));
+      if (Math.abs(run.x) < 0.5 || now - run.t0 > 1200) {
+        caret.style.translate = "";
+        glide.current = null;
         return;
       }
-      el.style.width = `${run.w}px`;
+      caret.style.translate = `${run.x}px 0`;
       run.raf = requestAnimationFrame(step);
     };
     run.raf = requestAnimationFrame(step);
   });
   useEffect(
     () => () => {
-      if (follow.current) cancelAnimationFrame(follow.current.raf);
+      if (glide.current) cancelAnimationFrame(glide.current.raf);
     },
     [],
   );
@@ -1232,6 +1236,11 @@ export function CodeMode({
   /** Active background downloads (header progress badge). */
   const [downloads, setDownloads] = useState<AgentDlInfo[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  /** Words a turn streamed last, by message, and the places before a step
+   *  they then took: drawn there as they were, not brought in again (see
+   *  .cm-asst-text.settled) — they came in once already, word by word. */
+  const lastWords = useRef(new Map<string, string>());
+  const settled = useRef(new Set<string>());
   const signalRef = useRef<AgentSignal | null>(null);
   // Connect enabled MCP servers — their tools join the registry before the
   // first agent turn builds its prompt. This lived in the attachment
@@ -2628,6 +2637,26 @@ export function CodeMode({
     }
   }
 
+  /** A reply's copy button, once the run is over. */
+  const copyButton = (m: CodeMsg) =>
+    !running && (
+      <button
+        className="cm-copy"
+        title={t("copy")}
+        onClick={() => {
+          void copyToClipboard(m.text);
+          setCopiedId(m.id);
+          setTimeout(() => setCopiedId((c) => (c === m.id ? null : c)), 1200);
+        }}
+      >
+        {copiedId === m.id ? (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+        ) : (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 012-2h10" /></svg>
+        )}
+      </button>
+    );
+
   /** The folded view of an assistant turn (Settings → Code → collapse tool
    *  calls): its words and runs, which run is going on, what is happening,
    *  and whether that needs a line of its own under what was said last. */
@@ -2668,7 +2697,11 @@ export function CodeMode({
     // still being written — goes in the last run, out of sight like the rest.
     // A turn with no run shows it as any reply does.
     const lastRun = [...segs].reverse().find((s) => s.kind === "tools")?.key ?? null;
-    return { segs, activeKey, activity, bottom: activity && !activeKey ? activity : null, lastRun, nextRun: `run-${runs}`, turnLive };
+    // While it speaks, the line under its words says so: the line the call
+    // it may be speaking before then carries on — where it went with every
+    // sentence before a call, and came back.
+    const bottom: Activity | null = activity && !activeKey ? activity : turnLive && speaking ? { key: "actReplying" } : null;
+    return { segs, activeKey, activity, bottom, lastRun, nextRun: `run-${runs}`, turnLive };
   };
 
   // Either separator: split on "/" alone, a Windows workspace showed its whole
@@ -2994,6 +3027,16 @@ export function CodeMode({
               // The turn being written: its words fade in as they come (see
               // lib/streamFade), rendered block by block like a chat reply.
               const live = running && mi === msgs.length - 1;
+              const pending = m.text.trim();
+              if (pending) lastWords.current.set(m.id, pending);
+              const streamedLast = lastWords.current.get(m.id);
+              const isSettled = (key: string, text: string) => {
+                const id = `${m.id}:${key}`;
+                if (settled.current.has(id)) return true;
+                if (pending || !streamedLast || !sameWords(text, streamedLast)) return false;
+                settled.current.add(id);
+                return true;
+              };
               return m.role === "user" ? (
                 <div key={m.id} className="cm-user-row">
                   <div className="cm-user" data-copy={m.text}>
@@ -3049,7 +3092,7 @@ export function CodeMode({
                     [
                     ...f.segs.map((seg) =>
                       seg.kind === "say" ? (
-                        <div key={seg.key} className="cm-asst-text answer cm-said">
+                        <div key={seg.key} className={`cm-asst-text answer cm-said${isSettled(seg.key, seg.text) ? " settled" : ""}`}>
                           <Markdown>{seg.text}</Markdown>
                         </div>
                       ) : (
@@ -3073,43 +3116,54 @@ export function CodeMode({
                         </ToolRun>
                       ),
                     ),
-                    ...(f.bottom
-                      ? [
-                          // The words before a call still being written, then
-                          // the run that call begins.
-                          ...(m.text.trim()
-                            ? [
-                                <div key="said-pending" className="cm-asst-text answer cm-said">
-                                  <TurnMarkdown text={m.text} live={live} />
-                                </div>,
-                              ]
-                            : []),
-                          <ToolRun
-                            key={f.nextRun}
-                            steps={[]}
-                            activity={f.bottom}
-                            thinking={f.bottom.key === "actThinking" ? m.liveThinking : undefined}
-                          >
-                            <Exit ms={260} collapse>{m.liveThinking ? <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} /> : null}</Exit>
+                    ...(() => {
+                      // The words being written — or the answer, once written
+                      // — in one place for the whole turn: above the line of
+                      // the run a call they come before begins, which says
+                      // what is happening under them. They moved between
+                      // here and under the runs as the line came and went.
+                      // Once the turn is over they are where they stay: not
+                      // brought in again should the thought's line take its
+                      // place over them.
+                      const words = pending ? (
+                        <div key="said-pending" className={`cm-asst-text answer cm-said${live ? "" : " settled"}`} data-copy={m.text}>
+                          <TurnMarkdown text={m.text} live={live} />
+                          {copyButton(m)}
+                        </div>
+                      ) : null;
+                      if (f.turnLive) {
+                        return [
+                          ...(words ? [words] : []),
+                          f.bottom ? (
+                            <ToolRun
+                              key={f.nextRun}
+                              steps={[]}
+                              activity={f.bottom}
+                              thinking={f.bottom.key === "actThinking" ? m.liveThinking : undefined}
+                            >
+                              <Exit ms={260} collapse>{m.liveThinking ? <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} /> : null}</Exit>
+                            </ToolRun>
+                          ) : (
+                            // Thinking in the run going on: no line of its own.
+                            <ToolRun key={f.nextRun} steps={[]} hidden />
+                          ),
+                        ];
+                      }
+                      // A turn that called no tool keeps its thought in a run
+                      // of its own, over its answer: one line, opened by hand.
+                      if (!f.lastRun && (m.thinking || m.liveThinking)) {
+                        return [
+                          <ToolRun key={f.nextRun} steps={[]} doneLabel={t("cmThought")}>
+                            <div className="cm-think-body">
+                              <Markdown>{[m.thinking, m.liveThinking].filter(Boolean).join("\n\n")}</Markdown>
+                            </div>
                           </ToolRun>,
-                        ]
-                      : // While the model speaks, the line it had folds away
-                        // (and comes back as a call it speaks before begins).
-                        f.turnLive
-                        ? [<ToolRun key={f.nextRun} steps={[]} hidden />]
-                        : // A turn that called no tool keeps its thought in a run
-                        // of its own: one line, opened by hand. Not while the
-                        // turn goes on — words then may be the ones before a
-                        // call, whose run comes under them, not over.
-                        !f.lastRun && (m.thinking || m.liveThinking)
-                        ? [
-                            <ToolRun key={f.nextRun} steps={[]} doneLabel={t("cmThought")}>
-                              <div className="cm-think-body">
-                                <Markdown>{[m.thinking, m.liveThinking].filter(Boolean).join("\n\n")}</Markdown>
-                              </div>
-                            </ToolRun>,
-                          ]
-                        : []),
+                          ...(words ? [words] : []),
+                        ];
+                      }
+                      // Over: the line under the words goes as a note comes.
+                      return [...(words ? [words] : []), <ToolRun key={f.nextRun} steps={[]} hidden />];
+                    })(),
                     ]
                   ) : (
                     <>
@@ -3146,26 +3200,10 @@ export function CodeMode({
                     </>
                   )}
                   {!f && m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />}
-                  {m.text && !f?.bottom && (
+                  {m.text && !f && (
                     <div className="cm-asst-text answer" data-copy={m.text}>
                       <TurnMarkdown text={m.text} live={live} />
-                      {!running && (
-                        <button
-                          className="cm-copy"
-                          title={t("copy")}
-                          onClick={() => {
-                            void copyToClipboard(m.text);
-                            setCopiedId(m.id);
-                            setTimeout(() => setCopiedId((c) => (c === m.id ? null : c)), 1200);
-                          }}
-                        >
-                          {copiedId === m.id ? (
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
-                          ) : (
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 012-2h10" /></svg>
-                          )}
-                        </button>
-                      )}
+                      {copyButton(m)}
                     </div>
                   )}
                   {m.changes && m.changes.length > 0 && (
