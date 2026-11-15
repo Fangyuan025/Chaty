@@ -9,7 +9,7 @@ import { getCurrent as getDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-l
 import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextRing } from "./components/ContextRing";
 import { Exit } from "./components/Exit";
-import { prefersStill } from "./lib/smoothHeight";
+import { prefersStill, shrinking } from "./lib/smoothHeight";
 import { maybeAutorun } from "./lib/debugProbe";
 import { RECENCY_LABEL, recencyGroups } from "./lib/recency";
 
@@ -1279,7 +1279,7 @@ export default function App() {
       const d = dist();
       // Moved up from where it was pinned, and not by content shrinking (that
       // leaves it at the bottom): the user's doing, whatever brought it here.
-      if (followRef.current && pinnedTop.current >= 0 && el.scrollTop < pinnedTop.current - 2 && d > 2) {
+      if (followRef.current && pinnedTop.current >= 0 && !shrinking() && el.scrollTop < pinnedTop.current - 12 && d > 12) {
         followRef.current = false;
         releasedAt.current = performance.now();
       }
@@ -1337,12 +1337,18 @@ export default function App() {
     // thread, the event is handled on the page's, behind the reply being
     // drawn — and a pin before it arrived took back what had been scrolled:
     // a turn of the wheel during a reply moved the view a line, or nothing.
+    // Not while something above folds away on its own: the page shrinking
+    // moves a view kept at the end up too, and the reply's next words take
+    // the end away from it in the same frame — read as a scroll, that ended
+    // the following as a thought folded (the answer then streamed out of
+    // sight). A few pixels are the page's own small reflows, not a wheel.
     if (
       !structural &&
       followRef.current &&
       pinnedTop.current >= 0 &&
-      el.scrollTop < pinnedTop.current - 2 &&
-      el.scrollHeight - el.scrollTop - el.clientHeight > 2
+      !shrinking() &&
+      el.scrollTop < pinnedTop.current - 12 &&
+      el.scrollHeight - el.scrollTop - el.clientHeight > 12
     ) {
       followRef.current = false;
       releasedAt.current = performance.now();

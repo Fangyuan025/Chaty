@@ -12,6 +12,19 @@ export function prefersStill(): boolean {
 
 const running = new WeakMap<HTMLElement, () => void>();
 
+/** Until when something on the page is folding away on its own (a thought
+ *  folding as its answer starts, a block settling into its window). While it
+ *  does, a view kept at the end is moved up by the page shrinking under it —
+ *  which is not the user scrolling, and must not be read as such (see the
+ *  transcripts' follow). */
+let shrinkingUntil = 0;
+export function noteShrink(ms: number): void {
+  shrinkingUntil = Math.max(shrinkingUntil, performance.now() + ms);
+}
+export function shrinking(): boolean {
+  return performance.now() < shrinkingUntil;
+}
+
 /** Take `el` from height `from` to the height it has now.
  *
  *  Opening, the height it goes to is read again every frame: what opens is
@@ -24,6 +37,7 @@ export function animateHeight(el: HTMLElement, from: number, ms = 260): void {
   const to = el.getBoundingClientRect().height;
   if (Math.abs(to - from) < 2 || prefersStill()) return;
   const opening = to > from;
+  if (!opening) noteShrink(ms * 3 + 120);
   const cs = getComputedStyle(el);
   const borders = (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
   const keep = { height: el.style.height, maxHeight: el.style.maxHeight, overflow: el.style.overflow, transition: el.style.transition };

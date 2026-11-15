@@ -23,7 +23,7 @@ import { detectLang, lookup, useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { DiagramViewer } from "./DiagramViewer";
 import { Exit } from "./Exit";
-import { animateHeight, prefersStill, smoothly } from "../lib/smoothHeight";
+import { animateHeight, noteShrink, prefersStill, smoothly } from "../lib/smoothHeight";
 import { exportCodeFile, exportDiagramFile, exportTextFile } from "../lib/ipc";
 import { copyToClipboard } from "../lib/clipboard";
 import { fitPop } from "../lib/popFit";
@@ -1175,6 +1175,7 @@ function CodeBlock({ children, node: _node, ...props }: ComponentPropsWithoutRef
       el.scrollTop = el.scrollHeight;
       void el.offsetHeight;
       el.classList.add("folding");
+      noteShrink(520);
       el.style.maxHeight = "";
       el.style.removeProperty("--fold-in");
       cancelAnimationFrame(f.raf);

@@ -111,7 +111,7 @@ import { prefillPct } from "../lib/prefill";
 import { ContextRing } from "./ContextRing";
 import { Exit } from "./Exit";
 import { UserCopy } from "./UserText";
-import { animateHeight, smoothly } from "../lib/smoothHeight";
+import { animateHeight, shrinking, smoothly } from "../lib/smoothHeight";
 
 interface CodeMsg {
   id: string;
@@ -1259,8 +1259,9 @@ export function CodeMode({
     if (
       followRef.current &&
       pinnedTop.current >= 0 &&
-      el.scrollTop < pinnedTop.current - 2 &&
-      el.scrollHeight - el.scrollTop - el.clientHeight > 2
+      !shrinking() &&
+      el.scrollTop < pinnedTop.current - 12 &&
+      el.scrollHeight - el.scrollTop - el.clientHeight > 12
     ) {
       followRef.current = false;
     }
@@ -1297,7 +1298,7 @@ export function CodeMode({
       // Covers scrollbar drags and keyboard scrolling; programmatic pins land
       // at the bottom, so they only ever re-arm.
       const d = dist();
-      if (followRef.current && pinnedTop.current >= 0 && el.scrollTop < pinnedTop.current - 2 && d > 2) {
+      if (followRef.current && pinnedTop.current >= 0 && !shrinking() && el.scrollTop < pinnedTop.current - 12 && d > 12) {
         followRef.current = false;
         pinnedTop.current = -1;
       }

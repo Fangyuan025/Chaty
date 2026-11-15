@@ -1497,7 +1497,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       const wantsMidBad = /中坏图|broken middle/i.test(last);
       // 网页 / web page streams a single-file page — a style, a comment over
       // two lines, a script — to look at its highlighting as it streams.
-      const wantsPage = /网页|web page|长代码|long code/i.test(last);
+      const wantsPage = /网页|web page|长代码|long code|思考长答|think then long/i.test(last);
       // 设计网页 / design page: a page as models make them — a title, a nav, a
       // hero, cards — for looking at the folded page's picture.
       const wantsDesign = /设计网页|design page/i.test(last);
@@ -1548,6 +1548,12 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       } else if (wantsBigBad && !isTitleReq) {
         const lines = ["flowchart TD", "  A0[开始] --> A1[第 1 步]", "  A1 -->|未闭合 X[", ...Array.from({ length: 150 }, (_, i) => `  A${i + 1}[第 ${i + 1} 步] --> A${i + 2}[第 ${i + 2} 步]`)];
         reply = "图:\n\n```mermaid\n" + lines.join("\n") + "\n```\n\n完。";
+      } else if (/思考长答|think then long/i.test(last) && !isTitleReq) {
+        // A thought, then a long answer: the thought folds itself away as the
+        // answer starts, and the view is to keep following the answer.
+        reply =
+          "<think>\n" + Array.from({ length: 16 }, (_, i) => `第 ${i + 1} 步:先想清楚要讲什么,再决定怎么组织。`).join("\n") + "\n</think>\n\n" +
+          Array.from({ length: 30 }, (_, i) => `${i + 1}. 这是回答的第 ${i + 1} 段,讲一个具体的细节,写得足够长,好让整个回答超出一屏、需要一路跟着往下滚。`).join("\n\n");
       } else if (/长代码|long code/i.test(last) && !isTitleReq) {
         // A long block, then words after it: the block is to fold to its
         // first lines as its fence closes, not when the reply ends.
