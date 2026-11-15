@@ -1248,6 +1248,29 @@ export function CodeMode({
   // frame re-pinning the bottom before the user escapes the threshold), and
   // parking back at the bottom re-arms it.
   const followRef = useRef(true);
+  /** Where the last pin left the view (see pinEnd). */
+  const pinnedTop = useRef(-1);
+  /** Keep the view at the end while following — unless it was moved up since
+   *  the last pin and is not at the end: the user scrolled, and their wheel's
+   *  event, handled behind the turn being drawn, has not arrived yet. Pinned
+   *  anyway, a turn of the wheel during a run moved the view a line, or not
+   *  at all. (Content that shrinks leaves the view at the end: not this.) */
+  const pinEnd = useCallback((el: HTMLElement) => {
+    if (
+      followRef.current &&
+      pinnedTop.current >= 0 &&
+      el.scrollTop < pinnedTop.current - 2 &&
+      el.scrollHeight - el.scrollTop - el.clientHeight > 2
+    ) {
+      followRef.current = false;
+    }
+    if (followRef.current) {
+      el.scrollTop = el.scrollHeight;
+      pinnedTop.current = el.scrollTop;
+    } else {
+      pinnedTop.current = -1;
+    }
+  }, []);
   /** How far the end is from view, and whether that is far enough to offer the
    *  way back. Recomputed from the CONTENT as well as from scrolling: a
    *  transcript shrinks — a thinking panel folds itself away, a live card is
@@ -1274,6 +1297,10 @@ export function CodeMode({
       // Covers scrollbar drags and keyboard scrolling; programmatic pins land
       // at the bottom, so they only ever re-arm.
       const d = dist();
+      if (followRef.current && pinnedTop.current >= 0 && el.scrollTop < pinnedTop.current - 2 && d > 2) {
+        followRef.current = false;
+        pinnedTop.current = -1;
+      }
       if (d < 4) followRef.current = true;
       else if (d > 240) followRef.current = false;
       syncJump();
@@ -1299,12 +1326,13 @@ export function CodeMode({
     prevSidRef.current = sid;
     if (switched) {
       followRef.current = true;
+      pinnedTop.current = -1;
       showJumpRef.current = false;
       setShowJump(false);
     }
-    if (followRef.current) el.scrollTop = el.scrollHeight;
+    pinEnd(el);
     syncJump();
-  }, [msgs, sid, syncJump]);
+  }, [msgs, sid, syncJump, pinEnd]);
 
   // Whatever arrives late — a picture, a diff card, a code block that only
   // knows its height once it is laid out — keeps the view at the end while
@@ -1316,12 +1344,12 @@ export function CodeMode({
     const content = threadRef.current;
     if (!el || !content) return;
     const obs = new ResizeObserver(() => {
-      if (followRef.current) el.scrollTop = el.scrollHeight;
+      pinEnd(el);
       syncJump();
     });
     obs.observe(content);
     return () => obs.disconnect();
-  }, [msgs.length > 0, syncJump]);
+  }, [msgs.length > 0, syncJump, pinEnd]);
 
   // Keyboard shortcuts: approval Enter/Esc, ask-user number keys, Esc to stop.
   useEffect(() => {

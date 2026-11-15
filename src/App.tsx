@@ -804,6 +804,9 @@ export default function App() {
    *  follow-scroll may still be moving the view. */
   const releasedAt = useRef(0);
   const pinAnimUntil = useRef(0);
+  /** Where the last pin to the bottom left the view. Above it, and not at
+   *  the bottom, the user moved it: nothing else scrolls the transcript up. */
+  const pinnedTop = useRef(-1);
   /** The running chat turn's stop state — see handleStop. */
   const turnStopRef = useRef<{ stopped: boolean; wake: () => void } | null>(null);
   const showJumpRef = useRef(false);
@@ -1274,6 +1277,12 @@ export default function App() {
       // at the bottom, so they only ever re-arm — but not in the moment after
       // a wheel-up, when the bottom is where an animation left the view.
       const d = dist();
+      // Moved up from where it was pinned, and not by content shrinking (that
+      // leaves it at the bottom): the user's doing, whatever brought it here.
+      if (followRef.current && pinnedTop.current >= 0 && el.scrollTop < pinnedTop.current - 2 && d > 2) {
+        followRef.current = false;
+        releasedAt.current = performance.now();
+      }
       if (d < 4) {
         if (performance.now() - releasedAt.current > 800) followRef.current = true;
       } else if (d > 240) followRef.current = false;
@@ -1322,10 +1331,30 @@ export default function App() {
       el.scrollTo({ top: kept, behavior: "instant" });
       return;
     }
+    // The view moved up since it was last pinned, and is not at the bottom:
+    // the user scrolled. Let it be. The wheel's own event can come a frame
+    // or several late — the wheel moves the page on WebKit's scrolling
+    // thread, the event is handled on the page's, behind the reply being
+    // drawn — and a pin before it arrived took back what had been scrolled:
+    // a turn of the wheel during a reply moved the view a line, or nothing.
+    if (
+      !structural &&
+      followRef.current &&
+      pinnedTop.current >= 0 &&
+      el.scrollTop < pinnedTop.current - 2 &&
+      el.scrollHeight - el.scrollTop - el.clientHeight > 2
+    ) {
+      followRef.current = false;
+      releasedAt.current = performance.now();
+    }
     if (followRef.current) {
       const smooth = structural && !switched;
       if (smooth) pinAnimUntil.current = performance.now() + 600;
       el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "instant" });
+      // Where an instant pin lands; a smooth one is on its way there.
+      pinnedTop.current = smooth ? -1 : el.scrollTop;
+    } else {
+      pinnedTop.current = -1;
     }
   }, [messages, conversationId]);
 
