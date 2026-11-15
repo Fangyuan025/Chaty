@@ -121,6 +121,13 @@
   diagram viewer and notices fade out** as they came in; switching between
   chat and Code mode fades; Code mode's run line and the attachment bar open
   and close over the input rather than jumping it.
+- **Loading a model says which, and goes from one to the next.** The model
+  chip names what is being let go and what is being loaded ("Loading
+  Qwen3.5 9B · 45%"), a light passing over the words, each state coming in
+  from a soft blur and the chip's width going to the new one; the bar under
+  the top row fades in, fills the rest of the way when the model is ready,
+  and fades. A switch used to show the old model's name all through it, then
+  the new one in a frame, the bar gone wherever it had got to.
 - **While a reply is written, its count and rate count up** beside the
   context ring, as Code mode's do, where the line went blank; the ring stays
   and, in both modes, sweeps to its new share once the reply is done; why it

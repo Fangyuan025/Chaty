@@ -714,13 +714,30 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     // ---- model / hardware ----
     case "get_model":
       return CURRENT;
-    case "load_model":
-      CURRENT = String(args?.path ?? "").includes("Qwen-Image")
+    case "load_model": {
+      // As a load goes: the old model let go, then the weights read in — so
+      // the model chip and the load bar can be looked at while it happens.
+      const ch = args?.onProgress as { onmessage?: (ev: unknown) => void } | undefined;
+      const next = String(args?.path ?? "").includes("Qwen-Image")
         ? IMAGE_MODEL
         : /yue2/i.test(String(args?.path ?? ""))
           ? MUSIC_MODEL
           : MODEL;
-      return CURRENT;
+      return (async () => {
+        const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+        if (CURRENT) {
+          ch?.onmessage?.({ phase: "eject", frac: 0 });
+          await wait(400);
+        }
+        for (let i = 0; i <= 20; i++) {
+          ch?.onmessage?.({ phase: "weights", frac: i / 20 });
+          await wait(80);
+        }
+        ch?.onmessage?.({ phase: "ready", frac: 1 });
+        CURRENT = next;
+        return CURRENT;
+      })();
+    }
     case "eject_model":
       CURRENT = null;
       return null;

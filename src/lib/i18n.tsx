@@ -472,6 +472,10 @@ export const T = {
   cmPlaceholderNoModel: { zh: "请先加载模型…", en: "Load a model first…", pt: "Carregue um modelo primeiro…" },
   noModel: { zh: "未加载模型", en: "No model", pt: "Sem modelo" },
   loadingModel: { zh: "加载中…", en: "Loading…", pt: "Carregando…" },
+  // The model chip while a model loads, names the one it is loading.
+  loadingNamed: { zh: "正在加载 {name}", en: "Loading {name}", pt: "Carregando {name}" },
+  reloadingNamed: { zh: "正在重新加载 {name}", en: "Reloading {name}", pt: "Recarregando {name}" },
+  ejectingNamed: { zh: "正在卸载 {name}", en: "Unloading {name}", pt: "Descarregando {name}" },
   changeModel: { zh: "更换模型", en: "Change model", pt: "Trocar modelo" },
   modelsHeader: { zh: "models 文件夹", en: "Models folder", pt: "Pasta de modelos" },
   loadFromFolder: { zh: "从文件夹载入…", en: "Load from folder…", pt: "Carregar da pasta…" },
@@ -1219,7 +1223,6 @@ export const T = {
     zh: "模型能“记住”的对话长度（token）；越大越耗内存。自动：按显存（或 Mac 的统一内存）能放下的长度，最多到模型训练时的长度",
     en: "How much conversation the model can hold (tokens); larger uses more memory. Auto: as long as the GPU's memory (a Mac's unified memory) holds, up to what the model was trained for", pt: "Quanto da conversa o modelo pode reter (tokens); valores maiores usam mais memória. Automático: o quanto couber na memória da GPU (a memória unificada de um Mac), até o que o modelo foi treinado"
   },
-  ejectingModel: { zh: "正在卸载旧模型…", en: "Ejecting old model…", pt: "Descarregando o modelo antigo…" },
   noLimit: { zh: "不限制", en: "No limit", pt: "Sem limite" },
   openModelsDir: { zh: "打开模型文件夹", en: "Open models folder", pt: "Abrir pasta de modelos" },
   voiceModelsDir: { zh: "语音模型文件夹", en: "Voice models folder", pt: "Pasta dos modelos de voz" },

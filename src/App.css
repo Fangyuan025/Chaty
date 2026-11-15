@@ -390,6 +390,27 @@ body {
   background: var(--surface-2);
   overflow: hidden;
   flex-shrink: 0;
+  animation: ui-fade-in 0.25s var(--ease);
+}
+/* Done: it fills the rest of the way, then fades — not gone wherever it had
+   got to. */
+.exit-wrap.leaving > .load-bar {
+  animation: load-bar-done 0.5s var(--ease) both !important;
+}
+.exit-wrap.leaving > .load-bar .load-bar-fill {
+  width: 100% !important;
+  margin-left: 0 !important;
+  animation: none !important;
+  transition: width 0.22s var(--ease-out);
+}
+@keyframes load-bar-done {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 .load-bar-fill {
   height: 100%;
@@ -654,9 +675,58 @@ body {
 }
 /* A narrow row (App measures it: .narrow / .tight) keeps the model's name
    and drops its size figures. */
-.tb-main.narrow .model-chip .chip-meta,
-.tb-main.tight .model-chip .chip-meta {
+.tb-main.narrow .model-chip .chip-meta:not(.chip-pct),
+.tb-main.tight .model-chip .chip-meta:not(.chip-pct) {
   display: none;
+}
+/* What the chip shows, as one piece that comes in when it changes — the
+   model being loaded, then the one loaded — out of a soft blur, while the
+   chip's width goes to the new one (App animates it). */
+.chip-swap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  animation: chip-in 0.34s var(--ease-out);
+}
+@keyframes chip-in {
+  from {
+    opacity: 0;
+    filter: blur(3px);
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    filter: none;
+    transform: none;
+  }
+}
+/* "Loading Qwen3.5 9B": a light passing over the words while it lasts. */
+.chip-loading {
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    var(--text-dim) 0%,
+    var(--text-dim) 38%,
+    var(--text) 50%,
+    var(--text-dim) 62%,
+    var(--text-dim) 100%
+  );
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: live-shimmer 1.8s linear infinite;
+}
+.chip-pct {
+  min-width: 4.8ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chip-swap,
+  .chip-loading {
+    animation: none;
+  }
 }
 
 .model-chip {

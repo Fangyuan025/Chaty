@@ -381,7 +381,9 @@ jobs:
 
             ## Nothing jumps
 
-            The sidebar slides; folded code, thoughts, sources and long messages open and close
+            Loading a model names it on the model chip as it goes, and the chip and the bar under
+            the top row move from one state to the next. The sidebar slides; folded code, thoughts,
+            sources and long messages open and close
             smoothly, and fold themselves away smoothly; menus, previews and notices fade out. A
             reply's count and rate count up as it is written, and the context ring sweeps to its
             new share. Copy and edit sit under your message on hover; hover a reply for the model

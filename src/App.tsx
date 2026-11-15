@@ -9,6 +9,7 @@ import { getCurrent as getDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-l
 import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextRing } from "./components/ContextRing";
 import { Exit } from "./components/Exit";
+import { prefersStill } from "./lib/smoothHeight";
 import { maybeAutorun } from "./lib/debugProbe";
 import { RECENCY_LABEL, recencyGroups } from "./lib/recency";
 
@@ -189,6 +190,13 @@ const OVERLAYS =
   ".preview-overlay, .popover-backdrop, .settings-overlay, .confirm-overlay, .cmdk-overlay, .canvas-overlay, .dl-backdrop, .live-overlay, .cm-approve-backdrop, [role=dialog]";
 
 const uid = () => Math.random().toString(36).slice(2);
+
+/** A model's name from its path: the file without .gguf, or the folder an
+ *  MLX model is. */
+function modelNameOf(path: string): string {
+  const base = path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? path;
+  return base.replace(/\.gguf$/i, "");
+}
 const SETTINGS_KEY = "chaty.settings";
 /** Set once a stored dark theme has been moved to the system's (index.html
  *  reads it too, to paint the right colour before the app has loaded). */
@@ -356,7 +364,69 @@ export default function App() {
    *  while the ring stays on the last reply's count until this one is done. */
   const [liveStats, setLiveStats] = useState<{ tokens: number; tps: number } | null>(null);
   const [loadingModel, setLoadingModel] = useState(false);
+  /** What is being loaded, reloaded or unloaded — named on the model chip
+   *  while it happens. It used to show the old model's name all through a
+   *  switch, then the new one in a frame. */
+  const [loadTarget, setLoadTarget] = useState<{ name: string; kind: "load" | "reload" | "eject" } | null>(null);
+  useEffect(() => {
+    if (!loadingModel) setLoadTarget(null);
+  }, [loadingModel]);
+  /** The model chip: what it says while a model loads, and a key for what
+   *  it shows, so a change of it comes in (and its width goes to the new
+   *  one) rather than snapping. */
+  const chipRef = useRef<HTMLButtonElement>(null);
+  const chipW = useRef(0);
   const [loadProgress, setLoadProgress] = useState<LoadProgress | null>(null);
+  const chipLoadingLabel = (() => {
+    // Switching, the old model goes first: named as it goes.
+    if (loadProgress?.phase === "eject" && model && loadTarget?.kind !== "eject")
+      return t("ejectingNamed", { name: model.name.replace(/\.gguf$/i, "") });
+    if (!loadTarget) return t("loadingModel");
+    const name = loadTarget.name.replace(/\.gguf$/i, "");
+    return t(loadTarget.kind === "eject" ? "ejectingNamed" : loadTarget.kind === "reload" ? "reloadingNamed" : "loadingNamed", { name });
+  })();
+  const chipKey = loadingModel
+    ? `load:${loadTarget?.kind ?? ""}:${loadTarget?.name ?? ""}:${loadProgress?.phase === "eject" ? "eject" : ""}`
+    : model
+      ? `model:${model.path}`
+      : "none";
+  // The chip's width as it last settled, kept as it changes.
+  useEffect(() => {
+    const el = chipRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([e]) => {
+      if (!el.style.width) chipW.current = e.borderBoxSize?.[0]?.inlineSize ?? el.getBoundingClientRect().width;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // A new state: from the width it had to the one it takes.
+  useLayoutEffect(() => {
+    const el = chipRef.current;
+    const from = chipW.current;
+    if (!el || !from || prefersStill()) return;
+    const to = el.getBoundingClientRect().width;
+    if (Math.abs(to - from) < 2) return;
+    el.style.transition = "none";
+    el.style.width = `${from}px`;
+    void el.offsetWidth;
+    el.style.transition = "width 0.34s cubic-bezier(0.22, 0.8, 0.24, 1)";
+    el.style.width = `${to}px`;
+    const timer = setTimeout(() => {
+      el.style.width = "";
+      el.style.transition = "";
+      chipW.current = el.getBoundingClientRect().width;
+    }, 380);
+    return () => {
+      clearTimeout(timer);
+      // Cut short by the next change: go on from where it had got to. (Read
+      // only then — by now the chip already holds the next state, and its
+      // own width would be the one to go to, not the one to go from.)
+      if (el.style.width) chipW.current = el.getBoundingClientRect().width;
+      el.style.width = "";
+      el.style.transition = "";
+    };
+  }, [chipKey]);
   // Weight ticks come from a poller thread and can race the final "ready" —
   // drop anything that would move the bar backwards or resurrect it.
   const onLoadProgress = useCallback((p: LoadProgress) => {
@@ -933,6 +1003,7 @@ export default function App() {
         const last = localStorage.getItem(LAST_MODEL_KEY);
         const target = last;
         if (!target) return;
+        setLoadTarget({ name: modelNameOf(target), kind: "load" });
         setLoadingModel(true);
         try {
           const info = await loadModel(target, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, target), musicLoadOptions(settings));
@@ -1936,6 +2007,7 @@ export default function App() {
 
   /** Load `path` as the active model, whatever kind it is. */
   async function loadPath(path: string) {
+    setLoadTarget({ name: availableModels.find((m) => m.path === path)?.name ?? modelNameOf(path), kind: "load" });
     setLoadingModel(true);
     try {
       const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, path), musicLoadOptions(settings));
@@ -1957,6 +2029,7 @@ export default function App() {
   /** Reload the current model so settings (context length, GPU layers) take effect. */
   async function reloadModel() {
     if (!model || busy || loadingModel) return;
+    setLoadTarget({ name: model.name, kind: "reload" });
     setLoadingModel(true);
     try {
       const info = await loadModel(model.path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, model.path), musicLoadOptions(settings));
@@ -1978,6 +2051,7 @@ export default function App() {
   async function handleEject() {
     setShowModelMenu(false);
     if (!model || busy || loadingModel) return;
+    setLoadTarget({ name: model.name, kind: "eject" });
     setLoadingModel(true);
     try {
       await ejectModel();
@@ -2040,6 +2114,7 @@ export default function App() {
         void refreshModels();
         return;
       }
+      setLoadTarget({ name: modelNameOf(path), kind: "load" });
       setLoadingModel(true);
       const info = await loadModel(path, settings.gpuLayers, settings.contextLength || undefined, settings.speculative, onLoadProgress, imageLoadOptions(settings, probe?.path ?? path), musicLoadOptions(settings));
       setLoadedWith({ sig: loadSig(settings, probe?.path ?? path), imagePath: probe?.path ?? path });
@@ -4490,14 +4565,25 @@ ${body.outerHTML}
 
         <div className="model-wrap">
           <button
-            className={`model-chip ${model ? "loaded" : ""}`}
+            ref={chipRef}
+            className={`model-chip ${model ? "loaded" : ""}${loadingModel ? " loading" : ""}`}
             onClick={() => {
               if (!showModelMenu) void refreshModels();
               setShowModelMenu((v) => !v);
             }}
             title={t("changeModel")}
           >
-            {model ? (
+            {/* Keyed by what it shows: a new state comes in (see .chip-swap)
+                rather than its words changing in place. */}
+            <span key={chipKey} className="chip-swap">
+            {loadingModel ? (
+              <>
+                <span className="chip-name chip-loading">{chipLoadingLabel}</span>
+                {loadProgress?.phase === "weights" ? (
+                  <span className="chip-meta chip-pct">{Math.round(loadProgress.frac * 100)}%</span>
+                ) : null}
+              </>
+            ) : model ? (
               <>
                 <span className="chip-name">{model.name.replace(/\.gguf$/i, "")}</span>
                 {model.kind === "image" ? <span className="chip-meta chip-img">{t("imageBadge")}</span> : null}
@@ -4509,15 +4595,10 @@ ${body.outerHTML}
                   <span className="chip-meta">{fmtGbFromMb(model.sizeMb)}</span>
                 ) : null}
               </>
-            ) : loadingModel ? (
-              loadProgress?.phase === "weights"
-                ? `${t("loadingModel")} ${Math.round(loadProgress.frac * 100)}%`
-                : loadProgress?.phase === "eject"
-                  ? t("ejectingModel")
-                  : t("loadingModel")
             ) : (
               t("noModel")
             )}
+            </span>
             <span className={`chip-caret ${showModelMenu ? "open" : ""}`}><Icon name="chevron-down" size={11} strokeWidth={2} /></span>
           </button>
           <Exit>{showModelMenu && (
@@ -4838,9 +4919,13 @@ ${body.outerHTML}
         {!IS_MACOS && <WindowControls />}
         </div>
       </header>
+      <Exit ms={500}>
       {loadingModel && (
         <div className="load-bar">
           <div
+            // A new fill when the bar starts counting: the sliding one is
+            // not shrunk to the count's start, it is replaced by it.
+            key={loadProgress?.phase === "weights" ? "count" : "slide"}
             className={`load-bar-fill ${loadProgress?.phase === "weights" ? "" : "indeterminate"}`}
             style={
               loadProgress?.phase === "weights"
@@ -4850,6 +4935,7 @@ ${body.outerHTML}
           />
         </div>
       )}
+      </Exit>
       <ContextMenu />
       {update?.available && (
         <div className="update-banner">
