@@ -1055,10 +1055,28 @@ function PageThumb({ html }: { html: string }) {
 function PageCard({ html, lines }: { html: string; lines: number }) {
   const { t } = useI18n();
   const title = useMemo(() => pageTitleOf(html), [html]);
+  // A title too long to sit beside the picture goes under it, and then the
+  // two are centred together: left alone, they hung off the card's left
+  // edge. Read from the layout (flex has no selector for a wrapped line);
+  // centring does not move where the line wraps, so this cannot flip back.
+  const card = useRef<HTMLDivElement>(null);
+  const meta = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+  useLayoutEffect(() => {
+    const el = card.current;
+    const m = meta.current;
+    const thumb = el?.querySelector<HTMLElement>(".page-thumb");
+    if (!el || !m || !thumb) return;
+    const check = () => setStacked(m.offsetTop >= thumb.offsetTop + thumb.offsetHeight);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [title]);
   return (
-    <div className="page-card">
+    <div ref={card} className={stacked ? "page-card stacked" : "page-card"}>
       <PageThumb html={html} />
-      <div className="page-meta">
+      <div ref={meta} className="page-meta">
         <span className="page-title">{title || t("pageUntitled")}</span>
         <span className="page-sub">{t("pageCardSub", { n: lines })}</span>
       </div>

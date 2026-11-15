@@ -31,7 +31,8 @@
   after the page is written, while the rest of the reply is still coming —
   and a page whose fonts or scripts come from somewhere that does not answer
   (Google Fonts, where it cannot be reached) is pictured all the same,
-  within a couple of seconds, where it used to stay grey.
+  within a couple of seconds, where it used to stay grey. A title too long
+  to sit beside the picture goes under it, the two centred together.
 - **Tables copy as tables.** Over a table's corner: copied as cells, it pastes
   into a spreadsheet as one; or saved as CSV that Excel opens with its Chinese
   intact.

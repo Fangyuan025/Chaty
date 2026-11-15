@@ -1929,6 +1929,15 @@ body.resizing-x {
   font-size: 12px;
   color: var(--text-dim);
 }
+/* Its title too long to sit beside the picture: the two centred, one over
+   the other (PageCard decides from the layout). */
+.page-card.stacked {
+  justify-content: center;
+}
+.page-card.stacked .page-meta {
+  align-items: center;
+  text-align: center;
+}
 .code-fold-body.page:hover .page-thumb {
   border-color: var(--border-strong);
 }

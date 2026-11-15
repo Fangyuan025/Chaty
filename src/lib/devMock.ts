@@ -1531,6 +1531,13 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       } else if (wantsBigBad && !isTitleReq) {
         const lines = ["flowchart TD", "  A0[开始] --> A1[第 1 步]", "  A1 -->|未闭合 X[", ...Array.from({ length: 150 }, (_, i) => `  A${i + 1}[第 ${i + 1} 步] --> A${i + 2}[第 ${i + 2} 步]`)];
         reply = "图:\n\n```mermaid\n" + lines.join("\n") + "\n```\n\n完。";
+      } else if (/长标题网页|long title page/i.test(last) && !isTitleReq) {
+        // A title too long to sit beside the page's picture.
+        reply =
+          "好的:\n\n```html\n<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"UTF-8\">\n  <title>这是一个超级超级超级超级超级长标题示例</title>\n  <style>\n" +
+          "    body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center; background: #f1f2f6; font-family: sans-serif; }\n" +
+          "    h1 { max-width: 80%; text-align: center; color: #222; font-size: 28px; line-height: 1.5; }\n" +
+          "  </style>\n</head>\n<body>\n  <h1>这是一个用于演示超长文本标题排版效果的网页，看看它怎么自动换行显示在屏幕中间。</h1>\n</body>\n</html>\n```\n\n完成。";
       } else if (wantsHeavy && !isTitleReq) {
         reply = "做好了:\n\n```html\n" + HEAVY_PAGE + "\n```\n\n直接用浏览器打开即可。";
       } else if (wantsDesign && !isTitleReq) {
