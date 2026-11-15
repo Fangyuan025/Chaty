@@ -146,6 +146,13 @@
 - **Reduce motion in Settings stills all of it**, as the system's setting
   did: the heights and widths moved from script went on moving with only the
   app's own setting on.
+- **The end of a reply holds still as it settles.** A page's card opening
+  to its picture once the reply was done, a block folding as its fence
+  closed, a thought folding away: the end was kept in view only as the reply
+  changed, a frame or more behind, and its bottom jumped up and down while
+  these opened and folded. It is kept there in the same frame now. Starting
+  a turn in Code mode, the spinner folds as the thought opens, where the end
+  went up and came back down.
 - **Menus, the model menu, previews, the shortcut sheet, find, the
   diagram viewer and notices fade out** as they came in; switching between
   chat and Code mode fades; Code mode's run line and the attachment bar open

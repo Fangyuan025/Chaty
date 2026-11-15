@@ -3262,9 +3262,16 @@ export function CodeMode({
                       {t("cmContinue")}
                     </button>
                   )}
-                  {!collapseTools && running && m === msgs[msgs.length - 1] && !m.text && !m.liveThinking && m.steps.length === 0 && (
-                    prefill != null ? <PrefillRing frac={prefill} size={18} /> : <span className="cm-spin cm-working" />
-                  )}
+                  {/* Folding away as what replaces it opens: gone in a frame
+                      while the thought opened from nothing, the turn's end
+                      went up and came down again. */}
+                  <Exit ms={260} collapse>
+                    {!collapseTools && running && m === msgs[msgs.length - 1] && !m.text && !m.liveThinking && m.steps.length === 0
+                      ? prefill != null
+                        ? <PrefillRing frac={prefill} size={18} />
+                        : <span className="cm-spin cm-working" />
+                      : null}
+                  </Exit>
                 </div>
               );
             })}

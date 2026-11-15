@@ -20,6 +20,14 @@ function drawn(children: ReactNode): boolean {
   return children != null && typeof children !== "boolean" && children !== "";
 }
 
+/** Its height in the layout — not the box a transform draws it in: a
+ *  spinner turned 45° measured half again as tall, and folded from there it
+ *  first grew. */
+function laidHeight(el: Element): number {
+  if (el instanceof HTMLElement && getComputedStyle(el).transform !== "none") return el.offsetHeight;
+  return el.getBoundingClientRect().height;
+}
+
 /** The gap a column puts before or after what is in it — given back as that
  *  folds away, taken as it comes. */
 function gapOf(wrap: HTMLElement | null): number {
@@ -67,7 +75,7 @@ export function Exit({
     const child = wrap.current?.firstElementChild as HTMLElement | null;
     const back = folding.current;
     const now = back && child ? getComputedStyle(child) : null;
-    const from = back && child ? child.getBoundingClientRect().height : 0;
+    const from = back && child ? laidHeight(child) : 0;
     const op = now ? parseFloat(now.opacity) || 0 : 0;
     const gap = gapOf(wrap.current);
     const top0 = now ? now.marginTop : `${-gap}px`;
@@ -92,7 +100,7 @@ export function Exit({
     if (present || !collapse || prefersStill()) return;
     const child = wrap.current?.firstElementChild as HTMLElement | null;
     if (!child?.animate) return;
-    const h = child.getBoundingClientRect().height;
+    const h = laidHeight(child);
     if (h < 2) return;
     noteShrink(ms + 80);
     const gap = gapOf(wrap.current);
@@ -100,7 +108,18 @@ export function Exit({
     folding.current = child.animate(
       [
         { height: `${h}px`, opacity: 1 },
-        { height: "0px", opacity: 0, marginTop: `${-gap}px`, marginBottom: "0px", paddingTop: "0px", paddingBottom: "0px" },
+        {
+          height: "0px",
+          opacity: 0,
+          marginTop: `${-gap}px`,
+          marginBottom: "0px",
+          paddingTop: "0px",
+          paddingBottom: "0px",
+          // A box's borders are in its height too: left, a ringed spinner
+          // stopped at 3px and went in a frame.
+          borderTopWidth: "0px",
+          borderBottomWidth: "0px",
+        },
       ],
       { duration: ms, easing: "cubic-bezier(0.22, 0.8, 0.24, 1)", fill: "forwards" },
     );

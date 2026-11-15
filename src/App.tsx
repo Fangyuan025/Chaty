@@ -1328,11 +1328,48 @@ export default function App() {
         setShowJump(jump);
       }
     };
+    // Whatever grows or folds in the transcript between its messages'
+    // changes — a page's card opening to its picture, a block folding as its
+    // fence closes, a thought folding away — keeps the end in view in the
+    // same frame: watched after layout, before paint. The end was followed
+    // only as messages changed, a frame or more behind, and the bottom of a
+    // reply jumped up and down as something in it opened after it ended.
+    const follow = () => {
+      if (!followRef.current || pinnedTop.current < 0 || performance.now() < pinAnimUntil.current) return;
+      if (hold?.active) {
+        if (hold.further(el)) {
+          followRef.current = false;
+          hold.clear();
+          releasedAt.current = performance.now();
+        }
+        return;
+      }
+      if (!shrinking() && el.scrollTop < pinnedTop.current - 12 && dist() > 12) {
+        if (input.recent()) {
+          followRef.current = false;
+          releasedAt.current = performance.now();
+        } else hold?.start(el);
+        return;
+      }
+      if (dist() > 0.5) el.scrollTop = el.scrollHeight;
+      pinnedTop.current = el.scrollTop;
+    };
+    const sizes = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(follow);
+    const watchAll = () => {
+      if (!sizes) return;
+      sizes.disconnect();
+      for (const c of Array.from(el.children)) sizes.observe(c);
+    };
+    watchAll();
+    const added = new MutationObserver(watchAll);
+    added.observe(el, { childList: true });
     el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("scroll", onScroll);
+      sizes?.disconnect();
+      added.disconnect();
       input.dispose();
       scrollInput.current = null;
       hold?.clear();
