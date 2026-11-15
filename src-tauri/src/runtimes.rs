@@ -97,7 +97,7 @@ impl Engine {
     pub fn bundled(self) -> Bundled {
         match self {
             Engine::Llama => Bundled { upstream: "ggml-org/llama.cpp", rev: "8642541b255bfb5dc39cd351a178be09013a55d6", date: "2026-10-28T11:30:38Z" },
-            Engine::Sd => Bundled { upstream: "leejet/stable-diffusion.cpp", rev: "88411ef1e0688ff2df1010aeeb5d92b2d8cea2be", date: "2026-09-23T17:45:14Z" },
+            Engine::Sd => Bundled { upstream: "leejet/stable-diffusion.cpp", rev: "532d2c15c430a785a712b2d94281f04e733008a4", date: "2026-11-15T10:33:53Z" },
             Engine::Audio => Bundled { upstream: "0xShug0/audio.cpp", rev: "955c8725c611d511774e6be132aff6609163b2d2", date: "2026-09-25T22:44:03Z" },
             Engine::Mlx => Bundled { upstream: "ml-explore/mlx-swift-lm", rev: "f5b0677f6b52b81d068871611cfcb82d1e7a0005", date: "2026-10-28T23:27:06Z" },
         }
@@ -772,21 +772,23 @@ mod tests {
 
     /// The newest pack for this app's protocol and platform, never one set
     /// aside; a newer engine for another protocol says a newer Chaty is needed.
+    /// Dated far ahead: newer than whatever engine the app comes with, which
+    /// moves with every pin (dated in 2026, this broke when the pin did).
     #[test]
     fn the_newest_usable_pack_is_chosen() {
         let index = Index {
             packs: vec![
-                pack(Engine::Sd, "2026.10.01", "1", "2026-10-01T00:00:00Z"),
-                pack(Engine::Sd, "2026.10.20", "1", "2026-10-20T00:00:00Z"),
-                pack(Engine::Sd, "2026.10.25", "2", "2026-10-25T00:00:00Z"),
-                pack(Engine::Audio, "2026.10.22", "1", "2026-10-22T00:00:00Z"),
+                pack(Engine::Sd, "2099.10.01", "1", "2099-10-01T00:00:00Z"),
+                pack(Engine::Sd, "2099.10.20", "1", "2099-10-20T00:00:00Z"),
+                pack(Engine::Sd, "2099.10.25", "2", "2099-10-25T00:00:00Z"),
+                pack(Engine::Audio, "2099.10.22", "1", "2099-10-22T00:00:00Z"),
             ],
         };
         let none = BTreeSet::new();
-        assert_eq!(best_pack(&index, Engine::Sd, &none).unwrap().version, "2026.10.20");
-        let broken: BTreeSet<String> = ["sd:2026.10.20".to_string()].into();
-        assert_eq!(best_pack(&index, Engine::Sd, &broken).unwrap().version, "2026.10.01");
-        assert_eq!(newer_needs_app(&index, Engine::Sd, "2026-10-20T00:00:00Z").as_deref(), Some(APP_VERSION));
+        assert_eq!(best_pack(&index, Engine::Sd, &none).unwrap().version, "2099.10.20");
+        let broken: BTreeSet<String> = ["sd:2099.10.20".to_string()].into();
+        assert_eq!(best_pack(&index, Engine::Sd, &broken).unwrap().version, "2099.10.01");
+        assert_eq!(newer_needs_app(&index, Engine::Sd, "2099-10-20T00:00:00Z").as_deref(), Some(APP_VERSION));
         assert!(best_pack(&index, Engine::Mlx, &none).is_none());
         // Nothing older than the engine the app came with.
         let old = Index { packs: vec![pack(Engine::Sd, "2020.01.01", "1", "2020-01-01T00:00:00Z")] };
