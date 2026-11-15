@@ -111,7 +111,7 @@ import { prefillPct } from "../lib/prefill";
 import { ContextRing } from "./ContextRing";
 import { Exit } from "./Exit";
 import { UserCopy } from "./UserText";
-import { animateHeight, shrinking, smoothly } from "../lib/smoothHeight";
+import { prefersStill, shrinking, useHeightOnChange } from "../lib/smoothHeight";
 
 interface CodeMsg {
   id: string;
@@ -494,15 +494,20 @@ function StepCard({
   const added = counts?.added ?? 0;
   const removed = counts?.removed ?? 0;
   // Clicking an image step opens the preview directly; otherwise toggle the body.
-  const onHead = (e: React.MouseEvent<HTMLElement>) => {
+  const onHead = () => {
     if (hasImage && step.image) onPreview?.(step.image);
     else if (hasBody) {
       touched.current = true;
-      smoothly(e.currentTarget.closest<HTMLElement>(".cm-step"), () => setOpen((o) => !o));
+      setOpen((o) => !o);
     }
   };
+  // Opened or closed — by a click, or by itself as a live card's call is
+  // written and run — it goes from one height to the other: its body coming
+  // (a live card opens before the call has any lines), and the live view
+  // giving way to the step's result, too.
+  const boxRef = useHeightOnChange<HTMLDivElement>(`${open && hasBody}|${!!liveS}`);
   return (
-    <div className={`cm-step ${step.status}${cmdFailed ? " cmd-failed" : ""}`}>
+    <div ref={boxRef} className={`cm-step ${step.status}${cmdFailed ? " cmd-failed" : ""}`}>
       <button className="cm-step-head" onClick={onHead}>
         <svg className="cm-step-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
           <path d={TOOL_ICON[step.call.name] ?? "M4 6h16M4 12h16M4 18h16"} />
@@ -560,7 +565,6 @@ function StepCard({
   );
 }
 
-/** Collapsible reasoning panel. Streams open while `live`; collapsed once done. */
 /** Each Code session's permission mode, by session id. */
 const PERM_MODES_KEY = "chaty.code.permModes";
 
@@ -584,6 +588,7 @@ function savePermModes(m: Record<string, PermMode>): void {
 /** Marks a code run as in flight so an interrupted one can be reported. */
 const RUN_INFLIGHT_KEY = "chaty.code.runInflight";
 
+/** Collapsible reasoning panel. Streams open while `live`; collapsed once done. */
 function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label: string }) {
   const [open, setOpen] = useState(false);
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -596,30 +601,13 @@ function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label
   useEffect(() => {
     if (focus && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
   }, [text, focus]);
-  // The thought folds to its line when it ends, from the window it was in —
-  // as chat's does (see AssistantMessage) — not in a frame.
-  const boxEl = useRef<HTMLDivElement | null>(null);
-  const boxH = useRef(0);
-  const boxRo = useRef<ResizeObserver | null>(null);
-  const boxRef = useCallback((el: HTMLDivElement | null) => {
-    boxRo.current?.disconnect();
-    boxEl.current = el;
-    if (el && typeof ResizeObserver !== "undefined") {
-      boxRo.current = new ResizeObserver(([e]) => {
-        boxH.current = e.borderBoxSize?.[0]?.blockSize ?? el.getBoundingClientRect().height;
-      });
-      boxRo.current.observe(el);
-    }
-  }, []);
-  const wasLive = useRef(!!live);
-  useLayoutEffect(() => {
-    if (wasLive.current && !live && !open && boxEl.current && boxH.current > 0) animateHeight(boxEl.current, boxH.current, 300);
-    wasLive.current = !!live;
-  }, [live, open]);
+  // Opened or closed, by a click or as it ends, it goes from one height to
+  // the other (see useHeightOnChange).
+  const boxRef = useHeightOnChange<HTMLDivElement>(open || !!live);
   if (!text) return null;
   return (
     <div className={`cm-think ${live ? "live" : ""}`} ref={boxRef}>
-      <button className="cm-think-head" onClick={(e) => smoothly(e.currentTarget.closest<HTMLElement>(".cm-think"), () => setOpen((o) => !o))}>
+      <button className="cm-think-head" onClick={() => setOpen((o) => !o)}>
         {live ? (
           <span className="cm-spin" />
         ) : (
@@ -631,7 +619,9 @@ function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label
       </button>
       {(open || live) && (
         <div ref={bodyRef} className={`cm-think-body ${focus ? "focus" : ""}`}>
-          {text}
+          {/* Rendered as chat renders a thought: its words fade in as they
+              come (see TurnMarkdown), where they used to appear as text. */}
+          <TurnMarkdown text={text} live={!!live} />
         </div>
       )}
     </div>
@@ -714,6 +704,8 @@ function ToolRun({
   steps,
   activity,
   doneLabel,
+  thinking,
+  hidden = false,
   children,
 }: {
   steps: ToolStep[];
@@ -721,10 +713,33 @@ function ToolRun({
   activity?: Activity | null;
   /** The line of a run that is over and called no tool — only thought. */
   doneLabel?: string;
+  /** What the model is thinking, while that is what the run is doing. */
+  thinking?: string;
+  /** The line for the run not yet begun, while the model speaks instead:
+   *  folded away, and back as the call it was speaking before begins — the
+   *  same line, so one opened by hand stays open. It went in a frame. */
+  hidden?: boolean;
   children?: React.ReactNode;
 }) {
   const { t, lang } = useI18n();
   const [open, setOpen] = useState(false);
+  const runRef = useHeightOnChange<HTMLDivElement>(open);
+  // A thought that goes on a while is shown under the line as it is written
+  // — the newest of it, in a short window, as chat's is — and folds away
+  // when the model moves on. A short one only says it is thinking: a window
+  // opening and shutting at every step was more motion than news. Opened,
+  // the run shows its steps (and the thought among them) as it always has.
+  const thinkingNow = !!thinking;
+  const [long, setLong] = useState(false);
+  useEffect(() => {
+    if (!thinkingNow) {
+      setLong(false);
+      return;
+    }
+    const timer = setTimeout(() => setLong(true), PEEK_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [thinkingNow]);
+  const peek = !open && long && thinking ? thinking : null;
   const active = !!activity;
   const openable = steps.length > 0 || !!children;
   let label: React.ReactNode;
@@ -770,28 +785,131 @@ function ToolRun({
     );
   }
   return (
-    <div className={`cm-run${active ? " active" : ""}${open ? " open" : ""}`}>
+    <Exit ms={260} collapse away={hidden}>
+    <div ref={runRef} className={`cm-run${active ? " active" : ""}${open ? " open" : ""}`}>
       <button
         type="button"
         className="cm-run-head"
-        onClick={(e) => openable && smoothly(e.currentTarget.closest<HTMLElement>(".cm-run"), () => setOpen((o) => !o))}
+        onClick={() => openable && setOpen((o) => !o)}
         aria-expanded={openable ? open : undefined}
         disabled={!openable}
       >
-        {/* Keyed by the state, not its words: a new state fades in, while
-            the same one updating — a path arriving, the prompt's percent —
-            changes in place. */}
-        <span key={activity ? `a:${activity.key}` : doneLabel ? "done:thought" : "done"} className="cm-run-state">
+        {/* Keyed by the state, not its words: a new state comes in as the
+            last one goes, while the same one updating — a path arriving, the
+            prompt's percent — changes in place. */}
+        <RunState k={activity ? `a:${activity.key}` : doneLabel ? "done:thought" : "done"} measure={active}>
           {label}
-        </span>
+        </RunState>
         {openable && (
           <span className={`cm-run-caret${open ? " open" : ""}`}>
             <Icon name="chevron-right" size={11} strokeWidth={2} />
           </span>
         )}
       </button>
+      <Exit ms={260} collapse>{peek ? <ThinkPeek text={peek} /> : null}</Exit>
       {open && openable && <div className="cm-run-body">{children}</div>}
     </div>
+    </Exit>
+  );
+}
+
+/** How long a run's thought goes on before it is shown under the run's line. */
+const PEEK_AFTER_MS = 3000;
+
+/** The thought being written, under a folded run's line: a short window kept
+ *  at its newest words, faded above, each word fading in (see ThinkPanel). */
+function ThinkPeek({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [text]);
+  return (
+    <div className="cm-run-peek">
+      <div ref={ref} className="cm-think-body focus">
+        <TurnMarkdown text={text} live />
+      </div>
+    </div>
+  );
+}
+
+/** A run's line from one state to the next: the new words out of a soft
+ *  blur as the last ones go into one, over each other, and the line's width
+ *  going to the new one's — so the caret after it moves there rather than
+ *  jumping. Measured while the run goes on (`measure`) and as its state
+ *  changes; a run that is over does not change. */
+function RunState({ k, measure, children }: { k: string; measure: boolean; children: React.ReactNode }) {
+  const box = useRef<HTMLSpanElement>(null);
+  const shown = useRef<{ k: string; node: React.ReactNode }>({ k, node: children });
+  const [leaving, setLeaving] = useState<{ id: number; node: React.ReactNode } | null>(null);
+  const seq = useRef(0);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const width = useRef(0);
+  // Followed, not tweened (as heights are, see animateHeight): the words can
+  // change every frame — the prompt's percent — and each change only moves
+  // where the width is going, where a tween begun again each frame stood
+  // still at its start.
+  const follow = useRef<{ target: number; w: number; raf: number; last: number; t0: number } | null>(null);
+  useLayoutEffect(() => {
+    const prev = shown.current;
+    shown.current = { k, node: children };
+    const changed = prev.k !== k;
+    const still = prefersStill();
+    if (changed && !still) {
+      const id = ++seq.current;
+      setLeaving({ id, node: prev.node });
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => setLeaving((l) => (l?.id === id ? null : l)), 300);
+    }
+    const el = box.current;
+    if (!el || !(measure || changed)) return;
+    // What the words take, all of them — the box may be held narrower than
+    // they are, and they cut short in it.
+    const inner = el.firstElementChild as HTMLElement | null;
+    const to = inner ? Array.from(inner.children).reduce((a, c) => a + (c as HTMLElement).scrollWidth, 0) : 0;
+    const f = follow.current;
+    const from = f ? f.w : width.current;
+    width.current = to;
+    if (f) {
+      f.target = to;
+      return;
+    }
+    if (!from || !to || Math.abs(to - from) < 1 || still) return;
+    const now0 = performance.now();
+    const run = { target: to, w: from, raf: 0, last: now0, t0: now0 };
+    follow.current = run;
+    el.style.width = `${from}px`;
+    const step = (now: number) => {
+      const dt = Math.min(20, Math.max(0, now - run.last));
+      run.last = now;
+      run.w += (run.target - run.w) * (1 - Math.exp(-dt / 70));
+      if (Math.abs(run.target - run.w) < 0.5 || now - run.t0 > 1500) {
+        el.style.width = "";
+        follow.current = null;
+        return;
+      }
+      el.style.width = `${run.w}px`;
+      run.raf = requestAnimationFrame(step);
+    };
+    run.raf = requestAnimationFrame(step);
+  });
+  useEffect(
+    () => () => {
+      clearTimeout(timer.current);
+      if (follow.current) cancelAnimationFrame(follow.current.raf);
+    },
+    [],
+  );
+  return (
+    <span ref={box} className="cm-run-state">
+      <span key={k} className="cm-run-state-in">
+        {children}
+      </span>
+      {leaving && (
+        <span key={`out:${leaving.id}`} className="cm-run-state-out" aria-hidden="true">
+          {leaving.node}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -2874,6 +2992,7 @@ export function CodeMode({
                           key={seg.key}
                           steps={seg.steps}
                           activity={seg.key === f.activeKey ? f.activity : null}
+                          thinking={seg.key === f.activeKey && f.activity?.key === "actThinking" ? m.liveThinking : undefined}
                         >
                           {seg.steps.map((s) => (
                             <div key={s.id} className="cm-block">
@@ -2883,8 +3002,8 @@ export function CodeMode({
                           ))}
                           {seg.key === f.lastRun && m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />}
                           {/* The live thought, unless the run not yet begun holds it. */}
-                          {seg.key === f.lastRun && m.liveThinking && !f.bottom && (
-                            <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />
+                          {seg.key === f.lastRun && (
+                            <Exit ms={260} collapse>{m.liveThinking && !f.bottom ? <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} /> : null}</Exit>
                           )}
                         </ToolRun>
                       ),
@@ -2900,19 +3019,28 @@ export function CodeMode({
                                 </div>,
                               ]
                             : []),
-                          <ToolRun key={f.nextRun} steps={[]} activity={f.bottom}>
-                            {m.liveThinking ? <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} /> : null}
+                          <ToolRun
+                            key={f.nextRun}
+                            steps={[]}
+                            activity={f.bottom}
+                            thinking={f.bottom.key === "actThinking" ? m.liveThinking : undefined}
+                          >
+                            <Exit ms={260} collapse>{m.liveThinking ? <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} /> : null}</Exit>
                           </ToolRun>,
                         ]
-                      : // A turn that called no tool keeps its thought in a run
+                      : // While the model speaks, the line it had folds away
+                        // (and comes back as a call it speaks before begins).
+                        f.turnLive
+                        ? [<ToolRun key={f.nextRun} steps={[]} hidden />]
+                        : // A turn that called no tool keeps its thought in a run
                         // of its own: one line, opened by hand. Not while the
                         // turn goes on — words then may be the ones before a
                         // call, whose run comes under them, not over.
-                        !f.lastRun && !f.turnLive && (m.thinking || m.liveThinking)
+                        !f.lastRun && (m.thinking || m.liveThinking)
                         ? [
                             <ToolRun key={f.nextRun} steps={[]} doneLabel={t("cmThought")}>
                               <div className="cm-think-body">
-                                {[m.thinking, m.liveThinking].filter(Boolean).join("\n\n")}
+                                <Markdown>{[m.thinking, m.liveThinking].filter(Boolean).join("\n\n")}</Markdown>
                               </div>
                             </ToolRun>,
                           ]
@@ -2949,7 +3077,7 @@ export function CodeMode({
                           <Markdown>{w.text}</Markdown>
                         </div>
                       ))}
-                    {m.liveThinking && <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />}
+                    <Exit ms={260} collapse>{m.liveThinking && <ThinkPanel text={m.liveThinking} live label={t("cmThinking")} />}</Exit>
                     </>
                   )}
                   {!f && m.thinking && <ThinkPanel text={m.thinking} label={t("cmThought")} />}

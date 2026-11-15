@@ -111,15 +111,32 @@
 - **The sidebar slides** away and back (⌘\\ or its button), in chat, Code
   mode and the studios, the panel widening into its place — it vanished in a
   frame.
-- **What opens and closes goes from one height to the other**: a folded
-  code block, a thought, the sources, a long message, a diagram's source,
-  Code mode's steps, thoughts and changes. A thought folds itself away
+- **What opens and closes goes from one height to the other — by a click
+  or by itself, the same way**: a folded code block, a thought, the sources,
+  a long message, a diagram's source; Code mode's steps, thoughts, runs and
+  changes, a card opening as its call is written and folding once it has
+  run, the thought being written folding away as its step takes over; the
+  rest of a diff, the finished background tasks, an MCP entry's fields and
+  the image studio's negative prompt. A thought folds itself away
   smoothly as the answer starts, a long code block settles into its window as
   it grows past the fold, and a finished page's window grows into its
   picture — each of which used to move the reply under it in a frame. A
   block written folds to its first lines the moment its fence closes, while
   the reply goes on, where it stayed in its streaming window until the whole
   reply was done.
+- **Code mode's thought is written as chat's is**: its words fade in as
+  they come, set as Markdown where it was plain text. A folded run's line
+  goes from one state to the next — "Reading…" to "Read 3 files" — the new
+  words out of a soft blur as the old ones go, the line's width, and the
+  caret after it, moving to the new one's. With tool calls folded, a thought
+  that goes on past three seconds opens under its run's line — its newest
+  words in a short window, as they are written — and folds away as the model
+  moves on; the run opened shows its steps as before. The line for the next
+  run folds away while the model speaks and comes back as its call begins,
+  where it went and came in a frame.
+- **Reduce motion in Settings stills all of it**, as the system's setting
+  did: the heights and widths moved from script went on moving with only the
+  app's own setting on.
 - **Menus, the model menu, previews, the shortcut sheet, find, the
   diagram viewer and notices fade out** as they came in; switching between
   chat and Code mode fades; Code mode's run line and the attachment bar open

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { diffLines } from "../lib/diff";
+import { useHeightOnChange } from "../lib/smoothHeight";
 import { useI18n } from "../lib/i18n";
 
 type Contents = { before: string; after: string };
@@ -29,6 +30,7 @@ export function DiffView({
 }) {
   const { t } = useI18n();
   const [all, setAll] = useState(false);
+  const preRef = useHeightOnChange<HTMLPreElement>(all);
   const [full, setFull] = useState<Contents | null>(null);
   const [loading, setLoading] = useState(false);
   const src = full ?? { before, after };
@@ -48,7 +50,7 @@ export function DiffView({
     setAll(true);
   };
   return (
-    <pre className={`cm-diff${className ? ` ${className}` : ""}`}>
+    <pre ref={preRef} className={`cm-diff${className ? ` ${className}` : ""}`}>
       {d.rows.map((l, i) => (
         <div key={i} className={`cm-dl ${l.kind}`}>
           <span className="cm-dl-mark">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}</span>

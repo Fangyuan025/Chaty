@@ -7127,13 +7127,31 @@ body:has(.live-overlay) .win-btn.close:hover {
 /* The line in one state — thinking, running a command, done — fading in
    when the state changes. */
 .cm-run-state {
+  position: relative;
   display: inline-flex;
   min-width: 0;
-  animation: cmrunstate var(--t-slow) var(--ease-out) both;
 }
-@keyframes cmrunstate {
-  from {
+.cm-run-state-in {
+  display: inline-flex;
+  min-width: 0;
+  animation: chip-in 0.32s var(--ease-out) both;
+}
+/* The words it had, over the new ones as they go: not in the line's width. */
+.cm-run-state-out {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: inline-flex;
+  max-width: 100%;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: cm-run-state-out 0.22s var(--ease) both;
+}
+@keyframes cm-run-state-out {
+  to {
     opacity: 0;
+    filter: blur(3px);
+    transform: translateY(-2px);
   }
 }
 .cm-run-diff {
@@ -7189,8 +7207,11 @@ body:has(.live-overlay) .win-btn.close:hover {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .cm-run-state {
+  .cm-run-state-in {
     animation: none;
+  }
+  .cm-run-state-out {
+    display: none;
   }
   .cm-run.active .cm-run-label,
   .cm-runbar-label,
@@ -7890,8 +7911,25 @@ html[data-motion="reduce"] .prefill-label {
   line-height: 1.6;
   color: var(--text-dim);
   font-style: italic;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+/* Rendered as chat's thought is (Markdown, its words fading in): the type of
+   the panel, not of a reply. */
+.cm-think-body p,
+.cm-think-body ul,
+.cm-think-body ol {
+  margin: 0 0 8px;
+}
+.cm-think-body > :last-child,
+.cm-think-body p:last-child {
+  margin-bottom: 0;
+}
+.cm-think-body h1,
+.cm-think-body h2,
+.cm-think-body h3,
+.cm-think-body h4 {
+  margin: 8px 0 4px;
+  font-size: 1em;
 }
 .cm-think.live .cm-think-body {
   color: var(--text);
@@ -7902,6 +7940,13 @@ html[data-motion="reduce"] .prefill-label {
    to be scrolled. */
 .cm-think-body.focus {
   max-height: 132px;
+}
+/* A folded run's thought, under its line (see ThinkPeek). */
+.cm-run-peek {
+  padding: 0 0 4px;
+}
+.cm-run-peek .cm-think-body {
+  margin-top: 2px;
 }
 
 /* ---- spinner ---- */
@@ -9229,8 +9274,12 @@ html[data-motion="reduce"] .prefill-label {
 .exit-wrap {
   display: contents;
 }
-.exit-wrap.leaving > * {
+.exit-wrap.leaving:not(.collapse) > * {
   animation: ui-fade-out var(--t-fast) var(--ease) both !important;
+  pointer-events: none !important;
+}
+/* Folding away (Exit's collapse): animated from Exit, not to be clicked. */
+.exit-wrap.leaving.collapse > * {
   pointer-events: none !important;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -10490,6 +10539,10 @@ body,
 /* ---- composer ---- */
 .is-composer {
   padding-top: 6px;
+}
+/* Its own block, so the row's margin is inside the height that opens. */
+.is-extras-wrap {
+  display: flow-root;
 }
 .is-extras {
   max-width: 768px;

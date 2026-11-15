@@ -33,6 +33,7 @@ import { decodeAudio, playAudio, primeAudioPlayback } from "../lib/audio";
 import { CODE_THEMES, type CodeTheme } from "../lib/codeTheme";
 import { useConfirm } from "./ConfirmModal";
 import { Select } from "./Select";
+import { useHeightOnChange } from "../lib/smoothHeight";
 import { BUILTIN_SKILLS } from "../lib/skills";
 import { loadMcpServers, saveMcpServers, syncMcpServers, type McpServerCfg } from "../lib/mcp";
 import catalog from "../lib/mcpStore.catalog.json";
@@ -1045,6 +1046,7 @@ export function SettingsPanel({
     setDisabledSkills(next);
   };
   const [storeOpen, setStoreOpen] = useState<string | null>(null);
+  const storeRowsRef = useHeightOnChange<HTMLDivElement>(storeOpen);
   const [storeInput, setStoreInput] = useState<Record<string, string>>({});
   const addFromStore = (entry: (typeof catalog)["entries"][number]) => {
     const values = storeInput;
@@ -2099,7 +2101,7 @@ export function SettingsPanel({
               <div className="settings-hint">{t("cmMcpHint")}</div>
               <div className="field">
                 <span>{t("cmMcpStore")}</span>
-                <div className="skill-rows">
+                <div className="skill-rows" ref={storeRowsRef}>
                   {catalog.entries.map((en) => {
                     const installed = mcpServers.some((x) => x.name === en.id);
                     const needsInput =

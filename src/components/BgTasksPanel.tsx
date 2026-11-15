@@ -4,6 +4,7 @@ import { Icon } from "./Icon";
 import { useConfirm } from "./ConfirmModal";
 import { agentBgClearFinished, agentBgKill, agentBgLog, type AgentBgInfo } from "../lib/ipc";
 import { bgStatus, bgTitle, fmtElapsed } from "../lib/bgTasks";
+import { useHeightOnChange } from "../lib/smoothHeight";
 
 /** The background tasks panel: every command the agent left running or ran in
  *  the background, what became of it, and — once opened — its output, live.
@@ -53,6 +54,7 @@ export function BgTasksPanel({
   const [open, setOpen] = useState<Set<number>>(() => new Set());
   const [logs, setLogs] = useState<Record<number, string>>({});
   const [showFinished, setShowFinished] = useState(true);
+  const listRef = useHeightOnChange<HTMLDivElement>(showFinished);
   const running = jobs.filter((j) => j.running);
   const finished = jobs.filter((j) => !j.running);
 
@@ -186,7 +188,7 @@ export function BgTasksPanel({
             </button>
           </div>
         </div>
-        <div className="bg-panel-list">
+        <div className="bg-panel-list" ref={listRef}>
           {jobs.length === 0 && <div className="hw-loading">{t("bgEmpty")}</div>}
           {running.length > 0 && (
             <>

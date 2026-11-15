@@ -383,8 +383,10 @@ jobs:
 
             Loading a model names it on the model chip as it goes, and the chip and the bar under
             the top row move from one state to the next. The sidebar slides; folded code, thoughts,
-            sources and long messages open and close
-            smoothly, and fold themselves away smoothly; menus, previews and notices fade out. A
+            sources, long messages and Code mode's cards open and close smoothly — by a click or by
+            themselves, the same way; menus, previews and notices fade out. Code mode's thought
+            fades in word by word as chat's does, a folded run's line goes from one state to the
+            next, and a long thought shows under it as it is written. A
             reply's count and rate count up as it is written, and the context ring sweeps to its
             new share. Copy and edit sit under your message on hover; hover a reply for the model
             that wrote it.

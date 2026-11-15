@@ -1538,7 +1538,14 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       const longTail = /长说明|long explanation/i.test(last)
         ? "\n\n" + Array.from({ length: 16 }, (_, i) => `${i + 1}. 这一段说明页面里的第 ${i + 1} 处设计:配色、间距、字号与交互,以及为什么这样安排更适合阅读。`).join("\n")
         : "";
-      if (wantsDemo && !isTitleReq) reply = DEMO[Math.min(demoStep, DEMO.length - 1)];
+      // 长思考 / long think: the demo's thoughts go on for a few seconds each
+      // — what shows a folded run's thought under its line.
+      const longThink = msgs.some((m) => m.role === "user" && /长思考|long think/i.test(m.content));
+      const thinkLong = (r: string) =>
+        r.replace(/<think>([\s\S]*?)<\/think>/, (_, t: string) =>
+          `<think>${t}\n\n` + Array.from({ length: 30 }, (_, i) => `第 ${i + 1} 点:**先确认**这一步要改什么,再看会不会影响别处。`).join("\n") + "</think>",
+        );
+      if (wantsDemo && !isTitleReq) reply = longThink ? thinkLong(DEMO[Math.min(demoStep, DEMO.length - 1)]) : DEMO[Math.min(demoStep, DEMO.length - 1)];
       else if (wantsLongPage && !isTitleReq) {
         const items = Array.from({ length: 600 }, (_, i) => `    <li class="item"><b>第 ${i + 1} 项</b> <span>说明文字 ${i}</span></li>`).join("\n");
         reply = "做好了:\n\n```html\n<!DOCTYPE html>\n<html lang=\"zh\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>长清单</title>\n  <style>body{font-family:system-ui;margin:0;padding:40px} .item{padding:8px;border-bottom:1px solid #ddd}</style>\n</head>\n<body>\n  <h1>长清单</h1>\n  <ul>\n" + items + "\n  </ul>\n</body>\n</html>\n```\n\n完成。";

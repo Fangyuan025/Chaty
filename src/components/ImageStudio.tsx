@@ -5,6 +5,7 @@ import { pastedFile } from "../lib/paste";
 
 import { useI18n, type TKey } from "../lib/i18n";
 import { watchContentHeight } from "../lib/autoGrow";
+import { useHeightOnChange } from "../lib/smoothHeight";
 import {
   imageCopy,
   openExternal,
@@ -365,6 +366,7 @@ export function ImageStudio({
   const eff = useMemo(() => effective(settings, d), [settings, d]);
   const [pop, setPop] = useState<"" | "size" | "params">("");
   const [showNeg, setShowNeg] = useState(false);
+  const extrasRef = useHeightOnChange<HTMLDivElement>(`${!!studio.reference}|${showNeg}`);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
@@ -627,6 +629,8 @@ export function ImageStudio({
       </div>
 
       <footer className="composer is-composer">
+        {/* Always there, so what comes and goes in it opens and closes. */}
+        <div className="is-extras-wrap" ref={extrasRef}>
         {(studio.reference || (showNeg && d.negativePrompt)) && (
           <div className="is-extras">
             {studio.reference && (
@@ -670,6 +674,7 @@ export function ImageStudio({
             )}
           </div>
         )}
+        </div>
         <div className="input-row is-input">
           <button className="tool-toggle" title={t("imgRefAdd")} onClick={() => void pickReference()}>
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

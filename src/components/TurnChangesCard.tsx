@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { smoothly } from "../lib/smoothHeight";
+import { useHeightOnChange } from "../lib/smoothHeight";
 import { DiffStat } from "./DiffStat";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
@@ -24,15 +24,16 @@ export function TurnChangesCard({
   // Open up to five files; past that, folded to its totals until asked.
   const [expanded, setExpanded] = useState(() => !startsFolded(changes.length));
   const [open, setOpen] = useState<string | null>(null);
+  const boxRef = useHeightOnChange<HTMLDivElement>(`${expanded}|${open}`);
   const pending = changes.filter((c) => !c.undone);
   const total = changeTotals(changes);
   return (
-    <div className={`cm-changes ${expanded ? "open" : ""}`}>
+    <div ref={boxRef} className={`cm-changes ${expanded ? "open" : ""}`}>
       <div className="cm-changes-head">
         <button
           className="cm-changes-toggle"
           aria-expanded={expanded}
-          onClick={(e) => smoothly(e.currentTarget.closest<HTMLElement>(".cm-changes"), () => setExpanded((v) => !v))}
+          onClick={() => setExpanded((v) => !v)}
         >
           <span className="cm-changes-chev">
             <Icon name="chevron-right" size={13} />
@@ -59,7 +60,7 @@ export function TurnChangesCard({
               className="cm-change-file"
               title={c.path}
               aria-expanded={open === c.path}
-              onClick={(e) => smoothly(e.currentTarget.closest<HTMLElement>(".cm-changes"), () => setOpen((o) => (o === c.path ? null : c.path)))}
+              onClick={() => setOpen((o) => (o === c.path ? null : c.path))}
             >
               <Icon name={open === c.path ? "chevron-down" : "chevron-right"} size={12} />
               <span className="cm-change-name">{c.rel}</span>

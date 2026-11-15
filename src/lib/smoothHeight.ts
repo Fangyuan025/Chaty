@@ -3,10 +3,13 @@
 // The change is made at once (React renders it in the same handler, through
 // flushSync), and before the frame is painted the element is put back at the
 // height it had and let go to its new one.
+import { useCallback, useLayoutEffect, useRef } from "react";
 import { flushSync } from "react-dom";
 
-/** The user asked their system for less motion. */
+/** The user asked for less motion — of their system, or in Settings (which
+ *  the stylesheet already honoured, and the motion made from here did not). */
 export function prefersStill(): boolean {
+  if (typeof document !== "undefined" && document.documentElement.dataset.motion === "reduce") return true;
   return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
@@ -63,7 +66,10 @@ export function animateHeight(el: HTMLElement, from: number, ms = 260): void {
   let last = t0;
   let h = from;
   const step = (now: number) => {
-    const dt = Math.max(0, now - last);
+    // A frame held up (what opened being drawn) moves it on by a frame's
+    // worth, not by all the time it took: a slow frame slows it, where it
+    // leapt.
+    const dt = Math.min(20, Math.max(0, now - last));
     last = now;
     // What it holds now, all of it (the box is held shorter, so its own
     // height says nothing — its content's does).
@@ -92,4 +98,37 @@ export function smoothly(el: HTMLElement | null | undefined, change: () => void,
   running.get(el)?.();
   flushSync(change);
   animateHeight(el, from, ms);
+}
+
+/** Height animated whenever `key` changes — by a click or by itself (a card
+ *  opening as its call is written, a thought folding as it ends): every open
+ *  and close of the element the returned ref is put on goes the same way.
+ *  Its height is kept as it changes (a ResizeObserver, read after layout) to
+ *  go from; the first render is drawn where it is. */
+export function useHeightOnChange<T extends HTMLElement>(key: unknown, ms = 260): (node: T | null) => void {
+  const el = useRef<T | null>(null);
+  const lastH = useRef(0);
+  const ro = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((node: T | null) => {
+    ro.current?.disconnect();
+    el.current = node;
+    lastH.current = 0;
+    if (node && typeof ResizeObserver !== "undefined") {
+      ro.current = new ResizeObserver(([e]) => {
+        lastH.current = e.borderBoxSize?.[0]?.blockSize ?? node.getBoundingClientRect().height;
+      });
+      ro.current.observe(node);
+    }
+  }, []);
+  const first = useRef(true);
+  useLayoutEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    const node = el.current;
+    if (node && lastH.current > 0) animateHeight(node, lastH.current, ms);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return ref;
 }
