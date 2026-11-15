@@ -202,6 +202,34 @@ jobs:
           echo "$OUT" | head -1 | grep -q '"event":"ready"'
           echo "$OUT" | grep -q '"event":"pong"'
 
+  sd-sidecar-windows:
+    name: Image engine sidecar on Windows (build + protocol smoke)
+    # The same under MSVC, which nothing else compiles before a release tag:
+    # the engine's C API moved (opaque options and results, 532d2c1) and a
+    # main.cpp GCC takes can still be one cl.exe refuses.
+    runs-on: windows-latest
+    steps:
+      - name: Long paths
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.99.1 # the staged name carries the target triple
+      - name: Ninja
+        run: choco install ninja -y
+      - uses: ilammy/msvc-dev-cmd@v1 # load MSVC env so CMake/Ninja can find cl.exe
+      - name: Build chaty-sd (CPU)
+        shell: pwsh
+        run: .\scripts\build-sd-sidecar.ps1 -Backend cpu
+        env:
+          CMAKE_GENERATOR: Ninja
+      - name: Protocol smoke
+        shell: pwsh
+        run: |
+          $bin = Get-ChildItem src-tauri\binaries\chaty-sd-*.exe | Select-Object -First 1 -ExpandProperty FullName
+          $out = '{"cmd":"ping"}' | & $bin
+          Write-Host $out
+          if ("$out" -notmatch '"event":"ready"') { throw "chaty-sd did not say it was ready" }
+          if ("$out" -notmatch '"event":"pong"') { throw "chaty-sd did not answer the ping" }
+
   audio-sidecar:
     name: Music engine sidecar (build + protocol smoke)
     # chaty-audio is C++ around audio.cpp, with Chaty's progress patch on top

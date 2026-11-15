@@ -197,6 +197,14 @@ static bool write_file(const fs::path& p, const std::vector<unsigned char>& byte
 enum class Job { None, Load, Generate };
 
 static sd_ctx_t* g_ctx = nullptr;
+
+static void ctx_free(sd_ctx_t* ctx) {
+#if CHATY_SD_OPT_API
+    sd_ctx_free(ctx);
+#else
+    free_sd_ctx(ctx);
+#endif
+}
 static std::atomic<bool> g_busy{false};
 static std::thread g_worker;
 
@@ -460,8 +468,36 @@ static void png_add_text(std::vector<unsigned char>& png, const std::string& key
     png.insert(png.begin() + 33, chunk.begin(), chunk.end());
 }
 
-static void on_preview(int step, int frame_count, sd_image_t* frames, bool is_noisy, void*) {
-    if (frames == nullptr || frame_count <= 0 || frames[0].data == nullptr || is_noisy)
+/// A picture as both forms of the engine's API hand one over: interleaved
+/// 8-bit pixels, row by row. Before upstream's opaque API (532d2c1,
+/// 2026-11-15) a struct with these fields; since, a U8 tensor shaped
+/// [channels, width, height] (CMakeLists.txt says which this build has).
+struct Pix {
+    uint32_t width        = 0;
+    uint32_t height       = 0;
+    uint32_t channel      = 0;
+    const uint8_t* data   = nullptr;
+};
+
+#if CHATY_SD_OPT_API
+static Pix pix_of(const sd_tensor_t* t) {
+    Pix p;
+    if (t == nullptr || sd_tensor_type(t) != SD_TENSOR_U8 || sd_tensor_rank(t) != 3)
+        return p;
+    p.channel = (uint32_t)sd_tensor_dim(t, 0);
+    p.width   = (uint32_t)sd_tensor_dim(t, 1);
+    p.height  = (uint32_t)sd_tensor_dim(t, 2);
+    p.data    = static_cast<const uint8_t*>(sd_tensor_data(t));
+    return p;
+}
+#else
+static Pix pix_of(const sd_image_t& im) {
+    return Pix{im.width, im.height, im.channel, im.data};
+}
+#endif
+
+static void emit_preview(int step, const Pix& img) {
+    if (img.data == nullptr)
         return;
     std::string id;
     {
@@ -470,7 +506,6 @@ static void on_preview(int step, int frame_count, sd_image_t* frames, bool is_no
             return;
         id = g_job_id;
     }
-    const sd_image_t& img = frames[0];
     std::vector<unsigned char> jpg;
     if (img.channel < 1 || img.channel > 4)
         return;
@@ -484,7 +519,35 @@ static void on_preview(int step, int frame_count, sd_image_t* frames, bool is_no
           {"data", "data:image/jpeg;base64," + base64(jpg)}});
 }
 
-static bool load_image(const std::string& path, sd_image_t& out, int want_channels, std::string& err) {
+#if CHATY_SD_OPT_API
+static void on_preview(int step, int frame_count, const sd_tensor_t* const* frames, bool is_noisy, void*) {
+    if (frames == nullptr || frame_count <= 0 || is_noisy)
+        return;
+    emit_preview(step, pix_of(frames[0]));
+}
+#else
+static void on_preview(int step, int frame_count, sd_image_t* frames, bool is_noisy, void*) {
+    if (frames == nullptr || frame_count <= 0 || is_noisy)
+        return;
+    emit_preview(step, pix_of(frames[0]));
+}
+#endif
+
+/// A picture read from disk, its pixels owned until it goes.
+struct Loaded {
+    Pix pix;
+    unsigned char* owned = nullptr;
+    Loaded()             = default;
+    Loaded(const Loaded&) = delete;
+    Loaded& operator=(const Loaded&) = delete;
+    Loaded(Loaded&& o) noexcept : pix(o.pix), owned(o.owned) { o.owned = nullptr; }
+    ~Loaded() {
+        if (owned != nullptr)
+            stbi_image_free(owned);
+    }
+};
+
+static bool load_image(const std::string& path, Loaded& out, int want_channels, std::string& err) {
     std::vector<unsigned char> bytes;
     if (!read_file(path, bytes)) {
         err = "cannot read image: " + path;
@@ -496,12 +559,45 @@ static bool load_image(const std::string& path, sd_image_t& out, int want_channe
         err = "cannot decode image: " + path;
         return false;
     }
-    out.width   = (uint32_t)w;
-    out.height  = (uint32_t)h;
-    out.channel = (uint32_t)(want_channels ? want_channels : c);
-    out.data    = data;
+    out.owned       = data;
+    out.pix.width   = (uint32_t)w;
+    out.pix.height  = (uint32_t)h;
+    out.pix.channel = (uint32_t)(want_channels ? want_channels : c);
+    out.pix.data    = data;
     return true;
 }
+
+#if CHATY_SD_OPT_API
+/// A picture as the engine takes one: a U8 tensor [channels, width, height]
+/// holding a copy of the pixels (the options retain it once set).
+static sd_tensor_t* tensor_of(const Pix& p) {
+    const int64_t shape[] = {(int64_t)p.channel, (int64_t)p.width, (int64_t)p.height};
+    return sd_tensor_create(SD_TENSOR_U8, 3, shape, p.data, (size_t)p.width * p.height * p.channel);
+}
+
+/// The engine's word for why the last call failed on this thread, if any.
+static std::string engine_error() {
+    const char* e = sd_get_last_error();
+    return e != nullptr ? std::string(e) : std::string();
+}
+
+/// A setter's refusal, said on stderr: an option the engine no longer takes
+/// is not a reason to fail the job — what it governs falls back to the
+/// engine's default.
+static void check_opt(sd_status_t st, const char* key) {
+    if (st != SD_STATUS_OK)
+        fprintf(stderr, "[WARN] option %s not taken (%d): %s\n", key, (int)st, engine_error().c_str());
+}
+#else
+static sd_image_t image_of(const Pix& p) {
+    sd_image_t im{};
+    im.width   = p.width;
+    im.height  = p.height;
+    im.channel = p.channel;
+    im.data    = const_cast<uint8_t*>(p.data);
+    return im;
+}
+#endif
 
 static fs::path unique_path(const fs::path& dir, const std::string& stem, const std::string& ext) {
     fs::path p = dir / fs_path(stem + ext);
@@ -570,11 +666,11 @@ static void do_load(json cmd) {
         g_version_name.clear();
     }
     if (g_ctx != nullptr) {
-        free_sd_ctx(g_ctx);
+        ctx_free(g_ctx);
         g_ctx = nullptr;
     }
 
-    // Keep every string alive for the duration of new_sd_ctx.
+    // Keep every string alive for the duration of the context's creation.
     std::string model        = engine_path(jstr(cmd, "model"));
     std::string diffusion    = engine_path(jstr(cmd, "diffusion_model"));
     std::string vae          = engine_path(jstr(cmd, "vae"));
@@ -600,63 +696,127 @@ static void do_load(json cmd) {
     if (jbool(cmd, "vae_on_cpu", false))
         prepend(backend, "vae=cpu");
 
-    sd_ctx_params_t p;
-    sd_ctx_params_init(&p);
-    p.model_path           = model.c_str();
-    p.diffusion_model_path = diffusion.c_str();
-    p.vae_path             = vae.c_str();
-    p.llm_path             = llm.c_str();
-    p.llm_vision_path      = llm_vision.c_str();
-    p.clip_l_path          = clip_l.c_str();
-    p.clip_g_path          = clip_g.c_str();
-    p.t5xxl_path           = t5xxl.c_str();
-    p.taesd_path           = taesd.c_str();
-    p.tae_preview_only     = !taesd.empty();
-    int threads            = jint(cmd, "threads", -1);
-    if (threads > 0)
-        p.n_threads = threads;
-    p.flash_attn           = jbool(cmd, "flash_attn", false);
-    p.diffusion_flash_attn = jbool(cmd, "diffusion_fa", true);
-    p.enable_mmap          = jbool(cmd, "mmap", false);
-    p.vae_conv_direct      = jbool(cmd, "vae_conv_direct", false);
-    p.diffusion_conv_direct = jbool(cmd, "diffusion_conv_direct", false);
+    const int threads             = jint(cmd, "threads", -1);
+    const bool flash_attn         = jbool(cmd, "flash_attn", false);
+    const bool diffusion_fa       = jbool(cmd, "diffusion_fa", true);
+    const bool mmap               = jbool(cmd, "mmap", false);
+    const bool vae_conv_direct    = jbool(cmd, "vae_conv_direct", false);
+    const bool diff_conv_direct   = jbool(cmd, "diffusion_conv_direct", false);
     // Everything resident at load time, the way a chat model loads: the bar
     // the user watches is the whole cost, and the first picture is not
     // mysteriously slower than the rest. The library falls back to lazy
     // loading by itself when the model has to be split across memories.
-    p.eager_load = jbool(cmd, "eager_load", true);
-    p.auto_fit   = jbool(cmd, "auto_fit", true);
+    const bool eager_load         = jbool(cmd, "eager_load", true);
+    const bool auto_fit           = jbool(cmd, "auto_fit", true);
     // The prompt's encoding (and, for editing models, the reference
     // picture's) is kept for the rounds that ask for it again — "again", a
     // batch re-run, a negative prompt that did not change — so the text and
     // vision encoders are skipped for them. Explicit rather than trusting
     // the library's default, which differs between its front ends.
-    p.conditioning_cache_size = std::max(0, jint(cmd, "conditioning_cache", 8));
-    p.max_vram   = max_vram.empty() ? nullptr : max_vram.c_str();
-    p.backend    = backend.empty() ? nullptr : backend.c_str();
-    p.params_backend = params_backend.empty() ? nullptr : params_backend.c_str();
-    std::string rng = jstr(cmd, "rng");
-    if (!rng.empty()) {
-        enum rng_type_t r = str_to_rng_type(rng.c_str());
-        if (r != RNG_TYPE_COUNT)
-            p.rng_type = r;
-    }
-    std::string prediction = jstr(cmd, "prediction");
-    if (!prediction.empty()) {
-        enum prediction_t pr = str_to_prediction(prediction.c_str());
-        if (pr != PREDICTION_COUNT)
-            p.prediction = pr;
-    }
+    const int conditioning_cache  = std::max(0, jint(cmd, "conditioning_cache", 8));
+    const std::string rng         = jstr(cmd, "rng");
+    const std::string prediction  = jstr(cmd, "prediction");
 
-    sd_ctx_t* ctx = new_sd_ctx(&p);
+    sd_ctx_t* ctx = nullptr;
+    std::string engine_err;
+#if CHATY_SD_OPT_API
+    {
+        sd_ctx_opt_t* o = sd_ctx_opt_create();
+        if (o == nullptr) {
+            end_job();
+            emit({{"event", "error"}, {"scope", "load"}, {"message", "out of memory"}});
+            return;
+        }
+        // A path or list not given is left unset — the engine's default, as
+        // the struct's empty fields were — not set to "".
+        auto set_str = [&](const char* key, const std::string& v) {
+            if (!v.empty())
+                check_opt(sd_opt_set_string(o, key, v.c_str()), key);
+        };
+        auto set_bool = [&](const char* key, bool v) { check_opt(sd_opt_set_bool(o, key, v), key); };
+        set_str("model_path", model);
+        set_str("diffusion_model_path", diffusion);
+        set_str("vae_path", vae);
+        set_str("llm_path", llm);
+        set_str("llm_vision_path", llm_vision);
+        set_str("clip_l_path", clip_l);
+        set_str("clip_g_path", clip_g);
+        set_str("t5xxl_path", t5xxl);
+        set_str("taesd_path", taesd);
+        set_bool("tae_preview_only", !taesd.empty());
+        if (threads > 0)
+            check_opt(sd_opt_set_int(o, "n_threads", threads), "n_threads");
+        set_bool("flash_attn", flash_attn);
+        set_bool("diffusion_flash_attn", diffusion_fa);
+        set_bool("enable_mmap", mmap);
+        set_bool("vae_conv_direct", vae_conv_direct);
+        set_bool("diffusion_conv_direct", diff_conv_direct);
+        set_bool("eager_load", eager_load);
+        set_bool("auto_fit", auto_fit);
+        check_opt(sd_opt_set_int(o, "conditioning_cache_size", conditioning_cache), "conditioning_cache_size");
+        set_str("max_vram", max_vram);
+        set_str("backend", backend);
+        set_str("params_backend", params_backend);
+        // A name the engine does not know is refused by its setter and leaves
+        // the engine's own choice, as an unknown name did before.
+        set_str("rng_type", rng);
+        set_str("prediction", prediction);
+        if (sd_ctx_create(o, &ctx) != SD_STATUS_OK) {
+            ctx        = nullptr;
+            engine_err = engine_error();
+        }
+        sd_opt_free(o);
+    }
+#else
+    {
+        sd_ctx_params_t p;
+        sd_ctx_params_init(&p);
+        p.model_path            = model.c_str();
+        p.diffusion_model_path  = diffusion.c_str();
+        p.vae_path              = vae.c_str();
+        p.llm_path              = llm.c_str();
+        p.llm_vision_path       = llm_vision.c_str();
+        p.clip_l_path           = clip_l.c_str();
+        p.clip_g_path           = clip_g.c_str();
+        p.t5xxl_path            = t5xxl.c_str();
+        p.taesd_path            = taesd.c_str();
+        p.tae_preview_only      = !taesd.empty();
+        if (threads > 0)
+            p.n_threads = threads;
+        p.flash_attn            = flash_attn;
+        p.diffusion_flash_attn  = diffusion_fa;
+        p.enable_mmap           = mmap;
+        p.vae_conv_direct       = vae_conv_direct;
+        p.diffusion_conv_direct = diff_conv_direct;
+        p.eager_load            = eager_load;
+        p.auto_fit              = auto_fit;
+        p.conditioning_cache_size = conditioning_cache;
+        p.max_vram       = max_vram.empty() ? nullptr : max_vram.c_str();
+        p.backend        = backend.empty() ? nullptr : backend.c_str();
+        p.params_backend = params_backend.empty() ? nullptr : params_backend.c_str();
+        if (!rng.empty()) {
+            enum rng_type_t r = str_to_rng_type(rng.c_str());
+            if (r != RNG_TYPE_COUNT)
+                p.rng_type = r;
+        }
+        if (!prediction.empty()) {
+            enum prediction_t pr = str_to_prediction(prediction.c_str());
+            if (pr != PREDICTION_COUNT)
+                p.prediction = pr;
+        }
+        ctx = new_sd_ctx(&p);
+    }
+#endif
+
     std::string err = take_last_error();
     end_job();
     if (ctx == nullptr) {
+        if (err.empty())
+            err = engine_err;
         emit({{"event", "error"}, {"scope", "load"}, {"message", err.empty() ? "failed to load the model" : err}});
         return;
     }
     g_ctx = ctx;
-    enum sample_method_t method = sd_get_default_sample_method(ctx);
     std::string version;
     {
         std::lock_guard<std::mutex> lk(g_state_mu);
@@ -665,26 +825,52 @@ static void do_load(json cmd) {
     const char* vname = sd_get_model_version_name(ctx);
     if (vname != nullptr && strcmp(vname, "Unknown") != 0)
         version = vname;
+    // The sampler and scheduler the engine picks for this model when none is
+    // asked for. The opaque API resolves them inside each generation and has
+    // no way to ask beforehand; the app then names the family's own (its
+    // catalogue's) beside "Auto", as it does whenever this is empty.
+#if CHATY_SD_OPT_API
+    const std::string default_sampler, default_scheduler;
+#else
+    enum sample_method_t method = sd_get_default_sample_method(ctx);
+    const std::string default_sampler   = sd_sample_method_name(method);
+    const std::string default_scheduler = sd_scheduler_name(sd_get_default_scheduler(ctx, method));
+#endif
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     emit({{"event", "loaded"},
           {"version", version},
           {"supports_image", sd_ctx_supports_image_generation(ctx)},
           {"supports_video", sd_ctx_supports_video_generation(ctx)},
-          {"default_sampler", sd_sample_method_name(method)},
-          {"default_scheduler", sd_scheduler_name(sd_get_default_scheduler(ctx, method))},
+          {"default_sampler", default_sampler},
+          {"default_scheduler", default_scheduler},
           {"elapsed_ms", ms}});
 }
 
-// The pictures one generate_image call made, freed when it goes. Upstream
-// changed the call to hand back a result that owns them (a85db96, 2026-10-24);
-// CMakeLists.txt says which form this build's header has, so a runtime pack
-// built from a newer upstream compiles as the pinned one does.
-#if CHATY_SD_RESULT_API
+// The pictures one generation made, freed when it goes. Upstream changed the
+// call to hand back a result that owns them (a85db96, 2026-10-24), and then
+// to opaque options and results (532d2c1, 2026-11-15); CMakeLists.txt says
+// which form this build's header has, so a runtime pack built from a newer
+// upstream compiles as the pinned one does.
+#if CHATY_SD_OPT_API
+struct Generated {
+    sd_result_t* r     = nullptr;
+    sd_status_t status = SD_STATUS_OK;
+    bool run(sd_ctx_t* ctx, const sd_img_gen_opt_t* g) {
+        status = sd_generate_image(ctx, g, &r);
+        return status == SD_STATUS_OK;
+    }
+    int count() const { return r ? (int)sd_result_get_image_count(r) : 0; }
+    Pix at(int i) const { return pix_of(sd_result_get_image(r, (size_t)i)); }
+    bool cancelled() const { return status == SD_STATUS_CANCELLED; }
+    ~Generated() { sd_result_free(r); }
+};
+#elif CHATY_SD_RESULT_API
 struct Generated {
     sd_image_generation_result_t* r = nullptr;
     bool run(sd_ctx_t* ctx, const sd_img_gen_params_t* g) { return generate_image(ctx, g, &r); }
     int count() const { return r ? r->count : 0; }
-    const sd_image_t& at(int i) const { return r->items[i].image; }
+    Pix at(int i) const { return pix_of(r->items[i].image); }
+    bool cancelled() const { return false; }
     ~Generated() { free_sd_image_generation_result(r); }
 };
 #else
@@ -693,7 +879,8 @@ struct Generated {
     int n              = 0;
     bool run(sd_ctx_t* ctx, const sd_img_gen_params_t* g) { return generate_image(ctx, g, &images, &n); }
     int count() const { return images ? n : 0; }
-    const sd_image_t& at(int i) const { return images[i]; }
+    Pix at(int i) const { return pix_of(images[i]); }
+    bool cancelled() const { return false; }
     ~Generated() { free_sd_images(images, n); }
 };
 #endif
@@ -714,15 +901,11 @@ static void do_generate(json cmd) {
     std::string metadata = jstr(cmd, "metadata");
     int jpeg_quality     = std::clamp(jint(cmd, "jpeg_quality", 95), 1, 100);
 
-    sd_img_gen_params_t g;
-    sd_img_gen_params_init(&g);
-    g.prompt          = prompt.c_str();
-    g.negative_prompt = negative.c_str();
-    g.width           = std::max(64, jint(cmd, "width", 1024));
-    g.height          = std::max(64, jint(cmd, "height", 1024));
-    g.clip_skip       = jint(cmd, "clip_skip", -1);
-    g.batch_count     = std::clamp(jint(cmd, "batch_count", 1), 1, 16);
-    g.strength        = jfloat(cmd, "strength", 0.75f);
+    const int width       = std::max(64, jint(cmd, "width", 1024));
+    const int height      = std::max(64, jint(cmd, "height", 1024));
+    const int clip_skip   = jint(cmd, "clip_skip", -1);
+    const int batch_count = std::clamp(jint(cmd, "batch_count", 1), 1, 16);
+    const float strength  = jfloat(cmd, "strength", 0.75f);
 
     int64_t seed = jint64(cmd, "seed", -1);
     if (seed < 0) {
@@ -732,117 +915,215 @@ static void do_generate(json cmd) {
         std::mt19937_64 gen(((uint64_t)rd() << 32) ^ rd() ^ (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count());
         seed = (int64_t)(gen() % 4294967295ull);
     }
-    g.seed = seed;
 
-    sd_sample_params_t& s = g.sample_params;
-    s.sample_steps        = std::clamp(jint(cmd, "steps", 20), 1, 200);
-    s.guidance.txt_cfg    = jfloat(cmd, "cfg_scale", 7.0f);
-    s.guidance.distilled_guidance = jfloat(cmd, "guidance", 3.5f);
-    float flow_shift = jfloat(cmd, "flow_shift", 0.0f);
-    if (flow_shift > 0.0f)
-        s.flow_shift = flow_shift;
-    float eta = jfloat(cmd, "eta", -1.0f);
-    if (eta >= 0.0f)
-        s.eta = eta;
-    std::string sampler = jstr(cmd, "sampler");
-    s.sample_method     = sampler.empty() ? SAMPLE_METHOD_COUNT : str_to_sample_method(sampler.c_str());
-    if (s.sample_method == SAMPLE_METHOD_COUNT)
-        s.sample_method = sd_get_default_sample_method(g_ctx);
-    std::string scheduler = jstr(cmd, "scheduler");
-    s.scheduler           = scheduler.empty() ? SCHEDULER_COUNT : str_to_scheduler(scheduler.c_str());
-    if (s.scheduler == SCHEDULER_COUNT)
-        s.scheduler = sd_get_default_scheduler(g_ctx, s.sample_method);
-
-    g.vae_tiling_params = {jbool(cmd, "vae_tiling", false), false, 0, 0, 0.5f, 0.0f, 0.0f, nullptr};
+    const int steps           = std::clamp(jint(cmd, "steps", 20), 1, 200);
+    const float cfg_scale     = jfloat(cmd, "cfg_scale", 7.0f);
+    const float guidance      = jfloat(cmd, "guidance", 3.5f);
+    const float flow_shift    = jfloat(cmd, "flow_shift", 0.0f);
+    const float eta           = jfloat(cmd, "eta", -1.0f);
+    const std::string sampler   = jstr(cmd, "sampler");
+    const std::string scheduler = jstr(cmd, "scheduler");
+    const bool vae_tiling     = jbool(cmd, "vae_tiling", false);
 
     // Sampling acceleration: denoiser work reused between steps whose input
     // barely moved (EasyCache for DiT models, UCache for UNet, Spectrum for
     // either). Off unless asked for; the threshold is the engine's own when
     // not given.
-    std::string cache_mode = jstr(cmd, "cache_mode");
-    if (!cache_mode.empty() && cache_mode != "off") {
+    std::string cache_mode    = jstr(cmd, "cache_mode");
+    if (cache_mode == "off")
+        cache_mode.clear();
+    const float cache_threshold = jfloat(cmd, "cache_threshold", -1.0f);
+
+    // Optional img2img source and reference pictures (editing models).
+    std::string err;
+    std::vector<Loaded> refs;
+    Loaded init;
+    bool has_init         = false;
+    std::string init_path = jstr(cmd, "init_image");
+    if (!init_path.empty()) {
+        if (!load_image(init_path, init, 3, err)) {
+            emit({{"event", "error"}, {"id", id}, {"scope", "generate"}, {"message", err}});
+            return;
+        }
+        has_init = true;
+    }
+    if (cmd.contains("ref_images") && cmd["ref_images"].is_array()) {
+        for (const auto& r : cmd["ref_images"]) {
+            if (!r.is_string())
+                continue;
+            Loaded im;
+            if (!load_image(r.get<std::string>(), im, 0, err)) {
+                emit({{"event", "error"}, {"id", id}, {"scope", "generate"}, {"message", err}});
+                return;
+            }
+            refs.push_back(std::move(im));
+        }
+    }
+
+    // Live preview of the denoised estimate, every `preview_interval` steps.
+    std::string preview        = jstr(cmd, "preview", "proj");
+    const int preview_interval = std::max(1, jint(cmd, "preview_interval", 1));
+
+#if CHATY_SD_OPT_API
+    sd_img_gen_opt_t* g = sd_img_gen_opt_create();
+    if (g == nullptr) {
+        emit({{"event", "error"}, {"id", id}, {"scope", "generate"}, {"message", "out of memory"}});
+        return;
+    }
+    struct OptGuard {
+        sd_img_gen_opt_t* o;
+        ~OptGuard() { sd_opt_free(o); }
+    } guard{g};
+    check_opt(sd_opt_set_string(g, "prompt", prompt.c_str()), "prompt");
+    check_opt(sd_opt_set_string(g, "negative_prompt", negative.c_str()), "negative_prompt");
+    check_opt(sd_opt_set_int(g, "width", width), "width");
+    check_opt(sd_opt_set_int(g, "height", height), "height");
+    if (clip_skip > 0)
+        check_opt(sd_opt_set_int(g, "clip_skip", clip_skip), "clip_skip");
+    check_opt(sd_opt_set_int(g, "batch_count", batch_count), "batch_count");
+    check_opt(sd_opt_set_float(g, "strength", std::clamp(strength, 0.0f, 1.0f)), "strength");
+    check_opt(sd_opt_set_int(g, "seed", seed), "seed");
+    check_opt(sd_opt_set_int(g, "sample.steps", steps), "sample.steps");
+    check_opt(sd_opt_set_float(g, "sample.guidance.txt_cfg", cfg_scale), "sample.guidance.txt_cfg");
+    check_opt(sd_opt_set_float(g, "sample.guidance.distilled_guidance", guidance), "sample.guidance.distilled_guidance");
+    if (flow_shift > 0.0f)
+        check_opt(sd_opt_set_float(g, "sample.flow_shift", flow_shift), "sample.flow_shift");
+    if (eta >= 0.0f)
+        check_opt(sd_opt_set_float(g, "sample.eta", eta), "sample.eta");
+    // Unset — or a name the engine does not know, which its setter refuses —
+    // is the engine's choice for the model, as before.
+    if (!sampler.empty())
+        check_opt(sd_opt_set_string(g, "sample.method", sampler.c_str()), "sample.method");
+    if (!scheduler.empty())
+        check_opt(sd_opt_set_string(g, "sample.scheduler", scheduler.c_str()), "sample.scheduler");
+    if (vae_tiling)
+        check_opt(sd_opt_set_bool(g, "vae_tiling.enabled", true), "vae_tiling.enabled");
+    if (!cache_mode.empty()) {
+        // The app's names, in the engine's spelling ("cache-dit" is
+        // "cache_dit" there).
+        std::string mode = cache_mode;
+        std::replace(mode.begin(), mode.end(), '-', '_');
+        check_opt(sd_opt_set_string(g, "cache.mode", mode.c_str()), "cache.mode");
+        if (cache_threshold > 0.0f) {
+            if (mode == "easycache" || mode == "ucache")
+                check_opt(sd_opt_set_float(g, "cache.reuse_threshold", cache_threshold), "cache.reuse_threshold");
+            else if (mode == "dbcache" || mode == "cache_dit")
+                check_opt(sd_opt_set_float(g, "cache.residual_diff_threshold", cache_threshold), "cache.residual_diff_threshold");
+        }
+    }
+    // The options keep their own reference to each picture once set.
+    if (has_init) {
+        sd_tensor_t* t = tensor_of(init.pix);
+        if (t == nullptr) {
+            emit({{"event", "error"}, {"id", id}, {"scope", "generate"}, {"message", engine_error()}});
+            return;
+        }
+        check_opt(sd_opt_set_tensor(g, "init_image", t), "init_image");
+        sd_tensor_free(t);
+    }
+    if (!refs.empty()) {
+        std::vector<sd_tensor_t*> ts;
+        for (const auto& r : refs) {
+            sd_tensor_t* t = tensor_of(r.pix);
+            if (t != nullptr)
+                ts.push_back(t);
+        }
+        std::vector<const sd_tensor_t*> views(ts.begin(), ts.end());
+        check_opt(sd_opt_set_tensors(g, "ref_images", views.data(), views.size()), "ref_images");
+        for (auto* t : ts)
+            sd_tensor_free(t);
+    }
+    // A mode the engine does not know keeps the projection preview.
+    if (preview == "none") {
+        sd_set_preview_callback(nullptr, "none", 1, false, false, nullptr);
+    } else if (sd_set_preview_callback(on_preview, preview.c_str(), preview_interval, true, false, nullptr) != SD_STATUS_OK) {
+        sd_set_preview_callback(on_preview, "proj", preview_interval, true, false, nullptr);
+    }
+#else
+    sd_img_gen_params_t gp;
+    sd_img_gen_params_init(&gp);
+    const sd_img_gen_params_t* g = &gp;
+    gp.prompt          = prompt.c_str();
+    gp.negative_prompt = negative.c_str();
+    gp.width           = width;
+    gp.height          = height;
+    gp.clip_skip       = clip_skip;
+    gp.batch_count     = batch_count;
+    gp.strength        = strength;
+    gp.seed            = seed;
+
+    sd_sample_params_t& sp = gp.sample_params;
+    sp.sample_steps        = steps;
+    sp.guidance.txt_cfg    = cfg_scale;
+    sp.guidance.distilled_guidance = guidance;
+    if (flow_shift > 0.0f)
+        sp.flow_shift = flow_shift;
+    if (eta >= 0.0f)
+        sp.eta = eta;
+    sp.sample_method = sampler.empty() ? SAMPLE_METHOD_COUNT : str_to_sample_method(sampler.c_str());
+    if (sp.sample_method == SAMPLE_METHOD_COUNT)
+        sp.sample_method = sd_get_default_sample_method(g_ctx);
+    sp.scheduler = scheduler.empty() ? SCHEDULER_COUNT : str_to_scheduler(scheduler.c_str());
+    if (sp.scheduler == SCHEDULER_COUNT)
+        sp.scheduler = sd_get_default_scheduler(g_ctx, sp.sample_method);
+
+    gp.vae_tiling_params = {vae_tiling, false, 0, 0, 0.5f, 0.0f, 0.0f, nullptr};
+
+    if (!cache_mode.empty()) {
         static const std::pair<const char*, sd_cache_mode_t> modes[] = {
             {"easycache", SD_CACHE_EASYCACHE}, {"ucache", SD_CACHE_UCACHE},         {"dbcache", SD_CACHE_DBCACHE},
             {"taylorseer", SD_CACHE_TAYLORSEER}, {"cache-dit", SD_CACHE_CACHE_DIT}, {"spectrum", SD_CACHE_SPECTRUM},
         };
         for (const auto& m : modes) {
             if (cache_mode == m.first)
-                g.cache.mode = m.second;
+                gp.cache.mode = m.second;
         }
-        float threshold = jfloat(cmd, "cache_threshold", -1.0f);
-        if (threshold > 0.0f) {
-            if (g.cache.mode == SD_CACHE_EASYCACHE || g.cache.mode == SD_CACHE_UCACHE)
-                g.cache.reuse_threshold = threshold;
-            else if (g.cache.mode == SD_CACHE_DBCACHE || g.cache.mode == SD_CACHE_CACHE_DIT)
-                g.cache.residual_diff_threshold = threshold;
+        if (cache_threshold > 0.0f) {
+            if (gp.cache.mode == SD_CACHE_EASYCACHE || gp.cache.mode == SD_CACHE_UCACHE)
+                gp.cache.reuse_threshold = cache_threshold;
+            else if (gp.cache.mode == SD_CACHE_DBCACHE || gp.cache.mode == SD_CACHE_CACHE_DIT)
+                gp.cache.residual_diff_threshold = cache_threshold;
         }
     }
 
-    // Optional img2img source and reference pictures (editing models).
-    std::vector<sd_image_t> owned;
-    auto release = [&]() {
-        for (auto& im : owned)
-            stbi_image_free(im.data);
-        owned.clear();
-    };
-    std::string err;
-    std::string init_path = jstr(cmd, "init_image");
-    if (!init_path.empty()) {
-        sd_image_t im{};
-        if (!load_image(init_path, im, 3, err)) {
-            emit({{"event", "error"}, {"id", id}, {"scope", "generate"}, {"message", err}});
-            return;
-        }
-        owned.push_back(im);
-        g.init_image = im;
-    }
-    std::vector<sd_image_t> refs;
-    if (cmd.contains("ref_images") && cmd["ref_images"].is_array()) {
-        for (const auto& r : cmd["ref_images"]) {
-            if (!r.is_string())
-                continue;
-            sd_image_t im{};
-            if (!load_image(r.get<std::string>(), im, 0, err)) {
-                release();
-                emit({{"event", "error"}, {"id", id}, {"scope", "generate"}, {"message", err}});
-                return;
-            }
-            owned.push_back(im);
-            refs.push_back(im);
-        }
-    }
-    if (!refs.empty()) {
-        g.ref_images       = refs.data();
-        g.ref_images_count = (int)refs.size();
+    std::vector<sd_image_t> ref_images;
+    if (has_init)
+        gp.init_image = image_of(init.pix);
+    for (const auto& r : refs)
+        ref_images.push_back(image_of(r.pix));
+    if (!ref_images.empty()) {
+        gp.ref_images       = ref_images.data();
+        gp.ref_images_count = (int)ref_images.size();
     }
 
-    // Live preview of the denoised estimate, every `preview_interval` steps.
-    std::string preview = jstr(cmd, "preview", "proj");
     enum preview_t pmode = preview == "none" ? PREVIEW_NONE : str_to_preview(preview.c_str());
     if (pmode == PREVIEW_COUNT)
         pmode = PREVIEW_PROJ;
-    sd_set_preview_callback(pmode == PREVIEW_NONE ? nullptr : on_preview, pmode,
-                            std::max(1, jint(cmd, "preview_interval", 1)), true, false, nullptr);
+    sd_set_preview_callback(pmode == PREVIEW_NONE ? nullptr : on_preview, pmode, preview_interval, true, false, nullptr);
+#endif
 
     g_cancel_requested = false;
     begin_job(Job::Generate, id);
     {
         std::lock_guard<std::mutex> lk(g_state_mu);
-        g_batch_count = g.batch_count;
+        g_batch_count = batch_count;
         g_cur_seed    = seed;
         emit_stage_locked();
     }
 
     Generated images;
-    bool ok             = images.run(g_ctx, &g);
+    bool ok             = images.run(g_ctx, g);
     const int count     = images.count();
     std::string gen_err = take_last_error();
+#if CHATY_SD_OPT_API
+    if (!ok && gen_err.empty())
+        gen_err = engine_error();
+#endif
     end_job();
-    release();
 
     if (!ok || count <= 0) {
         // A cancel ends the call as a failure; it is not one to report.
-        if (g_cancel_requested) {
+        if (g_cancel_requested || images.cancelled()) {
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
             emit({{"event", "done"}, {"id", id}, {"count", 0}, {"cancelled", true}, {"elapsed_ms", ms}});
         } else {
@@ -857,7 +1138,7 @@ static void do_generate(json cmd) {
     const bool jpeg = format == "jpg" || format == "jpeg";
     int saved       = 0;
     for (int i = 0; i < count; i++) {
-        const sd_image_t& im = images.at(i);
+        const Pix im = images.at(i);
         if (im.data == nullptr)
             continue;
         std::vector<unsigned char> bytes;
@@ -892,7 +1173,7 @@ static void do_generate(json cmd) {
     }
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
     // "after_current" returns the pictures finished so far — fewer than asked.
-    emit({{"event", "done"}, {"id", id}, {"count", saved}, {"cancelled", saved < g.batch_count}, {"elapsed_ms", ms}});
+    emit({{"event", "done"}, {"id", id}, {"count", saved}, {"cancelled", saved < batch_count}, {"elapsed_ms", ms}});
 }
 
 static void run_job(void (*fn)(json), json cmd) {
@@ -1014,7 +1295,7 @@ int main(int argc, char** argv) {
             if (g_worker.joinable())
                 g_worker.join();
             if (g_ctx != nullptr) {
-                free_sd_ctx(g_ctx);
+                ctx_free(g_ctx);
                 g_ctx = nullptr;
             }
             emit({{"event", "unloaded"}});

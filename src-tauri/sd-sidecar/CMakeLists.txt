@@ -30,7 +30,7 @@ set_property(CACHE CHATY_SD_BACKEND PROPERTY STRINGS cpu vulkan metal cuda)
 # The pinned engine. Bumping it is a deliberate act: a newer revision is what
 # brings new model families, and it is also what can move the C API under us.
 set(CHATY_SDCPP_REPO "https://github.com/leejet/stable-diffusion.cpp.git" CACHE STRING "")
-set(CHATY_SDCPP_REV "88411ef1e0688ff2df1010aeeb5d92b2d8cea2be" CACHE STRING "")
+set(CHATY_SDCPP_REV "532d2c15c430a785a712b2d94281f04e733008a4" CACHE STRING "")
 
 # Library only — no CLI, no server, no WebP/WebM (output is PNG/JPEG).
 set(SD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -89,10 +89,14 @@ target_link_libraries(chaty-sd PRIVATE stable-diffusion)
 if (CHATY_SD_NEEDS_AVX2)
     target_compile_definitions(chaty-sd PRIVATE CHATY_SD_NEEDS_AVX2=1)
 endif()
-# generate_image hands back an owning result since upstream a85db96; a runtime
-# pack may be built from either side of that (main.cpp, struct Generated).
+# The engine's C API has moved under us twice: generate_image hands back an
+# owning result since upstream a85db96, and since 532d2c1 options, pictures and
+# results are opaque, set and read by key. A runtime pack may be built from any
+# side of either (main.cpp: Pix, Generated), so the header says which.
 file(READ "${sdcpp_SOURCE_DIR}/include/stable-diffusion.h" CHATY_SD_HEADER)
-if (CHATY_SD_HEADER MATCHES "sd_image_generation_result_t")
+if (CHATY_SD_HEADER MATCHES "sd_ctx_opt_create")
+    target_compile_definitions(chaty-sd PRIVATE CHATY_SD_OPT_API=1)
+elseif (CHATY_SD_HEADER MATCHES "sd_image_generation_result_t")
     target_compile_definitions(chaty-sd PRIVATE CHATY_SD_RESULT_API=1)
 endif()
 if (MSVC)

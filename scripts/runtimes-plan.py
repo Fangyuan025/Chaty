@@ -71,6 +71,47 @@ def newest(engine):
     return gh(f"repos/{repo}/commits/{branch}")["sha"]
 
 
+# stable-diffusion.cpp made its C API opaque (options, pictures and results set
+# and read by key) in 532d2c1; a wrapper from before that cannot build against
+# it. The header's marker, and the wrapper's, for the opaque form.
+SD_OPAQUE_HEADER = "sd_ctx_opt_create"
+SD_OPAQUE_WRAPPER = "CHATY_SD_OPT_API"
+
+
+def file_at(repo, path, ref):
+    try:
+        return base64.b64decode(gh(f"repos/{repo}/contents/{path}?ref={ref}")["content"]).decode()
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def sd_rev_for(source, rev):
+    """The newest stable-diffusion.cpp commit the release's wrapper builds
+    against: `rev`, unless upstream's API moved past the wrapper — then the
+    commit before the move. A release from before the opaque API keeps its
+    packs coming, not a build that fails every day until the next release."""
+    repo = os.environ.get("GITHUB_REPOSITORY", "Fangyuan025/Chaty")
+    upstream = UPSTREAM["sd"][0]
+    if SD_OPAQUE_WRAPPER in file_at(repo, "src-tauri/sd-sidecar/main.cpp", source):
+        return rev
+    if SD_OPAQUE_HEADER not in file_at(upstream, "include/stable-diffusion.h", rev):
+        return rev
+    # The commit that brought the opaque header in: the oldest of the header's
+    # recent changes that has it. Its parent is the newest without.
+    changes = gh(f"repos/{upstream}/commits?path=include/stable-diffusion.h&sha={rev}&per_page=30")
+    introduced = None
+    for c in changes:
+        if SD_OPAQUE_HEADER in file_at(upstream, "include/stable-diffusion.h", c["sha"]):
+            introduced = c
+        else:
+            break
+    if introduced is None or not introduced.get("parents"):
+        return rev
+    before = introduced["parents"][0]["sha"]
+    print(f"sd: {source}'s wrapper predates upstream's opaque API ({introduced['sha'][:7]}); building {before[:7]}", file=sys.stderr)
+    return before
+
+
 def main():
     repo = os.environ.get("GITHUB_REPOSITORY", "Fangyuan025/Chaty")
     source = os.environ.get("SOURCE", "").strip() or gh(f"repos/{repo}/releases/latest")["tag_name"]
@@ -95,7 +136,11 @@ def main():
             print(f"unknown engine {engine}", file=sys.stderr)
             sys.exit(1)
         repo_up = UPSTREAM[engine][0]
-        rev = os.environ.get(f"{engine.upper()}_REV", "").strip() or newest(engine)
+        rev = os.environ.get(f"{engine.upper()}_REV", "").strip()
+        if not rev:
+            rev = newest(engine)
+            if engine == "sd":
+                rev = sd_rev_for(source, rev)
         commit = gh(f"repos/{repo_up}/commits/{rev}")
         rev, date = commit["sha"], commit["commit"]["committer"]["date"]
         if ships.get(engine, ("", ""))[1] == rev:
