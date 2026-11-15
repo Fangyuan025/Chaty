@@ -17,7 +17,7 @@ import { FindBar } from "./components/FindBar";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { ImagePreview } from "./components/ImagePreview";
 import { ImageThumb } from "./components/ImageThumb";
-import { SentAt, UserCopy, UserText } from "./components/UserText";
+import { UserCopy, UserText } from "./components/UserText";
 import { withErrorNote } from "./lib/reasoning";
 import { localSave } from "./lib/localSave";
 import { DownloadModal } from "./components/DownloadModal";
@@ -164,8 +164,6 @@ interface UiMessage extends ChatMessage {
   sources?: SearchResult[];
   /** The model that wrote a reply — shown under it. */
   model?: string;
-  /** When it was sent or written (ms). */
-  createdAt?: number;
   /** What the model was given for this user turn — today's date and the
    *  search results before the question. Kept (in memory) so every later
    *  prompt repeats the turn exactly as the cache holds it. */
@@ -519,12 +517,11 @@ export default function App() {
           images: m.images,
           sources: m.sources?.length ? m.sources : undefined,
           model: m.model || undefined,
-          createdAt: m.createdAt,
         }));
         // The reply is still being written, so it is not in the conversation
         // yet — put the bubble back where it was.
         if (!rows.some((m) => m.id === turn.messageId)) {
-          rows.push({ id: turn.messageId, role: "assistant", content: acc, images: undefined, sources: undefined, model: undefined, createdAt: Date.now() });
+          rows.push({ id: turn.messageId, role: "assistant", content: acc, images: undefined, sources: undefined, model: undefined });
         }
         setMessages(rows);
         setConversationId(turn.conversationId);
@@ -1164,7 +1161,7 @@ export default function App() {
     const fresh = !liveConvRef.current;
     const convId = liveConvRef.current ?? uid();
     liveConvRef.current = convId;
-    const uMsg: UiMessage = { id: uid(), role: "user", content: userText, createdAt: Date.now() };
+    const uMsg: UiMessage = { id: uid(), role: "user", content: userText };
     const aMsg: UiMessage = { id: uid(), role: "assistant", content: assistantText };
     setMessages((cur) => [...cur, uMsg, aMsg]);
     try {
@@ -2262,7 +2259,6 @@ ${body.outerHTML}
           images: m.images,
           sources: m.sources?.length ? m.sources : undefined,
           model: m.model || undefined,
-          createdAt: m.createdAt,
         })),
       );
       swapDraft(id);
@@ -3099,7 +3095,7 @@ ${body.outerHTML}
         : attachment?.images?.length
           ? attachment.images
           : undefined;
-    const userMsg: UiMessage = { id: uid(), role: "user", content: text, images: visionImgs, createdAt: Date.now() };
+    const userMsg: UiMessage = { id: uid(), role: "user", content: text, images: visionImgs };
     const asstMsg: UiMessage = { id: uid(), role: "assistant", content: "" };
     const history = [...messages, userMsg];
     setMessages([...history, asstMsg]);
@@ -3148,7 +3144,7 @@ ${body.outerHTML}
     if (busy || sendingRef.current || !model || !conversationId || !txt) return;
     const target = messages[index];
     if (!target || target.role !== "user") return;
-    const editedUser: UiMessage = { id: target.id, role: "user", content: txt, images: target.images, createdAt: Date.now() };
+    const editedUser: UiMessage = { id: target.id, role: "user", content: txt, images: target.images };
     const asstMsg: UiMessage = { id: uid(), role: "assistant", content: "" };
     const history = [...messages.slice(0, index), editedUser];
     setMessages([...history, asstMsg]);
@@ -3904,7 +3900,6 @@ ${body.outerHTML}
                           <UserText content={m.content} expandLabel={t("expandAll")} collapseLabel={t("collapseText")} />
                         </div>
                         <div className="user-actions">
-                          {m.createdAt ? <SentAt at={m.createdAt} /> : null}
                           <UserCopy content={m.content} title={t("copyMsg")} />
                           {!busy && (
                             <button

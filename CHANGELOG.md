@@ -53,10 +53,9 @@
 - **Each reply says which model wrote it**, at its foot on the right on
   hover — a conversation can pass through several — and a chat exported as
   JSON or Markdown says it of each reply too.
-- **Your message's buttons sit under it, at its right, on hover** — when it
-  was sent ("just now", "5 minutes ago", an earlier day's date), copy and
-  edit — where they sat centred on its left side, half-way down a long one.
-  In Code mode the same, with copy beside rewind.
+- **Your message's copy and edit sit under it, at its right, on hover**,
+  where they sat centred on its left side, half-way down a long one. In Code
+  mode the same, with copy beside rewind.
 
 ### Nothing stutters
 

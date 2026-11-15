@@ -2,7 +2,6 @@ import { useState } from "react";
 
 import { smoothly } from "../lib/smoothHeight";
 import { copyToClipboard } from "../lib/clipboard";
-import { useI18n } from "../lib/i18n";
 
 /** User-message text with a clamp for pasted walls of text: over ~15 lines or
  *  1200 chars it renders a 220px preview with a fade + expand pill. */
@@ -52,32 +51,3 @@ export function UserCopy({ content, title }: { content: string; title: string })
   );
 }
 
-/** When a message was sent, by the copy and edit buttons under it: "just
- *  now", "5 minutes ago", an earlier day's date and time — the whole of it
- *  on hover. In the interface's language. */
-export function SentAt({ at }: { at: number }) {
-  const { lang: ui } = useI18n();
-  const lang = ui === "zh" ? "zh-CN" : ui === "pt" ? "pt-BR" : ui;
-  const now = Date.now();
-  const secs = Math.round((now - at) / 1000);
-  const rel = new Intl.RelativeTimeFormat(lang, { numeric: "auto" });
-  const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((day(new Date(now)) - day(new Date(at))) / 86400000);
-  const time = new Date(at).toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" });
-  const label =
-    secs < 45
-      ? ui === "zh" ? "刚刚" : ui === "pt" ? "agora mesmo" : "just now"
-      : secs < 3600
-        ? rel.format(-Math.round(secs / 60), "minute")
-        : days === 0
-          ? rel.format(-Math.round(secs / 3600), "hour")
-          : days === 1
-            ? `${rel.format(-1, "day")} ${time}`
-            : new Date(at).toLocaleDateString(lang, { month: "short", day: "numeric", ...(days > 300 ? { year: "numeric" } : {}) }) + ` ${time}`;
-  const full = new Date(at).toLocaleString(lang, { dateStyle: "full", timeStyle: "short" });
-  return (
-    <span className="user-time" title={full}>
-      {label}
-    </span>
-  );
-}

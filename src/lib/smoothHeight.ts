@@ -5,8 +5,6 @@
 // height it had and let go to its new one.
 import { flushSync } from "react-dom";
 
-const EASE = "cubic-bezier(0.22, 0.8, 0.24, 1)";
-
 /** The user asked their system for less motion. */
 export function prefersStill(): boolean {
   return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -14,34 +12,57 @@ export function prefersStill(): boolean {
 
 const running = new WeakMap<HTMLElement, () => void>();
 
-/** Take `el` from height `from` to the height it has now. */
+/** Take `el` from height `from` to the height it has now.
+ *
+ *  Opening, the height it goes to is read again every frame: what opens is
+ *  not always all there the moment it opens — a diagram drawn a moment later,
+ *  a picture that loads, highlighted code — and a height fixed when it opened
+ *  ran out short of it, the rest arriving in a jump as the animation let go.
+ *  Closing goes to the height it was given. */
 export function animateHeight(el: HTMLElement, from: number, ms = 260): void {
   running.get(el)?.();
   const to = el.getBoundingClientRect().height;
   if (Math.abs(to - from) < 2 || prefersStill()) return;
+  const opening = to > from;
+  const cs = getComputedStyle(el);
+  const borders = (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
   const keep = { height: el.style.height, maxHeight: el.style.maxHeight, overflow: el.style.overflow, transition: el.style.transition };
   el.style.transition = "none";
-  el.style.height = `${from}px`;
   el.style.maxHeight = "none";
   el.style.overflow = "hidden";
-  void el.offsetHeight;
-  el.style.transition = `height ${ms}ms ${EASE}`;
-  el.style.height = `${to}px`;
-  let timer = 0;
+  el.style.height = `${from}px`;
+  let raf = 0;
   const done = () => {
-    el.removeEventListener("transitionend", onEnd);
-    clearTimeout(timer);
+    cancelAnimationFrame(raf);
     running.delete(el);
     el.style.height = keep.height;
     el.style.maxHeight = keep.maxHeight;
     el.style.overflow = keep.overflow;
     el.style.transition = keep.transition;
   };
-  const onEnd = (e: TransitionEvent) => {
-    if (e.target === el && e.propertyName === "height") done();
+  // Followed rather than tweened: each frame closes a share of the gap to
+  // where it is going (by the time since the last), so a target that moves
+  // part-way — more content arriving — is gone on to without a break, where a
+  // fixed curve recomputed toward it leapt there in a frame.
+  const tau = ms / 4;
+  const t0 = performance.now();
+  let last = t0;
+  let h = from;
+  const step = (now: number) => {
+    const dt = Math.max(0, now - last);
+    last = now;
+    // What it holds now, all of it (the box is held shorter, so its own
+    // height says nothing — its content's does).
+    const target = opening ? Math.max(to, el.scrollHeight + borders) : to;
+    h += (target - h) * (1 - Math.exp(-dt / tau));
+    if (Math.abs(target - h) < 0.5 || now - t0 > ms * 3) {
+      done();
+      return;
+    }
+    el.style.height = `${h}px`;
+    raf = requestAnimationFrame(step);
   };
-  el.addEventListener("transitionend", onEnd);
-  timer = window.setTimeout(done, ms + 120);
+  raf = requestAnimationFrame(step);
   running.set(el, done);
 }
 

@@ -384,8 +384,8 @@ jobs:
             The sidebar slides; folded code, thoughts, sources and long messages open and close
             smoothly, and fold themselves away smoothly; menus, previews and notices fade out. A
             reply's count and rate count up as it is written, and the context ring sweeps to its
-            new share. Hover a message for when it was sent, copy and edit; hover a reply for the
-            model that wrote it.
+            new share. Copy and edit sit under your message on hover; hover a reply for the model
+            that wrote it.
 
             ## Taking a chat elsewhere
 
