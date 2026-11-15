@@ -1497,7 +1497,7 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       const wantsMidBad = /中坏图|broken middle/i.test(last);
       // 网页 / web page streams a single-file page — a style, a comment over
       // two lines, a script — to look at its highlighting as it streams.
-      const wantsPage = /网页|web page/i.test(last);
+      const wantsPage = /网页|web page|长代码|long code/i.test(last);
       // 设计网页 / design page: a page as models make them — a title, a nav, a
       // hero, cards — for looking at the folded page's picture.
       const wantsDesign = /设计网页|design page/i.test(last);
@@ -1548,6 +1548,12 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       } else if (wantsBigBad && !isTitleReq) {
         const lines = ["flowchart TD", "  A0[开始] --> A1[第 1 步]", "  A1 -->|未闭合 X[", ...Array.from({ length: 150 }, (_, i) => `  A${i + 1}[第 ${i + 1} 步] --> A${i + 2}[第 ${i + 2} 步]`)];
         reply = "图:\n\n```mermaid\n" + lines.join("\n") + "\n```\n\n完。";
+      } else if (/长代码|long code/i.test(last) && !isTitleReq) {
+        // A long block, then words after it: the block is to fold to its
+        // first lines as its fence closes, not when the reply ends.
+        const code = Array.from({ length: 40 }, (_, i) => `    total += step(${i})  # 第 ${i + 1} 步`).join("\n");
+        reply = "```python\ndef run():\n    total = 0\n" + code + "\n    return total\n```\n\n" +
+          Array.from({ length: 12 }, (_, i) => `${i + 1}. 这一段解释上面代码里的第 ${i + 1} 处细节,以及为什么这样写更清楚。`).join("\n");
       } else if (/长标题网页|long title page/i.test(last) && !isTitleReq) {
         // A title too long to sit beside the page's picture.
         reply =

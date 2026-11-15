@@ -1154,7 +1154,10 @@ function CodeBlock({ children, node: _node, ...props }: ComponentPropsWithoutRef
   // Folded blocks are never fully hidden: while the message streams they show
   // a window pinned to the NEWEST lines (focus-follow); once finished they
   // show the FIRST few lines as a preview. Clicking either expands.
-  const focusMode = foldable && !expanded && streaming && override === null && !pageMode;
+  // While THIS block is being written — its fence still open — not while
+  // the reply is: a block finished folds to its first lines (or its page's
+  // picture) the moment its fence closes, as the reply goes on below it.
+  const focusMode = foldable && !expanded && streaming && fenceOpen && override === null && !pageMode;
   // A block that grows past the fold while it streams settles into its
   // window instead of dropping into it: from the height it had to the
   // window's, the newest lines held at the bottom, the fade over the top

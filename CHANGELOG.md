@@ -116,7 +116,10 @@
   Code mode's steps, thoughts and changes. A thought folds itself away
   smoothly as the answer starts, a long code block settles into its window as
   it grows past the fold, and a finished page's window grows into its
-  picture — each of which used to move the reply under it in a frame.
+  picture — each of which used to move the reply under it in a frame. A
+  block written folds to its first lines the moment its fence closes, while
+  the reply goes on, where it stayed in its streaming window until the whole
+  reply was done.
 - **Menus, the model menu, previews, the shortcut sheet, find, the
   diagram viewer and notices fade out** as they came in; switching between
   chat and Code mode fades; Code mode's run line and the attachment bar open
