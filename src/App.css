@@ -7124,44 +7124,15 @@ body:has(.live-overlay) .win-btn.close:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The line in one state — thinking, running a command, done — fading in
-   when the state changes. */
+/* The line in one state — thinking, running a command, done: the words
+   change at once, the width following them (see RunState). */
 .cm-run-state {
-  position: relative;
   display: inline-flex;
   min-width: 0;
 }
 .cm-run-state-in {
   display: inline-flex;
   min-width: 0;
-  animation: cm-run-state-in 0.22s var(--ease-out) both;
-}
-/* Not the model chip's blur: this line changes state many times a turn, and
-   a blur at every change tired the eye — the words cross-fade where they
-   are, only the line's width (and the caret after it) moving. */
-@keyframes cm-run-state-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-/* The words it had, over the new ones as they go: not in the line's width. */
-.cm-run-state-out {
-  position: absolute;
-  left: 0;
-  top: 0;
-  display: inline-flex;
-  max-width: 100%;
-  white-space: nowrap;
-  pointer-events: none;
-  animation: cm-run-state-out 0.16s var(--ease) both;
-}
-@keyframes cm-run-state-out {
-  to {
-    opacity: 0;
-  }
 }
 .cm-run-diff {
   margin-left: 6px;
@@ -7216,12 +7187,6 @@ body:has(.live-overlay) .win-btn.close:hover {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .cm-run-state-in {
-    animation: none;
-  }
-  .cm-run-state-out {
-    display: none;
-  }
   .cm-run.active .cm-run-label,
   .cm-runbar-label,
   .think-label.is-thinking,

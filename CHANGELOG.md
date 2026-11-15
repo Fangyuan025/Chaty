@@ -133,9 +133,9 @@
   reply was done.
 - **Code mode's thought is written as chat's is**: its words fade in as
   they come, set as Markdown where it was plain text. A folded run's line
-  goes from one state to the next — "Reading…" to "Read 3 files" — the new
-  words fading in as the old ones fade out, the line's width, and the caret
-  after it, moving to the new one's. With tool calls folded, a thought
+  goes from one state to the next — "Reading…" to "Read 3 files" — its
+  width, and the caret after it, moving quickly to the new words' where
+  they jumped. With tool calls folded, a thought
   that goes on past three seconds opens under its run's line — its newest
   words in a short window, as they are written — and folds away as the model
   moves on; the run opened shows its steps as before. The line for the next

@@ -795,9 +795,9 @@ function ToolRun({
         aria-expanded={openable ? open : undefined}
         disabled={!openable}
       >
-        {/* Keyed by the state, not its words: a new state comes in as the
-            last one goes, while the same one updating — a path arriving, the
-            prompt's percent — changes in place. */}
+        {/* The state, not its words, is what it measures by: a new state
+            and the same one updating — a path arriving, the prompt's percent
+            — both change in place, the width following. */}
         <RunState k={activity ? `a:${activity.key}` : doneLabel ? "done:thought" : "done"} measure={active}>
           {label}
         </RunState>
@@ -833,17 +833,13 @@ function ThinkPeek({ text }: { text: string }) {
   );
 }
 
-/** A run's line from one state to the next: the new words fading in as the
- *  last ones fade out, over each other, and the line's width
- *  going to the new one's — so the caret after it moves there rather than
- *  jumping. Measured while the run goes on (`measure`) and as its state
- *  changes; a run that is over does not change. */
+/** A run's line from one state to the next: the words change at once, and
+ *  the line's width goes quickly to the new one's — so the caret after it
+ *  moves there rather than jumping. Measured while the run goes on
+ *  (`measure`) and as its state changes; a run that is over does not change. */
 function RunState({ k, measure, children }: { k: string; measure: boolean; children: React.ReactNode }) {
   const box = useRef<HTMLSpanElement>(null);
-  const shown = useRef<{ k: string; node: React.ReactNode }>({ k, node: children });
-  const [leaving, setLeaving] = useState<{ id: number; node: React.ReactNode } | null>(null);
-  const seq = useRef(0);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const shownK = useRef(k);
   const width = useRef(0);
   // Followed, not tweened (as heights are, see animateHeight): the words can
   // change every frame — the prompt's percent — and each change only moves
@@ -851,16 +847,8 @@ function RunState({ k, measure, children }: { k: string; measure: boolean; child
   // still at its start.
   const follow = useRef<{ target: number; w: number; raf: number; last: number; t0: number } | null>(null);
   useLayoutEffect(() => {
-    const prev = shown.current;
-    shown.current = { k, node: children };
-    const changed = prev.k !== k;
-    const still = prefersStill();
-    if (changed && !still) {
-      const id = ++seq.current;
-      setLeaving({ id, node: prev.node });
-      clearTimeout(timer.current);
-      timer.current = setTimeout(() => setLeaving((l) => (l?.id === id ? null : l)), 300);
-    }
+    const changed = shownK.current !== k;
+    shownK.current = k;
     const el = box.current;
     if (!el || !(measure || changed)) return;
     // What the words take, all of them — the box may be held narrower than
@@ -868,13 +856,23 @@ function RunState({ k, measure, children }: { k: string; measure: boolean; child
     const inner = el.firstElementChild as HTMLElement | null;
     const to = inner ? Array.from(inner.children).reduce((a, c) => a + (c as HTMLElement).scrollWidth, 0) : 0;
     const f = follow.current;
+    // No words (a line folding away while the model speaks): nothing to go
+    // to — back, it is drawn as wide as its words at once, not drawn out
+    // from nothing.
+    if (!to) {
+      if (f) cancelAnimationFrame(f.raf);
+      follow.current = null;
+      el.style.width = "";
+      width.current = 0;
+      return;
+    }
     const from = f ? f.w : width.current;
     width.current = to;
     if (f) {
       f.target = to;
       return;
     }
-    if (!from || !to || Math.abs(to - from) < 1 || still) return;
+    if (!from || Math.abs(to - from) < 1 || prefersStill()) return;
     const now0 = performance.now();
     const run = { target: to, w: from, raf: 0, last: now0, t0: now0 };
     follow.current = run;
@@ -882,8 +880,8 @@ function RunState({ k, measure, children }: { k: string; measure: boolean; child
     const step = (now: number) => {
       const dt = Math.min(20, Math.max(0, now - run.last));
       run.last = now;
-      run.w += (run.target - run.w) * (1 - Math.exp(-dt / 70));
-      if (Math.abs(run.target - run.w) < 0.5 || now - run.t0 > 1500) {
+      run.w += (run.target - run.w) * (1 - Math.exp(-dt / 45));
+      if (Math.abs(run.target - run.w) < 0.5 || now - run.t0 > 1200) {
         el.style.width = "";
         follow.current = null;
         return;
@@ -895,21 +893,13 @@ function RunState({ k, measure, children }: { k: string; measure: boolean; child
   });
   useEffect(
     () => () => {
-      clearTimeout(timer.current);
       if (follow.current) cancelAnimationFrame(follow.current.raf);
     },
     [],
   );
   return (
     <span ref={box} className="cm-run-state">
-      <span key={k} className="cm-run-state-in">
-        {children}
-      </span>
-      {leaving && (
-        <span key={`out:${leaving.id}`} className="cm-run-state-out" aria-hidden="true">
-          {leaving.node}
-        </span>
-      )}
+      <span className="cm-run-state-in">{children}</span>
     </span>
   );
 }
