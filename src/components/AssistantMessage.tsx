@@ -1,4 +1,5 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { animateHeight, smoothly } from "../lib/smoothHeight";
 import { Markdown, StreamingContext } from "./Markdown";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
@@ -79,6 +80,31 @@ export const AssistantMessage = memo(function AssistantMessage({
       thinkBodyRef.current.scrollTop = thinkBodyRef.current.scrollHeight;
     }
   }, [reasoning, focusMode]);
+  // The thought folds itself away when the answer starts: from the window it
+  // was shown in down to its one line, not in a frame — the answer under it
+  // used to jump up by the window's height as its first words came. Its
+  // height is kept as it changes (a ResizeObserver: read after layout, so
+  // nothing extra while it streams) to fold from.
+  const thinkEl = useRef<HTMLDivElement | null>(null);
+  const thinkH = useRef(0);
+  const thinkRo = useRef<ResizeObserver | null>(null);
+  const thinkRef = useCallback((el: HTMLDivElement | null) => {
+    thinkRo.current?.disconnect();
+    thinkEl.current = el;
+    if (el && typeof ResizeObserver !== "undefined") {
+      thinkRo.current = new ResizeObserver(([e]) => {
+        thinkH.current = e.borderBoxSize?.[0]?.blockSize ?? el.getBoundingClientRect().height;
+      });
+      thinkRo.current.observe(el);
+    }
+  }, []);
+  const wasThinking = useRef(thinking);
+  useLayoutEffect(() => {
+    if (wasThinking.current && !thinking && override === null && thinkEl.current && thinkH.current > 0) {
+      animateHeight(thinkEl.current, thinkH.current, 300);
+    }
+    wasThinking.current = thinking;
+  }, [thinking, override]);
 
   // Thinking off: never use the reasoning panel — strip the whole <think> block
   // and any stray tags so a buggy/empty panel can never appear.
@@ -130,11 +156,11 @@ export const AssistantMessage = memo(function AssistantMessage({
     <div className="bubble">
       <StreamingContext.Provider value={streaming}>
       {showThink && (
-        <div className="think">
+        <div className="think" ref={thinkRef}>
           <button
             className="think-toggle"
             type="button"
-            onClick={() => setOverride(!expanded)}
+            onClick={(e) => smoothly(e.currentTarget.closest<HTMLElement>(".think"), () => setOverride(!expanded))}
           >
             <span className={`think-caret ${expanded ? "open" : ""}`}><Icon name="chevron-right" size={11} strokeWidth={2} /></span>
             {thinking ? (

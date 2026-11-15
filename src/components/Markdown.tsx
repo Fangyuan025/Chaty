@@ -22,6 +22,8 @@ import { mdBlocks, type BlockCache } from "../lib/mdBlocks";
 import { detectLang, lookup, useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { DiagramViewer } from "./DiagramViewer";
+import { Exit } from "./Exit";
+import { animateHeight, prefersStill, smoothly } from "../lib/smoothHeight";
 import { exportCodeFile, exportDiagramFile, exportTextFile } from "../lib/ipc";
 import { copyToClipboard } from "../lib/clipboard";
 import { fitPop } from "../lib/popFit";
@@ -544,7 +546,11 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
               <Icon name="expand" size={13} strokeWidth={1.8} />
             </button>
           )}
-          <button className="code-btn" type="button" onClick={() => setShowSrc((v) => !v)}>
+          <button
+            className="code-btn"
+            type="button"
+            onClick={(e) => smoothly(e.currentTarget.closest<HTMLElement>(".mermaid-wrap"), () => setShowSrc((v) => !v))}
+          >
             {showSrc ? t("mermaidShowDiagram") : t("mermaidShowSource")}
           </button>
           <button
@@ -574,7 +580,7 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
             dangerouslySetInnerHTML={{ __html: svg }}
           />
         )}
-        {viewing && (
+        <Exit>{viewing && (
           <DiagramViewer
             svg={svg}
             onClose={() => setViewing(false)}
@@ -583,7 +589,7 @@ function Mermaid({ code, building = false }: { code: string; building?: boolean 
               return exportDiagramFile(`diagram.${kind}`, kind, kind === "svg" ? pure : await diagramPng(pure));
             }}
           />
-        )}
+        )}</Exit>
         {/* What was left out, said quietly under the drawing — the lines on hover. */}
         {!showSrc && skipped.length > 0 && (
           <div className="mermaid-skipped" title={skipped.join("\n")}>
@@ -773,8 +779,13 @@ let lastActivity = 0;
 let lastInput = 0;
 let watchingActivity = false;
 let stillHost: HTMLDivElement | null = null;
+/** A page to watch and work in: not a test's stand-in `window` (a bare
+ *  globalThis, no events, no document) — the warm-up below fired into one
+ *  four seconds in, on a slow runner, and failed the run. */
+const livePage = () =>
+  typeof window !== "undefined" && typeof window.addEventListener === "function" && typeof document !== "undefined";
 function watchActivity() {
-  if (watchingActivity || typeof window === "undefined") return;
+  if (watchingActivity || !livePage()) return;
   watchingActivity = true;
   const mark = () => {
     lastActivity = performance.now();
@@ -963,8 +974,9 @@ async function requestStill(html: string): Promise<string | null> {
  *  session used to pay for all of it — a library, each diagram kind's own
  *  code and layout, the math fonts — in long frames while its reply
  *  streamed. */
-if (typeof window !== "undefined") {
+if (livePage()) {
   setTimeout(async () => {
+    if (!livePage()) return;
     watchActivity();
     await waitQuiet(1500);
     try {
@@ -1143,6 +1155,52 @@ function CodeBlock({ children, node: _node, ...props }: ComponentPropsWithoutRef
   // a window pinned to the NEWEST lines (focus-follow); once finished they
   // show the FIRST few lines as a preview. Clicking either expands.
   const focusMode = foldable && !expanded && streaming && override === null && !pageMode;
+  // A block that grows past the fold while it streams settles into its
+  // window instead of dropping into it: from the height it had to the
+  // window's, the newest lines held at the bottom, the fade over the top
+  // coming in with it. It went from a full screen of code to a sliver in one
+  // frame, and the page under it jumped up by the difference.
+  const fold = useRef<{ wasFocus: boolean; height: number; raf: number; timer: number; mode: string }>({ wasFocus: false, height: 0, raf: 0, timer: 0, mode: "" });
+  const foldMode = !foldable || expanded ? "open" : pageMode ? "page" : focusMode ? "focus" : "preview";
+  useLayoutEffect(() => {
+    const el = focusRef.current;
+    const f = fold.current;
+    if (!el) return;
+    if (focusMode && !f.wasFocus && f.height > 150 && !(typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches)) {
+      el.style.maxHeight = `${f.height}px`;
+      el.style.setProperty("--fold-in", "0");
+      el.scrollTop = el.scrollHeight;
+      void el.offsetHeight;
+      el.classList.add("folding");
+      el.style.maxHeight = "";
+      el.style.removeProperty("--fold-in");
+      cancelAnimationFrame(f.raf);
+      clearTimeout(f.timer);
+      const pin = () => {
+        el.scrollTop = el.scrollHeight;
+        f.raf = requestAnimationFrame(pin);
+      };
+      f.raf = requestAnimationFrame(pin);
+      f.timer = window.setTimeout(() => {
+        cancelAnimationFrame(f.raf);
+        el.classList.remove("folding");
+      }, 420);
+    }
+    // The reply ends and the window changes on its own: to the page's picture
+    // (taller — it grows to it, the picture fading in) or to the block's
+    // first lines (the same height — the head fades in where the tail was).
+    // Both changed in a frame: the window jumped to a new size, or its code
+    // jumped from the end to the start.
+    if (f.mode === "focus" && (foldMode === "page" || foldMode === "preview") && !prefersStill()) {
+      if (foldMode === "page") animateHeight(el, 140, 300);
+      el.firstElementChild?.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: 260, easing: "ease-out" });
+    }
+    f.mode = foldMode;
+    f.wasFocus = focusMode;
+    // The height to settle from, read only near the fold (a read lays the
+    // page out, and every streaming block re-renders on every token).
+    if (!foldable && collapseEnabled && streaming && lines >= COLLAPSE_MIN_LINES - 2) f.height = el.offsetHeight;
+  });
   useEffect(() => {
     if (!focusRef.current) return;
     if (focusMode) {
@@ -1269,7 +1327,7 @@ function CodeBlock({ children, node: _node, ...props }: ComponentPropsWithoutRef
     <div className={`code-block ${foldable ? "foldable" : ""}`}>
       <div className="codeblock-head">
         {foldable ? (
-          <button className="code-fold-toggle" type="button" onClick={() => setOverride(!expanded)}>
+          <button className="code-fold-toggle" type="button" onClick={() => smoothly(focusRef.current, () => setOverride(!expanded))}>
             <span className={`think-caret ${expanded ? "open" : ""}`}>▶</span>
             <span className="code-fold-lang">{lang || "code"}</span>
             <span className="code-fold-count">
@@ -1284,7 +1342,7 @@ function CodeBlock({ children, node: _node, ...props }: ComponentPropsWithoutRef
       <div
         ref={focusRef}
         className={`code-fold-body ${foldable && !expanded ? (pageMode ? "page" : focusMode ? "focus" : "preview") : ""}`}
-        onClick={foldable && !expanded ? () => setOverride(true) : undefined}
+        onClick={foldable && !expanded ? () => smoothly(focusRef.current, () => setOverride(true)) : undefined}
       >
         {pageMode && <PageCard html={nodeText(children)} lines={lines} />}
         <pre ref={ref} {...props}>

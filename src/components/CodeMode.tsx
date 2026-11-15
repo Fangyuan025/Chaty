@@ -109,6 +109,9 @@ import { PrefillRing } from "./PrefillRing";
 import { DiffStat } from "./DiffStat";
 import { prefillPct } from "../lib/prefill";
 import { ContextRing } from "./ContextRing";
+import { Exit } from "./Exit";
+import { UserCopy } from "./UserText";
+import { animateHeight, smoothly } from "../lib/smoothHeight";
 
 interface CodeMsg {
   id: string;
@@ -491,11 +494,11 @@ function StepCard({
   const added = counts?.added ?? 0;
   const removed = counts?.removed ?? 0;
   // Clicking an image step opens the preview directly; otherwise toggle the body.
-  const onHead = () => {
+  const onHead = (e: React.MouseEvent<HTMLElement>) => {
     if (hasImage && step.image) onPreview?.(step.image);
     else if (hasBody) {
       touched.current = true;
-      setOpen((o) => !o);
+      smoothly(e.currentTarget.closest<HTMLElement>(".cm-step"), () => setOpen((o) => !o));
     }
   };
   return (
@@ -593,10 +596,30 @@ function ThinkPanel({ text, live, label }: { text: string; live?: boolean; label
   useEffect(() => {
     if (focus && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
   }, [text, focus]);
+  // The thought folds to its line when it ends, from the window it was in —
+  // as chat's does (see AssistantMessage) — not in a frame.
+  const boxEl = useRef<HTMLDivElement | null>(null);
+  const boxH = useRef(0);
+  const boxRo = useRef<ResizeObserver | null>(null);
+  const boxRef = useCallback((el: HTMLDivElement | null) => {
+    boxRo.current?.disconnect();
+    boxEl.current = el;
+    if (el && typeof ResizeObserver !== "undefined") {
+      boxRo.current = new ResizeObserver(([e]) => {
+        boxH.current = e.borderBoxSize?.[0]?.blockSize ?? el.getBoundingClientRect().height;
+      });
+      boxRo.current.observe(el);
+    }
+  }, []);
+  const wasLive = useRef(!!live);
+  useLayoutEffect(() => {
+    if (wasLive.current && !live && !open && boxEl.current && boxH.current > 0) animateHeight(boxEl.current, boxH.current, 300);
+    wasLive.current = !!live;
+  }, [live, open]);
   if (!text) return null;
   return (
-    <div className={`cm-think ${live ? "live" : ""}`}>
-      <button className="cm-think-head" onClick={() => setOpen((o) => !o)}>
+    <div className={`cm-think ${live ? "live" : ""}`} ref={boxRef}>
+      <button className="cm-think-head" onClick={(e) => smoothly(e.currentTarget.closest<HTMLElement>(".cm-think"), () => setOpen((o) => !o))}>
         {live ? (
           <span className="cm-spin" />
         ) : (
@@ -751,7 +774,7 @@ function ToolRun({
       <button
         type="button"
         className="cm-run-head"
-        onClick={() => openable && setOpen((o) => !o)}
+        onClick={(e) => openable && smoothly(e.currentTarget.closest<HTMLElement>(".cm-run"), () => setOpen((o) => !o))}
         aria-expanded={openable ? open : undefined}
         disabled={!openable}
       >
@@ -2558,7 +2581,11 @@ export function CodeMode({
 
   return (
     <div className="code-mode" style={active ? undefined : { display: "none" }}>
-      <aside className={`code-rail ${railHidden ? "folded" : ""}`} style={{ width: railW }}>
+      <aside
+        className={`code-rail ${railHidden ? "folded" : ""}`}
+        style={{ width: railW, marginLeft: railHidden ? -railW : 0 }}
+        inert={railHidden || undefined}
+      >
         <button className="cm-new" onClick={newSession} disabled={running}>
           <Icon name="plus" size={13} strokeWidth={2} /> {t("cmNewSession")}
         </button>
@@ -2757,15 +2784,6 @@ export function CodeMode({
               const live = running && mi === msgs.length - 1;
               return m.role === "user" ? (
                 <div key={m.id} className="cm-user-row">
-                  {m.checkpointId != null && !running && (
-                    <button
-                      className="cm-rewind"
-                      title={t("cmRewindHint")}
-                      onClick={() => void rewindTo(m)}
-                    >
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
-                    </button>
-                  )}
                   <div className="cm-user" data-copy={m.text}>
                     {m.images && m.images.length > 0 && (
                       <span className="cm-user-images">
@@ -2791,6 +2809,15 @@ export function CodeMode({
                       </span>
                     )}
                     {m.text}
+                  </div>
+                  {/* Under the message at its right, on hover, as in chat. */}
+                  <div className="user-actions">
+                    <UserCopy content={m.text} title={t("copyMsg")} />
+                    {m.checkpointId != null && !running && (
+                      <button className="user-edit" title={t("cmRewindHint")} onClick={() => void rewindTo(m)}>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
+                      </button>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -2993,6 +3020,7 @@ export function CodeMode({
         <div className="code-composer">
           {/* What the agent is doing sits inside the composer, as chat's
               status line does: above it, the transcript's fade covered it. */}
+          <Exit ms={200}>
           {running && (() => {
             // The same words the folded run uses — what is going on now, the
             // tool it is by name — whichever way the steps are shown.
@@ -3012,6 +3040,7 @@ export function CodeMode({
               </div>
             );
           })()}
+          </Exit>
           {queue.length > 0 && (
             <div className="cm-queue">
               {queue.map((q, i) => (
@@ -3266,7 +3295,7 @@ export function CodeMode({
         </div>
       </main>
 
-      {previewImg && <ImagePreview path={previewImg} onClose={() => setPreviewImg(null)} />}
+      <Exit>{previewImg && <ImagePreview path={previewImg} onClose={() => setPreviewImg(null)} />}</Exit>
       {sudoAsk && (() => {
         const deny = () => { sudoAsk.resolve({ ok: false }); setSudoAsk(null); setSudoPw(""); };
         const allow = () => { sudoAsk.resolve({ ok: true, password: sudoPw || undefined }); setSudoAsk(null); setSudoPw(""); };

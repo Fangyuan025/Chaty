@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { smoothly } from "../lib/smoothHeight";
 import { DiffStat } from "./DiffStat";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
@@ -31,7 +32,7 @@ export function TurnChangesCard({
         <button
           className="cm-changes-toggle"
           aria-expanded={expanded}
-          onClick={() => setExpanded((v) => !v)}
+          onClick={(e) => smoothly(e.currentTarget.closest<HTMLElement>(".cm-changes"), () => setExpanded((v) => !v))}
         >
           <span className="cm-changes-chev">
             <Icon name="chevron-right" size={13} />
@@ -58,7 +59,7 @@ export function TurnChangesCard({
               className="cm-change-file"
               title={c.path}
               aria-expanded={open === c.path}
-              onClick={() => setOpen((o) => (o === c.path ? null : c.path))}
+              onClick={(e) => smoothly(e.currentTarget.closest<HTMLElement>(".cm-changes"), () => setOpen((o) => (o === c.path ? null : c.path)))}
             >
               <Icon name={open === c.path ? "chevron-down" : "chevron-right"} size={12} />
               <span className="cm-change-name">{c.rel}</span>

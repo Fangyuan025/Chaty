@@ -50,11 +50,13 @@
   its end otherwise.
 - **Every shortcut on one sheet** — ⌘/ (Ctrl+/), or the command palette.
 - With many models, typing in the model menu finds one; Enter loads it.
-- **Each reply says which model wrote it**, at its foot on the right — a
-  conversation can pass through several.
-- **Copy and edit sit beside your message at its foot**, and stay in view
-  while a long one runs past the bottom of the window, where they sat at its
-  middle.
+- **Each reply says which model wrote it**, at its foot on the right on
+  hover — a conversation can pass through several — and a chat exported as
+  JSON or Markdown says it of each reply too.
+- **Your message's buttons sit under it, at its right, on hover** — when it
+  was sent ("just now", "5 minutes ago", an earlier day's date), copy and
+  edit — where they sat centred on its left side, half-way down a long one.
+  In Code mode the same, with copy beside rewind.
 
 ### Nothing stutters
 
@@ -104,6 +106,26 @@
   and pointed at the plan's next item. The move a refused plan is shown fits
   the plan's first item — a look, a file, a directory — and a tool the
   model's own thinking settled on is the one it is told to send.
+
+### Nothing jumps
+
+- **The sidebar slides** away and back (⌘\\ or its button), in chat, Code
+  mode and the studios, the panel widening into its place — it vanished in a
+  frame.
+- **What opens and closes goes from one height to the other**: a folded
+  code block, a thought, the sources, a long message, a diagram's source,
+  Code mode's steps, thoughts and changes. A thought folds itself away
+  smoothly as the answer starts, a long code block settles into its window as
+  it grows past the fold, and a finished page's window grows into its
+  picture — each of which used to move the reply under it in a frame.
+- **Menus, the model menu, previews, the shortcut sheet, find, the
+  diagram viewer and notices fade out** as they came in; switching between
+  chat and Code mode fades; Code mode's run line and the attachment bar open
+  and close over the input rather than jumping it.
+- **While a reply is written, its count and rate count up** beside the
+  context ring, as Code mode's do, where the line went blank; the ring stays
+  and, in both modes, sweeps to its new share once the reply is done; why it
+  ended shows when it has.
 
 ### Taking a chat elsewhere
 

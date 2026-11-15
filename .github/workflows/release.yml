@@ -379,6 +379,14 @@ jobs:
             the workspace its plan began with, and pointed at the move the plan names next; one
             reading a file again for something not in it is told where that is.
 
+            ## Nothing jumps
+
+            The sidebar slides; folded code, thoughts, sources and long messages open and close
+            smoothly, and fold themselves away smoothly; menus, previews and notices fade out. A
+            reply's count and rate count up as it is written, and the context ring sweeps to its
+            new share. Hover a message for when it was sent, copy and edit; hover a reply for the
+            model that wrote it.
+
             ## Taking a chat elsewhere
 
             Export a chat as a web page: the replies as Chaty draws them, in your theme, one

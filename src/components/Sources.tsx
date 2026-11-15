@@ -3,6 +3,7 @@
 // each with its number (the 【n】 in the answer), title, site and passage. A
 // web source opens its page; a knowledge-base passage, which has no page,
 // opens to its whole retrieved text.
+import { smoothly } from "../lib/smoothHeight";
 import { useState } from "react";
 import { useI18n } from "../lib/i18n";
 import { openExternal, type SearchResult } from "../lib/ipc";
@@ -36,7 +37,11 @@ export function Sources({ sources }: { sources: SearchResult[] }) {
       : t("sourcesMany", { first, n, more: n - 1 });
   return (
     <div className={`sources${open ? " open" : ""}`}>
-      <button className="sources-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button
+        className="sources-toggle"
+        aria-expanded={open}
+        onClick={(e) => smoothly(e.currentTarget.closest<HTMLElement>(".sources"), () => setOpen(!open))}
+      >
         <span className="sources-sum">{label}</span>
         <Icon name="chevron-down" size={13} strokeWidth={2} />
       </button>

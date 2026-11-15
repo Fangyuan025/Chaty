@@ -486,13 +486,63 @@ body {
 
 /* The sidebar folded away: the panel takes the window; the top row's side
    keeps the window buttons, the fold button and the mode switch, over the
-   panel rather than in a strip of the sidebar's colour. */
+   panel rather than in a strip of the sidebar's colour. It slides out to the
+   left whole — its contents keep their width, nothing re-wraps — while the
+   panel widens into its place, and slides back the same way; it used to
+   vanish in a frame. Out of sight once it has gone (visibility, after the
+   slide), so nothing in it takes focus. */
+:root {
+  --side-t: 0.3s;
+  --side-ease: cubic-bezier(0.32, 0.72, 0, 1);
+}
+.body,
+.code-mode {
+  overflow: hidden;
+}
+.sidebar,
+.code-rail {
+  transition:
+    margin-left var(--side-t) var(--side-ease),
+    visibility 0s,
+    background-color var(--t-slow) var(--ease),
+    border-color var(--t-slow) var(--ease),
+    color var(--t-slow) var(--ease);
+}
 .sidebar.folded,
 .code-rail.folded {
-  display: none;
+  visibility: hidden;
+  transition:
+    margin-left var(--side-t) var(--side-ease),
+    visibility 0s linear var(--side-t),
+    background-color var(--t-slow) var(--ease),
+    border-color var(--t-slow) var(--ease),
+    color var(--t-slow) var(--ease);
+}
+.tb-side {
+  position: relative;
+  transition:
+    width var(--side-t) var(--side-ease),
+    background-color var(--side-t) var(--side-ease),
+    color var(--t-slow) var(--ease);
 }
 .tb-side.folded {
-  position: relative;
+  background-color: transparent;
+}
+/* Folded, the row's side half fades the transcript under it, as the rest of
+   the row does — coming in as the sidebar goes. */
+.tb-side::before,
+.tb-side::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--side-t) var(--side-ease);
+}
+.tb-side::before {
+  top: 0;
+  bottom: 0;
   background: linear-gradient(
     to bottom,
     var(--bg) 0%,
@@ -500,12 +550,8 @@ body {
     color-mix(in srgb, var(--bg) 72%, transparent) 100%
   );
 }
-.tb-side.folded::after {
-  content: "";
-  position: absolute;
+.tb-side::after {
   top: 100%;
-  left: 0;
-  right: 0;
   height: 20px;
   background: linear-gradient(
     to bottom,
@@ -513,14 +559,32 @@ body {
     color-mix(in srgb, var(--bg) 28%, transparent) 45%,
     color-mix(in srgb, var(--bg) 0%, transparent) 100%
   );
-  pointer-events: none;
+}
+.tb-side.folded::before,
+.tb-side.folded::after {
+  opacity: 1;
+}
+.tb-main {
+  transition:
+    border-left-color var(--side-t) var(--side-ease),
+    background-color var(--t-slow) var(--ease),
+    color var(--t-slow) var(--ease);
 }
 /* No sidebar to edge against: the row is one piece. */
 .tb-side.folded + .tb-main {
   border-left-color: transparent;
 }
+.brand {
+  max-width: 120px;
+  overflow: hidden;
+  white-space: nowrap;
+  transition:
+    max-width var(--side-t) var(--side-ease),
+    opacity calc(var(--side-t) * 0.6) ease;
+}
 .tb-side.folded .brand {
-  display: none;
+  max-width: 0;
+  opacity: 0;
 }
 .side-toggle[aria-pressed="false"] {
   color: var(--text);
@@ -1450,6 +1514,11 @@ body.resizing-x {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.msg.assistant:hover .msg-model {
+  opacity: 1;
 }
 
 .msg-action {
@@ -1962,13 +2031,25 @@ body.resizing-x {
 }
 /* Focus-follows-generation: a small window pinned to the newest lines while
    the block streams in, older lines fading out above (mirrors .think-body). */
+/* How far the fade over a streaming block's window has come in: 1 once
+   settled, from 0 as a block grows past the fold (see CodeBlock). */
+@property --fold-in {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
 .code-fold-body.focus {
   max-height: 140px;
   overflow-y: auto;
   scrollbar-width: none;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 55%);
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, calc(1 - var(--fold-in))) 0, #000 55%);
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, calc(1 - var(--fold-in))) 0, #000 55%);
   cursor: pointer;
+}
+.code-fold-body.focus.folding {
+  transition:
+    max-height 0.36s cubic-bezier(0.22, 0.8, 0.24, 1),
+    --fold-in 0.36s ease-out;
 }
 .code-fold-body.focus::-webkit-scrollbar {
   display: none;
@@ -4723,6 +4804,44 @@ a:focus-visible,
   font-variant-numeric: tabular-nums;
 }
 
+/* It opens over the input when something is attached and closes when it is
+   taken off, rather than the input jumping by its height. */
+@keyframes bar-grow-in {
+  from {
+    opacity: 0;
+    max-height: 0;
+    margin-bottom: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 120px;
+    margin-bottom: 8px;
+  }
+}
+@keyframes bar-grow-out {
+  from {
+    opacity: 1;
+    max-height: 120px;
+    margin-bottom: 8px;
+  }
+  to {
+    opacity: 0;
+    max-height: 0;
+    margin-bottom: 0;
+  }
+}
+.attach-bar {
+  animation: bar-grow-in 0.2s var(--ease-out);
+}
+.exit-wrap.leaving > .attach-bar {
+  animation: bar-grow-out 0.18s var(--ease) both !important;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .attach-bar {
+    animation: none;
+  }
+}
 .attach-bar {
   display: flex;
   align-items: center;
@@ -6148,19 +6267,32 @@ body:has(.live-overlay) .win-btn.close:hover {
   opacity: 0;
   transition: opacity 0.15s, background 0.15s, color 0.15s;
 }
-/* Copy and edit sit beside the bubble at its foot, and stay in view while a
-   long message runs past the bottom of the window (issue #25: centred on
-   the bubble, half-way down a long message, they were off screen). */
+/* Copy and edit under the bubble, at its right, on hover — where a message
+   ends and the eye already is (issue #25: centred on the bubble's left side,
+   half-way down a long message they were off screen). */
+.msg.user {
+  flex-direction: column;
+  align-items: flex-end;
+}
 .user-actions {
-  position: sticky;
-  bottom: 12px;
-  align-self: flex-end;
-  flex: none;
   display: flex;
   gap: 2px;
-  margin: 0 6px 10px 0;
+  margin-top: 4px;
   opacity: 0;
   transition: opacity 0.15s;
+}
+.user-time {
+  align-self: center;
+  margin-right: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-runbar {
+    animation: none;
+  }
 }
 .msg.user:hover .user-actions,
 .user-actions:focus-within {
@@ -6850,26 +6982,12 @@ body:has(.live-overlay) .win-btn.close:hover {
 .cm-user-row {
   align-self: flex-end;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-end;
   max-width: 82%;
 }
-.cm-rewind {
-  flex: none;
-  width: 26px;
-  height: 26px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-faint);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--r-md);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
-}
-.cm-user-row:hover .cm-rewind {
+.cm-user-row:hover .user-actions,
+.cm-user-row .user-actions:focus-within {
   opacity: 1;
 }
 /* The row already caps the width at 82% of the thread. A second 82% on the
@@ -6878,11 +6996,6 @@ body:has(.live-overlay) .win-btn.close:hover {
 .cm-user-row > .cm-user {
   max-width: none;
   min-width: 0;
-}
-.cm-rewind:hover {
-  color: var(--text);
-  border-color: var(--border-strong);
-  background: var(--surface);
 }
 .cm-user {
   align-self: flex-end;
@@ -7217,6 +7330,42 @@ html[data-motion="reduce"] .prefill-label {
   padding: 0 17px 8px;
   font-size: 12.5px;
   color: var(--text-dim);
+  overflow: hidden;
+  animation: runbar-in 0.22s var(--ease-out);
+}
+/* It opens above the input as a run starts and closes as it ends, the
+   input and the thread above it going with it — not a line's height
+   appearing and going in a frame. */
+@keyframes runbar-in {
+  from {
+    opacity: 0;
+    max-height: 0;
+    padding-bottom: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 40px;
+    padding-bottom: 8px;
+  }
+}
+@keyframes runbar-out {
+  from {
+    opacity: 1;
+    max-height: 40px;
+    padding-bottom: 8px;
+  }
+  to {
+    opacity: 0;
+    max-height: 0;
+    padding-bottom: 0;
+  }
+}
+.exit-wrap.leaving > .cm-runbar {
+  animation: runbar-out 0.2s var(--ease) both !important;
+}
+/* Why a reply ended comes in once it has. */
+.stop-reason {
+  animation: ui-fade-in 0.25s var(--ease);
 }
 /* The line under the code input — the image studio's settings row, for
    code: how the next message thinks and whether it asks before changing
@@ -9013,6 +9162,46 @@ html[data-motion="reduce"] .prefill-label {
   }
 }
 
+/* <Exit>: what was over the page fades out as it goes (see Exit.tsx). The
+   wrapper is no box of its own, so what it holds is laid out as before. */
+.exit-wrap {
+  display: contents;
+}
+.exit-wrap.leaving > * {
+  animation: ui-fade-out var(--t-fast) var(--ease) both !important;
+  pointer-events: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .exit-wrap.leaving {
+    display: none;
+  }
+}
+
+/* Chat and Code mode, and the studios, come in over a moment when switched
+   to (each is shown again from display:none, which starts this) instead of
+   the window's whole content changing in a frame. */
+@keyframes mode-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* No fill: once in, nothing of the animation stays on the panel (a filled
+   opacity would make it a stacking context, and change what layers over
+   what for good). */
+.body,
+.code-mode {
+  animation: mode-in 0.18s var(--ease);
+}
+@media (prefers-reduced-motion: reduce) {
+  .body,
+  .code-mode {
+    animation: none;
+  }
+}
+
 /* Exit half of the motion language (driven by useExitTransition's .closing). */
 @keyframes ui-pop-out {
   to {
@@ -9162,11 +9351,10 @@ html[data-motion="reduce"] *::after {
   animation: pane-in var(--t-med) var(--ease-out) both;
 }
 
-/* Theme / palette switches cross-fade the big surfaces instead of snapping. */
+/* Theme / palette switches cross-fade the big surfaces instead of snapping.
+   (The sidebars and the top row say the same with their own slides: one
+   shorthand here would take theirs away — see "The sidebar folded away".) */
 body,
-.tb-side,
-.tb-main,
-.sidebar,
 .chat,
 .composer,
 .settings-modal,

@@ -8,6 +8,7 @@ import { attachmentName, pastedFile } from "./lib/paste";
 import { getCurrent as getDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { AssistantMessage } from "./components/AssistantMessage";
 import { ContextRing } from "./components/ContextRing";
+import { Exit } from "./components/Exit";
 import { maybeAutorun } from "./lib/debugProbe";
 import { RECENCY_LABEL, recencyGroups } from "./lib/recency";
 
@@ -16,7 +17,7 @@ import { FindBar } from "./components/FindBar";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { ImagePreview } from "./components/ImagePreview";
 import { ImageThumb } from "./components/ImageThumb";
-import { UserCopy, UserText } from "./components/UserText";
+import { SentAt, UserCopy, UserText } from "./components/UserText";
 import { withErrorNote } from "./lib/reasoning";
 import { localSave } from "./lib/localSave";
 import { DownloadModal } from "./components/DownloadModal";
@@ -163,6 +164,8 @@ interface UiMessage extends ChatMessage {
   sources?: SearchResult[];
   /** The model that wrote a reply — shown under it. */
   model?: string;
+  /** When it was sent or written (ms). */
+  createdAt?: number;
   /** What the model was given for this user turn — today's date and the
    *  search results before the question. Kept (in memory) so every later
    *  prompt repeats the turn exactly as the cache holds it. */
@@ -350,6 +353,10 @@ export default function App() {
    *  from a reply just written: then only the ring is shown — its speed and
    *  why it stopped are that moment's, gone once the conversation is left. */
   const [stats, setStats] = useState<(GenStats & { nCtx?: number; restored?: boolean }) | null>(null);
+  /** The reply being written, counted as it comes: its tokens so far and its
+   *  rate — shown in place of the last reply's, as Code mode's run bar does,
+   *  while the ring stays on the last reply's count until this one is done. */
+  const [liveStats, setLiveStats] = useState<{ tokens: number; tps: number } | null>(null);
   const [loadingModel, setLoadingModel] = useState(false);
   const [loadProgress, setLoadProgress] = useState<LoadProgress | null>(null);
   // Weight ticks come from a poller thread and can race the final "ready" —
@@ -512,11 +519,12 @@ export default function App() {
           images: m.images,
           sources: m.sources?.length ? m.sources : undefined,
           model: m.model || undefined,
+          createdAt: m.createdAt,
         }));
         // The reply is still being written, so it is not in the conversation
         // yet — put the bubble back where it was.
         if (!rows.some((m) => m.id === turn.messageId)) {
-          rows.push({ id: turn.messageId, role: "assistant", content: acc, images: undefined, sources: undefined, model: undefined });
+          rows.push({ id: turn.messageId, role: "assistant", content: acc, images: undefined, sources: undefined, model: undefined, createdAt: Date.now() });
         }
         setMessages(rows);
         setConversationId(turn.conversationId);
@@ -740,6 +748,11 @@ export default function App() {
    *  container query: containment would make the row the containing block
    *  of the menus and panels that open from it. */
   const tbMainRef = useRef<HTMLDivElement>(null);
+  /** The top row's side half, and how wide it is folded: what its buttons
+   *  take. Given as a width, so it can be gone to smoothly — it used to snap
+   *  between the sidebar's width and its buttons' as the sidebar went. */
+  const tbSideRef = useRef<HTMLDivElement>(null);
+  const [tbFoldedW, setTbFoldedW] = useState(0);
   /** What the model in memory was loaded with — the settings a reload would
    *  change. "Reload model to apply" is offered only when one of them has
    *  changed since: always there, it reloaded the model for nothing. */
@@ -831,6 +844,22 @@ export default function App() {
       localSave("chaty.sideHidden", v ? "0" : "1");
       return !v;
     });
+  // What the side half of the top row takes folded: its padding, its buttons
+  // and the gaps between them (the wordmark goes when it folds). Read from the
+  // row as laid out, again when what it holds changes.
+  useLayoutEffect(() => {
+    const el = tbSideRef.current;
+    if (!el) return;
+    const cs = getComputedStyle(el);
+    const kids = [...el.children].filter(
+      (k): k is HTMLElement => k instanceof HTMLElement && !k.classList.contains("brand") && getComputedStyle(k).display !== "none",
+    );
+    const gap = parseFloat(cs.columnGap) || 0;
+    const w =
+      parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) +
+      kids.reduce((n, k) => n + k.getBoundingClientRect().width, 0) + gap * Math.max(0, kids.length - 1);
+    setTbFoldedW(Math.ceil(w));
+  }, [imageMode, musicMode, appMode, lang]);
 
   // Drag the sidebar's right edge to resize. The width is driven through state
   // (rAF-throttled to one update per frame) so a concurrent re-render — e.g. a
@@ -1135,7 +1164,7 @@ export default function App() {
     const fresh = !liveConvRef.current;
     const convId = liveConvRef.current ?? uid();
     liveConvRef.current = convId;
-    const uMsg: UiMessage = { id: uid(), role: "user", content: userText };
+    const uMsg: UiMessage = { id: uid(), role: "user", content: userText, createdAt: Date.now() };
     const aMsg: UiMessage = { id: uid(), role: "assistant", content: assistantText };
     setMessages((cur) => [...cur, uMsg, aMsg]);
     try {
@@ -2056,6 +2085,7 @@ export default function App() {
     setConversationId(null);
     setMessages([]);
     setStats(null);
+    setLiveStats(null);
     setAttachment(null);
     setAttachError("");
   }
@@ -2145,7 +2175,9 @@ ${body.outerHTML}
           title,
           model: model?.name ?? null,
           exportedAt: new Date().toISOString(),
-          messages: list.map((m) => ({ role: m.role, content: m.content })),
+          // Each reply with the model that wrote it: a conversation can
+          // pass through several.
+          messages: list.map((m) => ({ role: m.role, content: m.content, ...(m.model ? { model: m.model } : {}) })),
         },
         null,
         2,
@@ -2153,7 +2185,7 @@ ${body.outerHTML}
     } else {
       const lines = [`# ${title}`, ""];
       for (const m of list) {
-        lines.push(`## ${m.role === "user" ? userL : asstL}`, "", stripThink(m.content).trim(), "");
+        lines.push(`## ${m.role === "user" ? userL : m.model ? `${asstL} · ${m.model}` : asstL}`, "", stripThink(m.content).trim(), "");
       }
       content = lines.join("\n");
     }
@@ -2230,6 +2262,7 @@ ${body.outerHTML}
           images: m.images,
           sources: m.sources?.length ? m.sources : undefined,
           model: m.model || undefined,
+          createdAt: m.createdAt,
         })),
       );
       swapDraft(id);
@@ -2241,6 +2274,7 @@ ${body.outerHTML}
         last = null;
       }
       setStats(last ? { ...last, restored: true } : null);
+      setLiveStats(null);
       setAttachment(null);
       setAttachError("");
     } catch (e) {
@@ -2327,6 +2361,7 @@ ${body.outerHTML}
         setConversationId(null);
         setMessages([]);
         setStats(null);
+        setLiveStats(null);
         setAttachment(null);
         setAttachError("");
         if (wasStreaming) {
@@ -2385,6 +2420,7 @@ ${body.outerHTML}
       setConversationId(newId);
       setMessages(copied);
       setStats(null);
+      setLiveStats(null);
       await refreshConversations();
     } catch (e) {
       reportChatSaveFailure(newId, e);
@@ -2539,7 +2575,10 @@ ${body.outerHTML}
     if (writer) setMessages((cur) => cur.map((m) => (m.id === asstId ? { ...m, model: writer } : m)));
     setBusy(true);
     setStreamingId(asstId);
-    setStats(null);
+    // The last reply's numbers stay up — the ring until this reply is done,
+    // the count and rate until its first tokens replace them — rather than
+    // the line going blank for the whole of a reply.
+    setLiveStats(null);
     setPrefill(null);
 
     let wake = () => {};
@@ -2863,12 +2902,18 @@ ${body.outerHTML}
      *  down at the token, a frame before the text it carried, it left a
      *  bare cursor between the two. */
     let ringDone = false;
+    /** Tokens of this reply so far, and when the first came: its live rate. */
+    let liveTokens = 0;
+    let firstAt = 0;
+    let liveTps = 0;
     const renderMsg = () => {
       if (ringDone) {
         ringDone = false;
         setPrefill(null);
       }
       setMessages((cur) => cur.map((m) => (m.id === asstId ? { ...m, content: acc.text } : m)));
+      // Once a frame, with the text: the count and rate as they stand.
+      if (liveTokens > 0 && shownConvRef.current === convId) setLiveStats({ tokens: liveTokens, tps: liveTps });
     };
     const scheduleRender = () => {
       if (rafId == null)
@@ -2901,6 +2946,12 @@ ${body.outerHTML}
               ringDone = true;
             }
             acc.text += ev.text;
+            liveTokens++;
+            const now = performance.now();
+            if (!firstAt) firstAt = now;
+            // Meaningless for the first fraction of a second (one token over
+            // next to nothing): held until the measurement has some time in it.
+            if (now - firstAt >= 350) liveTps = (liveTokens - 1) / ((now - firstAt) / 1000);
             scheduleRender();
             pumpSpeech(false);
           } else if (ev.type === "prefill") {
@@ -2920,7 +2971,10 @@ ${body.outerHTML}
             // it: deleted mid-reply (or left), the cancelled reply's numbers
             // used to arrive after the reset and put the old ring back.
             const counted = { ...ev.stats, nCtx: model?.nCtx ?? undefined };
-            if (shownConvRef.current === convId) setStats(counted);
+            if (shownConvRef.current === convId) {
+              setStats(counted);
+              setLiveStats(null);
+            }
             void sessionStatsSet("chat", convId, JSON.stringify(counted)).catch(() => {});
             lastPromptTokens.current.set(convId, ev.stats.promptTokens);
             calibrate(sentRaw, ev.stats.promptTokens);
@@ -2950,6 +3004,8 @@ ${body.outerHTML}
       }
       setPrefill(null);
       renderMsg();
+      // Over, however it ended: the line goes back to the reply's own numbers.
+      if (shownConvRef.current === convId) setLiveStats(null);
       // A finished turn with no answer in it must say so. It happens two ways:
       // the prompt outgrew the window, so the engine generated nothing at all
       // and the message was never even saved (the turn vanished on reload); or
@@ -3043,7 +3099,7 @@ ${body.outerHTML}
         : attachment?.images?.length
           ? attachment.images
           : undefined;
-    const userMsg: UiMessage = { id: uid(), role: "user", content: text, images: visionImgs };
+    const userMsg: UiMessage = { id: uid(), role: "user", content: text, images: visionImgs, createdAt: Date.now() };
     const asstMsg: UiMessage = { id: uid(), role: "assistant", content: "" };
     const history = [...messages, userMsg];
     setMessages([...history, asstMsg]);
@@ -3092,7 +3148,7 @@ ${body.outerHTML}
     if (busy || sendingRef.current || !model || !conversationId || !txt) return;
     const target = messages[index];
     if (!target || target.role !== "user") return;
-    const editedUser: UiMessage = { id: target.id, role: "user", content: txt, images: target.images };
+    const editedUser: UiMessage = { id: target.id, role: "user", content: txt, images: target.images, createdAt: Date.now() };
     const asstMsg: UiMessage = { id: uid(), role: "assistant", content: "" };
     const history = [...messages.slice(0, index), editedUser];
     setMessages([...history, asstMsg]);
@@ -3424,7 +3480,7 @@ ${body.outerHTML}
     <CodeCollapseContext.Provider value={settings.chatCollapseCode}>
     <div className="app">
       <CommandPalette open={showCmdk} onClose={() => setShowCmdk(false)} commands={commands} />
-      {showKeys && <ShortcutsSheet mac={IS_MACOS} onClose={() => setShowKeys(false)} />}
+      <Exit>{showKeys && <ShortcutsSheet mac={IS_MACOS} onClose={() => setShowKeys(false)} />}</Exit>
       <CanvasPanel
         open={canvasOpen}
         versions={canvasVersions}
@@ -3495,7 +3551,12 @@ ${body.outerHTML}
       />
 
       <div className="body" style={appMode === "code" && !studioMode ? { display: "none" } : undefined}>
-        <aside className={`sidebar ${sideHidden ? "folded" : ""}`} ref={asideRef} style={{ width: shownSidebarW }}>
+        <aside
+          className={`sidebar ${sideHidden ? "folded" : ""}`}
+          ref={asideRef}
+          style={{ width: shownSidebarW, marginLeft: sideHidden ? -shownSidebarW : 0 }}
+          inert={sideHidden || undefined}
+        >
           {imageMode ? (
             <ImageSidebar studio={studio} busy={busy} notify={showNotice} />
           ) : musicMode ? (
@@ -3683,7 +3744,7 @@ ${body.outerHTML}
             />
           )}
           <div className="chat-wrap">
-          {find.open && appMode === "chat" && conversationId && (
+          <Exit>{find.open && appMode === "chat" && conversationId && (
             <FindBar
               key={findKey}
               query={find.q}
@@ -3693,7 +3754,7 @@ ${body.outerHTML}
               onStep={stepFind}
               onClose={closeFind}
             />
-          )}
+          )}</Exit>
           <main className="chat" ref={scrollRef}>
             {messages.length === 0 ? (
               <div className="empty">
@@ -3832,7 +3893,18 @@ ${body.outerHTML}
                       </div>
                     ) : (
                       <>
+                        <div className="bubble" data-copy={m.content}>
+                          {m.images && m.images.length > 0 && (
+                            <span className="msg-images">
+                              {m.images.map((p) => (
+                                <ImageThumb key={p} path={p} onOpen={() => setPreviewImg(p)} />
+                              ))}
+                            </span>
+                          )}
+                          <UserText content={m.content} expandLabel={t("expandAll")} collapseLabel={t("collapseText")} />
+                        </div>
                         <div className="user-actions">
+                          {m.createdAt ? <SentAt at={m.createdAt} /> : null}
                           <UserCopy content={m.content} title={t("copyMsg")} />
                           {!busy && (
                             <button
@@ -3848,16 +3920,6 @@ ${body.outerHTML}
                               </svg>
                             </button>
                           )}
-                        </div>
-                        <div className="bubble" data-copy={m.content}>
-                          {m.images && m.images.length > 0 && (
-                            <span className="msg-images">
-                              {m.images.map((p) => (
-                                <ImageThumb key={p} path={p} onOpen={() => setPreviewImg(p)} />
-                              ))}
-                            </span>
-                          )}
-                          <UserText content={m.content} expandLabel={t("expandAll")} collapseLabel={t("collapseText")} />
                         </div>
                       </>
                     )}
@@ -3947,12 +4009,18 @@ ${body.outerHTML}
                       ))}
                     </div>
                   )}
-            {stats && (!stats.restored || (stats.nCtx ?? model?.nCtx)) && (
+            {(liveStats || (stats && (!stats.restored || (stats.nCtx ?? model?.nCtx)))) && (
               <div className="stats">
-                {!stats.restored && (
+                {liveStats ? (
+                  // The reply being written: its count and rate as they grow.
+                  <span className="stats-live">
+                    {liveStats.tokens} tokens{liveStats.tps > 0 ? ` · ${liveStats.tps.toFixed(1)} tok/s` : ""}
+                  </span>
+                ) : stats && !stats.restored && (
                   <>
                     {stats.completionTokens} tokens · {stats.tokensPerSecond.toFixed(1)} tok/s
-                    {stats.stopReason ? (
+                    {/* Why it ended, once it has. */}
+                    {stats.stopReason && !streamingId ? (
                       <span
                         className={`stop-reason ${
                           stats.stopReason === "context" || stats.stopReason === "length"
@@ -3976,7 +4044,7 @@ ${body.outerHTML}
                     ) : null}
                   </>
                 )}
-                {(stats.nCtx ?? model?.nCtx) ? (
+                {stats && (stats.nCtx ?? model?.nCtx) ? (
                   <ContextRing
                     used={stats.promptTokens + stats.completionTokens}
                     total={(stats.nCtx ?? model?.nCtx)!}
@@ -3987,7 +4055,7 @@ ${body.outerHTML}
                 </div>
               );
             })()}
-            {(attachment || attachError) && (
+            <Exit ms={200}>{(attachment || attachError) && (
               <div className="attach-bar">
                 {attachment && (
                   <div className="attach-chip">
@@ -4029,7 +4097,7 @@ ${body.outerHTML}
                 )}
                 {attachError && <span className="attach-error">{attachError}</span>}
               </div>
-            )}
+            )}</Exit>
             <div className="input-row">
               <div className="tools-wrap">
                 <button
@@ -4049,7 +4117,7 @@ ${body.outerHTML}
                     <path d="M12 5v14M5 12h14" strokeLinecap="round" />
                   </svg>
                 </button>
-                {showToolsMenu && (
+                <Exit>{showToolsMenu && (
                   <div className="tools-menu">
                     <button
                       className="tool-item"
@@ -4259,7 +4327,7 @@ ${body.outerHTML}
                       </div>
                     </>
                   </div>
-                )}
+                )}</Exit>
               </div>
               <textarea
                 ref={inputRef}
@@ -4349,9 +4417,10 @@ ${body.outerHTML}
           stay above Live mode and every dialog). */}
       <header className="titlebar">
         <div
+          ref={tbSideRef}
           className={`tb-side ${sideHidden ? "folded" : ""}`}
           data-tauri-drag-region
-          style={sideHidden ? undefined : { width: shownSidebarW }}
+          style={{ width: sideHidden ? tbFoldedW || undefined : shownSidebarW }}
         >
           <div className="brand" data-tauri-drag-region>Chaty</div>
           <button
@@ -4456,7 +4525,7 @@ ${body.outerHTML}
             )}
             <span className={`chip-caret ${showModelMenu ? "open" : ""}`}><Icon name="chevron-down" size={11} strokeWidth={2} /></span>
           </button>
-          {showModelMenu && (
+          <Exit>{showModelMenu && (
             <div className="model-menu">
               <div className="model-menu-head">
                 {/* Many models: typed to find one, Enter loads the first that
@@ -4601,7 +4670,7 @@ ${body.outerHTML}
                 )}
               </div>
             </div>
-          )}
+          )}</Exit>
         </div>
 
         <div className="settings-wrap">
@@ -4625,9 +4694,9 @@ ${body.outerHTML}
               <circle cx="12" cy="7.6" r="0.7" fill="currentColor" stroke="none" />
             </svg>
           </button>
-          {showModelInfo && (
+          <Exit>{showModelInfo && (
             <ModelInfoPanel model={model} onClose={() => setShowModelInfo(false)} />
-          )}
+          )}</Exit>
         </div>
 
         {!studioMode && (appMode === "code" ? codeExport !== null : messages.length > 0) && (
@@ -4693,9 +4762,9 @@ ${body.outerHTML}
               />
             </svg>
           </button>
-          {showHardware && (
+          <Exit>{showHardware && (
             <HardwarePanel model={model} onClose={() => setShowHardware(false)} />
-          )}
+          )}</Exit>
         </div>
 
         <div className="settings-wrap">
@@ -4806,7 +4875,7 @@ ${body.outerHTML}
           </button>
         </div>
       )}
-      {notice && (
+      <Exit ms={200}>{notice && (
         <div
           className={`toast toast-${notice.kind}`}
           onClick={() => setNotice(null)}
@@ -4814,10 +4883,10 @@ ${body.outerHTML}
         >
           {notice.text}
         </div>
-      )}
-      {previewImg && (
+      )}</Exit>
+      <Exit>{previewImg && (
         <ImagePreview path={previewImg} title={t("imagePreview")} onClose={() => setPreviewImg(null)} />
-      )}
+      )}</Exit>
       {voiceDl && (
         <div className="toast voice-dl" role="status">
           <span>
