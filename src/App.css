@@ -9454,7 +9454,8 @@ body,
 .cm-block,
 .cm-plan-box,
 .cm-compacted,
-.cm-asst-text {
+.cm-asst-text,
+.cm-run {
   animation: pane-in var(--t-med) var(--ease-out) both;
 }
 

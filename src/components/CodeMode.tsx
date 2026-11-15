@@ -703,7 +703,7 @@ function sumPhrase(t: (k: TKey, v?: Record<string, string | number>) => string, 
  *  the steps as they always show. */
 function ToolRun({
   steps,
-  activity,
+  activity: given,
   doneLabel,
   thinking,
   hidden = false,
@@ -717,14 +717,19 @@ function ToolRun({
   /** What the model is thinking, while that is what the run is doing. */
   thinking?: string;
   /** The line for the run not yet begun, while the model speaks instead:
-   *  folded away, and back as the call it was speaking before begins — the
-   *  same line, so one opened by hand stays open. It went in a frame. */
+   *  gone, and back as the call it was speaking before begins — the same
+   *  line, so one opened by hand stays open. It went in a frame. */
   hidden?: boolean;
   children?: React.ReactNode;
 }) {
   const { t, lang } = useI18n();
   const [open, setOpen] = useState(false);
   const runRef = useHeightOnChange<HTMLDivElement>(open);
+  // Going, it says what it was doing as it fades — not nothing, its line
+  // shorter for the moment it takes.
+  const lastActivity = useRef(given);
+  if (!hidden) lastActivity.current = given;
+  const activity = hidden ? lastActivity.current : given;
   // A thought that goes on a while is shown under the line as it is written
   // — the newest of it, in a short window, as chat's is — and folds away
   // when the model moves on. A short one only says it is thinking: a window
@@ -786,7 +791,9 @@ function ToolRun({
     );
   }
   return (
-    <Exit ms={260} collapse away={hidden}>
+    // Going while the model speaks, and back as its call begins, as a note
+    // comes in: at once, a quick fade (see .cm-run), not drawn open.
+    <Exit ms={120} away={hidden}>
     <div ref={runRef} className={`cm-run${active ? " active" : ""}${open ? " open" : ""}`}>
       <button
         type="button"

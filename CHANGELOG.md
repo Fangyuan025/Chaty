@@ -139,8 +139,8 @@
   that goes on past three seconds opens under its run's line — its newest
   words in a short window, as they are written — and folds away as the model
   moves on; the run opened shows its steps as before. The line for the next
-  run folds away while the model speaks and comes back as its call begins,
-  where it went and came in a frame.
+  run fades away while the model speaks and comes back as its call begins,
+  as a note does, where it went and came in a frame.
 - **Reduce motion in Settings stills all of it**, as the system's setting
   did: the heights and widths moved from script went on moving with only the
   app's own setting on.
