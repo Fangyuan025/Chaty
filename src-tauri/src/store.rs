@@ -35,6 +35,10 @@ pub struct StoredMessage {
     /// its 【n】 marks point at — stored as a JSON array.
     #[serde(default)]
     pub sources: Vec<MsgSource>,
+    /// The model that wrote this reply ("" for a user turn, or a reply saved
+    /// before it was recorded).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
 }
 
 /// One source of an answer: a web page (`url`) or a knowledge-base passage
@@ -77,7 +81,8 @@ CREATE TABLE IF NOT EXISTS messages (
     content         TEXT NOT NULL,
     created_at      INTEGER NOT NULL,
     images          TEXT NOT NULL DEFAULT '[]',
-    sources         TEXT NOT NULL DEFAULT '[]'
+    sources         TEXT NOT NULL DEFAULT '[]',
+    model           TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
 CREATE TABLE IF NOT EXISTS code_sessions (
@@ -168,6 +173,10 @@ pub fn init_db(path: &Path) -> rusqlite::Result<Db> {
         "ALTER TABLE messages ADD COLUMN sources TEXT NOT NULL DEFAULT '[]'",
         [],
     );
+    // Migration for DBs created before v2.4.2: the model that wrote a reply.
+    // One conversation can go through several (issue #25: after a few
+    // switches, which said what could not be told).
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN model TEXT NOT NULL DEFAULT ''", []);
     migrate_image_sessions(&conn);
     // Sweep messages left behind by a conversation that is already gone. No
     // screen can reach one — every read goes through a conversation id — so
@@ -293,13 +302,15 @@ pub fn save_message(
     // finished reply down itself, without them, and must not wipe the ones
     // the page saved.
     sources: Option<Vec<MsgSource>>,
+    // None keeps the model it already has.
+    model: Option<String>,
 ) -> Result<(), String> {
     let conn = lock(&db)?;
     let now = now_ms();
     let images_json =
         serde_json::to_string(&images.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
     let sources_json = sources.map(|s| serde_json::to_string(&s).unwrap_or_else(|_| "[]".into()));
-    put_message(&conn, &id, &conversation_id, &role, &content, now, &images_json, sources_json.as_deref())
+    put_message(&conn, &id, &conversation_id, &role, &content, now, &images_json, sources_json.as_deref(), model.as_deref())
         .map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
@@ -320,6 +331,7 @@ fn put_message(
     now: i64,
     images_json: &str,
     sources_json: Option<&str>,
+    model: Option<&str>,
 ) -> rusqlite::Result<usize> {
     // Only for a conversation that still exists. Cancelling a stream and
     // deleting its conversation in the same breath used to land here *after*
@@ -328,8 +340,8 @@ fn put_message(
     // count in Settings → Data. The guard makes that unreachable from any
     // caller, whatever the ordering.
     conn.execute(
-        "INSERT INTO messages (id, conversation_id, role, content, created_at, images, sources)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, COALESCE(?7, '[]')
+        "INSERT INTO messages (id, conversation_id, role, content, created_at, images, sources, model)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, COALESCE(?7, '[]'), COALESCE(?8, '')
          WHERE EXISTS (SELECT 1 FROM conversations WHERE id = ?2)
          ON CONFLICT(id) DO UPDATE SET
              conversation_id = excluded.conversation_id,
@@ -337,8 +349,9 @@ fn put_message(
              content = excluded.content,
              created_at = excluded.created_at,
              images = excluded.images,
-             sources = COALESCE(?7, messages.sources)",
-        params![id, conversation_id, role, content, now, images_json, sources_json],
+             sources = COALESCE(?7, messages.sources),
+             model = COALESCE(?8, messages.model)",
+        params![id, conversation_id, role, content, now, images_json, sources_json, model],
     )
 }
 
@@ -372,7 +385,7 @@ pub fn get_messages(db: State<'_, Db>, conversation_id: String) -> Result<Vec<St
     let conn = lock(&db)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, role, content, created_at, images, sources FROM messages
+            "SELECT id, role, content, created_at, images, sources, model FROM messages
              WHERE conversation_id = ?1 ORDER BY created_at ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -385,6 +398,7 @@ pub fn get_messages(db: State<'_, Db>, conversation_id: String) -> Result<Vec<St
                 created_at: r.get(3)?,
                 images: images_from_json(r.get(4)?),
                 sources: sources_from_json(r.get(5)?),
+                model: r.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -401,6 +415,8 @@ pub struct MsgIn {
     pub images: Vec<String>,
     #[serde(default)]
     pub sources: Vec<MsgSource>,
+    #[serde(default)]
+    pub model: String,
 }
 
 /// Replace ALL messages of a conversation with `messages` (in order). Used by
@@ -435,9 +451,9 @@ pub fn replace_messages(
         let images_json = serde_json::to_string(&m.images).unwrap_or_else(|_| "[]".into());
         let sources_json = serde_json::to_string(&m.sources).unwrap_or_else(|_| "[]".into());
         tx.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, created_at, images, sources)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![m.id, conversation_id, m.role, m.content, base + i as i64, images_json, sources_json],
+            "INSERT INTO messages (id, conversation_id, role, content, created_at, images, sources, model)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![m.id, conversation_id, m.role, m.content, base + i as i64, images_json, sources_json, m.model],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -2220,7 +2236,7 @@ mod tests {
     /// conversation in the same breath used to save the reply afterwards,
     /// leaving a row no screen could reach.
     fn save(conn: &Connection, id: &str, conv_id: &str) -> usize {
-        put_message(conn, id, conv_id, "assistant", "hi", 0, "[]", None).unwrap()
+        put_message(conn, id, conv_id, "assistant", "hi", 0, "[]", None, None).unwrap()
     }
 
     /// A conversation's and a Code session's last numbers stay with them,
@@ -2255,15 +2271,18 @@ mod tests {
             MsgSource { title: "notes.pdf".into(), url: String::new(), snippet: "a passage".into() },
         ];
         let json = serde_json::to_string(&src).unwrap();
-        put_message(&conn, "m1", "c1", "assistant", "draft", 1, "[]", Some(&json)).unwrap();
-        put_message(&conn, "m1", "c1", "assistant", "final", 2, "[]", None).unwrap();
+        put_message(&conn, "m1", "c1", "assistant", "draft", 1, "[]", Some(&json), Some("Qwen3.5-9B")).unwrap();
+        put_message(&conn, "m1", "c1", "assistant", "final", 2, "[]", None, None).unwrap();
         let (content, kept): (String, String) = conn
             .query_row("SELECT content, sources FROM messages WHERE id = 'm1'", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         assert_eq!(content, "final");
         assert_eq!(sources_from_json(Some(kept)), src);
+        // …and the model that wrote it, the same way.
+        let model: String = conn.query_row("SELECT model FROM messages WHERE id = 'm1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(model, "Qwen3.5-9B");
         // A message saved with none has none, and a broken column reads as none.
-        put_message(&conn, "m2", "c1", "user", "q", 3, "[]", None).unwrap();
+        put_message(&conn, "m2", "c1", "user", "q", 3, "[]", None, None).unwrap();
         let none: String = conn.query_row("SELECT sources FROM messages WHERE id = 'm2'", [], |r| r.get(0)).unwrap();
         assert!(sources_from_json(Some(none)).is_empty());
         assert!(sources_from_json(Some("not json".into())).is_empty());

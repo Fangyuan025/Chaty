@@ -45,7 +45,7 @@ export interface GenRequest {
   /** Where the finished reply belongs. Given this, the app keeps the reply
    *  itself: a turn outlives the page that asked for it, and one that ends
    *  after the webview was replaced is written down rather than lost. */
-  save?: { conversationId: string; messageId: string };
+  save?: { conversationId: string; messageId: string; model?: string };
 }
 
 export interface ModelInfo {
@@ -1738,7 +1738,7 @@ export async function generate(
   /** Where the reply belongs. With it, the app owns the turn: generation is
    *  not stopped by this page going away, and a page that comes back can pick
    *  the stream up where it left off. */
-  save?: { conversationId: string; messageId: string },
+  save?: { conversationId: string; messageId: string; model?: string },
 ): Promise<void> {
   await asJob(
     async () => {
@@ -1796,6 +1796,8 @@ export interface StoredMessage {
   images?: string[];
   /** An answer's sources — what its 【n】 marks point at. */
   sources?: SearchResult[];
+  /** The model that wrote a reply. */
+  model?: string;
 }
 
 export async function saveConversation(
@@ -1814,8 +1816,10 @@ export async function saveMessage(
   images?: string[],
   /** Left out: the message keeps the sources it already has. */
   sources?: SearchResult[],
+  /** The model that wrote a reply; left out, the message keeps the one it has. */
+  model?: string,
 ): Promise<void> {
-  await invoke("save_message", { id, conversationId, role, content, images: images ?? null, sources: sources ?? null });
+  await invoke("save_message", { id, conversationId, role, content, images: images ?? null, sources: sources ?? null, model: model ?? null });
 }
 
 /** What a conversation's ("chat") or a Code session's ("code") last reply
@@ -1840,7 +1844,7 @@ export async function getMessages(conversationId: string): Promise<StoredMessage
 /** Replace all messages of a conversation (for edit / regenerate truncation). */
 export async function replaceMessages(
   conversationId: string,
-  messages: { id: string; role: Role; content: string; images?: string[]; sources?: SearchResult[] }[],
+  messages: { id: string; role: Role; content: string; images?: string[]; sources?: SearchResult[]; model?: string }[],
 ): Promise<void> {
   await invoke("replace_messages", { conversationId, messages });
 }

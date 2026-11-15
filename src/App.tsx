@@ -161,6 +161,8 @@ import { Sources } from "./components/Sources";
 interface UiMessage extends ChatMessage {
   id: string;
   sources?: SearchResult[];
+  /** The model that wrote a reply — shown under it. */
+  model?: string;
   /** What the model was given for this user turn — today's date and the
    *  search results before the question. Kept (in memory) so every later
    *  prompt repeats the turn exactly as the cache holds it. */
@@ -509,11 +511,12 @@ export default function App() {
           content: m.content,
           images: m.images,
           sources: m.sources?.length ? m.sources : undefined,
+          model: m.model || undefined,
         }));
         // The reply is still being written, so it is not in the conversation
         // yet — put the bubble back where it was.
         if (!rows.some((m) => m.id === turn.messageId)) {
-          rows.push({ id: turn.messageId, role: "assistant", content: acc, images: undefined, sources: undefined });
+          rows.push({ id: turn.messageId, role: "assistant", content: acc, images: undefined, sources: undefined, model: undefined });
         }
         setMessages(rows);
         setConversationId(turn.conversationId);
@@ -561,6 +564,11 @@ export default function App() {
    *  The summary above lets the tail keep growing while it stands, and it
    *  decides that on an ESTIMATE of the tail's size — see composeContext. */
   const lastPromptTokens = useRef(new Map<string, number>());
+  /** Conversations whose pictures the engine could not take — over the
+   *  window, or a vision prefill that failed. Their earlier pictures stay out
+   *  of the prompt from then on: sent again, they failed every turn after the
+   *  first (issue #25). The picture sent with the current message still goes. */
+  const pictureShed = useRef(new Set<string>());
   const [canvasKey, setCanvasKey] = useState("");
   const [canvasBusy, setCanvasBusy] = useState(false);
   // Set by the canvas Stop button; the generation flow then discards the
@@ -2221,6 +2229,7 @@ ${body.outerHTML}
           content: m.content,
           images: m.images,
           sources: m.sources?.length ? m.sources : undefined,
+          model: m.model || undefined,
         })),
       );
       swapDraft(id);
@@ -2370,8 +2379,8 @@ ${body.outerHTML}
       const copied: UiMessage[] = [];
       for (const m of slice) {
         const id = uid();
-        await saveMessage(id, newId, m.role, m.content, m.images, m.sources);
-        copied.push({ id, role: m.role, content: m.content, images: m.images, sources: m.sources });
+        await saveMessage(id, newId, m.role, m.content, m.images, m.sources, m.model);
+        copied.push({ id, role: m.role, content: m.content, images: m.images, sources: m.sources, model: m.model });
       }
       setConversationId(newId);
       setMessages(copied);
@@ -2524,6 +2533,10 @@ ${body.outerHTML}
   ) {
     const text = [...history].reverse().find((m) => m.role === "user")?.content ?? "";
     const prior = history.slice(0, -1);
+    // Who writes it, kept with it: a conversation can pass through several
+    // models, and which said what is shown under each reply (issue #25).
+    const writer = model ? model.name.replace(/\.gguf$/i, "") : undefined;
+    if (writer) setMessages((cur) => cur.map((m) => (m.id === asstId ? { ...m, model: writer } : m)));
     setBusy(true);
     setStreamingId(asstId);
     setStats(null);
@@ -2666,11 +2679,17 @@ ${body.outerHTML}
     // re-read of the whole conversation on every turn after a search. The
     // current turn gets its parts afresh below.
     const lastUserAt = history.map((m) => m.role).lastIndexOf("user");
+    const shed = pictureShed.current.has(convId);
     const historyForModel = history.map(({ role, content, images, modelContent }, i) => {
+      const dropped = shed && i !== lastUserAt && role === "user" && !!images?.length;
       const pixels =
-        role === "user" && images?.length && model?.visionReady ? { images } : {};
+        role === "user" && images?.length && model?.visionReady && !dropped ? { images } : {};
       if (role !== "assistant") {
-        return { role, content: role === "user" && modelContent && i !== lastUserAt ? modelContent : content, ...pixels };
+        const said = role === "user" && modelContent && i !== lastUserAt ? modelContent : content;
+        const note = dropped && model?.visionReady
+          ? lang === "zh" ? "\n[这条消息附带的图片已从上下文移除]" : "\n[the image sent with this message was left out to fit the context]"
+          : "";
+        return { role, content: said + note, ...pixels };
       }
       const reasoning = model?.reasoningField ? turnReasoning(content).trim() : "";
       return reasoning
@@ -2906,6 +2925,8 @@ ${body.outerHTML}
             lastPromptTokens.current.set(convId, ev.stats.promptTokens);
             calibrate(sentRaw, ev.stats.promptTokens);
           } else if (ev.type === "error") {
+            if (/超出上下文窗口|exceeds the \d+-token context window|图文预填充失败|多模态分词失败|multimodal prefill failed|multimodal tokenization failed/i.test(ev.message))
+              pictureShed.current.add(convId);
             acc.text = withErrorNote(acc.text, ev.message);
             if (rafId != null) {
               cancelAnimationFrame(rafId);
@@ -2916,7 +2937,7 @@ ${body.outerHTML}
         },
         // The app owns this turn: it keeps generating if this page goes away,
         // and hands the rest to whichever page comes back.
-        { conversationId: convId, messageId: asstId },
+        { conversationId: convId, messageId: asstId, model: writer },
       );
     } catch (e) {
       console.error(e);
@@ -2954,7 +2975,7 @@ ${body.outerHTML}
       setBusy(false);
       setStreamingId(null);
       try {
-        if (acc.text.trim()) await saveMessage(asstId, convId, "assistant", acc.text, undefined, turnSources);
+        if (acc.text.trim()) await saveMessage(asstId, convId, "assistant", acc.text, undefined, turnSources, writer);
         await refreshConversations();
       } catch (e) {
         reportChatSaveFailure(convId, e);
@@ -3055,7 +3076,7 @@ ${body.outerHTML}
     try {
       await replaceMessages(
         conversationId,
-        history.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images, sources: m.sources })),
+        history.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images, sources: m.sources, model: m.model })),
       );
       await refreshConversations();
     } catch (e) {
@@ -3078,7 +3099,7 @@ ${body.outerHTML}
     try {
       await replaceMessages(
         conversationId,
-        history.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images, sources: m.sources })),
+        history.map((m) => ({ id: m.id, role: m.role, content: m.content, images: m.images, sources: m.sources, model: m.model })),
       );
       await refreshConversations();
     } catch (e) {
@@ -3730,6 +3751,7 @@ ${body.outerHTML}
                       sources={m.sources}
                     />
                     {m.sources && m.sources.length > 0 && <Sources sources={m.sources} />}
+                    <div className="msg-foot">
                     {streamingId !== m.id && m.content.trim() && (
                       <div className="msg-actions">
                         <button
@@ -3763,6 +3785,12 @@ ${body.outerHTML}
                         </button>
                       </div>
                     )}
+                    {m.model && (
+                      <span className="msg-model" title={m.model}>
+                        {m.model}
+                      </span>
+                    )}
+                    </div>
                   </div>
                 ) : (
                   <div key={m.id} className="msg user">
@@ -3803,31 +3831,35 @@ ${body.outerHTML}
                         </div>
                       </div>
                     ) : (
-                      <div className="bubble" data-copy={m.content}>
-                        {m.images && m.images.length > 0 && (
-                          <span className="msg-images">
-                            {m.images.map((p) => (
-                              <ImageThumb key={p} path={p} onOpen={() => setPreviewImg(p)} />
-                            ))}
-                          </span>
-                        )}
-                        <UserText content={m.content} expandLabel={t("expandAll")} collapseLabel={t("collapseText")} />
-                        <UserCopy content={m.content} title={t("copyMsg")} />
-                        {!busy && (
-                          <button
-                            className="user-edit"
-                            title={t("editMsg")}
-                            onClick={() => {
-                              setEditingText(m.content);
-                              setEditingId(m.id);
-                            }}
-                          >
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                              <path d="M14.5 5.5l4 4M4 20l1-4L16 5a2 2 0 0 1 3 3L8 19l-4 1z" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                          </button>
-                        )}
-                      </div>
+                      <>
+                        <div className="user-actions">
+                          <UserCopy content={m.content} title={t("copyMsg")} />
+                          {!busy && (
+                            <button
+                              className="user-edit"
+                              title={t("editMsg")}
+                              onClick={() => {
+                                setEditingText(m.content);
+                                setEditingId(m.id);
+                              }}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                                <path d="M14.5 5.5l4 4M4 20l1-4L16 5a2 2 0 0 1 3 3L8 19l-4 1z" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                        <div className="bubble" data-copy={m.content}>
+                          {m.images && m.images.length > 0 && (
+                            <span className="msg-images">
+                              {m.images.map((p) => (
+                                <ImageThumb key={p} path={p} onOpen={() => setPreviewImg(p)} />
+                              ))}
+                            </span>
+                          )}
+                          <UserText content={m.content} expandLabel={t("expandAll")} collapseLabel={t("collapseText")} />
+                        </div>
+                      </>
                     )}
                   </div>
                 ),

@@ -1916,6 +1916,7 @@ pub async fn generate(
                 text,
                 None,
                 None,
+                to.model,
             );
         }
         // Let go of the slot only if it is still this turn's.
@@ -2338,6 +2339,7 @@ mod tests {
         let to = SaveTarget {
             conversation_id: "c1".into(),
             message_id: "m1".into(),
+            model: None,
         };
         assert!(!super::turn_already_running(&state, &to), "nothing is running yet");
 
@@ -2354,7 +2356,7 @@ mod tests {
         assert!(
             !super::turn_already_running(
                 &state,
-                &SaveTarget { conversation_id: "c1".into(), message_id: "m2".into() }
+                &SaveTarget { conversation_id: "c1".into(), message_id: "m2".into(), model: None }
             ),
             "a different message is a different turn"
         );
@@ -2383,6 +2385,7 @@ mod tests {
             SaveTarget {
                 conversation_id: "c1".into(),
                 message_id: "m1".into(),
+                model: None,
             },
             dead,
         );
@@ -2419,6 +2422,7 @@ mod tests {
             SaveTarget {
                 conversation_id: "c1".into(),
                 message_id: "m1".into(),
+                model: None,
             },
             dead,
         );

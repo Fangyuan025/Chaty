@@ -361,7 +361,8 @@ jobs:
 
             Find in the chat with ⌘F (Ctrl+F): every match marked, a count, Enter between them.
             A chat opened from the sidebar's search opens at the match, and one left part-way
-            through opens where you left it. Every shortcut is on one sheet, ⌘/ (Ctrl+/).
+            through opens where you left it. Every shortcut is on one sheet, ⌘/ (Ctrl+/). Each reply
+            says which model wrote it.
 
             ## Nothing stutters
 
@@ -372,8 +373,11 @@ jobs:
 
             ## Code mode
 
+            A screenshot no longer breaks a session: the window is counted by what a picture really
+            takes, and a prompt that cannot hold its pictures lets the older ones go and goes on.
             A small model that sends the same plan again instead of starting is handed the look at
-            the workspace its plan began with, and pointed at the move the plan names next.
+            the workspace its plan began with, and pointed at the move the plan names next; one
+            reading a file again for something not in it is told where that is.
 
             ## Taking a chat elsewhere
 

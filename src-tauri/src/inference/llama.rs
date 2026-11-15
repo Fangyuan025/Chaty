@@ -362,6 +362,15 @@ struct MediaCache {
     image_keys: Vec<String>,
     /// Number of positions resident right after that prefill.
     n_past: i32,
+    /// KV cells resident beyond `n_past`: what the images in it take over the
+    /// positions they advance. A model with M-RoPE (Qwen-VL, Qwen3.5) moves a
+    /// picture's position by max(columns, rows) of its grid, but stores every
+    /// one of its tokens — a 55×35 screenshot is 55 positions and 1925 cells.
+    /// The window is cells: counting positions said a conversation carrying a
+    /// few screenshots had room to spare while its KV was full, the decode
+    /// found no slot ("Eval failed with code: 1"), and with the screenshot
+    /// still in the history every turn after it failed the same way.
+    extra_cells: i32,
     /// The prompt WITHOUT the generation tail (assistant header + thinking
     /// prefill) — the stable anchor the next turn's render string-extends
     /// even when the tail diverges (Qwen3.5+ `<think>` prefill). Empty when
@@ -1586,6 +1595,10 @@ fn run_turn(
     // `n_prompt_pos` = positions resident after prefill; `idx` = where to
     // sample the first token (-1 = "last logits" after an mtmd prefill).
     let (n_prompt_pos, mut idx): (i32, i32);
+    // KV cells the prompt holds beyond its positions — its pictures' (see
+    // MediaCache::extra_cells); 0 for a text prompt. The window, and what is
+    // reported as the prompt's size, are cells.
+    let mut n_extra: i32 = 0;
     // How many prompt tokens the KV already held — the same observability the
     // MLX engine reports, and the number that shows an agent turn is a pure
     // append rather than a full re-read.
@@ -1611,6 +1624,7 @@ fn run_turn(
                         prompt: held,
                         image_keys: Vec::new(),
                         n_past: cached.len() as i32,
+                        extra_cells: 0,
                         body: String::new(),
                         n_past_body: 0,
                         complete: true,
@@ -1642,8 +1656,9 @@ fn run_turn(
         )?;
         n_prompt_pos = pos;
         kv_reused = reused_media;
+        n_extra = media_cache.as_ref().map_or(0, |c| c.extra_cells);
         if cancel.load(Ordering::Relaxed) {
-            return done_event(sink, n_prompt_pos as u32, 0, 0.0, "cancelled");
+            return done_event(sink, (n_prompt_pos + n_extra) as u32, 0, 0.0, "cancelled");
         }
         idx = -1;
     } else {
@@ -1665,7 +1680,7 @@ fn run_turn(
         if n_prompt + 4 >= n_ctx as usize {
             dec.clear_kv_cache();
             cached.clear();
-            bail!(trf!("提示词 {n_prompt} tokens 超出上下文窗口 {n_ctx}，请新建对话或缩短输入", "Prompt exceeds the {n_ctx}-token context window — start a new chat or shorten the input."));
+            bail!(trf!("提示词 {n_prompt} tokens 超出上下文窗口 {n_ctx}，请新建对话或缩短输入", "The prompt ({n_prompt} tokens) exceeds the {n_ctx}-token context window — start a new chat or shorten the input."));
         }
 
         // Longest common prefix with the cached sequence → reuse that part of the KV.
@@ -1930,7 +1945,7 @@ fn run_turn(
             stop_reason = "length";
             break;
         }
-        if n_past + 1 >= n_ctx as i32 {
+        if n_past + n_extra + 1 >= n_ctx as i32 {
             stop_reason = "context";
             break;
         }
@@ -1948,7 +1963,7 @@ fn run_turn(
         // asked to guess from a conversation it only half knows.
         let room = !media_turn
             && dec.spec_mut().is_some()
-            && n_past + 1 + MTP_DRAFT_MAX < n_ctx as i32;
+            && n_past + n_extra + 1 + MTP_DRAFT_MAX < n_ctx as i32;
         let round = if room {
             match speculate(dec, &mut sampler, &mut batch, token, n_past, cached) {
                 Ok(Some((r, drafted))) => {
@@ -2079,7 +2094,7 @@ fn run_turn(
     }
 
     let secs = start.elapsed().as_secs_f32().max(1e-3);
-    done_event_reused(sink, n_prompt_pos as u32, n_decoded, n_decoded as f32 / secs, stop_reason, kv_reused)
+    done_event_reused(sink, (n_prompt_pos + n_extra) as u32, n_decoded, n_decoded as f32 / secs, stop_reason, kv_reused)
 }
 
 /// Prefill a multimodal prompt through mtmd, reusing the media KV cache
@@ -2121,20 +2136,21 @@ fn prefill_media(
     // an empty tail would leave the sampler without fresh logits.
     let reuse = media_cache.as_ref().and_then(|c| {
         if prompt.len() > c.prompt.len() && prompt.starts_with(c.prompt.as_str()) && img_prefix_ok(c) {
-            Some((c.n_past, c.prompt.len(), c.image_keys.len(), c.complete))
+            Some((c.n_past, c.prompt.len(), c.image_keys.len(), c.complete, c.extra_cells))
         } else if !c.body.is_empty()
             && prompt.len() > c.body.len()
             && prompt.starts_with(c.body.as_str())
             && img_prefix_ok(c)
         {
             // The anchor deliberately points behind the generation tail, so
-            // this one always has something to truncate.
-            Some((c.n_past_body, c.body.len(), c.image_keys.len(), false))
+            // this one always has something to truncate. Every image lies in
+            // the body, before the tail: its cells are all still there.
+            Some((c.n_past_body, c.body.len(), c.image_keys.len(), false, c.extra_cells))
         } else {
             None
         }
     });
-    let (start_past, tail, new_images) = match reuse {
+    let (start_past, tail, new_images, start_extra) = match reuse {
         // Reuse needs the generation tail truncated out of the KV first.
         // Hybrid/recurrent models (Qwen3.6) can't partially rewind their
         // state — seq_rm reports false — so fall back to a clean full
@@ -2143,25 +2159,25 @@ fn prefill_media(
         // A complete ledger means the KV ends exactly where the cached prompt
         // does: the new prompt appends to it, so there is nothing to remove and
         // no rewind to ask for. This is what lets a hybrid model reuse at all.
-        Some((n_past, prompt_len, n_imgs, true)) => {
-            (n_past, &prompt[prompt_len..], &images[n_imgs..])
+        Some((n_past, prompt_len, n_imgs, true, extra)) => {
+            (n_past, &prompt[prompt_len..], &images[n_imgs..], extra)
         }
-        Some((n_past, prompt_len, n_imgs, false))
+        Some((n_past, prompt_len, n_imgs, false, extra))
             if ctx.clear_kv_cache_seq(Some(0), Some(n_past as u32), None) == Ok(true) =>
         {
-            (n_past, &prompt[prompt_len..], &images[n_imgs..])
+            (n_past, &prompt[prompt_len..], &images[n_imgs..], extra)
         }
         Some(_) => {
             CACHE_FALLBACKS.fetch_add(1, Ordering::Relaxed);
             eprintln!("media cache: partial KV removal unsupported by this model — full re-prefill");
             ctx.clear_kv_cache();
             *media_cache = None;
-            (0, prompt, &images[..])
+            (0, prompt, &images[..], 0)
         }
         None => {
             ctx.clear_kv_cache();
             *media_cache = None;
-            (0, prompt, &images[..])
+            (0, prompt, &images[..], 0)
         }
     };
 
@@ -2278,6 +2294,7 @@ fn prefill_media(
 
     let mut segs: Vec<Seg> = Vec::new();
     let mut total_pos: i32 = 0;
+    let mut total_cells: i32 = 0;
     for (i, (text, bm_idx)) in seg_texts.iter().enumerate() {
         let seg_bitmaps: Vec<&MtmdBitmap> = bm_idx.iter().map(|&j| &bitmaps[j]).collect();
         let input = MtmdInputText {
@@ -2290,6 +2307,7 @@ fn prefill_media(
             Ok(c) => {
                 let p = c.total_positions();
                 total_pos += p;
+                total_cells += c.total_tokens() as i32;
                 segs.push(Seg { chunks: c, positions: p });
             }
             Err(e) => {
@@ -2300,11 +2318,17 @@ fn prefill_media(
     }
 
     let grand_total = start_past + total_pos;
-    if grand_total + 4 >= n_ctx as i32 {
+    // What the window holds is cells (see MediaCache::extra_cells). Refused in
+    // the words the text path refuses in, so whoever sent it can recover the
+    // same way — compact, let older pictures go — rather than meet an engine
+    // error at the decode, turn after turn.
+    let extra_cells = start_extra + (total_cells - total_pos);
+    let cells = grand_total + extra_cells;
+    if cells + 4 >= n_ctx as i32 {
         clear_all(ctx, media_cache);
         bail!(trf!(
-            "图文提示共 {grand_total} 个位置，超出上下文窗口 {n_ctx}，请新建对话、缩短输入或减少图片。",
-            "The multimodal prompt needs {grand_total} positions — over the {n_ctx} context window; start a new chat, shorten the input or drop images."
+            "提示词 {cells} tokens 超出上下文窗口 {n_ctx}，请新建对话、缩短输入或减少图片。",
+            "The prompt ({cells} tokens) exceeds the {n_ctx}-token context window — start a new chat, shorten the input or drop images."
         ));
     }
     if cancel.load(Ordering::Relaxed) {
@@ -2357,13 +2381,14 @@ fn prefill_media(
         prompt: prompt.to_string(),
         image_keys,
         n_past,
+        extra_cells,
         body: if anchored { prompt_body.to_string() } else { String::new() },
         n_past_body,
         // The reply has not been generated yet; the generation loop marks this
         // true once it has recorded what it decoded.
         complete: false,
     });
-    Ok((n_past, start_past.max(0) as u32))
+    Ok((n_past, (start_past + start_extra).max(0) as u32))
 }
 
 /// Feed-side image budget for the vision encoder. Full-page browser

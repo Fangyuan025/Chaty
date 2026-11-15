@@ -50,6 +50,11 @@
   its end otherwise.
 - **Every shortcut on one sheet** — ⌘/ (Ctrl+/), or the command palette.
 - With many models, typing in the model menu finds one; Enter loads it.
+- **Each reply says which model wrote it**, at its foot on the right — a
+  conversation can pass through several.
+- **Copy and edit sit beside your message at its foot**, and stay in view
+  while a long one runs past the bottom of the window, where they sat at its
+  middle.
 
 ### Nothing stutters
 
@@ -77,6 +82,21 @@
 
 ### Code mode
 
+- **A screenshot no longer breaks a session.** A vision model such as
+  Qwen3.5 keeps a screenshot as up to two thousand tokens while moving its
+  position on by a few dozen, and the window was counted by positions: a
+  session with a few screenshots looked half full while it was full, its next
+  prompt failed with "Eval failed with code: 1" — and, the screenshot still in
+  it, so did every prompt after. The window is now counted by what it holds,
+  so the context ring, compaction and the limit see what a picture costs; a
+  prompt that does not fit lets its older pictures go and runs again, and a
+  picture the engine cannot take is left out instead of ending the turn. In
+  chat, a conversation whose pictures no longer fit leaves its earlier ones
+  out of what the model is given.
+- **A file read again for something not in it is told where that is.** The
+  function or name the model said it was after is looked up across the
+  workspace — on these lines, in another file, or nowhere yet — where it was
+  told only that the file had not changed, and read it again until paused.
 - **A plan sent again and again is answered with the look it was for.** A
   small model whose plan starts by looking at the workspace, and that sends
   the plan again instead of looking, is handed the workspace's overview, once

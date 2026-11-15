@@ -530,6 +530,16 @@ function RequestBubble({
   void rec;
   return (
     <div className="msg user">
+      <div className="user-actions">
+        <UserCopy content={copy} title={t("copyMsg")} />
+        {onReuse && (
+          <button className="user-edit" title={t("musReuse")} onClick={onReuse}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <path d="M14.5 5.5l4 4M4 20l1-4L16 5a2 2 0 0 1 3 3L8 19l-4 1z" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
+      </div>
       <div className="bubble ms-bubble" data-copy={copy}>
         {edit && fromRound != null && (
           <button className="is-from" onClick={onJump} title={t("musJumpToRound")}>
@@ -554,14 +564,6 @@ function RequestBubble({
             <UserText content={lyrics} expandLabel={t("expandAll")} collapseLabel={t("collapseText")} />
           </div>
         ) : null}
-        <UserCopy content={copy} title={t("copyMsg")} />
-        {onReuse && (
-          <button className="user-edit" title={t("musReuse")} onClick={onReuse}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-              <path d="M14.5 5.5l4 4M4 20l1-4L16 5a2 2 0 0 1 3 3L8 19l-4 1z" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-        )}
       </div>
     </div>
   );

@@ -303,6 +303,16 @@ function PromptBubble({
   const { t } = useI18n();
   return (
     <div className="msg user">
+      <div className="user-actions">
+        <UserCopy content={prompt} title={t("copyMsg")} />
+        {onEdit && (
+          <button className="user-edit" title={t("imgReuse")} onClick={onEdit}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <path d="M14.5 5.5l4 4M4 20l1-4L16 5a2 2 0 0 1 3 3L8 19l-4 1z" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
+      </div>
       <div className="bubble" data-copy={prompt}>
         {reference && (
           <span className="msg-images">
@@ -322,14 +332,6 @@ function PromptBubble({
           <span className="is-neg-line">
             <span>{t("imgNegative")}</span> {negative}
           </span>
-        )}
-        <UserCopy content={prompt} title={t("copyMsg")} />
-        {onEdit && (
-          <button className="user-edit" title={t("imgReuse")} onClick={onEdit}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-              <path d="M14.5 5.5l4 4M4 20l1-4L16 5a2 2 0 0 1 3 3L8 19l-4 1z" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
         )}
       </div>
     </div>

@@ -1433,6 +1433,25 @@ body.resizing-x {
   opacity: 1;
 }
 
+/* A reply's foot: its actions on the left (on hover), and on the right, the
+   model that wrote it — a conversation can pass through several, and which
+   said what could not be told (issue #25). */
+.msg-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.msg-model {
+  margin: 6px 0 0 auto;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .msg-action {
   padding: 4px 9px;
   font-size: 12px;
@@ -6129,7 +6148,27 @@ body:has(.live-overlay) .win-btn.close:hover {
   opacity: 0;
   transition: opacity 0.15s, background 0.15s, color 0.15s;
 }
-.msg.user .bubble:hover .user-edit {
+/* Copy and edit sit beside the bubble at its foot, and stay in view while a
+   long message runs past the bottom of the window (issue #25: centred on
+   the bubble, half-way down a long message, they were off screen). */
+.user-actions {
+  position: sticky;
+  bottom: 12px;
+  align-self: flex-end;
+  flex: none;
+  display: flex;
+  gap: 2px;
+  margin: 0 6px 10px 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.msg.user:hover .user-actions,
+.user-actions:focus-within {
+  opacity: 1;
+}
+.user-actions .user-edit {
+  position: static;
+  transform: none;
   opacity: 1;
 }
 .user-edit:hover {

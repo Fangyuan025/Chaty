@@ -1006,17 +1006,17 @@ function capDiffForCard(
  *  `force` is false for engines that reuse across a new image; those evict only
  *  when the transcript is genuinely under context pressure. Evicted images
  *  leave a note so the model knows to retake if it needs another look. */
-export function evictStaleImages(messages: ChatMessage[], force: boolean) {
-  if (!force) return;
+export function evictStaleImages(messages: ChatMessage[], force: boolean, keep = 1): number {
+  if (!force) return 0;
   // Keeping two used to mean encoding both again on every screenshot round —
   // measured on MLX Qwen3.5, three screenshots in: 1799/3939/3988ms holding
   // two against 1798/1821/1871ms holding one. Both engines now resume across a
   // new picture, so an older screenshot costs its tokens and nothing else, and
   // callers only force this where it is not a matter of cost: a model that
   // accepts one image per prompt, or a context being reclaimed anyway.
-  const keep = 1;
   const withImages = messages.filter((m) => m.images && m.images.length > 0);
-  for (const m of withImages.slice(0, Math.max(0, withImages.length - keep))) {
+  const gone = withImages.slice(0, Math.max(0, withImages.length - keep));
+  for (const m of gone) {
     m.images = [];
     if (!m.content.includes("[截图已过期")) {
       m.content += isZh()
@@ -1024,6 +1024,15 @@ export function evictStaleImages(messages: ChatMessage[], force: boolean) {
         : "\n[stale screenshot evicted from context — retake if needed]";
     }
   }
+  return gone.length;
+}
+
+/** The engine could not take the pictures in this prompt at all: a vision
+ *  prefill that failed, or a tokenizer that refused one. */
+export function failedOnPictures(e: unknown): boolean {
+  return /图文预填充失败|多模态分词失败|multimodal prefill failed|multimodal tokenization failed/i.test(
+    e instanceof Error ? e.message : String(e),
+  );
 }
 
 /** The backend's out-of-workspace marker: `NEED_DIR_GRANT\t<dir>\t<message>`.
@@ -2149,6 +2158,53 @@ let turnSessionId = "";
  *  (which has no access to opts) can serve use_skill bodies. */
 let turnSkills: SkillFile[] = [];
 
+/** Names in what the model said it was after — `startGame`, `init_canvas` —
+ *  the way code spells them: camelCase, snake_case. */
+export function codeNames(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/[A-Za-z_$][\w$]{2,}/g)) {
+    const w = m[0];
+    if (/[a-z][A-Z]/.test(w) || /[A-Za-z]_[A-Za-z]/.test(w)) out.add(w);
+  }
+  return [...out].filter((w) => !(NATIVE_TOOL_NAMES as readonly string[]).includes(w)).slice(0, 3);
+}
+
+/** Where what the model is reading a file again for actually is. Issue #25:
+ *  a 9B read the whole of a 22-line game.js, then read it again and again,
+ *  "to find startGame" — which was not in it — and was told each time only
+ *  that the file had not changed. Each refusal left it as it was; this is
+ *  something it did not know: where the name is, or that it is nowhere. */
+async function whereNamed(path: string, said: string, zh: boolean): Promise<string> {
+  const rel = path.replace(/^\.?\//, "");
+  const names = codeNames(said).filter((n) => !rel.includes(n));
+  const lines: string[] = [];
+  for (const n of names) {
+    let hits = "";
+    try {
+      hits = await agentGrep(`\\b${n.replace(/\$/g, "\\$")}\\b`);
+    } catch {
+      continue;
+    }
+    const rows = hits.split("\n").filter((l) => /^[^\s:][^:]*:\d+:/.test(l)).slice(0, 4);
+    const here = rows.filter((r) => {
+      const file = r.slice(0, r.indexOf(":"));
+      return file === rel || path.endsWith(`/${file}`) || file.endsWith(`/${rel}`);
+    });
+    if (!rows.length) {
+      lines.push(zh ? `工作区里没有任何地方出现 ${n}——它还不存在,要用就自己写出来。` : `${n} appears nowhere in the workspace — it does not exist yet; write it if you need it.`);
+    } else if (!here.length) {
+      lines.push(zh ? `${path} 里没有 ${n}。它在:\n${rows.join("\n")}` : `${n} is not in ${path}. It is in:\n${rows.join("\n")}`);
+    } else {
+      lines.push(
+        zh
+          ? `${n} 在 ${path} 的这几行:\n${here.join("\n")}\n上面读到的就是全部;要改就直接 edit_file。`
+          : `${n} is on these lines of ${path}:\n${here.join("\n")}\nWhat you read above is all of it; edit it with edit_file.`,
+      );
+    }
+  }
+  return lines.length ? `\n\n${lines.join("\n\n")}` : "";
+}
+
 /** The call that starts a plan item: a look for an item about looking, a
  *  file for one about making something, a directory otherwise. */
 function planKick(item: string | undefined): string {
@@ -3225,8 +3281,11 @@ export function xmlRunsOn(raw: string): boolean {
 
 /** The prompt size llama.cpp reports when it refuses a prompt too long for the
  *  window; 0 for any other error. */
-function refusedPromptTokens(e: unknown): number {
-  const m = /提示词 (\d+) tokens 超出上下文窗口/.exec(e instanceof Error ? e.message : String(e));
+export function refusedPromptTokens(e: unknown): number {
+  const text = e instanceof Error ? e.message : String(e);
+  // In the interface's language: an English refusal went unread, and the
+  // turn — and every one after it — ended on it instead of compacting.
+  const m = /提示词 (\d+) tokens 超出上下文窗口/.exec(text) ?? /The prompt \((\d+) tokens\) exceeds the/.exec(text);
   return m ? Number(m[1]) : 0;
 }
 
@@ -3934,6 +3993,8 @@ export async function runAgentTurn(
   let lastInvalidRaw = "";
   /** Steps re-run after the engine refused a prompt too long for the window. */
   let overflowRetries = 0;
+  /** The step is to run again, without pictures the engine could not take. */
+  let shedPictures = false;
   let forceNoThinkNext = false;
   // ── Live file cards ── a write or edit shows its card, and its diff, while
   // the model is still writing the call; the step that runs it takes the same
@@ -4346,7 +4407,17 @@ export async function runAgentTurn(
       ).catch((e: unknown) => {
         // llama.cpp refuses it with an error that names the count.
         const n = refusedPromptTokens(e);
-        if (!n) throw e;
+        if (!n) {
+          // Pictures the engine could not take: the turn goes on without
+          // them rather than ending — and, the screenshot being in the
+          // transcript, ending every turn after it the same way (issue #25).
+          // The older ones first, then the last: each retry has fewer.
+          if (failedOnPictures(e) && (evictStaleImages(messages, true, 1) > 0 || evictStaleImages(messages, true, 0) > 0)) {
+            shedPictures = true;
+            return;
+          }
+          throw e;
+        }
         calibrate(sentRaw, n);
         overflowAt = n;
       });
@@ -4355,6 +4426,10 @@ export async function runAgentTurn(
       // Safety: a cancelled/errored step may end mid-prefill — clear the ring.
       cb.onPrefill?.(null);
       if (opts.signal.cancelled) return;
+      if (shedPictures) {
+        shedPictures = false;
+        continue;
+      }
       // ── Over the window ── the engine counted the prompt and it does not
       // fit: the estimate under-read it, or what fills the window is something
       // compaction's usual tiers leave alone. Believe the engine — compact
@@ -4377,6 +4452,10 @@ export async function runAgentTurn(
           noteCompacted();
           continue;
         }
+        // Nothing left to summarise, and pictures still in it: the older ones
+        // go, then the last — a screenshot is up to two thousand tokens of a
+        // window, and a conversation that carries a few cannot fit for them.
+        if (evictStaleImages(messages, true, 1) > 0 || evictStaleImages(messages, true, 0) > 0) continue;
         cb.onError(
           lang === "zh"
             ? `提示词 ${overflowAt} tokens 超出上下文窗口 ${nCtx},压缩后仍放不下。请新建会话,或在设置里调大上下文长度。`
@@ -5123,9 +5202,10 @@ export async function runAgentTurn(
                 ? lang === "zh"
                   ? `这个文件你刚读过且内容没有变化(第 ${repeatCount + 1} 次重复)——再读一遍不会出现新信息。你需要的信息已经够了:现在把方案写成回答。`
                   : `You just read this file and it has not changed (repeat #${repeatCount + 1}) — reading again reveals nothing new. You have what you need: write the plan as your answer now.`
-                : lang === "zh"
+                : (lang === "zh"
                   ? `这个文件你刚读过且内容没有变化(第 ${repeatCount + 1} 次重复)——再读一遍不会出现新信息。直接行动:编辑它、构建、或继续下一步。${first ? `计划里的下一项:「${first}」。` : ""}`
-                  : `You just read this file and it has not changed (repeat #${repeatCount + 1}) — reading again reveals nothing new. Act instead: edit it, build, or move to the next step.${first ? ` Next plan item: "${first}".` : ""}`
+                  : `You just read this file and it has not changed (repeat #${repeatCount + 1}) — reading again reveals nothing new. Act instead: edit it, build, or move to the next step.${first ? ` Next plan item: "${first}".` : ""}`) +
+                  (await whereNamed(argPath(call.args), `${stepObj.said ?? ""}\n${thinking}`, lang === "zh"))
               : opts.planMode
                 ? lang === "zh"
                   ? `同一条失败的命令已重发 ${repeatCount + 1} 次,再跑结果也一样。计划模式下不用去修:把这个错误、以及你打算怎么修,写进方案,然后把方案写成回答。`
@@ -5156,9 +5236,10 @@ export async function runAgentTurn(
             ? lang === "zh"
               ? `${path} 这一轮你已经读过 ${n - 1} 次,其间什么都没改,再读不会有新信息。你需要的信息已经够了:现在把方案写成回答。`
               : `You have read ${path} ${n - 1} times this turn and nothing has changed since; reading it again shows nothing new. You have what you need: write the plan as your answer now.`
-            : lang === "zh"
+            : (lang === "zh"
               ? `${path} 这一轮你已经读过 ${n - 1} 次,其间什么都没改,再读不会有新信息。直接行动:编辑它、运行它,或做下一步。`
-              : `You have read ${path} ${n - 1} times this turn and nothing has changed since; reading it again shows nothing new. Act instead: edit it, run it, or move to the next step.`;
+              : `You have read ${path} ${n - 1} times this turn and nothing has changed since; reading it again shows nothing new. Act instead: edit it, run it, or move to the next step.`) +
+              (await whereNamed(path, `${stepObj.said ?? ""}\n${thinking}`, lang === "zh"));
           stepObj.status = "error";
           stepObj.result = note;
           cb.onStep(stepObj);
@@ -5260,10 +5341,15 @@ export async function runAgentTurn(
               : lang === "zh"
               ? `调用被拦截:这和上一步完全相同,结果不会变化。请换一种做法——传入具体的子目录/文件路径(如 ${callExample("list_dir", '{"path":"src"}')}、${callExample("read_file", '{"path":"src/app.ts"}')})、换个工具,或用 update_plan 重新梳理。提醒:没有持久的工作目录,cd 不会保留。`
               : `Intercepted: this call is identical to the previous one — the result cannot change. Do something different: pass a concrete subdirectory/file path (${callExample("list_dir", '{"path":"src"}')}, ${callExample("read_file", '{"path":"src/app.ts"}')}), use another tool, or re-plan with update_plan. Reminder: there is no persistent cwd.`;
+        // A read made again: what it was for, found (see whereNamed).
+        const told =
+          call.name === "read_file" && !lastResultErrored
+            ? note + (await whereNamed(argPath(call.args), `${stepObj.said ?? ""}\n${thinking}`, lang === "zh"))
+            : note;
         stepObj.status = "error";
-        stepObj.result = note;
+        stepObj.result = told;
         cb.onStep(stepObj);
-        pushUser(toolResultMsg(call.name, note));
+        pushUser(toolResultMsg(call.name, told));
         continue;
       }
 

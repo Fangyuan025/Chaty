@@ -162,6 +162,9 @@ pub struct GenRequest {
 pub struct SaveTarget {
     pub conversation_id: String,
     pub message_id: String,
+    /// The model writing the reply, recorded with it.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Streaming protocol pushed to the frontend over a Tauri `Channel`.
