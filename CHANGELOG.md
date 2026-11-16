@@ -198,6 +198,14 @@
   coloured, tables, formulas and diagrams, in the theme you use, without the
   app's buttons: one file any browser opens.
 
+### Building against newer engines
+
+- stable-diffusion.cpp's new C API — options set by name, pictures passed as
+  tensors, results read back through a handle — is taken in stride: the
+  image engine is built on it, its pictures the same to the byte as before,
+  and the engine updates Chaty fetches go on building on either side of the
+  change.
+
 ## v2.4.1 — Read along (2026-11-12)
 
 ### Reading as it streams
