@@ -378,7 +378,9 @@ jobs:
             A small model that sends the same plan again instead of starting is handed the look at
             the workspace its plan began with, and pointed at the move the plan names next; one
             reading a file again for something not in it is told where that is. With tool calls
-            folded, the view keeps following a run to its end.
+            folded, the view keeps following a run to its end. The first Qwen3 models keep thinking
+            through a long task, and a few steps gone round with nothing changing are pointed out,
+            then paused.
 
             ## Nothing jumps
 

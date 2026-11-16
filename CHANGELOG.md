@@ -112,6 +112,29 @@
   and pointed at the plan's next item. The move a refused plan is shown fits
   the plan's first item — a look, a file, a directory — and a tool the
   model's own thinking settled on is the one it is told to send.
+- **Qwen3 thinks all the way through a long task.** The first Qwen3 models
+  (before 3.5), run as GGUF, were handed each tool's result in a kind of turn
+  they were never trained on, and a few steps into a task stopped thinking: a
+  step that looked obvious — the tests after an edit — had its call written
+  straight into an empty thought, and the run went round between two or three
+  moves. A result now comes to them as it did in training, and while their
+  thought is open it can neither hold a call nor close before it has said
+  something. Every other model writes what it wrote before, to the byte.
+- **Steps going round are caught.** Two, three or four steps taken over and
+  over, each result the same every time — an edit that does not land and the
+  test after it; a permission refused, another way, the first again — went
+  on to the step limit, as only a call repeated straight after itself was
+  caught. The third time round, the step is held and the model told which
+  steps it has been going round; still going, the turn pauses, and Continue
+  tells it the same. A result that changes, if only in how many tests fail,
+  is work going on; a clock time or a job number changing is not.
+- **`note` sent as a tool of its own** — the model meaning to tell you
+  something — is passed on to you, and the model told the word goes with a
+  call, where it came back "unknown tool" and was sent again two steps on.
+- **A command that finishes and leaves something running** — an installer
+  whose helper stays behind — is said to have finished, what it left kept as
+  a background task, where it was taken for a dev server and the model sent
+  to open it in the browser.
 
 ### Nothing jumps
 

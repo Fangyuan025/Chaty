@@ -3402,6 +3402,12 @@ pub struct BashResult {
     /// menu, an editor), where typed words are keystrokes too.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub key_mode: bool,
+    /// With `bg_id`: the command itself FINISHED (`code` is its exit) and what
+    /// went on running is something it left behind — a `cmd &` child, or a
+    /// helper a tool forks off (Homebrew does) — adopted so it is reaped like
+    /// any other job. Not a server the command became.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub detached: bool,
 }
 
 /// macOS seatbelt profile: allow everything by default, then deny all writes and
@@ -3848,6 +3854,7 @@ fn run_bash(
                                     awaiting_input: false,
                                     prompt: None,
                                     key_mode: false,
+                                    detached: false,
                                 });
                             }
                             Err((back, kept)) => {
@@ -3898,6 +3905,7 @@ fn run_bash(
                                         awaiting_input: true,
                                         prompt,
                                         key_mode: raw,
+                                        detached: false,
                                     });
                                 }
                                 Err((back, kept)) => {
@@ -3991,6 +3999,7 @@ fn run_bash(
         awaiting_input: false,
         prompt: None,
         key_mode: false,
+        detached: bg_id.is_some(),
     })
 }
 
@@ -5245,6 +5254,7 @@ fn run_in_terminal(root: &Path, command: &str, timeout: Duration) -> Result<Bash
                 awaiting_input: false,
                 prompt: None,
                 key_mode: false,
+                detached: false,
             });
         }
         let now_seen = seen.load(Ordering::Relaxed);
@@ -5271,6 +5281,7 @@ fn run_in_terminal(root: &Path, command: &str, timeout: Duration) -> Result<Bash
                     // A REPL's `>>>` is a line prompt even in key-by-key mode.
                     key_mode: raw && asked.as_ref().is_none_or(|p| !p.ends_with('>')),
                     prompt: asked,
+                    detached: false,
                 });
             }
         }
@@ -5285,6 +5296,7 @@ fn run_in_terminal(root: &Path, command: &str, timeout: Duration) -> Result<Bash
                 awaiting_input: true,
                 prompt: None,
                 key_mode: raw,
+                detached: false,
             });
         }
     }
@@ -5734,6 +5746,7 @@ mod tests {
         );
         assert!(!res.timed_out);
         let id = res.bg_id.expect("server run should convert to a bg job");
+        assert!(!res.detached, "a server the command became is not a leftover");
         assert!(res.stdout.contains("http://localhost:9317"), "output-so-far is returned");
 
         // The job is alive in the registry, with the SAME live output buffer.
@@ -6284,6 +6297,8 @@ mod tests {
         assert_eq!(res.code, 0);
         assert!(res.stdout.contains("started"));
         let id = res.bg_id.expect("detached survivor must be adopted as a bg job");
+        // The command finished; what runs on is what it left behind.
+        assert!(res.detached, "an adopted survivor is said to be one");
         let info = agent_bg_output(id).expect("job exists");
         assert!(info.running, "adopted server should be alive");
         assert!(info.command.starts_with("[detached]"), "{}", info.command);

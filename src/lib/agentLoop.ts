@@ -480,6 +480,65 @@ export function turnCall(raw: string): ToolCall | null {
   return callStart(region) === -1 ? parseToolCall(region) : null;
 }
 
+/** A call that ran: its fingerprint and what it returned. */
+export type RanCall = { key: string; result: string; observe?: boolean };
+
+/**
+ * About to start a third round of the same few steps?
+ *
+ * A, B, A, B — and A once more; or A, B, C twice over: distinct calls taking
+ * turns, each coming back exactly as it did the round before. The repeat
+ * breaker counts a call only against the one right before it, so a model
+ * going round in a circle is never seen repeating anything; what gives the
+ * loop away is that no result has moved. Steps whose results change are work
+ * going on (an edit and a test run that fails differently each time) and are
+ * not a cycle.
+ */
+export function stepCycle(ring: readonly RanCall[], next: string): { keys: string[] } | null {
+  // The same few steps, two rounds running: periods of two, three and four
+  // (Qwen3 8B went sudo chown → chmod → brew install, round after round).
+  for (let k = 2; k <= 4 && ring.length >= 2 * k; k++) {
+    const first = ring.slice(-2 * k, -k);
+    const second = ring.slice(-k);
+    const keys = second.map((r) => r.key);
+    if (new Set(keys).size < 2) continue; // one call over and over: the repeat breaker's
+    const same = first.every((r, i) => r.key === second[i].key && settledResult(r.result) === settledResult(second[i].result));
+    // Looking around and nothing else — listings by turns — is the
+    // observation streak's to break, with its own act-now hint.
+    if (same && second.every((r) => r.observe)) continue;
+    if (same && next === second[0].key) return { keys };
+  }
+  return null;
+}
+
+/** A step of a cycle as the model would recognise it: the command a shell
+ *  step ran, the file a file step touched, else the tool. */
+function stepLabel(key: string): string {
+  const at = key.indexOf(":");
+  const name = key.slice(0, at);
+  let args: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(key.slice(at + 1)) ?? {};
+  } catch {
+    /* the name says enough */
+  }
+  const cmd = asStr(args.command);
+  if (cmd) return `${name} \`${cmd.length > 48 ? `${cmd.slice(0, 47)}…` : cmd}\``;
+  const path = asStr(args.path ?? args.file_path ?? args.url);
+  return path ? `${name} ${path}` : name;
+}
+
+/** A result with what changes on every run regardless taken out: a job's id,
+ *  a clock time, how long it took. A count stays — "3 failed" becoming "2
+ *  failed" is the work moving. */
+export function settledResult(r: string): string {
+  return r
+    .replace(/#\d{6,}/g, "#…")
+    .replace(/\b\d{9,}\b/g, "…")
+    .replace(/\b\d{1,2}:\d{2}(:\d{2})?(\.\d+)?\b/g, "…")
+    .replace(/\b\d+(\.\d+)?\s?(ms|s|sec|seconds|秒|毫秒)\b/g, "…");
+}
+
 /** A call's `note` — what the model tells the user with it — taken off its
  *  arguments. A model that thinks writes its updates inside the thought
  *  whatever it is asked; the one thing it always writes outside is the call,
@@ -577,12 +636,18 @@ export function thinkSuffix(mode: ThinkMode, zh: boolean, thinkSwitch?: boolean)
  */
 export type StuckState =
   | { kind: "argslip"; tool: string; count: number }
-  | { kind: "repeat"; tool: string; key: string; count: number };
+  | { kind: "repeat"; tool: string; key: string; count: number }
+  | { kind: "cycle"; steps: string };
 
 /** What a "continue" after a pause says on the turn itself, at the end of the
  *  user message — where the model reads its instructions from. The pause text
  *  the user sees is ours; this is the model's copy of it. */
 export function resumeNudge(stuck: StuckState, zh: boolean): string {
+  if (stuck.kind === "cycle") {
+    return zh
+      ? `\n(上一轮因为在同样几步之间反复(${stuck.steps})、每一轮结果都没有变化而暂停。原样再走一遍不会不同:先弄清楚卡在哪里(读报错、读相关文件),再换一种做法;做不下去就如实告诉我。)`
+      : `\n(The previous attempt was paused going round the same steps (${stuck.steps}) with nothing changing from one round to the next. Going round again cannot differ — find out what is in the way (read the error, the file it names), then take another approach; if it cannot be done, say so.)`;
+  }
   if (stuck.kind === "argslip") {
     return zh
       ? `\n(上一轮因为 ${stuck.tool} 连续 ${stuck.count} 次缺少必需参数而暂停。这一轮请换个做法:先用 list_dir / read_file / grep 带着具体参数弄清楚要操作的对象,再带完整 arguments 调用 ${stuck.tool}。不要再发空参数的调用。)`
@@ -2539,6 +2604,18 @@ async function execTool(
         );
         return { result: parts.join("\n") };
       }
+      if (r.bgId != null && r.detached) {
+        // The command FINISHED; something it started lives on and was adopted
+        // as a job. Said as a server, it sent a model that had only run
+        // `brew install` (which forks a helper) off to browser_navigate.
+        parts.push(`[exit ${r.code}]`);
+        parts.push(
+          isZh()
+            ? `[后台 #${r.bgId}] 命令本身已经结束,但它留下了仍在运行的进程,已登记为后台任务。如果那是你用 & 启动的服务,它还在运行;否则一般不用理会。用 ${callExample("bg_output", JSON.stringify({ id: r.bgId }))} 看它的输出,用不上就 bg_kill 结束它。`
+            : `[background #${r.bgId}] the command itself has finished, but it left a process running, registered as a background job. If that is a server you started with &, it is still up; otherwise it can usually be ignored. ${callExample("bg_output", JSON.stringify({ id: r.bgId }))} shows its output; bg_kill stops it if it is not needed.`,
+        );
+        return { result: parts.join("\n") };
+      }
       if (r.bgId != null) {
         // The backend saw a dev-server banner and MOVED the still-running
         // command to the background instead of blocking to the timeout and
@@ -3820,6 +3897,12 @@ export async function runAgentTurn(
    *  states. A flow that is genuinely progressing — next question, next page,
    *  next wizard step — reads differently every time and never trips this. */
   const uiResultRing: string[] = [];
+  /** The last few calls that ran, with what each came back with — for the
+   *  cycle of steps below (see stepCycle). */
+  const cycleRing: RanCall[] = [];
+  /** The steps a cycle was pointed out on, and how many calls of them since. */
+  let cycleWarned: { keys: string[] } | null = null;
+  let cycleSince = 0;
   const UI_CYCLE_WINDOW = 8;
   /** Every tool whose result is "here is the page now". Scrolling and reading
    *  belong here with clicking: a spin that alternates click → scroll → click
@@ -4912,7 +4995,8 @@ export async function runAgentTurn(
         (stepsThisTurn === 0 || silentCalls >= SILENT_CALLS) &&
         !proseAfter(raw).trim() &&
         !note &&
-        !NOTE_EXEMPT.has(call.name)
+        !NOTE_EXEMPT.has(call.name) &&
+        (call.name as string) !== "note"
       ) {
         const first = stepsThisTurn === 0;
         noteAsks++;
@@ -5271,6 +5355,40 @@ export async function runAgentTurn(
         );
         return;
       }
+      // ── A cycle of steps ── see stepCycle. Pointed out once, the call
+      // unrun; if the calls after it are still the same steps for a whole
+      // round, the turn pauses.
+      if (cycleWarned) {
+        if (cycleWarned.keys.includes(callKey)) cycleSince++;
+        else (cycleWarned = null), (cycleSince = 0);
+      }
+      const cycling: { keys: string[] } | null =
+        !exemptFromRepeat && !PAGE_TOOLS.has(call.name) ? stepCycle(cycleRing, callKey) : null;
+      if (cycleWarned && (cycleSince >= cycleWarned.keys.length || cycling)) {
+        const steps = cycleWarned.keys.map(stepLabel).join(" → ");
+        const notice =
+          lang === "zh"
+            ? `模型一直在重复同样几步(${steps}),每一轮的结果都和上一轮一样,已暂停以免空转。可以点「继续」让它换个做法,或者直接告诉它卡在哪里。`
+            : `The model kept repeating the same steps (${steps}) and every round came back as the last one did — paused instead of spinning. "Continue" lets it try another way; or tell it what it is stuck on.`;
+        const said = await sayWhatBlocks(call.name);
+        cb.onFinal(said ? `${said}\n\n${notice}` : notice, undefined, "steps", { kind: "cycle", steps });
+        return;
+      }
+      if (cycling) {
+        cycleWarned = cycling;
+        cycleSince = 0;
+        hotNext = true;
+        const steps = cycling.keys.map(stepLabel).join(" → ");
+        const note =
+          lang === "zh"
+            ? `调用被拦截:这 ${cycling.keys.length} 步(${steps})你已经原样走了两轮,每一步的结果都和上一轮一模一样——再走一轮也不会不同。停下来想一想为什么没有进展,然后换一种做法:换个工具、换个参数、先看清楚卡住的原因(读报错、读相关文件),或者如果确实做不下去,把情况如实告诉用户。`
+            : `Call intercepted: you have been through these ${cycling.keys.length} steps (${steps}) twice exactly as they are, and each came back just as it did the round before — a third round will not differ. Stop and work out why nothing is moving, then do something else: another tool, other arguments, a look at what is actually in the way (read the error, the file it names), or, if it truly cannot be done, tell the user so.`;
+        stepObj.status = "error";
+        stepObj.result = note;
+        cb.onStep(stepObj);
+        pushUser(toolResultMsg(call.name, note));
+        continue;
+      }
       if (repeatCount >= pauseAt) {
         // One past the warning — pause instead of spinning to the step limit,
         // under the model's own account of where things stand.
@@ -5372,6 +5490,30 @@ export async function runAgentTurn(
 
       // ── Meta-tools handled in the loop (no backend call, no approval) ──
       // update_plan renders as a dedicated live plan panel, not a step card.
+      // ── `note` sent as a tool of its own ── the rule asks for a note
+      // argument on the next call, and a model that took the word for a
+      // tool's name called it: "unknown tool", some action, the same "tool"
+      // again — back and forth between the two, never one call twice for the
+      // repeat breaker to see (Qwen3 8B, a long task). What it meant to say
+      // reaches the user, and it is told where the word goes.
+      if ((call.name as string) === "note" && !toolSpec("note")) {
+        const a = (call.args ?? {}) as Record<string, unknown>;
+        const words =
+          stepObj.said || [a.message, a.text, a.content, a.said].map(asStr).find((t) => /\p{L}/u.test(t))?.trim() || "";
+        if (words) {
+          cb.onSaid?.(words);
+          silentCalls = 0;
+        }
+        pushUser(
+          toolResultMsg(
+            "note",
+            lang === "zh"
+              ? `${words ? "已转告用户。" : ""}note 不是单独的工具,而是任何调用都能带的参数:下次把要说的话直接写进下一个调用的 note 参数里。现在继续做下一步。`
+              : `${words ? "Passed on to the user. " : ""}note is not a tool of its own but an argument every call takes: next time put what you want to say in the note of your next call. Carry on with the next step now.`,
+          ),
+        );
+        continue;
+      }
       if (call.name === "update_plan") {
         const todos = parsePlan(call.args);
         currentPlan = todos;
@@ -5911,6 +6053,16 @@ export async function runAgentTurn(
         uiResultRing.length = 0; // anything else breaks the cycle
       }
       lastResultText = resultText;
+      if (!REPEAT_EXEMPT.has(call.name) && !PAGE_TOOLS.has(call.name)) {
+        cycleRing.push({
+          key: `${call.name}:${JSON.stringify(call.args)}`,
+          result: resultText,
+          observe:
+            ["list_dir", "glob", "grep"].includes(call.name) ||
+            (call.name === "bash" && isReadOnlyCommand(asStr(call.args?.command))),
+        });
+        if (cycleRing.length > 8) cycleRing.shift();
+      }
       if (opts.signal.cancelled) return;
       cb.onStep(stepObj);
       // 3rd/4th consecutive search: results go through, but remind the model

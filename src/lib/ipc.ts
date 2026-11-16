@@ -963,6 +963,9 @@ export interface AgentBashResult {
   prompt?: string;
   /** It waits for keys (a menu, an editor), not a line of text. */
   keyMode?: boolean;
+  /** With bgId: the command itself finished (`code` is its exit); the job is
+   *  what it left running behind it (a `cmd &` child, a forked helper). */
+  detached?: boolean;
 }
 
 export async function agentSetWorkspace(path: string): Promise<string> {

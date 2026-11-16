@@ -867,7 +867,7 @@ impl LlamaEngine {
             .map(|ft| quant_name(ft).to_string());
 
         let effort_levels = effort_levels_of(template.as_deref().unwrap_or(""));
-        let tool_role = probe_tool_role(&model);
+        let tool_role = probe_tool_role(&model) && !tool_turn_unknown(&arch_lc, jinja_template(&model).is_some());
         // llama.cpp's chat message carries a role and a body and nothing else,
         // so a structured reasoning field cannot reach a template it renders.
         // Where Chaty renders the prompt itself the field is read straight off
@@ -1821,6 +1821,7 @@ fn run_turn(
     let mut decoded_len = 0usize;
 
     let mut sampler = build_sampler(model, &req.params);
+    let mut thought_guard = ThoughtGuard::new(model, &req.params, &prompt);
     // Robust incremental UTF-8 assembly: accumulate raw token bytes and only
     // emit the valid-UTF-8 prefix, carrying any incomplete trailing bytes to
     // the next token. This never drops a byte (the old streaming decoder could
@@ -1867,12 +1868,9 @@ fn run_turn(
         }
         let token = match settled.pop_front() {
             Some(t) => t,
-            None => {
-                let t = sampler.sample(dec.ctx(), idx);
-                sampler.accept(t);
-                t
-            }
+            None => ThoughtGuard::sample(&thought_guard, &mut sampler, dec.ctx(), idx),
         };
+        ThoughtGuard::saw(&mut thought_guard, model, token);
         if model.vocab().is_eog(token) || turn_end.contains(&token) {
             break;
         }
@@ -2920,6 +2918,25 @@ fn gguf_diagnosis<R: std::io::Read>(r: R) -> Option<String> {
     ))
 }
 
+/// A tool turn the model has never seen.
+///
+/// The probe below asks whether a result under the `tool` role keeps the next
+/// prompt an append — and through llama.cpp's built-in rendition it always
+/// does, because that rendition writes any role out as it is given:
+/// `<|im_start|>tool`. Qwen3 before 3.5 was never shown such a turn; its
+/// template hands a result back inside the user's, wrapped in
+/// `<tool_response>`. Given one anyway, it stopped reasoning: the step after a
+/// result opened its thought and wrote the call straight into it, nothing
+/// considered, and so on for the rest of the task. Measured on Qwen3 8B over
+/// the same transcript, six seeds: 0/6 steps reasoned after a `tool` turn,
+/// 6/6 after the same result as a user turn (2/6 wrapped the template's way).
+/// Where the model's own template renders the prompt, it renders this turn
+/// too, the way it was trained to; that is left alone, and so is every later
+/// Qwen, which carries on reasoning either way.
+fn tool_turn_unknown(arch_lc: &str, own_template: bool) -> bool {
+    is_think_paradigm_arch(arch_lc) && !is_qwen3_5_plus_arch(arch_lc) && !own_template
+}
+
 fn probe_tool_role(model: &LlamaModel) -> bool {
     let msg = |role: Role, content: &str| ChatMessage {
     reasoning_content: None,
@@ -3863,6 +3880,104 @@ fn quant_name(ft: u32) -> &'static str {
     }
 }
 
+/// A thought that has to be one.
+///
+/// Qwen3 before 3.5 leaves its reasoning to itself, and on a long task it
+/// stopped doing it in two ways. At a step whose next move was plain — the
+/// tests just written, run them — it opened the thought and wrote the call
+/// straight into it, nothing considered and the thought never closed: the
+/// real prompts of those steps, re-sampled on six seeds, did it 6/6. Held off
+/// that, it closed the thought at once instead, which is how this hybrid
+/// writes its NON-thinking mode — the empty block — though reasoning was
+/// asked for; every such turn in the transcript was one more step done
+/// without thinking for the next to follow. So while a thought is open, the
+/// token that starts a call is not on offer, and until it has said something,
+/// neither is the one that ends it: 0/6 → 6/6 on those same prompts.
+///
+/// Nothing else changes. The reply is drawn by the same chain, from the same
+/// random sequence, with those tokens' logits put out of reach — where the
+/// model was not going to write one, it writes what it always would have.
+struct ThoughtGuard {
+    call: LlamaToken,
+    open_tag: LlamaToken,
+    close_tag: LlamaToken,
+    open: bool,
+    said: bool,
+}
+
+impl ThoughtGuard {
+    fn new(model: &LlamaModel, params: &GenParams, prompt: &str) -> Option<Self> {
+        let arch = model.meta_val_str("general.architecture").map(|a| a.to_lowercase()).ok()?;
+        if !guards_thought(&arch, params.think) {
+            return None;
+        }
+        let one = |text: &str| match tokenize(model, text, false).as_slice() {
+            [t] => Some(*t),
+            _ => None,
+        };
+        Some(Self {
+            call: one("<tool_call>")?,
+            open_tag: one("<think>")?,
+            close_tag: one("</think>")?,
+            open: preopened_think_tag(prompt) == Some("<think>"),
+            said: false,
+        })
+    }
+
+    /// The next token. Outside a thought, exactly what the engine has always
+    /// done; inside one, the same chain over the same logits, less the held
+    /// tokens — told of the token twice, as `sample` and the explicit accept
+    /// after it always have.
+    fn sample(guard: &Option<Self>, sampler: &mut LlamaSampler, ctx: &LlamaContext<'_>, idx: i32) -> LlamaToken {
+        let Some(g) = guard.as_ref().filter(|g| g.open) else {
+            let t = sampler.sample(ctx, idx);
+            sampler.accept(t);
+            return t;
+        };
+        let mut candidates = ctx.token_data_array_ith(idx);
+        let mut hold = |t: LlamaToken| {
+            if let Some(d) = candidates.data.get_mut(t.0 as usize) {
+                d.set_logit(f32::NEG_INFINITY);
+            }
+        };
+        hold(g.call);
+        if !g.said {
+            hold(g.close_tag);
+        }
+        candidates.apply_sampler(sampler);
+        let Some(t) = candidates.selected_token() else {
+            // Nothing selected — no chain this engine builds ends without a
+            // pick, but should one, the unguarded draw is the safe answer.
+            let t = sampler.sample(ctx, idx);
+            sampler.accept(t);
+            return t;
+        };
+        sampler.accept(t);
+        sampler.accept(t);
+        t
+    }
+
+    /// Every token the reply is made of, however it was drawn.
+    fn saw(guard: &mut Option<Self>, model: &LlamaModel, t: LlamaToken) {
+        if let Some(g) = guard.as_mut() {
+            if t == g.open_tag {
+                g.open = true;
+                g.said = false;
+            } else if t == g.close_tag {
+                g.open = false;
+            } else if g.open && !g.said {
+                g.said = piece_bytes(model, t).iter().any(|b| !b.is_ascii_whitespace());
+            }
+        }
+    }
+}
+
+/// Which replies get the guard: Qwen3 before 3.5, reasoning not switched off.
+/// Every later Qwen, and every other family, samples exactly as before.
+fn guards_thought(arch_lc: &str, think: Option<bool>) -> bool {
+    is_think_paradigm_arch(arch_lc) && !is_qwen3_5_plus_arch(arch_lc) && think != Some(false)
+}
+
 fn build_sampler(model: &LlamaModel, params: &GenParams) -> LlamaSampler {
     let seed = params.seed.map_or(0xFFFF_FFFF, |s| s as u32);
     // Repetition penalty applies to greedy and sampled decoding alike.
@@ -4115,6 +4230,34 @@ mod tests {
         }
         for a in ["qwen3", "qwen3moe", "qwen2", "qwen34", "llama", "qwen"] {
             assert!(!super::is_qwen3_5_plus_arch(a), "{a} should NOT be 3.5+");
+        }
+    }
+
+    /// The guard holds back a call only in a Qwen3-before-3.5 thought; no
+    /// other family's sampling changes at all.
+    #[test]
+    fn the_thought_guard_is_for_qwen3_before_3_5_only() {
+        for a in ["qwen3", "qwen3moe"] {
+            assert!(super::guards_thought(a, Some(true)), "{a}");
+            assert!(super::guards_thought(a, None), "{a}");
+            assert!(!super::guards_thought(a, Some(false)), "{a} with reasoning off");
+        }
+        for a in ["qwen35", "qwen36", "qwen38", "qwen35moe", "qwen2", "llama", "gemma4", "lfm2", "glm4", "deepseek2"] {
+            assert!(!super::guards_thought(a, Some(true)), "{a}");
+        }
+    }
+
+    /// Only Qwen3 before 3.5, and only where llama.cpp's built-in rendition
+    /// writes the turn, loses the `tool` role. Every other family — and Qwen3
+    /// rendered through its own template — keeps what the probe decided.
+    #[test]
+    fn the_tool_turn_is_unknown_only_to_qwen3_on_the_built_in_rendition() {
+        for a in ["qwen3", "qwen3moe", "qwen3vl", "qwen3next"] {
+            assert!(super::tool_turn_unknown(a, false), "{a}");
+            assert!(!super::tool_turn_unknown(a, true), "{a} through its own template");
+        }
+        for a in ["qwen35", "qwen35moe", "qwen36", "qwen38", "qwen2", "llama", "gemma4", "lfm2", "glm4"] {
+            assert!(!super::tool_turn_unknown(a, false), "{a}");
         }
     }
 
