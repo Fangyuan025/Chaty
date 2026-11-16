@@ -810,19 +810,31 @@ export default function App() {
   useEffect(() => {
     localSave("chaty.appMode", appMode);
   }, [appMode]);
-  /** One that finished while you were in another mode: its row and the Chat
-   *  tab say so until you are back. */
+  /** A reply that was finished while its conversation was not on screen:
+   *  its row is bold until you open it. Only a reply counts (a canvas page
+   *  is written with its conversation open), and not one whose conversation
+   *  was deleted meanwhile — that left a mark nothing could ever clear. */
   const [chatUnseen, setChatUnseen] = useState<string | null>(null);
-  const chatGenWas = useRef<string | null>(null);
+  /** …and finished while you were in Code mode: the hairline under the Chat
+   *  tab says so until you are back in chat — coming back is seeing it,
+   *  whichever conversation is open, as a notice on a tab is. */
+  const [chatTabNews, setChatTabNews] = useState(false);
+  const runConv = chatRun?.convId ?? null;
+  const runConvWas = useRef<string | null>(null);
   useEffect(() => {
-    const was = chatGenWas.current;
-    chatGenWas.current = chatGen;
-    if (was && !chatGen && (appMode !== "chat" || shownConvRef.current !== was)) setChatUnseen(was);
-  }, [chatGen, appMode]);
+    const was = runConvWas.current;
+    runConvWas.current = runConv;
+    if (!was || runConv || goneConvs.current.has(was)) return;
+    if (appMode !== "chat" || shownConvRef.current !== was) setChatUnseen(was);
+    if (appMode !== "chat") setChatTabNews(true);
+  }, [runConv, appMode]);
   useEffect(() => {
     if (appMode === "chat" && chatUnseen && conversationId === chatUnseen) setChatUnseen(null);
   }, [appMode, conversationId, chatUnseen]);
-  const chatMark = chatGen ? "busy" : chatUnseen ? "done" : "";
+  useEffect(() => {
+    if (appMode === "chat") setChatTabNews(false);
+  }, [appMode]);
+  const chatMark = chatGen ? "busy" : chatTabNews ? "done" : "";
   /** Native reasoning-effort rung for models with a ladder (Qwen3.8). Kept
    *  even while thinking is off, so toggling back restores the choice; models
    *  without a ladder never send it. */
@@ -2731,6 +2743,7 @@ ${body.outerHTML}
         }
       }
       await deleteConversation(id);
+      setChatUnseen((u) => (u === id ? null : u));
       compacted.current.delete(id);
       lastPromptTokens.current.delete(id);
       if (isCurrent) {
@@ -3139,6 +3152,8 @@ ${body.outerHTML}
     // flag when the next generate starts. Asked again here, after the wait.
     if (turnStop.stopped) {
       setMessages((cur) => cur.filter((m) => m.id !== asstId));
+      if (chatRunRef.current === run) chatRunRef.current = null;
+      setChatRun((r) => (r?.asstId === asstId ? null : r));
       setBusy(false);
       setStreamingId(null);
       return;
@@ -5309,6 +5324,8 @@ ${body.outerHTML}
             reloadHeld={busy || !!codeAct.run}
             onDataCleared={() => {
               handleNewChat();
+              setChatUnseen(null);
+              setChatTabNews(false);
               void refreshConversations();
             }}
           />

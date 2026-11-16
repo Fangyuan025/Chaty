@@ -44,7 +44,7 @@
   accent bar beside one waiting on you — a question, a change to approve, a
   paused run; the full weight of an unread title on one that finished while
   you were away, until you look. In chat, a hairline under the Code tab says
-  the same. Chat's conversations do as well: a light over the one a reply is
+  the same, until you are back in Code mode. Chat's conversations do as well: a light over the one a reply is
   being written for, the full weight of one that was answered while you
   read another, and, in Code mode, a hairline under the Chat tab while it is
   written and once it is done.

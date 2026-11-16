@@ -1474,6 +1474,15 @@ export function CodeMode({
     if (!active || !(sid in marks)) return;
     setMarks(({ [sid]: _seen, ...rest }) => rest);
   }, [active, sid, marks]);
+  // The tab's hairline is a notice of its own: being back in Code mode is
+  // seeing it, whichever session is open — the rows keep theirs until
+  // opened. It stayed up, from chat, for a session you had not opened yet.
+  const [doneSeen, setDoneSeen] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    if (!active) return;
+    const done = Object.keys(marks).filter((k) => marks[k] === "done");
+    setDoneSeen((cur) => (cur.size === done.length && done.every((k) => cur.has(k)) ? cur : new Set(done)));
+  }, [active, marks]);
 
   // Messages queued in a session whose turn ended while another was on
   // screen: sent once you are back in it.
@@ -1726,7 +1735,7 @@ export function CodeMode({
       : "busy"
     : markKinds.includes("pending")
       ? "pending"
-      : markKinds.length
+      : Object.keys(marks).some((k) => marks[k] === "done" && !doneSeen.has(k))
         ? "done"
         : null;
   useEffect(() => {
