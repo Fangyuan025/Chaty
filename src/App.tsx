@@ -27,7 +27,8 @@ import { HardwarePanel } from "./components/HardwarePanel";
 import { LiveMode } from "./components/LiveMode";
 import { ModelInfoPanel } from "./components/ModelInfoPanel";
 import { WindowControls } from "./components/WindowControls";
-import { useI18n, type Lang, type TKey, detectLang } from "./lib/i18n";
+import { useI18n, type Lang, type TKey, detectLang, agentLang } from "./lib/i18n";
+import { chatyFacts, chatyPrompt, earlierModels, warmChatyFacts } from "./lib/chatyPrompt";
 import { startUpdateDownload, useUpdateDownload } from "./lib/updateDownload";
 import { listen } from "@tauri-apps/api/event";
 import { clampRung, effortLabel } from "./lib/effort";
@@ -60,7 +61,10 @@ import { useConfirm } from "./components/ConfirmModal";
 import { IconPin, IconPinFilled, IconEdit } from "./components/icons";
 import { PodcastPanel } from "./components/PodcastPanel";
 import { DeepResearchPanel } from "./components/DeepResearchPanel";
-import { CodeMode } from "./components/CodeMode";
+import { CodeMode, type CodeActions, type CodeActivity } from "./components/CodeMode";
+import { BusyNote } from "./components/BusyNote";
+import { SwapText } from "./components/SwapText";
+import { dlOverall, onDownloadDone, useDownloads } from "./lib/downloads";
 import { ImageStudio } from "./components/ImageStudio";
 import { ImageSidebar } from "./components/ImageSidebar";
 import { ImageComponentsModal } from "./components/ImageComponentsModal";
@@ -96,6 +100,8 @@ import {
   loadModel,
   logAppError,
   ejectModel,
+  cancelModelLoad,
+  LOAD_CANCELLED,
   deleteModelFile,
   openExternal,
   setUiZoom,
@@ -347,11 +353,32 @@ export default function App() {
   /** The conversation on screen, for a reply's callbacks that outlive a render. */
   const shownConvRef = useRef<string | null>(null);
   shownConvRef.current = conversationId;
+  /** The chat turn being written, wherever you are reading: another
+   *  conversation can be opened meanwhile, as another Code session can while
+   *  a turn runs, and nothing sent until it is done. The ref holds what the
+   *  bubble needs to be put back on coming back to it mid-reply; the state is
+   *  for the row, the note over other boxes, and the stop button's place. */
+  const [chatRun, setChatRun] = useState<{ convId: string; asstId: string } | null>(null);
+  const chatRunRef = useRef<{
+    convId: string;
+    asstId: string;
+    acc: { text: string };
+    sources: SearchResult[];
+    model?: string;
+  } | null>(null);
+  /** Conversations deleted while their reply was still being written: what
+   *  is left of it is not saved into them. */
+  const goneConvs = useRef(new Set<string>());
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [busy, setBusy] = useState(false);
+  /** Where Code stands: the session a turn runs in holds the engine until it
+   *  ends — chat waits, and the model stays as it is. */
+  const [codeAct, setCodeAct] = useState<CodeActivity>({ run: null, mark: null });
+  const codeRunRef = useRef<CodeActivity["run"]>(null);
+  codeRunRef.current = codeAct.run;
   const [streamingId, setStreamingId] = useState<string | null>(null);
   /** The last reply's numbers, and the context window it was counted
    *  against: the ring is that reply's, and stays as it was through a model or
@@ -365,6 +392,46 @@ export default function App() {
    *  while the ring stays on the last reply's count until this one is done. */
   const [liveStats, setLiveStats] = useState<{ tokens: number; tps: number } | null>(null);
   const [loadingModel, setLoadingModel] = useState(false);
+  /** The engine is at work — a reply, a Code turn, a load: the model stays as it is. */
+  const engineBusy = busy || loadingModel || !!codeAct.run;
+  /** What waits on the Code turn says, wherever it waits. */
+  const codeHeldText = codeAct.run
+    ? t(codeAct.run.waiting ? "busyCodeWaiting" : "busyCode", { title: codeAct.run.title || t("cmUntitled") })
+    : "";
+  /** A run of Deep Research or a podcast holds the engine as a reply does
+   *  (`busy`), but it is the panel's own: it holds the other panels, not
+   *  itself. */
+  const [panelRun, setPanelRun] = useState(false);
+  const panelRunRef = useRef(false);
+  // Only the panel's own lock is the panel's to lift. Opening one says "not
+  // running" as it mounts, and that used to clear `busy` outright: a reply
+  // being written went on with everything unlocked — the model menu,
+  // Settings' reload, the panels — once Deep Research had been opened.
+  const lockForPanel = useCallback((on: boolean) => {
+    if (on === panelRunRef.current) return;
+    panelRunRef.current = on;
+    setPanelRun(on);
+    setBusy(on);
+  }, []);
+  /** What a panel that uses the model says while the engine is at work
+   *  elsewhere — a Code turn, a chat reply, a load — where nothing is sent
+   *  but something is used. */
+  const codeHeldPanel = codeAct.run
+    ? t(codeAct.run.waiting ? "busyCodeWaitingUse" : "busyCodeUse", { title: codeAct.run.title || t("cmUntitled") })
+    : loadingModel
+      ? t("busyLoadUse")
+      : busy && !panelRun
+        ? t("busyChatUse")
+        : null;
+  /** Live voice takes the engine for as long as it is open: it starts only
+   *  with the engine free, and says why not. */
+  const liveHeld = codeHeldPanel ?? (busy ? t("busyChatUse") : null);
+  /** The conversation a reply (or a canvas page) is being written for — its
+   *  row in the sidebar says so as a Code session's does. */
+  const chatGen = chatRun?.convId ?? (busy && !panelRun ? conversationId : null);
+  /** You are reading the conversation the reply is being written for (or
+   *  none is). */
+  const chatHere = !chatRun || chatRun.convId === conversationId;
   /** What is being loaded, reloaded or unloaded — named on the model chip
    *  while it happens. It used to show the old model's name all through a
    *  switch, then the new one in a frame. */
@@ -372,6 +439,14 @@ export default function App() {
   useEffect(() => {
     if (!loadingModel) setLoadTarget(null);
   }, [loadingModel]);
+  // The computer Chaty's prompt names, asked before the first message.
+  useEffect(() => warmChatyFacts(), []);
+  // Downloads are the app's (lib/downloads.ts): one that finishes with the
+  // store closed puts its model in the menu, and says so.
+  const downloads = useDownloads();
+  const dlFrac = dlOverall(downloads);
+  const onDlDoneRef = useRef<(name: string) => void>(() => {});
+  useEffect(() => onDownloadDone((task) => onDlDoneRef.current(task.name)), []);
   /** The model chip: what it says while a model loads, and a key for what
    *  it shows, so a change of it comes in (and its width goes to the new
    *  one) rather than snapping. */
@@ -647,6 +722,15 @@ export default function App() {
   const pictureShed = useRef(new Set<string>());
   const [canvasKey, setCanvasKey] = useState("");
   const [canvasBusy, setCanvasBusy] = useState(false);
+  /** The canvas's iterations wait on the same: a Code turn, a chat reply
+   *  (not its own), a load. */
+  const canvasHeld = codeAct.run
+    ? codeHeldText
+    : loadingModel
+      ? t("busyLoad")
+      : busy && !canvasBusy && !panelRun
+        ? t("busyChat")
+        : null;
   // Set by the canvas Stop button; the generation flow then discards the
   // partial output instead of reporting a "no HTML" error.
   const canvasCancelRef = useRef(false);
@@ -673,8 +757,12 @@ export default function App() {
    *  shows one with turns. */
   const [codeExport, setCodeExport] = useState<(() => Promise<boolean>) | null>(null);
   const onCodeExportable = useCallback((fn: (() => Promise<boolean>) | null) => setCodeExport(() => fn), []);
-  const codeActions = useRef<{ newSession: () => void; attachPath: (path: string) => void } | null>(null);
+  const codeActions = useRef<CodeActions | null>(null);
   const [showDownload, setShowDownload] = useState(false);
+  onDlDoneRef.current = (name) => {
+    void refreshModels();
+    if (!showDownload && !showSetup) showNotice("info", t("dlDoneNotice", { name }));
+  };
   const [deepLink, setDeepLink] = useState<{ repo: string; file?: string } | null>(null);
 
   // Preview-only deep entry for the screenshot pipeline: ?open=store opens
@@ -722,6 +810,19 @@ export default function App() {
   useEffect(() => {
     localSave("chaty.appMode", appMode);
   }, [appMode]);
+  /** One that finished while you were in another mode: its row and the Chat
+   *  tab say so until you are back. */
+  const [chatUnseen, setChatUnseen] = useState<string | null>(null);
+  const chatGenWas = useRef<string | null>(null);
+  useEffect(() => {
+    const was = chatGenWas.current;
+    chatGenWas.current = chatGen;
+    if (was && !chatGen && (appMode !== "chat" || shownConvRef.current !== was)) setChatUnseen(was);
+  }, [chatGen, appMode]);
+  useEffect(() => {
+    if (appMode === "chat" && chatUnseen && conversationId === chatUnseen) setChatUnseen(null);
+  }, [appMode, conversationId, chatUnseen]);
+  const chatMark = chatGen ? "busy" : chatUnseen ? "done" : "";
   /** Native reasoning-effort rung for models with a ladder (Qwen3.8). Kept
    *  even while thinking is off, so toggling back restores the choice; models
    *  without a ladder never send it. */
@@ -783,6 +884,14 @@ export default function App() {
   const [speakReplies, setSpeakReplies] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [showLive, setShowLive] = useState(false);
+  // Open, it holds the engine as a Deep Research run does: Code's send, the
+  // model menu, Settings' reload and the panels wait until it is closed —
+  // a shortcut reaches them under the overlay.
+  useEffect(() => {
+    if (!showLive) return;
+    lockForPanel(true);
+    return () => lockForPanel(false);
+  }, [showLive, lockForPanel]);
   const [showToolsMenu, setShowToolsMenu] = useState(false);
   const liveConvRef = useRef<string | null>(null);
   const playbackRef = useRef<{ stop: () => void } | null>(null);
@@ -1235,6 +1344,10 @@ export default function App() {
 
   async function openLive() {
     if (!model) return;
+    if (liveHeld) {
+      showNotice("warn", liveHeld);
+      return;
+    }
     // Live mode owns the microphone for its whole listen/respond loop. Stop a
     // composer recording first and wait until the native slot is released.
     const rec = recorderRef.current;
@@ -1879,6 +1992,10 @@ export default function App() {
   /** Generate a new Canvas version from the current one (an edit or a fix). */
   async function generateCanvasVersion(kind: "edit" | "fix", payload: string) {
     if (busy || canvasBusy) return;
+    if (codeRunRef.current) {
+      showNotice("warn", t("busyCode", { title: codeRunRef.current.title || t("cmUntitled") }));
+      return;
+    }
     if (!model) {
       showNotice("error", t("canvasNeedsModel"));
       return;
@@ -2096,6 +2213,8 @@ export default function App() {
   /** Turn a model-load failure into a friendly toast (OOM gets a clear hint). */
   function showLoadError(e: unknown) {
     const msg = typeof e === "string" ? e : ((e as Error)?.message ?? String(e));
+    // Stopped by the user: nothing went wrong.
+    if (msg === LOAD_CANCELLED) return;
     if (/out of memory|内存不足|allocate|insufficient memory/i.test(msg)) {
       showNotice("error", t("oomFail"));
     } else {
@@ -2121,12 +2240,23 @@ export default function App() {
   /** Hot-swap to another already-discovered model. An image model that is
    *  still missing a companion file (VAE, text encoder) opens the dialog that
    *  fetches it instead of failing to load. */
+  /** Nothing is using the model, so it may be let go of or replaced; when
+   *  something is — a reply, a Code turn — say so and leave it. */
+  function modelFree(): boolean {
+    if (loadingModel) return false;
+    if (busy || codeRunRef.current) {
+      showNotice("warn", t("busyModel"));
+      return false;
+    }
+    return true;
+  }
+
   async function switchModel(path: string) {
     setShowModelMenu(false);
     // A load already running is the one case the old guard missed: the menu
     // stayed open to a second pick, and the backend releases the engine lock
     // the moment it takes the old model, so both loads went resident at once.
-    if (busy || loadingModel || model?.path === path) return;
+    if (model?.path === path || !modelFree()) return;
     const kind = availableModels.find((m) => m.path === path)?.kind;
     if (kind === "image") {
       const probe = await imageModelProbe(path, settings.imgComponents[path]).catch(() => null);
@@ -2149,6 +2279,7 @@ export default function App() {
 
   /** Load `path` as the active model, whatever kind it is. */
   async function loadPath(path: string) {
+    if (!modelFree()) return;
     setLoadTarget({ name: availableModels.find((m) => m.path === path)?.name ?? modelNameOf(path), kind: "load" });
     setLoadingModel(true);
     try {
@@ -2162,6 +2293,9 @@ export default function App() {
     } catch (e) {
       console.error(e);
       showLoadError(e);
+      // The old model went as the load began: what is loaded now is the
+      // backend's to say — none, after a cancel or most failures.
+      void getModel().then(setModel).catch(() => {});
     } finally {
       setLoadingModel(false);
       setLoadProgress(null);
@@ -2170,7 +2304,7 @@ export default function App() {
 
   /** Reload the current model so settings (context length, GPU layers) take effect. */
   async function reloadModel() {
-    if (!model || busy || loadingModel) return;
+    if (!model || !modelFree()) return;
     setLoadTarget({ name: model.name, kind: "reload" });
     setLoadingModel(true);
     try {
@@ -2183,6 +2317,9 @@ export default function App() {
     } catch (e) {
       console.error(e);
       showLoadError(e);
+      // The old model went as the load began: what is loaded now is the
+      // backend's to say — none, after a cancel or most failures.
+      void getModel().then(setModel).catch(() => {});
     } finally {
       setLoadingModel(false);
       setLoadProgress(null);
@@ -2192,7 +2329,7 @@ export default function App() {
   /** Unload the active model and return Chaty to the empty state. */
   async function handleEject() {
     setShowModelMenu(false);
-    if (!model || busy || loadingModel) return;
+    if (!model || !modelFree()) return;
     setLoadTarget({ name: model.name, kind: "eject" });
     setLoadingModel(true);
     try {
@@ -2202,6 +2339,9 @@ export default function App() {
     } catch (e) {
       console.error(e);
       showLoadError(e);
+      // The old model went as the load began: what is loaded now is the
+      // backend's to say — none, after a cancel or most failures.
+      void getModel().then(setModel).catch(() => {});
     } finally {
       setLoadingModel(false);
       setLoadProgress(null);
@@ -2235,7 +2375,7 @@ export default function App() {
   // the folder contains.
   async function handleLoadFolder() {
     setShowModelMenu(false);
-    if (busy || loadingModel) return;
+    if (!modelFree()) return;
     try {
       const path = await pickModelFolder();
       if (!path) return;
@@ -2269,6 +2409,9 @@ export default function App() {
     } catch (e) {
       console.error(e);
       showLoadError(e);
+      // The old model went as the load began: what is loaded now is the
+      // backend's to say — none, after a cancel or most failures.
+      void getModel().then(setModel).catch(() => {});
     } finally {
       setLoadingModel(false);
       setLoadProgress(null);
@@ -2285,7 +2428,7 @@ export default function App() {
   }
 
   function handleNewChat() {
-    if (busy) return;
+    if (busy && !chatRunRef.current) return;
     if (imageMode) {
       studio.startNew();
       return;
@@ -2454,7 +2597,9 @@ ${body.outerHTML}
    *  either order, and the slower first pick used to land on top of the second. */
   const openSeq = useRef(0);
   async function openConversation(id: string) {
-    if (busy || id === conversationId) return;
+    // A reply being written does not hold the sidebar — the canvas's or a
+    // panel's run still does.
+    if ((busy && !chatRunRef.current) || id === conversationId) return;
     // Opened from a search: shown at the first place it matched.
     if (convQuery.trim().length >= 2) findJumpRef.current = id;
     keepReadingPlace();
@@ -2468,16 +2613,31 @@ ${body.outerHTML}
         sessionStatsGet("chat", id).catch(() => ""),
       ]);
       if (mine !== openSeq.current) return;
-      setMessages(
-        stored.map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          images: m.images,
-          sources: m.sources?.length ? m.sources : undefined,
-          model: m.model || undefined,
-        })),
-      );
+      let rows: UiMessage[] = stored.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        images: m.images,
+        sources: m.sources?.length ? m.sources : undefined,
+        model: m.model || undefined,
+      }));
+      // Back to the conversation whose reply is still being written: it is
+      // not saved yet (or the saved one is the reply it replaces) — the bubble
+      // goes back as it stands, and the rest of the reply comes into it.
+      const run = chatRunRef.current;
+      if (run && run.convId === id) {
+        const live: UiMessage = {
+          id: run.asstId,
+          role: "assistant",
+          content: run.acc.text,
+          sources: run.sources.length ? run.sources : undefined,
+          model: run.model,
+        };
+        rows = rows.some((m) => m.id === run.asstId)
+          ? rows.map((m) => (m.id === run.asstId ? { ...m, ...live } : m))
+          : [...rows, live];
+      }
+      setMessages(rows);
       swapDraft(id);
       setConversationId(id);
       let last: (GenStats & { nCtx?: number }) | null = null;
@@ -2550,10 +2710,13 @@ ${body.outerHTML}
       // destructive delete should always reset, so cancel any in-flight reply
       // and reset the view inline rather than going through that guard.
       const isCurrent = id === conversationId;
+      // The reply may be being written for it while another is on screen.
+      const isRun = chatRunRef.current?.convId === id;
       // Only a *chat* stream is ours to cancel here; busy from Deep Research /
       // Podcast (streamingId is null) must not be force-unlocked by a delete.
-      const wasStreaming = isCurrent && streamingId != null;
-      if (isCurrent && turnStopRef.current) {
+      const wasStreaming = (isCurrent && streamingId != null) || isRun;
+      if (wasStreaming) goneConvs.current.add(id);
+      if ((isCurrent || isRun) && turnStopRef.current) {
         // The turn may still be searching, with the generation yet to start:
         // cancelling the engine alone left the workflow running and a reply
         // being produced for a conversation that is gone.
@@ -2615,7 +2778,7 @@ ${body.outerHTML}
 
   /** Fork a new conversation from the messages up to (and including) `index`. */
   async function handleFork(index: number) {
-    if (busy) return;
+    if (busy && !chatRunRef.current) return;
     const slice = messages.slice(0, index + 1).filter((m) => m.content.trim());
     if (slice.length === 0) return;
     const newId = uid();
@@ -2786,6 +2949,10 @@ ${body.outerHTML}
     // models, and which said what is shown under each reply (issue #25).
     const writer = model ? model.name.replace(/\.gguf$/i, "") : undefined;
     if (writer) setMessages((cur) => cur.map((m) => (m.id === asstId ? { ...m, model: writer } : m)));
+    const acc = { text: "" };
+    const run = { convId, asstId, acc, sources: [] as SearchResult[], model: writer };
+    chatRunRef.current = run;
+    setChatRun({ convId, asstId });
     setBusy(true);
     setStreamingId(asstId);
     // The last reply's numbers stay up — the ring until this reply is done,
@@ -2886,6 +3053,7 @@ ${body.outerHTML}
 
         if (usedSources.length) {
           turnSources = usedSources;
+          run.sources = usedSources;
           setMessages((cur) =>
             cur.map((m) => (m.id === asstId ? { ...m, sources: usedSources } : m)),
           );
@@ -2910,6 +3078,8 @@ ${body.outerHTML}
     // bubble goes with it.
     if (turnStop.stopped) {
       setMessages((cur) => cur.filter((m) => m.id !== asstId));
+      if (chatRunRef.current === run) chatRunRef.current = null;
+      setChatRun((r) => (r?.asstId === asstId ? null : r));
       setBusy(false);
       setStreamingId(null);
       return;
@@ -3003,6 +3173,14 @@ ${body.outerHTML}
       );
 
     const sys = settings.systemPrompt.trim();
+    // Chaty's own words to the model open the message, before the user's:
+    // the same every turn of a load, so they never cost a re-read.
+    // A conversation can pass through several models: the one answering now
+    // is told which others wrote replies above its own.
+    const appPrompt =
+      settings.chatyPrompt && model
+        ? chatyPrompt(await chatyFacts(model, agentLang(lang), earlierModels(prior, writer ?? "")))
+        : "";
     // ONE system message, always. Qwen3.5/3.6 chat templates assert the
     // system turn is single and first — stacking fragments as separate
     // system messages threw TemplateException("System message must be at
@@ -3021,6 +3199,7 @@ ${body.outerHTML}
     // transcript afterwards, which is the more honest arrangement: the answer
     // that cited them keeps its sources instead of standing alone.
     const sysParts = [
+      ...(appPrompt ? [appPrompt] : []),
       ...(webDesign ? [WEBDESIGN_PROMPT] : []),
       ...(sys ? [sys] : []),
       ...(attachment && attachment.kind !== "vision"
@@ -3105,7 +3284,6 @@ ${body.outerHTML}
       enqueueChunk(pending);
     };
 
-    const acc = { text: "" };
     // Coalesce token → state into one re-render per animation frame (was: one
     // setMessages per token = a full re-render of the list on every token).
     let rafId: number | null = null;
@@ -3243,14 +3421,18 @@ ${body.outerHTML}
       }
       setBusy(false);
       setStreamingId(null);
+      const gone = goneConvs.current.has(convId);
       try {
-        if (acc.text.trim()) await saveMessage(asstId, convId, "assistant", acc.text, undefined, turnSources, writer);
+        if (acc.text.trim() && !gone) await saveMessage(asstId, convId, "assistant", acc.text, undefined, turnSources, writer);
         await refreshConversations();
       } catch (e) {
         reportChatSaveFailure(convId, e);
       }
+      // Saved: coming back to it now reads it from the conversation.
+      if (chatRunRef.current === run) chatRunRef.current = null;
+      setChatRun((r) => (r?.asstId === asstId ? null : r));
       // Let the model name a fresh conversation from its first question.
-      if (opts.freshConv && acc.text.trim()) void makeTitle(convId, text);
+      if (opts.freshConv && acc.text.trim() && !gone) void makeTitle(convId, text);
       // Flush the trailing sentence and clear the speaking state once audio ends.
       if (useTTS && speech) {
         pumpSpeech(true);
@@ -3279,7 +3461,7 @@ ${body.outerHTML}
   };
   async function handleSend(override?: string) {
     const text = (override ?? input).trim();
-    if (!text || busy || sendingRef.current) return;
+    if (!text || busy || sendingRef.current || codeRunRef.current) return;
     // Slash command: `/webdesign` toggles web-design mode (no message sent).
     if (!override && /^\/webdesign\s*$/i.test(text)) {
       setWebDesign((v) => !v);
@@ -3335,7 +3517,7 @@ ${body.outerHTML}
 
   /** Re-run the assistant turn at `index` (drops anything after it). */
   async function regenerate(index: number) {
-    if (busy || sendingRef.current || !model || !conversationId) return;
+    if (busy || sendingRef.current || codeRunRef.current || !model || !conversationId) return;
     const target = messages[index];
     if (!target || target.role !== "assistant") return;
     const history = messages.slice(0, index);
@@ -3358,7 +3540,7 @@ ${body.outerHTML}
   async function editUser(index: number, newText: string) {
     const txt = newText.trim();
     setEditingId(null);
-    if (busy || sendingRef.current || !model || !conversationId || !txt) return;
+    if (busy || sendingRef.current || codeRunRef.current || !model || !conversationId || !txt) return;
     const target = messages[index];
     if (!target || target.role !== "user") return;
     const editedUser: UiMessage = { id: target.id, role: "user", content: txt, images: target.images };
@@ -3685,7 +3867,7 @@ ${body.outerHTML}
     newItem: commands.find((c) => c.id === "new")?.run ?? (() => {}),
     settings: () => setShowSettings(true),
     mode: (m) => setAppMode(m),
-    stop: streamingId && appMode === "chat" && !studioMode ? () => void handleStop() : null,
+    stop: streamingId && appMode === "chat" && !studioMode && chatHere ? () => void handleStop() : null,
   };
 
   return (
@@ -3699,6 +3881,7 @@ ${body.outerHTML}
         versions={canvasVersions}
         index={canvasIndex}
         busy={canvasBusy}
+        held={canvasHeld}
         streamText={canvasStream}
         onSelectVersion={setCanvasIndex}
         onIterate={(instr) => void generateCanvasVersion("edit", instr)}
@@ -3761,6 +3944,13 @@ ${body.outerHTML}
         allowedCommands={settings.codeAllowedCommands}
         sendKey={settings.sendKey}
         autoTitle={settings.autoTitle}
+        engineHeld={busy ? "chat" : loadingModel ? "load" : null}
+        onActivity={setCodeAct}
+        onGoChat={() => {
+          setAppMode("chat");
+          const run = chatRunRef.current;
+          if (run && run.convId !== conversationId) void openConversation(run.convId);
+        }}
       />
 
       <div className="body" style={appMode === "code" && !studioMode ? { display: "none" } : undefined}>
@@ -3816,7 +4006,9 @@ ${body.outerHTML}
                   key={c.id}
                   className={`conv-item ${c.id === conversationId && !convSel.selecting ? "active" : ""} ${
                     c.pinned ? "pinned" : ""
-                  } ${convSel.selecting ? "selecting" : ""} ${convSel.selected.has(c.id) ? "picked" : ""}`}
+                  } ${convSel.selecting ? "selecting" : ""} ${convSel.selected.has(c.id) ? "picked" : ""}${
+                    c.id === chatGen ? " is-busy" : c.id === chatUnseen ? " is-done" : ""
+                  }`}
                   onClick={(e) => {
                     if (renamingId === c.id) return;
                     if (selectClick(convSel, c.id, e)) return;
@@ -3844,17 +4036,19 @@ ${body.outerHTML}
                     />
                   ) : (
                     <>
-                      <span
+                      <SwapText
                         className="conv-title"
+                        text={c.title}
                         title={`${c.title}\n${t("renameHint")}`}
                         onDoubleClick={(e) => {
                           if (convSel.selecting) return;
                           e.stopPropagation();
                           startRename(c);
                         }}
-                      >
-                        {c.title}
-                      </span>
+                      />
+                      {(c.id === chatGen || c.id === chatUnseen) && (
+                        <span className="sr-only">{t(c.id === chatGen ? "stBusy" : "stDone")}</span>
+                      )}
                       {!convSel.selecting && <div className="conv-actions">
                         <button
                           className={`conv-act ${c.pinned ? "on" : ""}`}
@@ -3945,7 +4139,8 @@ ${body.outerHTML}
             <DeepResearchPanel
               model={model}
               onClose={() => setShowDeepResearch(false)}
-              onLockChange={setBusy}
+              onLockChange={lockForPanel}
+              held={codeHeldPanel}
             />
           )}
           {showKbReport && (
@@ -3953,7 +4148,8 @@ ${body.outerHTML}
               mode="kb"
               model={model}
               onClose={() => setShowKbReport(false)}
-              onLockChange={setBusy}
+              onLockChange={lockForPanel}
+              held={codeHeldPanel}
             />
           )}
           <div className="chat-wrap">
@@ -4040,7 +4236,7 @@ ${body.outerHTML}
                           className="msg-action"
                           title={t("regenTitle")}
                           onClick={() => regenerate(i)}
-                          disabled={busy}
+                          disabled={busy || !!codeAct.run}
                         >
                           {t("regenerate")}
                         </button>
@@ -4100,7 +4296,7 @@ ${body.outerHTML}
                           <button
                             className="msg-action primary"
                             onClick={() => editUser(i, editingText)}
-                            disabled={busy || !editingText.trim()}
+                            disabled={busy || !!codeAct.run || !editingText.trim()}
                           >
                             {t("saveEdit")}
                           </button>
@@ -4313,6 +4509,32 @@ ${body.outerHTML}
                 {attachError && <span className="attach-error">{attachError}</span>}
               </div>
             )}</Exit>
+            {/* A Code turn has the engine: the box takes typing, sending
+                waits — and the tab on the box's top edge says where the
+                turn is. */}
+            <Exit ms={260} collapse>
+              {codeAct.run ? (
+                <BusyNote
+                  dock
+                  text={codeHeldText}
+                  go={t("busyGo")}
+                  onGo={() => {
+                    const id = codeRunRef.current?.sid;
+                    setAppMode("code");
+                    if (id) codeActions.current?.openSession(id);
+                  }}
+                />
+              ) : chatRun && !chatHere ? (
+                <BusyNote
+                  dock
+                  text={t("busyChatConv", {
+                    title: conversations.find((c) => c.id === chatRun.convId)?.title || t("newChat"),
+                  })}
+                  go={t("busyGo")}
+                  onGo={() => void openConversation(chatRun.convId)}
+                />
+              ) : null}
+            </Exit>
             <div className="input-row">
               <div className="tools-wrap">
                 <button
@@ -4531,7 +4753,7 @@ ${body.outerHTML}
                             <span className="ti-label">{t("speakAloud")}</span>
                             <span className="ti-check">{speakReplies ? <Icon name="check" size={12} strokeWidth={2.4} /> : ""}</span>
                           </button>
-                          <button className="tool-item" onClick={openLive} disabled={!model}>
+                          <button className="tool-item" onClick={openLive} disabled={!model || !!liveHeld} title={liveHeld ?? undefined}>
                             <svg className="ti-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
                               <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
                               <path d="M7.5 7.5a6 6 0 0 0 0 9M16.5 7.5a6 6 0 0 1 0 9" strokeLinecap="round" />
@@ -4596,7 +4818,7 @@ ${body.outerHTML}
                     </svg>
                   )}
               </button>
-              {busy ? (
+              {busy && chatHere ? (
                 <button className="send-btn stop" onClick={handleStop} title={t("stopTitle")}>
                   <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
                     <rect x="6" y="6" width="12" height="12" rx="3" fill="currentColor" />
@@ -4606,7 +4828,7 @@ ${body.outerHTML}
                 <button
                   className="send-btn"
                   onClick={() => handleSend()}
-                  disabled={!input.trim()}
+                  disabled={!input.trim() || !!codeAct.run || busy}
                   title={t("sendTitle")}
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
@@ -4665,7 +4887,9 @@ ${body.outerHTML}
           ) : (
             <div className="mode-switch" role="tablist" aria-label="Mode">
               <button
-                className={`mode-tab ${appMode === "chat" ? "active" : ""}`}
+                // Away from chat: a reply being written there, or finished
+                // while you were away — the same hairline as the Code tab's.
+                className={`mode-tab ${appMode === "chat" ? "active" : ""} ${appMode !== "chat" && chatMark ? `tab-${chatMark}` : ""}`}
                 role="tab"
                 aria-selected={appMode === "chat"}
                 onClick={() => setAppMode("chat")}
@@ -4675,7 +4899,9 @@ ${body.outerHTML}
                 <Icon name="chat" size={15} strokeWidth={1.7} />
               </button>
               <button
-                className={`mode-tab ${appMode === "code" ? "active" : ""}`}
+                // Away from Code: a turn running there, waiting on you, or
+                // finished while you were here — a hairline under the tab.
+                className={`mode-tab ${appMode === "code" ? "active" : ""} ${appMode !== "code" && codeAct.mark ? `tab-${codeAct.mark}` : ""}`}
                 role="tab"
                 aria-selected={appMode === "code"}
                 onClick={() => setAppMode("code")}
@@ -4745,6 +4971,11 @@ ${body.outerHTML}
             )}
             </span>
             <span className={`chip-caret ${showModelMenu ? "open" : ""}`}><Icon name="chevron-down" size={11} strokeWidth={2} /></span>
+            {/* A download going on, store open or not: a hairline under the
+                chip, filling as it comes in. */}
+            <span className={`chip-dl ${dlFrac !== null ? "on" : ""}`} aria-hidden="true">
+              <span style={{ transform: `scaleX(${dlFrac ?? 0})` }} />
+            </span>
           </button>
           <Exit>{showModelMenu && (
             <div className="model-menu">
@@ -4762,7 +4993,7 @@ ${body.outerHTML}
                       if (e.key === "Enter" && !imeEnter(e)) {
                         const f = modelFilter.trim().toLowerCase();
                         const hit = availableModels.find((m) => m.path !== model?.path && (!f || m.name.toLowerCase().includes(f)));
-                        if (hit && f && !busy && !loadingModel) switchModel(hit.path);
+                        if (hit && f && !engineBusy) switchModel(hit.path);
                       } else if (e.key === "Escape") {
                         e.stopPropagation();
                         if (modelFilter) setModelFilter("");
@@ -4782,6 +5013,13 @@ ${body.outerHTML}
                   <Icon name="refresh" size={13} strokeWidth={1.9} />
                 </button>
               </div>
+              <Exit ms={220} collapse>
+                {(busy || codeAct.run) && !loadingModel ? (
+                  <div className="model-menu-busy" title={t("busyModel")}>
+                    <span>{t("busyModelMenu")}</span>
+                  </div>
+                ) : null}
+              </Exit>
               <div className="model-menu-list">
                 {availableModels.length === 0 ? (
                   <div className="model-menu-empty">{t("noModelsFound")}</div>
@@ -4798,7 +5036,7 @@ ${body.outerHTML}
                         <button
                           className="mm-pick"
                           onClick={() => switchModel(m.path)}
-                          disabled={busy || loadingModel}
+                          disabled={engineBusy}
                           title={m.path}
                         >
                           {/* As the chip names it: the file's extension says nothing the list doesn't. */}
@@ -4854,7 +5092,7 @@ ${body.outerHTML}
                 )}
               </div>
               <div className="model-menu-actions">
-                <button className="model-menu-file" onClick={handleLoadFolder}>
+                <button className="model-menu-file" onClick={handleLoadFolder} disabled={engineBusy}>
                   <Icon name="plus" size={14} />
                   {t("loadFromFolder")}
                 </button>
@@ -4867,6 +5105,7 @@ ${body.outerHTML}
                 >
                   <Icon name="download" size={14} />
                   {t("dlTitle")}
+                  {dlFrac !== null && <span className="mm-dl-pct">{t("dlMenuProgress", { pct: String(Math.floor(dlFrac * 100)) })}</span>}
                 </button>
                 <button
                   className="model-menu-file"
@@ -4882,7 +5121,7 @@ ${body.outerHTML}
                   <button
                     className="model-menu-file model-menu-eject"
                     onClick={handleEject}
-                    disabled={busy || loadingModel}
+                    disabled={engineBusy}
                     title={t("ejectModel")}
                   >
                     <Icon name="eject" size={14} />
@@ -4893,6 +5132,20 @@ ${body.outerHTML}
             </div>
           )}</Exit>
         </div>
+        {/* Stop a load at any stage. It comes in beside the chip as a load
+            starts, its width opening, and closes again as it ends — the
+            chip moves over smoothly rather than jumping. */}
+        <button
+          type="button"
+          className={`load-cancel ${loadingModel && loadTarget?.kind !== "eject" ? "on" : ""}`}
+          onClick={() => void cancelModelLoad().catch(console.error)}
+          title={t("loadCancel")}
+          aria-label={t("loadCancel")}
+          tabIndex={loadingModel ? 0 : -1}
+          aria-hidden={loadingModel ? undefined : true}
+        >
+          <Icon name="x" size={11} strokeWidth={2.3} />
+        </button>
 
         <div className="settings-wrap">
           <button
@@ -5021,6 +5274,7 @@ ${body.outerHTML}
             mode={imageMode ? "image" : musicMode ? "music" : "chat"}
             imageModel={imageMode ? model : null}
             musicModel={musicMode ? model : null}
+            chatModel={imageMode || musicMode ? null : model}
             onManageMusicComponents={
               musicMode && model
                 ? () => {
@@ -5052,6 +5306,7 @@ ${body.outerHTML}
             }
             onModelsChanged={() => void refreshModels()}
             reloading={loadingModel}
+            reloadHeld={busy || !!codeAct.run}
             onDataCleared={() => {
               handleNewChat();
               void refreshConversations();
@@ -5173,7 +5428,11 @@ ${body.outerHTML}
             setShowDownload(false);
             setDeepLink(null);
           }}
-          onDownloaded={refreshModels}
+          onLoad={(path) => {
+            setShowDownload(false);
+            setDeepLink(null);
+            void refreshModels().then(() => switchModel(path));
+          }}
           initialRepo={deepLink?.repo}
           initialFile={deepLink?.file}
         />
@@ -5181,6 +5440,7 @@ ${body.outerHTML}
       {showKb && (
         <KnowledgePanel
           captionImages={settings.kbCaptionImages}
+          held={codeHeldPanel}
           onClose={() => setShowKb(false)}
           onPodcast={() => {
             setShowKb(false);
@@ -5197,7 +5457,8 @@ ${body.outerHTML}
           model={model}
           voiceSpeed={settings.voiceSpeed}
           onClose={() => setShowPodcast(false)}
-          onLockChange={setBusy}
+          onLockChange={lockForPanel}
+          held={codeHeldPanel}
         />
       )}
       {compFor && (

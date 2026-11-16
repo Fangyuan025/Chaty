@@ -260,7 +260,9 @@ fn start_engine<T>(start: impl Fn(&Path) -> Result<T>) -> Result<T> {
         find_sidecar(),
         || anyhow!(trf!("未找到对话引擎组件 chaty-llama,请重新安装应用", "the chat engine (chaty-llama) is missing; please reinstall")),
         |exe| match start(exe) {
-            Err(e) if cfg!(windows) && e.is::<SidecarExited>() => {
+            // A load the user cancelled died because it was ended, not
+            // because the driver took it down.
+            Err(e) if cfg!(windows) && e.is::<SidecarExited>() && !super::load_cancelled() => {
                 if super::llama::apply_gpu_crash_guard().is_some() {
                     start(exe)
                 } else {

@@ -200,6 +200,12 @@ pub fn gpu_layer_cap() -> Option<i32> {
     None
 }
 
+/// A load the user cancelled ended its engine inside the load, which left the
+/// marker behind as a crash would: taken away, so the next load is not capped.
+pub(crate) fn clear_load_marker() {
+    let _ = std::fs::remove_file(chaty_data_dir().join(GPU_INFLIGHT));
+}
+
 /// Removes the marker when load() returns — normally OR with an error. Only
 /// a process death leaves it behind, which is exactly the signal we want.
 /// Armed on Windows only (see apply_gpu_crash_guard).

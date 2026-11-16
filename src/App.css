@@ -61,6 +61,10 @@
   --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* enters */
   --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1); /* playful pops */
+  /* Every light passing over something while it goes on — "Thinking", a
+     load, a busy row, a skeleton — at the one pace "Thinking" has: a band
+     as wide (42–58% of a 300% gradient) crossing in the same time. */
+  --shimmer: cmrunlight 2.6s ease-in-out infinite;
 
   /* ---- frame ----
      The window is one continuous frame — titlebar, sidebar, session rail —
@@ -707,15 +711,15 @@ body {
   background: linear-gradient(
     90deg,
     var(--text-dim) 0%,
-    var(--text-dim) 38%,
+    var(--text-dim) 42%,
     var(--text) 50%,
-    var(--text-dim) 62%,
+    var(--text-dim) 58%,
     var(--text-dim) 100%
   );
-  background-size: 250% 100%;
+  background-size: 300% 100%;
   -webkit-background-clip: text;
   background-clip: text;
-  animation: live-shimmer 1.8s linear infinite;
+  animation: var(--shimmer);
 }
 .chip-pct {
   min-width: 4.8ch;
@@ -2229,7 +2233,7 @@ body.resizing-x {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: cmrunlight 2.6s ease-in-out infinite;
+  animation: var(--shimmer);
 }
 html[data-motion="reduce"] .mermaid-pending-label {
   animation: none;
@@ -3296,6 +3300,66 @@ html[data-motion="reduce"] .sw.quick {
 
 .field textarea:focus {
   border-color: var(--border-strong);
+}
+
+/* Settings → Chat: Chaty's own prompt — its switch, and what it says, read
+   only, folded under it. */
+.chaty-prompt-field {
+  gap: 6px;
+}
+/* The switch's row is a line of this field, not a box of its own. */
+.settings-pane-body .chaty-prompt-field > .field {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
+.chaty-peek-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.chaty-peek-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.chaty-peek-btn:hover:not(:disabled) {
+  color: var(--text);
+}
+.chaty-peek-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.chaty-peek-chev {
+  transition: transform 200ms ease;
+}
+.chaty-peek-chev.open {
+  transform: rotate(90deg);
+}
+.chaty-peek {
+  align-self: stretch;
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
 }
 
 /* Sliders: a hairline track filled in the text tone up to the value, and a
@@ -4444,12 +4508,19 @@ html[data-motion="reduce"] .sw.quick {
   color: var(--text);
   background: rgba(255, 255, 255, 0.06);
 }
+.canvas-foot {
+  flex: none;
+  border-top: 1px solid var(--border);
+}
+/* Why an iteration waits: centred over the box, under the same rule. */
+.canvas-held {
+  padding: 10px 14px 0;
+}
 .canvas-composer {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 12px 14px;
-  border-top: 1px solid var(--border);
 }
 .canvas-input {
   flex: 1;
@@ -5479,20 +5550,12 @@ button.tool-parent {
 }
 .live-thinking .live-idle {
   /* A light passing through the words while it thinks. */
-  background: linear-gradient(100deg, var(--live-fg-dim) 30%, var(--live-fg) 50%, var(--live-fg-dim) 70%);
-  background-size: 250% 100%;
+  background: linear-gradient(90deg, var(--live-fg-dim) 42%, var(--live-fg) 50%, var(--live-fg-dim) 58%);
+  background-size: 300% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: live-shimmer 2.4s linear infinite;
-}
-@keyframes live-shimmer {
-  from {
-    background-position: 100% 0;
-  }
-  to {
-    background-position: -150% 0;
-  }
+  animation: var(--shimmer);
 }
 .live-caption {
   width: min(780px, 90vw);
@@ -7173,7 +7236,7 @@ body:has(.live-overlay) .win-btn.close:hover {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: cmrunlight 2.6s ease-in-out infinite;
+  animation: var(--shimmer);
 }
 @keyframes cmrunlight {
   0% {
@@ -10112,13 +10175,13 @@ body,
   display: inline-block;
   border-radius: 6px;
   background: linear-gradient(
-    100deg,
-    var(--surface) 40%,
+    90deg,
+    var(--surface) 42%,
     var(--surface-2) 50%,
-    var(--surface) 60%
+    var(--surface) 58%
   );
-  background-size: 200% 100%;
-  animation: skel-shimmer 1.4s ease-in-out infinite;
+  background-size: 300% 100%;
+  animation: var(--shimmer);
 }
 .skel-line {
   height: 11px;
@@ -10135,14 +10198,6 @@ body,
   flex-direction: column;
   gap: 12px;
   padding-top: 6px;
-}
-@keyframes skel-shimmer {
-  from {
-    background-position: 200% 0;
-  }
-  to {
-    background-position: -200% 0;
-  }
 }
 
 /* MCP server rows (Settings → Code): reuse the skill-row shell; the toggle is
@@ -10441,17 +10496,9 @@ body,
 .is-run-ph {
   position: absolute;
   inset: 0;
-  background: linear-gradient(110deg, var(--surface) 30%, var(--surface-2) 50%, var(--surface) 70%);
-  background-size: 250% 100%;
-  animation: is-shimmer 1.6s linear infinite;
-}
-@keyframes is-shimmer {
-  from {
-    background-position: 120% 0;
-  }
-  to {
-    background-position: -120% 0;
-  }
+  background: linear-gradient(90deg, var(--surface) 42%, var(--surface-2) 50%, var(--surface) 58%);
+  background-size: 300% 100%;
+  animation: var(--shimmer);
 }
 .is-run-pct {
   position: absolute;
@@ -11907,4 +11954,431 @@ body,
   border: 1px solid var(--border-strong);
   border-bottom-width: 2px;
   border-radius: 6px;
+}
+
+/* ---- A Code session's state ----
+   Told in the row's own type and light, no mark of its own: a light passing
+   over a running title (as over the model chip while a model loads); a thin
+   bar in the accent beside one that waits on you; the unread weight of one
+   that finished while you were away. Each comes and goes in a fade. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+.cm-session-title {
+  transition: color 0.25s ease;
+}
+.cm-session.is-busy .cm-session-title,
+.conv-item.is-busy .conv-title,
+.busy-note-text,
+.model-menu-busy span {
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    var(--text-dim) 0%,
+    var(--text-dim) 42%,
+    var(--text) 50%,
+    var(--text-dim) 58%,
+    var(--text-dim) 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: var(--shimmer);
+}
+.cm-session.is-pending .cm-session-title,
+.cm-session.is-done .cm-session-title,
+.conv-item.is-done .conv-title {
+  color: var(--text);
+  font-weight: 600;
+}
+.cm-session::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  width: 2.5px;
+  height: 14px;
+  margin-top: -7px;
+  border-radius: 2px;
+  background: var(--accent-bright);
+  opacity: 0;
+  transform: scaleY(0.4);
+  transition:
+    opacity 0.25s ease,
+    transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  pointer-events: none;
+}
+.cm-session.is-pending::before {
+  opacity: 1;
+  transform: none;
+}
+/* The Code tab, while you are in chat: a hairline under it — a light running
+   along it while a turn runs, the accent while one waits on you, the text's
+   own dim tone once one finished. */
+.mode-tab {
+  position: relative;
+}
+.mode-tab::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--text-dim);
+  opacity: 0;
+  transition: opacity 0.3s ease, background-color 0.3s ease;
+  pointer-events: none;
+}
+.mode-tab.tab-busy::after {
+  opacity: 1;
+  background: linear-gradient(90deg, var(--border-strong) 0%, var(--border-strong) 42%, var(--text) 50%, var(--border-strong) 58%, var(--border-strong) 100%);
+  background-size: 300% 100%;
+  animation: var(--shimmer);
+}
+.mode-tab.tab-pending::after {
+  opacity: 1;
+  background: var(--accent-bright);
+}
+.mode-tab.tab-done::after {
+  opacity: 0.85;
+}
+/* Why the list below is dimmed: one line in a soft band the width of the
+   rows, centred — not a paragraph wrapped under the filter. */
+.model-menu-busy {
+  display: flex;
+  justify-content: center;
+  margin: 1px 0 5px;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  white-space: nowrap;
+  border-radius: 7px;
+  background: var(--ink-faint);
+}
+.model-menu-busy span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+html[data-motion="reduce"] :is(.cm-session.is-busy .cm-session-title, .conv-item.is-busy .conv-title, .busy-note-text, .model-menu-busy span, .mode-tab.tab-busy::after) {
+  animation: none;
+}
+html[data-motion="reduce"] :is(.cm-session.is-busy .cm-session-title, .conv-item.is-busy .conv-title, .busy-note-text, .model-menu-busy span) {
+  color: var(--text-dim);
+  background: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.cm-session.is-busy .cm-session-title, .conv-item.is-busy .conv-title, .busy-note-text, .model-menu-busy span, .mode-tab.tab-busy::after) {
+    animation: none;
+  }
+  :is(.cm-session.is-busy .cm-session-title, .conv-item.is-busy .conv-title, .busy-note-text, .model-menu-busy span) {
+    color: var(--text-dim);
+    background: none;
+  }
+}
+
+/* Said over a composer whose send waits on a run elsewhere. */
+.busy-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 8px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+.busy-note-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.busy-note-go {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.busy-note-go:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+/* In a panel, a line of its own across the actions, centred over them —
+   not one cell of their grid, cut short. */
+.busy-note:not(.busy-dock) {
+  justify-content: center;
+  padding: 2px 4px;
+  text-align: center;
+}
+.busy-note:not(.busy-dock) .busy-note-text {
+  white-space: normal;
+}
+.kb-foot-actions > .busy-note {
+  grid-column: 1 / -1;
+}
+.dr-held {
+  padding-top: 10px;
+}
+
+/* Over a composer, a tab tucked behind the box's top edge: centred on it
+   and inset by its corner on each side, so it stands on the straight part
+   of the edge and both ends match. It comes up from behind the box and goes
+   back down into it (Exit collapse). */
+.composer {
+  --dock-max: 768px;
+}
+.code-composer {
+  --dock-max: 860px;
+}
+.busy-note.busy-dock {
+  box-sizing: border-box;
+  width: calc(100% - 2 * var(--composer-radius));
+  max-width: calc(var(--dock-max) - 2 * var(--composer-radius));
+  min-height: 34px;
+  margin: 0 auto;
+  padding: 4px 5px 5px 14px;
+  gap: 12px;
+  justify-content: space-between;
+  background: color-mix(in srgb, var(--composer-bg) 55%, var(--bg));
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+}
+.busy-dock .busy-note-go {
+  padding: 3px 10px;
+  border-radius: 8px;
+  border-color: var(--border-strong);
+}
+
+/* ---- Downloads, the app's (lib/downloads.ts) ----
+   At the top of the store, every download as it stands; under the model
+   chip, a hairline filling while one runs, store open or not. */
+.dl-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.dl-strip-head {
+  padding: 0 4px 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.dl-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  border-radius: var(--r-sm);
+  transition: background 0.12s;
+}
+.dl-row:hover {
+  background: var(--surface-2);
+}
+.dl-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 6px 7px;
+  border: 0;
+  background: none;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.dl-row-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.dl-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dl-row-variant {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.dl-row-bar {
+  position: relative;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.dl-row:hover .dl-row-bar {
+  background: var(--border);
+}
+.dl-row-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: transform 0.4s ease, background-color 0.3s ease;
+}
+.dl-row.is-done .dl-row-fill {
+  background: var(--text-dim);
+}
+.dl-row.is-error .dl-row-fill {
+  background: var(--danger, #c0564b);
+  opacity: 0.6;
+}
+.dl-row-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dl-row.is-error .dl-row-sub {
+  color: var(--danger, #c0564b);
+}
+.dl-row-act {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.dl-row-act:hover {
+  color: var(--text);
+  background: var(--border);
+}
+.dl-row-load {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.dl-row-load:hover {
+  background: var(--surface-2);
+}
+.model-chip {
+  position: relative;
+}
+.chip-dl {
+  position: absolute;
+  left: 9px;
+  right: 9px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--border);
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+.chip-dl.on {
+  opacity: 1;
+}
+.chip-dl > span {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  background: var(--accent-bright);
+  transition: transform 0.4s ease;
+}
+.mm-dl-pct {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Stopping a load: beside the model chip while one runs. Its width opens
+   and closes with it, so the chip slides over rather than jumps. */
+.load-cancel {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0;
+  height: 28px;
+  margin-left: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0 solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--text-dim);
+  opacity: 0;
+  transform: scale(0.8);
+  pointer-events: none;
+  cursor: pointer;
+  transition:
+    width 0.26s cubic-bezier(0.2, 0.8, 0.2, 1),
+    margin-left 0.26s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.2s ease,
+    transform 0.26s cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 0.15s,
+    border-color 0.15s,
+    background 0.15s;
+}
+.load-cancel.on {
+  width: 28px;
+  margin-left: 6px;
+  border-width: 1px;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.load-cancel.on:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+html[data-motion="reduce"] .load-cancel {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .load-cancel {
+    transition: none;
+  }
 }

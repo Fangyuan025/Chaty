@@ -41,6 +41,77 @@ export const T = {
   // Code mode (agentic coding)
   modeChat: { zh: "对话", en: "Chat", pt: "Chat" },
   modeCode: { zh: "编程", en: "Code", pt: "Código" },
+  dlStripTitle: { zh: "下载", en: "Downloads", pt: "Downloads" },
+  dlRowDone: { zh: "已下载", en: "Downloaded", pt: "Baixado" },
+  dlLoad: { zh: "加载", en: "Load", pt: "Carregar" },
+  loadCancel: { zh: "取消加载", en: "Cancel loading", pt: "Cancelar carregamento" },
+  dlDoneNotice: { zh: "{name} 已下载，可在模型菜单里加载", en: "{name} is downloaded — load it from the model menu", pt: "{name} foi baixado — carregue pelo menu de modelos" },
+  dlMenuProgress: { zh: "下载中 {pct}%", en: "Downloading {pct}%", pt: "Baixando {pct}%" },
+  // one engine, one thing at a time (BusyNote, StatusMark)
+  busyCode: {
+    zh: "编程会话「{title}」正在运行，结束后才能发送",
+    en: "“{title}” is running in Code — send once it is done",
+    pt: "“{title}” está rodando no modo Código — envie quando terminar",
+  },
+  busyCodeWaiting: {
+    zh: "编程会话「{title}」在等你处理，处理完才能发送",
+    en: "“{title}” in Code is waiting for you — send once that is done",
+    pt: "“{title}” no modo Código está esperando você — envie quando terminar",
+  },
+  // The same, said in a panel (knowledge base, podcast, report), where
+  // nothing is sent: what waits there is used.
+  busyCodeUse: {
+    zh: "编程会话「{title}」正在运行，结束后才能使用",
+    en: "“{title}” is running in Code — available once it is done",
+    pt: "“{title}” está rodando no modo Código — disponível quando terminar",
+  },
+  busyCodeWaitingUse: {
+    zh: "编程会话「{title}」在等你处理，处理完才能使用",
+    en: "“{title}” in Code is waiting for you — available once that is done",
+    pt: "“{title}” no modo Código está esperando você — disponível quando terminar",
+  },
+  busyChatConv: {
+    zh: "对话「{title}」正在生成回复，结束后才能发送",
+    en: "“{title}” is being answered — send once it is done",
+    pt: "“{title}” está sendo respondida — envie quando terminar",
+  },
+  busyChatUse: {
+    zh: "对话正在生成回复，结束后才能使用",
+    en: "A chat reply is being written — available once it is done",
+    pt: "Uma resposta do chat está sendo escrita — disponível quando terminar",
+  },
+  busyLoadUse: {
+    zh: "模型正在加载，加载完才能使用",
+    en: "A model is loading — available once it is ready",
+    pt: "Um modelo está carregando — disponível quando estiver pronto",
+  },
+  busyChat: {
+    zh: "对话正在生成回复，结束后才能发送",
+    en: "A chat reply is being written — send once it is done",
+    pt: "Uma resposta do chat está sendo escrita — envie quando terminar",
+  },
+  busyLoad: { zh: "模型正在加载，加载完才能发送", en: "A model is loading — send once it is ready", pt: "Um modelo está carregando — envie quando estiver pronto" },
+  busyGo: { zh: "查看", en: "View", pt: "Ver" },
+  busyModel: {
+    zh: "模型正在使用中——结束或停止后才能切换、卸载或重新加载",
+    en: "The model is in use — switch, unload or reload it once that is done or stopped",
+    pt: "O modelo está em uso — troque, descarregue ou recarregue quando terminar ou parar",
+  },
+  // The same in a line of its own: the model menu, Settings' reload button.
+  busyModelMenu: {
+    zh: "模型使用中，结束后才能切换或卸载",
+    en: "In use — switch or unload once it is done",
+    pt: "Em uso — troque ou descarregue ao terminar",
+  },
+  busyReload: {
+    zh: "模型使用中，结束后才能重新加载",
+    en: "In use — reload once it is done",
+    pt: "Em uso — recarregue ao terminar",
+  },
+  cmUntitled: { zh: "新会话", en: "New session", pt: "Nova sessão" },
+  stBusy: { zh: "运行中", en: "Running", pt: "Em execução" },
+  stPending: { zh: "等你处理", en: "Waiting for you", pt: "Aguardando você" },
+  stDone: { zh: "已完成，还没看", en: "Finished — not yet seen", pt: "Concluído — ainda não visto" },
   cmNewSession: { zh: "新会话", en: "New session", pt: "Nova sessão" },
   cmNoSessions: { zh: "暂无会话", en: "No sessions yet", pt: "Nenhuma sessão ainda" },
   cmOpenFolder: { zh: "打开工作区…", en: "Open workspace…", pt: "Abrir workspace…" },
@@ -892,6 +963,15 @@ export const T = {
   // settings
   settingsTitle: { zh: "设置", en: "Settings", pt: "Configurações" },
   language: { zh: "语言", en: "Language", pt: "Idioma" },
+  chatyPrompt: { zh: "Chaty 系统提示词", en: "Chaty's system prompt", pt: "Prompt de sistema do Chaty" },
+  chatyPromptHint: {
+    zh: "告诉模型它是哪个模型、运行在 Chaty 里、Chaty 能做什么、这台电脑的情况，以及它的回复会怎么显示。放在你自己的系统提示词前面。",
+    en: "Tells the model which model it is, that it runs in Chaty, what Chaty can do, what computer it is on and how its reply will be shown. It comes before your own system prompt.",
+    pt: "Diz ao modelo qual modelo ele é, que roda no Chaty, o que o Chaty faz, em que computador está e como a resposta será exibida. Vem antes do seu próprio prompt de sistema.",
+  },
+  chatyPromptShow: { zh: "查看内容", en: "Show what it says", pt: "Ver o conteúdo" },
+  chatyPromptHide: { zh: "收起", en: "Hide", pt: "Ocultar" },
+  chatyPromptNoModel: { zh: "加载模型后可查看内容", en: "Load a model to see what it says", pt: "Carregue um modelo para ver o conteúdo" },
   systemPrompt: { zh: "系统提示词", en: "System prompt", pt: "Prompt de sistema"  },
   systemPromptPh: { zh: "可选，例如：你是一个简洁、专业的助手。", en: "Optional, e.g. You are a concise, professional assistant.", pt: "Opcional, ex: Você é um assistente conciso e profissional." },
   temperature: { zh: "温度", en: "Temperature", pt: "Temperatura" },

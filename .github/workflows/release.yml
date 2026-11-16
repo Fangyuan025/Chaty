@@ -342,62 +342,38 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: |
-            ## Diagrams that always draw
+            ## The model knows where it is
 
-            A Mermaid diagram wrong in a line or two — a subgraph never closed, an arrow to
-            nothing — is drawn without those lines, a quiet note under it saying how many; one
-            drawn while it streamed never turns into its source once finished. Click a diagram
-            to open it larger: zoom, move it, save it as SVG or PNG.
+            Chat opens with a few lines from Chaty (on by default, Settings → Chat): which model is
+            running and on which engine, the computer it runs on, what Chaty can do and where, and
+            how its reply will be shown. Asked who it is, a model gives the name of what is running;
+            it points to the + menu instead of offering to look up what it cannot reach.
 
-            ## What replies are made of
+            ## One thing at a time
 
-            A finished single-file page folds to a picture of itself and its title, up about half
-            a second after the page is written — even when its fonts come from somewhere that
-            does not answer. Tables copy
-            as cells that paste into a spreadsheet, or save as CSV. Code saves as a file of its
-            language, and a formula copies its LaTeX when clicked.
-
-            ## Finding your way
-
-            Find in the chat with ⌘F (Ctrl+F): every match marked, a count, Enter between them.
-            A chat opened from the sidebar's search opens at the match, and one left part-way
-            through opens where you left it. Every shortcut is on one sheet, ⌘/ (Ctrl+/). Each reply
-            says which model wrote it.
-
-            ## Nothing stutters
-
-            A page's picture is made out of sight while you are not scrolling, and kept across restarts;
-            a long code reply no longer hitches as its block closes; the first diagram or formula
-            of a session no longer hitches as it is drawn; and a diagram wrong in many lines, or a
-            long page, no longer freezes the window while it is worked out.
+            A Code session at work can be left to read other sessions or chat; nothing can be sent,
+            and the model can be neither switched nor unloaded, until it is done — a line over the
+            box says where it is. Each session's row says where it stands: a light over the running
+            one's title, an accent bar by one waiting on you, an unread title on one that finished
+            while you were away. Downloads go on with the store or Set up for me closed, show at the
+            top of the store wherever they were started, and fill a hairline under the model chip.
+            A model load can be stopped at any point, from beside the chip.
 
             ## Code mode
 
-            A screenshot no longer breaks a session: the window is counted by what a picture really
-            takes, and a prompt that cannot hold its pictures lets the older ones go and goes on.
-            A small model that sends the same plan again instead of starting is handed the look at
-            the workspace its plan began with, and pointed at the move the plan names next; one
-            reading a file again for something not in it is told where that is. With tool calls
-            folded, the view keeps following a run to its end. The first Qwen3 models keep thinking
-            through a long task, and a few steps gone round with nothing changing are pointed out,
-            then paused.
+            The first Qwen3 models keep thinking through a long task, and a few steps gone round
+            with nothing changing are pointed out, then paused. A screenshot no longer breaks a
+            session; a small model that sends the same plan again is handed the look at the
+            workspace its plan began with; one reading a file again for something not in it is
+            told where that is. With tool calls folded, the view keeps following a run to its end.
 
-            ## Nothing jumps
+            ## Nothing stutters, nothing jumps
 
-            Loading a model names it on the model chip as it goes, and the chip and the bar under
-            the top row move from one state to the next. The sidebar slides; folded code, thoughts,
-            sources, long messages and Code mode's cards open and close smoothly — by a click or by
-            themselves, the same way; menus, previews and notices fade out. Code mode's thought
-            fades in word by word as chat's does, a folded run's line goes from one state to the
-            next, and a long thought shows under it as it is written. A
-            reply's count and rate count up as it is written, and the context ring sweeps to its
-            new share. Copy and edit sit under your message on hover; hover a reply for the model
-            that wrote it.
-
-            ## Taking a chat elsewhere
-
-            Export a chat as a web page: the replies as Chaty draws them, in your theme, one
-            file any browser opens.
+            A page's picture is made out of sight and kept across restarts; long code, the first
+            diagram or formula, and badly broken diagrams no longer hitch the window. Loading a
+            model names it on the chip as it goes; the sidebar slides; folded code, thoughts and
+            Code mode's cards open and close smoothly, by a click or by themselves; Code mode's
+            thought fades in word by word, and a long one shows under its run as it is written.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

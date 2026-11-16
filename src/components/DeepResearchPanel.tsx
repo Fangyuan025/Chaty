@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { BusyNote } from "./BusyNote";
+import { Exit } from "./Exit";
 import { agentLang, useI18n } from "../lib/i18n";
 import { exportTextFile, openHtmlReport, type ModelInfo } from "../lib/ipc";
 import { Markdown } from "./Markdown";
@@ -41,11 +43,14 @@ export function DeepResearchPanel({
   onClose,
   onLockChange,
   mode = "web",
+  held = null,
 }: {
   model: ModelInfo | null;
   onClose: () => void;
   onLockChange: (locked: boolean) => void;
   mode?: "web" | "kb";
+  /** The model is at work elsewhere (a Code turn): a report waits. */
+  held?: string | null;
 }) {
   const { t, lang } = useI18n();
   const kb = mode === "kb";
@@ -87,7 +92,7 @@ export function DeepResearchPanel({
   async function start() {
     // The KB report is topic-free (NotebookLM-style overview); web Deep Research
     // needs a topic.
-    if (!model || running || (!kb && !topic.trim())) return;
+    if (!model || running || held || (!kb && !topic.trim())) return;
     setQueries([]);
     setSources([]);
     setReasoning("");
@@ -240,13 +245,22 @@ export function DeepResearchPanel({
                 <button
                   className="setup-dl ready"
                   onClick={() => void start()}
-                  disabled={(!kb && !topic.trim()) || !model}
+                  disabled={(!kb && !topic.trim()) || !model || !!held}
                 >
                   <IconPlay size={13} style={{ marginRight: 6 }} /> {kb ? t("kbReportRegen") : t("drRun")}
                 </button>
               )}
             </div>
           </div>
+          {/* Why Start waits: a line of its own, centred under the box —
+              in the row it pressed the depth and the button into two lines. */}
+          <Exit ms={220} collapse>
+            {held && !running ? (
+              <div className="dr-held">
+                <BusyNote text={held} />
+              </div>
+            ) : null}
+          </Exit>
 
           <div className="dr-body" ref={bodyRef}>
             {!report && !running && !error && (

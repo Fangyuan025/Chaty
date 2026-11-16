@@ -1,87 +1,77 @@
 # Changelog
 
-## v2.4.2 — Look closer (2026-11-14)
+## v2.4.3 — Steady hands (2026-11-16)
 
-### Diagrams that always draw
+### The model knows where it is
 
-- **A diagram wrong in a line or two is drawn without them.** A diagram a
-  model writes is right almost everywhere: a subgraph never closed is closed
-  where its indentation ends, an `end` that closes nothing is dropped, and a
-  line Mermaid cannot read is left out — with a quiet note under the drawing
-  saying how many (which ones on hover). A diagram drawn while it streamed
-  never turns into its source and an error once it is finished, and one being
-  written grows past a wrong line instead of standing still at it; only a
-  diagram of which nothing at all can be drawn shows its source and
-  Mermaid's reason. A subgraph's id in any script keeps its bracketed title.
-- **Open a diagram larger.** Click it: it fills the window, fitted at first,
-  zoomed with a pinch, ⌘/Ctrl + scroll or the buttons, moved by dragging, a
-  double-click between fitted and actual size — and saved as SVG or PNG, its
-  labels as real text other programs read.
-- **A finished diagram keeps its code to hand** — its source, shown in place
-  of the drawing, and a copy button, over its corner.
+- **Chat opens with a few lines from Chaty** (Settings → Chat, on by
+  default): which model is running and on which engine; that it runs in
+  Chaty, offline, on this computer — its system, chip and memory; what Chaty
+  can do and where — the + menu's files, knowledge base, web search and
+  voice, Code mode, the studios; and how its reply is shown — Markdown,
+  formulas between $ signs, Mermaid diagrams, a page in an html block. Asked
+  who it is, a model gives the name of what is running, not one it remembers
+  from training; it no longer offers to look up what it cannot reach, and
+  points to where the app does it instead. Your own system prompt follows
+  it. Show what it says, under the switch, shows the words for the model
+  loaded now. They read the same every turn, so they cost one read of the
+  prompt, not one per message.
+- **A model that takes over a conversation knows it.** Switch models partway
+  through and the one answering now is told which others wrote the replies
+  above — so a reply above saying "I am Gemma" is not taken for its own, and
+  asked who it is, it gives its own name. With the switch off, the model is
+  told nothing, as before; Code mode is unchanged.
 
-### What replies are made of
+### One thing at a time
 
-- **A finished page folds to what it looks like.** With long code blocks
-  folded (Settings → Chat), a single-file page whose fence has closed shows a
-  picture of itself and its title instead of its first lines of code — run
-  once in a sandbox until its scripts have built it, then kept as a still, so
-  a conversation full of pages is not a conversation full of pages running.
-  Open it for the code, as before. The picture is up about half a second
-  after the page is written, while the rest of the reply is still coming —
-  and a page whose fonts or scripts come from somewhere that does not answer
-  (Google Fonts, where it cannot be reached) is pictured all the same,
-  within a couple of seconds, where it used to stay grey. A title too long
-  to sit beside the picture goes under it, the two centred together.
-- **Tables copy as tables.** Over a table's corner: copied as cells, it pastes
-  into a spreadsheet as one; or saved as CSV that Excel opens with its Chinese
-  intact.
-- **Code saves as a file** of its language — a page by its title.
-- **A formula copies its LaTeX** when clicked.
-
-### Finding your way
-
-- **Find in the chat (⌘/Ctrl F).** Every match marked, the current one
-  stronger, Enter and ⇧Enter (or the arrows) between them, a count of where
-  you are. ⌘⇧F is the sidebar's search, as ⌘F is outside a chat.
-- **Searching finds the place, not only the chat.** A chat opened from the
-  sidebar's search opens at the first match, every match marked.
-- **A chat opens where you left it** when you left it part-way through; at
-  its end otherwise.
-- **Every shortcut on one sheet** — ⌘/ (Ctrl+/), or the command palette.
-- With many models, typing in the model menu finds one; Enter loads it.
-- **Each reply says which model wrote it**, at its foot on the right on
-  hover — a conversation can pass through several — and a chat exported as
-  JSON or Markdown says it of each reply too.
-- **Your message's copy and edit sit under it, at its right, on hover**,
-  where they sat centred on its left side, half-way down a long one. In Code
-  mode the same, with copy beside rewind.
-
-### Nothing stutters
-
-- **A page's picture appears without a hitch.** It is made out of sight, one
-  page at a time, while you are not scrolling or typing — any scroll or
-  keystroke, and it stops to be made again a moment later — with the page's
-  own animation slowed to a few frames a second while it builds; it is put
-  on screen one at a time; and it is kept across restarts, so a conversation
-  opened again shows its pages without running them. Made in the open, a page
-  cost the app its frames as its picture came.
-- **A long code reply no longer hitches as its block closes.** The code stays
-  drawn line by line, as it streamed, where it used to be highlighted and
-  built again whole the moment its fence closed — the stutter at the end of
-  every long page or script.
-- **The first diagram or formula of a session no longer hitches.** Mermaid,
-  its flowchart and sequence drawing, Chinese labels' measuring and KaTeX's
-  fonts are made ready while nothing moves, where the first diagram or
-  formula in a reply paid for them in long frames as it streamed.
-- **A diagram wrong in many lines, or a page of many parts, no longer holds
-  the window.** Finding which lines of a badly broken diagram can be drawn is
-  done a little at a time, between frames, and given up past a budget for
-  what was found by then; a long page's picture is cut to what shows in one
-  pass, where it used to measure the page part by part — either could freeze
-  the app for seconds, with nothing in the log to say why.
+- **Code goes on while you read elsewhere.** A session at work can be left:
+  another session opens as it is, and chat can be read. Nothing can be sent,
+  in either mode, while the turn runs — a tab on the box's top edge says
+  where it is, and View goes back to it — and the model can be neither switched,
+  unloaded nor reloaded meanwhile; the model menu and Settings say why. A
+  chat reply being written holds Code mode's send the same way, and the
+  knowledge base, Deep Research, the podcast, the canvas's next version and
+  live voice wait for either — or for a load — saying which. Live voice, open,
+  holds the model in turn. A question or an approval the turn waits on is asked
+  on its own screen, not over the one you are reading, and Enter there
+  answers nothing it cannot show.
+- **Opening Deep Research or a podcast no longer frees the model mid-reply.**
+  Opened while a chat reply was being written, either one let go of the
+  engine's lock as it appeared: the model could then be switched, unloaded
+  or reloaded under the reply.
+- **Each Code session says where it stands**, in its row and not in a mark
+  of its own: a light passing over the title of the one running; a thin
+  accent bar beside one waiting on you — a question, a change to approve, a
+  paused run; the full weight of an unread title on one that finished while
+  you were away, until you look. In chat, a hairline under the Code tab says
+  the same. Chat's conversations do as well: a light over the one a reply is
+  being written for, the full weight of one that was answered while you
+  read another, and, in Code mode, a hairline under the Chat tab while it is
+  written and once it is done.
+- **Chat goes on while you read another conversation.** A reply being
+  written no longer holds the sidebar: another conversation, or a new one,
+  opens as it is, with nothing sent until the reply is done — the tab on the
+  box's top edge names the conversation, and View goes back to it, the reply
+  still coming in where it had got to. Stop is on its own screen. A
+  conversation deleted while its reply is written stops it, and nothing is
+  saved into it afterwards.
+- **A new title comes in softly**: a Code session named after its first
+  message, a conversation after its first reply, fade in out of a slight
+  blur rather than change in a frame.
+- **Downloads go on in the background.** The store and Set up for me can be
+  closed while a model comes down — the rest of Chaty in use — and opening
+  the store again shows every download at its top, wherever it was started:
+  how far, how long is left, stop it, load it once it is in. Others can be
+  browsed and fetched meanwhile. A hairline under the model chip fills while
+  one runs, the model menu gives its share, and a notice says when it is in.
+- **A load can be stopped at any point**, with the button that opens beside
+  the model chip while it runs: the engine it started ends, its memory with
+  it, and Chaty is left with no model rather than half of one. A switch that
+  failed or was stopped no longer leaves the chip naming the model that was
+  let go before it.
 
 ### Code mode
+
 
 - **A screenshot no longer breaks a session.** A vision model such as
   Qwen3.5 keeps a screenshot as up to two thousand tokens while moving its
@@ -136,6 +126,30 @@
   a background task, where it was taken for a dev server and the model sent
   to open it in the browser.
 
+### Nothing stutters
+
+- **A page's picture appears without a hitch.** It is made out of sight, one
+  page at a time, while you are not scrolling or typing — any scroll or
+  keystroke, and it stops to be made again a moment later — with the page's
+  own animation slowed to a few frames a second while it builds; it is put
+  on screen one at a time; and it is kept across restarts, so a conversation
+  opened again shows its pages without running them. Made in the open, a page
+  cost the app its frames as its picture came.
+- **A long code reply no longer hitches as its block closes.** The code stays
+  drawn line by line, as it streamed, where it used to be highlighted and
+  built again whole the moment its fence closed — the stutter at the end of
+  every long page or script.
+- **The first diagram or formula of a session no longer hitches.** Mermaid,
+  its flowchart and sequence drawing, Chinese labels' measuring and KaTeX's
+  fonts are made ready while nothing moves, where the first diagram or
+  formula in a reply paid for them in long frames as it streamed.
+- **A diagram wrong in many lines, or a page of many parts, no longer holds
+  the window.** Finding which lines of a badly broken diagram can be drawn is
+  done a little at a time, between frames, and given up past a budget for
+  what was found by then; a long page's picture is cut to what shows in one
+  pass, where it used to measure the page part by part — either could freeze
+  the app for seconds, with nothing in the log to say why.
+
 ### Nothing jumps
 
 - **The sidebar slides** away and back (⌘\\ or its button), in chat, Code
@@ -166,6 +180,10 @@
   note does; the words stay where they are. The line went and came back
   with every sentence before a call, and the words moved under the runs and
   came in again.
+- **Every light passing over something goes at one pace** — "Thinking"'s:
+  a busy row or tab, the line saying why something waits, a model loading,
+  Live's "Thinking", the store's placeholders and a picture being made each
+  had a speed and a band of their own.
 - **Reduce motion in Settings stills all of it**, as the system's setting
   did: the heights and widths moved from script went on moving with only the
   app's own setting on.
@@ -192,11 +210,23 @@
   and, in both modes, sweeps to its new share once the reply is done; why it
   ended shows when it has.
 
-### Taking a chat elsewhere
+### What replies are made of
 
-- **Export a chat as a web page** — the replies as Chaty draws them, code
-  coloured, tables, formulas and diagrams, in the theme you use, without the
-  app's buttons: one file any browser opens.
+- **A finished page's picture is up about half a second after the page is
+  written**, while the rest of the reply is still coming — and a page whose
+  fonts or scripts come from somewhere that does not answer (Google Fonts,
+  where it cannot be reached) is pictured all the same, within a couple of
+  seconds, where it used to stay grey. A title too long to sit beside the
+  picture goes under it, the two centred together.
+
+### Finding your way
+
+- **Each reply says which model wrote it**, at its foot on the right on
+  hover — a conversation can pass through several — and a chat exported as
+  JSON or Markdown says it of each reply too.
+- **Your message's copy and edit sit under it, at its right, on hover**,
+  where they sat centred on its left side, half-way down a long one. In Code
+  mode the same, with copy beside rewind.
 
 ### Building against newer engines
 
@@ -205,6 +235,58 @@
   image engine is built on it, its pictures the same to the byte as before,
   and the engine updates Chaty fetches go on building on either side of the
   change.
+
+## v2.4.2 — Look closer (2026-11-14)
+
+### Diagrams that always draw
+
+- **A diagram wrong in a line or two is drawn without them.** A diagram a
+  model writes is right almost everywhere: a subgraph never closed is closed
+  where its indentation ends, an `end` that closes nothing is dropped, and a
+  line Mermaid cannot read is left out — with a quiet note under the drawing
+  saying how many (which ones on hover). A diagram drawn while it streamed
+  never turns into its source and an error once it is finished, and one being
+  written grows past a wrong line instead of standing still at it; only a
+  diagram of which nothing at all can be drawn shows its source and
+  Mermaid's reason. A subgraph's id in any script keeps its bracketed title.
+- **Open a diagram larger.** Click it: it fills the window, fitted at first,
+  zoomed with a pinch, ⌘/Ctrl + scroll or the buttons, moved by dragging, a
+  double-click between fitted and actual size — and saved as SVG or PNG, its
+  labels as real text other programs read.
+- **A finished diagram keeps its code to hand** — its source, shown in place
+  of the drawing, and a copy button, over its corner.
+
+### What replies are made of
+
+- **A finished page folds to what it looks like.** With long code blocks
+  folded (Settings → Chat), a single-file page whose fence has closed shows a
+  picture of itself and its title instead of its first lines of code — run
+  once in a sandbox until its scripts have built it, then kept as a still, so
+  a conversation full of pages is not a conversation full of pages running.
+  Open it for the code, as before.
+- **Tables copy as tables.** Over a table's corner: copied as cells, it pastes
+  into a spreadsheet as one; or saved as CSV that Excel opens with its Chinese
+  intact.
+- **Code saves as a file** of its language — a page by its title.
+- **A formula copies its LaTeX** when clicked.
+
+### Finding your way
+
+- **Find in the chat (⌘/Ctrl F).** Every match marked, the current one
+  stronger, Enter and ⇧Enter (or the arrows) between them, a count of where
+  you are. ⌘⇧F is the sidebar's search, as ⌘F is outside a chat.
+- **Searching finds the place, not only the chat.** A chat opened from the
+  sidebar's search opens at the first match, every match marked.
+- **A chat opens where you left it** when you left it part-way through; at
+  its end otherwise.
+- **Every shortcut on one sheet** — ⌘/ (Ctrl+/), or the command palette.
+- With many models, typing in the model menu finds one; Enter loads it.
+
+### Taking a chat elsewhere
+
+- **Export a chat as a web page** — the replies as Chaty draws them, code
+  coloured, tables, formulas and diagrams, in the theme you use, without the
+  app's buttons: one file any browser opens.
 
 ## v2.4.1 — Read along (2026-11-12)
 

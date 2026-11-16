@@ -1467,6 +1467,15 @@ export async function ejectModel(): Promise<void> {
   await invoke("eject_model");
 }
 
+/** What a load stopped by `cancelModelLoad` rejects with. */
+export const LOAD_CANCELLED = "LOAD_CANCELLED";
+
+/** Stop the model load in progress, at whatever stage: its engine is ended,
+ *  and the app is left with no model (the old one went as the load began). */
+export async function cancelModelLoad(): Promise<void> {
+  await invoke("cancel_load");
+}
+
 export interface ModelEntry {
   name: string;
   path: string;

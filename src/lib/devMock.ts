@@ -254,6 +254,11 @@ const CODE_SESSIONS = [
   { id: "cs3", title: "Refactor the config loader", workspace: "/Users/dev/projects/parser-kit", updatedAt: now - 3 * 86400e3 },
 ];
 
+/** The load in progress, and whether it was asked to stop (see load_model). */
+const MOCK_LOAD = { active: false, cancelled: false };
+/** Downloads the preview was asked to stop (see download_model). */
+const MOCK_DL_CANCEL = new Set<string>();
+
 // ---- Image studio fixtures ----
 const IMAGE_MODEL = {
   name: "qwen-image-2.1-Q4_K_M",
@@ -725,14 +730,23 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           : MODEL;
       return (async () => {
         const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+        MOCK_LOAD.cancelled = false;
+        MOCK_LOAD.active = true;
         if (CURRENT) {
           ch?.onmessage?.({ phase: "eject", frac: 0 });
           await wait(400);
+          // The old model goes before the new one comes, as in the backend.
+          CURRENT = null;
         }
-        for (let i = 0; i <= 20; i++) {
-          ch?.onmessage?.({ phase: "weights", frac: i / 20 });
-          await wait(80);
+        for (let i = 0; i <= 40; i++) {
+          if (MOCK_LOAD.cancelled) {
+            MOCK_LOAD.active = false;
+            throw "LOAD_CANCELLED";
+          }
+          ch?.onmessage?.({ phase: "weights", frac: i / 40 });
+          await wait(100);
         }
+        MOCK_LOAD.active = false;
         ch?.onmessage?.({ phase: "ready", frac: 1 });
         CURRENT = next;
         return CURRENT;
@@ -740,6 +754,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     }
     case "eject_model":
       CURRENT = null;
+      return null;
+    case "cancel_load":
+      if (MOCK_LOAD.active) MOCK_LOAD.cancelled = true;
       return null;
     case "image_model_probe": {
       const p = String(args?.path ?? "");
@@ -1732,7 +1749,31 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "cancel_generation":
       mockGenStop = true;
       return null;
+    // A download that takes ~14s, streaming progress, so the store's and the
+    // setup cards' downloads — and taking them to the background — can be
+    // driven in the preview. cancel_download stops it as the backend does.
+    case "download_model":
+    case "download_mlx_repo": {
+      const ch = args?.onProgress as { onmessage?: (ev: unknown) => void } | undefined;
+      const key = String(args?.filename ?? String(args?.repo ?? "").split("/").pop() ?? "");
+      const total = 2_400_000_000;
+      MOCK_DL_CANCEL.delete(key);
+      return (async () => {
+        for (let i = 1; i <= 70; i++) {
+          await new Promise((r) => setTimeout(r, 200));
+          if (MOCK_DL_CANCEL.has(key)) {
+            MOCK_DL_CANCEL.delete(key);
+            throw "DOWNLOAD_CANCELLED";
+          }
+          ch?.onmessage?.({ type: "progress", downloaded: Math.round((total * i) / 70), total });
+        }
+        const path = `/Users/demo/Models/${key}`;
+        ch?.onmessage?.({ type: "done", path });
+        return cmd === "download_mlx_repo" ? path : null;
+      })();
+    }
     case "cancel_download":
+      MOCK_DL_CANCEL.add(String(args?.key ?? ""));
       return null;
     case "agent_dl_list":
     case "agent_dl_reap":

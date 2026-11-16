@@ -1,25 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { dlCancel, dlDismiss, useDownloads, type DlTask } from "../lib/downloads";
+import { runStoreDownload, storeNeedBytes, storeTaskId } from "../lib/storeDownload";
+import { Exit } from "./Exit";
 import { imeEnter } from "../lib/ime";
 import { platform } from "@tauri-apps/plugin-os";
-import { etaSeconds, fmtTime, type EtaSample } from "../lib/eta";
+import { fmtTime } from "../lib/eta";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
 import { Select } from "./Select";
 import { fmtBytes, fmtCount } from "../lib/fmt";
-import { downloadMusicParts } from "../lib/musicDownload";
 import { OrgAvatar } from "./VendorIcon";
 import {
   hfSearch,
   hfModelDetail,
-  hfResolveUrl,
-  downloadModel,
-  downloadMlxRepo,
-  cancelDownload,
-  imageModelProbe,
-  musicModelProbe,
-  modelFolderFor,
   openExternal,
-  DOWNLOAD_CANCELLED,
   type HfModelHit,
   type HfModelDetail,
   getHardwareInfo,
@@ -73,14 +67,74 @@ function asRepoId(input: string): string | null {
   return /^[\w.-]+\/[\w.-]+$/.test(s) ? s : null;
 }
 
+/** Every download, at the top of the store: started here or from "Set up for
+ *  me", going or just finished — how far, how long left, stop it; open it,
+ *  load it, put it away. */
+function DownloadsStrip({
+  tasks,
+  onOpen,
+  onLoad,
+}: {
+  tasks: DlTask[];
+  onOpen: (repo: string) => void;
+  onLoad?: (path: string) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="dl-strip">
+      <div className="dl-strip-head">{t("dlStripTitle")}</div>
+      {tasks.map((x) => {
+        const pct = x.total > 0 ? Math.min(100, (x.done / x.total) * 100) : 0;
+        return (
+          <div key={x.id} className={`dl-row is-${x.state}`}>
+            <button type="button" className="dl-row-main" onClick={() => onOpen(x.repo)} title={x.repo}>
+              <span className="dl-row-name">
+                <span className="dl-row-title">{x.name}</span>
+                <span className="dl-row-variant">{x.variant}</span>
+              </span>
+              <span className="dl-row-bar" aria-hidden="true">
+                <span className="dl-row-fill" style={{ transform: `scaleX(${x.state === "running" ? pct / 100 : x.state === "done" ? 1 : pct / 100})` }} />
+              </span>
+              <span className="dl-row-sub">
+                {x.state === "running"
+                  ? `${Math.floor(pct)}% · ${fmtSize(x.done)}${x.total ? ` / ${fmtSize(x.total)}` : ""}${x.eta !== null ? ` · ${t("etaLeft")} ~${fmtTime(x.eta)}` : ""}`
+                  : x.state === "done"
+                    ? t("dlRowDone")
+                    : hfErrorText(x.error || "", t) || t("dlFailed")}
+              </span>
+            </button>
+            {x.state === "running" ? (
+              <button type="button" className="dl-row-act" title={t("cancel")} aria-label={t("cancel")} onClick={() => void dlCancel(x.id)}>
+                <Icon name="x" size={11} strokeWidth={2.2} />
+              </button>
+            ) : (
+              <>
+                {x.state === "done" && x.path && onLoad && (
+                  <button type="button" className="dl-row-load" onClick={() => onLoad(x.path!)}>
+                    {t("dlLoad")}
+                  </button>
+                )}
+                <button type="button" className="dl-row-act" title={t("close")} aria-label={t("close")} onClick={() => dlDismiss(x.id)}>
+                  <Icon name="x" size={11} strokeWidth={2.2} />
+                </button>
+              </>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function DownloadModal({
   onClose,
-  onDownloaded,
+  onLoad,
   initialRepo,
   initialFile,
 }: {
   onClose: () => void;
-  onDownloaded: () => void;
+  /** Load a model a download brought in. */
+  onLoad?: (path: string) => void;
   /** Pre-open this repo's detail (e.g. from a chaty:// deep link). */
   initialRepo?: string;
   /** Auto-start the quant containing this file once the detail loads. */
@@ -116,12 +170,8 @@ export function DownloadModal({
       .finally(() => { if (live) setHardwareChecked(true); });
     return () => { live = false; };
   }, []);
-  // -- download state --
-  const [active, setActive] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
-  const [eta, setEta] = useState<number | null>(null);
-  const etaStore = useRef<EtaSample[]>([]);
-  const cancelKey = useRef<string | null>(null);
+  // -- downloads: the app's, not this window's (lib/downloads.ts) --
+  const tasks = useDownloads();
   const [error, setError] = useState("");
   const seq = useRef(0);
 
@@ -185,124 +235,7 @@ export function DownloadModal({
     [format, t],
   );
 
-  const startDownload = useCallback(
-    async (d: HfModelDetail, qi: number) => {
-      if (active) return;
-      const quant = d.quants[qi];
-      if (!quant) return;
-      setActive(true);
-      setError("");
-      etaStore.current = [];
-      // An image model's VAE and text encoder come with it, and so do a
-      // music model's VAE, configs and package parts (estimated here; ones
-      // already on disk are skipped below).
-      const companionBytes = d.image
-        ? (d.companions ?? []).reduce((a, c) => a + c.size, 0)
-        : d.music
-          ? (quant.extra ?? 0)
-          : 0;
-      let grandTotal =
-        d.format === "mlx" ? quant.size : quant.size + (d.mmproj ? d.mmprojSize : 0) + companionBytes;
-      setProgress({ done: 0, total: grandTotal });
-      setEta(null);
-      const tick = (done: number) => {
-        setProgress({ done, total: grandTotal });
-        setEta(etaSeconds(etaStore.current, done, grandTotal));
-      };
-      try {
-        if (d.format === "mlx") {
-          cancelKey.current = d.id.split("/").pop() ?? d.id;
-          await downloadMlxRepo(d.id, (p) => {
-            if (p.type === "progress") tick(p.downloaded);
-            else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) setError(p.message);
-          });
-        } else {
-          const subdir = modelFolderFor(d.id);
-          // A package kept in a folder of a larger repo names the repo apart.
-          const repo = d.repo || d.id;
-          const files = [...quant.files, ...(d.mmproj ? [d.mmproj] : [])];
-          let doneBase = 0;
-          let mainPath = "";
-          for (const path of files) {
-            const name = path.split("/").pop() ?? path;
-            cancelKey.current = name;
-            let thisFile = 0;
-            await downloadModel(
-              hfResolveUrl(repo, path),
-              name,
-              (p) => {
-                if (p.type === "progress") {
-                  thisFile = p.downloaded;
-                  tick(doneBase + thisFile);
-                } else if (p.type === "done") {
-                  if (!mainPath) mainPath = p.path;
-                } else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) {
-                  setError(p.message);
-                }
-              },
-              subdir,
-            );
-            doneBase += thisFile;
-          }
-          // A music model: its VAE, configs and package parts, into its own
-          // folder — asking the model itself, so parts already there (from
-          // another quantization) are not fetched again.
-          if (d.music && mainPath) {
-            const probe = await musicModelProbe(mainPath).catch(() => null);
-            const todo = probe?.suggestions ?? [];
-            grandTotal = doneBase + todo.reduce((a, c) => a + c.size, 0);
-            if (probe && todo.length) {
-              doneBase += await downloadMusicParts(
-                probe.path,
-                todo,
-                (done) => tick(doneBase + done),
-                (name) => (cancelKey.current = name),
-                (msg) => msg !== DOWNLOAD_CANCELLED && setError(msg),
-              );
-            }
-          }
-          // An image model: fetch what it still lacks into its own folder —
-          // asking the model itself, so an encoder another model already
-          // brought is reused instead of downloaded again.
-          if (d.image && mainPath) {
-            const probe = await imageModelProbe(mainPath).catch(() => null);
-            const todo = probe?.suggestions ?? [];
-            grandTotal = doneBase + todo.reduce((a, c) => a + c.size, 0);
-            const dir = mainPath.replace(/[/\\][^/\\]*$/, "");
-            for (const c of todo) {
-              const name = c.file.split("/").pop() ?? c.file;
-              cancelKey.current = name;
-              let thisFile = 0;
-              await downloadModel(
-                hfResolveUrl(c.repo, c.file),
-                name,
-                (p) => {
-                  if (p.type === "progress") {
-                    thisFile = p.downloaded;
-                    tick(doneBase + thisFile);
-                  } else if (p.type === "error" && p.message !== DOWNLOAD_CANCELLED) {
-                    setError(p.message);
-                  }
-                },
-                undefined,
-                dir,
-              );
-              doneBase += thisFile;
-            }
-          }
-        }
-        onDownloaded();
-        onClose();
-      } catch (e) {
-        const msg = typeof e === "string" ? e : "";
-        if (msg !== DOWNLOAD_CANCELLED) setError(msg || t("dlFailed"));
-      } finally {
-        setActive(false);
-        cancelKey.current = null;
-      }
-    },
-    [active, onClose, onDownloaded, t],
-  );
+  const startDownload = (d: HfModelDetail, qi: number) => void runStoreDownload(d, qi);
 
   // Deep link: open the repo directly; a named file selects + starts its quant.
   useEffect(() => {
@@ -314,12 +247,12 @@ export function DownloadModal({
       // the detail says why.
       if (d.unsupported) return;
       if (d.format === "mlx" && IS_MACOS) {
-        void startDownload(d, 0);
+        startDownload(d, 0);
       } else if (initialFile) {
         const qi = d.quants.findIndex((q) => q.files.some((f) => f.endsWith(initialFile)));
         if (qi >= 0) {
           setQuantIdx(qi);
-          void startDownload(d, qi);
+          startDownload(d, qi);
         }
       }
     })();
@@ -332,11 +265,12 @@ export function DownloadModal({
   };
 
   const quant = detail?.quants[quantIdx];
-  const needBytes = quant
-    ? quant.size +
-      (detail?.format === "gguf" && detail.mmproj ? detail.mmprojSize : 0) +
-      (detail?.image ? (detail.companions ?? []).reduce((a, c) => a + c.size, 0) : detail?.music ? (quant.extra ?? 0) : 0)
-    : 0;
+  const needBytes = detail && quant ? storeNeedBytes(detail, quantIdx) : 0;
+  // This model's download, if one runs (whichever build), and this build's,
+  // if it is in.
+  const running = detail ? tasks.find((x) => x.repo === detail.id && x.state === "running") : undefined;
+  const thisTask = detail ? tasks.find((x) => x.id === storeTaskId(detail, quantIdx)) : undefined;
+  const shownTasks = tasks.filter((x) => x.state !== "cancelled");
   // A missing hardware snapshot is genuinely unknown; do not infer
   // "CPU-only" from installed RAM when the GPU query failed.
   const memory = quant && hardware
@@ -358,30 +292,34 @@ export function DownloadModal({
         mlx: detail?.format === "mlx",
       })
     : "unknown";
-  const pct = progress.total > 0 ? Math.min(100, (progress.done / progress.total) * 100) : 0;
+  const pct = running && running.total > 0 ? Math.min(100, (running.done / running.total) * 100) : 0;
 
   return (
     <>
-      <div className="dl-backdrop" onClick={active ? undefined : onClose} style={{ zIndex: 90 }} />
+      <div className="dl-backdrop" onClick={onClose} style={{ zIndex: 90 }} />
       <div className="dl-modal store-modal">
         <div className="dl-head">
           <span className="dl-title">{t("dlTitle")}</span>
-          {!active && (
-            <button className="dl-close" onClick={onClose} title={t("cancel")}>
-              <Icon name="x" size={12} strokeWidth={2.2} />
-            </button>
-          )}
+          {/* Closing leaves downloads going: they are the app's, and show
+              here again — and under the model chip — while they run. */}
+          <button className="dl-close" onClick={onClose} title={t("close")}>
+            <Icon name="x" size={12} strokeWidth={2.2} />
+          </button>
         </div>
 
         <div className="store-body">
           {/* ---- left: search + browse ---- */}
           <div className="store-list-pane">
+            <Exit ms={260} collapse>
+              {shownTasks.length > 0 ? (
+                <DownloadsStrip tasks={shownTasks} onOpen={(repo) => void openDetail(repo)} onLoad={onLoad} />
+              ) : null}
+            </Exit>
             <div className="dl-search">
               <input
                 type="text"
                 placeholder={t("storeSearchPh")}
                 value={query}
-                disabled={active}
                 autoFocus
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
@@ -394,7 +332,6 @@ export function DownloadModal({
                   most of all on Windows. */}
               <Select
                 value={format}
-                disabled={active}
                 ariaLabel={t("storeFormat")}
                 onChange={(v) => setFormat(v)}
                 options={[
@@ -404,7 +341,6 @@ export function DownloadModal({
               />
               <Select
                 value={task}
-                disabled={active}
                 ariaLabel={t("storeTask")}
                 onChange={(v) => { setTask(v); if (v === "music") setFormat("gguf"); }}
                 options={[
@@ -416,7 +352,6 @@ export function DownloadModal({
               />
               <Select
                 value={sort}
-                disabled={active}
                 ariaLabel={t("storeSort")}
                 onChange={(v) => setSort(v)}
                 options={[
@@ -458,8 +393,7 @@ export function DownloadModal({
                     <button
                       key={h.id}
                       className={`store-hit ${detail?.id === h.id ? "active" : ""}`}
-                      disabled={active}
-                      onClick={() => void openDetail(h.id)}
+                            onClick={() => void openDetail(h.id)}
                       title={h.id}
                     >
                       <span className="store-avatar">
@@ -549,42 +483,43 @@ export function DownloadModal({
                   <div className="store-quant-row">
                     <Select
                       value={quantIdx}
-                      disabled={active || detail.quants.length <= 1}
+                      disabled={!!running || detail.quants.length <= 1}
                       ariaLabel={t("storeQuant")}
                       onChange={(v) => setQuantIdx(v)}
                       options={detail.quants.map((q, i) => ({ value: i, label: `${q.label} · ${fmtSize(q.size)}` }))}
                     />
-                    {!active ? (
+                    {running ? (
+                      <button className="dl-cancel" title={t("cancel")} onClick={() => void dlCancel(running.id)}>
+                        <Icon name="x" size={12} strokeWidth={2.2} />
+                      </button>
+                    ) : thisTask?.state === "done" && thisTask.path && onLoad ? (
+                      <button className="dl-get store-get" onClick={() => onLoad(thisTask.path!)}>
+                        {t("setupLoad")}
+                      </button>
+                    ) : (
                       <button
                         className="dl-get store-get"
-                        onClick={() => void startDownload(detail, quantIdx)}
+                        onClick={() => startDownload(detail, quantIdx)}
                         disabled={(detail.format === "mlx" && !IS_MACOS) || !!detail.unsupported}
                       >
                         {t("dlGet")} {quant ? fmtSize(needBytes) : ""}
                       </button>
-                    ) : (
-                      <button
-                        className="dl-cancel"
-                        title={t("cancel")}
-                        onClick={() => {
-                          if (cancelKey.current) void cancelDownload(cancelKey.current).catch(() => {});
-                        }}
-                      >
-                        <Icon name="x" size={12} strokeWidth={2.2} />
-                      </button>
                     )}
                   </div>
-                  {active && (
+                  {running && (
                     <div className="dl-progress store-progress">
                       <div className="dl-bar">
                         <div className="dl-bar-fill" style={{ width: `${pct}%` }} />
                       </div>
                       <span className="dl-pct">
-                        {fmtSize(progress.done)}
-                        {progress.total ? ` / ${fmtSize(progress.total)}` : ""}
-                        {eta !== null ? ` · ${t("etaLeft")} ~${fmtTime(eta)}` : ""}
+                        {fmtSize(running.done)}
+                        {running.total ? ` / ${fmtSize(running.total)}` : ""}
+                        {running.eta !== null ? ` · ${t("etaLeft")} ~${fmtTime(running.eta)}` : ""}
                       </span>
                     </div>
+                  )}
+                  {!running && thisTask?.state === "error" && (
+                    <div className="dl-error">{hfErrorText(thisTask.error || "", t) || t("dlFailed")}</div>
                   )}
                   <div
                     className={`store-fit ${!detail.unsupported &&

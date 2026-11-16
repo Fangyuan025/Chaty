@@ -53,6 +53,11 @@ impl MonotonicProgress {
 /// avoid. A second caller is turned away rather than queued: by the time the
 /// first finished, its answer would be a model nobody asked for any more.
 static LOADING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// The sidecars running as the load in progress began: what `cancel_load`
+/// leaves alone. None outside a load's own engine start.
+static LOAD_BEFORE: std::sync::Mutex<Option<Vec<u32>>> = std::sync::Mutex::new(None);
+/// What a cancelled load rejects with; the app says nothing of it as an error.
+const LOAD_CANCELLED: &str = "LOAD_CANCELLED";
 
 /// Load a GGUF file and make it the active engine. Heavy and blocking, so the
 /// actual load runs on a blocking thread.
@@ -80,6 +85,7 @@ pub async fn load_model(
             "another model is still loading — wait for it to finish before switching",
         )
     })?;
+    crate::inference::LOAD_CANCELLED.store(false, Ordering::SeqCst);
     // Stored paths from before the folder-layout migration point at
     // `models/Foo.gguf`; the file now lives at `models/Foo/Foo.gguf`. Follow
     // it transparently — the returned ModelInfo carries the new path, which
@@ -244,6 +250,12 @@ pub async fn load_model(
         verified?;
     }
     state.cancel.store(false, Ordering::SeqCst);
+    // Cancelled while the old model was let go: nothing more to do — the app
+    // is left with no model, as the cancel said.
+    if crate::inference::load_cancelled() {
+        return Err(LOAD_CANCELLED.into());
+    }
+    *LOAD_BEFORE.lock().unwrap() = Some(crate::inference::SIDECAR_PIDS.lock().unwrap().clone());
 
     // Progress: every engine reports its own as it loads. Shared through one
     // gate so the bar the user sees never moves backwards (see
@@ -304,6 +316,18 @@ pub async fn load_model(
     };
     // Saturate the mark so a straggling poller tick can't undercut "ready".
     gate.saturate();
+    *LOAD_BEFORE.lock().unwrap() = None;
+    if crate::inference::load_cancelled() {
+        // Ended by the user. A load that got in just as the cancel came is let
+        // go too: what the user asked for is no model, not this one. The
+        // engine ended inside the load leaves the llama crash marker, which
+        // is not a crash.
+        if let Ok(Ok((backend, _))) = result {
+            let _ = tokio::task::spawn_blocking(move || backend.unload()).await;
+        }
+        crate::inference::llama::clear_load_marker();
+        return Err(LOAD_CANCELLED.into());
+    }
     let (backend, mut info) = result
         .map_err(|e| trf!("加载任务异常:{e}", "load task panicked: {e}"))
         .and_then(|r| r.map_err(|e| format!("{e:#}")))
@@ -318,6 +342,23 @@ pub async fn load_model(
     *state.engine.write().await = Some(backend);
     *state.model.write().await = Some(info.clone());
     Ok(info)
+}
+
+/// Stop the model load in progress, whatever stage it is at: the engine it
+/// started is ended (its memory with it), and the load rejects with
+/// `LOAD_CANCELLED`. The old model went before the load began, so the app is
+/// left with none. Nothing loading: nothing to do.
+#[tauri::command]
+pub async fn cancel_load() -> Result<(), String> {
+    if LOADING.try_lock().is_ok() {
+        return Ok(());
+    }
+    crate::inference::LOAD_CANCELLED.store(true, Ordering::SeqCst);
+    let before = LOAD_BEFORE.lock().unwrap().clone();
+    if let Some(before) = before {
+        let _ = tokio::task::spawn_blocking(move || crate::inference::kill_sidecars_except(&before)).await;
+    }
+    Ok(())
 }
 
 /// Eject the active model and return to the empty state, freeing its memory.

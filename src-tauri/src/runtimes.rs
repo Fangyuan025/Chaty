@@ -302,6 +302,9 @@ pub fn start_with<T>(
     };
     match start(&pack) {
         Ok(t) => Ok(t),
+        // Cancelled by the user: the pack is not at fault, and nothing else
+        // is to be tried.
+        Err(with_pack) if crate::inference::load_cancelled() => Err(with_pack),
         Err(with_pack) => {
             let Some(bundled) = bundled else { return Err(with_pack) };
             let t = start(&bundled)?;

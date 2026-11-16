@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MOD } from "../lib/modKey";
 import { imeEnter } from "../lib/ime";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { RECENCY_LABEL, recencyGroups } from "../lib/recency";
 import { ImagePreview } from "./ImagePreview";
 import { resolveToolFormat, type CallFormat } from "../lib/callFormat";
@@ -110,6 +110,8 @@ import { DiffStat } from "./DiffStat";
 import { prefillPct } from "../lib/prefill";
 import { ContextRing } from "./ContextRing";
 import { Exit } from "./Exit";
+import { BusyNote } from "./BusyNote";
+import { SwapText } from "./SwapText";
 import { UserCopy } from "./UserText";
 import { prefersStill, shrinking, useHeightOnChange } from "../lib/smoothHeight";
 import { BeforeCommit, Hold, movedByCommit, watchScrollInput } from "../lib/followEnd";
@@ -978,6 +980,39 @@ function ImgThumb({ path }: { path: string }) {
   return src ? <img src={src} alt="" /> : <span className="cm-attach-ph" />;
 }
 
+/** Where a Code session stands: running, waiting on you (a question, a
+ *  change to approve, a paused run), or finished while you were away. Shown
+ *  in the row's own type and light — a light passing over a running title, a
+ *  thin bar in the accent by one that waits, an unread weight on one that
+ *  finished — never a mark of its own. */
+export type SessionState = "busy" | "pending" | "done" | null;
+
+/** What the rest of the app may ask of Code mode. */
+export interface CodeActions {
+  newSession: () => void;
+  attachPath: (path: string) => void;
+  openSession: (id: string) => void;
+}
+
+/** Where Code stands, as the app needs to know it: the session a turn runs
+ *  in (the engine is its until the turn ends), whether that turn waits on
+ *  you, and the mark for the Code tab — the run's, or what finished while
+ *  you were away. */
+export interface CodeActivity {
+  run: { sid: string; title: string; waiting: boolean } | null;
+  mark: SessionState;
+}
+
+/** A running turn's transcript, held by the turn rather than by the screen:
+ *  open another session while it runs and the turn goes on writing here;
+ *  come back and this is what shows. Every box of one session holds the same
+ *  messages (a stopped turn still winding down and the turn sent after it). */
+interface RunBox {
+  sid: string;
+  ws: string | null;
+  msgs: CodeMsg[];
+}
+
 
 export function CodeMode({
   model,
@@ -1008,6 +1043,9 @@ export function CodeMode({
   autoTitle = true,
   onExportable,
   actionsRef,
+  engineHeld = null,
+  onActivity,
+  onGoChat,
 }: {
   model: ModelInfo | null;
   active: boolean;
@@ -1064,8 +1102,17 @@ export function CodeMode({
   /** The top row's export button: handed the open session's trace export
    *  while this mode is showing a session with turns, null otherwise. */
   onExportable?: (exportTrace: (() => Promise<boolean>) | null) => void;
-  /** What the command palette does here: "New" is a new Code session. */
-  actionsRef?: React.MutableRefObject<{ newSession: () => void; attachPath: (path: string) => void } | null>;
+  /** What the command palette does here: "New" is a new Code session; and
+   *  where chat's "view" takes you — the session at work. */
+  actionsRef?: React.MutableRefObject<CodeActions | null>;
+  /** The model is at work elsewhere — a chat reply ("chat"), a model being
+   *  loaded ("load"): a session can be read, not sent to. */
+  engineHeld?: "chat" | "load" | null;
+  /** Where Code stands, for the app: the session at work (the rest of the
+   *  app waits on it), and the mark the Code tab shows while you are away. */
+  onActivity?: (a: CodeActivity) => void;
+  /** To the chat whose reply holds the engine. */
+  onGoChat?: () => void;
 }) {
   const { t, lang } = useI18n();
   const confirm = useConfirm();
@@ -1099,6 +1146,27 @@ export function CodeMode({
   // Full-size image preview (screenshot / view_image steps).
   const [previewImg, setPreviewImg] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  /** The session the running turn works in — on screen or not: another can
+   *  be read while it runs. Null when nothing runs (runSidRef keeps the last). */
+  const [runSid, setRunSid] = useState<string | null>(null);
+  /** The transcripts of the turns in flight (see RunBox). */
+  const boxesRef = useRef(new Set<RunBox>());
+  /** Sessions deleted while a turn of theirs was in flight: nothing the turn
+   *  writes afterwards may bring them back. */
+  const goneRef = useRef(new Set<string>());
+  /** What happened in a session you were not looking at: it finished, or it
+   *  stopped to wait on you. Cleared once you look. */
+  const [marks, setMarks] = useState<Record<string, "done" | "pending">>({});
+  /** The session queued messages belong to, and one whose queue is held
+   *  because its turn ended while another session was on screen. */
+  const [queueSid, setQueueSid] = useState<string | null>(null);
+  const queueSidRef = useRef(queueSid);
+  queueSidRef.current = queueSid;
+  const queueHeldRef = useRef<string | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const engineHeldRef = useRef(engineHeld);
+  engineHeldRef.current = engineHeld;
   // Each session's permission mode, its own and kept across restarts; a
   // session never set is in auto.
   const [permModes, setPermModes] = useState<Record<string, PermMode>>(loadPermModes);
@@ -1113,7 +1181,7 @@ export function CodeMode({
   const nativeEffort = effortLevels.length > 0;
   /** Set when a turn pauses on a loop the model could not get out of; consumed
    *  by the next turn so "Continue" picks the escape up where it stopped. */
-  const stuckRef = useRef<StuckState | null>(null);
+  const stuckRef = useRef(new Map<string, StuckState>());
   const [thinkMode, setThinkMode] = useState<ThinkMode>(() => {
     const v = localStorage.getItem("chaty.code.think");
     return v === "off" || v === "low" || v === "normal" || v === "deep" ? v : "normal";
@@ -1195,6 +1263,34 @@ export function CodeMode({
     runningRef.current = v;
     setRunning(v);
   };
+  /** Change session `id`'s transcript: the screen's when it is the one
+   *  open, and the boxes of the turns writing to it, all alike. */
+  const editSession = (id: string, fn: (m: CodeMsg[]) => CodeMsg[]) => {
+    if (sidRef.current === id) {
+      setMsgs((cur) => {
+        const next = fn(cur);
+        for (const b of boxesRef.current) if (b.sid === id) b.msgs = next;
+        return next;
+      });
+      return;
+    }
+    let next: CodeMsg[] | null = null;
+    for (const b of boxesRef.current) if (b.sid === id) b.msgs = next ??= fn(b.msgs);
+  };
+  const boxOf = (id: string) => [...boxesRef.current].find((b) => b.sid === id);
+  /** Leaving the session on screen: a turn writing to it keeps what it shows
+   *  now, to go on from off screen. */
+  const keepForRun = () => {
+    const id = sidRef.current;
+    if (!boxOf(id)) return;
+    flushSync(() =>
+      setMsgs((cur) => {
+        for (const b of boxesRef.current) if (b.sid === id) b.msgs = cur;
+        return cur;
+      }),
+    );
+  };
+  const markSession = (id: string, kind: "done" | "pending") => setMarks((m) => (m[id] === kind ? m : { ...m, [id]: kind }));
   const sendRef = useRef(send);
   sendRef.current = send;
   const queueRef = useRef(queue);
@@ -1348,6 +1444,9 @@ export function CodeMode({
   useEffect(() => {
     if (!active || !workspace) return;
     const tick = () => {
+      // Reading another session while a turn runs: the agent is the turn's,
+      // and so are the jobs it would list.
+      if (runningRef.current && runSidRef.current !== sidRef.current) return;
       agentBgAll().then(setBgJobs).catch(() => {});
       agentDlList()
         .then((all) => setDownloads(all.filter((d) => !d.done)))
@@ -1362,11 +1461,34 @@ export function CodeMode({
   // which session it is working for, and show that session's jobs.
   useEffect(() => {
     setBgJobs([]);
+    // A turn running in another session keeps the agent until it ends.
+    if (runningRef.current && runSidRef.current !== sid) return;
     agentSetSession(sid)
       .then(() => agentBgAll())
       .then(setBgJobs)
       .catch(() => {});
   }, [sid]);
+
+  // Looked at: what its row said happened while you were away is seen.
+  useEffect(() => {
+    if (!active || !(sid in marks)) return;
+    setMarks(({ [sid]: _seen, ...rest }) => rest);
+  }, [active, sid, marks]);
+
+  // Messages queued in a session whose turn ended while another was on
+  // screen: sent once you are back in it.
+  useEffect(() => {
+    if (!active || running || queueHeldRef.current !== sid) return;
+    queueHeldRef.current = null;
+    const next = queueRef.current[0];
+    if (next === undefined) return;
+    setQueue((q) => q.slice(1));
+    void sendRef.current(next);
+  }, [active, running, sid]);
+  useEffect(() => {
+    if (queue.length === 0 && queueSid !== null) setQueueSid(null);
+  }, [queue.length, queueSid]);
+
 
   // Follow-the-stream is an *intent*, not a position: any upward wheel motion
   // releases it immediately (a distance check alone loses to the next stream
@@ -1544,8 +1666,10 @@ export function CodeMode({
   }, [msgs.length > 0, syncJump, pinEnd]);
 
   // Keyboard shortcuts: approval Enter/Esc, ask-user number keys, Esc to stop.
+  // Only on the running session's own screen: reading another, Enter in its
+  // box must not answer a question you cannot see, nor Esc stop a turn there.
   useEffect(() => {
-    if (!active) return;
+    if (!active || (running && runSid !== null && runSid !== sid)) return;
     const onKey = (e: KeyboardEvent) => {
       if (sudoAsk) {
         // High-risk: require an explicit click to allow; Esc denies.
@@ -1578,11 +1702,36 @@ export function CodeMode({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, approval, ask, dirAsk, sudoAsk, running]);
+  }, [active, approval, ask, dirAsk, sudoAsk, running, runSid, sid]);
 
   /** Model-generated session titles by session id — once one exists it wins
    *  over the first-message fallback on every later persist. */
   const titlesRef = useRef(new Map<string, string>());
+
+  // Where Code stands, for the rest of the app: the session at work (the
+  // engine is its until the turn ends) and the mark the Code tab shows.
+  const waiting = !!(approval || ask || dirAsk || sudoAsk);
+  const titleOf = (id: string) =>
+    titlesRef.current.get(id) ??
+    sessions.find((x) => x.id === id)?.title ??
+    ((sidRef.current === id ? msgs : boxOf(id)?.msgs ?? []).find((m) => m.role === "user")?.text ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 48);
+  const runTitle = running && runSid ? titleOf(runSid) : "";
+  const markKinds = Object.values(marks);
+  const tabMark: SessionState = running
+    ? waiting
+      ? "pending"
+      : "busy"
+    : markKinds.includes("pending")
+      ? "pending"
+      : markKinds.length
+        ? "done"
+        : null;
+  useEffect(() => {
+    onActivity?.({ run: running && runSid ? { sid: runSid, title: runTitle, waiting } : null, mark: tabMark });
+  }, [onActivity, running, runSid, runTitle, waiting, tabMark]);
 
   /** Sessions already warned about a failing save — one alert, not a storm. */
   const saveFailWarnedRef = useRef(new Set<string>());
@@ -1620,11 +1769,17 @@ export function CodeMode({
       persistTimerRef.current = window.setTimeout(() => {
         persistTimerRef.current = null;
         const id = persistIdRef.current;
-        if (bodyRef.current.sid !== id) return;
-        setMsgs((cur) => {
-          persist(cur, bodyRef.current.workspace, id);
-          return cur;
-        });
+        if (goneRef.current.has(id)) return;
+        if (bodyRef.current.sid === id) {
+          setMsgs((cur) => {
+            persist(cur, bodyRef.current.workspace, id);
+            return cur;
+          });
+          return;
+        }
+        // Off screen, a running turn's steps are saved from its own record.
+        const b = [...boxesRef.current].find((x) => x.sid === id);
+        if (b) persist(b.msgs, b.ws, id);
       }, 2000);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1666,14 +1821,20 @@ export function CodeMode({
         },
       );
       const title = cleanTitle(acc);
-      // The session may have been deleted or switched away while the title
-      // generated — saving then would resurrect / mislabel it.
-      if (!title || bodyRef.current.sid !== id) return;
+      // The session may have been deleted while the title generated —
+      // saving then would resurrect it. Switched away from, it is saved from
+      // its turn's own record.
+      if (!title || goneRef.current.has(id)) return;
       titlesRef.current.set(id, title);
-      setMsgs((cur) => {
-        persist(cur, bodyRef.current.workspace, id);
-        return cur;
-      });
+      if (bodyRef.current.sid === id) {
+        setMsgs((cur) => {
+          persist(cur, bodyRef.current.workspace, id);
+          return cur;
+        });
+      } else {
+        const b = boxOf(id);
+        if (b) persist(b.msgs, b.ws, id);
+      }
     } catch (e) {
       console.error(e);
     }
@@ -1719,13 +1880,29 @@ export function CodeMode({
     setDirGrants(await agentListGrants().catch(() => [] as string[]));
   }
 
+  /** The agent works for the session on screen: its workspace, its grants,
+   *  its background jobs. Put off while a turn runs in another session —
+   *  moving the workspace under a running turn moved its commands too — and
+   *  done once that turn is over. */
+  function settleBackend() {
+    sessionAllowsRef.current = new Set();
+    void agentClearGrants().catch(() => {});
+    setDirGrants([]);
+    const id = sidRef.current;
+    void agentSetSession(id)
+      .then(() => agentBgAll())
+      .then((jobs) => sidRef.current === id && setBgJobs(jobs))
+      .catch(() => {});
+    const ws = bodyRef.current.workspace;
+    if (ws) void agentSetWorkspace(ws).then(setWorkspace).catch(() => setWorkspace(null));
+  }
+
   function newSession() {
-    if (running) return;
-    // A pause belongs to the session it happened in. Carried over, the next
-    // session's first turn opened with "the previous attempt was paused after
-    // N identical calls…" and hotter sampling — the model then reasoned about
-    // another session's steps (owner report: context bleeding across sessions).
-    stuckRef.current = null;
+    // A pause belongs to the session it happened in (stuckRef is by session):
+    // carried over, the next session's first turn opened with "the previous
+    // attempt was paused after N identical calls…" and hotter sampling — the
+    // model then reasoned about another session's steps.
+    keepForRun();
     const fresh = uid();
     sidRef.current = fresh;
     setSid(fresh);
@@ -1734,25 +1911,41 @@ export function CodeMode({
     setRefSessions([]);
     setCtxUsed(0);
     setStats(null);
+    if (runningRef.current) return;
     sessionAllowsRef.current = new Set();
     void agentClearGrants().catch(() => {});
     setDirGrants([]);
   }
 
-  if (actionsRef) actionsRef.current = { newSession, attachPath: (path) => void attachCodePath(path) };
+  if (actionsRef)
+    actionsRef.current = {
+      newSession,
+      attachPath: (path) => void attachCodePath(path),
+      openSession: (id) => void openSession(id),
+    };
 
   async function openSession(id: string) {
-    if (running || id === sid) return;
-    const raw = await codeSessionLoad(id).catch(() => null);
-    if (raw == null) return;
+    if (id === sid) return;
+    // A session a turn is writing to opens as the turn has it, newer than
+    // what was last saved.
+    let parsed = boxOf(id)?.msgs;
+    if (!parsed) {
+      const raw = await codeSessionLoad(id).catch(() => null);
+      if (raw == null) return;
+      try {
+        parsed = forDisk(JSON.parse(raw) as CodeMsg[]);
+      } catch {
+        return; /* ignore corrupt */
+      }
+    }
     try {
-      const parsed = forDisk(JSON.parse(raw) as CodeMsg[]);
       // Its title as kept — the model's, or one given by hand. Held only in
       // memory, it was gone after a restart, and the session's next save put
       // the first message's opening words back in its place.
       const kept = sessions.find((x) => x.id === id)?.title;
       if (kept) titlesRef.current.set(id, kept);
-      stuckRef.current = null;
+      keepForRun();
+      parsed = boxOf(id)?.msgs ?? parsed;
       sidRef.current = id;
       setSid(id);
       // The draft survives a switch, but a reference to the session now open
@@ -1771,13 +1964,19 @@ export function CodeMode({
           setCtxTotal(kept.nCtx ?? 0);
         })
         .catch(() => {});
+      const meta = sessions.find((s) => s.id === id);
+      // Read while a turn runs elsewhere: its folder shows, and the agent
+      // stays with the turn until it ends (settleBackend).
+      if (runningRef.current) {
+        if (meta?.workspace) setWorkspace(meta.workspace);
+        return;
+      }
       sessionAllowsRef.current = new Set();
       void agentClearGrants().catch(() => {});
       setDirGrants([]);
       // A session opens in its own workspace. Setting it used to fail in
       // silence — a folder since moved or deleted left the header showing
       // one workspace while the agent kept working in another.
-      const meta = sessions.find((s) => s.id === id);
       if (meta?.workspace) {
         try {
           setWorkspace(await agentSetWorkspace(meta.workspace));
@@ -1849,6 +2048,17 @@ export function CodeMode({
    *  when the row could not be removed; the callers confirm and refresh. */
   async function removeSession(id: string) {
     await codeSessionDelete(id);
+    // Whatever a turn of it still writes goes nowhere; a turn running in it,
+    // on screen or not, is stopped.
+    goneRef.current.add(id);
+    for (const b of [...boxesRef.current]) if (b.sid === id) boxesRef.current.delete(b);
+    stuckRef.current.delete(id);
+    setMarks((m) => {
+      if (!(id in m)) return m;
+      const { [id]: _gone, ...rest } = m;
+      return rest;
+    });
+    if (id !== sid && runningRef.current && runSidRef.current === id) stop();
     if (id in modesRef.current) {
       const { [id]: _gone, ...rest } = modesRef.current;
       modesRef.current = rest;
@@ -1874,10 +2084,6 @@ export function CodeMode({
       }
       setQueue([]);
       titlesRef.current.delete(id);
-      // Belongs to the turn that was paused in the session being deleted —
-      // left behind, the next send in the fresh session resumed with the old
-      // session's escape (newSession/openSession already clear it).
-      stuckRef.current = null;
       const fresh = uid();
       sidRef.current = fresh;
       setSid(fresh);
@@ -1977,7 +2183,7 @@ export function CodeMode({
     // Whatever it was thinking when the user stopped it: kept, but no longer
     // "thinking". Left live, the panel kept its spinner turning over a turn
     // that had already been told to stop.
-    setMsgs((cur) =>
+    editSession(runSidRef.current ?? sidRef.current, (cur) =>
       cur.map((m) =>
         m.liveThinking
           ? { ...m, thinking: m.thinking ? `${m.thinking}\n\n${m.liveThinking}` : m.liveThinking, liveThinking: "" }
@@ -1994,7 +2200,10 @@ export function CodeMode({
     ask?.resolve("");
     setAsk(null);
     setQueue([]);
+    setQueueSid(null);
+    queueHeldRef.current = null;
     setRunningNow(false);
+    setRunSid(null);
   }
 
   // ── @-mention: reference a workspace file from the composer ──
@@ -2207,8 +2416,10 @@ export function CodeMode({
     if (pick === "ok" || !runningRef.current) {
       // Queued — or the turn ended while the dialog was up: the queue sends
       // it next either way.
-      if (runningRef.current) setQueue((cur) => [...cur, q]);
-      else void sendRef.current(q);
+      if (runningRef.current) {
+        setQueue((cur) => [...cur, q]);
+        setQueueSid(runSidRef.current);
+      } else void sendRef.current(q);
       return;
     }
     const winding = turnDone.current;
@@ -2216,6 +2427,7 @@ export function CodeMode({
     // Shown as waiting while the stopped turn winds down; taking it off the
     // queue meanwhile takes the message back.
     setQueue([q]);
+    setQueueSid(sidRef.current);
     await winding?.catch(() => {});
     if (!queueRef.current.includes(q)) return;
     setQueue((cur) => cur.filter((x) => x !== q));
@@ -2229,6 +2441,8 @@ export function CodeMode({
       return;
     }
     if (!text || runningRef.current || !model || !workspace) return;
+    // The model is at work elsewhere — a chat reply, a model loading.
+    if (engineHeldRef.current) return;
     if (!textArg) setInput("");
     let finish = () => {};
     turnDone.current = new Promise<void>((r) => (finish = r));
@@ -2350,13 +2564,20 @@ export function CodeMode({
     const base = [...msgs, userMsg, asst];
     const isFirstTurn = msgs.length === 0;
     setMsgs(base);
+    // The turn holds its transcript from here, on screen or off (RunBox); a
+    // stopped turn still winding down in this session shares it.
+    const box: RunBox = { sid: turnSid, ws: workspace, msgs: base };
+    for (const b of boxesRef.current) if (b.sid === turnSid) b.msgs = base;
+    boxesRef.current.add(box);
+    let endedPaused = false;
+    setRunSid(turnSid);
     setRunningNow(true);
     // A run in flight, recorded outside React state. The webview reloads on its
     // own sometimes and takes the turn with it; without this the session simply
     // reappeared idle and there was nothing to say what had happened.
     localSave(RUN_INFLIGHT_KEY, String(Date.now()));
-    const resumeFrom = stuckRef.current;
-    stuckRef.current = null;
+    const resumeFrom = stuckRef.current.get(turnSid) ?? null;
+    stuckRef.current.delete(turnSid);
     setStats(null);
     // First message = the session EXISTS: on disk, in the sidebar, named
     // (fallback title from the message text; the model-polished title still
@@ -2380,7 +2601,7 @@ export function CodeMode({
     // report used to land after the reset and put the old ring back.
     const shown = () => owns() && sidRef.current === runSid;
     const update = (fn: (a: CodeMsg) => CodeMsg) =>
-      setMsgs((cur) => cur.map((m) => (m.id === asst.id ? fn(m) : m)));
+      editSession(turnSid, (cur) => cur.map((m) => (m.id === asst.id ? fn(m) : m)));
 
     const turnImages = visionImgs;
     setCodeAttachments([]);
@@ -2498,13 +2719,17 @@ export function CodeMode({
       onThinking: (t) => update((m) => ({ ...m, liveThinking: t })),
       onStats: (tokens, tps) => shown() && setStats({ tokens, tps }),
       onContext: (used) => {
+        // Kept with the session either way: opened again mid-run, its ring
+        // is where the turn has got to.
+        if (owns()) void sessionStatsSet("code", runSid, JSON.stringify({ ctxUsed: used, nCtx: runCtx })).catch(() => {});
         if (!shown()) return;
         setCtxUsed(used);
         setCtxTotal(runCtx);
-        void sessionStatsSet("code", runSid, JSON.stringify({ ctxUsed: used, nCtx: runCtx })).catch(() => {});
       },
-      onPrefill: (frac) => shown() && setPrefill(frac),
-      onCalling: (name) => shown() && setCallingTool(name),
+      // Followed off screen too (they show only on the run's own screen), so
+      // coming back to the session shows what it is doing now.
+      onPrefill: (frac) => owns() && setPrefill(frac),
+      onCalling: (name) => owns() && setCallingTool(name),
       onDirGrants: (grants) => owns() && setDirGrants(grants),
       onPlan: (todos) => update((m) => ({ ...m, plan: todos })),
       onSaid: (text) =>
@@ -2567,7 +2792,11 @@ export function CodeMode({
       onFinal: (final, thinking, reason, stuck) => {
         // What the turn was stuck on, so "Continue" resumes the escape instead
         // of restarting it — see AgentOptions.resume.
-        if (owns()) stuckRef.current = reason === "steps" ? (stuck ?? null) : null;
+        if (owns()) {
+          if (reason === "steps" && stuck) stuckRef.current.set(turnSid, stuck);
+          else stuckRef.current.delete(turnSid);
+        }
+        endedPaused = reason === "steps";
         update((m) => ({
           ...m,
           text: final,
@@ -2583,7 +2812,7 @@ export function CodeMode({
       // Only in this turn's own transcript: after a switch, clearing "every
       // other" tail wiped the one the open session needed to resume from.
       onTranscript: (tail) =>
-        setMsgs((cur) =>
+        editSession(turnSid, (cur) =>
           !cur.some((m) => m.id === asst.id)
             ? cur
             : cur.map((m) =>
@@ -2612,34 +2841,66 @@ export function CodeMode({
     // approval dialog (leaving the run waiting on an answer that could never
     // come) and its in-flight marker. Only the run that still owns the
     // controls resets them.
+    boxesRef.current.delete(box);
+    const gone = goneRef.current.has(turnSid);
+    const onScreen = sidRef.current === turnSid;
+    // Messages queued while the agent was working → run them in order — on
+    // its own screen; off it, they wait there for you to come back.
+    const next = queueRef.current[0];
+    const queued = next !== undefined && !signal.cancelled && !gone && queueSidRef.current === turnSid;
     if (owns()) {
       setRunningNow(false);
+      setRunSid(null);
       localStorage.removeItem(RUN_INFLIGHT_KEY);
       setApproval(null);
       setPrefill(null);
       setCallingTool(null);
+      // Ended where you were not looking: its row says so until you look —
+      // waiting on you (paused, or with messages queued) or done.
+      if (!gone && !signal.cancelled && !(activeRef.current && onScreen))
+        markSession(turnSid, endedPaused || (queued && !onScreen) ? "pending" : "done");
+      // The agent goes back to the session on screen (settleBackend).
+      if (!onScreen) settleBackend();
     }
-    // Persist only while this turn's session is still the active one — after
-    // a mid-run delete, writing here would resurrect the file the user just
-    // removed (and clobber the fresh empty session).
-    if (bodyRef.current.sid === turnSid) {
-      setMsgs((cur) => {
-        persist(cur, bodyRef.current.workspace, turnSid);
-        return cur;
-      });
+    // Persisted unless the session was deleted meanwhile — writing then would
+    // resurrect the file the user just removed. On screen, from the screen;
+    // off it, from the turn's own transcript.
+    if (!gone) {
+      if (onScreen) {
+        setMsgs((cur) => {
+          persist(cur, bodyRef.current.workspace, turnSid);
+          return cur;
+        });
+      } else persist(box.msgs, box.ws, turnSid);
     }
 
-    // Messages queued while the agent was working → run them in order.
-    const next = queueRef.current[0];
-    if (next !== undefined && !signal.cancelled && bodyRef.current.sid === turnSid) {
-      setQueue((q) => q.slice(1));
-      void send(next);
+    if (queued) {
+      if (onScreen) {
+        setQueue((q) => q.slice(1));
+        void send(next);
+      } else queueHeldRef.current = turnSid;
     }
   }
 
+  /** On the running turn's own screen — or nothing runs. Reading another
+   *  session while a turn runs shows that session as it is, idle. */
+  const here = !running || runSid === null || runSid === sid;
+  const runningHere = running && here;
+  const stateOf = (id: string): SessionState =>
+    running && runSid === id ? (waiting ? "pending" : "busy") : (marks[id] ?? null);
+  /** Why sending waits on this screen, and where to go instead. */
+  const held: { text: string; go: () => void } | null =
+    running && !here && runSid
+      ? { text: t(waiting ? "busyCodeWaiting" : "busyCode", { title: runTitle || t("cmUntitled") }), go: () => void openSession(runSid) }
+      : engineHeld === "chat"
+        ? { text: t("busyChat"), go: () => onGoChat?.() }
+        : engineHeld === "load"
+          ? { text: t("busyLoad"), go: () => {} }
+          : null;
+
   /** A reply's copy button, once the run is over. */
   const copyButton = (m: CodeMsg) =>
-    !running && (
+    !runningHere && (
       <button
         className="cm-copy"
         title={t("copy")}
@@ -2669,7 +2930,7 @@ export function CodeMode({
     let runs = 0;
     const segs = segmentsOf(m.steps, m.said).map((x) => (x.kind === "tools" ? { ...x, key: `run-${runs++}` } : x));
     const tail = segs[segs.length - 1];
-    const turnLive = running && isLast;
+    const turnLive = runningHere && isLast;
     // Words in the answer box: the model is speaking — a step's words before
     // its call, or the answer. Thinking is not what is happening then.
     const speaking = !!m.text.trim();
@@ -2747,7 +3008,7 @@ export function CodeMode({
       key={s.id}
       className={`cm-session ${s.id === sid && !sessSel.selecting ? "active" : ""} ${
         sessSel.selecting ? "selecting" : ""
-      } ${sessSel.selected.has(s.id) ? "picked" : ""}`}
+      } ${sessSel.selected.has(s.id) ? "picked" : ""} ${stateOf(s.id) ? `is-${stateOf(s.id)}` : ""}`}
       onClick={(e) => {
         if (selectClick(sessSel, s.id, e)) return;
         void openSession(s.id);
@@ -2775,18 +3036,18 @@ export function CodeMode({
           onBlur={commitRename}
         />
       ) : (
-        <span
+        <SwapText
           className="cm-session-title"
+          text={s.title}
           title={`${s.title}\n${t("renameHint")}`}
           onDoubleClick={(e) => {
             if (sessSel.selecting) return;
             e.stopPropagation();
             setRenaming({ id: s.id, draft: s.title });
           }}
-        >
-          {s.title}
-        </span>
+        />
       )}
+      {stateOf(s.id) && <span className="sr-only">{t(stateOf(s.id) === "busy" ? "stBusy" : stateOf(s.id) === "pending" ? "stPending" : "stDone")}</span>}
       {!sessSel.selecting && renaming?.id !== s.id && (
         <button
           className="cm-session-del"
@@ -2829,7 +3090,7 @@ export function CodeMode({
         style={{ width: railW, marginLeft: railHidden ? -railW : 0 }}
         inert={railHidden || undefined}
       >
-        <button className="cm-new" onClick={newSession} disabled={running}>
+        <button className="cm-new" onClick={newSession}>
           <Icon name="plus" size={13} strokeWidth={2} /> {t("cmNewSession")}
         </button>
         {sessions.length > 0 && (
@@ -2930,9 +3191,9 @@ export function CodeMode({
                 {wsName ? <span className="cm-ws-name">{wsName}</span> : <span className="cm-ws-pick">{t("cmOpenFolder")}</span>}
                 <Icon name="chevron-down" size={11} strokeWidth={2} className="cm-ws-caret" />
               </button>
-              {(dirGrants.length > 0 || workspace) && (
+              {((here && dirGrants.length > 0) || workspace) && (
                 <div className="cm-grants">
-                  {dirGrants.map((d) => (
+                  {(here ? dirGrants : []).map((d) => (
                     <span key={d} className="cm-grant-chip" title={d}>
                       <Icon name="folder" size={11} />
                       <span className="cm-grant-name">{workspaceName(d)}</span>
@@ -3025,7 +3286,7 @@ export function CodeMode({
               const f = collapseTools && m.role !== "user" ? foldOf(m, mi === msgs.length - 1) : null;
               // The turn being written: its words fade in as they come (see
               // lib/streamFade), rendered block by block like a chat reply.
-              const live = running && mi === msgs.length - 1;
+              const live = runningHere && mi === msgs.length - 1;
               const pending = m.text.trim();
               if (pending) lastWords.current.set(m.id, pending);
               const streamedLast = lastWords.current.get(m.id);
@@ -3266,7 +3527,7 @@ export function CodeMode({
                       while the thought opened from nothing, the turn's end
                       went up and came down again. */}
                   <Exit ms={260} collapse>
-                    {!collapseTools && running && m === msgs[msgs.length - 1] && !m.text && !m.liveThinking && m.steps.length === 0
+                    {!collapseTools && runningHere && m === msgs[msgs.length - 1] && !m.text && !m.liveThinking && m.steps.length === 0
                       ? prefill != null
                         ? <PrefillRing frac={prefill} size={18} />
                         : <span className="cm-spin cm-working" />
@@ -3293,7 +3554,7 @@ export function CodeMode({
           {/* What the agent is doing sits inside the composer, as chat's
               status line does: above it, the transcript's fade covered it. */}
           <Exit ms={200}>
-          {running && (() => {
+          {runningHere && (() => {
             // The same words the folded run uses — what is going on now, the
             // tool it is by name — whichever way the steps are shown.
             const cur = msgs[msgs.length - 1];
@@ -3313,7 +3574,7 @@ export function CodeMode({
             );
           })()}
           </Exit>
-          {queue.length > 0 && (
+          {queue.length > 0 && queueSid === sid && (
             <div className="cm-queue">
               {queue.map((q, i) => (
                 <span key={i} className="cm-queue-chip" title={q}>
@@ -3372,6 +3633,13 @@ export function CodeMode({
               {attachErr && <span className="cm-attach-err">{attachErr}</span>}
             </div>
           )}
+          {/* Sending waits on a run elsewhere: a tab on the box's top edge
+              says where. */}
+          <Exit ms={260} collapse>
+            {held && !runningHere ? (
+              <BusyNote dock text={held.text} go={engineHeld === "load" && !running ? undefined : t("busyGo")} onGo={held.go} />
+            ) : null}
+          </Exit>
           <div className="cm-input-row">
             {slashMenu.length > 0 && (
               <div className="cm-slash">
@@ -3423,7 +3691,7 @@ export function CodeMode({
                   ? t("cmPlaceholderNoModel")
                   : !workspace
                     ? t("cmPlaceholderNoWs")
-                    : running
+                    : runningHere
                       ? t("cmQueuePlaceholder")
                       : keptPlanning && keptPlanning === msgs[msgs.length - 1]?.id && mode === "plan"
                         ? t("planKeepHint")
@@ -3491,9 +3759,10 @@ export function CodeMode({
                 if (sends) {
                   e.preventDefault();
                   if (running) {
-                    void sendWhileRunning();
+                    if (here) void sendWhileRunning();
                     return;
                   }
+                  if (held) return;
                   void send();
                 }
               }}
@@ -3507,12 +3776,12 @@ export function CodeMode({
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21.4 11.05l-8.5 8.5a5 5 0 01-7.07-7.07l8.49-8.49a3 3 0 014.24 4.24l-8.49 8.49a1 1 0 01-1.42-1.42l7.8-7.79" /></svg>
             </button>
-            {running ? (
+            {runningHere ? (
               <button className="cm-send stop" onClick={stop} title={t("drStop")}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg>
               </button>
             ) : (
-              <button className="cm-send" onClick={() => void send()} disabled={!input.trim() || !model || !workspace} title={t("sendTitle")}>
+              <button className="cm-send" onClick={() => void send()} disabled={!input.trim() || !model || !workspace || !!held || running} title={t("sendTitle")}>
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
               </button>
             )}
@@ -3568,7 +3837,7 @@ export function CodeMode({
       </main>
 
       <Exit>{previewImg && <ImagePreview path={previewImg} onClose={() => setPreviewImg(null)} />}</Exit>
-      {sudoAsk && (() => {
+      {here && sudoAsk && (() => {
         const deny = () => { sudoAsk.resolve({ ok: false }); setSudoAsk(null); setSudoPw(""); };
         const allow = () => { sudoAsk.resolve({ ok: true, password: sudoPw || undefined }); setSudoAsk(null); setSudoPw(""); };
         return (
@@ -3596,7 +3865,7 @@ export function CodeMode({
           </div>
         );
       })()}
-      {dirAsk && (
+      {here && dirAsk && (
         <div className="cm-approve-backdrop">
           <div className="cm-approve" onMouseDown={(e) => e.stopPropagation()}>
             <div className="cm-approve-title">{t("cmDirAskTitle")}</div>
@@ -3609,7 +3878,7 @@ export function CodeMode({
           </div>
         </div>
       )}
-      {approval && (
+      {here && approval && (
         <div className={`cm-approve-backdrop${approval.early ? " early" : ""}`}>
           <div className="cm-approve" onMouseDown={(e) => e.stopPropagation()}>
             <div className="cm-approve-title">
@@ -3683,7 +3952,7 @@ export function CodeMode({
         </div>
       )}
 
-      {ask && (
+      {here && ask && (
         <div className="cm-approve-backdrop">
           <div className="cm-ask" onMouseDown={(e) => e.stopPropagation()}>
             <div className="cm-ask-label">{t("cmAskUser")}</div>

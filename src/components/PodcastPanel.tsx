@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { BusyNote } from "./BusyNote";
 import { createPortal } from "react-dom";
 import { useI18n } from "../lib/i18n";
 import { Icon } from "./Icon";
@@ -78,8 +79,11 @@ export function PodcastPanel({
   voiceSpeed,
   onClose,
   onLockChange,
+  held = null,
 }: {
   model: ModelInfo | null;
+  /** The model is at work elsewhere (a Code turn): making one waits. */
+  held?: string | null;
   voiceSpeed: number;
   onClose: () => void;
   /** Lock/unlock other LLM features while the podcast is being produced. */
@@ -145,6 +149,7 @@ export function PodcastPanel({
   }
 
   async function run() {
+    if (held) return;
     if (!model) {
       setError(t("podcastNeedModel"));
       setPhase("error");
@@ -288,7 +293,8 @@ export function PodcastPanel({
         {phase === "idle" && (
           <div className="kb-setup">
             <p className="kb-note">{t("podcastIntro")}</p>
-            <button className="setup-dl ready" onClick={() => void run()}>
+            {held && <BusyNote text={held} />}
+            <button className="setup-dl ready" onClick={() => void run()} disabled={!!held}>
               {t("podcastStart")}
             </button>
           </div>
@@ -339,7 +345,7 @@ export function PodcastPanel({
               <button className="setup-dl" onClick={() => void exportAudio()}>
                 <IconDownload size={14} style={{ marginRight: 6 }} /> {t("podcastExport")}
               </button>
-              <button className="setup-dl" onClick={() => void run()}>
+              <button className="setup-dl" onClick={() => void run()} disabled={!!held}>
                 <IconRefresh size={14} style={{ marginRight: 6 }} /> {t("podcastRegen")}
               </button>
             </div>

@@ -6,6 +6,8 @@ import { useConfirm } from "./ConfirmModal";
 import { Icon } from "./Icon";
 import { STORAGE_SHIM } from "./Markdown";
 import { IconDownload, IconEdit } from "./icons";
+import { BusyNote } from "./BusyNote";
+import { Exit } from "./Exit";
 import { annotate, buildFixPayload, highlightLines, INSPECT_SHIM, instrumentHtml, precheckScripts } from "../lib/canvasSource";
 import { diffLines } from "../lib/diff";
 import { buildScanView } from "../lib/canvasStream";
@@ -488,6 +490,7 @@ export function CanvasPanel({
   versions,
   index,
   busy,
+  held = null,
   streamText = null,
   onSelectVersion,
   onReset,
@@ -503,6 +506,9 @@ export function CanvasPanel({
   versions: CanvasVersion[];
   index: number;
   busy: boolean;
+  /** The engine is at work elsewhere — a Code turn, a chat reply, a load —
+   *  and says where: the box takes typing, an iteration waits. */
+  held?: string | null;
   /** The model's partial output while an iteration streams (null when idle) —
    *  drives the Cursor-style live scan/diff in the code pane. */
   streamText?: string | null;
@@ -781,7 +787,7 @@ export function CanvasPanel({
 
   const submit = () => {
     const text = instruction.trim();
-    if (!text || busy) return;
+    if (!text || busy || held) return;
     setInstruction("");
     if (selected.length && annotated && current) {
       const lines = current.html.split("\n");
@@ -1220,7 +1226,7 @@ export function CanvasPanel({
             <div className="canvas-heal-actions">
               <button
                 className="canvas-heal-fix"
-                disabled={busy}
+                disabled={busy || !!held}
                 onClick={() => {
                   // One click hands the model EVERY current error, not just
                   // the banner's — fixing them one round-trip at a time was
@@ -1274,6 +1280,14 @@ export function CanvasPanel({
             </button>
           </div>
         )}
+        <div className="canvas-foot">
+        <Exit ms={220} collapse>
+          {held && !busy ? (
+            <div className="canvas-held">
+              <BusyNote text={held} />
+            </div>
+          ) : null}
+        </Exit>
         <div className="canvas-composer">
           <IconEdit size={15} style={{ color: "var(--faint)", flex: "none" }} />
           <input
@@ -1294,10 +1308,11 @@ export function CanvasPanel({
               {t("canvasStop")}
             </button>
           ) : (
-            <button className="canvas-send" disabled={busy || editing || !instruction.trim()} onClick={submit}>
+            <button className="canvas-send" disabled={busy || editing || !instruction.trim() || !!held} onClick={submit}>
               {t("canvasSend")}
             </button>
           )}
+        </div>
         </div>
       </div>
     </div>,

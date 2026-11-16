@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { BusyNote } from "./BusyNote";
 import { createPortal } from "react-dom";
 import { open } from "../lib/dialog";
 import { useI18n } from "../lib/i18n";
@@ -40,8 +41,12 @@ export function KnowledgePanel({
   onPodcast,
   onReport,
   captionImages = true,
+  held = null,
 }: {
   onClose: () => void;
+  /** The model is at work elsewhere (a Code turn): reading the library is
+   *  fine, adding to it (pictures are described by the model) waits. */
+  held?: string | null;
   onPodcast?: () => void;
   onReport?: () => void;
   /** Settings → Chat → describe images inside documents. */
@@ -54,6 +59,8 @@ export function KnowledgePanel({
   const [dl, setDl] = useState<{ pct: number; eta: number | null } | null>(null);
   const dlEtaStore = useRef<EtaSample[]>([]);
   const [indexing, setIndexing] = useState<{ name: string; pct: number } | null>(null);
+  const heldRef = useRef(held);
+  heldRef.current = held;
   const [error, setError] = useState("");
 
   const refresh = () => {
@@ -90,6 +97,9 @@ export function KnowledgePanel({
    *  When more than one file is queued the label shows its position (3/20).
    *  `root` (folder import) preserves each file's path relative to the folder. */
   async function ingestPaths(paths: string[], root?: string) {
+    // A file dialog stays open as long as it likes: the engine may have been
+    // taken by a reply or a Code turn by the time it closes.
+    if (heldRef.current) return;
     const total = paths.length;
     for (let i = 0; i < total; i++) {
       const path = paths[i];
@@ -284,23 +294,24 @@ export function KnowledgePanel({
                 </div>
               ) : (
                 <>
+                  {held && <BusyNote text={held} />}
                   {/* Icons as the two below have them — the first had a "+"
                       typed into its label, the second none. */}
-                  <button className="setup-dl" onClick={() => void addDocuments()}>
+                  <button className="setup-dl" onClick={() => void addDocuments()} disabled={!!held}>
                     <Icon name="plus" size={15} strokeWidth={1.8} style={{ marginRight: 6 }} /> {t("kbAdd")}
                   </button>
-                  <button className="setup-dl" onClick={() => void addFolder()}>
+                  <button className="setup-dl" onClick={() => void addFolder()} disabled={!!held}>
                     <Icon name="folder" size={15} strokeWidth={1.7} style={{ marginRight: 6 }} /> {t("kbAddFolder")}
                   </button>
                 </>
               )}
               {onReport && docs.length > 0 && !indexing && (
-                <button className="setup-dl kb-report" onClick={onReport}>
+                <button className="setup-dl kb-report" onClick={onReport} disabled={!!held}>
                   <IconResearch size={15} style={{ marginRight: 6 }} /> {t("kbReport")}
                 </button>
               )}
               {onPodcast && docs.length > 0 && !indexing && (
-                <button className="setup-dl kb-podcast" onClick={onPodcast}>
+                <button className="setup-dl kb-podcast" onClick={onPodcast} disabled={!!held}>
                   <IconMic size={15} style={{ marginRight: 6 }} /> {t("kbPodcast")}
                 </button>
               )}

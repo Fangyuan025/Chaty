@@ -596,6 +596,7 @@ pub fn run() {
             errlog::log_app_error,
             errlog::open_error_log,
             commands::eject_model,
+            commands::cancel_load,
             commands::get_model,
             commands::debug_autorun,
             commands::debug_report,

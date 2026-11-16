@@ -1,7 +1,8 @@
 import { cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { imeEnter } from "../lib/ime";
 import { createPortal } from "react-dom";
-import { LANGS, useI18n } from "../lib/i18n";
+import { LANGS, agentLang, useI18n } from "../lib/i18n";
+import { chatyFacts, chatyPrompt } from "../lib/chatyPrompt";
 import { startUpdateDownload, useUpdateDownload } from "../lib/updateDownload";
 import { useExitTransition } from "../lib/useExit";
 import { Icon } from "./Icon";
@@ -85,6 +86,10 @@ export type Theme = "dark" | "light" | "system";
  *  a setting outlives a model switch. */
 export interface GenSettings extends ImageSettings, MusicSettings {
   theme: Theme;
+  /** Chat: open the system message with what Chaty tells the model about
+   *  itself — which model it is, the app, the computer, how replies are
+   *  shown (lib/chatyPrompt.ts). */
+  chatyPrompt: boolean;
   systemPrompt: string;
   temperature: number;
   topP: number;
@@ -192,6 +197,7 @@ export const defaultSettings: GenSettings = {
   ...IMAGE_SETTINGS_DEFAULTS,
   ...MUSIC_SETTINGS_DEFAULTS,
   theme: "system",
+  chatyPrompt: true,
   systemPrompt: "",
   temperature: 0.7,
   topP: 0.95,
@@ -374,6 +380,41 @@ interface StatsView {
 }
 
 /** LM-Studio-style row: label (+hint) left, control right. */
+/** What Chaty's own prompt says, for the model loaded now — read, not
+ *  edited: the system prompt below is where the user's words go. */
+function ChatyPromptPeek({ model, on }: { model?: ModelInfo | null; on: boolean }) {
+  const { t, lang } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const shown = open && on && !!text;
+  const box = useHeightOnChange<HTMLDivElement>(shown);
+  useEffect(() => {
+    if (!open || !model) return;
+    let alive = true;
+    void chatyFacts(model, agentLang(lang)).then((f) => {
+      if (alive) setText(chatyPrompt(f));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [open, model, lang]);
+  return (
+    <div ref={box} className="chaty-peek-wrap">
+      <button
+        type="button"
+        className="chaty-peek-btn"
+        aria-expanded={shown}
+        disabled={!model || !on}
+        onClick={() => setOpen((o) => !o)}
+      >
+        {!model ? t("chatyPromptNoModel") : t(shown ? "chatyPromptHide" : "chatyPromptShow")}
+        {model && on && <Icon name="chevron-right" size={11} strokeWidth={2.2} className={shown ? "chaty-peek-chev open" : "chaty-peek-chev"} />}
+      </button>
+      {shown && <pre className="chaty-peek">{text}</pre>}
+    </div>
+  );
+}
+
 function SetRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   // A switch takes its row's label as its name: a bare toggle announced as
   // just "switch, on".
@@ -659,6 +700,7 @@ export function SettingsPanel({
   onReloadModel,
   onModelsChanged,
   reloading = false,
+  reloadHeld = false,
   onDataCleared,
   mode = "chat",
   imageModel,
@@ -668,6 +710,7 @@ export function SettingsPanel({
   musicModel,
   onManageMusicComponents,
   onMusicHistoryCleared,
+  chatModel,
 }: {
   open: boolean;
   value: GenSettings;
@@ -690,6 +733,8 @@ export function SettingsPanel({
    *  now points somewhere else, so the picker is listing the wrong disk. */
   onModelsChanged?: () => void;
   reloading?: boolean;
+  /** The model is in use — a reply, a Code turn: reloading waits for it. */
+  reloadHeld?: boolean;
   /** Called after the user clears all conversations, so the app can reset. */
   onDataCleared?: () => void;
   /** "image" when an image model is loaded: the panel offers the image
@@ -707,6 +752,8 @@ export function SettingsPanel({
   /** The loaded music model: its family's parameters and engine options,
    *  and the files it runs from. */
   musicModel?: ModelInfo | null;
+  /** The loaded language model — what Chaty's own prompt is shown for. */
+  chatModel?: ModelInfo | null;
   /** Show the loaded music model's companion files dialog. */
   onManageMusicComponents?: () => void;
   /** The music history was cleared here. */
@@ -1380,6 +1427,12 @@ export function SettingsPanel({
 
           {cat === "chat" && (
             <>
+              <div className="field chaty-prompt-field">
+                <SetRow label={t("chatyPrompt")} hint={t("chatyPromptHint")}>
+                  <Switch on={value.chatyPrompt} onToggle={() => set("chatyPrompt", !value.chatyPrompt)} />
+                </SetRow>
+                <ChatyPromptPeek model={chatModel} on={value.chatyPrompt} />
+              </div>
               <label className="field">
                 <span>{t("systemPrompt")}</span>
                 <textarea
@@ -1622,8 +1675,8 @@ export function SettingsPanel({
                 />
               </SetRow>
               {onReloadModel && (
-                <button className="settings-reload" onClick={onReloadModel} disabled={reloading}>
-                  {reloading ? "…" : t("reloadApply")}
+                <button className="settings-reload" onClick={onReloadModel} disabled={reloading || reloadHeld}>
+                  {reloading ? "…" : reloadHeld ? t("busyReload") : t("reloadApply")}
                 </button>
               )}
               <div className="settings-section">{t("secLibrary")}</div>
@@ -2491,8 +2544,8 @@ export function SettingsPanel({
                     <Switch on={value.imgMmap} onToggle={() => set("imgMmap", !value.imgMmap)} />
                   </SetRow>
                   {onReloadModel && (
-                    <button className="settings-reload" onClick={onReloadModel} disabled={reloading}>
-                      {reloading ? "…" : t("reloadApply")}
+                    <button className="settings-reload" onClick={onReloadModel} disabled={reloading || reloadHeld}>
+                      {reloading ? "…" : reloadHeld ? t("busyReload") : t("reloadApply")}
                     </button>
                   )}
                 </>
@@ -2652,8 +2705,8 @@ export function SettingsPanel({
                 </>
               )}
               {onReloadModel && (
-                <button className="settings-reload" onClick={onReloadModel} disabled={reloading}>
-                  {reloading ? "…" : t("reloadApply")}
+                <button className="settings-reload" onClick={onReloadModel} disabled={reloading || reloadHeld}>
+                  {reloading ? "…" : reloadHeld ? t("busyReload") : t("reloadApply")}
                 </button>
               )}
               <div className="settings-section">{t("secLibrary")}</div>

@@ -16,6 +16,7 @@ import {
   type HfFile,
 } from "../lib/ipc";
 import { Icon } from "./Icon";
+import { dlBegin, dlCancelled, dlDone, dlFailed, dlFile, dlProgress } from "../lib/downloads";
 
 /** One hardware-fitted recommendation (a model family at a size + quant). */
 interface Pick {
@@ -224,6 +225,7 @@ export function SetupModal({
   const setCard = setCardEverywhere;
 
   async function download(p: Pick) {
+    const taskId = `setup:${p.label}`;
     setCard(p.label, { kind: "resolving" });
     try {
       // Resolve: first candidate repo that lists GGUFs wins. Keep the repo's
@@ -264,9 +266,14 @@ export function SetupModal({
       const mmproj = pickMmproj(repoFiles);
       const subdir = modelFolderFor(chosenRepo);
       let mainPath = "";
+      // Shown in the store too, with the rest of the app's downloads.
+      const total = chosen.size + (mmproj?.size ?? 0);
+      dlBegin({ id: taskId, name: p.label, variant: p.quant, repo: chosenRepo, total });
+      let base = 0;
       const fetchOne = async (f: HfFile, keepPath: boolean) => {
         const file = f.name;
         etaStores.current[p.label] = [];
+        dlFile(taskId, file);
         setCard(p.label, { kind: "downloading", pct: 0, file, eta: null });
         await new Promise<void>((resolve, reject) => {
           downloadModel(
@@ -274,6 +281,7 @@ export function SetupModal({
             file,
             (ev: DownloadProgress) => {
               if (ev.type === "progress" && ev.total > 0) {
+                dlProgress(taskId, base + ev.downloaded, total);
                 setCard(p.label, {
                   kind: "downloading",
                   pct: Math.round((ev.downloaded / ev.total) * 100),
@@ -289,12 +297,18 @@ export function SetupModal({
             subdir,
           ).then(resolve, reject);
         });
+        base += f.size;
       };
       await fetchOne(chosen, true);
       if (mmproj) await fetchOne(mmproj, false);
-      if (mainPath) setCard(p.label, { kind: "done", path: mainPath });
+      if (mainPath) {
+        setCard(p.label, { kind: "done", path: mainPath });
+        dlDone(taskId, mainPath);
+      }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
+      if (message === DOWNLOAD_CANCELLED) dlCancelled(taskId);
+      else dlFailed(taskId, message);
       setCard(
         p.label,
         message === DOWNLOAD_CANCELLED

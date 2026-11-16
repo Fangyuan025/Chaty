@@ -31,6 +31,37 @@ use tauri::ipc::Channel;
 /// sidecars see their stdin close when the app goes and exit by themselves.)
 pub(crate) static SIDECAR_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
+/// A model load the user cancelled. Set by `cancel_load`, cleared as the next
+/// load begins: while it is set, a sidecar that dies inside the load is not a
+/// crash — no smaller GPU offload is tried, no runtime pack is set aside as
+/// broken, and the bundled engine is not tried in its place.
+pub(crate) static LOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+pub fn load_cancelled() -> bool {
+    LOAD_CANCELLED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The engine processes a load started — every sidecar not in `before`,
+/// taken as the load began — ended now. Names checked as in
+/// `kill_sidecars_now`; sysinfo's kill ends a process on every platform.
+pub fn kill_sidecars_except(before: &[u32]) {
+    let pids: Vec<u32> = SIDECAR_PIDS.lock().unwrap().iter().copied().filter(|p| !before.contains(p)).collect();
+    if pids.is_empty() {
+        return;
+    }
+    let mut sys = sysinfo::System::new();
+    let want: Vec<sysinfo::Pid> = pids.iter().map(|p| sysinfo::Pid::from_u32(*p)).collect();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&want), true);
+    for pid in pids {
+        if let Some(p) = sys.process(sysinfo::Pid::from_u32(pid)) {
+            let name = p.name().to_string_lossy();
+            if name.contains("chaty-mlx") || name.contains("chaty-sd") || name.contains("chaty-audio") || name.contains("chaty-llama") {
+                p.kill();
+            }
+        }
+    }
+}
+
 pub fn kill_sidecars_now() {
     let pids: Vec<u32> = std::mem::take(&mut *SIDECAR_PIDS.lock().unwrap());
     if pids.is_empty() {
