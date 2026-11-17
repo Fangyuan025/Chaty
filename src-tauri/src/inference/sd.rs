@@ -235,7 +235,9 @@ impl SdEngine {
         let mut child = command
             .spawn()
             .with_context(|| trf!("无法启动图像引擎 {}", "failed to start the image engine {}", sidecar.display()))?;
-        super::SIDECAR_PIDS.lock().unwrap().push(child.id());
+        if !super::register_sidecar(&mut child) {
+            return Err(super::cancelled_error());
+        }
         let stdin = child.stdin.take().context(trf!("图像引擎的输入管道不可用", "the image engine's input pipe is unavailable"))?;
         let stdout = child.stdout.take().context(trf!("图像引擎的输出管道不可用", "the image engine's output pipe is unavailable"))?;
         let stderr = child.stderr.take().context(trf!("图像引擎的日志管道不可用", "the image engine's log pipe is unavailable"))?;
@@ -561,6 +563,13 @@ impl SdEngine {
 /// worth one more try on the CPU.
 #[derive(Debug)]
 pub struct Crashed(pub String);
+
+/// A GPU load worth one more try on the CPU: its engine crashed by itself —
+/// not one ended because the user cancelled the load, which used to be taken
+/// for a crash and started again (a second press stopped it).
+pub fn crashed_by_itself(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<Crashed>().is_some() && !super::load_cancelled()
+}
 impl std::fmt::Display for Crashed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)

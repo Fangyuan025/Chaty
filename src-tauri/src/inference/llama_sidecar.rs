@@ -124,7 +124,9 @@ impl Proc {
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
         let stdin = child.stdin.take();
         let pid = child.id();
-        super::SIDECAR_PIDS.lock().unwrap().push(pid);
+        if !super::register_sidecar(&mut child) {
+            return Err(super::cancelled_error());
+        }
         let routes: Arc<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<Value>>>> = Arc::default();
         let (control_tx, control) = std::sync::mpsc::channel::<Value>();
         let reader_routes = routes.clone();

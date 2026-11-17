@@ -92,7 +92,7 @@ pub fn load(path: &Path, opts: &MusicLoadOptions, progress: impl Fn(f32)) -> any
         || anyhow::anyhow!(trf!("未找到音乐引擎组件 chaty-audio,请重新安装应用", "the music engine (chaty-audio) is missing; please reinstall")),
         |sidecar| match AudioEngine::load(sidecar, load_cmd(&probe, opts, want_cpu), &progress) {
             Ok((e, l)) => Ok((e, l, want_cpu, None)),
-            Err(e) if !want_cpu && e.downcast_ref::<crate::inference::sd::Crashed>().is_some() => {
+            Err(e) if !want_cpu && crate::inference::sd::crashed_by_itself(&e) => {
                 crate::errlog::append_error("music-model-load", &format!("path: {}\nGPU load crashed, retrying on CPU\n{e:#}", path.display()));
                 let (e, l) = AudioEngine::load(sidecar, load_cmd(&probe, opts, true), &progress)?;
                 Ok((e, l, true, Some("music-gpu-crash-cpu".to_string())))

@@ -400,7 +400,9 @@ impl MlxEngine {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| trf!("无法启动 MLX 引擎 {sidecar:?}", "failed to start the MLX engine {sidecar:?}"))?;
-        super::SIDECAR_PIDS.lock().unwrap().push(child.id());
+        if !super::register_sidecar(&mut child) {
+            return Err(super::cancelled_error());
+        }
         let mut stdin_pipe = child.stdin.take().context(trf!("MLX 引擎的输入管道不可用", "the MLX engine's input pipe is unavailable"))?;
         let stdout = child.stdout.take().context(trf!("MLX 引擎的输出管道不可用", "the MLX engine's output pipe is unavailable"))?;
 

@@ -142,7 +142,7 @@ pub fn load(
         },
         |sidecar| match SdEngine::load(sidecar, load_cmd(&probe, opts, want_cpu), &progress) {
             Ok((e, l)) => Ok((e, l, want_cpu, None)),
-            Err(e) if !want_cpu && e.downcast_ref::<crate::inference::sd::Crashed>().is_some() => {
+            Err(e) if !want_cpu && crate::inference::sd::crashed_by_itself(&e) => {
                 crate::errlog::append_error("image-model-load", &format!("path: {}\nGPU load crashed, retrying on CPU\n{e:#}", path.display()));
                 let (e, l) = SdEngine::load(sidecar, load_cmd(&probe, opts, true), &progress)?;
                 Ok((e, l, true, Some("image-gpu-crash-cpu".to_string())))
@@ -772,5 +772,86 @@ mod tests {
         assert!(c.get("backend").is_none());
         let cpu = load_cmd(&probe, &LoadOptions::default(), true);
         assert_eq!(cpu["backend"], "cpu");
+    }
+
+    /// Cancelling a load ends it at the first press, whenever it comes. Mid
+    /// load: the engine the cancel ended is not taken for a GPU load that
+    /// crashed and started again on the CPU (which took a second press to
+    /// stop). Before the engine is up: the engine is ended as it starts, not
+    /// left to load the whole model. A real model, loaded:
+    ///   CHATY_IMAGE_MODEL=/path/model.gguf cargo test --lib a_cancelled_image_load -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn a_cancelled_image_load_is_not_started_again() {
+        use crate::inference::{kill_sidecars_except, LOAD_BEFORE, LOAD_CANCELLED, SIDECAR_PIDS};
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+        let path = PathBuf::from(std::env::var("CHATY_IMAGE_MODEL").expect("CHATY_IMAGE_MODEL"));
+        let roots = vec![path.parent().unwrap().parent().unwrap().to_path_buf()];
+        let before = SIDECAR_PIDS.lock().unwrap().clone();
+        let started = |b: &[u32]| -> Vec<u32> { SIDECAR_PIDS.lock().unwrap().iter().copied().filter(|p| !b.contains(p)).collect() };
+        // As `load_model` and `cancel_load` do it.
+        let begin = || {
+            LOAD_CANCELLED.store(false, Ordering::SeqCst);
+            *LOAD_BEFORE.lock().unwrap() = Some(SIDECAR_PIDS.lock().unwrap().clone());
+        };
+        let press = || {
+            LOAD_CANCELLED.store(true, Ordering::SeqCst);
+            let b = LOAD_BEFORE.lock().unwrap().clone().unwrap();
+            kill_sidecars_except(&b);
+        };
+        let spawn_load = {
+            let path = path.clone();
+            let roots = roots.clone();
+            move || {
+                let (path, roots) = (path.clone(), roots.clone());
+                std::thread::spawn(move || load(&path, &LoadOptions::default(), &roots, |_| {}).map(|(e, _)| e.unload()))
+            }
+        };
+
+        // Mid load.
+        begin();
+        let loader = spawn_load();
+        let t = Instant::now();
+        let first = loop {
+            if let Some(p) = started(&before).first() {
+                break *p;
+            }
+            assert!(t.elapsed() < Duration::from_secs(60), "the engine never started");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        std::thread::sleep(Duration::from_millis(2500)); // well into the weights
+        press();
+        let pressed = Instant::now();
+        // Another engine coming up after it is the load started over.
+        let mut again = None;
+        while !loader.is_finished() && pressed.elapsed() < Duration::from_secs(8) {
+            if let Some(p) = started(&before).into_iter().find(|p| *p != first) {
+                again = Some(p);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if again.is_some() {
+            press(); // the second press, so nothing is left loading
+        }
+        let r = loader.join().unwrap();
+        eprintln!("mid load: engine {first}; after one press {again:?} started, load {} in {:?}", if r.is_ok() { "finished" } else { "ended" }, pressed.elapsed());
+        assert_eq!(again, None, "the cancelled load was started again on another engine");
+        assert!(r.is_err(), "the cancelled load went on to finish");
+        assert!(started(&before).is_empty(), "an engine was left running");
+
+        // Before the engine is up: the press finds nothing to end.
+        begin();
+        press();
+        let pressed = Instant::now();
+        let r = spawn_load().join().unwrap();
+        eprintln!("before the engine: load {} in {:?}", r.as_ref().err().map(|e| format!("ended ({e})")).unwrap_or("finished".into()), pressed.elapsed());
+        assert!(r.is_err(), "a load cancelled before its engine started went on to finish");
+        assert!(pressed.elapsed() < Duration::from_secs(5), "it loaded on before it ended");
+        assert!(started(&before).is_empty(), "an engine was left running");
+
+        *LOAD_BEFORE.lock().unwrap() = None;
+        LOAD_CANCELLED.store(false, Ordering::SeqCst);
     }
 }

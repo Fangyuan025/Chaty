@@ -53,9 +53,6 @@ impl MonotonicProgress {
 /// avoid. A second caller is turned away rather than queued: by the time the
 /// first finished, its answer would be a model nobody asked for any more.
 static LOADING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-/// The sidecars running as the load in progress began: what `cancel_load`
-/// leaves alone. None outside a load's own engine start.
-static LOAD_BEFORE: std::sync::Mutex<Option<Vec<u32>>> = std::sync::Mutex::new(None);
 /// What a cancelled load rejects with; the app says nothing of it as an error.
 const LOAD_CANCELLED: &str = "LOAD_CANCELLED";
 
@@ -255,7 +252,7 @@ pub async fn load_model(
     if crate::inference::load_cancelled() {
         return Err(LOAD_CANCELLED.into());
     }
-    *LOAD_BEFORE.lock().unwrap() = Some(crate::inference::SIDECAR_PIDS.lock().unwrap().clone());
+    *crate::inference::LOAD_BEFORE.lock().unwrap() = Some(crate::inference::SIDECAR_PIDS.lock().unwrap().clone());
 
     // Progress: every engine reports its own as it loads. Shared through one
     // gate so the bar the user sees never moves backwards (see
@@ -316,7 +313,7 @@ pub async fn load_model(
     };
     // Saturate the mark so a straggling poller tick can't undercut "ready".
     gate.saturate();
-    *LOAD_BEFORE.lock().unwrap() = None;
+    *crate::inference::LOAD_BEFORE.lock().unwrap() = None;
     if crate::inference::load_cancelled() {
         // Ended by the user. A load that got in just as the cancel came is let
         // go too: what the user asked for is no model, not this one. The
@@ -354,7 +351,7 @@ pub async fn cancel_load() -> Result<(), String> {
         return Ok(());
     }
     crate::inference::LOAD_CANCELLED.store(true, Ordering::SeqCst);
-    let before = LOAD_BEFORE.lock().unwrap().clone();
+    let before = crate::inference::LOAD_BEFORE.lock().unwrap().clone();
     if let Some(before) = before {
         let _ = tokio::task::spawn_blocking(move || crate::inference::kill_sidecars_except(&before)).await;
     }

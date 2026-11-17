@@ -34,11 +34,38 @@ pub(crate) static SIDECAR_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// A model load the user cancelled. Set by `cancel_load`, cleared as the next
 /// load begins: while it is set, a sidecar that dies inside the load is not a
 /// crash — no smaller GPU offload is tried, no runtime pack is set aside as
-/// broken, and the bundled engine is not tried in its place.
+/// broken, the bundled engine is not tried in its place, and an image or
+/// music model is not tried again on the CPU.
 pub(crate) static LOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 pub fn load_cancelled() -> bool {
     LOAD_CANCELLED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The sidecars running as the load in progress began: what `cancel_load`
+/// leaves alone. None outside a load's own engine start.
+pub(crate) static LOAD_BEFORE: Mutex<Option<Vec<u32>>> = Mutex::new(None);
+
+/// List a sidecar just started, for the quit path's reap and a cancel's reach.
+/// `cancel_load` ends the engines it can see; one that comes up after it, in a
+/// load already cancelled, is ended here instead — false, the process gone,
+/// and the caller gives up with `cancelled_error`. (Sidecars are listed and
+/// the flag read in opposite order to the cancel's, so one of the two always
+/// sees the other.)
+pub(crate) fn register_sidecar(child: &mut std::process::Child) -> bool {
+    let pid = child.id();
+    SIDECAR_PIDS.lock().unwrap().push(pid);
+    if !load_cancelled() || LOAD_BEFORE.lock().unwrap().is_none() {
+        return true;
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    SIDECAR_PIDS.lock().unwrap().retain(|p| *p != pid);
+    false
+}
+
+pub(crate) fn cancelled_error() -> anyhow::Error {
+    anyhow::anyhow!(trf!("加载已取消", "the load was cancelled"))
 }
 
 /// The chat's Skip on a reply that is still thinking: end the thought where it

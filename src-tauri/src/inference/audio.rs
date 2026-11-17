@@ -170,7 +170,9 @@ impl Proc {
         let mut child = command
             .spawn()
             .with_context(|| trf!("无法启动音乐引擎 {}", "failed to start the music engine {}", sidecar.display()))?;
-        super::SIDECAR_PIDS.lock().unwrap().push(child.id());
+        if !super::register_sidecar(&mut child) {
+            return Err(super::cancelled_error());
+        }
         let stdin = child.stdin.take().context(trf!("音乐引擎的输入管道不可用", "the music engine's input pipe is unavailable"))?;
         let stdout = child.stdout.take().context(trf!("音乐引擎的输出管道不可用", "the music engine's output pipe is unavailable"))?;
         let stderr = child.stderr.take().context(trf!("音乐引擎的日志管道不可用", "the music engine's log pipe is unavailable"))?;
