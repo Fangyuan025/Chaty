@@ -56,6 +56,7 @@ fn sidecar_key(role: Role) -> &'static str {
         Role::ClipL => "clip_l",
         Role::ClipG => "clip_g",
         Role::T5xxl => "t5xxl",
+        Role::Tokenizer => "tokenizer",
     }
 }
 
@@ -65,6 +66,9 @@ fn load_cmd(p: &ImageProbe, o: &LoadOptions, cpu: bool) -> Value {
     c[if p.all_in_one { "model" } else { "diffusion_model" }] = json!(p.path);
     for comp in &p.components {
         c[sidecar_key(comp.role)] = json!(comp.path);
+    }
+    if !p.model_args.is_empty() {
+        c["model_args"] = json!(p.model_args);
     }
     c["diffusion_fa"] = json!(o.flash_attn);
     c["mmap"] = json!(o.mmap);
@@ -95,6 +99,7 @@ fn roles_text(roles: &[Role]) -> String {
             Role::ClipL => "CLIP-L".into(),
             Role::ClipG => "CLIP-G".into(),
             Role::T5xxl => "T5-XXL".into(),
+            Role::Tokenizer => trf!("分词器", "tokenizer"),
         })
         .collect::<Vec<_>>()
         .join(trf!("、", ", ").as_str())
@@ -496,6 +501,7 @@ pub async fn image_generate(
 
     let mut params = request.params.clone();
     params.cache = family::step_cache(&family, &params.accel).map(|(m, t)| (m.to_string(), t));
+    params.sigmas = family::sigmas_for(&family, params.steps, &params.scheduler);
     let dir = out_dir.clone();
     let l2 = listener.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
@@ -670,15 +676,24 @@ mod tests {
             Some(n) => n,
             None => info.image.as_ref().map(|i| i.defaults.steps.min(4)).unwrap_or(4),
         };
-        let params = GenerateParams {
+        // The family's settings, as the studio starts from them — and its
+        // schedule, as image_generate gives it.
+        let d = info.image.as_ref().map(|i| i.defaults.clone());
+        let family = info.image.as_ref().map(|i| i.family.clone()).unwrap_or_default();
+        let mut params = GenerateParams {
             prompt: std::env::var("CHATY_TEST_SD_PROMPT").unwrap_or_else(|_| "a lighthouse at dusk".into()),
             width: side,
             height: side,
             steps,
-            cfg_scale: info.image.as_ref().map(|i| i.defaults.cfg_scale).unwrap_or(1.0),
+            cfg_scale: d.as_ref().map(|d| d.cfg_scale).unwrap_or(1.0),
+            guidance: d.as_ref().and_then(|d| d.guidance),
+            sampler: d.as_ref().map(|d| d.sampler.to_string()).unwrap_or_default(),
+            flow_shift: d.as_ref().map(|d| d.flow_shift).unwrap_or(0.0),
             seed: 1,
             ..Default::default()
         };
+        params.sigmas = family::sigmas_for(&family, params.steps, &params.scheduler);
+        eprintln!("family {family}: {} steps, cfg {}, sigmas {:?}", params.steps, params.cfg_scale, params.sigmas);
         let mut stages = Vec::new();
         let result = engine
             .generate(&params, &out, "e2e", &metadata_text(&params, &info.name), |e| {
@@ -697,6 +712,21 @@ mod tests {
             eprintln!("info {}", serde_json::to_string(&info).unwrap_or_default());
         } else {
             std::fs::remove_dir_all(&out).ok();
+        }
+    }
+
+    /// What the store would fetch beside a downloaded model, one
+    /// `role<TAB>repo<TAB>file` line each — the companion downloads of the
+    /// store's flow, for a script to fetch.
+    /// `CHATY_TEST_SD_MODEL=/path/to/model.gguf cargo test … -- --ignored`
+    #[test]
+    #[ignore]
+    fn print_what_a_model_still_needs() {
+        let model = PathBuf::from(std::env::var("CHATY_TEST_SD_MODEL").expect("set CHATY_TEST_SD_MODEL"));
+        let p = probe::probe_image_model(&model, &probe::Overrides::new(), &[]).expect("an image model");
+        eprintln!("family {} all_in_one {} missing {:?}", p.family, p.all_in_one, p.missing);
+        for s in &p.suggestions {
+            println!("NEED\t{}\t{}\t{}", s.role.key(), s.repo, s.file);
         }
     }
 
@@ -721,12 +751,21 @@ mod tests {
             defaults: family::QWEN_IMAGE_21.defaults.clone(),
             edits: false,
             engine: "sd.cpp",
+            model_args: String::new(),
         };
         // Default: everything on the GPU.
         let c = load_cmd(&probe, &LoadOptions::default(), false);
         assert_eq!(c["diffusion_model"], "/m/q.gguf");
         assert_eq!(c["vae"], "/m/vae.safetensors");
         assert_eq!(c["llm"], "/m/llm.gguf");
+        assert!(c.get("model_args").is_none() && c.get("tokenizer").is_none());
+        // A vocabulary and the network's settings go as the engine names them.
+        let mut moss = probe.clone();
+        moss.components.push(Component { role: Role::Tokenizer, path: "/m/tokenizer.json".into(), size_mb: 1, source: "folder" });
+        moss.model_args = "qwen_image_zero_cond_t=true".into();
+        let c = load_cmd(&moss, &LoadOptions::default(), false);
+        assert_eq!(c["tokenizer"], "/m/tokenizer.json");
+        assert_eq!(c["model_args"], "qwen_image_zero_cond_t=true");
         assert_eq!(c["diffusion_fa"], true);
         assert_eq!(c["offload_to_cpu"], false);
         assert_eq!(c["clip_on_cpu"], false);

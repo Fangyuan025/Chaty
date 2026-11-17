@@ -680,6 +680,12 @@ static void do_load(json cmd) {
     std::string clip_g       = engine_path(jstr(cmd, "clip_g"));
     std::string t5xxl        = engine_path(jstr(cmd, "t5xxl"));
     std::string taesd        = engine_path(jstr(cmd, "taesd"));
+    // A text encoder's vocabulary the engine does not carry (MOSS-Image's
+    // Qwen3.5), and settings of the network its file does not state (Qwen-
+    // Image Edit 2511's zero-timestep reference) — the CLI's --tokenizer and
+    // --model-args. Only the opaque options take them.
+    std::string tokenizer    = engine_path(jstr(cmd, "tokenizer"));
+    std::string model_args   = jstr(cmd, "model_args");
     std::string max_vram     = jstr(cmd, "max_vram");
     std::string backend      = jstr(cmd, "backend");
     std::string params_backend = jstr(cmd, "params_backend");
@@ -743,6 +749,8 @@ static void do_load(json cmd) {
         set_str("clip_g_path", clip_g);
         set_str("t5xxl_path", t5xxl);
         set_str("taesd_path", taesd);
+        set_str("tokenizer", tokenizer);
+        set_str("model_args", model_args);
         set_bool("tae_preview_only", !taesd.empty());
         if (threads > 0)
             check_opt(sd_opt_set_int(o, "n_threads", threads), "n_threads");
@@ -990,6 +998,16 @@ static void do_generate(json cmd) {
         check_opt(sd_opt_set_float(g, "sample.flow_shift", flow_shift), "sample.flow_shift");
     if (eta >= 0.0f)
         check_opt(sd_opt_set_float(g, "sample.eta", eta), "sample.eta");
+    // A distilled model's own schedule (the CLI's --sigmas), given while the
+    // round is drawn in its steps — one value per step and a last 0.
+    if (cmd.contains("sigmas") && cmd["sigmas"].is_array() && cmd["sigmas"].size() == (size_t)steps + 1) {
+        std::vector<float> sigmas;
+        for (const auto& v : cmd["sigmas"])
+            if (v.is_number())
+                sigmas.push_back(v.get<float>());
+        if (sigmas.size() == (size_t)steps + 1)
+            check_opt(sd_opt_set_floats(g, "sample.sigmas", sigmas.data(), sigmas.size()), "sample.sigmas");
+    }
     // Unset — or a name the engine does not know, which its setter refuses —
     // is the engine's choice for the model, as before.
     if (!sampler.empty())

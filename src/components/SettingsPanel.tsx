@@ -1211,6 +1211,7 @@ export function SettingsPanel({
     clipL: t("imgRoleClipL"),
     clipG: t("imgRoleClipG"),
     t5xxl: t("imgRoleT5"),
+    tokenizer: t("imgRoleTokenizer"),
   };
   const baseName = (p: string) => p.split(/[/\\]/).pop() || p;
 
@@ -1642,7 +1643,10 @@ export function SettingsPanel({
                     type="button"
                     className="data-btn"
                     disabled={!!voiceTesting}
-                    onClick={() => testVoice(lang === "zh" ? "zh" : "en")}
+                    // Without Chinese support every reply is read by the
+                    // English voice, and so is the sample: the Chinese one
+                    // came out a string of "Chinese letter".
+                    onClick={() => testVoice("en")}
                   >
                     {voiceTesting ? "…" : t("voicePreviewBtn")}
                   </button>

@@ -357,6 +357,15 @@ jobs:
             Settings → Chat, off by default, does the same by itself once a thought runs that long;
             an experimental floor, the other way round, keeps a model thinking at least that long.
 
+            ## More image models, ready from the store
+
+            Most popular text-to-image models now download with what they need beside them, as
+            Qwen-Image and Z-Image did: FLUX.3 Image Klein, MiniMax-H3-Image, P-H3-Image, Krea 2,
+            MOSS-Image, FLUX.2 [dev], ERNIE-Image, Anima, Ovis-Image, LongCat-Image, Iris-3B,
+            Qwen-Image Edit, Stable Diffusion 3.5 and more, each set up as its makers run it. The
+            store reads what a model is from the file itself, so fine-tunes under names of their own
+            get their family's files too.
+
             ## One thing at a time
 
             A Code session at work can be left to read other sessions or chat; nothing can be sent,
@@ -384,6 +393,7 @@ jobs:
             instead of standing at half; the sidebar slides; folded code, thoughts and
             Code mode's cards open and close smoothly, by a click or by themselves; Code mode's
             thought fades in word by word, and a long one shows under its run as it is written.
+            Code mode's welcome holds still while a model loads.
 
             <!-- Highlights go above this line, hand-written per release —
                  the release page is where people who found Chaty through a

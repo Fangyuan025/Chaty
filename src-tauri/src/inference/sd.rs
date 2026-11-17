@@ -105,6 +105,10 @@ pub struct GenerateParams {
     /// reuse threshold, 0 = the engine's default) — set by the caller.
     #[serde(skip)]
     pub cache: Option<(String, f32)>,
+    /// The schedule to draw in, when the model has one of its own
+    /// (family::sigmas_for) — set by the caller. Empty = the scheduler's.
+    #[serde(skip)]
+    pub sigmas: Vec<f32>,
 }
 
 impl Default for GenerateParams {
@@ -132,6 +136,7 @@ impl Default for GenerateParams {
             ref_images: Vec::new(),
             accel: String::new(),
             cache: None,
+            sigmas: Vec::new(),
         }
     }
 }
@@ -445,6 +450,9 @@ impl SdEngine {
         }
         if let Some(init) = p.init_image.as_ref().filter(|s| !s.is_empty()) {
             cmd["init_image"] = json!(init);
+        }
+        if !p.sigmas.is_empty() {
+            cmd["sigmas"] = json!(p.sigmas);
         }
         if let Some((mode, threshold)) = &p.cache {
             cmd["cache_mode"] = json!(mode);

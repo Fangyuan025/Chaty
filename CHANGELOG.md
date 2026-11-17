@@ -166,6 +166,11 @@
   code block folding as its fence closes brings the end of a chat up to a
   view left part-way through, without any scrolling — and the round arrow
   stayed over it. It is read again whenever the conversation changes size.
+- **Code mode's welcome holds still while a model loads.** The tab saying
+  a model is loading came up over the box and pushed the centred
+  "Coding agent" and its Open workspace button up, then let them drop back
+  once the model was in; in an empty session it now stands over the box
+  without moving them.
 - **The sidebar slides** away and back (⌘\\ or its button), in chat, Code
   mode and the studios, the panel widening into its place — it vanished in a
   frame.
@@ -250,11 +255,37 @@
   seconds, where it used to stay grey. A title too long to sit beside the
   picture goes under it, the two centred together.
 
+### More image models, ready from the store
+
+- **Most popular text-to-image models download ready to draw.** Getting one
+  from the store brings what it needs beside it — its VAE, the language
+  model that reads the prompt, a vision encoder or a tokenizer — as Qwen-Image
+  and Z-Image already did, now for FLUX.3 Image Klein and Klein Base,
+  MiniMax-H3-Image, P-H3-Image, Krea 2 Turbo and Raw, MOSS-Image, FLUX.2
+  [dev], ERNIE-Image and its Turbo, Anima, Ovis-Image, LongCat-Image,
+  Iris-3B, Mage-Flow, Chroma1-Radiance, Qwen-Image Edit (2509 and 2511
+  included) and Stable Diffusion 3.5, each set up with the steps, guidance
+  and schedule its makers draw with. Qwen-Image 2.1 Turbo and the H3 models
+  draw on the eight- and six-step schedules they were trained for.
+- **The store reads what a model is from the file itself**, its first
+  megabytes, before anything is downloaded — so a fine-tune or a
+  quantization under a name of its own gets its family's files too, and a
+  checkpoint carrying its own VAE (second-state's Stable Diffusion 3.5) is
+  loaded whole, needing none. Where the name is all there is, the model
+  card's base model is read as well. A model of a family Chaty does not
+  set up says so before the download, as before.
+
 ### Finding your way
 
 - **Each reply says which model wrote it**, at its foot on the right on
   hover — a conversation can pass through several — and a chat exported as
   JSON or Markdown says it of each reply too.
+- **The voice sample speaks English with Chinese voice support off.** In the
+  Chinese interface it played the Chinese sample to the English voice, which
+  read every character as "Chinese letter". And the English voice is no
+  longer handed what it cannot read anywhere: a few Chinese, Japanese or
+  Korean words in an English reply are passed over, not spelled out as
+  letters.
 - **Your message's copy and edit sit under it, at its right, on hover**,
   where they sat centred on its left side, half-way down a long one. In Code
   mode the same, with copy beside rewind.

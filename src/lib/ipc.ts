@@ -384,7 +384,7 @@ export function musicMediaUrl(path: string): string {
 // ---- Text-to-image ----
 
 /** A file an image model needs besides its own weights. */
-export type ImageRole = "vae" | "llm" | "llmVision" | "clipL" | "clipG" | "t5xxl";
+export type ImageRole = "vae" | "llm" | "llmVision" | "clipL" | "clipG" | "t5xxl" | "tokenizer";
 
 /** The settings a model family was made to be run with. */
 export interface ImageDefaults {
@@ -1617,6 +1617,9 @@ export interface HfModelDetail {
   image?: boolean;
   /** Its VAE / text encoder, fetched into the same folder with the quant. */
   companions?: ImageSuggestion[];
+  /** An image model needing a file nothing here downloads — added by hand
+   *  after the download. */
+  imageIncomplete?: boolean;
   /** Why Chaty could not run it once downloaded; absent = no known obstacle. */
   unsupported?: string | null;
   /** A text-to-music model. */

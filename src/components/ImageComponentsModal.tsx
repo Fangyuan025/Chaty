@@ -22,6 +22,7 @@ export const ROLE_KEY: Record<ImageRole, TKey> = {
   clipL: "imgRoleClipL",
   clipG: "imgRoleClipG",
   t5xxl: "imgRoleT5",
+  tokenizer: "imgRoleTokenizer",
 };
 
 function basename(p: string): string {
@@ -72,7 +73,11 @@ export function ImageComponentsModal({
     const picked = await openDialog({
       multiple: false,
       defaultPath: dirname(path),
-      filters: [{ name: t("imgWeightsFiles"), extensions: ["gguf", "safetensors", "sft"] }],
+      // A vocabulary is a tokenizer.json; everything else is weights.
+      filters:
+        role === "tokenizer"
+          ? [{ name: t("imgRoleTokenizer"), extensions: ["json"] }]
+          : [{ name: t("imgWeightsFiles"), extensions: ["gguf", "safetensors", "sft"] }],
     });
     if (typeof picked === "string") onOverrides({ ...overrides, [role]: picked });
   };

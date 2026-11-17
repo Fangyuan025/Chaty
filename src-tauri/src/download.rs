@@ -399,6 +399,10 @@ pub struct HfModelDetail {
     /// For an image model of a known family: the VAE / text encoder it needs,
     /// fetched into the same folder with the chosen quant.
     pub companions: Vec<crate::imagegen::probe::Suggestion>,
+    /// An image model needing a file nothing here downloads (the family is
+    /// not known, or its file is only in a gated repository): to be added
+    /// by hand after the download.
+    pub image_incomplete: bool,
     /// Why Chaty could not run it once downloaded (an MLX image model of an
     /// architecture its engine does not run); None = no known obstacle.
     pub unsupported: Option<String>,
@@ -986,7 +990,7 @@ fn hf_is_image_model(id: &str, tags: &[String], pipeline: Option<&str>, mflux: b
     if mflux || tags.iter().any(|t| t == "mflux") {
         return true;
     }
-    if crate::imagegen::family::guess_by_name(id).is_some() {
+    if crate::imagegen::family::guess_by_repo(id, tags).is_some() {
         return true;
     }
     if is_audiocpp_repo(tags) || matches!(pipeline, Some(
@@ -1181,6 +1185,55 @@ fn shelf_put(path: &std::path::Path, key: &str, hits: &[HfModelHit]) {
 }
 
 /// Everything the store's detail pane needs for one repo, quant-level.
+/// The family of a diffusion GGUF on Hugging Face, from its header — the
+/// first megabytes of the file, read again with more until its tensor table
+/// is in — and whether it carries its own VAE. None when it cannot be read
+/// or is not a denoiser.
+async fn remote_image_family(
+    client: &reqwest::Client,
+    base: &str,
+    repo: &str,
+    file: &str,
+) -> Option<(&'static crate::imagegen::family::Family, bool)> {
+    use crate::imagegen::family::{self, Tensors};
+    let url = format!("{base}/{repo}/resolve/main/{file}");
+    let mut want: u64 = 2 << 20;
+    loop {
+        let resp = client
+            .get(&url)
+            .header(reqwest::header::RANGE, format!("bytes=0-{}", want - 1))
+            .timeout(std::time::Duration::from_secs(20))
+            .send()
+            .await
+            .ok()?;
+        // Anything but the range asked for — the whole file — is not read.
+        if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            return None;
+        }
+        let bytes = resp.bytes().await.ok()?;
+        match crate::inference::gguf::read_header(std::io::Cursor::new(&bytes[..]), true, true) {
+            Ok(h) => {
+                if h.has_tokenizer {
+                    return None;
+                }
+                let names: Vec<(&str, &[u64])> = h.tensors.iter().map(|t| (t.name.as_str(), t.dims.as_slice())).collect();
+                let t = Tensors::new(names);
+                let known_arch = h.arch.as_deref().is_some_and(|a| family::DIFFUSION_ARCHS.contains(&a));
+                if !known_arch && !t.is_denoiser() {
+                    return None;
+                }
+                let name = file.rsplit('/').next().unwrap_or(file).to_lowercase();
+                return Some((family::detect(&t, h.arch.as_deref(), &name), t.has_vae()));
+            }
+            // Cut off inside the table: read further, up to 32 MB.
+            Err(crate::inference::gguf::HeaderError::Malformed) if bytes.len() as u64 >= want && want < (32 << 20) => {
+                want *= 4;
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn hf_model_detail(
     repo: String,
@@ -1290,27 +1343,43 @@ pub async fn hf_model_detail(
     // its family names the VAE and encoder to fetch alongside.
     // An mflux save is an image model whatever its tags say.
     let image = !music && (is_mflux_tree(&tree) || (format == "gguf" && hf_is_image_model(&repo, &tags, pipeline.as_deref(), false)));
-    let companions = if image && format == "gguf" {
-        crate::imagegen::family::guess_by_name(&repo)
-            .map(|f| {
-                f.companions
+    // What the file itself is, read from its first megabytes — the same
+    // reading the model gets once it is here, which picks what to fetch
+    // beside it. A name says less: fine-tunes go by names of their own, and
+    // a turbo or an edit shares its family's.
+    let (companions, image_incomplete) = if image && format == "gguf" {
+        let first = quants.first().and_then(|q| q.files.first()).cloned();
+        let read = match &first {
+            Some(f) => remote_image_family(&client, &base, &repo, f).await,
+            None => None,
+        };
+        let (fam, vae_inside) = match read {
+            Some((f, inside)) => (Some(f), inside),
+            None => (crate::imagegen::family::guess_by_repo(family_repo, &tags), false),
+        };
+        match fam {
+            Some(f) => {
+                let need: Vec<crate::imagegen::family::Role> =
+                    f.requires.iter().copied().filter(|r| !(vae_inside && *r == crate::imagegen::family::Role::Vae)).collect();
+                let companions: Vec<crate::imagegen::probe::Suggestion> = f
+                    .companions
                     .iter()
-                    .map(|c| crate::imagegen::probe::Suggestion {
-                        role: c.role,
-                        repo: c.repo.into(),
-                        file: c.file.into(),
-                        size: c.size,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+                    .filter(|c| need.contains(&c.role))
+                    .map(|c| crate::imagegen::probe::Suggestion { role: c.role, repo: c.repo.into(), file: c.file.into(), size: c.size })
+                    .collect();
+                let incomplete = need.iter().any(|r| !companions.iter().any(|c| c.role == *r));
+                (companions, incomplete)
+            }
+            None => (Vec::new(), true),
+        }
     } else {
-        Vec::new()
+        (Vec::new(), false)
     };
     let unsupported = if is_mflux_tree(&tree) { mflux_unsupported(&client, &base, &repo).await } else { None };
     Ok(HfModelDetail {
         image,
         companions,
+        image_incomplete,
         unsupported,
         music,
         music_family: music_fam.map(|f| f.name.to_string()),
@@ -2740,5 +2809,48 @@ mod store_e2e {
         if let Ok(d) = d {
             eprintln!("vision repo: vision={} mmproj={:?}", d.vision, d.mmproj);
         }
+    }
+
+    /// The store reads the family off the file on Hugging Face, for the
+    /// shelf's popular image models — fine-tunes under names of their own
+    /// among them. Network: `cargo test --lib reads_the_family -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn the_store_reads_the_family_off_the_file() {
+        let client = crate::http::client(UA, std::time::Duration::from_secs(30)).unwrap();
+        let base = hf_base(None);
+        let cases = [
+            ("unsloth/Qwen-Image-2.1-Turbo-GGUF", "qwen-image-2.1-turbo-Q3_K_M.gguf", "qwen-image-2.1-turbo"),
+            ("unsloth/Qwen-Image-Edit-2511-GGUF", "qwen-image-edit-2511-Q3_K_M.gguf", "qwen-image-edit"),
+            ("unsloth/flux-3-image-klein-GGUF", "flux-3-image-klein-Q3_K_M.gguf", "flux3-klein"),
+            ("leejet/flux-3-image-klein-GGUF", "flux3-image-klein-Q2_K.gguf", "flux3-klein"),
+            ("unsloth/MiniMax-H3-Image-GGUF", "minimax_h3_image_pruned-Q2_K.gguf", "minimax-h3-image"),
+            ("Abiray/MiniMax-H3-Image-GGUF", "MiniMax-H3-Image-Pruned-Q2_K.gguf", "minimax-h3-image"),
+            ("AtomicChat/P-H3-Image-GGUF", "P-H3-Image-AD-Q3_K.gguf", "p-h3-image"),
+            ("unsloth/MOSS-Image-SFT-GGUF", "MOSS-Image-SFT-Q4_K_M.gguf", "moss-image"),
+            ("vantagewithai/Krea-2-Turbo-GGUF", "krea2_turbo-Q3_K_M.gguf", "krea2-turbo"),
+            ("unsloth/ERNIE-Image-Turbo-GGUF", "ernie-image-turbo-Q3_K_M.gguf", "ernie-image-turbo"),
+            ("vanes430/Anima-Turbo-V1.1-GGUF", "anima-turbo-v1.1-Q3_K_M.gguf", "anima"),
+            ("unsloth/FLUX.2-dev-GGUF", "flux2-dev-Q3_K_M.gguf", "flux2-dev"),
+            ("leejet/Ovis-Image-7B-GGUF", "ovis_image-Q4_0.gguf", "ovis-image"),
+            ("vantagewithai/LongCat-Image-GGUF", "comfy/LongCat-Image-Q3_K_M.gguf", "longcat-image"),
+            ("webmp3/Sakura-Iris-3B-Uncensored-GGUF", "Sakura-Iris-3B-Q4_K_M-3.14GiB.gguf", "iris"),
+            ("silveroxides/Chroma1-Radiance-GGUF", "Chroma1-Radiance-v0.4/Chroma1-Radiance-v0.4-Q8_0.gguf", "chroma-radiance"),
+            ("second-state/stable-diffusion-3.5-large-GGUF", "sd3.5_large-Q4_0.gguf", "sd3"),
+            ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q3_K_M.gguf", "z-image-turbo"),
+            ("city96/FLUX.1-dev-gguf", "flux1-dev-Q2_K.gguf", "flux-dev"),
+            ("unsloth/FLUX.2-klein-9B-GGUF", "flux-2-klein-9b-Q3_K_M.gguf", "flux2-klein-9b"),
+            ("off-grid-ai/dreamshaper-xl-v2-turbo-GGUF", "dreamshaper-xl-v2-turbo-Q4_K.gguf", "sdxl"),
+        ];
+        let mut bad = Vec::new();
+        for (repo, file, want) in cases {
+            let got = remote_image_family(&client, &base, repo, file).await;
+            let id = got.map(|(f, _)| f.id).unwrap_or("(unread)");
+            eprintln!("{repo} :: {file} -> {id} vae_inside={:?}", got.map(|g| g.1));
+            if id != want {
+                bad.push(format!("{repo}: {id} != {want}"));
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
     }
 }

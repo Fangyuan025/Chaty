@@ -1676,6 +1676,7 @@ export const T = {
   imgRoleClipL: { zh: "CLIP-L 文本编码器", en: "CLIP-L text encoder", pt: "Codificador de texto CLIP-L" },
   imgRoleClipG: { zh: "CLIP-G 文本编码器", en: "CLIP-G text encoder", pt: "Codificador de texto CLIP-G" },
   imgRoleT5: { zh: "T5-XXL 文本编码器", en: "T5-XXL text encoder", pt: "Codificador de texto T5-XXL" },
+  imgRoleTokenizer: { zh: "分词器（tokenizer.json）", en: "Tokenizer (tokenizer.json)", pt: "Tokenizador (tokenizer.json)" },
   imgClearHistory: { zh: "清空生图会话", en: "Clear image sessions", pt: "Limpar sessões de imagem" },
   imgClearHistoryHint: { zh: "删除所有生图会话及其图片文件，不可撤销。", en: "Deletes every image session and its picture files. This can't be undone.", pt: "Exclui todas as sessões de imagem e seus arquivos. Não pode ser desfeito." },
   imgClearHistoryConfirm: { zh: "将删除全部生图会话和其中的图片文件，无法撤销。确定吗？", en: "Every image session and the picture files in it will be deleted. This can't be undone. Continue?", pt: "Todas as sessões de imagem e os arquivos nelas serão excluídos. Não pode ser desfeito. Continuar?" },
@@ -1689,7 +1690,7 @@ export const T = {
   storeTaskText: { zh: "文本生成", en: "Text generation", pt: "Geração de texto" },
   storeTaskImage: { zh: "文生图", en: "Text to image", pt: "Texto para imagem" },
   storeQuant: { zh: "量化版本", en: "Quantization", pt: "Quantização" },
-  storeImageIncluded: { zh: "含 VAE 与文本编码器", en: "VAE and text encoder included", pt: "VAE e codificador de texto incluídos" },
+  storeImageIncluded: { zh: "配套文件一并下载", en: "companion files included", pt: "arquivos complementares incluídos" },
   storeImageManual: { zh: "配套文件需加载时再选", en: "companion files chosen at load", pt: "arquivos complementares escolhidos ao carregar" },
 
   // ---- Text-to-music (the music studio) ----

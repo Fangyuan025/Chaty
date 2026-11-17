@@ -53,6 +53,9 @@ struct Probe {
     family: Option<&'static Family>,
     /// Total tensor elements — the parameter count, for a denoiser.
     params: u64,
+    /// A denoiser whose file carries its own VAE: loaded whole, as a
+    /// checkpoint, and needing none beside it (second-state's SD 3.5).
+    vae_inside: bool,
 }
 
 /// Headers are re-read only when the file changes. `list_models` asks about
@@ -80,7 +83,7 @@ fn probe(path: &Path) -> Probe {
 }
 
 fn read_probe(path: &Path) -> Probe {
-    let other = Probe { kind: Kind::Other, family: None, params: 0 };
+    let other = Probe { kind: Kind::Other, family: None, params: 0, vae_inside: false };
     let name = lower_name(path);
     if is_gguf(path) {
         let Ok(h) = crate::inference::gguf::read_header_file(path, true, true) else {
@@ -98,7 +101,7 @@ fn read_probe(path: &Path) -> Probe {
         if known_arch || tensors.is_denoiser() {
             let fam = family::detect(&tensors, h.arch.as_deref(), &name);
             let params = h.tensors.iter().map(|t| t.dims.iter().product::<u64>()).sum();
-            return Probe { kind: Kind::Denoiser, family: Some(fam), params };
+            return Probe { kind: Kind::Denoiser, family: Some(fam), params, vae_inside: tensors.has_vae() };
         }
         if tensors.is_vae() {
             return Probe { kind: Kind::Vae, ..other };
@@ -132,7 +135,7 @@ fn read_probe(path: &Path) -> Probe {
     if tensors.is_denoiser() {
         let fam = family::detect(&tensors, None, &name);
         let params = shapes.iter().map(|(_, d)| d.iter().product::<u64>()).sum();
-        return Probe { kind: Kind::Denoiser, family: Some(fam), params };
+        return Probe { kind: Kind::Denoiser, family: Some(fam), params, vae_inside: tensors.has_vae() };
     }
     if tensors.is_vae() || name.contains("vae") || name == "ae.safetensors" || name == "ae.sft" {
         return Probe { kind: Kind::Vae, ..other };
@@ -279,6 +282,7 @@ fn probe_mlx_image_dir(dir: &Path) -> ImageProbe {
         defaults: family::defaults_for(fam, &name),
         edits: false,
         engine: "mlx",
+        model_args: String::new(),
     }
 }
 
@@ -357,6 +361,10 @@ pub struct ImageProbe {
     /// What runs it: "sd.cpp" (a GGUF or safetensors denoiser) or "mlx" (an
     /// MLX image model folder).
     pub engine: &'static str,
+    /// Settings of the network the file does not say itself (the engine's
+    /// `--model-args`), "" for none.
+    #[serde(skip)]
+    pub model_args: String,
 }
 
 fn size_mb(p: &Path) -> u64 {
@@ -393,7 +401,23 @@ fn fits(role: Role, path: &Path, fam: &Family, need_hint: bool) -> bool {
         Role::ClipL => name.contains("clip_l") || name.contains("clip-l"),
         Role::ClipG => name.contains("clip_g") || name.contains("clip-g"),
         Role::T5xxl => name.contains("t5"),
+        Role::Tokenizer => is_tokenizer_file(path),
     }
+}
+
+/// A `tokenizer.json` (by any name with "tokenizer" in it).
+fn is_tokenizer_file(p: &Path) -> bool {
+    let name = lower_name(p);
+    name.ends_with(".json") && name.contains("tokenizer")
+}
+
+/// The tokenizer files in a folder — beside the model they belong to.
+fn tokenizers_in(dir: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && is_tokenizer_file(p)).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
 }
 
 /// Find a family's companions for the model at `model`: a hand-picked file
@@ -417,6 +441,13 @@ pub fn find_components(model: &Path, fam: &Family, overrides: &Overrides, roots:
             let p = PathBuf::from(o);
             if p.is_file() {
                 out.push(Component { role, size_mb: size_mb(&p), path: o.clone(), source: "override" });
+            }
+            continue;
+        }
+        // A vocabulary is the encoder's own: only the one beside the model.
+        if role == Role::Tokenizer {
+            if let Some(p) = tokenizers_in(dir).into_iter().next() {
+                out.push(Component { role, size_mb: size_mb(&p), path: p.to_string_lossy().to_string(), source: "folder" });
             }
             continue;
         }
@@ -473,7 +504,14 @@ pub fn find_components(model: &Path, fam: &Family, overrides: &Overrides, roots:
                         let projs: Vec<&PathBuf> = files.iter().filter(|p| kind_of(p) == Kind::Mmproj).collect();
                         (llms == 1 && projs.len() == 1).then(|| projs[0].clone())
                     };
-                    if let Some(mm) = crate::inference::llama::find_mmproj(&llm.path).or_else(lone) {
+                    // An encoder shared from another model's folder, its
+                    // projector fetched beside this model (which needs it
+                    // where the other did not): the one projector here.
+                    let own = || {
+                        let projs: Vec<PathBuf> = beside.iter().filter(|p| kind_of(p) == Kind::Mmproj).cloned().collect();
+                        (projs.len() == 1).then(|| projs[0].clone())
+                    };
+                    if let Some(mm) = crate::inference::llama::find_mmproj(&llm.path).or_else(lone).or_else(own) {
                         out.push(Component {
                             role: Role::LlmVision,
                             size_mb: size_mb(&mm),
@@ -500,8 +538,12 @@ pub fn probe_image_model(path: &Path, overrides: &Overrides, roots: &[PathBuf]) 
     let fam = p.family.unwrap_or(&family::GENERIC);
     let name = lower_name(path);
     let components = find_components(path, fam, overrides, roots);
+    // A file carrying its own VAE is loaded whole and needs none beside it;
+    // one there all the same is used in its place, as for an SDXL
+    // checkpoint with the fp16-fixed VAE put next to it.
+    let requires: Vec<Role> = fam.requires.iter().copied().filter(|r| !(p.vae_inside && *r == Role::Vae)).collect();
     let have = |r: Role| components.iter().any(|c| c.role == r);
-    let missing: Vec<Role> = fam.requires.iter().copied().filter(|r| !have(*r)).collect();
+    let missing: Vec<Role> = requires.iter().copied().filter(|r| !have(*r)).collect();
     let suggestions = fam
         .companions
         .iter()
@@ -512,22 +554,31 @@ pub fn probe_image_model(path: &Path, overrides: &Overrides, roots: &[PathBuf]) 
     let quant = Some(crate::download::quant_label_of(stem)).filter(|q| q != "DEFAULT");
     let own = size_mb(path)
         + components.iter().filter(|c| c.source == "folder").map(|c| c.size_mb).sum::<u64>();
+    // Qwen-Image Edit 2511 conditions on the reference at timestep zero;
+    // ComfyUI's conversions mark it in a tensor the engine reads, a GGUF of
+    // the release does not.
+    let model_args = if fam.id == "qwen-image-edit" && name.contains("2511") {
+        "qwen_image_zero_cond_t=true".to_string()
+    } else {
+        String::new()
+    };
     Some(ImageProbe {
         path: path.to_string_lossy().to_string(),
         family: fam.id.into(),
         family_name: fam.name.into(),
-        all_in_one: fam.all_in_one,
+        all_in_one: fam.all_in_one || p.vae_inside,
         params_b: (p.params > 0).then(|| (p.params as f64 / 1e8).round() / 10.0),
         quant,
         size_mb: own,
         edits: fam.edits && have(Role::LlmVision),
-        requires: fam.requires.to_vec(),
+        requires,
         optional: fam.optional.to_vec(),
         defaults: family::defaults_for(fam, &name),
         components,
         missing,
         suggestions,
         engine: "sd.cpp",
+        model_args,
     })
 }
 
@@ -672,6 +723,61 @@ mod tests {
         ov.insert("llm".into(), String::new());
         let probe = probe_image_model(&model, &ov, std::slice::from_ref(&root)).unwrap();
         assert!(probe.missing.contains(&Role::Llm));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// What the store brings for the newer families lands where the probe
+    /// finds it: a MOSS-Image folder's `tokenizer.json`, an SD 3.5 file
+    /// that carries its VAE needing none, and an edit model's projector
+    /// fetched beside it while its encoder is another model's.
+    #[test]
+    fn the_newer_families_find_what_the_store_brought() {
+        let root = tmpdir("newer");
+
+        let moss = root.join("MOSS-Image-SFT-GGUF");
+        std::fs::create_dir_all(&moss).unwrap();
+        let model = moss.join("MOSS-Image-SFT-Q4_K_M.gguf");
+        std::fs::write(&model, gguf_bytes(&[("general.architecture", "moss_image")], &[("video_embedder.weight", &[128, 3072]), ("shared_block_modulation.weight", &[3072, 18432])])).unwrap();
+        let probe = probe_image_model(&model, &Overrides::new(), std::slice::from_ref(&root)).unwrap();
+        assert_eq!(probe.family, "moss-image");
+        assert_eq!(probe.missing, vec![Role::Vae, Role::Llm, Role::Tokenizer]);
+        assert!(probe.suggestions.iter().any(|s| s.role == Role::Tokenizer && s.file.ends_with("tokenizer.json")));
+        write_st(&moss.join("flux2-vae.safetensors"), &["decoder.conv_in.weight", "encoder.conv_in.weight"]);
+        std::fs::write(moss.join("Qwen3.5-9B-Q4_K_M.gguf"), gguf_bytes(&[("tokenizer.ggml.model", "gpt2")], &[])).unwrap();
+        std::fs::write(moss.join("tokenizer.json"), "{}").unwrap();
+        let probe = probe_image_model(&model, &Overrides::new(), std::slice::from_ref(&root)).unwrap();
+        assert!(probe.missing.is_empty(), "{:?}", probe.missing);
+        assert!(probe.components.iter().any(|c| c.role == Role::Tokenizer && c.path.ends_with("tokenizer.json")));
+        // The folder is not taken for an MLX model, nor the vocabulary for weights.
+        assert_eq!(image_model_in_dir(&moss), Some(model.clone()));
+
+        let sd = root.join("sd35");
+        std::fs::create_dir_all(&sd).unwrap();
+        let ckpt = sd.join("sd3.5_large-Q4_0.gguf");
+        std::fs::write(&ckpt, gguf_bytes(&[], &[("first_stage_model.decoder.conv_in.bias", &[512]), ("model.diffusion_model.joint_blocks.0.x", &[1])])).unwrap();
+        let probe = probe_image_model(&ckpt, &Overrides::new(), std::slice::from_ref(&root)).unwrap();
+        assert_eq!(probe.family, "sd3");
+        assert!(probe.all_in_one, "loaded whole, its VAE with it");
+        assert_eq!(probe.missing, vec![Role::ClipL, Role::ClipG, Role::T5xxl]);
+        assert_eq!(probe.suggestions.len(), 3);
+
+        // Qwen-Image's encoder already here, in Qwen-Image's folder.
+        let qi = root.join("Qwen-Image-GGUF");
+        std::fs::create_dir_all(&qi).unwrap();
+        std::fs::write(qi.join("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"), gguf_bytes(&[("tokenizer.ggml.model", "gpt2")], &[])).unwrap();
+        let edit = root.join("Qwen-Image-Edit-2511-GGUF");
+        std::fs::create_dir_all(&edit).unwrap();
+        let em = edit.join("qwen-image-edit-2511-Q4_K_M.gguf");
+        std::fs::write(&em, gguf_bytes(&[("general.architecture", "qwen_image")], &[("transformer_blocks.0.img_mod.1.weight", &[1]), ("img_in.weight", &[64, 3072])])).unwrap();
+        write_st(&edit.join("qwen_image_vae.safetensors"), &["decoder.conv_in.weight"]);
+        let probe = probe_image_model(&em, &Overrides::new(), std::slice::from_ref(&root)).unwrap();
+        assert_eq!(probe.family, "qwen-image-edit");
+        assert_eq!(probe.model_args, "qwen_image_zero_cond_t=true");
+        assert_eq!(probe.missing, vec![Role::LlmVision]);
+        std::fs::write(edit.join("mmproj-F16.gguf"), gguf_bytes(&[("general.architecture", "clip")], &[])).unwrap();
+        let probe = probe_image_model(&em, &Overrides::new(), std::slice::from_ref(&root)).unwrap();
+        assert!(probe.missing.is_empty(), "{:?}", probe.missing);
+        assert!(probe.edits);
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -549,7 +549,7 @@ export function DownloadModal({
                             // no known companions, that they are to be added.
                             (detail.format === "gguf" && detail.mmproj ? ` · ${t("storeVisionIncluded")}` : "") +
                             (detail.image
-                              ? ` · ${detail.format === "mlx" || (detail.companions?.length ?? 0) > 0 ? t("storeImageIncluded") : t("storeImageManual")}`
+                              ? ` · ${detail.format === "mlx" || ((detail.companions?.length ?? 0) > 0 && !detail.imageIncomplete) ? t("storeImageIncluded") : t("storeImageManual")}`
                               : "") +
                             (detail.music && (quant?.extra ?? 0) > 0 ? ` · ${t("storeMusicIncluded")}` : "")}
                   </div>

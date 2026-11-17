@@ -3560,6 +3560,11 @@ export function CodeMode({
         </div>
 
         <div className="code-composer">
+          {/* What stands over the box. In an empty session it floats there,
+              taking no room: the welcome is centred in the space above, and
+              a load's tab coming and going moved it up and back down. */}
+          <div className={`cm-above${msgs.length === 0 ? " float" : ""}`}>
+          <div className="cm-above-in">
           {/* What the agent is doing sits inside the composer, as chat's
               status line does: above it, the transcript's fade covered it. */}
           <Exit ms={200}>
@@ -3649,6 +3654,8 @@ export function CodeMode({
               <BusyNote dock text={held.text} go={engineHeld === "load" && !running ? undefined : t("busyGo")} onGo={held.go} />
             ) : null}
           </Exit>
+          </div>
+          </div>
           <div className="cm-input-row">
             {slashMenu.length > 0 && (
               <div className="cm-slash">

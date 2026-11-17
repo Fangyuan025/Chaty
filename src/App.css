@@ -12196,6 +12196,26 @@ html[data-motion="reduce"] :is(.cm-session.is-busy .cm-session-title, .conv-item
   border-bottom: 0;
   border-radius: 12px 12px 0 0;
 }
+/* What stands over Code's box — the run's line, the queue, attachments, the
+   tab. In the flow of the composer; in an empty session, floating over the
+   space above the box instead, its foot on the box's top edge, so the
+   welcome centred in that space stays where it is as they come and go. */
+.cm-above,
+.cm-above-in {
+  display: contents;
+}
+.cm-above.float {
+  display: block;
+  position: relative;
+  height: 0;
+}
+.cm-above.float > .cm-above-in {
+  display: block;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
 .busy-dock .busy-note-go {
   padding: 3px 10px;
   border-radius: 8px;

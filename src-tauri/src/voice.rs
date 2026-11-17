@@ -654,6 +654,61 @@ fn contains_cjk(text: &str) -> bool {
     })
 }
 
+/// What the English voice can say of `text`. Kokoro's phonemizer has no
+/// reading for Han, kana or Hangul and names each one instead — a Chinese
+/// sentence came out as "Chinese letter, Chinese letter, …" (the preview with
+/// Chinese support off read its Chinese sample so). Those characters go;
+/// full-width punctuation becomes its ASCII self, keeping its pause.
+fn for_english_voice(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let u = c as u32;
+        match c {
+            '，' | '、' => out.push_str(", "),
+            '。' | '．' => out.push_str(". "),
+            '！' => out.push_str("! "),
+            '？' => out.push_str("? "),
+            '：' => out.push_str(": "),
+            '；' => out.push_str("; "),
+            '（' | '【' | '［' | '〔' | '「' | '『' | '《' | '〈' => out.push_str(" ("),
+            '）' | '】' | '］' | '〕' | '」' | '』' | '》' | '〉' => out.push_str(") "),
+            '“' | '”' | '„' => out.push('"'),
+            '‘' | '’' => out.push('\''),
+            '　' => out.push(' '),
+            // Full-width ASCII (Ａ, ３, ＆): the letter it is.
+            _ if (0xFF01..=0xFF5E).contains(&u) => out.push(char::from_u32(u - 0xFEE0).unwrap_or(' ')),
+            _ if matches!(
+                u,
+                0x1100..=0x11FF // Hangul jamo
+                    | 0x2E80..=0x2FDF // CJK radicals
+                    | 0x3000..=0x30FF // CJK symbols, kana
+                    | 0x3100..=0x31FF // bopomofo, Hangul compatibility jamo, kana ext.
+                    | 0x3200..=0x9FFF // enclosed CJK, ideographs
+                    | 0xA960..=0xA97F
+                    | 0xAC00..=0xD7FF // Hangul syllables
+                    | 0xF900..=0xFAFF
+                    | 0xFE30..=0xFE4F
+                    | 0xFF5F..=0xFFEF
+                    | 0x20000..=0x3FFFF
+            ) => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    let mut tidy = String::with_capacity(out.len());
+    for w in out.split_whitespace() {
+        // A mark left with nothing before it (", " where a word was) is not
+        // read: skip it rather than start a clause with it.
+        if tidy.is_empty() && w.chars().all(|c| c.is_ascii_punctuation()) {
+            continue;
+        }
+        if !tidy.is_empty() {
+            tidy.push(' ');
+        }
+        tidy.push_str(w);
+    }
+    tidy
+}
+
 /// Which voice speaks `text`. With Chinese enabled, a Han character sends it
 /// to VITS. A stretch without one inside a Chinese reply (a model name, a
 /// line of code, "OK") stays with VITS too while the English voice has never
@@ -779,6 +834,12 @@ pub async fn synthesize(
         })
         .await?
     } else {
+        let text = for_english_voice(&text);
+        // Nothing left it can say: a beat of silence, as the Chinese voice
+        // gives for a stretch it cannot read.
+        if !text.chars().any(|c| c.is_alphanumeric()) {
+            return Ok((vec![0.0; 1600], 16000));
+        }
         let dir = ensure_model(&models_dir, &KOKORO, endpoint, report).await?;
         tokio::task::spawn_blocking(move || -> Result<(Vec<f32>, u32)> {
             let engine = english_tts_engine(&dir)?;
@@ -865,6 +926,16 @@ mod tests {
         // reply is English.
         assert!(!use_chinese_tts("Qwythos 9B.", true, true, true));
         assert!(!use_chinese_tts("Hello, world.", true, false, false));
+    }
+
+    #[test]
+    fn english_voice_is_not_given_what_it_cannot_read() {
+        assert_eq!(for_english_voice("Hello, world."), "Hello, world.");
+        assert_eq!(for_english_voice("你好，这是一段中文示例。"), "");
+        assert_eq!(for_english_voice("The word 你好 means hello。"), "The word means hello.");
+        assert_eq!(for_english_voice("用 Rust（1.99）写的"), "Rust (1.99)");
+        assert_eq!(for_english_voice("こんにちは world 안녕"), "world");
+        assert_eq!(for_english_voice("ＧＰＵ：３２ GB"), "GPU: 32 GB");
     }
 
     /// Cancelling wakes every voice download in the process, so the tests
