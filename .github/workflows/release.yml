@@ -356,6 +356,8 @@ jobs:
             and the model answers from what it had thought so far — on both engines. A limit in
             Settings → Chat, off by default, does the same by itself once a thought runs that long;
             an experimental floor, the other way round, keeps a model thinking at least that long.
+            A thought going round in circles is closed the same way, in chat and in Code, and
+            Code's think limit now closes the thought and lets the step act, as chat's does.
 
             ## More image models, ready from the store
 

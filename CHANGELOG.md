@@ -66,15 +66,22 @@
   how far, how long is left, stop it, load it once it is in. Others can be
   browsed and fetched meanwhile. A hairline under the model chip fills while
   one runs, the model menu gives its share, and a notice says when it is in.
-- **A load can be stopped at any point**, with the button that opens beside
-  the model chip while it runs: the engine it started ends, its memory with
-  it, and Chaty is left with no model rather than half of one. A switch that
+- **A load can be stopped at any point**, with one press of the button that
+  opens beside the model chip while it runs: the engine it started ends, its
+  memory with it, and Chaty is left with no model rather than half of one. A switch that
   failed or was stopped no longer leaves the chip naming the model that was
   let go before it.
 
 ### Code mode
 
-
+- **Code's think limit closes the thought, and the step goes on.** Settings
+  → Code's think limit works as chat's: a step still thinking at that many
+  tokens has its thought closed there, in the model's own markup, and acts
+  in the same step, what it thought kept — where the step was stopped and
+  the model told in a message of its own to act, its next step not thinking.
+  With no limit set, a thought about to fill the step is closed a quarter
+  short of its length, so a step that thought to its end no longer ends with
+  nothing done.
 - **A screenshot no longer breaks a session.** A vision model such as
   Qwen3.5 keeps a screenshot as up to two thousand tokens while moving its
   position on by a few dozen, and the window was counted by positions: a
@@ -248,6 +255,14 @@
   the conversation fills three quarters of it. It is the limit or the floor,
   never both: turning one on turns the other off. Skip still ends a thought
   held by it.
+- **A thought going round is closed**, in chat and in Code mode, on both
+  engines: one writing the same stretch for the third time, or the same
+  line over and over with only a number changing, is closed where it stands,
+  as Skip closes it, and the model answers from what it had thought — where
+  it went on until the reply's length ran out with no answer. A draft copied
+  out clean, a list checked item by item and a call begun inside the thought
+  are left alone; a model rephrasing its way round the same idea is not
+  caught, so long reasoning is never cut. It holds under the floor too.
 - **A finished page's picture is up about half a second after the page is
   written**, while the rest of the reply is still coming — and a page whose
   fonts or scripts come from somewhere that does not answer (Google Fonts,
