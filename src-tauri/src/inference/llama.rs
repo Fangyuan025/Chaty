@@ -1590,9 +1590,14 @@ fn run_turn(
     // Whatever was asked: a prompt that still ends on an opened thought (a
     // template with no off switch the engine could not close) puts the model
     // inside one, and the stream has to say so.
-    if let Some(tag) = preopened_think_tag(&prompt) {
-        sink.emit(StreamEvent::Token { text: opened_think_text(&prompt, tag) })?;
+    // The reply as the stream tells it begins with this; a Skip reads where
+    // the thought stands from it and the text generated after.
+    let opened = preopened_think_tag(&prompt).map(|tag| opened_think_text(&prompt, tag)).unwrap_or_default();
+    if !opened.is_empty() {
+        sink.emit(StreamEvent::Token { text: opened.clone() })?;
     }
+    // A Skip asked for before this reply began was for one that has ended.
+    super::THINK_SKIP.store(false, Ordering::SeqCst);
 
     let n_batch = (dec.ctx().n_batch() as usize).max(1);
     let mut batch = LlamaBatch::new(n_batch, 1);
@@ -1867,17 +1872,36 @@ fn run_turn(
     // last of them is the one the model has NOT read back — every earlier one
     // is in the cache already — so the run ends when this empties.
     let mut settled: std::collections::VecDeque<LlamaToken> = std::collections::VecDeque::new();
+    // The close of a thought the user skipped, token by token: given, not
+    // drawn — the logits waiting for this step go unread — and read into the
+    // cache like any other, so the reply goes on from it as if the model had
+    // closed the thought there itself.
+    let mut forced: std::collections::VecDeque<LlamaToken> = std::collections::VecDeque::new();
     loop {
         if cancel.load(Ordering::Relaxed) {
             stop_reason = "cancelled";
             break;
         }
-        let token = match settled.pop_front() {
-            Some(t) => t,
-            None => ThoughtGuard::sample(&thought_guard, &mut sampler, dec.ctx(), idx),
+        // Taken only at a clean point: no settled run still to emit (all but
+        // its last token are in the cache already) and no half character.
+        if forced.is_empty() && settled.is_empty() && pending.is_empty() && super::THINK_SKIP.swap(false, Ordering::SeqCst) {
+            if let Some(close) = super::think_closer(&format!("{opened}{out}")) {
+                forced.extend(tokenize(model, &close, false));
+            }
+        }
+        let given = forced.pop_front();
+        let token = match given {
+            Some(t) => {
+                sampler.accept(t);
+                t
+            }
+            None => match settled.pop_front() {
+                Some(t) => t,
+                None => ThoughtGuard::sample(&thought_guard, &mut sampler, dec.ctx(), idx),
+            },
         };
         ThoughtGuard::saw(&mut thought_guard, model, token);
-        if model.vocab().is_eog(token) || turn_end.contains(&token) {
+        if given.is_none() && (model.vocab().is_eog(token) || turn_end.contains(&token)) {
             break;
         }
         if dump_gen {
@@ -1965,7 +1989,12 @@ fn run_turn(
         // An image turn is prefilled by the vision helper, whose batches this
         // code never sees — so the head has not been fed them and must not be
         // asked to guess from a conversation it only half knows.
+        // Nor while a Skip waits, or a round would settle the next run and
+        // the clean point it waits for would never come.
         let room = !media_turn
+            && given.is_none()
+            && forced.is_empty()
+            && !super::THINK_SKIP.load(Ordering::Relaxed)
             && dec.spec_mut().is_some()
             && n_past + n_extra + 1 + MTP_DRAFT_MAX < n_ctx as i32;
         let round = if room {

@@ -76,6 +76,8 @@ struct WireCmd: Decodable {
     let speculative: Bool?
     let messages: [WireMessage]?
     let params: WireParams?
+    /// `skip_think`: what closes the thought, in the reply's own markup.
+    let text: String?
 }
 
 // MARK: - serialized stdout writer
@@ -131,6 +133,80 @@ final class Flag: @unchecked Sendable {
         lock.lock()
         v = false
         lock.unlock()
+    }
+}
+
+/// A text handed from the command reader to the generation running beside it.
+final class Slot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var v: String?
+    var isFull: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return v != nil
+    }
+    func put(_ s: String) {
+        lock.lock()
+        v = s
+        lock.unlock()
+    }
+    func take() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        let s = v
+        v = nil
+        return s
+    }
+}
+
+/// How far a load has got, as the app's bar shows it. The app used to guess
+/// from this process's resident memory over the weights' size, and MLX's
+/// weights do not stay counted there: on a 34 GB model the guess climbed to
+/// half in five seconds, then fell while the weights went to the GPU, and the
+/// bar — which never goes back — stood at half for the fifteen seconds left.
+/// Each stage of the load is given its stretch of the bar instead: the
+/// weights by what MLX has actually allocated for them, the rest — learning
+/// the chat template, measuring what a token of context costs, which is the
+/// first pass through the whole model — easing towards the end of theirs, so
+/// the bar keeps moving through work no number measures.
+final class LoadMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var from = 0.0, to = 0.0, since = Date(), tau = 1.0
+    private var measure: (@Sendable () -> Double)?
+    private(set) var stage = "start"
+    private var shown = 0.0
+
+    /// From where the bar is now to `to`, by `measure` (0…1 of the stage).
+    func measured(_ stage: String, to: Double, by measure: @escaping @Sendable () -> Double) {
+        begin(stage, to: to, tau: 1, measure: measure)
+    }
+    /// From where the bar is now towards `to`: two thirds of the way after
+    /// `tau` seconds, never quite there until the next stage begins.
+    func easing(_ stage: String, to: Double, tau: Double) {
+        begin(stage, to: to, tau: tau, measure: nil)
+    }
+    private func begin(_ stage: String, to: Double, tau: Double, measure: (@Sendable () -> Double)?) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.stage = stage
+        from = shown
+        self.to = max(to, shown)
+        since = Date()
+        self.tau = max(tau, 0.1)
+        self.measure = measure
+    }
+    func value() -> Double {
+        lock.lock()
+        let (from, to, since, tau, measure) = (self.from, self.to, self.since, self.tau, self.measure)
+        lock.unlock()
+        let part = measure.map { min(max($0(), 0), 1) }
+            ?? (1 - exp(-Date().timeIntervalSince(since) / tau))
+        let v = from + (to - from) * part
+        lock.lock()
+        shown = max(shown, v)
+        let now = shown
+        lock.unlock()
+        return now
     }
 }
 
@@ -1056,6 +1132,9 @@ final class Engine: @unchecked Sendable {
     var modelDir: URL?
     var nCtxCap = 0
     let cancelFlag = Flag()
+    /// The chat's Skip: the close of the thought the reply is in, given to
+    /// the model as its next tokens (see `decode`).
+    let skipThought = Slot()
 
     /// Prompt tokens currently materialized in `kvCache` with positions this
     /// engine computed itself (the cache also holds the sampled tokens past
@@ -1178,10 +1257,18 @@ final class Engine: @unchecked Sendable {
             eval(out.logits)
         }
         func sizes() -> [Int] { cache.map { $0.state.reduce(0) { $0 + $1.nbytes } } }
+        let t0 = Date()
         feed()
+        let t1 = Date()
         let first = sizes()
         feed()
         let second = sizes()
+        // The first pass is the model's warm-up (kernels built, weights made
+        // resident) and costs ten times the second; worth seeing when a load
+        // seems slow.
+        if ProcessInfo.processInfo.environment["CHATY_MLX_LOADLOG"] == "1" {
+            log(String(format: "probe first pass %.2fs, second %.2fs", t1.timeIntervalSince(t0), Date().timeIntervalSince(t1)))
+        }
         var perToken = 0.0
         var fixed = 0
         for (i, c) in cache.enumerated() {
@@ -1295,6 +1382,25 @@ final class Engine: @unchecked Sendable {
         self.meta = meta
         self.modelDir = dir
         let useVLM = meta.multimodal
+        let meter = LoadMeter()
+        let weightBytes = Double(max(meta.sizeBytes, 1))
+        let loadLog = ProcessInfo.processInfo.environment["CHATY_MLX_LOADLOG"] == "1"
+        let loadStart = Date()
+        let reporter = Task.detached {
+            while !Task.isCancelled {
+                let frac = meter.value()
+                out.emit(["event": "loadProgress", "frac": (frac * 1000).rounded() / 1000])
+                if loadLog {
+                    log(
+                        String(
+                            format: "load %.2fs %@ %.3f active=%ldMB", Date().timeIntervalSince(loadStart),
+                            meter.stage as NSString, frac, Memory.activeMemory >> 20))
+                }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+        defer { reporter.cancel() }
+        meter.measured("weights", to: 0.5) { Double(Memory.activeMemory) / weightBytes }
         do {
             // Local-directory load: no downloader involved; the tokenizer
             // comes from swift-transformers via the MLXHuggingFace macro.
@@ -1364,6 +1470,7 @@ final class Engine: @unchecked Sendable {
                                 : "depth ≤\(mtp.depth), gated by confidence")
                             + ")\n").utf8))
             }
+            meter.easing("template", to: 0.55, tau: 2)
             // Ask the loaded template itself, rather than guessing from a name.
             let shape = await container.perform { ctx in probeHistoryShape(ctx.tokenizer) }
             meta.toolRole = shape.toolRole
@@ -1449,6 +1556,10 @@ final class Engine: @unchecked Sendable {
             let workingSet = GPU.maxRecommendedWorkingSetBytes() ?? 0
             self.workingSet = workingSet
             self.scratchPerPair = 0
+            // The first pass through the model, which this measures with:
+            // as long as reading the weights took, near enough — 9.8 s on a
+            // 34 GB model whose weights took 9 (the second pass, 0.9 s).
+            meter.easing("context", to: 0.99, tau: max(1.5, weightBytes / 1e9 * 0.2))
             let fits = await container.perform { ctx in Self.contextThatFits(ctx, workingSet: workingSet) }
             self.nCtxCap = fits.map { min(wanted, $0) } ?? wanted
             if let fits, fits < wanted, loadWarning == nil { loadWarning = "ctx-clamped" }
@@ -1489,6 +1600,7 @@ final class Engine: @unchecked Sendable {
             if let v = meta.nEmbd { info["nEmbd"] = v }
             if let v = meta.nCtxTrain { info["nCtxTrain"] = v }
             if let v = loadWarning { info["warning"] = v }
+            reporter.cancel()
             out.emit(["event": "loaded", "info": info])
         } catch {
             out.error("模型加载失败 (failed to load MLX model): \(error)")
@@ -1521,6 +1633,7 @@ final class Engine: @unchecked Sendable {
             return
         }
         cancelFlag.reset()
+        _ = skipThought.take()
         do {
             // withError: box MLX's C-level runtime errors (Metal allocation
             // failures, shape errors) into thrown Swift errors. Without it the
@@ -2465,6 +2578,11 @@ final class Engine: @unchecked Sendable {
         var tSnapshot = 0.0, tRedo = 0.0
         /// Tokens already settled by a verified run, waiting their turn.
         var settled: [Int] = []
+        /// The close of a thought the user skipped: given, not drawn, and
+        /// read into the cache like any other token, so the reply goes on as
+        /// if the model had closed the thought there itself.
+        var forced: [Int] = []
+        var given = false
         /// The trunk's hidden state for the last position it consumed — the
         /// head's starting point for its first guess.
         var trunkHidden: MLXArray? = nil
@@ -2719,7 +2837,10 @@ final class Engine: @unchecked Sendable {
                 reason = "cancelled"
                 break
             }
-            if tok == unknownId || stopIds.contains(tok) { break }
+            // A given token never ends the reply — Harmony's `<|end|>` is an
+            // end of turn to some checkpoints, and here it ends a thought.
+            if !given, tok == unknownId || stopIds.contains(tok) { break }
+            given = false
             done += 1
             // Kick the next forward off, then detokenize/emit the current
             // token while the GPU runs it. With a head in play the "next
@@ -2731,7 +2852,10 @@ final class Engine: @unchecked Sendable {
                     // The governor can put the head down for a stretch; when it
                     // has, this decodes exactly as it would with no head at
                     // all — no guess, no head pass, nothing to pay back.
-                    let run = speculation.governor?.shouldSpeculate() ?? true
+                    // A Skip waiting, or its close still being given: no
+                    // guesses — the next tokens are not the model's to draw.
+                    let run = (speculation.governor?.shouldSpeculate() ?? true)
+                        && forced.isEmpty && !skipThought.isFull
                     if run {
                         _ = speculate(from: tok, depth: speculation.depth)
                     } else if let step = trunkEval([tok]) {
@@ -2766,6 +2890,18 @@ final class Engine: @unchecked Sendable {
             if nCtxCap > 0, total + done >= nCtxCap {
                 reason = "context"
                 break
+            }
+            // Taken only with no settled run in hand: all but the last of
+            // those are in the cache already.
+            if forced.isEmpty, settled.isEmpty, let close = skipThought.take() {
+                forced = context.tokenizer.encode(text: close, addSpecialTokens: false)
+            }
+            if !forced.isEmpty {
+                // The logits this step computed go unread.
+                tok = forced.removeFirst()
+                given = true
+                processor?.didSample(token: MLXArray(Int32(tok)))
+                continue
             }
             if let logits {
                 tok = sample(logits)
@@ -3010,6 +3146,8 @@ struct ChatyMLX {
                     }
                 case "cancel":
                     engine.cancelFlag.set()
+                case "skip_think":
+                    if let text = cmd.text, !text.isEmpty { engine.skipThought.put(text) }
                 case "quit":
                     engine.cancelFlag.set()
                     await generation?.value

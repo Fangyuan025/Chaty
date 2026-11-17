@@ -349,6 +349,12 @@ jobs:
             how its reply will be shown. Asked who it is, a model gives the name of what is running;
             it points to the + menu instead of offering to look up what it cannot reach.
 
+            ## A thought can be cut short
+
+            While a chat reply is thinking, Skip appears at the end of its Thinking line when the
+            pointer is over the thought: the thought ends where it stands, kept as it was written,
+            and the model answers from what it had thought so far — on both engines.
+
             ## One thing at a time
 
             A Code session at work can be left to read other sessions or chat; nothing can be sent,
@@ -357,7 +363,8 @@ jobs:
             one's title, an accent bar by one waiting on you, an unread title on one that finished
             while you were away. Downloads go on with the store or Set up for me closed, show at the
             top of the store wherever they were started, and fill a hairline under the model chip.
-            A model load can be stopped at any point, from beside the chip.
+            A model load can be stopped at any point, from beside the chip, and holds chat's send as
+            it holds Code's.
 
             ## Code mode
 
@@ -371,7 +378,8 @@ jobs:
 
             A page's picture is made out of sight and kept across restarts; long code, the first
             diagram or formula, and badly broken diagrams no longer hitch the window. Loading a
-            model names it on the chip as it goes; the sidebar slides; folded code, thoughts and
+            model names it on the chip as it goes, and an MLX model's bar keeps moving to the end
+            instead of standing at half; the sidebar slides; folded code, thoughts and
             Code mode's cards open and close smoothly, by a click or by themselves; Code mode's
             thought fades in word by word, and a long one shows under its run as it is written.
 

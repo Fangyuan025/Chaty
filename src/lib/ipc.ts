@@ -1789,6 +1789,11 @@ export async function cancelGeneration(): Promise<void> {
   await invoke("cancel_generation");
 }
 
+/** End the thought the reply being written is in; it answers from there. */
+export async function skipThinking(): Promise<void> {
+  await invoke("skip_thinking");
+}
+
 // ---------- Conversation persistence ----------
 
 export interface Conversation {

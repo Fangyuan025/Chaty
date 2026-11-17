@@ -361,6 +361,9 @@ impl LlamaSidecar {
                     if cancel.load(Ordering::SeqCst) {
                         cancelled = true;
                         let _ = self.proc.send(json!({ "cmd": "cancel", "id": id }));
+                    } else if cmd == "generate" && super::THINK_SKIP.swap(false, Ordering::SeqCst) {
+                        // The engine in there has its own Skip to set.
+                        let _ = self.proc.send(json!({ "cmd": "skip_think", "id": id }));
                     }
                 }
             }
@@ -612,6 +615,11 @@ pub fn serve() -> ! {
             "cancel" => {
                 if let Some(c) = cancels.lock().unwrap().get(&id) {
                     c.store(true, Ordering::SeqCst);
+                }
+            }
+            "skip_think" => {
+                if cancels.lock().unwrap().contains_key(&id) {
+                    super::THINK_SKIP.store(true, Ordering::SeqCst);
                 }
             }
             "embed_load" => {

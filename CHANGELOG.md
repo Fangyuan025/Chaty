@@ -31,7 +31,9 @@
   unloaded nor reloaded meanwhile; the model menu and Settings say why. A
   chat reply being written holds Code mode's send the same way, and the
   knowledge base, Deep Research, the podcast, the canvas's next version and
-  live voice wait for either — or for a load — saying which. Live voice, open,
+  live voice wait for either — or for a load — saying which. A load holds
+  chat's send as it holds Code's, a tab on the box saying a model is loading;
+  with no model in yet, Enter no longer opens the folder picker meanwhile. Live voice, open,
   holds the model in turn. A question or an approval the turn waits on is asked
   on its own screen, not over the one you are reading, and Enter there
   answers nothing it cannot show.
@@ -128,6 +130,14 @@
 
 ### Nothing stutters
 
+- **An MLX model's load bar no longer stands still.** It went by the engine's
+  share of memory, which on a large model rose to about half and then fell
+  while the weights moved to the GPU, so the bar stood at half for the rest
+  of the load — fifteen seconds on a 34 GB model — through the weights and
+  the first pass through the model that sets the context to what memory
+  holds. The engine now says how far it has got: the weights by what has
+  actually been read in, then the first pass, and the bar keeps moving to
+  the end.
 - **A page's picture appears without a hitch.** It is made out of sight, one
   page at a time, while you are not scrolling or typing — any scroll or
   keystroke, and it stops to be made again a moment later — with the page's
@@ -212,6 +222,13 @@
 
 ### What replies are made of
 
+- **A thought can be cut short.** While a chat reply is thinking, Skip
+  appears at the end of its Thinking line when the pointer is over the
+  thought: the thought ends where it stands, kept as it was written, and the
+  answer begins from there — closed the way the model closes its own, so the
+  next message still picks up where the conversation left off instead of
+  reading it all again. On both engines, for every model whose thinking the
+  chat shows.
 - **A finished page's picture is up about half a second after the page is
   written**, while the rest of the reply is still coming — and a page whose
   fonts or scripts come from somewhere that does not answer (Google Fonts,

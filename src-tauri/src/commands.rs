@@ -1911,6 +1911,7 @@ pub async fn generate(
     // handle to the engine.
     state.cancel.store(false, Ordering::SeqCst);
     let cancel = state.cancel.clone();
+    crate::inference::THINK_SKIP.store(false, Ordering::SeqCst);
 
     // When the caller says where the reply belongs, the app holds on to it —
     // so a turn that finishes after its page is gone is not lost with it.
@@ -1982,6 +1983,13 @@ pub async fn generate(
 #[tauri::command]
 pub fn cancel_generation(state: State<'_, AppState>) {
     state.cancel.store(true, Ordering::SeqCst);
+}
+
+/// End the thought the reply being written is in and have it answer from
+/// there (the chat's Skip). What was thought is kept as thought.
+#[tauri::command]
+pub fn skip_thinking() {
+    crate::inference::THINK_SKIP.store(true, Ordering::SeqCst);
 }
 
 /// One-shot vision analysis: run the loaded vision model on `images` + `prompt`

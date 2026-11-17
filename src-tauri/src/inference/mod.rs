@@ -41,6 +41,119 @@ pub fn load_cancelled() -> bool {
     LOAD_CANCELLED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// The chat's Skip on a reply that is still thinking: end the thought where it
+/// stands and answer. Set by `skip_thinking` and taken once by the engine
+/// writing the reply, which closes the thought in the reply's own markup and
+/// goes on sampling from there — what was thought stays thought, the cache
+/// holds the reply exactly as it reads. Each engine process has its own; the
+/// app passes a Skip on to the sidecar doing the work. Cleared as a reply
+/// starts, so one asked for too late never ends the next reply's thought.
+pub static THINK_SKIP: AtomicBool = AtomicBool::new(false);
+
+/// What ends the thought `text` — a reply as streamed so far, the opener the
+/// engine sent first included — is in the middle of, written the way its model
+/// writes it; `None` when it is not in one. The markups are the ones the
+/// chat's reasoning panel reads: `<think>`, a namespaced `<ifm|think…>` (K2
+/// Horizon), Gemma 4's thought channel, Harmony's analysis channel and ATEM's
+/// `to=self` span. The innermost — latest — open one is the one closed.
+pub fn think_closer(text: &str) -> Option<String> {
+    let nl = if text.ends_with('\n') { "" } else { "\n" };
+    let mut best: Option<(usize, String)> = None;
+    let mut offer = |at: usize, closer: String| {
+        if best.as_ref().is_none_or(|(b, _)| at > *b) {
+            best = Some((at, closer));
+        }
+    };
+    let open_at = |opener: &str, closes: &[&str]| -> Option<usize> {
+        let at = text.rfind(opener)?;
+        let after = &text[at + opener.len()..];
+        (!closes.iter().any(|c| after.contains(c))).then_some(at)
+    };
+    if let Some(at) = open_at("<think>", &["</think>"]) {
+        offer(at, format!("{nl}</think>\n\n"));
+    }
+    // `<ns|think>`, `<ns|think_fast>`: the namespace before the pipe keeps it
+    // apart from Gemma 4's `<|think|>` control token, which opens nothing.
+    let mut from = text.len();
+    while let Some(bar) = text[..from].rfind("|think") {
+        from = bar;
+        let Some(lt) = text[..bar].rfind('<') else { break };
+        let ns = &text[lt + 1..bar];
+        let rest = &text[bar + 1..];
+        let Some(gt) = rest.find('>') else { continue };
+        let name = &rest[..gt];
+        let named = name == "think"
+            || name.strip_prefix("think_").is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_lowercase()));
+        if ns.is_empty() || !ns.chars().all(|c| c.is_ascii_alphanumeric()) || !named {
+            continue;
+        }
+        let close = format!("</{ns}|{name}>");
+        if !rest[gt..].contains(&close) {
+            offer(lt, format!("{nl}{close}\n"));
+        }
+        break;
+    }
+    for name in ["thought", "thinking"] {
+        if let Some(at) = open_at(&format!("<|channel>{name}"), &["<channel|>"]) {
+            offer(at, "<channel|>".into());
+        }
+    }
+    if let Some(at) = open_at("<|channel|>analysis", &["<|end|>", "<|channel|>final", "<|return|>"]) {
+        offer(at, "<|end|><|start|>assistant<|channel|>final<|message|>".into());
+    }
+    if let Some(at) = open_at("to=self<|message|>", &["<|eom|>", "<|eot|>", "<|end|>"]) {
+        offer(at, "<|eom|><|start|>assistant to=user<|message|>".into());
+    }
+    best.map(|(_, c)| c)
+}
+
+#[cfg(test)]
+mod think_closer_tests {
+    use super::think_closer;
+
+    #[test]
+    fn each_markup_is_closed_its_own_way() {
+        assert_eq!(think_closer("<think>\nweighing it").as_deref(), Some("\n</think>\n\n"));
+        assert_eq!(think_closer("<think>\nweighing it\n").as_deref(), Some("</think>\n\n"));
+        assert_eq!(think_closer("<ifm|think>\nplan").as_deref(), Some("\n</ifm|think>\n"));
+        assert_eq!(think_closer("<ifm|think_fast>\nplan").as_deref(), Some("\n</ifm|think_fast>\n"));
+        assert_eq!(think_closer("<|channel>thought\nplan").as_deref(), Some("<channel|>"));
+        assert_eq!(
+            think_closer("<|channel|>analysis<|message|>plan").as_deref(),
+            Some("<|end|><|start|>assistant<|channel|>final<|message|>")
+        );
+        assert_eq!(
+            think_closer(" to=self<|message|>plan").as_deref(),
+            Some("<|eom|><|start|>assistant to=user<|message|>")
+        );
+    }
+
+    #[test]
+    fn a_reply_out_of_its_thought_has_nothing_to_close() {
+        assert_eq!(think_closer(""), None);
+        assert_eq!(think_closer("just an answer"), None);
+        assert_eq!(think_closer("<think>\nplan\n</think>\n\nanswer"), None);
+        assert_eq!(think_closer("<ifm|think>\nplan\n</ifm|think>\nanswer"), None);
+        assert_eq!(think_closer("<|channel>thought\nplan<channel|>answer"), None);
+        assert_eq!(think_closer("<|turn>model\n<|think|>"), None);
+        assert_eq!(
+            think_closer("<|channel|>analysis<|message|>plan<|end|><|start|>assistant<|channel|>final<|message|>4"),
+            None
+        );
+        assert_eq!(think_closer(" to=self<|message|>plan<|eom|><|start|>assistant to=user<|message|>4"), None);
+    }
+
+    #[test]
+    fn the_latest_open_thought_is_the_one_closed() {
+        // A second thought after an answer: that one is open.
+        assert_eq!(
+            think_closer("<|channel>thought\na<channel|>part one<|channel>thought\nmore").as_deref(),
+            Some("<channel|>")
+        );
+        assert_eq!(think_closer("<think>a</think>b<think>\nmore").as_deref(), Some("\n</think>\n\n"));
+    }
+}
+
 /// The engine processes a load started — every sidecar not in `before`,
 /// taken as the load began — ended now. Names checked as in
 /// `kill_sidecars_now`; sysinfo's kill ends a process on every platform.

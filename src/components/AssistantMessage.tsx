@@ -35,6 +35,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   prefill,
   hideThinking,
   sources,
+  onSkipThink,
 }: {
   content: string;
   streaming: boolean;
@@ -44,6 +45,9 @@ export const AssistantMessage = memo(function AssistantMessage({
   prefill?: number | null;
   hideThinking?: boolean;
   sources?: { title: string; url: string; snippet: string }[];
+  /** The reply being written here: its thought can be cut short and the
+   *  answer begun (Skip, shown on hover while it thinks). */
+  onSkipThink?: () => void;
 }) {
   const { t } = useI18n();
   const busyHint = composing
@@ -84,6 +88,11 @@ export const AssistantMessage = memo(function AssistantMessage({
   // starts — the thought goes from one height to the other: the answer under
   // it used to jump up by the window's height as its first words came.
   const thinkRef = useHeightOnChange<HTMLDivElement>(override ?? thinking);
+  // Asked once, Skip steps aside: the thought ends at the model's next token.
+  const [skipAsked, setSkipAsked] = useState(false);
+  useEffect(() => {
+    if (!thinking) setSkipAsked(false);
+  }, [thinking]);
 
   // Thinking off: never use the reasoning panel — strip the whole <think> block
   // and any stray tags so a buggy/empty panel can never appear.
@@ -136,20 +145,38 @@ export const AssistantMessage = memo(function AssistantMessage({
       <StreamingContext.Provider value={streaming}>
       {showThink && (
         <div className="think" ref={thinkRef}>
-          <button
-            className="think-toggle"
-            type="button"
-            onClick={() => setOverride(!expanded)}
-          >
-            <span className={`think-caret ${expanded ? "open" : ""}`}><Icon name="chevron-right" size={11} strokeWidth={2} /></span>
-            {thinking ? (
-              <span className="think-label is-thinking">{t("thinking")}</span>
-            ) : (
-              <span className="think-label">
-                {expanded ? t("thoughtCollapse") : t("thoughtExpand")}
-              </span>
+          <div className="think-head">
+            <button
+              className="think-toggle"
+              type="button"
+              onClick={() => setOverride(!expanded)}
+            >
+              <span className={`think-caret ${expanded ? "open" : ""}`}><Icon name="chevron-right" size={11} strokeWidth={2} /></span>
+              {thinking ? (
+                <span className="think-label is-thinking">{t("thinking")}</span>
+              ) : (
+                <span className="think-label">
+                  {expanded ? t("thoughtCollapse") : t("thoughtExpand")}
+                </span>
+              )}
+            </button>
+            {onSkipThink && (
+              <button
+                type="button"
+                className={`think-skip${thinking && !skipAsked ? " on" : ""}`}
+                title={t("skipThinkTitle")}
+                tabIndex={thinking && !skipAsked ? 0 : -1}
+                aria-hidden={thinking && !skipAsked ? undefined : true}
+                onClick={() => {
+                  if (!thinking || skipAsked) return;
+                  setSkipAsked(true);
+                  onSkipThink();
+                }}
+              >
+                {t("skipThink")}
+              </button>
             )}
-          </button>
+          </div>
           {expanded && (
             <div ref={thinkBodyRef} className={`think-body ${focusMode ? "focus" : ""}`}>
               <Markdown blocks={blocks}>{reasoning}</Markdown>

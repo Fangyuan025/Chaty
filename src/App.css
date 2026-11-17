@@ -2573,6 +2573,40 @@ html[data-motion="reduce"] .sw.quick {
   color: var(--text-dim);
 }
 
+/* The row the label sits in. Skip stands at its far end, out of sight until
+   the pointer is over the thought, and only while there is a thought going
+   on to cut short. */
+.think-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.think-skip {
+  margin-left: auto;
+  padding: 3px 0;
+  font-size: calc(12.5px * var(--read-scale, 1));
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  text-decoration: underline dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.18s ease,
+    color 0.15s;
+}
+.think:hover .think-skip.on,
+.think-skip.on:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.think-skip:hover {
+  color: var(--text);
+}
+
 .think-caret {
   font-size: 9px;
   transition: transform 0.15s;

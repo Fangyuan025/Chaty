@@ -144,6 +144,7 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
             };
             let cancel = Arc::new(AtomicBool::new(false));
             *cancel_slot().lock().unwrap() = cancel.clone();
+            chaty_lib::inference::THINK_SKIP.store(false, Ordering::SeqCst);
             let sink = tauri::ipc::Channel::new(move |body: tauri::ipc::InvokeResponseBody| {
                 if let tauri::ipc::InvokeResponseBody::Json(s) = body {
                     if let Ok(ev) = serde_json::from_str::<Value>(&s) {
@@ -159,6 +160,10 @@ async fn dispatch(cmd: &str, args: Value, id: u64) {
         }
         "cancel_generation" => {
             cancel_slot().lock().unwrap().store(true, Ordering::SeqCst);
+            Ok(Value::Null)
+        }
+        "skip_thinking" => {
+            chaty_lib::inference::THINK_SKIP.store(true, Ordering::SeqCst);
             Ok(Value::Null)
         }
 

@@ -84,6 +84,7 @@ import { copyToClipboard } from "./lib/clipboard";
 import {
   agentSetShell,
   cancelGeneration,
+  skipThinking,
   attachGeneration,
   checkUpdate,
   deleteConversation,
@@ -338,6 +339,11 @@ function loadSettings(): GenSettings {
   }
   return { ...defaultSettings, chineseVoice: detectLang() === "zh" };
 }
+
+/** Skip on a reply's thought (one handler for every bubble, so the memoised
+ *  message is not redrawn for it). A reply that ended meanwhile has nothing
+ *  to skip, and nothing to say about it. */
+const skipThought = () => void skipThinking().catch(() => {});
 
 export default function App() {
   const { t, lang } = useI18n();
@@ -3476,7 +3482,9 @@ ${body.outerHTML}
   };
   async function handleSend(override?: string) {
     const text = (override ?? input).trim();
-    if (!text || busy || sendingRef.current || codeRunRef.current) return;
+    // A load holds the engine as a turn does: nothing is sent until the
+    // model is in (with none loaded yet, sending used to open the picker).
+    if (!text || busy || loadingModel || sendingRef.current || codeRunRef.current) return;
     // Slash command: `/webdesign` toggles web-design mode (no message sent).
     if (!override && /^\/webdesign\s*$/i.test(text)) {
       setWebDesign((v) => !v);
@@ -4235,6 +4243,7 @@ ${body.outerHTML}
                       prefill={streamingId === m.id ? prefill : null}
                       hideThinking={!thinkEnabled}
                       sources={m.sources}
+                      onSkipThink={streamingId === m.id ? skipThought : undefined}
                     />
                     {m.sources && m.sources.length > 0 && <Sources sources={m.sources} />}
                     <div className="msg-foot">
@@ -4524,9 +4533,9 @@ ${body.outerHTML}
                 {attachError && <span className="attach-error">{attachError}</span>}
               </div>
             )}</Exit>
-            {/* A Code turn has the engine: the box takes typing, sending
-                waits — and the tab on the box's top edge says where the
-                turn is. */}
+            {/* A Code turn or a load has the engine: the box takes typing,
+                sending waits — and the tab on the box's top edge says where
+                the turn is, or that a model is loading. */}
             <Exit ms={260} collapse>
               {codeAct.run ? (
                 <BusyNote
@@ -4539,6 +4548,8 @@ ${body.outerHTML}
                     if (id) codeActions.current?.openSession(id);
                   }}
                 />
+              ) : loadingModel ? (
+                <BusyNote dock text={t("busyLoad")} />
               ) : chatRun && !chatHere ? (
                 <BusyNote
                   dock
@@ -4843,7 +4854,7 @@ ${body.outerHTML}
                 <button
                   className="send-btn"
                   onClick={() => handleSend()}
-                  disabled={!input.trim() || !!codeAct.run || busy}
+                  disabled={!input.trim() || !!codeAct.run || busy || loadingModel}
                   title={t("sendTitle")}
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">

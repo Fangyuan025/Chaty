@@ -826,6 +826,8 @@ export const T = {
     en: "**(The model spent this turn reasoning and stopped without writing an answer. Regenerating usually gets one.)**", pt: "**(O modelo gastou este turno apenas raciocinando e parou antes de escrever uma resposta. Regerar geralmente resolve.)**"
   },
   thinking: { zh: "正在思考", en: "Thinking", pt: "Pensando" },
+  skipThink: { zh: "跳过", en: "Skip", pt: "Pular" },
+  skipThinkTitle: { zh: "不再思考，直接开始回答（已想的内容保留）", en: "Stop thinking and start the answer (what was thought is kept)", pt: "Parar de pensar e começar a resposta (o que já foi pensado fica)" },
   thoughtExpand: { zh: "已深度思考 · 点击展开", en: "Reasoned · click to expand", pt: "Raciocinou · clique para expandir" },
   thoughtCollapse: { zh: "已深度思考 · 点击收起", en: "Reasoned · click to collapse", pt: "Raciocinou · clique para recolher" },
   // attachment

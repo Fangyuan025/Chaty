@@ -645,6 +645,7 @@ pub fn run() {
             commands::set_tray_language,
             commands::generate,
             commands::cancel_generation,
+            commands::skip_thinking,
             imagegen::image_model_probe,
             imagegen::image_generate,
             imagegen::image_cancel,

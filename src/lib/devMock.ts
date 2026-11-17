@@ -671,6 +671,8 @@ const MOCK_RUNTIMES = {
 };
 /** A generation told to stop (cancel_generation) stops streaming. */
 let mockGenStop = false;
+/** Skip asked for (skip_thinking): the thought closes where it stands. */
+let mockSkipThink = false;
 /** Background jobs in the preview, stopped and cleared for real. */
 const MOCK_BG = [
   { id: 2, command: "npm run dev", running: true, code: null as number | null, killed: false, elapsedSecs: 94, tail: "" },
@@ -1724,11 +1726,28 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
           await new Promise((r) => setTimeout(r, fast ? 15 : 140));
         }
         const pieceRe = wantsHeavy || wantsLongPage || wantsBigBad || wantsVeryBad ? /[\s\S]{1,24}/g : wantsRich && wantsFast ? /[\s\S]{1,12}/g : wantsLong || wantsRich || wantsPage ? /[\s\S]{1,3}/g : /.{1,6}/g;
-        for (const piece of reply.match(pieceRe) ?? []) {
+        // Skip, as the engines take it: the thought is closed where it
+        // stands and the reply goes on with its answer.
+        let skipTo = -1;
+        mockSkipThink = false;
+        for (const m of reply.matchAll(pieceRe)) {
+          const piece = m[0];
           // Told to stop, it stops, as the engines do.
           if (mockGenStop) break;
           // `__mockPause` holds the stream mid-reply, to look at a frame of it.
           while ((globalThis as { __mockPause?: boolean }).__mockPause) await new Promise((r) => setTimeout(r, 50));
+          if (m.index! < skipTo) continue;
+          if (mockSkipThink) {
+            mockSkipThink = false;
+            const sofar = opened + reply.slice(0, m.index);
+            const close = reply.indexOf("</think>", m.index);
+            if (close !== -1 && sofar.lastIndexOf("<think>") > sofar.lastIndexOf("</think>")) {
+              emit({ type: "token", text: (sofar.endsWith("\n") ? "" : "\n") + "</think>\n\n" });
+              skipTo = close + "</think>".length;
+              while (reply[skipTo] === "\n") skipTo++;
+              continue;
+            }
+          }
           emit({ type: "token", text: piece });
           await new Promise((r) => setTimeout(r, wantsHeavy || wantsLongPage || wantsBigBad || wantsVeryBad || (wantsRich && wantsFast) ? 16 : wantsLong || wantsRich || wantsPage ? 28 : 30));
         }
@@ -1748,6 +1767,9 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
       return null;
     case "cancel_generation":
       mockGenStop = true;
+      return null;
+    case "skip_thinking":
+      mockSkipThink = true;
       return null;
     // A download that takes ~14s, streaming progress, so the store's and the
     // setup cards' downloads — and taking them to the background — can be

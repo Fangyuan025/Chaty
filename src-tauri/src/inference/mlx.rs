@@ -451,14 +451,16 @@ impl MlxEngine {
         stdin_pipe.flush()?;
 
         let loaded = {
-            // The sidecar has no local-load progress callback, but weights
-            // stream into ITS process roughly linearly — its RSS over the
-            // shard bytes is a good fraction (same heuristic as the GGUF
-            // path, one process over).
+            // A sidecar from before LoadMeter reports nothing while it loads;
+            // for one of those, its RSS over the shard bytes is the guess
+            // (same heuristic as the GGUF path, one process over).
             let expected = mlx_dir_size_mb(&dir_path).saturating_mul(1024 * 1024).max(1);
             let pid = sysinfo::Pid::from_u32(child.id());
             let mut sys = sysinfo::System::new();
             let deadline = Instant::now() + LOAD_TIMEOUT;
+            // A sidecar that says how far it has got is believed over the
+            // guess (see LoadMeter in the sidecar); an older one is not asked.
+            let mut told = false;
             loop {
                 let remain = deadline
                     .checked_duration_since(Instant::now())
@@ -474,6 +476,7 @@ impl MlxEngine {
                     })?;
                 match ev["event"].as_str() {
                     Some("loadProgress") => {
+                        told = true;
                         progress(ev["frac"].as_f64().unwrap_or(0.0) as f32);
                     }
                     Some("loaded") => break ev["info"].clone(),
@@ -488,6 +491,7 @@ impl MlxEngine {
                         super::SIDECAR_PIDS.lock().unwrap().retain(|p| *p != dead);
                         bail!("{msg}");
                     }
+                    _ if told => {}
                     _ => {
                         sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
                         if let Some(p) = sys.process(pid) {
@@ -803,6 +807,10 @@ fn run_generation(
     let mut stop_hit = false;
     let mut cancel_sent = false;
     let mut last_activity = Instant::now();
+    // The reply as the sidecar has streamed it, for a Skip to read where its
+    // thought stands.
+    let mut seen = String::new();
+    super::THINK_SKIP.store(false, Ordering::SeqCst);
 
     loop {
         // The user hitting stop and a stop-sequence match funnel into the
@@ -810,6 +818,13 @@ fn run_generation(
         if (cancel.load(Ordering::Relaxed) || stop_hit) && !cancel_sent {
             let _ = send_cmd(stdin, &json!({ "cmd": "cancel" }));
             cancel_sent = true;
+        }
+        // Skip: the sidecar is handed the close in the reply's own markup and
+        // gives the model those tokens at its next step.
+        if !cancel_sent && super::THINK_SKIP.swap(false, Ordering::SeqCst) {
+            if let Some(close) = super::think_closer(&seen) {
+                let _ = send_cmd(stdin, &json!({ "cmd": "skip_think", "text": close }));
+            }
         }
         let line = match lines.recv_timeout(Duration::from_millis(100)) {
             Ok(l) => l,
@@ -835,7 +850,9 @@ fn run_generation(
                 if stop_hit {
                     continue; // draining until the sidecar acks the cancel
                 }
-                let (out, hit) = watch.feed(ev["text"].as_str().unwrap_or(""));
+                let piece = ev["text"].as_str().unwrap_or("");
+                seen.push_str(piece);
+                let (out, hit) = watch.feed(piece);
                 if !out.is_empty() {
                     emit(StreamEvent::Token { text: out });
                 }
