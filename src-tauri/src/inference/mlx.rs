@@ -815,6 +815,9 @@ fn run_generation(
     // before it did is counted by its token events, a token or two behind.
     let mut budget_spent = p.think_budget == 0;
     let mut pieces: u64 = 0;
+    // A thought going round is closed the same way, once it is seen to.
+    let mut looper = super::ThoughtLoop::new();
+    let mut looped = false;
     // The think floor: told to the sidecar once the reply's thought shows,
     // with what closes it (the sidecar holds that token back until then).
     let mut floor_told = p.think_floor == 0;
@@ -830,8 +833,12 @@ fn run_generation(
         // gives the model those tokens at its next step. The ceiling reached
         // asks for the same, once.
         let due = !budget_spent && pieces >= u64::from(p.think_budget);
-        if !cancel_sent && (due || super::THINK_SKIP.swap(false, Ordering::SeqCst)) {
+        let going_round = std::mem::take(&mut looped);
+        if !cancel_sent && (due || going_round || super::THINK_SKIP.swap(false, Ordering::SeqCst)) {
             budget_spent |= due;
+            if going_round {
+                eprintln!("[mlx] thought going round at {pieces} tokens; closing it");
+            }
             if let Some(close) = super::think_closer(&seen) {
                 let _ = send_cmd(stdin, &json!({ "cmd": "skip_think", "text": close }));
             }
@@ -863,6 +870,7 @@ fn run_generation(
                 let piece = ev["text"].as_str().unwrap_or("");
                 seen.push_str(piece);
                 pieces = ev["n"].as_u64().unwrap_or(pieces + 1);
+                looped |= looper.due("", &seen);
                 if !floor_told {
                     if let Some(close) = super::think_closer(&seen) {
                         floor_told = true;

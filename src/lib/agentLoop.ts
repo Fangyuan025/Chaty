@@ -305,11 +305,10 @@ export interface AgentOptions {
   /** Native reasoning-effort rung to request (Qwen3.8: low|medium|xhigh).
    *  Undefined for models without the ladder. */
   effort?: string;
-  /** User-set hard ceiling on thinking tokens per round (0/undefined = no
-   *  mid-stream ceiling). Over budget the think block is CLOSED gracefully:
-   *  the reasoning so far stays in context and the model is told to act on
-   *  it — nothing is discarded (owner call: a 35B at low temperature loops
-   *  in thought; cutting must not cost coherence). */
+  /** User-set ceiling on thinking tokens per step (0/undefined = none of the
+   *  user's). Given to the engine, which closes a thought still open there
+   *  in the model's own markup — as chat's limit and Skip do — and the step
+   *  goes on to act in the same generation, what was thought kept. */
   thinkBudget?: number;
   /** User-set per-round generation budget in tokens — Settings → Sampling's
    *  max length (0/undefined = no ceiling of its own). Always clamped to what
@@ -661,9 +660,10 @@ export function resumeNudge(stuck: StuckState, zh: boolean): string {
 /**
  * Has the stream stopped saying anything?
  *
- * Not "is it long" and not "is it looping over an idea" — the built-in runaway
- * cuts were removed on purpose, and the think budget is the only ceiling on
- * how MUCH a model may reason. This is the other failure: output that carries
+ * Not "is it long" and not "is it looping over an idea" — how much a model may
+ * reason is the think limit's to say, and a thought going round over its own
+ * paragraphs is closed by the engine (inference::ThoughtLoop), the step going
+ * on from it. This is the other failure: output that carries
  * no information at all, the same character or a two-character cycle emitted
  * until the token cap. The llama.cpp engine has caught one shape of it since
  * MiniCPM5 (32 tokens of pure whitespace, a broken conversion); MLX caught
@@ -2035,14 +2035,6 @@ export function parseBareJsonCall(text: string): ToolCall | null {
   const args = obj.arguments ?? obj.parameters;
   if (!args || typeof args !== "object" || Array.isArray(args)) return null;
   return { name: name as AgentToolName, args: args as Record<string, unknown> };
-}
-
-/** Runaway-reasoning check: so far the output is *only* reasoning — no tool
- *  call and no real answer yet. Small models fall into this and keep thinking
- *  forever; gated behind a token budget so normal reasoning isn't cut short. */
-function isThinkOnly(raw: string): boolean {
-  if (callStart(raw) !== -1) return false;
-  return proseAfter(raw).trim() === "";
 }
 
 const asStr = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
@@ -3661,12 +3653,20 @@ export async function runAgentTurn(
   const budget =
     opts.maxGenTokens && opts.maxGenTokens > 0 ? Math.max(512, opts.maxGenTokens) : Infinity;
   const maxTokens = Math.min(budget, Math.max(1024, Math.floor(nCtx * 0.75)));
-  // User think budget: the ONLY mid-stream thinking ceiling (owner call — the
-  // old built-in 3000/5000 runaway cut kept beheading legitimate long
-  // reasoning; a user who wants a cap sets one). Unset ⇒ a round is bounded
-  // by maxTokens, and a think-only round still lands in the no-output
-  // recovery below.
-  const thinkBudget = opts.thinkBudget && opts.thinkBudget > 0 ? opts.thinkBudget : 0;
+  // The think ceiling, given to the engine: a step still thinking at the
+  // user's limit has its thought closed there in its own markup — as chat's
+  // limit and Skip close one — and goes on to act in the same generation,
+  // what it thought kept and the cache holding the step as it reads. (This
+  // used to stop the step and add a message telling the model to act, which
+  // cost a round and broke the step in two.) With no limit set, a thought
+  // that would run into the step's length cap is closed a quarter short of
+  // it (at most 4096 tokens short) so the action has room: run to the cap,
+  // the whole round was lost. The owner's call stands — no built-in limit
+  // below that; a thought going round is closed by the engine on sight.
+  const thinkBudget = Math.min(
+    opts.thinkBudget && opts.thinkBudget > 0 ? opts.thinkBudget : Infinity,
+    maxTokens - Math.min(4096, Math.floor(maxTokens / 4)),
+  );
   // read_file budget: use most of the real context window for one read so even
   // long files come back in a single call (the #1 agent frustration). We leave
   // ~5k tokens of headroom for the system prompt + room to act, then ~3 chars/
@@ -4285,7 +4285,6 @@ export async function runAgentTurn(
       /** The call stopped as soon as its name showed it would not run. */
       let blockedCall: string | null = null;
       let blockedWhy: Blocked = "plan";
-      let budgetTripped = false;
       let degenerated = false;
       let closersCut = false;
       let prefillShown = false;
@@ -4376,6 +4375,7 @@ export async function runAgentTurn(
             stop: [...callClosers(callFormat()), ...(opts.sampling?.stop ?? [])],
             think: stepThink,
             effort: opts.effort,
+            thinkBudget: stepThink === false ? 0 : thinkBudget,
           },
         },
         (ev) => {
@@ -4443,23 +4443,15 @@ export async function runAgentTurn(
                 }
               }
             }
-            // ── Think gate (mid-stream) ── stop a runaway before it fills the
-            // whole budget: too much uninterrupted reasoning with no output, or
-            // degenerate looping. Checked periodically to stay cheap.
-            // The user think budget is the only mid-stream thinking ceiling
-            // (the old built-in runaway/looping cuts are gone — owner call:
-            // set a budget if you want a cap). Graceful close, not a discard.
-            if (!budgetTripped && !degenerated && liveTokens % 48 === 0) {
-              if (thinkBudget && liveTokens > thinkBudget && isThinkOnly(raw)) {
-                budgetTripped = true;
-                void cancelGeneration().catch(() => {});
-              } else if (looksDegenerate(raw)) {
-                // Not a runaway thought — output with nothing in it. Waiting
-                // for the token cap costs minutes at a big model's speed and
-                // cannot produce anything, so cut it here.
-                degenerated = true;
-                void cancelGeneration().catch(() => {});
-              }
+            // ── Degenerate output (mid-stream) ── output with nothing in it,
+            // one character or a short cycle. Waiting for the token cap costs
+            // minutes at a big model's speed and cannot produce anything, so
+            // cut it here. (The think limit and a thought going round are the
+            // engine's: it closes the thought and the step goes on.) Checked
+            // periodically to stay cheap.
+            if (!degenerated && liveTokens % 48 === 0 && looksDegenerate(raw)) {
+              degenerated = true;
+              void cancelGeneration().catch(() => {});
             }
             // An XML call that goes on after its last argument — the same
             // closing tag again and again — is complete, and the rest runs to
@@ -4692,26 +4684,6 @@ export async function runAgentTurn(
         if (shown && !shown.claimed && sameFileTool(shown.view.name, blockedCall)) stepObj.id = shown.id;
         cb.onStep(stepObj);
         if (sendBlockedBack(blockedCall, blockedWhy, call)) return;
-        continue;
-      }
-
-      // ── Think budget (user setting) ── the round was cut at the ceiling.
-      // Graceful close: the reasoning STAYS in context (capped) and the model
-      // is told to act on it — coherence preserved, unlike the runaway gate
-      // which discards a pathological loop on purpose.
-      if (budgetTripped) {
-        // As generated (with the thought closed, which is an append the cache
-        // keeps): a turn recorded in any other shape — the capped copy this
-        // used to store — stops matching the tokens the engine holds, and on
-        // a cache that cannot be rewound that costs the whole conversation.
-        const ending = raw.includes("</think>") ? raw : `${raw}\n</think>`;
-        storeAssistantTurn(messages, ending, opts.reasoningField);
-        pushUser(
-          lang === "zh"
-            ? "思考预算已用完。以上思考已保留——现在基于它直接执行下一步(发工具调用或给出答案),不要再展开思考。"
-            : "Think budget reached. Your reasoning above is kept — act on it NOW (issue the tool call or give the answer); do not reason further.",
-        );
-        forceNoThinkNext = true;
         continue;
       }
 

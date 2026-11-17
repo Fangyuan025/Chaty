@@ -1881,6 +1881,9 @@ fn run_turn(
     let think_budget = req.params.think_budget;
     let mut budget_spent = think_budget == 0;
     let mut floor = ThinkFloor::new(req.params.think_floor);
+    // A thought going round is closed the same way, once it is seen to.
+    let mut looper = super::ThoughtLoop::new();
+    let mut looped = false;
     loop {
         if cancel.load(Ordering::Relaxed) {
             stop_reason = "cancelled";
@@ -1890,8 +1893,12 @@ fn run_turn(
         // its last token are in the cache already) and no half character.
         if forced.is_empty() && settled.is_empty() && pending.is_empty() {
             let due = !budget_spent && n_decoded >= think_budget;
-            if due || super::THINK_SKIP.swap(false, Ordering::SeqCst) {
+            let going_round = std::mem::take(&mut looped);
+            if due || going_round || super::THINK_SKIP.swap(false, Ordering::SeqCst) {
                 budget_spent |= due;
+                if going_round {
+                    eprintln!("[llama] thought going round at {n_decoded} tokens; closing it");
+                }
                 if let Some(close) = super::think_closer(&format!("{opened}{out}")) {
                     forced.extend(tokenize(model, &close, false));
                 }
@@ -1929,6 +1936,7 @@ fn run_turn(
             let text = String::from_utf8_lossy(&pending[..valid]).into_owned();
             pending.drain(..valid);
             out.push_str(&text);
+            looped |= given.is_none() && looper.due(&opened, &out);
         }
 
         // Emit the portion of `out` that is safe to send.
@@ -2008,6 +2016,7 @@ fn run_turn(
             && given.is_none()
             && forced.is_empty()
             && !super::THINK_SKIP.load(Ordering::Relaxed)
+            && !looped
             && (budget_spent || n_decoded < think_budget)
             // The head's guesses are checked by a draw the floor does not see.
             && !floor.holding()

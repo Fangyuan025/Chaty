@@ -57,6 +57,12 @@ pub static THINK_SKIP: AtomicBool = AtomicBool::new(false);
 /// Horizon), Gemma 4's thought channel, Harmony's analysis channel and ATEM's
 /// `to=self` span. The innermost — latest — open one is the one closed.
 pub fn think_closer(text: &str) -> Option<String> {
+    open_thought(text).map(|(_, close)| close)
+}
+
+/// The thought `text` is in, as [`think_closer`] finds it: where its opener
+/// begins, and what closes it.
+pub fn open_thought(text: &str) -> Option<(usize, String)> {
     let nl = if text.ends_with('\n') { "" } else { "\n" };
     let mut best: Option<(usize, String)> = None;
     let mut offer = |at: usize, closer: String| {
@@ -104,7 +110,7 @@ pub fn think_closer(text: &str) -> Option<String> {
     if let Some(at) = open_at("to=self<|message|>", &["<|eom|>", "<|eot|>", "<|end|>"]) {
         offer(at, "<|eom|><|start|>assistant to=user<|message|>".into());
     }
-    best.map(|(_, c)| c)
+    best
 }
 
 #[cfg(test)]
@@ -151,6 +157,363 @@ mod think_closer_tests {
             Some("<channel|>")
         );
         assert_eq!(think_closer("<think>a</think>b<think>\nmore").as_deref(), Some("\n</think>\n\n"));
+    }
+}
+
+/// A thought going round: what it writes now it has written twice before,
+/// word for word or nearly. A small model that falls into it does not climb
+/// out — it writes the same paragraphs until the reply's length or the
+/// context runs out, minutes of it, and the answer never comes. Caught, the
+/// thought is closed the way a Skip closes it (in the reply's own markup,
+/// given to the model as its next tokens), so the reply answers from what it
+/// had thought; both modes, both engines.
+///
+/// The test is on the text, so it reads the same however an engine counts its
+/// tokens (whitespace runs read as one space). Either of two:
+/// - Going round: of the last `WINDOW` characters, nine in ten sit in a
+///   `GRAM`-character stretch this thought has written three times. A draft
+///   and its clean copy are two; a loop gets there on its third pass however
+///   long its turn is, and a number or a word changed here and there does not
+///   hide it.
+/// - Counting: with every run of digits read as one, the last `COUNTED`
+///   characters are one line over and over — "In base 331, 2 is 2." then
+///   332, 333… (a 4B wrote three hundred of them and answered nothing). Only
+///   the very same line: a check that comes out one way or another ("37 is
+///   prime", "38 = 2 × 19") is reasoning, and is left alone.
+pub struct ThoughtLoop {
+    /// Where the open thought's opener begins in the text.
+    start: Option<usize>,
+    /// This thought has been called a loop already.
+    fired: bool,
+    /// Bytes of the text read so far.
+    read: usize,
+    norm: Vec<char>,
+    space: bool,
+    /// `norm` with each run of digits as one `#`.
+    counted: Vec<char>,
+    digits: bool,
+    /// Each `GRAM`-character stretch of `norm`, hashed, by where it ends.
+    grams: Vec<u64>,
+    counts: std::collections::HashMap<u64, u32>,
+    /// The text's length at which to look again.
+    next: usize,
+}
+
+/// The openers of a tool call, in the formats models write them.
+const ACTS: [&str; 4] = ["<tool_call>", "<|tool_call>", "<|tool_call_start|>", "<function="];
+
+impl Default for ThoughtLoop {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ThoughtLoop {
+    const GRAM: usize = 64;
+    const WINDOW: usize = 1200;
+    const SEEN: u32 = 3;
+    const SHARE: f64 = 0.9;
+    const COUNTED: usize = 2400;
+    /// The longest line a count is looked for in.
+    const LINE: usize = 400;
+
+    pub fn new() -> Self {
+        Self {
+            start: None,
+            fired: false,
+            read: 0,
+            norm: Vec::new(),
+            space: false,
+            counted: Vec::new(),
+            digits: false,
+            grams: Vec::new(),
+            counts: std::collections::HashMap::new(),
+            next: 0,
+        }
+    }
+
+    /// Is the reply `head` + `out` (the opener the prompt left open, then
+    /// what was generated) in a thought that has started going round? Yes
+    /// once per thought. Cheap between looks: it reads the text again only
+    /// every sixty-four bytes or so (further apart as the reply grows).
+    pub fn due(&mut self, head: &str, out: &str) -> bool {
+        let len = head.len() + out.len();
+        if len < self.next {
+            return false;
+        }
+        let next = len + (len / 128).clamp(64, 1024);
+        self.next = next;
+        let text = [head, out].concat();
+        let Some((at, _)) = open_thought(&text) else {
+            self.start = None;
+            return false;
+        };
+        if self.start != Some(at) {
+            *self = Self { start: Some(at), read: at, next, ..Self::new() };
+        }
+        // A call begun inside the thought (Gemma 4 writes one in its thought
+        // channel) is the model acting: what repeats there is the call's
+        // content, and a close given in the middle of it would break it.
+        if self.fired || ACTS.iter().any(|m| text[at..].contains(m)) {
+            return false;
+        }
+        for c in text[self.read..].chars() {
+            let c = if c.is_whitespace() {
+                if self.space {
+                    continue;
+                }
+                self.space = true;
+                ' '
+            } else {
+                self.space = false;
+                c
+            };
+            self.norm.push(c);
+            if !c.is_ascii_digit() {
+                self.counted.push(c);
+                self.digits = false;
+            } else if !self.digits {
+                self.counted.push('#');
+                self.digits = true;
+            }
+            if self.norm.len() >= Self::GRAM {
+                let h = self.norm[self.norm.len() - Self::GRAM..]
+                    .iter()
+                    .fold(0xcbf2_9ce4_8422_2325u64, |h, &c| (h ^ u64::from(c)).wrapping_mul(0x0100_0000_01b3));
+                self.grams.push(h);
+                *self.counts.entry(h).or_default() += 1;
+            }
+        }
+        self.read = text.len();
+        if self.counting() {
+            self.fired = true;
+            return true;
+        }
+        if self.norm.len() < Self::WINDOW {
+            return false;
+        }
+        // A character counts as said before when a stretch around it was
+        // written three times: a number changed costs that number, not the
+        // sixty-four stretches it sits in. Records written one after another
+        // (CSS rules, JSON rows) share runs shorter than a stretch — a field
+        // changes every few dozen characters — so a long table is not a loop.
+        let n = self.norm.len();
+        let from = n - Self::WINDOW;
+        let seen = |g: usize| self.counts.get(&self.grams[g]).copied().unwrap_or(0) >= Self::SEEN;
+        // `grams[g]` covers characters g .. g + GRAM.
+        let mut reach = (from.saturating_sub(Self::GRAM - 1)..from).filter(|&g| seen(g)).map(|g| g + Self::GRAM).max().unwrap_or(0);
+        let mut again = 0usize;
+        for c in from..n {
+            if c < self.grams.len() && seen(c) {
+                reach = c + Self::GRAM;
+            }
+            again += usize::from(c < reach);
+        }
+        if again as f64 >= Self::WINDOW as f64 * Self::SHARE {
+            self.fired = true;
+            return true;
+        }
+        false
+    }
+
+    /// The last `COUNTED` characters, digits aside, one line repeated: some
+    /// period of at most `LINE` characters that the whole stretch keeps to.
+    fn counting(&self) -> bool {
+        const KEY: usize = 32;
+        let m = &self.counted;
+        if m.len() < Self::COUNTED {
+            return false;
+        }
+        let tail = &m[m.len() - Self::COUNTED..];
+        let w = tail.len();
+        let key = &tail[w - KEY..];
+        (1..=Self::LINE).any(|p| tail[w - KEY - p..w - p] == *key && (p..w).all(|i| tail[i] == tail[i - p]))
+    }
+}
+
+#[cfg(test)]
+mod thought_loop_tests {
+    use super::ThoughtLoop;
+
+    /// Words that read as prose and never repeat a stretch of thirty-two
+    /// characters: a small generator over a fixed vocabulary.
+    fn prose(seed: u64, words: usize) -> String {
+        const VOCAB: &[&str] = &[
+            "the", "file", "returns", "a", "value", "when", "we", "check", "whether", "index", "is", "past", "end",
+            "so", "maybe", "loop", "should", "stop", "earlier", "but", "then", "test", "expects", "three", "items",
+            "and", "parser", "reads", "header", "first", "which", "means", "offset", "shifts", "by", "one", "line",
+        ];
+        let mut x = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let mut out = String::new();
+        for i in 0..words {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            out.push_str(VOCAB[(x >> 33) as usize % VOCAB.len()]);
+            out.push(if i % 13 == 12 { '.' } else { ' ' });
+            if i % 40 == 39 {
+                out.push_str("\n\n");
+            }
+        }
+        out
+    }
+
+    /// Where in `thought` (fed a few characters at a time, as tokens come)
+    /// the watch calls it a loop.
+    fn caught(head: &str, thought: &str) -> Option<usize> {
+        let mut w = ThoughtLoop::new();
+        let chars: Vec<char> = thought.chars().collect();
+        let mut out = String::new();
+        for piece in chars.chunks(4) {
+            out.extend(piece);
+            if w.due(head, &out) {
+                return Some(out.chars().count());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn a_paragraph_written_over_and_over_is_caught_on_its_third_pass() {
+        let intro = prose(1, 200);
+        let para = "Wait, let me re-check the boundary. If the index equals the length, the loop has already gone one past the end, so the guard must use < and not <=. That means the fix is in the condition, not in the body. Let me verify this again.\n\n";
+        let p = para.chars().count();
+        let at = caught("<think>\n", &format!("{intro}{}", para.repeat(20))).expect("a loop");
+        let into = at - intro.chars().count();
+        assert!(into > 2 * p, "caught before the third pass: {into} of a {p}-character turn");
+        assert!(into < 2 * p + 1300, "caught late: {into} of a {p}-character turn");
+    }
+
+    #[test]
+    fn a_long_turn_is_caught_as_surely_as_a_short_one() {
+        let turn = format!("{}\n\n", prose(7, 450));
+        let p = turn.chars().count();
+        assert!(p > 2000);
+        let at = caught("", &format!("<think>\n{}{}", prose(2, 60), turn.repeat(5))).expect("a loop");
+        assert!(at > 2 * p && at < 3 * p + 600, "{at} for a {p}-character turn");
+        // A line said again and again.
+        assert!(caught("<think>\n", &format!("{}{}", prose(3, 80), "I'll write the file now.\n".repeat(200))).is_some());
+        // Chinese goes round the same way.
+        let zh = "等一下，我再检查一遍边界条件：如果下标等于长度，循环已经越过末尾一位，所以判断应该用小于而不是小于等于。也就是说问题出在条件上，不在循环体里。我再确认一次。\n";
+        assert!(caught("<think>\n", &format!("{}{}", prose(4, 80), zh.repeat(30))).is_some());
+    }
+
+    #[test]
+    fn a_number_changed_each_time_round_does_not_hide_it() {
+        let mut thought = format!("<think>\n{}", prose(5, 120));
+        for i in 0..20 {
+            thought.push_str(&format!(
+                "Attempt {i}: the test still fails because the parser reads the header first, which shifts every offset by one line. So the fix must go in the reader, before the offsets are computed. Let me look at the reader once more and try it.\n\n"
+            ));
+        }
+        assert!(caught("", &thought).is_some());
+    }
+
+    #[test]
+    fn a_thought_counting_up_the_same_line_is_caught() {
+        // As a 4B wrote it, three hundred lines on.
+        let lines: String = (3..400).map(|b| format!("    *   In base {b}, 2 is 2.\n")).collect();
+        let at = caught("<think>\n", &format!("{}{lines}", prose(21, 150))).expect("a count");
+        // 2400 characters with the numbers read as one: about 115 lines.
+        assert!(at < prose(21, 150).chars().count() + 4000, "caught late: {at}");
+        // Plain counting, and a sum carried on.
+        let count: String = (1..2000).map(|i| format!("{i}, ")).collect();
+        assert!(caught("<think>\n", &count).is_some());
+        let sums: String = (1..400).map(|i| format!("{} + 7 = {}. ", i * 7, i * 7 + 7)).collect();
+        assert!(caught("<think>\n", &sums).is_some());
+    }
+
+    #[test]
+    fn a_check_run_down_a_list_is_reasoning() {
+        // Each number checked comes out one way or the other.
+        let primes: String = (2..400u32)
+            .map(|n| match (2..n).find(|d| d * d <= n && n % d == 0) {
+                Some(d) => format!("Is {n} prime? {n} = {d} × {}, so it is not prime.\n", n / d),
+                None => format!("Is {n} prime? No divisor up to its square root, so {n} is prime.\n"),
+            })
+            .collect();
+        assert_eq!(caught("<think>\n", &primes), None);
+        // Trying sums, each one different.
+        let ops: Vec<usize> = prose(22, 300).bytes().map(|b| usize::from(b) % 4).collect();
+        let tries: String = (0..300).map(|i| format!("Try {} {} {} = {}? ", i % 7, ["+", "-", "×", "÷"][ops[i]], i % 5, i % 11)).collect();
+        assert_eq!(caught("<think>\n", &tries), None);
+    }
+
+    #[test]
+    fn thinking_that_moves_on_is_left_alone() {
+        // Long reasoning that never says the same thing.
+        assert_eq!(caught("<think>\n", &prose(11, 6000)), None);
+        // A draft of a function and its clean copy: written twice, not three times.
+        let code: String = (0..60).map(|i| format!("    if value == {i} {{\n        return table[{}];\n    }}\n", i * 7)).collect();
+        let thought = format!("{}\n```rust\n{code}```\nThat works. The final version:\n```rust\n{code}```\n{}", prose(12, 100), prose(13, 300));
+        assert_eq!(caught("<think>\n", &thought), None);
+        // Code made of nearly the same lines, indentation and all — a few
+        // dozen of them. (Pages of one line with its numbers changed are a
+        // count: see above.)
+        let css: String = (0..50).map(|i| format!(".item-{i} {{\n    margin: {}px;\n    padding: 0;\n}}\n", i % 9)).collect();
+        assert_eq!(caught("<think>\n", &format!("{}{css}", prose(14, 50))), None);
+        let rows: String = (0..30)
+            .map(|i| format!("  {{\"id\": {i}, \"name\": \"user{}\", \"active\": true, \"role\": \"member\"}},\n", i * 37 % 101))
+            .collect();
+        assert_eq!(caught("<think>\n", &format!("{}[\n{rows}]", prose(15, 50))), None);
+        let cards: String = (0..40)
+            .map(|i| format!("<div class=\"card\">\n  <h3>{}</h3>\n  <p>{}</p>\n</div>\n", prose(100 + i, 3), prose(200 + i, 9)))
+            .collect();
+        assert_eq!(caught("<think>\n", &format!("{}{cards}", prose(16, 50))), None);
+    }
+
+    #[test]
+    fn only_a_thought_is_watched() {
+        let para = "The answer is the same as before and I will say it once more for you. ".repeat(60);
+        // An answer that goes round is not this watch's business.
+        assert_eq!(caught("", &format!("<think>\nshort</think>\n\n{para}")), None);
+        assert_eq!(caught("", &para), None);
+        // A thought opened in the prompt is watched from there.
+        assert!(caught("<|turn>model\n<|channel>thought\n", &para).is_some());
+        // A call written inside the thought is the model acting, whatever
+        // it repeats.
+        let edits = "{old_string:<|\"|>    if qty >= 10:<|\"|>,new_string:<|\"|>    if qty >= 12:<|\"|>,replace_all:false},".repeat(40);
+        assert_eq!(caught("<|channel>thought\n", &format!("{}<|tool_call>call:edit_file{{edits:[{edits}", prose(17, 40))), None);
+    }
+
+    /// Real replies, one JSON object per line (`{"src", "t"}`), fed as they
+    /// streamed: which the watch would have closed, and where.
+    ///   CHATY_THOUGHTS=/path/raws.jsonl cargo test --lib real_thoughts -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn real_thoughts() {
+        let path = std::env::var("CHATY_THOUGHTS").expect("CHATY_THOUGHTS");
+        let (mut n, mut hit) = (0, 0);
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let t = v["t"].as_str().unwrap_or("");
+            n += 1;
+            if let Some(at) = caught("", t) {
+                hit += 1;
+                let cs: Vec<char> = t.chars().collect();
+                let tail: String = cs[at.saturating_sub(600)..at].iter().collect();
+                println!("== {} at {at}/{}\n{tail}\n", v["src"], cs.len());
+            }
+        }
+        println!("{hit} of {n} caught");
+    }
+
+    #[test]
+    fn each_thought_is_called_a_loop_once() {
+        let para = "Let me re-check: two plus two is four, so the total is four, which matches. ".repeat(60);
+        let mut w = ThoughtLoop::new();
+        let mut out = String::from("<think>\n");
+        let mut fired = 0;
+        for c in para.chars() {
+            out.push(c);
+            fired += w.due("", &out) as u32;
+        }
+        assert_eq!(fired, 1);
+        // Closed, then a second thought that goes round as well.
+        out.push_str("\n</think>\n\nFour.<think>\n");
+        for c in para.chars() {
+            out.push(c);
+            fired += w.due("", &out) as u32;
+        }
+        assert_eq!(fired, 2);
     }
 }
 
@@ -272,9 +635,10 @@ pub struct GenParams {
     /// after it re-read the whole of it: 0% reused on every turn of a chat with
     /// web search on (measured on Qwen3.6 35B).
     pub scratch: bool,
-    /// Chat's think ceiling (Settings → Chat), in tokens of the reply: a
-    /// thought still open when the reply reaches it is closed there, as a
-    /// Skip closes it — what was thought kept, the answer begun. 0 = none.
+    /// The think ceiling (Settings → Chat for a reply, Settings → Code for
+    /// each step of a turn), in tokens of the reply: a thought still open
+    /// when the reply reaches it is closed there, as a Skip closes it — what
+    /// was thought kept, the answer or the step's action begun. 0 = none.
     pub think_budget: u32,
     /// Chat's think floor (experimental): until the reply has run this many
     /// tokens, a thought it is in may not close, nor the reply end. 0 = none.

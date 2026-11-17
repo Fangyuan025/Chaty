@@ -159,6 +159,8 @@ async function main() {
               process.env.CHATY_BENCH_TOOLFORMAT ?? "json",
             ) as never,
             nCtx,
+            // CHATY_BENCH_THINKBUDGET: Settings → Code's think limit (0 = none).
+            thinkBudget: Number(process.env.CHATY_BENCH_THINKBUDGET ?? 0),
             maxSteps: 40,
             temperature: 0.2,
             bashTimeout: 120,
