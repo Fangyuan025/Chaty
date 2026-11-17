@@ -162,6 +162,10 @@
 
 ### Nothing jumps
 
+- **The way back to the latest goes when the latest is in view.** A long
+  code block folding as its fence closes brings the end of a chat up to a
+  view left part-way through, without any scrolling — and the round arrow
+  stayed over it. It is read again whenever the conversation changes size.
 - **The sidebar slides** away and back (⌘\\ or its button), in chat, Code
   mode and the studios, the panel widening into its place — it vanished in a
   frame.
@@ -229,6 +233,16 @@
   next message still picks up where the conversation left off instead of
   reading it all again. On both engines, for every model whose thinking the
   chat shows.
+- **A limit on how long chat thinks** (Settings → Chat, off by default): a
+  reply still thinking when it reaches that many tokens skips the rest of its
+  thought there, as Skip does by hand — what was thought kept, the answer
+  begun. It goes up to the loaded model's context window.
+- **A floor under it, experimental** (Settings → Chat, off by default): on,
+  a reply may neither end its thought nor give its answer before it has
+  thought that many tokens — up to half the context window, let go early once
+  the conversation fills three quarters of it. It is the limit or the floor,
+  never both: turning one on turns the other off. Skip still ends a thought
+  held by it.
 - **A finished page's picture is up about half a second after the page is
   written**, while the rest of the reply is still coming — and a page whose
   fonts or scripts come from somewhere that does not answer (Google Fonts,

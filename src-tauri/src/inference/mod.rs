@@ -272,6 +272,13 @@ pub struct GenParams {
     /// after it re-read the whole of it: 0% reused on every turn of a chat with
     /// web search on (measured on Qwen3.6 35B).
     pub scratch: bool,
+    /// Chat's think ceiling (Settings → Chat), in tokens of the reply: a
+    /// thought still open when the reply reaches it is closed there, as a
+    /// Skip closes it — what was thought kept, the answer begun. 0 = none.
+    pub think_budget: u32,
+    /// Chat's think floor (experimental): until the reply has run this many
+    /// tokens, a thought it is in may not close, nor the reply end. 0 = none.
+    pub think_floor: u32,
 }
 
 impl Default for GenParams {
@@ -288,6 +295,8 @@ impl Default for GenParams {
             think: None,
             effort: None,
             scratch: false,
+            think_budget: 0,
+            think_floor: 0,
         }
     }
 }

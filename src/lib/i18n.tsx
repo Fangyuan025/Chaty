@@ -235,6 +235,19 @@ export const T = {
   },
   cmThinkBudget: { zh: "思考预算 (tokens)", en: "Think budget (tokens)", pt: "Orçamento de raciocínio (tokens)" },
   cmThinkBudgetOff: { zh: "不限", en: "off", pt: "desligado" },
+  chatThinkBudget: { zh: "思考上限 (tokens)", en: "Think limit (tokens)", pt: "Limite de raciocínio (tokens)" },
+  chatThinkFloor: { zh: "思考下限", en: "Think floor", pt: "Raciocínio mínimo" },
+  chatThinkFloorAt: { zh: "至少思考 (tokens)", en: "Think at least (tokens)", pt: "Pensar pelo menos (tokens)" },
+  chatThinkFloorHint: {
+    zh: "默认关闭。开启后，回复的思考写不到这么多 token 就不允许结束，也不允许直接给出正文；最多到上下文窗口的一半，对话已经用掉大半个窗口时会提前放开；和思考上限只能二选一，开启会把上限调回不限。手动「跳过」仍然有效。模型被要求多想时可能会重复或兜圈子。",
+    en: "Off by default. On, a reply may neither end its thought nor give its answer before it has thought this many tokens; up to half the context window, and let go early once the conversation has filled most of it. It is one or the other with the think limit, which turning it on sets back to no limit. Skip still works. A model made to think longer may repeat itself or go round in circles.",
+    pt: "Desligado por padrão. Ligado, a resposta não pode encerrar o raciocínio nem dar a resposta antes de pensar esta quantidade de tokens; até metade da janela de contexto, e é liberado antes quando a conversa já ocupa a maior parte dela. É isto ou o limite de raciocínio, que volta a sem limite ao ligar. Pular continua funcionando. Um modelo forçado a pensar mais pode se repetir ou andar em círculos.",
+  },
+  chatThinkBudgetHint: {
+    zh: "回复的思考写到这么多 token 还没结束，就在那里自动跳过：已想的内容保留为「已思考」，模型接着直接写正文，和手动点「跳过」一样。0 = 不限；滑杆上限即当前模型的上下文窗口。",
+    en: "A reply still thinking at this many tokens skips the rest of its thought there: what was thought is kept, and the model goes on to the answer — as Skip does by hand. 0 = no limit; the slider tops out at the loaded model's context window.",
+    pt: "Uma resposta ainda pensando com esta quantidade de tokens pula o resto do raciocínio ali: o que foi pensado é mantido e o modelo segue para a resposta — como Pular faz à mão. 0 = sem limite; o controle vai até a janela de contexto do modelo carregado.",
+  },
   cmThinkBudgetHint: {
     zh: "每步思考的 token 上限。超出后思考块被温和收束：已有思考保留在上下文里，模型基于它直接行动——不丢内容、不断连贯。0 = 不限制（由「采样」里的最大生成长度封顶）；滑杆上限即当前模型的上下文窗口。低温下容易无限思考的模型建议设 1000-2000。",
     en: "Hard per-step ceiling on thinking tokens. Over budget the think block closes gracefully: the reasoning stays in context and the model acts on it — nothing discarded, coherence kept. 0 = no ceiling (Sampling's max length still bounds it); the slider tops out at the loaded model's context window. For models that loop in thought at low temperature, 1000-2000 works well.", pt: "Limite rígido de tokens de raciocínio por passo. Ao exceder o orçamento, o bloco de raciocínio é fechado de forma suave: o raciocínio permanece no contexto e o modelo age com base nele — nada é descartado, a coerência é mantida. 0 = sem teto (o comprimento máximo em Amostragem ainda restringe); o controle vai até a janela de contexto do modelo carregado. Para modelos que entram em loop de raciocínio em baixas temperaturas, 1000-2000 costuma funcionar bem.",

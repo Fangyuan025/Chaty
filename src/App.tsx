@@ -1425,6 +1425,18 @@ export default function App() {
         }
       } else if (dist() < 40) followRef.current = true;
     };
+    // The pill says the end is out of view. Content that shrinks under a view
+    // left part-way up — a long code block folding as its fence closes —
+    // takes the end to the view, and WebKit clamps the position there with no
+    // scroll event: the pill stayed up at the very bottom. So it is read again
+    // whenever the transcript's size changes, not only when it scrolls.
+    const updateJump = () => {
+      const jump = dist() > 320;
+      if (jump !== showJumpRef.current) {
+        showJumpRef.current = jump;
+        setShowJump(jump);
+      }
+    };
     const onScroll = () => {
       // Covers scrollbar drags and keyboard scrolling; programmatic pins land
       // at the bottom, so they only ever re-arm — but not in the moment after
@@ -1453,11 +1465,7 @@ export default function App() {
         hold?.clear();
         if (performance.now() - releasedAt.current > 800) followRef.current = true;
       }
-      const jump = d > 320;
-      if (jump !== showJumpRef.current) {
-        showJumpRef.current = jump;
-        setShowJump(jump);
-      }
+      updateJump();
     };
     // Whatever grows or folds in the transcript between its messages'
     // changes — a page's card opening to its picture, a block folding as its
@@ -1485,7 +1493,13 @@ export default function App() {
       if (dist() > 0.5) el.scrollTop = el.scrollHeight;
       pinnedTop.current = el.scrollTop;
     };
-    const sizes = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(follow);
+    const sizes =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => {
+            follow();
+            updateJump();
+          });
     const watchAll = () => {
       if (!sizes) return;
       sizes.disconnect();
@@ -3349,6 +3363,14 @@ ${body.outerHTML}
             stop: parseStops(settings.stop),
             think: thinkParam,
             effort: effortParam,
+            // The think limit and floor only mean something while the model
+            // thinks, and only one of them is ever set (Settings keeps it so;
+            // the floor wins should an old file say both).
+            thinkBudget: wantNoThink || settings.chatThinkFloorOn ? 0 : settings.chatThinkBudget,
+            thinkFloor:
+              wantNoThink || !settings.chatThinkFloorOn
+                ? 0
+                : Math.min(settings.chatThinkFloor, Math.floor((model?.nCtx ?? 4096) / 2)),
           },
         },
         (ev: StreamEvent) => {

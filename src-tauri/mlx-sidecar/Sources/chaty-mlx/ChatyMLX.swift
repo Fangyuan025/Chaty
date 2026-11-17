@@ -76,8 +76,11 @@ struct WireCmd: Decodable {
     let speculative: Bool?
     let messages: [WireMessage]?
     let params: WireParams?
-    /// `skip_think`: what closes the thought, in the reply's own markup.
+    /// `skip_think` / `think_floor`: what closes the thought, in the reply's
+    /// own markup.
     let text: String?
+    /// `think_floor`: the token count before which the thought may not close.
+    let until: Int?
 }
 
 // MARK: - serialized stdout writer
@@ -207,6 +210,25 @@ final class LoadMeter: @unchecked Sendable {
         let now = shown
         lock.unlock()
         return now
+    }
+}
+
+/// The think floor handed from the command reader to the generation: what
+/// closes the thought, and how many tokens in it may first close.
+final class FloorSlot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var v: (String, Int)?
+    func put(_ close: String, until: Int) {
+        lock.lock()
+        v = (close, until)
+        lock.unlock()
+    }
+    func take() -> (String, Int)? {
+        lock.lock()
+        defer { lock.unlock() }
+        let x = v
+        v = nil
+        return x
     }
 }
 
@@ -1135,6 +1157,8 @@ final class Engine: @unchecked Sendable {
     /// The chat's Skip: the close of the thought the reply is in, given to
     /// the model as its next tokens (see `decode`).
     let skipThought = Slot()
+    /// Chat's think floor (experimental): see `decode`.
+    let thinkFloor = FloorSlot()
 
     /// Prompt tokens currently materialized in `kvCache` with positions this
     /// engine computed itself (the cache also holds the sampled tokens past
@@ -1634,6 +1658,7 @@ final class Engine: @unchecked Sendable {
         }
         cancelFlag.reset()
         _ = skipThought.take()
+        _ = thinkFloor.take()
         do {
             // withError: box MLX's C-level runtime errors (Metal allocation
             // failures, shape errors) into thrown Swift errors. Without it the
@@ -2510,6 +2535,13 @@ final class Engine: @unchecked Sendable {
         // is still empty.
         let minThought = 16
         var banRow: MLXArray?
+        // The think floor: until `floorUntil` tokens, the thought's close and
+        // every end of turn are out of reach — a model held from closing
+        // would otherwise end the reply inside its thought. Given tokens (a
+        // Skip, the think limit) still close it.
+        var floorIds: [Int] = []
+        var floorUntil = 0
+        var floorRow: MLXArray?
         /// The forward pass produced NaN (see `sample`): the turn ends there.
         var spoiled = false
         func sample(_ logits: MLXArray) -> Int {
@@ -2525,6 +2557,15 @@ final class Engine: @unchecked Sendable {
                     banRow = MLXArray(row).reshaped([1, row.count])
                 }
                 if let row = banRow { l = l + row }
+            }
+            // Let go once the window is three quarters full: the answer needs the rest.
+            if !floorIds.isEmpty, done < floorUntil, nCtxCap <= 0 || (total + done) * 4 < nCtxCap * 3 {
+                if floorRow == nil {
+                    var row = [Float](repeating: 0, count: l.dim(-1))
+                    for id in floorIds where id >= 0 && id < row.count { row[id] = -Float.greatestFiniteMagnitude }
+                    floorRow = MLXArray(row).reshaped([1, row.count])
+                }
+                if let row = floorRow { l = l + row }
             }
             let y = sampler.sample(logits: l)
             // A NaN anywhere in the row means the forward pass broke — a
@@ -2856,6 +2897,7 @@ final class Engine: @unchecked Sendable {
                     // guesses — the next tokens are not the model's to draw.
                     let run = (speculation.governor?.shouldSpeculate() ?? true)
                         && forced.isEmpty && !skipThought.isFull
+                        && (floorIds.isEmpty || done >= floorUntil)
                     if run {
                         _ = speculate(from: tok, depth: speculation.depth)
                     } else if let step = trunkEval([tok]) {
@@ -2878,7 +2920,8 @@ final class Engine: @unchecked Sendable {
             if dumpTokens { dumpIds.append(tok) }
             if let piece = detok.next() {
                 if dumpTokens { dumpStreamed += piece }
-                out.emit(["event": "token", "text": piece])
+                // `n`: tokens so far, for the app's think ceiling.
+                out.emit(["event": "token", "text": piece, "n": done])
             }
             if done >= maxTokens {
                 reason = "length"
@@ -2893,6 +2936,19 @@ final class Engine: @unchecked Sendable {
             }
             // Taken only with no settled run in hand: all but the last of
             // those are in the cache already.
+            if floorIds.isEmpty, let (close, until) = thinkFloor.take() {
+                // Held only when the close is one token: a tag spelt in pieces
+                // would hold back an ordinary piece of text.
+                let tag = String(close.drop(while: { $0 == "\n" || $0 == " " }))
+                if let first = context.tokenizer.encode(text: tag, addSpecialTokens: false).first {
+                    let piece = context.tokenizer.decode(tokenIds: [first], skipSpecialTokens: false)
+                    if piece.count > 2, piece.hasPrefix("<"), piece.hasSuffix(">"), tag.hasPrefix(piece) {
+                        floorIds = [first] + Array(stopIds)
+                        floorUntil = until
+                        floorRow = nil
+                    }
+                }
+            }
             if forced.isEmpty, settled.isEmpty, let close = skipThought.take() {
                 forced = context.tokenizer.encode(text: close, addSpecialTokens: false)
             }
@@ -2900,6 +2956,7 @@ final class Engine: @unchecked Sendable {
                 // The logits this step computed go unread.
                 tok = forced.removeFirst()
                 given = true
+                if tok == floorIds.first { floorIds = [] }
                 processor?.didSample(token: MLXArray(Int32(tok)))
                 continue
             }
@@ -3148,6 +3205,10 @@ struct ChatyMLX {
                     engine.cancelFlag.set()
                 case "skip_think":
                     if let text = cmd.text, !text.isEmpty { engine.skipThought.put(text) }
+                case "think_floor":
+                    if let text = cmd.text, !text.isEmpty, let until = cmd.until {
+                        engine.thinkFloor.put(text, until: until)
+                    }
                 case "quit":
                     engine.cancelFlag.set()
                     await generation?.value

@@ -1877,6 +1877,10 @@ fn run_turn(
     // cache like any other, so the reply goes on from it as if the model had
     // closed the thought there itself.
     let mut forced: std::collections::VecDeque<LlamaToken> = std::collections::VecDeque::new();
+    // The think ceiling, once reached, is a Skip of its own — taken once.
+    let think_budget = req.params.think_budget;
+    let mut budget_spent = think_budget == 0;
+    let mut floor = ThinkFloor::new(req.params.think_floor);
     loop {
         if cancel.load(Ordering::Relaxed) {
             stop_reason = "cancelled";
@@ -1884,9 +1888,13 @@ fn run_turn(
         }
         // Taken only at a clean point: no settled run still to emit (all but
         // its last token are in the cache already) and no half character.
-        if forced.is_empty() && settled.is_empty() && pending.is_empty() && super::THINK_SKIP.swap(false, Ordering::SeqCst) {
-            if let Some(close) = super::think_closer(&format!("{opened}{out}")) {
-                forced.extend(tokenize(model, &close, false));
+        if forced.is_empty() && settled.is_empty() && pending.is_empty() {
+            let due = !budget_spent && n_decoded >= think_budget;
+            if due || super::THINK_SKIP.swap(false, Ordering::SeqCst) {
+                budget_spent |= due;
+                if let Some(close) = super::think_closer(&format!("{opened}{out}")) {
+                    forced.extend(tokenize(model, &close, false));
+                }
             }
         }
         let given = forced.pop_front();
@@ -1897,10 +1905,15 @@ fn run_turn(
             }
             None => match settled.pop_front() {
                 Some(t) => t,
-                None => ThoughtGuard::sample(&thought_guard, &mut sampler, dec.ctx(), idx),
+                None => {
+                    let full = (n_past + n_extra) as i64 * 4 >= n_ctx as i64 * 3;
+                    let held = floor.holds(model, || format!("{opened}{out}"), n_decoded, full, &turn_end);
+                    ThoughtGuard::sample(&thought_guard, held, &mut sampler, dec.ctx(), idx)
+                }
             },
         };
         ThoughtGuard::saw(&mut thought_guard, model, token);
+        floor.saw(token);
         if given.is_none() && (model.vocab().is_eog(token) || turn_end.contains(&token)) {
             break;
         }
@@ -1995,6 +2008,9 @@ fn run_turn(
             && given.is_none()
             && forced.is_empty()
             && !super::THINK_SKIP.load(Ordering::Relaxed)
+            && (budget_spent || n_decoded < think_budget)
+            // The head's guesses are checked by a draw the floor does not see.
+            && !floor.holding()
             && dec.spec_mut().is_some()
             && n_past + n_extra + 1 + MTP_DRAFT_MAX < n_ctx as i32;
         let round = if room {
@@ -3963,21 +3979,37 @@ impl ThoughtGuard {
     /// done; inside one, the same chain over the same logits, less the held
     /// tokens — told of the token twice, as `sample` and the explicit accept
     /// after it always have.
-    fn sample(guard: &Option<Self>, sampler: &mut LlamaSampler, ctx: &LlamaContext<'_>, idx: i32) -> LlamaToken {
-        let Some(g) = guard.as_ref().filter(|g| g.open) else {
+    ///
+    /// `also` is held the same way whatever the guard says: the think floor's
+    /// close and ends of turn (see `ThinkFloor`). Empty, and the guard off,
+    /// the draw is exactly the unguarded one.
+    fn sample(
+        guard: &Option<Self>,
+        also: &[LlamaToken],
+        sampler: &mut LlamaSampler,
+        ctx: &LlamaContext<'_>,
+        idx: i32,
+    ) -> LlamaToken {
+        let g = guard.as_ref().filter(|g| g.open);
+        if g.is_none() && also.is_empty() {
             let t = sampler.sample(ctx, idx);
             sampler.accept(t);
             return t;
-        };
+        }
         let mut candidates = ctx.token_data_array_ith(idx);
         let mut hold = |t: LlamaToken| {
             if let Some(d) = candidates.data.get_mut(t.0 as usize) {
                 d.set_logit(f32::NEG_INFINITY);
             }
         };
-        hold(g.call);
-        if !g.said {
-            hold(g.close_tag);
+        for &t in also {
+            hold(t);
+        }
+        if let Some(g) = g {
+            hold(g.call);
+            if !g.said {
+                hold(g.close_tag);
+            }
         }
         candidates.apply_sampler(sampler);
         let Some(t) = candidates.selected_token() else {
@@ -4004,6 +4036,81 @@ impl ThoughtGuard {
                 g.said = piece_bytes(model, t).iter().any(|b| !b.is_ascii_whitespace());
             }
         }
+    }
+}
+
+/// Chat's think floor (Settings → Chat, experimental): until the reply has
+/// run to `until` tokens, a thought it is in may not close — the token that
+/// closes it in the reply's own markup is out of reach, and so is every end of
+/// turn, or a model held from closing would end the reply inside its thought.
+/// The close is learned from the reply itself once its thought shows (see
+/// `think_closer`), and only when that close is one token: a tag spelt in
+/// pieces would hold back an ordinary piece of text. A reply with no thought in
+/// its first few tokens is not held at all. A Skip or the think limit still
+/// closes it: their tokens are given, not drawn.
+struct ThinkFloor {
+    until: u32,
+    close: Option<LlamaToken>,
+    held: Vec<LlamaToken>,
+    off: bool,
+}
+
+impl ThinkFloor {
+    fn new(until: u32) -> Self {
+        Self { until, close: None, held: Vec::new(), off: until == 0 }
+    }
+
+    /// The tokens out of reach for the next draw. `full`: the window is three
+    /// quarters full — the answer needs the rest, and the floor lets go.
+    fn holds(
+        &mut self,
+        model: &LlamaModel,
+        shown: impl FnOnce() -> String,
+        n_decoded: u32,
+        full: bool,
+        ends: &[LlamaToken],
+    ) -> &[LlamaToken] {
+        if self.off || n_decoded >= self.until || full {
+            self.off = true;
+            return &[];
+        }
+        if self.close.is_none() {
+            let Some(closer) = super::think_closer(&shown()) else {
+                // A thought begins the reply or not at all.
+                if n_decoded >= 8 {
+                    self.off = true;
+                }
+                return &[];
+            };
+            let tag = closer.trim_start();
+            let ids = tokenize(model, tag, false);
+            let whole = ids.first().is_some_and(|&t| {
+                let piece = String::from_utf8_lossy(&piece_bytes(model, t)).into_owned();
+                piece.len() > 2 && tag.starts_with(piece.as_str()) && piece.starts_with('<') && piece.ends_with('>')
+            });
+            if !whole {
+                self.off = true;
+                return &[];
+            }
+            self.close = ids.first().copied();
+            self.held = std::iter::once(ids[0])
+                .chain((0..model.n_vocab()).map(LlamaToken).filter(|&t| model.vocab().is_eog(t)))
+                .chain(ends.iter().copied())
+                .collect();
+        }
+        &self.held
+    }
+
+    /// Every token the reply is made of: once its thought closes — given by a
+    /// Skip or the limit — there is nothing left to hold.
+    fn saw(&mut self, t: LlamaToken) {
+        if self.close == Some(t) {
+            self.off = true;
+        }
+    }
+
+    fn holding(&self) -> bool {
+        !self.off
     }
 }
 

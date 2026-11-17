@@ -37,6 +37,12 @@ export interface GenParams {
    *  `reasoning_effort` kwarg (Qwen3.8: "low" | "medium" | "xhigh"). Ignored
    *  by every other model. */
   effort?: string | null;
+  /** Chat's think ceiling in tokens: a thought still open there is closed as
+   *  a Skip closes it, and the answer begins. 0/absent = none. */
+  thinkBudget?: number;
+  /** Chat's think floor (experimental): before this many tokens a thought may
+   *  not close, nor the reply end. 0/absent = none. */
+  thinkFloor?: number;
 }
 
 export interface GenRequest {

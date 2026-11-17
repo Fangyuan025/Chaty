@@ -353,7 +353,9 @@ jobs:
 
             While a chat reply is thinking, Skip appears at the end of its Thinking line when the
             pointer is over the thought: the thought ends where it stands, kept as it was written,
-            and the model answers from what it had thought so far — on both engines.
+            and the model answers from what it had thought so far — on both engines. A limit in
+            Settings → Chat, off by default, does the same by itself once a thought runs that long;
+            an experimental floor, the other way round, keeps a model thinking at least that long.
 
             ## One thing at a time
 

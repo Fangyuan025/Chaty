@@ -133,6 +133,14 @@ export interface GenSettings extends ImageSettings, MusicSettings {
   codeMaxSteps: number;
   /** Code mode: default bash-command timeout in seconds. */
   codeBashTimeout: number;
+  /** Chat: a thought still going at this many tokens is closed there and the
+   *  answer begun, as Skip does by hand (0 = no ceiling). */
+  chatThinkBudget: number;
+  /** Chat (experimental): a thought may not close, nor the reply end, before
+   *  `chatThinkFloor` tokens. Off by default; on, it turns the limit off —
+   *  the two are one or the other. */
+  chatThinkFloorOn: boolean;
+  chatThinkFloor: number;
   /** Code mode: sampling temperature for agent steps (0–1). */
   codeTemperature: number;
   /** Code mode: hard ceiling on thinking tokens per agent round (0 = auto).
@@ -230,6 +238,9 @@ export const defaultSettings: GenSettings = {
   codeBashTimeout: 60,
   codeTemperature: 0.3,
   codeThinkBudget: 0,
+  chatThinkBudget: 0,
+  chatThinkFloorOn: false,
+  chatThinkFloor: 1000,
   // Each family writes calls the way its template taught it; a template that
   // names no format gets XML — nothing in it is escaped, so a long edit can't
   // come out broken the way one line of JSON does.
@@ -1474,6 +1485,61 @@ export function SettingsPanel({
                   </button>
                 </div>
               </div>
+              <label className="field">
+                <span>
+                  {t("chatThinkBudget")}{" "}
+                  <b>
+                    {value.chatThinkBudget > 0
+                      ? Math.min(value.chatThinkBudget, maxTokensLimit)
+                      : t("cmThinkBudgetOff")}
+                  </b>
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={maxTokensLimit}
+                  step={250}
+                  value={Math.min(value.chatThinkBudget, maxTokensLimit)}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    // A limit and a floor are one or the other.
+                    onChange({ ...value, chatThinkBudget: v, chatThinkFloorOn: v > 0 ? false : value.chatThinkFloorOn });
+                  }}
+                />
+              </label>
+              <div className="settings-hint">{t("chatThinkBudgetHint")}</div>
+              <SetRow label={`${t("chatThinkFloor")} · ${t("experimental")}`} hint={t("chatThinkFloorHint")}>
+                <Switch
+                  on={value.chatThinkFloorOn}
+                  onToggle={() =>
+                    onChange({
+                      ...value,
+                      chatThinkFloorOn: !value.chatThinkFloorOn,
+                      chatThinkBudget: value.chatThinkFloorOn ? value.chatThinkBudget : 0,
+                    })
+                  }
+                />
+              </SetRow>
+              {value.chatThinkFloorOn && (() => {
+                // Half the window at most: the prompt and the answer need the rest.
+                const floorMax = Math.max(250, Math.floor(maxTokensLimit / 2 / 250) * 250);
+                const floor = Math.min(value.chatThinkFloor, floorMax);
+                return (
+                  <label className="field">
+                    <span>
+                      {t("chatThinkFloorAt")} <b>{floor}</b>
+                    </span>
+                    <input
+                      type="range"
+                      min={250}
+                      max={floorMax}
+                      step={250}
+                      value={floor}
+                      onChange={(e) => set("chatThinkFloor", Number(e.target.value))}
+                    />
+                  </label>
+                );
+              })()}
               <SetRow label={t("chatCollapseCode")} hint={t("chatCollapseCodeHint")}>
                 <Switch
                   on={value.chatCollapseCode}

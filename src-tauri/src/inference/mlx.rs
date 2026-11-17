@@ -811,6 +811,13 @@ fn run_generation(
     // thought stands.
     let mut seen = String::new();
     super::THINK_SKIP.store(false, Ordering::SeqCst);
+    // The think ceiling: the sidecar numbers its tokens (`n`); one from
+    // before it did is counted by its token events, a token or two behind.
+    let mut budget_spent = p.think_budget == 0;
+    let mut pieces: u64 = 0;
+    // The think floor: told to the sidecar once the reply's thought shows,
+    // with what closes it (the sidecar holds that token back until then).
+    let mut floor_told = p.think_floor == 0;
 
     loop {
         // The user hitting stop and a stop-sequence match funnel into the
@@ -820,8 +827,11 @@ fn run_generation(
             cancel_sent = true;
         }
         // Skip: the sidecar is handed the close in the reply's own markup and
-        // gives the model those tokens at its next step.
-        if !cancel_sent && super::THINK_SKIP.swap(false, Ordering::SeqCst) {
+        // gives the model those tokens at its next step. The ceiling reached
+        // asks for the same, once.
+        let due = !budget_spent && pieces >= u64::from(p.think_budget);
+        if !cancel_sent && (due || super::THINK_SKIP.swap(false, Ordering::SeqCst)) {
+            budget_spent |= due;
             if let Some(close) = super::think_closer(&seen) {
                 let _ = send_cmd(stdin, &json!({ "cmd": "skip_think", "text": close }));
             }
@@ -852,6 +862,19 @@ fn run_generation(
                 }
                 let piece = ev["text"].as_str().unwrap_or("");
                 seen.push_str(piece);
+                pieces = ev["n"].as_u64().unwrap_or(pieces + 1);
+                if !floor_told {
+                    if let Some(close) = super::think_closer(&seen) {
+                        floor_told = true;
+                        let _ = send_cmd(
+                            stdin,
+                            &json!({ "cmd": "think_floor", "text": close, "until": p.think_floor }),
+                        );
+                    } else if pieces >= 8 {
+                        // A thought begins the reply or not at all.
+                        floor_told = true;
+                    }
+                }
                 let (out, hit) = watch.feed(piece);
                 if !out.is_empty() {
                     emit(StreamEvent::Token { text: out });
