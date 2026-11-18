@@ -54,6 +54,115 @@ export interface WrapupState {
    *  zero real invocations, zero browser walkthroughs. Compiling and
    *  launching is the entry ticket, not the bar (owner spec, all stacks). */
   functionalUnverified?: boolean;
+  /** Ledger files that are page code without a server: plain scripts beside
+   *  a page opened as a file (see `isPageScript`). They belong to the browser
+   *  note, like any other page file. */
+  pageFiles?: string[];
+}
+
+// ── Pages opened as files ──
+// A page written this turn and opened from disk (file://) runs its scripts
+// as surely as one behind a dev server does. Its plain .js used to count as
+// page code only when a server was known, so a walkthrough of a file:// page
+// cleared nothing and the run-check note fired after it, then fired again
+// as "you still have not executed a single verification" — while
+// validate_change, asked for by name, answered that page files are verified
+// in the browser (Qwen3.5 4B, a single-page Y2K site: walked twice, held
+// back twice, its answer lost).
+
+/** One spelling for one file: workspace-absolute, `/`-separated, `.` and
+ *  `..` resolved, lower-cased (macOS and Windows compare paths that way). */
+export function normPath(p: string, workspace: string): string {
+  let s = p.trim().replace(/\\/g, "/");
+  const abs = s.startsWith("/") || /^[a-z]:\//i.test(s);
+  if (!abs) s = `${workspace.replace(/\\/g, "/").replace(/\/+$/, "")}/${s}`;
+  const drive = /^[a-z]:/i.exec(s)?.[0] ?? "";
+  const out: string[] = [];
+  for (const seg of s.slice(drive.length).split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") out.pop();
+    else out.push(seg);
+  }
+  return `${drive}/${out.join("/")}`.toLowerCase();
+}
+
+/** The file a file:// URL names (query and fragment dropped), or null. */
+export function fileUrlPath(url: string): string | null {
+  const m = /^file:\/\/(?:localhost)?(\/[^?#]*)/i.exec(url.trim());
+  if (!m) return null;
+  let p = m[1];
+  try {
+    p = decodeURIComponent(p);
+  } catch {
+    /* keep it as written */
+  }
+  // file:///C:/x → C:/x
+  return /^\/[a-z]:\//i.test(p) ? p.slice(1) : p;
+}
+
+/** The folder a normalized path sits in. */
+export function dirOf(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i <= 0 ? "/" : p.slice(0, i);
+}
+
+/** A plain script a page loads as it is — no build step in between. */
+export function isPlainScript(path: string): boolean {
+  return /\.(m?js|cjs)$/i.test(path);
+}
+
+/** Is this plain script page code: under the folder of a page written this
+ *  turn or walked from disk? The same reach the server rule has always had
+ *  (behind a server every .js is page code), drawn around the page instead
+ *  of the whole workspace. */
+export function isPageScript(path: string, workspace: string, pageDirs: Iterable<string>): boolean {
+  if (!isPlainScript(path)) return false;
+  const p = normPath(path, workspace);
+  for (const d of pageDirs) if (p.startsWith(d === "/" ? "/" : `${d}/`)) return true;
+  return false;
+}
+
+// ── The answer the gate held back ──
+// The gate holds back an answer written for the user and asks for loose ends
+// to be tied. What a small model writes next is often a reply to the gate,
+// not to the user — "运行验证完成 … 所有检查已通过 ✅" — and that used to be
+// all the user got: the answer to what they had asked was gone.
+
+/** Below this an answer held back is a placeholder ("Done."), not one worth
+ *  keeping beside what follows. */
+const HELD_MIN = 24;
+
+function trigrams(s: string): Set<string> {
+  const t = s.toLowerCase().replace(/[\s*_`#>|\-—:：,，.。!！?？()（）[\]【】✅✓]+/g, "");
+  const out = new Set<string>();
+  for (let i = 0; i + 2 < t.length; i++) out.add(t.slice(i, i + 3));
+  return out;
+}
+
+/** Above this share of shared character trigrams — of the held answer, or of
+ *  the latest — the latest is the answer given again. Measured: a rewrite
+ *  shares 0.64–0.73 (a condensed Chinese one is the low end, seen from its
+ *  own side), a check report 0.07–0.22. Erring low shows both, erring high
+ *  loses the answer, so the line sits nearer the rewrites. */
+const SAME_ANSWER = 0.55;
+
+/** What the user is shown when a turn ends after the gate held an answer
+ *  back: the latest answer when it is that answer again (rewritten,
+ *  condensed or extended), else the held answer with the latest after it —
+ *  the check's outcome added to the answer rather than put in its place. */
+export function answerAfterGate(held: string | null | undefined, latest: string): string {
+  const h = (held ?? "").trim();
+  const l = latest.trim();
+  if (h.length < HELD_MIN || l === h || l.includes(h)) return latest;
+  if (!l || h.includes(l)) return h;
+  const hg = trigrams(h);
+  const lg = trigrams(l);
+  if (hg.size && lg.size) {
+    let shared = 0;
+    for (const g of hg) if (lg.has(g)) shared++;
+    if (Math.max(shared / hg.size, shared / lg.size) >= SAME_ANSWER) return latest;
+  }
+  return `${h}\n\n${l}`;
 }
 
 /** Files whose edits deserve a "did you actually run it?" check. Docs and
@@ -208,8 +317,9 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
   // trivial tasks keep their flow, and the message itself offers the honest
   // way out — say why a run isn't needed. When the browser note already
   // fired, files it covers don't count twice.
+  const pageFiles = new Set(st.pageFiles ?? []);
   const codeFiles = webNote
-    ? st.codeEditsSinceExec.files.filter((f) => !isWebSourceFile(f, st.serverCtx))
+    ? st.codeEditsSinceExec.files.filter((f) => !isWebSourceFile(f, st.serverCtx) && !pageFiles.has(f))
     : st.codeEditsSinceExec.files;
   if (
     codeFiles.length > 0 &&
@@ -232,8 +342,8 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
       // and give one concrete order.
       notes.push(
         zh
-          ? `- 这是第二次提醒:上一次收尾检查之后你仍然没有执行过任何验证,更新计划状态或补写文档都不算。现在就发一条 validate_change(不带参数即可)——它会自动构建/类型检查你写的代码并给出错误清单。除非你能在答复里给出确凿理由说明这些代码无法在本机验证,否则不要直接交付。`
-          : `- Second reminder: since the last wrap-up check you still have not executed a single verification — updating plan status or writing docs does not count. Issue one validate_change call right now (no arguments needed) — it will build/type-check what you wrote and hand you the error list. Do not deliver without it unless your answer gives a concrete reason these files cannot be verified on this machine.`,
+          ? `- 这是第二次提醒:上一次收尾检查之后你仍然没有执行过任何验证,更新计划状态或补写文档都不算。现在就发一条 validate_change(不带参数即可)——它会自动构建/类型检查你写的代码并给出错误清单;如果它回答没有可跑的测试,就直接运行程序或一条最小冒烟命令。除非你能在答复里给出确凿理由说明这些代码无法在本机验证,否则不要直接交付。`
+          : `- Second reminder: since the last wrap-up check you still have not executed a single verification — updating plan status or writing docs does not count. Issue one validate_change call right now (no arguments needed) — it will build/type-check what you wrote and hand you the error list; if it reports nothing to run, execute the program or a minimal smoke command instead. Do not deliver without it unless your answer gives a concrete reason these files cannot be verified on this machine.`,
       );
     } else {
       notes.push(
@@ -277,8 +387,10 @@ export function wrapupNudge(st: WrapupState, lang: "zh" | "en"): string | null {
       ? "[收尾检查] 先别交付,还有没闭环的事项:\n"
       : "[wrap-up check] Don't deliver yet — loose ends:\n") +
     notes.join("\n") +
+    // What comes after the check is the answer the user reads: a model told
+    // only "then answer" answered the check ("all checks passed ✅").
     (zh
-      ? "\n处理完再给最终答复。"
-      : "\nHandle these, then give your final answer.")
+      ? "\n处理完再给最终答复:完整回答用户原本的需求(做了什么、怎么用),验证情况放在后面作补充,不要只汇报检查结果。"
+      : "\nHandle these, then give your final answer: a complete answer to what the user asked (what you did, how to use it), with the verification after it — not just a report that the checks passed.")
   );
 }

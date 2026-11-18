@@ -99,6 +99,11 @@ import {
   isLocalPageUrl,
   loadedUrlFrom,
   LOOKING,
+  normPath,
+  fileUrlPath,
+  dirOf,
+  isPageScript,
+  answerAfterGate,
 } from "./wrapupGate";
 import { isReadOnlyCommand, isSymbolicCheck } from "./readOnlyCmd";
 import { changeCounts } from "./diff";
@@ -3978,6 +3983,23 @@ export async function runAgentTurn(
   let serverCtx = false;
   let devServerUrl: string | undefined;
   let wrapNudgeCount = 0;
+  // Folders of the pages this turn wrote or walked from disk (normalized):
+  // their plain scripts are page code even with no server — see
+  // isPageScript. Page code is what a walkthrough runs.
+  const pageDirs = new Set<string>();
+  const isPageFile = (f: string) => isWebSourceFile(f, serverCtx) || isPageScript(f, workspace, pageDirs);
+  // Verification the model attempted since the gate last fired: a run (any
+  // exit), a validate_change that ran something, a walk of the local page.
+  // The gate's one extra push-back on an unverified ledger is for a model
+  // that ignored the first entirely (round 9) — not for one that went and
+  // checked, which used to be told it "still had not executed a single
+  // verification" and sent round again.
+  let verifyAttemptsSinceNudge = 0;
+  // The answer the gate held back (the first one worth keeping): what the
+  // user asked for, which the next answer — often a reply to the check —
+  // must not erase. See answerAfterGate.
+  let heldAnswer: string | null = null;
+  const withHeld = (notice: string) => (heldAnswer ? `${heldAnswer}\n\n---\n\n${notice}` : notice);
   let symbolicHintsShown = 0;
   // Run-check ledger: source edits since the last qualifying SUCCESSFUL
   // execution. A qualifying run must (a) actually exercise something —
@@ -4704,9 +4726,11 @@ export async function runAgentTurn(
           stuckThinkCount++;
           if (stuckThinkCount >= 3) {
             cb.onFinal(
-              lang === "zh"
-                ? "模型连续陷入思考循环、迟迟没有产出结果,已暂停以免空转。点「继续」重试,或把任务拆得更具体一些。"
-                : 'The model kept looping in its own reasoning without producing anything — paused to avoid spinning. Hit "Continue" to retry, or break the task into more concrete steps.',
+              withHeld(
+                lang === "zh"
+                  ? "模型连续陷入思考循环、迟迟没有产出结果,已暂停以免空转。点「继续」重试,或把任务拆得更具体一些。"
+                  : 'The model kept looping in its own reasoning without producing anything — paused to avoid spinning. Hit "Continue" to retry, or break the task into more concrete steps.',
+              ),
               undefined,
               "steps",
             );
@@ -4764,9 +4788,11 @@ export async function runAgentTurn(
           invalidStreak++;
           if (invalidStreak >= 4) {
             cb.onFinal(
-              lang === "zh"
-                ? "模型连续多次发出无法解析的工具调用,已暂停以免空转。点「继续」重试,或提示它换一种写法(比如把大改动拆成几次小的 edit_file)。"
-                : 'The model kept issuing tool calls that cannot be parsed — paused instead of spinning. Hit "Continue" to retry, or suggest another way to write it (split a big change into several small edit_file calls, say).',
+              withHeld(
+                lang === "zh"
+                  ? "模型连续多次发出无法解析的工具调用,已暂停以免空转。点「继续」重试,或提示它换一种写法(比如把大改动拆成几次小的 edit_file)。"
+                  : 'The model kept issuing tool calls that cannot be parsed — paused instead of spinning. Hit "Continue" to retry, or suggest another way to write it (split a big change into several small edit_file calls, say).',
+              ),
               undefined,
               "steps",
             );
@@ -4861,27 +4887,35 @@ export async function runAgentTurn(
               },
               lastFailedRun,
               htmlEdited,
+              pageFiles: [...codeEditsSinceExec.files].filter((f) => isPageScript(f, workspace, pageDirs)),
               // Normally the gate fires at most once. Three things earn one
               // extra push-back before the answer stands: an outstanding RED
               // build, a run-check ledger the model left completely
               // untouched after the first nudge (round-9 escape: it ticked
               // todos and re-delivered with zero verification attempts), and
               // a mac-app delivery still missing its packaged .app.
+              // "Completely untouched" is what it says: a model that went and
+              // ran or walked something since is not pushed back again.
               nudged:
                 wrapNudgeCount >=
                 (lastFailedRun ||
                 macAppMissingBundle ||
                 macAppStaleBundle ||
                 functionalUnverified ||
-                runCheckAboveBar(codeEditsSinceExec.files.size, codeEditsSinceExec.lines)
+                (runCheckAboveBar(codeEditsSinceExec.files.size, codeEditsSinceExec.lines) &&
+                  verifyAttemptsSinceNudge === 0)
                   ? 2
                   : 1),
-              attempt: wrapNudgeCount + 1,
+              // The sharpened "you still have not executed a single
+              // verification" wording is only true with no attempt since.
+              attempt: verifyAttemptsSinceNudge === 0 ? wrapNudgeCount + 1 : 1,
             },
             lang,
           );
           if (nudge) {
             wrapNudgeCount++;
+            verifyAttemptsSinceNudge = 0;
+            if (!heldAnswer || heldAnswer.trim().length < 24) heldAnswer = answer;
             // A model that ignored one correction tends to ignore its
             // verbatim sibling. Heat alone here backfired (round 12: hot
             // sampling with reasoning ON leaked think-prose as the final
@@ -4918,7 +4952,7 @@ export async function runAgentTurn(
             ending += "\n</think>";
           storeAssistantTurn(messages, ending, opts.reasoningField);
         }
-        cb.onFinal(answer, thinking);
+        cb.onFinal(answerAfterGate(heldAnswer, answer), thinking);
         return;
       }
       // A valid tool call = real progress; clear the stuck-thinking streak.
@@ -5318,9 +5352,11 @@ export async function runAgentTurn(
       ) {
         uiResultRing.length = 0;
         cb.onFinal(
-          lang === "zh"
-            ? `连续 ${UI_CYCLE_WINDOW} 次点击/输入之后,页面一直在同样的一两个状态之间打转,没有真正前进,已暂停以免空转。这条路走不通:用 browser_read 看清当前页面,换一个元素或换一种做法(比如直接导航到目标地址),再点「继续」。`
-            : `After ${UI_CYCLE_WINDOW} clicks/types the page kept returning to the same one or two states — nothing is actually advancing, so this is paused rather than spun out. That path is a dead end: read the page with browser_read, then pick a different element or a different approach (navigating straight to the target URL, say), and hit "Continue".`,
+          withHeld(
+            lang === "zh"
+              ? `连续 ${UI_CYCLE_WINDOW} 次点击/输入之后,页面一直在同样的一两个状态之间打转,没有真正前进,已暂停以免空转。这条路走不通:用 browser_read 看清当前页面,换一个元素或换一种做法(比如直接导航到目标地址),再点「继续」。`
+              : `After ${UI_CYCLE_WINDOW} clicks/types the page kept returning to the same one or two states — nothing is actually advancing, so this is paused rather than spun out. That path is a dead end: read the page with browser_read, then pick a different element or a different approach (navigating straight to the target URL, say), and hit "Continue".`,
+          ),
           undefined,
           "steps",
           { kind: "repeat", tool: call.name, key: callKey, count: UI_CYCLE_WINDOW },
@@ -5343,7 +5379,7 @@ export async function runAgentTurn(
             ? `模型一直在重复同样几步(${steps}),每一轮的结果都和上一轮一样,已暂停以免空转。可以点「继续」让它换个做法,或者直接告诉它卡在哪里。`
             : `The model kept repeating the same steps (${steps}) and every round came back as the last one did — paused instead of spinning. "Continue" lets it try another way; or tell it what it is stuck on.`;
         const said = await sayWhatBlocks(call.name);
-        cb.onFinal(said ? `${said}\n\n${notice}` : notice, undefined, "steps", { kind: "cycle", steps });
+        cb.onFinal(withHeld(said ? `${said}\n\n${notice}` : notice), undefined, "steps", { kind: "cycle", steps });
         return;
       }
       if (cycling) {
@@ -5370,7 +5406,7 @@ export async function runAgentTurn(
             : `The model issued the exact same ${call.name} call ${repeatCount + 1} times in a row — paused instead of spinning. "Continue" lets it try another way; or tell it what to do instead.`;
         const said = await sayWhatBlocks(call.name);
         cb.onFinal(
-          said ? `${said}\n\n${notice}` : notice,
+          withHeld(said ? `${said}\n\n${notice}` : notice),
           undefined,
           "steps",
           { kind: "repeat", tool: call.name, key: callKey, count: repeatCount + 1 },
@@ -5813,8 +5849,11 @@ export async function runAgentTurn(
           const p = asStr(call.args?.path);
           if (p && !resultText.startsWith("ERROR")) {
             editedFiles.add(p);
-            if (isWebSourceFile(p, serverCtx)) lastWebEditStep = step;
-            if (/\.html?$/i.test(p)) htmlEdited = true;
+            if (/\.html?$/i.test(p)) {
+              htmlEdited = true;
+              pageDirs.add(dirOf(normPath(p, workspace)));
+            }
+            if (isPageFile(p)) lastWebEditStep = step;
             if (isSourceCodeFile(p)) {
               codeEditsSinceExec.files.add(p);
               editedSinceGreen.add(p);
@@ -5899,6 +5938,10 @@ export async function runAgentTurn(
               // that away, so plain .js behind it never counted as page code
               // (bench: multi-file-walk fired "no run" after a walkthrough).
               if (browserOnLocalPage && !/^file:/i.test(url) && !resultText.startsWith("ERROR")) serverCtx = true;
+              // A page opened from disk: the scripts in its folder are what
+              // it runs, server or not.
+              const onDisk = fileUrlPath(url);
+              if (onDisk && !resultText.startsWith("ERROR")) pageDirs.add(dirOf(normPath(onDisk, workspace)));
             }
           }
           // Walking the local page is how page code gets run (owner report:
@@ -5911,13 +5954,15 @@ export async function runAgentTurn(
           // own build rejects (type errors), so with a failed run still
           // outstanding the files stay, and so does the red-build demand.
           if (browserOnLocalPage && call.name !== "browser_close" && !resultText.startsWith("ERROR")) {
+            verifyAttemptsSinceNudge++;
             if (!lastFailedRun) {
-              for (const f of [...codeEditsSinceExec.files]) if (isWebSourceFile(f, serverCtx)) dropFromLedger(f);
+              for (const f of [...codeEditsSinceExec.files]) if (isPageFile(f)) dropFromLedger(f);
             }
             // Page code was written this turn — judged with the server
-            // context as it stands now, since edits made before the server
-            // was known about didn't register as page edits at the time.
-            if (lastWebEditStep >= 0 || [...editedFiles].some((f) => isWebSourceFile(f, serverCtx))) {
+            // context (and the pages' folders) as they stand now, since edits
+            // made before either was known about didn't register as page
+            // edits at the time.
+            if (lastWebEditStep >= 0 || [...editedFiles].some(isPageFile)) {
               pageWalked = true;
             }
           }
@@ -5941,6 +5986,7 @@ export async function runAgentTurn(
         if (call.name === "validate_change") {
           const ran = resultText.includes("\n$ ");
           const failed = resultText.includes("✗");
+          if (ran) verifyAttemptsSinceNudge++;
           if (ran && !failed) {
             clearLedger();
             functionalReceipts++;
@@ -5949,10 +5995,13 @@ export async function runAgentTurn(
           // Long-running starts (dev servers, watch builds) can't report an
           // exit yet — starting one still counts as engaging with the code.
           clearLedger();
+          verifyAttemptsSinceNudge++;
         } else if (call.name === "bash") {
           const cmd = asStr(call.args?.command);
           if (!isReadOnlyCommand(cmd) && !isSymbolicCheck(cmd)) {
             const code = /\[exit (-?\d+)(?: · [^\]]*)?\]\s*$/.exec(resultText);
+            // Ran, whatever it exited with: an attempt at verification.
+            if (code) verifyAttemptsSinceNudge++;
             // A pipe swallows the build's exit code (`swift build | tail -5`
             // exits 0 through tail — minesweeper audit) — an exit 0 whose
             // output carries compiler-failure signatures is NOT a receipt.
@@ -6171,9 +6220,11 @@ export async function runAgentTurn(
       pushUser(toolResultMsg(call.name, resultText), { name: call.name, args: call.args });
     }
     cb.onFinal(
-      lang === "zh"
-        ? `已达到本轮 ${maxSteps} 步上限,先暂停。点击「继续」可接着当前进度做;也可在 设置 → Code 调高上限。`
-        : `Paused at the ${maxSteps}-step limit for this turn. Hit "Continue" to pick up where it left off, or raise the limit in Settings → Code.`,
+      withHeld(
+        lang === "zh"
+          ? `已达到本轮 ${maxSteps} 步上限,先暂停。点击「继续」可接着当前进度做;也可在 设置 → Code 调高上限。`
+          : `Paused at the ${maxSteps}-step limit for this turn. Hit "Continue" to pick up where it left off, or raise the limit in Settings → Code.`,
+      ),
       undefined,
       "steps",
     );

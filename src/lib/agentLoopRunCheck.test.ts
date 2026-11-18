@@ -26,7 +26,7 @@ async function runRounds(
   rounds: string[],
   // What browser_refresh reports having reloaded — the page the browser
   // was left on, possibly by an earlier turn.
-  opts: { refreshUrl?: string } = {},
+  opts: { refreshUrl?: string; workspace?: string } = {},
 ): Promise<{ injects: string[]; final: string }> {
   const script = [...rounds];
   const files = new Map<string, string>();
@@ -90,7 +90,7 @@ async function runRounds(
   await runAgentTurn(
     "build the tool",
     [],
-    "/tmp/ws",
+    opts.workspace ?? "/tmp/ws",
     "en",
     {
       thinkMode: "off", maxSteps: 12,
@@ -742,3 +742,139 @@ describe("run-check through the real loop", () => {
     expect(passed.injects.some((i) => i.includes(RUN_MARK) || i.includes("FAILED"))).toBe(false);
   });
 });
+
+// ── A page opened from disk (owner report, Qwen3.5 4B: a single-page Y2K
+// site, walked twice from file://, held back twice, the answer the user
+// asked for replaced by "all checks passed ✅") ──
+describe("wrap-up gate: pages opened as files, and the answer it holds back", () => {
+  afterEach(() => clearMocks());
+  const BIG_JS = Array.from({ length: 40 }, (_, i) => `console.log(${i});`).join("\n");
+  const PAGE = '<html><head><link rel="stylesheet" href="styles/y2k.css"></head><body><button>Emoji</button><script src="js/y2k.js"></script></body></html>';
+  const HELD =
+    "Done! Built the Y2K page: index.html holds the layout, styles/y2k.css the neon gradient theme, js/y2k.js the emoji rain, cursor stars and scroll progress bar. Open index.html to see it.";
+  const AGENT_NOTES = (injects: string[]) => injects.filter((i) => /Don't deliver yet/.test(i));
+
+  it("walked from file:// after writing it → its scripts ran: no note of any kind", async () => {
+    const { injects, final } = await runRounds([
+      call("write_file", { path: "site/index.html", content: PAGE }),
+      call("write_file", { path: "site/styles/y2k.css", content: "body{}" }),
+      call("write_file", { path: "site/js/y2k.js", content: BIG_JS }),
+      call("browser_navigate", { url: "file:///tmp/ws/site/index.html" }),
+      call("browser_click", { text: "Emoji" }),
+      HELD,
+    ]);
+    expect(AGENT_NOTES(injects)).toHaveLength(0);
+    expect(final).toBe(HELD);
+  });
+
+  it("the repro's spelling — page relative, script absolute — is the same page", async () => {
+    const { injects } = await runRounds(
+      [
+        call("write_file", { path: "index.html", content: PAGE }),
+        call("write_file", { path: "/Users/x/Desktop/1/js/y2k.js", content: BIG_JS }),
+        call("browser_navigate", { url: "file:///Users/x/Desktop/1/index.html" }),
+        call("browser_click", { text: "Emoji" }),
+        HELD,
+      ],
+      { workspace: "/Users/x/Desktop/1" },
+    );
+    expect(AGENT_NOTES(injects)).toHaveLength(0);
+  });
+
+  it("Windows paths and a file:///C:/ URL are the same page too", async () => {
+    const { injects } = await runRounds(
+      [
+        call("write_file", { path: "C:\\Users\\x\\site\\index.html", content: PAGE }),
+        call("write_file", { path: "js\\y2k.js", content: BIG_JS }),
+        call("browser_navigate", { url: "file:///C:/Users/x/site/index.html" }),
+        call("browser_click", { text: "Emoji" }),
+        HELD,
+      ],
+      { workspace: "C:\\Users\\x\\site" },
+    );
+    expect(AGENT_NOTES(injects)).toHaveLength(0);
+  });
+
+  it("not walked → the browser note (not a run-check on the page script); walked, then a check report → it stands, under the held answer", async () => {
+    const { injects, final } = await runRounds([
+      call("write_file", { path: "index.html", content: PAGE }),
+      call("write_file", { path: "js/y2k.js", content: BIG_JS }),
+      HELD,
+      call("browser_navigate", { url: "file:///tmp/ws/index.html" }),
+      call("browser_click", { text: "Emoji" }),
+      "All checks passed ✅",
+      "UNREACHED",
+    ]);
+    const notes = AGENT_NOTES(injects);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain(WEB_MARK);
+    expect(notes[0]).not.toContain("y2k.js) changed after the last run");
+    expect(notes[0]).not.toContain(RUN_MARK);
+    expect(final).toBe(`${HELD}\n\nAll checks passed ✅`);
+  });
+
+  it("a script outside the page is still asked for a run", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "site/index.html", content: PAGE }),
+      call("write_file", { path: "site/js/y2k.js", content: BIG_JS }),
+      call("write_file", { path: "tools/build.js", content: BIG_JS }),
+      call("browser_navigate", { url: "file:///tmp/ws/site/index.html" }),
+      call("browser_click", { text: "Emoji" }),
+      "All done.",
+      "Final.",
+      "Final final.",
+    ]);
+    const note = injects.find((i) => i.includes(RUN_MARK)) ?? "";
+    expect(note).toContain("tools/build.js");
+    expect(note).not.toContain("y2k.js");
+  });
+
+  it("verification attempted after the nudge → no 'Second reminder', the answer stands under the held one", async () => {
+    const { injects, final } = await runRounds([
+      call("write_file", { path: "tools/gen.py", content: BIG_PY }),
+      call("write_file", { path: "tools/gen2.py", content: BIG_PY }),
+      HELD,
+      call("browser_navigate", { url: "http://localhost:5173/" }),
+      "Checked.",
+      "UNREACHED",
+    ]);
+    expect(injects.filter((i) => i.includes(RUN_MARK))).toHaveLength(1);
+    expect(injects.some((i) => i.includes("Second reminder"))).toBe(false);
+    expect(final).toBe(`${HELD}\n\nChecked.`);
+  });
+
+  it("a run that FAILED after the nudge still earns the red-build push-back", async () => {
+    const { injects } = await runRounds([
+      call("write_file", { path: "tool.py", content: BIG_PY }),
+      HELD,
+      call("bash", { command: "python3 tool.py # fail" }),
+      "Shipping anyway.",
+      "Final.",
+    ]);
+    expect(injects.filter((i) => i.includes(RUN_MARK))).toHaveLength(1);
+    expect(injects.some((i) => i.includes("most recent verification FAILED"))).toBe(true);
+  });
+
+  it("the answer given again in full after the check → shown once, as rewritten", async () => {
+    const again = `${HELD.replace("Done!", "Done and verified!")} Walked it in the browser: no console errors.`;
+    const { final } = await runRounds([
+      call("write_file", { path: "tool.py", content: BIG_PY }),
+      HELD,
+      call("bash", { command: "python3 tool.py" }),
+      again,
+    ]);
+    expect(final).toBe(again);
+  });
+
+  it("a turn that stalls after the gate held its answer still shows that answer above the pause", async () => {
+    const ls = call("bash", { command: "ls" });
+    const { final } = await runRounds([
+      call("write_file", { path: "tool.py", content: BIG_PY }),
+      HELD,
+      ls, ls, ls, ls, ls, ls, ls, ls, ls, ls,
+    ]);
+    expect(final.startsWith(HELD)).toBe(true);
+    expect(final).toMatch(/paused|Paused/);
+  });
+});
+

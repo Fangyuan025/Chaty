@@ -28,6 +28,8 @@ export interface WebappScenario {
   expectServerAlive?: boolean;
   /** A browser action must have happened AFTER the last file edit. */
   expectBrowserAfterEdit?: boolean;
+  /** Per-language instruction override (the runner's --lang). */
+  instructionZh?: string;
 }
 
 const pkg = () =>
@@ -122,5 +124,23 @@ export const SCENARIOS: WebappScenario[] = [
     expectFilesAbsent: [["utils.js", "return 0;\n}"]],
     expectClicked: true,
     expectBrowserAfterEdit: true,
+  },
+  {
+    id: "file-page-y2k",
+    probes: "收尾 gate 误报 + 答复丢失:file:// 单页站点走查过仍被要求'运行验证',最终只剩'已通过所有检查'",
+    instruction:
+      "Build a cool Y2K-style single page in this folder: index.html, styles/y2k.css and js/y2k.js. js/y2k.js must make the 'Emoji rain' button drop emoji down the page and drive a scroll progress bar. No server — open it from disk (its file:// URL) in the browser, click the button to check it works, then tell me what you built and how to use it.",
+    instructionZh:
+      "在这个文件夹里做一个酷酷的千禧(Y2K)风格单页:index.html、styles/y2k.css 和 js/y2k.js。js/y2k.js 要让「Emoji 雨」按钮在页面上落下 emoji,并驱动一个滚动进度条。不用服务器——在浏览器里直接用 file:// 地址打开它,点一下按钮确认能用,然后告诉我你做了什么、怎么用。",
+    port: 0,
+    files: { "README.md": "# Y2K page\n" },
+    expectFiles: [
+      ["index.html", "y2k.js"],
+      ["js/y2k.js", "addEventListener"],
+    ],
+    expectClicked: true,
+    expectBrowserAfterEdit: true,
+    // The answer is about what was built — a bare check report fails this.
+    expectAnswer: "index.html",
   },
 ];

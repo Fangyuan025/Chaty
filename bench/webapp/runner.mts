@@ -67,13 +67,16 @@ async function main() {
   const only = flag("--only");
   const repo = path.resolve(flag("--repo") ?? path.join(DIR, "../.."));
   const tag = flag("--tag") ?? path.basename(repo);
+  const lang = (flag("--lang") ?? "en") as "en" | "zh";
+  const repeat = Number(flag("--repeat") ?? "1");
   const bin =
     process.env.CHATY_HEADLESS_BIN ?? path.join(repo, "src-tauri/target/release/chaty-headless");
   const model = process.env.CHATY_BENCH_MODEL;
   if (!model) throw new Error("set CHATY_BENCH_MODEL");
   if (!existsSync(bin)) throw new Error(`chaty-headless not found at ${bin}`);
 
-  const chosen = only ? SCENARIOS.filter((s) => s.id === only) : SCENARIOS;
+  const picked = only ? SCENARIOS.filter((s) => s.id === only) : SCENARIOS;
+  const chosen = Array.from({ length: repeat }, () => picked).flat();
 
   const bridge = new Bridge(bin);
   const info = (await bridge.call("load_model", { path: model, nCtx: 16384 })) as Json;
@@ -98,7 +101,7 @@ async function main() {
     // a stale server answer this side's liveness probe.
     const port = s.port === -1 ? portSeq++ : s.port;
     const sub = (t: string) => t.replaceAll("{PORT}", String(port));
-    const instruction = sub(s.instruction);
+    const instruction = sub(lang === "zh" && s.instructionZh ? s.instructionZh : s.instruction);
     const expectAnswer = s.expectAnswer ? sub(s.expectAnswer) : undefined;
     const ws = mkdtempSync(path.join(tmpdir(), `chaty-webapp-${s.id}-`));
     for (const [rel, body] of Object.entries(s.files)) {
@@ -122,6 +125,13 @@ async function main() {
       ["most recent verification FAILED", "red"],
       ["entry ticket", "functional"],
       ["macOS app", "mac"],
+      ["待办清单", "todo"],
+      ["没有经过浏览器走查", "web"],
+      ["只读命令不算", "run"],
+      ["第二次提醒", "run2"],
+      ["最近一次运行验证是失败的", "red"],
+      ["及格线", "functional"],
+      ["macOS 应用", "mac"],
     ];
     let steps = 0;
     let finalText = "";
@@ -140,7 +150,7 @@ async function main() {
           instruction,
           [] as never,
           ws,
-          "en",
+          lang,
           {
             thinkMode: "off",
             nCtx: 16384,
@@ -157,7 +167,7 @@ async function main() {
             onThinking: () => {},
             onAssistantText: () => {},
             onTrace: (ev: { kind: string; text: string }) => {
-              if (ev.kind !== "inject" || !ev.text.includes("[wrap-up check]")) return;
+              if (ev.kind !== "inject" || !(ev.text.includes("[wrap-up check]") || ev.text.includes("[收尾检查]"))) return;
               const lastEdit = stepLog.reduce((a, st) => (EDIT_TOOLS.has(st.name) ? st.i : a), -1);
               const lastBrowser = stepLog.reduce((a, st) => (st.name.startsWith("browser_") ? st.i : a), -1);
               wrapups.push({
@@ -251,6 +261,8 @@ async function main() {
       fileChecks,
       wrapups,
       finalHead: finalText.slice(0, 160),
+      finalLen: finalText.length,
+      finalText,
       error,
       stepNames: stepLog.map((st) => st.name),
     };
