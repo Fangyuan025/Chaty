@@ -74,6 +74,23 @@
 
 ### Code mode
 
+- **The answer you asked for survives the wrap-up check.** When the check
+  held an answer back to tie up loose ends, what a small model wrote next was
+  often a reply to the check — "all checks passed ✅" — and that was all you
+  were shown, the answer about what it had built gone. That answer now comes
+  first, with what the model said after the check below it, unless what it
+  said is the answer again; a turn that pauses after the check shows it above
+  the pause. The check asks for an answer to what you asked, with the
+  verification after it.
+- **A page opened from its file counts as walked.** A page written in Code
+  mode and opened in the browser from disk — no dev server — runs the
+  scripts in its folder, and walking it now counts as running them. The
+  wrap-up check used to ask for a run of those scripts after the walk, then
+  again as "you still have not executed a single verification", while the
+  check tool it named answered that a page is checked in the browser; a small
+  model went round between the two. The check's second push-back is kept for
+  a model that ignored the first, not given to one that went and ran or
+  walked something since.
 - **Code's think limit closes the thought, and the step goes on.** Settings
   → Code's think limit works as chat's: a step still thinking at that many
   tokens has its thought closed there, in the model's own markup, and acts
