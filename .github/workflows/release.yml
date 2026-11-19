@@ -399,7 +399,8 @@ jobs:
             A page's picture is made out of sight and kept across restarts; long code, the first
             diagram or formula, and badly broken diagrams no longer hitch the window. Loading a
             model names it on the chip as it goes, and an MLX model's bar keeps moving to the end
-            instead of standing at half; the sidebar slides; folded code, thoughts and
+            instead of standing at half; a model loads with the automatic context it settled on
+            last time, said the first time only; the sidebar slides; folded code, thoughts and
             Code mode's cards open and close smoothly, by a click or by themselves; Code mode's
             thought fades in word by word, and a long one shows under its run as it is written.
             Code mode's welcome holds still while a model loads.

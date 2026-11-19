@@ -76,12 +76,13 @@
   much of it memory holds; later loads start from that — the same length
   every time, said the first time and not again — where each worked it out
   anew, and a GGUF the GPU could not give its first context tried that one
-  again and read all its weights once more for every halving. A new build, a
-  new copy of the model, another GPU-layer or speculative setting, or other
+  again. A GGUF context that cannot be allocated is tried shorter on the
+  weights already read, where every halving read them all again. A new build,
+  a new copy of the model, another GPU-layer or speculative setting, or other
   memory works it out afresh. The memory free that day is weighed all the
-  same, on a Mac too now: with less of it, another program holding some, the
-  context is shorter for that load and says so, and the next is back to the
-  usual one.
+  same, on a Mac too now: when it is too little for the context, another
+  program holding some, the context is shorter for that load and says so, and
+  the next is back to the usual one.
 
 ### Code mode
 
