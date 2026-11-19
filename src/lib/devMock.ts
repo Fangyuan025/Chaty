@@ -1183,6 +1183,10 @@ function handle(cmd: string, args: Record<string, unknown> | undefined): unknown
     case "write_base64_file":
       (window as unknown as { __lastExport?: string }).__lastExport = String(args?.data ?? "");
       return null;
+    // The page a PDF would be printed from.
+    case "export_pdf":
+      (window as unknown as { __lastExport?: string }).__lastExport = String(args?.html ?? "");
+      return null;
     case "session_stats_get":
       return SESSION_STATS.get(`${args?.kind}:${args?.id}`) ?? "";
     case "session_stats_set":

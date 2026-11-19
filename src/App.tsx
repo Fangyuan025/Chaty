@@ -125,6 +125,7 @@ import {
   searchConversations,
   exportTextFile,
   exportHtmlFile,
+  exportPdfFile,
   openHtmlReport,
   canvasSessionSave,
   canvasSessionLoad,
@@ -2481,11 +2482,17 @@ export default function App() {
 
   /** The open chat as a page of its own: what is on screen — the replies as
    *  they are drawn, code coloured, formulas, diagrams — with the app's
-   *  styles and theme, and none of its buttons. Opens in any browser. */
-  async function exportConversationPage() {
-    setShowExport(false);
+   *  styles and theme, and none of its buttons. Opens in any browser.
+   *
+   *  For a PDF the same page, to be printed in a hidden window of the app's
+   *  own (pdfexport.rs): the app's fonts come along by address, code wraps
+   *  where the screen would scroll it (paper does not scroll), blocks keep
+   *  together across a page where they fit on one, and the page itself is
+   *  left unpainted — the theme's background is laid under each whole page
+   *  afterwards, margins and all. */
+  async function conversationPage(pdf: boolean): Promise<{ html: string; title: string; safe: string; background: [number, number, number] } | null> {
     const src = scrollRef.current;
-    if (!src || !messages.length) return;
+    if (!src || !messages.length) return null;
     const conv = conversations.find((c) => c.id === conversationId);
     const title = conv?.title ?? "Chaty";
     const body = src.cloneNode(true) as HTMLElement;
@@ -2498,53 +2505,146 @@ export default function App() {
     // Code folded in the app is whole on the page.
     body.querySelectorAll(".code-fold-body").forEach((n) => (n.className = "code-fold-body"));
     body.querySelectorAll(".code-fold-toggle").forEach((n) => n.remove());
+    // The app's styles as written. Read back rule by rule they lose a
+    // shorthand given with var() and then overridden in part — the user
+    // bubble came out with square corners.
     let css = "";
     for (const sheet of Array.from(document.styleSheets)) {
-      try {
-        for (const rule of Array.from(sheet.cssRules)) {
-          // The app's own fonts do not travel; the stacks fall back to the system's.
-          if (rule instanceof CSSFontFaceRule) continue;
-          css += `${rule.cssText}\n`;
+      if (sheet.disabled) continue;
+      let text: string | null = null;
+      const node = sheet.ownerNode;
+      if (node instanceof HTMLStyleElement) text = node.textContent ?? "";
+      else if (sheet.href) {
+        try {
+          const r = await fetch(sheet.href);
+          if (r.ok) text = await r.text();
+        } catch {
+          // read rule by rule below
         }
-      } catch {
-        // a sheet from elsewhere
       }
+      if (text === null) {
+        try {
+          text = Array.from(sheet.cssRules, (r) => r.cssText).join("\n");
+        } catch {
+          continue; // a sheet from elsewhere
+        }
+      }
+      const base = sheet.href ?? document.baseURI;
+      // A page saved to disk opens elsewhere, where the app's fonts are not:
+      // its stacks fall back to the system's. The PDF is printed here, so
+      // they come, by addresses that resolve from its page.
+      text = pdf
+        ? text.replace(/url\((['"]?)([^'")]+)\1\)/g, (m, _q, u: string) => (u.startsWith("data:") ? m : `url("${new URL(u, base).href}")`))
+        : text.replace(/@font-face\s*\{[^}]*\}/g, "");
+      const media = sheet.media.mediaText;
+      css += media && media !== "all" ? `@media ${media} {\n${text}\n}\n` : `${text}\n`;
     }
     const root = document.documentElement;
-    const when = new Date().toLocaleString(lang === "zh" ? "zh-CN" : lang === "pt" ? "pt-BR" : "en-US", { dateStyle: "long", timeStyle: "short" });
+    // The theme, the answer size, the code palette's background (set inline
+    // by applyCodeTheme): all of the root's own, as the app has them.
     const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+    // A theme that follows the system is the one showing now: printed, the
+    // system's appearance reads as light (a dark chat printed dark text on
+    // its dark background), and a page opened on another computer would
+    // follow that one's.
+    const shown = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    const rootAttrs = Array.from(root.attributes)
+      .filter((a) => a.name !== "lang")
+      .map((a) => ` ${a.name}="${esc(a.name === "data-theme" && a.value === "system" ? shown : a.value)}"`)
+      .join("");
+    // The colour under the chat, as the page paints it.
+    const probe = document.createElement("div");
+    probe.style.background = "var(--bg)";
+    document.body.appendChild(probe);
+    const bg = getComputedStyle(probe).backgroundColor.match(/[\d.]+/g)?.slice(0, 3).map((n) => Math.round(Number(n))) ?? [255, 255, 255];
+    probe.remove();
+    const when = new Date().toLocaleString(lang === "zh" ? "zh-CN" : lang === "pt" ? "pt-BR" : "en-US", { dateStyle: "long", timeStyle: "short" });
+    // Flex items are not split across pages (WebKit keeps one whole, a
+    // reply longer than a page was cut off): the chat's flex rows are
+    // blocks on paper, aligned as they are on screen.
+    const pdfCss = `
+*, *::before, *::after { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+html, body, .export-page, .export-page .chat { background: transparent !important; }
+.export-page { max-width: none; padding: 0; }
+.export-page pre, .export-page pre code { white-space: pre-wrap !important; overflow-wrap: anywhere; }
+.export-page pre, .export-page table, .export-page .table-wrap, .export-page .katex-display { overflow: visible !important; }
+.export-page table { display: table; }
+.export-page td, .export-page th { overflow-wrap: anywhere; }
+.export-page img, .export-page svg { max-width: 100%; }
+.export-page .code-block, .export-page .mermaid-wrap, .export-page img, .export-page .katex-display, .export-page tr, .export-page blockquote, .export-page .msg.user { break-inside: avoid; }
+.export-page h1, .export-page h2, .export-page h3, .export-page h4, .export-page .codeblock-head { break-after: avoid; }
+.export-page p, .export-page li { orphans: 2; widows: 2; }
+.export-page .msg { display: block; padding: 0; max-width: none; }
+.export-page .msg.user > * { margin-left: auto; width: fit-content; }
+.export-page .msg-foot { display: block; }
+.export-page .msg-model { display: block; width: fit-content; margin-left: auto; }`;
+    // The print window waits for this before printing: the fonts and every
+    // picture loaded (or given up on), and a turn to lay them out. Every face
+    // is asked for, not only those layout has reached: WebKit leaves text
+    // undrawn while its font loads, and a print begun then had no words.
+    const ready = `<script>
+(async () => {
+  void document.body.offsetHeight;
+  const faces = Array.from(document.fonts, (f) => f.load().catch(() => null));
+  const pics = Array.from(document.images).map((i) => (i.complete ? null : new Promise((r) => { i.onload = i.onerror = r; })));
+  await Promise.race([Promise.all([...faces, ...pics]).then(() => document.fonts.ready), new Promise((r) => setTimeout(r, 10000))]);
+  await new Promise((r) => setTimeout(r, 60));
+  document.title = "chaty-pdf-ready";
+})();
+<\/script>`;
     const html = `<!DOCTYPE html>
-<html lang="${lang === "zh" ? "zh-CN" : lang}" data-theme="${root.dataset.theme ?? ""}" data-dark="${root.dataset.dark ?? ""}" data-light="${root.dataset.light ?? ""}">
+<html lang="${lang === "zh" ? "zh-CN" : lang}"${rootAttrs}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/katex.min.css">
-<style>${css}
-html, body { height: auto; overflow: auto; background: var(--bg); }
+${pdf ? "" : `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/katex.min.css">\n`}<style>${css}
+html, body { position: static; inset: auto; height: auto; overflow: visible; background: var(--bg); }
 body { margin: 0; }
+.export-page *, .export-page *::before, .export-page *::after { animation: none !important; transition: none !important; }
+.export-page .msg-model { opacity: 1; }
 .export-page { max-width: 860px; margin: 0 auto; padding: 48px 28px 72px; }
 .export-page > header { margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
 .export-page > header h1 { margin: 0 0 6px; font-family: var(--font-display); font-size: 28px; color: var(--text); }
 .export-page > header p { margin: 0; font-family: var(--font-body); font-size: 13px; color: var(--faint); }
 .export-page .chat { overflow: visible !important; height: auto !important; padding: 0 !important; }
 .export-page .katex { cursor: auto; }
-.export-page .katex:hover { background: none; }
+.export-page .katex:hover { background: none; }${pdf ? pdfCss : ""}
 </style>
 </head>
 <body>
 <div class="export-page">
-<header><h1>${esc(title)}</h1><p>${esc(when)} · Chaty${model ? ` · ${esc(model.name.replace(/\.gguf$/i, ""))}` : ""}</p></header>
+<header><h1>${esc(title)}</h1><p>${esc(when)} · Chaty</p></header>
 ${body.outerHTML}
 </div>
+${pdf ? ready : ""}
 </body>
 </html>`;
     const safe = title.replace(/[\\/:*?"<>|\n]+/g, "_").slice(0, 60) || "chat";
+    return { html, title, safe, background: [bg[0] ?? 255, bg[1] ?? 255, bg[2] ?? 255] };
+  }
+
+  async function exportConversationPage() {
+    setShowExport(false);
+    const page = await conversationPage(false);
+    if (!page) return;
     try {
-      await exportHtmlFile(`${safe}.html`, html);
+      await exportHtmlFile(`${page.safe}.html`, page.html);
     } catch (e) {
       console.error(e);
       showNotice("error", t("exportFailed"));
+    }
+  }
+
+  async function exportConversationPdf() {
+    setShowExport(false);
+    const page = await conversationPage(true);
+    if (!page) return;
+    try {
+      await exportPdfFile(`${page.safe}.pdf`, page.html, page.title, page.background);
+    } catch (e) {
+      console.error(e);
+      showNotice("error", typeof e === "string" && e ? e : t("exportFailed"));
     }
   }
 
@@ -2562,10 +2662,10 @@ ${body.outerHTML}
       content = JSON.stringify(
         {
           title,
-          model: model?.name ?? null,
           exportedAt: new Date().toISOString(),
           // Each reply with the model that wrote it: a conversation can
-          // pass through several.
+          // pass through several, so there is no one model of the whole
+          // (the one loaded at export time wrote none of it, perhaps).
           messages: list.map((m) => ({ role: m.role, content: m.content, ...(m.model ? { model: m.model } : {}) })),
         },
         null,
@@ -5254,6 +5354,7 @@ ${body.outerHTML}
                       <button onClick={() => exportConversation("md")}>{t("exportMd")}</button>
                       <button onClick={() => exportConversation("json")}>{t("exportJson")}</button>
                       <button onClick={() => void exportConversationPage()}>{t("exportPage")}</button>
+                      <button onClick={() => void exportConversationPdf()}>{t("exportPdf")}</button>
                     </>
                   )}
                 </div>

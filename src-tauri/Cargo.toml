@@ -143,6 +143,10 @@ ash = "0.38"
 # The desktop's file chooser through the XDG Desktop Portal (src/portal.rs).
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "file_chooser", "inhibit"] }
 raw-window-handle = "0.6"
+# A chat printed to PDF by the web view itself (src/pdfexport.rs): the same
+# crates the app's web view is, through tauri/wry.
+webkit2gtk = "2.0"
+gtk = "0.18"
 
 # GPU VRAM detection (DXGI) for auto-tuning n_gpu_layers â€” cross-vendor on Windows.
 [target.'cfg(windows)'.dependencies]
@@ -157,6 +161,8 @@ windows = { version = "0.61", features = [
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# A chat printed to PDF by WebView2 itself (src/pdfexport.rs): wry's own.
+webview2-com = "0.38"
 # Windows code page number → encoding, for console output that is not UTF-8
 # (already in the tree through calamine).
 codepage = "0.1.2"

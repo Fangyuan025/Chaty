@@ -2662,6 +2662,9 @@ html[data-motion="reduce"] .sw.quick {
   padding: 9px 12px;
   font-size: 13px;
   text-align: left;
+  /* One line each: the menu is as wide as its longest item, not its
+     anchor's room ("Exportar como página web" broke in two). */
+  white-space: nowrap;
   color: var(--text);
   background: transparent;
   border: none;

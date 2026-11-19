@@ -1932,6 +1932,27 @@ export async function exportHtmlFile(defaultName: string, content: string): Prom
   return true;
 }
 
+/** Show a save dialog and print a page (built for it) to a PDF there, laid
+ *  out by the system's web view as the app is (pdfexport.rs). `background`:
+ *  the theme's, laid under each whole page. */
+export async function exportPdfFile(
+  defaultName: string,
+  html: string,
+  title: string,
+  background: [number, number, number],
+): Promise<boolean> {
+  const path = await save({
+    defaultPath: defaultName,
+    filters: [{ name: "PDF", extensions: ["pdf"] }],
+  });
+  if (!path) return false;
+  // Letter where it is the paper in use, A4 elsewhere (macOS asks the system).
+  const region = (navigator.languages?.[0] ?? navigator.language ?? "").split("-")[1]?.toUpperCase() ?? "";
+  const letter = ["US", "CA", "MX", "PH", "CL", "CO", "VE", "PR", "GT", "CR", "PA", "DO", "SV", "NI", "HN"].includes(region);
+  await invoke("export_pdf", { path, html, title, background, letter });
+  return true;
+}
+
 export async function renameConversation(id: string, title: string): Promise<void> {
   await invoke("rename_conversation", { id, title });
 }

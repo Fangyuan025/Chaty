@@ -965,6 +965,7 @@ export const T = {
   exportMd: { zh: "导出为 Markdown", en: "Export as Markdown", pt: "Exportar como Markdown" },
   exportPage: { zh: "导出为网页", en: "Export as a web page", pt: "Exportar como página web" },
   exportJson: { zh: "导出为 JSON", en: "Export as JSON", pt: "Exportar como JSON" },
+  exportPdf: { zh: "导出为 PDF", en: "Export as PDF", pt: "Exportar como PDF" },
   exportSessionTitle: { zh: "导出会话", en: "Export session", pt: "Exportar sessão" },
   exportTrace: { zh: "导出完整轨迹 (JSONL)", en: "Export full trace (JSONL)", pt: "Exportar rastro completo (JSONL)" },
   exportFailed: { zh: "导出失败", en: "Export failed", pt: "Falha na exportação" },

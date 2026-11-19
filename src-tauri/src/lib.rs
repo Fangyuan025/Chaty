@@ -24,6 +24,7 @@ pub mod errlog;
 pub mod mcp;
 pub mod ocr;
 pub mod search;
+pub mod pdfexport;
 mod scheme;
 pub mod portal;
 pub mod skillsync;
@@ -610,6 +611,7 @@ pub fn run() {
             commands::write_text_file,
             commands::write_wav_file,
             commands::write_base64_file,
+            pdfexport::export_pdf,
             download::list_hf_ggufs,
             download::list_hf_mlx,
             download::hf_search,
