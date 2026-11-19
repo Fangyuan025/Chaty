@@ -5,6 +5,7 @@
 //! swapping or adding engines never touches the command/UI layer.
 
 pub mod audio;
+pub mod autoctx;
 pub mod gguf;
 pub mod jinja;
 pub mod llama;
@@ -763,6 +764,11 @@ pub struct ModelInfo {
     pub n_ctx_train: Option<u32>,
     /// Context length we actually loaded it with.
     pub n_ctx: Option<u32>,
+    /// The automatic context this load settled on, for the next automatic
+    /// load of the same model here to start from (see `autoctx`). `None` for
+    /// a context the user set, and from an engine older than this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ctx_fit: Option<autoctx::CtxFit>,
     /// Total transformer layers in the model.
     pub n_layer: Option<u32>,
     /// Layers actually offloaded to the GPU (0 = pure CPU).

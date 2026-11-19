@@ -500,15 +500,21 @@ impl LlamaEngine {
         n_ctx_pref: Option<u32>,
         speculative: bool,
     ) -> Result<(Self, ModelInfo)> {
-        Self::load_with_progress(path, gpu_pref, n_ctx_pref, speculative, Arc::new(|_| {}))
+        Self::load_with_progress(path, gpu_pref, n_ctx_pref, None, speculative, Arc::new(|_| {}))
     }
 
     /// `load`, saying how far the weights have got (0.0–1.0, from llama.cpp's
     /// own loader; a backed-off retry starts again from 0).
+    ///
+    /// `n_ctx_known`: with the automatic context, the one this model settled
+    /// on here last time (see `autoctx`) — the load starts from it instead of
+    /// measuring again, and backs off from it if it no longer fits. The
+    /// returned `ctx_fit` is what to keep for the next one.
     pub fn load_with_progress(
         path: &str,
         gpu_pref: Option<i32>,
         n_ctx_pref: Option<u32>,
+        n_ctx_known: Option<u32>,
         speculative: bool,
         progress: Arc<dyn Fn(f32) + Send + Sync>,
     ) -> Result<(Self, ModelInfo)> {
@@ -590,6 +596,7 @@ impl LlamaEngine {
         // An automatic context that the GPU turned out not to hold is halved
         // before any layer comes off it: a shorter context keeps the speed.
         let mut ctx_cap = u32::MAX;
+        let auto_ctx = !matches!(n_ctx_pref, Some(n) if n > 0);
         // Whether this file carries an MTP head, decided from metadata before
         // the weights are read — `load_mtp` has to be set on the load itself.
         // Whether the FILE has a head, and whether it will be used. The first
@@ -599,7 +606,7 @@ impl LlamaEngine {
         let has_head = probe_mtp_layers(backend, path) > 0;
         let mtp =
             has_head && speculative && std::env::var("CHATY_MTP").as_deref() != Ok("0");
-        let (model, tx, handle, mtmd_err, n_ctx, n_ctx_wanted) = loop {
+        let (model, tx, handle, mtmd_err, n_ctx, n_ctx_wanted, base) = loop {
             let tick = progress.clone();
             let params = LlamaModelParams::default()
                 .with_n_gpu_layers(layers.max(0) as u32)
@@ -670,8 +677,11 @@ impl LlamaEngine {
             // Create the context in the worker and wait for the result, so a
             // KV/compute-buffer OOM is caught here and folded into the back-off.
             let n_ctx_wanted = clamp_n_ctx(model.n_ctx_train(), n_ctx_pref);
-            let auto_ctx = !matches!(n_ctx_pref, Some(n) if n > 0);
-            let n_ctx = fit_n_ctx(&model, Path::new(path), n_ctx_wanted, auto_ctx, layers).min(ctx_cap);
+            // And what this machine holds of it on a usual day, which is what
+            // the next automatic load starts from (see `ctx_fit`).
+            let (n_ctx, base) =
+                fit_n_ctx(&model, Path::new(path), n_ctx_wanted, auto_ctx, layers, n_ctx_known.filter(|_| auto_ctx));
+            let n_ctx = n_ctx.min(ctx_cap);
             let (tx, rx) = std::sync::mpsc::channel::<Job>();
             // Init result: Err = fatal context failure; Ok(Some(msg)) = context
             // fine but the mmproj failed to load (vision off, non-fatal).
@@ -690,7 +700,7 @@ impl LlamaEngine {
                 .context(trf!("无法启动推理线程", "failed to start the inference thread"))?;
 
             match init_rx.recv() {
-                Ok(Ok(mtmd_err)) => break (model, tx, handle, mtmd_err, n_ctx, n_ctx_wanted),
+                Ok(Ok(mtmd_err)) => break (model, tx, handle, mtmd_err, n_ctx, n_ctx_wanted, base),
                 Ok(Err(msg)) => {
                     drop(tx); // the worker already exited; release this attempt
                     if auto_ctx && n_ctx > AUTO_N_CTX {
@@ -757,10 +767,16 @@ impl LlamaEngine {
             Some("gpu-oom".to_string())
         } else if mtmd_err.is_some() {
             Some("mmproj-failed".to_string())
-        } else if n_ctx < n_ctx_wanted && (cfg!(target_os = "macos") || matches!(n_ctx_pref, Some(n) if n > 0)) {
+        } else if n_ctx < n_ctx_wanted
+            && (cfg!(target_os = "macos") || matches!(n_ctx_pref, Some(n) if n > 0))
+            && !n_ctx_known.is_some_and(|k| auto_ctx && n_ctx >= k.min(n_ctx_wanted))
+        {
             // A context the user set, made smaller to fit — or on macOS, the
             // unified-memory fit it has always said. An automatic one elsewhere
-            // fits the GPU by design and says nothing.
+            // fits the GPU by design and says nothing. Nor does one this model
+            // settled on here before: the user was told the first time, and is
+            // told again only when it had to be shorter still — memory short
+            // today, or the known one no longer allocating.
             Some("ctx-clamped".to_string())
         } else if conversion_suspect(
             &format!(
@@ -890,6 +906,14 @@ impl LlamaEngine {
             params_b: Some(model.n_params() as f64 / 1e9),
             n_ctx_train: Some(n_ctx_train),
             n_ctx: Some(n_ctx),
+            ctx_fit: ctx_fit(
+                auto_ctx,
+                n_ctx,
+                cfg!(target_os = "macos") || layers >= model.n_layer() as i32,
+                ctx_cap,
+                base,
+            )
+            .map(|n_ctx| super::autoctx::CtxFit { n_ctx, ..Default::default() }),
             n_layer: Some(model.n_layer()),
             speculative: has_head,
             speculative_on: mtp,
@@ -3717,23 +3741,47 @@ const AUTO_N_CTX: u32 = 8192;
 /// asked for *more* context than the one that crashed, and crashed again. A
 /// model the card does not hold whole is short of memory already, whoever
 /// decided it: 8192, as it always was.
-fn fit_n_ctx(model: &LlamaModel, path: &Path, wanted: u32, auto: bool, gpu_layers: i32) -> u32 {
+///
+/// `known` is the automatic context this model settled on here last time
+/// (`autoctx`), and the load starts from it rather than measuring again.
+/// What memory is free today is checked all the same, on every platform: a
+/// card may have another program on it, and a Mac may have less to give than
+/// its working set says. A context it cannot hold today is shorter for this
+/// load only.
+///
+/// Returns the context, and what an automatic one is on a usual day here —
+/// the working-set fit (macOS) or the known one, which today's memory does not
+/// change; `None` when the context is not an automatic fit at all.
+fn fit_n_ctx(model: &LlamaModel, path: &Path, wanted: u32, auto: bool, gpu_layers: i32, known: Option<u32>) -> (u32, Option<u32>) {
     #[cfg(target_os = "macos")]
     {
-        let _ = (auto, gpu_layers);
-        mem_safe_n_ctx(model, path, wanted)
+        let _ = gpu_layers;
+        if !auto {
+            return (mem_safe_n_ctx(model, path, wanted), None);
+        }
+        let base = match known {
+            Some(k) => wanted.min(k),
+            None => mem_safe_n_ctx(model, path, wanted),
+        };
+        let today = free_today_n_ctx(model, path, base);
+        eprintln!(
+            "[llama] auto context {today} (trained {wanted}; {}{})",
+            if known.is_some() { "as this model held here last time" } else { "fitted to the working set" },
+            if today < base { format!("; memory free today holds {today} of its {base}") } else { String::new() }
+        );
+        (today, Some(base))
     }
     #[cfg(not(target_os = "macos"))]
     {
         if !auto {
-            return wanted;
+            return (wanted, None);
         }
         let n_layer = model.n_layer().max(1);
         // Every block on the GPU (llama.cpp offloads the last `gpu_layers` of
         // them, the output layer only past n_layer — the panel shows a model
         // without it there as all of its layers, and it is).
         if gpu_layers < n_layer as i32 {
-            return wanted.min(AUTO_N_CTX);
+            return (wanted.min(AUTO_N_CTX), None);
         }
         let kv = kv_bytes_per_token(model, path);
         // What the card has free; where that cannot be read, its size less
@@ -3743,13 +3791,60 @@ fn fit_n_ctx(model: &LlamaModel, path: &Path, wanted: u32, auto: bool, gpu_layer
             .or_else(|| crate::gpu::detect_gpu().map(|g| (g.vram_mb * 1024 * 1024).saturating_sub(model.size())))
             .unwrap_or(0);
         let fit = ctx_for_free_vram(wanted, kv, free_vram);
+        let base = known.map_or(fit, |k| wanted.min(k));
+        let n_ctx = base.min(fit);
         eprintln!(
-            "[llama] auto context {fit} (trained {wanted}; KV {} KiB/token; {} MiB free on the GPU)",
+            "[llama] auto context {n_ctx} (trained {wanted}; KV {} KiB/token; {} MiB free on the GPU{})",
             kv / 1024,
-            free_vram / (1024 * 1024)
+            free_vram / (1024 * 1024),
+            match known {
+                Some(_) if n_ctx < base => format!("; the {base} it held here last time has no room today"),
+                Some(_) => ", as this model held here last time".to_string(),
+                None => String::new(),
+            }
         );
-        fit
+        (n_ctx, Some(base))
     }
+}
+
+/// The context the memory free right now holds, up to `n_ctx`: what macOS
+/// can hand out without paging (`reclaimable_memory`, read with the weights
+/// already in), less the 2 GiB `mem_safe_n_ctx` keeps for compute buffers,
+/// the app and the system, at the KV cache's cost per token — in steps of 256,
+/// 2048 at the least, as that one.
+#[cfg(target_os = "macos")]
+fn free_today_n_ctx(model: &LlamaModel, path: &Path, n_ctx: u32) -> u32 {
+    let per_tok = kv_bytes_per_token(model, path);
+    match crate::gpu::reclaimable_memory() {
+        Some(free) if per_tok > 0 => n_ctx.min(free_ctx(free, per_tok)),
+        _ => n_ctx,
+    }
+}
+
+/// Tokens of KV cache at `per_tok` bytes that `free` bytes hold beside 2 GiB
+/// of headroom, in steps of 256, 2048 at the least.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn free_ctx(free: u64, per_tok: u64) -> u32 {
+    let room = free.saturating_sub(2u64 << 30);
+    ((room / per_tok.max(1)).min(u32::MAX as u64) as u32 / 256 * 256).max(2048)
+}
+
+/// What an automatic load keeps for the next one (`autoctx`); `None` leaves
+/// the entry as it was.
+///
+/// The usual day's context (`base` from `fit_n_ctx`) — unless one failed to
+/// allocate: then the context that did, with the whole model on the GPU, or
+/// the shortest that was tried that way before layers came off it. `None`
+/// for a context the user set, and for one that was the CPU's 8192 rather
+/// than a fit.
+fn ctx_fit(auto: bool, n_ctx: u32, whole: bool, ctx_cap: u32, base: Option<u32>) -> Option<u32> {
+    if !auto {
+        return None;
+    }
+    if ctx_cap < u32::MAX {
+        return Some(if whole { n_ctx } else { ctx_cap });
+    }
+    base
 }
 
 /// How many tokens of KV cache, at `kv` bytes a token, go in half of
@@ -4201,6 +4296,37 @@ mod tests {
         assert_eq!(super::ctx_for_free_vram(262_144, 40 * KIB, 4 * GIB), 52_224);
         // A 12 GB card with the same model: 6 GiB free, 3 of them for the cache.
         assert_eq!(super::ctx_for_free_vram(262_144, 40 * KIB, 6 * GIB), 77_824);
+    }
+
+    /// What an automatic load keeps for the next one: the usual day's
+    /// context, not today's; the one that allocated after a failure; nothing
+    /// for the user's own number or for the CPU's 8192.
+    #[test]
+    fn a_load_keeps_the_context_of_a_usual_day() {
+        // Measured (or known) 40960, loaded so: kept.
+        assert_eq!(super::ctx_fit(true, 40_960, true, u32::MAX, Some(40_960)), Some(40_960));
+        // Memory short today, 16384 of a usual 40960: the 40960 stays.
+        assert_eq!(super::ctx_fit(true, 16_384, true, u32::MAX, Some(40_960)), Some(40_960));
+        // 40960 failed to allocate and 20480 did: 20480 from now on.
+        assert_eq!(super::ctx_fit(true, 20_480, true, 20_480, Some(40_960)), Some(20_480));
+        // Down to 8192 and that failed too, so layers came off: start at 8192.
+        assert_eq!(super::ctx_fit(true, 8192, false, 8192, None), Some(8192));
+        // Part of the model on the CPU from the start: not a fit, nothing.
+        assert_eq!(super::ctx_fit(true, 8192, false, u32::MAX, None), None);
+        // The user's number.
+        assert_eq!(super::ctx_fit(false, 20_000, true, u32::MAX, None), None);
+    }
+
+    /// What free memory holds beside 2 GiB of headroom, in 256 steps, 2048
+    /// at the least.
+    #[test]
+    fn free_memory_holds_its_share_of_context() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // 6 GiB free at 64 KiB a token: 4 GiB of cache, 65536 tokens.
+        assert_eq!(super::free_ctx(6 * GIB, 64 * 1024), 65_536);
+        // Less than the headroom: the floor.
+        assert_eq!(super::free_ctx(GIB, 64 * 1024), 2048);
+        assert_eq!(super::free_ctx(3 * GIB, 100_000) % 256, 0);
     }
 
     /// The estimate against llama.cpp's own allocation, on real files: each

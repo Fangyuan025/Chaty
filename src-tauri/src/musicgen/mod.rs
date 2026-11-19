@@ -131,6 +131,7 @@ pub fn load(path: &Path, opts: &MusicLoadOptions, progress: impl Fn(f32)) -> any
         params_b: probe.params_b,
         n_ctx_train: None,
         n_ctx: None,
+        ctx_fit: None,
         n_layer: None,
         gpu_layers: if on_cpu { 0 } else { -1 },
         gpu_name: (!device.is_empty()).then_some(device),

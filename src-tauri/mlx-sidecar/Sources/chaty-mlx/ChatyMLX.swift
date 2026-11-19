@@ -6,6 +6,9 @@
 // memory actually comes back (nothing survives process exit).
 //
 //   → {"cmd":"load","path":"/abs/model/dir","nCtx":8192}
+//     (an automatic context — no nCtx — may carry "ctxKnown":{"nCtx",
+//     "tokenBytes","fixedBytes"}: what the model settled on here last time,
+//     as the loaded info's "ctxFit" reported it)
 //   → {"cmd":"generate","messages":[{"role":"user","content":"hi"}],
 //      "params":{"temperature":0.7,"topP":0.95,"topK":40,"minP":0.05,
 //                "repeatPenalty":1.1,"maxTokens":512,"seed":1,"think":false}}
@@ -66,10 +69,19 @@ struct WireParams: Decodable {
     var scratch: Bool?
 }
 
+/// The automatic context a model settled on on this machine before, and what
+/// its cache cost then (see `Engine.load`).
+struct KnownContext: Decodable, Sendable {
+    let nCtx: Int
+    let tokenBytes: Int?
+    let fixedBytes: Int?
+}
+
 struct WireCmd: Decodable {
     let cmd: String
     let path: String?
     let nCtx: Int?
+    let ctxKnown: KnownContext?
     /// Decode with the checkpoint's multi-token-prediction head when it has
     /// one. Absent means no, matching the setting's default: a caller that
     /// does not ask for it does not get it.
@@ -1242,23 +1254,95 @@ final class Engine: @unchecked Sendable {
     /// a visible gap (mirrors the llama.cpp engine's behaviour).
     static let prefillEventThreshold = 256
 
+    /// What a context costs: per token as it is budgeted (the cache's growth
+    /// times `contextTokenFactor`), and what the cache holds at any length.
+    struct ContextCost: Sendable {
+        let perToken: Int
+        let fixed: Int
+    }
+
+    /// This model's `ContextCost`, measured (`probeCacheGrowth`). Nil when the
+    /// cache cannot be measured.
+    static func contextCost(_ context: ModelContext) -> ContextCost? {
+        guard let growth = probeCacheGrowth(context), growth.perToken > 0 else { return nil }
+        return ContextCost(
+            perToken: Int((Double(growth.perToken) * contextTokenFactor).rounded(.up)), fixed: growth.fixed)
+    }
+
     /// The context the GPU can carry beside the weights: what the working set
     /// leaves once the weights, the cache's fixed part and some headroom are
-    /// in, divided by what the cache gains per token. Nil when the working
-    /// set is unknown or the cache cannot be measured.
-    static func contextThatFits(_ context: ModelContext, workingSet: Int) -> Int? {
+    /// in, divided by what the cache costs per token. Nil when the working
+    /// set is unknown.
+    static func contextThatFits(_ context: ModelContext, cost: ContextCost, workingSet: Int) -> Int? {
         guard workingSet > 0 else { return nil }
         let paramBytes = context.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
         let weights = max(Memory.activeMemory, paramBytes)
-        guard let growth = probeCacheGrowth(context), growth.perToken > 0 else { return nil }
-        let room = workingSet - weights - growth.fixed - contextHeadroom
-        let perToken = Int((Double(growth.perToken) * contextTokenFactor).rounded(.up))
-        let fits = max(4096, room / perToken / 1024 * 1024)
+        let room = workingSet - weights - cost.fixed - contextHeadroom
+        let fits = max(4096, room / cost.perToken / 1024 * 1024)
         log(
-            "context fit: weights \(weights >> 20) MB, cache \(growth.perToken) B/token"
-                + " + \(growth.fixed >> 20) MB fixed, working set \(workingSet >> 20) MB -> \(fits) tokens")
+            "context fit: weights \(weights >> 20) MB, cache \(cost.perToken) B/token budgeted"
+                + " + \(cost.fixed >> 20) MB fixed, working set \(workingSet >> 20) MB -> \(fits) tokens")
         return fits
     }
+
+    /// The context the memory free right now holds, at `cost`: what macOS can
+    /// hand out without paging (`reclaimableMemory`, read with the weights
+    /// already in), less the cache's fixed part and the same headroom. The
+    /// working set is what the GPU may use; this is what the machine has to
+    /// give today, with other programs holding some of it. Nil when it
+    /// cannot be read.
+    static func contextFreeToday(cost: ContextCost) -> Int? {
+        guard let free = reclaimableMemory() else { return nil }
+        return max(4096, (free - cost.fixed - contextHeadroom) / cost.perToken / 1024 * 1024)
+    }
+
+    /// Bytes macOS can hand a new allocation without compressing or swapping
+    /// anything: free pages, file-backed ones (the file cache, dropped first)
+    /// and purgeable ones — not the anonymous memory other programs hold. The
+    /// app's engine reads the same (`gpu::reclaimable_memory`).
+    static func reclaimableMemory() -> Int? {
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
+        let ok = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        guard ok == KERN_SUCCESS else { return nil }
+        // Speculative pages are among the file-backed ones (free leaves them
+        // out): adding them again would count them twice.
+        let pages = Int(stats.free_count) + Int(stats.external_page_count) + Int(stats.purgeable_count)
+        return pages * Int(sysconf(Int32(_SC_PAGESIZE)))
+    }
+
+    /// A first run through the model on a throwaway cache, for a load that
+    /// does not measure it (`probeCacheGrowth` is otherwise that run): a short
+    /// prompt, then one token more on the cache it left, as a reply reads its
+    /// prompt and then writes. The first time the weights are used and the
+    /// kernels built costs what it costs — some 9 s on a 34 GB model — and
+    /// left to the first reply it held that reply back as long; a single pass
+    /// left a second and a half of it there.
+    static func warmUp(_ context: ModelContext) {
+        guard let cache = try? context.model.newCache(parameters: nil) else { return }
+        var state: LMOutput.State? = nil
+        func feed(_ ids: [Int32]) {
+            let text = LMInput.Text(tokens: MLXArray(ids))
+            let out = withPreparedCache(cache, lengths: text.sequenceLengths) {
+                context.model(text[text: .newAxis], cache: cache, state: state)
+            }
+            state = out.state
+            eval(out.logits)
+        }
+        let ids = context.tokenizer.encode(text: warmUpText, addSpecialTokens: false).map { Int32($0) }
+        guard let last = ids.last else { return }
+        feed(ids)
+        feed([last])
+    }
+    /// Words, another script and code: a mixture-of-experts model sends them
+    /// to different experts.
+    static let warmUpText =
+        "The quick brown fox jumps over the lazy dog. 你好，今天天气怎么样？ def add(a, b): return a + b # 1 2 3"
 
     /// What this model's cache gains per token of context, and what it holds
     /// that does not grow — measured by reading 64 tokens and 64 more, so it
@@ -1372,7 +1456,7 @@ final class Engine: @unchecked Sendable {
         return best.map { ($0.key, $0.added) }
     }
 
-    func load(path: String, nCtx: Int?, speculative: Bool) async {
+    func load(path: String, nCtx: Int?, known: KnownContext? = nil, speculative: Bool) async {
         // The folder itself, not a link to it: the weight loader walks the
         // directory with an enumerator that does not follow a symbolic link,
         // so a model linked into the models folder (kept on another drive, or
@@ -1580,13 +1664,46 @@ final class Engine: @unchecked Sendable {
             let workingSet = GPU.maxRecommendedWorkingSetBytes() ?? 0
             self.workingSet = workingSet
             self.scratchPerPair = 0
-            // The first pass through the model, which this measures with:
-            // as long as reading the weights took, near enough — 9.8 s on a
-            // 34 GB model whose weights took 9 (the second pass, 0.9 s).
-            meter.easing("context", to: 0.99, tau: max(1.5, weightBytes / 1e9 * 0.2))
-            let fits = await container.perform { ctx in Self.contextThatFits(ctx, workingSet: workingSet) }
-            self.nCtxCap = fits.map { min(wanted, $0) } ?? wanted
-            if let fits, fits < wanted, loadWarning == nil { loadWarning = "ctx-clamped" }
+            // An automatic context this model settled on here before is taken
+            // as it is: what the working set holds has not changed. The model
+            // is still run once, short, so that the first reply does not pay
+            // for its first run (`warmUp`); and what the machine has free today
+            // is weighed against the context all the same.
+            let knownCost: ContextCost? = known.flatMap { k in
+                guard nCtx == nil, k.nCtx > 0, let t = k.tokenBytes, t > 0 else { return nil }
+                return ContextCost(perToken: t, fixed: k.fixedBytes ?? 0)
+            }
+            // The context on a usual day here, and what it costs.
+            var usual = wanted
+            var cost: ContextCost?
+            if let known, let knownCost {
+                usual = min(wanted, known.nCtx)
+                cost = knownCost
+                meter.easing("warm-up", to: 0.99, tau: max(1.5, weightBytes / 1e9 * 0.2))
+                await container.perform { ctx in Self.warmUp(ctx) }
+            } else {
+                // The first pass through the model, which this measures with:
+                // as long as reading the weights took, near enough — 9.8 s on
+                // a 34 GB model whose weights took 9 (the second pass, 0.9 s).
+                meter.easing("context", to: 0.99, tau: max(1.5, weightBytes / 1e9 * 0.2))
+                let measured = await container.perform { ctx -> (ContextCost, Int?)? in
+                    guard let cost = Self.contextCost(ctx) else { return nil }
+                    return (cost, Self.contextThatFits(ctx, cost: cost, workingSet: workingSet))
+                }
+                cost = measured?.0
+                if let fits = measured?.1 { usual = min(wanted, fits) }
+            }
+            let today = cost.flatMap { Self.contextFreeToday(cost: $0) }
+            self.nCtxCap = min(usual, today ?? usual)
+            log(
+                "context \(self.nCtxCap) (trained \(trained); "
+                    + (knownCost != nil ? "as this model held here last time" : "fitted to the working set")
+                    + (self.nCtxCap < usual ? "; memory free today holds \(self.nCtxCap) of its \(usual))" : ")"))
+            // Said once: a context this model settled on here before is not
+            // news, one shorter than it today is.
+            if self.nCtxCap < wanted, loadWarning == nil, knownCost == nil || self.nCtxCap < usual {
+                loadWarning = "ctx-clamped"
+            }
             var info: [String: Any] = [
                 "quant": meta.quantLabel,
                 "sizeMb": Int(meta.sizeBytes / (1024 * 1024)),
@@ -1624,6 +1741,15 @@ final class Engine: @unchecked Sendable {
             if let v = meta.nEmbd { info["nEmbd"] = v }
             if let v = meta.nCtxTrain { info["nCtxTrain"] = v }
             if let v = loadWarning { info["warning"] = v }
+            // What the next automatic load of this model here starts from.
+            if nCtx == nil {
+                var fit: [String: Any] = ["nCtx": usual]
+                if let cost {
+                    fit["tokenBytes"] = cost.perToken
+                    fit["fixedBytes"] = cost.fixed
+                }
+                info["ctxFit"] = fit
+            }
             reporter.cancel()
             out.emit(["event": "loaded", "info": info])
         } catch {
@@ -3190,7 +3316,8 @@ struct ChatyMLX {
                         continue
                     }
                     await engine.load(
-                        path: path, nCtx: cmd.nCtx, speculative: cmd.speculative ?? false)
+                        path: path, nCtx: cmd.nCtx, known: cmd.ctxKnown,
+                        speculative: cmd.speculative ?? false)
                 case "generate":
                     guard let messages = cmd.messages else {
                         out.error("generate 缺少 messages (generate requires messages)")

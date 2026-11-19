@@ -101,6 +101,7 @@ pub fn mock_info(n_ctx: Option<u32>) -> super::ModelInfo {
         params_b: None,
         n_ctx_train: Some(16384),
         n_ctx,
+        ctx_fit: None,
         n_layer: None,
         speculative: false,
         speculative_on: false,

@@ -99,11 +99,11 @@ fn load_engine(path: &str, n_ctx: Option<u32>, speculative: bool) -> Result<Mode
         let info = chaty_lib::inference::mock::mock_info(n_ctx);
         (Arc::new(e), info)
     } else if Path::new(path).join("config.json").is_file() {
-        let (e, info) = MlxEngine::load(path, n_ctx, speculative, |_| {}).map_err(|e| e.to_string())?;
+        let (e, info) = MlxEngine::load(path, n_ctx, None, speculative, |_| {}).map_err(|e| e.to_string())?;
         (Arc::new(e), info)
     } else {
         // The app's own path: llama.cpp in its sidecar (`cargo build --bin chaty-llama`).
-        let (e, info) = LlamaSidecar::load(path, None, n_ctx, speculative, |_| {}).map_err(|e| format!("{e:#}"))?;
+        let (e, info) = LlamaSidecar::load(path, None, n_ctx, None, speculative, |_| {}).map_err(|e| format!("{e:#}"))?;
         (Arc::new(e), info)
     };
     if let Some(old) = engine_slot().lock().unwrap().replace(engine) {

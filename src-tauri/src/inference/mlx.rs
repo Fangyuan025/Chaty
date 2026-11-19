@@ -353,10 +353,13 @@ impl MlxEngine {
     /// own multi-token-prediction head. The returned `ModelInfo` reports
     /// whether the checkpoint HAS one separately from whether it is running,
     /// so the UI can offer the switch on exactly the models it does something
-    /// for.
+    /// for. `n_ctx_known`: with the automatic context, the one this model
+    /// settled on here last time (see `autoctx`), which the sidecar takes as
+    /// it is instead of measuring the model again.
     pub fn load(
         dir: &str,
         n_ctx: Option<u32>,
+        n_ctx_known: Option<super::autoctx::CtxFit>,
         speculative: bool,
         progress: impl Fn(f32),
     ) -> Result<(Self, ModelInfo)> {
@@ -364,7 +367,7 @@ impl MlxEngine {
             crate::runtimes::Engine::Mlx,
             find_sidecar(),
             || anyhow!(trf!("未找到 MLX 引擎组件 chaty-mlx,请重新安装应用", "the MLX engine (chaty-mlx) is missing; please reinstall")),
-            |sidecar| Self::load_with_sidecar(sidecar, dir, n_ctx, speculative, &progress),
+            |sidecar| Self::load_with_sidecar(sidecar, dir, n_ctx, n_ctx_known, speculative, &progress),
         )
     }
 
@@ -372,6 +375,7 @@ impl MlxEngine {
         sidecar: &Path,
         dir: &str,
         n_ctx: Option<u32>,
+        n_ctx_known: Option<super::autoctx::CtxFit>,
         speculative: bool,
         progress: impl Fn(f32),
     ) -> Result<(Self, ModelInfo)> {
@@ -448,7 +452,7 @@ impl MlxEngine {
         writeln!(
             stdin_pipe,
             "{}",
-            json!({ "cmd": "load", "path": dir, "nCtx": n_ctx, "speculative": speculative })
+            json!({ "cmd": "load", "path": dir, "nCtx": n_ctx, "ctxKnown": n_ctx_known, "speculative": speculative })
         )?;
         stdin_pipe.flush()?;
 
@@ -519,6 +523,7 @@ impl MlxEngine {
             params_b: loaded["paramsB"].as_f64(),
             n_ctx_train: loaded["nCtxTrain"].as_u64().map(|v| v as u32),
             n_ctx: loaded["nCtx"].as_u64().map(|v| v as u32),
+            ctx_fit: serde_json::from_value(loaded["ctxFit"].clone()).ok(),
             n_layer,
             speculative: loaded["speculative"].as_bool().unwrap_or(false),
             speculative_on: loaded["speculativeOn"].as_bool().unwrap_or(false),
@@ -1216,6 +1221,7 @@ done
             &script,
             model.to_str().unwrap(),
             Some(2048),
+            None,
             true,
             move |f| p2.lock().unwrap().push(f),
         )
@@ -1282,7 +1288,7 @@ mod mlx_e2e {
         let dir = model_dir();
         let t0 = std::time::Instant::now();
         let (engine, info) =
-            MlxEngine::load(&dir, Some(8192), true, |f| eprintln!("load {:.0}%", f * 100.0))
+            MlxEngine::load(&dir, Some(8192), None, true, |f| eprintln!("load {:.0}%", f * 100.0))
                 .expect("load MLX model");
         eprintln!("loaded {} in {:?}: {info:?}", info.name, t0.elapsed());
         assert_eq!(info.backend, "mlx");
@@ -1367,7 +1373,7 @@ mod mlx_e2e {
     #[ignore]
     fn mlx_e2e_no_cross_conversation_bleed() {
         let dir = model_dir();
-        let (engine, info) = MlxEngine::load(&dir, Some(8192), true, |_| {}).expect("load");
+        let (engine, info) = MlxEngine::load(&dir, Some(8192), None, true, |_| {}).expect("load");
         let hybrid = info.arch.as_deref().unwrap_or("").starts_with("qwen3_5");
         let rt = rt();
 
@@ -1431,7 +1437,7 @@ mod mlx_e2e {
     #[ignore]
     fn mlx_e2e_stream_events() {
         let dir = model_dir();
-        let (engine, _info) = MlxEngine::load(&dir, Some(8192), true, |_| {}).expect("load");
+        let (engine, _info) = MlxEngine::load(&dir, Some(8192), None, true, |_| {}).expect("load");
         let events = Arc::new(Mutex::new(Vec::<String>::new()));
         let ev2 = events.clone();
         let sink = Channel::new(move |body: tauri::ipc::InvokeResponseBody| {
@@ -1479,7 +1485,7 @@ mod mlx_vlm_e2e {
     #[ignore]
     fn mlx_vlm_e2e_sees_colors_then_chats() {
         let dir = std::env::var("CHATY_TEST_MLX_VLM").expect("set CHATY_TEST_MLX_VLM=<mlx vlm dir>");
-        let (engine, info) = MlxEngine::load(&dir, Some(8192), true, |_| {}).expect("load VLM");
+        let (engine, info) = MlxEngine::load(&dir, Some(8192), None, true, |_| {}).expect("load VLM");
         assert!(info.multimodal, "config has a vision tower");
         assert!(info.vision_ready, "MLX VLM must report vision_ready");
 
@@ -1549,7 +1555,7 @@ mod mlx_vlm_e2e {
         }
 
         let (engine, info) =
-            MlxEngine::load(clone.to_str().unwrap(), Some(8192), true, |_| {}).expect("healed load");
+            MlxEngine::load(clone.to_str().unwrap(), Some(8192), None, true, |_| {}).expect("healed load");
         assert!(info.vision_ready, "healed VLM must still be vision-ready");
         assert!(
             clone.join("preprocessor_config.json").is_file(),
@@ -1588,7 +1594,7 @@ mod mlx_vlm_e2e {
     #[ignore]
     fn mlx_vlm_e2e_oversized_screenshot_survives() {
         let dir = std::env::var("CHATY_TEST_MLX_VLM").expect("set CHATY_TEST_MLX_VLM=<mlx vlm dir>");
-        let (engine, _info) = MlxEngine::load(&dir, Some(8192), true, |_| {}).expect("load VLM");
+        let (engine, _info) = MlxEngine::load(&dir, Some(8192), None, true, |_| {}).expect("load VLM");
 
         // Tall red "page" at 2x-screenshot proportions: 2200x7000 = 15.4 MP.
         let img = image::RgbImage::from_pixel(2200, 7000, image::Rgb([220, 20, 20]));
@@ -1639,7 +1645,7 @@ mod mlx_vlm_e2e {
     #[ignore]
     fn mlx_vlm_e2e_prefill_progress_and_reuse() {
         let dir = std::env::var("CHATY_TEST_MLX_VLM").expect("set CHATY_TEST_MLX_VLM=<mlx vlm dir>");
-        let (engine, info) = MlxEngine::load(&dir, Some(8192), true, |_| {}).expect("load VLM");
+        let (engine, info) = MlxEngine::load(&dir, Some(8192), None, true, |_| {}).expect("load VLM");
         assert!(info.vision_ready, "MLX VLM must report vision_ready");
         let arch = info.arch.clone().unwrap_or_default();
 
@@ -1759,7 +1765,7 @@ mod mlx_mem_e2e {
         let base = probe(&mut sys);
 
         for cycle in 0..5 {
-            let (engine, _info) = MlxEngine::load(&dir, Some(4096), true, |_| {}).expect("load");
+            let (engine, _info) = MlxEngine::load(&dir, Some(4096), None, true, |_| {}).expect("load");
             let pid = sidecar_pid(&engine).expect("sidecar pid");
             assert!(pid_alive(pid), "cycle {cycle}: sidecar not running after load");
 

@@ -9,7 +9,7 @@
 //! The protocol is JSON lines, one object each way per line. Commands carry
 //! the UI language (`lang`), so what the engine says follows it.
 //!
-//!   → {"cmd":"load","path","gpuLayers","nCtx","speculative"}
+//!   → {"cmd":"load","path","gpuLayers","nCtx","nCtxKnown"?,"speculative"}
 //!       ← {"event":"progress","frac"}…  {"event":"loaded","info":ModelInfo} | {"event":"error","message"}
 //!   → {"cmd":"generate","id","req":GenRequest}   ← {"event":"ev","id","data":StreamEvent}… {"event":"end","id","error"?}
 //!   → {"cmd":"collect","id","req":GenRequest}    ← {"event":"end","id","text"|"error"}
@@ -282,17 +282,19 @@ pub struct LlamaSidecar {
 }
 
 impl LlamaSidecar {
-    /// Load a GGUF file: `gpu_pref` and `n_ctx_pref` as `LlamaEngine::load`
-    /// takes them, `progress` the weights' share loaded so far.
+    /// Load a GGUF file: `gpu_pref`, `n_ctx_pref` and `n_ctx_known` as
+    /// `LlamaEngine::load_with_progress` takes them, `progress` the weights'
+    /// share loaded so far.
     pub fn load(
         path: &str,
         gpu_pref: Option<i32>,
         n_ctx_pref: Option<u32>,
+        n_ctx_known: Option<u32>,
         speculative: bool,
         progress: impl Fn(f32) + Send + Sync + 'static,
     ) -> Result<(Self, ModelInfo)> {
         let progress: Arc<dyn Fn(f32) + Send + Sync> = Arc::new(progress);
-        start_engine(|exe| Self::load_with(exe, path, gpu_pref, n_ctx_pref, speculative, &progress))
+        start_engine(|exe| Self::load_with(exe, path, gpu_pref, n_ctx_pref, n_ctx_known, speculative, &progress))
     }
 
     fn load_with(
@@ -300,12 +302,14 @@ impl LlamaSidecar {
         path: &str,
         gpu_pref: Option<i32>,
         n_ctx_pref: Option<u32>,
+        n_ctx_known: Option<u32>,
         speculative: bool,
         progress: &Arc<dyn Fn(f32) + Send + Sync>,
     ) -> Result<(Self, ModelInfo)> {
         let (proc, control) = Proc::spawn(exe)?;
         proc.send(json!({
-            "cmd": "load", "path": path, "gpuLayers": gpu_pref, "nCtx": n_ctx_pref, "speculative": speculative,
+            "cmd": "load", "path": path, "gpuLayers": gpu_pref, "nCtx": n_ctx_pref, "nCtxKnown": n_ctx_known,
+            "speculative": speculative,
         }))?;
         let deadline = Instant::now() + LOAD_TIMEOUT;
         loop {
@@ -563,6 +567,7 @@ pub fn serve() -> ! {
                     let path = cmd["path"].as_str().unwrap_or_default().to_string();
                     let gpu = cmd["gpuLayers"].as_i64().map(|n| n as i32);
                     let n_ctx = cmd["nCtx"].as_u64().map(|n| n as u32);
+                    let n_ctx_known = cmd["nCtxKnown"].as_u64().map(|n| n as u32);
                     let speculative = cmd["speculative"].as_bool().unwrap_or(false);
                     let last = Mutex::new(-1.0f32);
                     let tick = out.clone();
@@ -573,7 +578,7 @@ pub fn serve() -> ! {
                             tick.emit(&json!({ "event": "progress", "frac": f }));
                         }
                     });
-                    match super::llama::LlamaEngine::load_with_progress(&path, gpu, n_ctx, speculative, progress) {
+                    match super::llama::LlamaEngine::load_with_progress(&path, gpu, n_ctx, n_ctx_known, speculative, progress) {
                         Ok((e, info)) => {
                             *engine.lock().unwrap() = Some(Arc::new(e));
                             out.emit(&json!({ "event": "loaded", "info": info }));
@@ -707,7 +712,7 @@ mod tests {
         let path = std::env::var("CHATY_TEST_GGUF").expect("set CHATY_TEST_GGUF");
         let ticks = Arc::new(Mutex::new(Vec::<f32>::new()));
         let t = ticks.clone();
-        let (engine, info) = LlamaSidecar::load(&path, None, Some(4096), false, move |f| t.lock().unwrap().push(f)).expect("load");
+        let (engine, info) = LlamaSidecar::load(&path, None, Some(4096), None, false, move |f| t.lock().unwrap().push(f)).expect("load");
         let ticks = ticks.lock().unwrap().clone();
         eprintln!("loaded {} ({:?} gpu layers {}), {} progress ticks", info.name, info.arch, info.gpu_layers, ticks.len());
         assert_eq!(info.kind, "chat");

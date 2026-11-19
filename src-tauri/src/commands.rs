@@ -260,6 +260,19 @@ pub async fn load_model(
     // starts its count again.
     let gate = Arc::new(MonotonicProgress::new());
 
+    // An automatic context starts from the one this model settled on here
+    // last time (see autoctx), not from measuring it again.
+    let auto_ctx = if !is_image && !is_music && !matches!(n_ctx, Some(n) if n > 0) {
+        let (p, engine, gpu) = (path.clone(), if is_mlx { "mlx" } else { "llama" }, if is_mlx { None } else { gpu_layers });
+        tokio::task::spawn_blocking(move || crate::inference::autoctx::Key::new(&p, engine, gpu, speculative))
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    let known = auto_ctx.as_ref().and_then(crate::inference::autoctx::recall);
+
     let path_for_log = path.clone();
     let result = if is_music {
         let chan = on_progress.clone();
@@ -290,7 +303,7 @@ pub async fn load_model(
         let chan = on_progress.clone();
         let gate = gate.clone();
         tokio::task::spawn_blocking(move || {
-            crate::inference::mlx::MlxEngine::load(&path, n_ctx, speculative, move |frac| {
+            crate::inference::mlx::MlxEngine::load(&path, n_ctx, known, speculative, move |frac| {
                 if gate.permit(frac) {
                     let _ = chan.send(LoadProgress { phase: "weights", frac });
                 }
@@ -302,7 +315,7 @@ pub async fn load_model(
         let chan = on_progress.clone();
         let gate = gate.clone();
         tokio::task::spawn_blocking(move || {
-            LlamaSidecar::load(&path, gpu_layers, n_ctx, speculative, move |frac| {
+            LlamaSidecar::load(&path, gpu_layers, n_ctx, known.map(|f| f.n_ctx), speculative, move |frac| {
                 if gate.permit(frac.min(0.99)) {
                     let _ = chan.send(LoadProgress { phase: "weights", frac: frac.min(0.99) });
                 }
@@ -334,6 +347,10 @@ pub async fn load_model(
             crate::errlog::append_error("model-load", &format!("path: {path_for_log}\n{e}"));
         })?;
     let _ = on_progress.send(LoadProgress { phase: "ready", frac: 1.0 });
+    if let Some(key) = auto_ctx {
+        let (fit, trained) = (info.ctx_fit, info.n_ctx_train);
+        let _ = tokio::task::spawn_blocking(move || crate::inference::autoctx::settle(&key, fit, trained)).await;
+    }
 
     info.backend = backend.name().to_string();
     *state.engine.write().await = Some(backend);

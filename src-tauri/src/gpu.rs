@@ -705,6 +705,37 @@ pub fn gpu_usage() -> Option<GpuUsage> {
     None
 }
 
+/// Bytes macOS can hand a new allocation right now without compressing or
+/// swapping anything: free pages, file-backed pages (the file cache, which the
+/// system counts as used and drops first) and purgeable ones. Not the
+/// anonymous memory other programs hold, inactive or not — reaching into that
+/// is what makes the machine page. `None` off macOS, or if it cannot be read.
+pub fn reclaimable_memory() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        let mut stats: libc::vm_statistics64 = std::mem::zeroed();
+        let mut count = libc::HOST_VM_INFO64_COUNT;
+        #[allow(deprecated)]
+        let host = libc::mach_host_self();
+        let ok = libc::host_statistics64(
+            host,
+            libc::HOST_VM_INFO64,
+            &mut stats as *mut libc::vm_statistics64 as libc::host_info64_t,
+            &mut count,
+        );
+        if ok != libc::KERN_SUCCESS {
+            return None;
+        }
+        let page = libc::sysconf(libc::_SC_PAGESIZE).max(0) as u64;
+        // Speculative pages are counted among the file-backed ones (free
+        // excludes them): adding them again would count them twice.
+        let pages = stats.free_count as u64 + stats.external_page_count as u64 + stats.purgeable_count as u64;
+        Some(pages * page)
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
 /// MiB of GPU memory free right now, what this process holds included — on
 /// Windows every process's dedicated usage (`gpu_usage`), on Linux the Vulkan
 /// budget left to this process. `None` where it cannot be read, and on macOS,
