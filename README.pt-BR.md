@@ -57,7 +57,7 @@ Um chat que mostra o raciocínio. O pensamento aparece num painel que você pode
 - **O que está ligado, num relance** — uma linha discreta acima da caixa de mensagem diz o que a próxima mensagem vai usar (raciocínio, busca na web, base de conhecimento), cada item a um clique de desligar.
 - **Imagens também** — qualquer modelo com visão: um GGUF com seu projetor, ou uma versão MLX.
 - **Canvas** — peça uma página e veja-a ganhar forma numa prévia ao vivo ao lado do código; as mudanças seguintes entram como patches.
-- **Busca na web sem chave**, busca em texto completo no histórico e exportação para Markdown ou JSON.
+- **Busca na web sem chave**, busca em texto completo no histórico e exportação para Markdown, JSON, página web ou PDF.
 - **Do seu jeito** — segue o claro ou escuro do sistema; escuro quente ou frio, claro papel ou creme, quatro temas de código, um tamanho de texto para o chat e o código, atalhos de teclado, English · 简体中文 · Português.
 
 ## Code

@@ -310,8 +310,10 @@
 ### Finding your way
 
 - **Each reply says which model wrote it**, at its foot on the right on
-  hover — a conversation can pass through several — and a chat exported as
-  JSON or Markdown says it of each reply too.
+  hover — a conversation can pass through several — and a chat exported says
+  it of each reply too: in JSON and Markdown, and on the web page and PDF at
+  each reply's foot. The JSON export no longer names one model for the whole
+  chat at its top.
 - **The voice sample speaks English with Chinese voice support off.** In the
   Chinese interface it played the Chinese sample to the English voice, which
   read every character as "Chinese letter". And the English voice is no
@@ -380,7 +382,15 @@
 
 - **Export a chat as a web page** — the replies as Chaty draws them, code
   coloured, tables, formulas and diagrams, in the theme you use, without the
-  app's buttons: one file any browser opens.
+  app's buttons: one file any browser opens, and that prints whole from it.
+- **Export a chat as a PDF**, from the same menu, saved where you choose with
+  no print dialog: laid out as Chaty draws the chat, in the theme you use —
+  its fonts, code colours, tables, formulas and diagrams — with the theme's
+  background edge to edge. It is cut into pages where it reads well: a code
+  block, a picture or a formula moves to the next page whole when it fits on
+  one, a long reply runs on across pages, and code the screen would scroll
+  wraps. Its text can be selected and searched, and it is titled after the
+  chat. On the paper your system uses, A4 or Letter.
 
 ## v2.4.1 — Read along (2026-11-12)
 

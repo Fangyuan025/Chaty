@@ -57,7 +57,7 @@ A chat that shows its work. Reasoning streams into a panel you can fold away; on
 - **What's on, at a glance** — a quiet line above the composer names what the next message will use (thinking, web search, the knowledge base), each one click from off.
 - **Pictures in** — any vision model: a GGUF with its projector, or an MLX build.
 - **Canvas** — ask for a page and watch it build in a live preview beside its source; later changes land as patches.
-- **Web search without a key**, full-text search across your history, and export to Markdown or JSON.
+- **Web search without a key**, full-text search across your history, and export to Markdown, JSON, a web page or PDF.
 - **Your way** — follows your system's light or dark; warm or cool dark, paper or cream light, four code themes, one text size for chat and code, keyboard shortcuts, English · 简体中文 · Português.
 
 ## Code

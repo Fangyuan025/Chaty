@@ -368,6 +368,13 @@ jobs:
             store reads what a model is from the file itself, so fine-tunes under names of their own
             get their family's files too.
 
+            ## A chat as a PDF
+
+            The download arrow over a chat saves it as a PDF too, with no print dialog: laid out as
+            Chaty draws it, in the theme you use — its fonts, code colours, tables, formulas and
+            diagrams — edge to edge, cut into pages where it reads well, each reply with the model
+            that wrote it.
+
             ## One thing at a time
 
             A Code session at work can be left to read other sessions or chat; nothing can be sent,
