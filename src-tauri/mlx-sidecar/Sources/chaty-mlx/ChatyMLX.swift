@@ -1287,12 +1287,17 @@ final class Engine: @unchecked Sendable {
 
     /// The context the memory free right now holds, at `cost`: what macOS can
     /// hand out without paging (`reclaimableMemory`, read with the weights
-    /// already in), less the cache's fixed part and the same headroom. The
-    /// working set is what the GPU may use; this is what the machine has to
-    /// give today, with other programs holding some of it. Nil when it
+    /// already in). The working set is what the GPU may use; this is what the
+    /// machine has to give today, with other programs holding some of it.
+    /// `nCtx` itself while its cache fits in that; else what it holds less the
+    /// cache's fixed part and the same headroom. The headroom is kept when
+    /// there is cutting to do, not taken off a context that fits: free memory
+    /// moves a little from one load to the next, and a context that moved with
+    /// it would be a little shorter, and said so, every time. Nil when it
     /// cannot be read.
-    static func contextFreeToday(cost: ContextCost) -> Int? {
+    static func contextFreeToday(_ nCtx: Int, cost: ContextCost) -> Int? {
         guard let free = reclaimableMemory() else { return nil }
+        if cost.fixed + nCtx * cost.perToken <= free { return nCtx }
         return max(4096, (free - cost.fixed - contextHeadroom) / cost.perToken / 1024 * 1024)
     }
 
@@ -1693,7 +1698,7 @@ final class Engine: @unchecked Sendable {
                 cost = measured?.0
                 if let fits = measured?.1 { usual = min(wanted, fits) }
             }
-            let today = cost.flatMap { Self.contextFreeToday(cost: $0) }
+            let today = cost.flatMap { Self.contextFreeToday(usual, cost: $0) }
             self.nCtxCap = min(usual, today ?? usual)
             log(
                 "context \(self.nCtxCap) (trained \(trained); "

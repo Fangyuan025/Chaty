@@ -606,7 +606,7 @@ impl LlamaEngine {
         let has_head = probe_mtp_layers(backend, path) > 0;
         let mtp =
             has_head && speculative && std::env::var("CHATY_MTP").as_deref() != Ok("0");
-        let (model, tx, handle, mtmd_err, n_ctx, n_ctx_wanted, base) = loop {
+        let (model, tx, handle, mtmd_err, n_ctx, n_ctx_wanted, base) = 'load: loop {
             let tick = progress.clone();
             let params = LlamaModelParams::default()
                 .with_n_gpu_layers(layers.max(0) as u32)
@@ -679,56 +679,63 @@ impl LlamaEngine {
             let n_ctx_wanted = clamp_n_ctx(model.n_ctx_train(), n_ctx_pref);
             // And what this machine holds of it on a usual day, which is what
             // the next automatic load starts from (see `ctx_fit`).
-            let (n_ctx, base) =
+            let (fit, base) =
                 fit_n_ctx(&model, Path::new(path), n_ctx_wanted, auto_ctx, layers, n_ctx_known.filter(|_| auto_ctx));
-            let n_ctx = n_ctx.min(ctx_cap);
-            let (tx, rx) = std::sync::mpsc::channel::<Job>();
-            // Init result: Err = fatal context failure; Ok(Some(msg)) = context
-            // fine but the mmproj failed to load (vision off, non-fatal).
-            let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<Option<String>, String>>();
-            let worker_model = model.clone();
-            let worker_mmproj = mmproj.clone();
-            let worker_gpu = layers > 0;
-            let handle = std::thread::Builder::new()
-                .name("chaty-llama".into())
-                .spawn(move || {
-                    worker(
-                        worker_model, n_ctx, n_threads, worker_mmproj, worker_gpu, mtp, rx,
-                        init_tx,
-                    )
-                })
-                .context(trf!("无法启动推理线程", "failed to start the inference thread"))?;
+            // A shorter context is tried on the weights already in memory: only
+            // a layer coming off the GPU needs them read again.
+            loop {
+                let n_ctx = fit.min(ctx_cap);
+                let (tx, rx) = std::sync::mpsc::channel::<Job>();
+                // Init result: Err = fatal context failure; Ok(Some(msg)) = context
+                // fine but the mmproj failed to load (vision off, non-fatal).
+                let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<Option<String>, String>>();
+                let worker_model = model.clone();
+                let worker_mmproj = mmproj.clone();
+                let worker_gpu = layers > 0;
+                let handle = std::thread::Builder::new()
+                    .name("chaty-llama".into())
+                    .spawn(move || {
+                        worker(
+                            worker_model, n_ctx, n_threads, worker_mmproj, worker_gpu, mtp, rx,
+                            init_tx,
+                        )
+                    })
+                    .context(trf!("无法启动推理线程", "failed to start the inference thread"))?;
 
-            match init_rx.recv() {
-                Ok(Ok(mtmd_err)) => break (model, tx, handle, mtmd_err, n_ctx, n_ctx_wanted, base),
-                Ok(Err(msg)) => {
-                    drop(tx); // the worker already exited; release this attempt
-                    if auto_ctx && n_ctx > AUTO_N_CTX {
-                        ctx_cap = (n_ctx / 2).max(AUTO_N_CTX);
-                        eprintln!("context init failed at n_ctx {n_ctx} ({msg}); trying {ctx_cap}");
-                        continue;
+                match init_rx.recv() {
+                    Ok(Ok(mtmd_err)) => break 'load (model, tx, handle, mtmd_err, n_ctx, n_ctx_wanted, base),
+                    Ok(Err(msg)) => {
+                        // The worker has already given up; wait for it to let go
+                        // of what it held before asking for less.
+                        drop(tx);
+                        let _ = handle.join();
+                        if auto_ctx && n_ctx > AUTO_N_CTX {
+                            ctx_cap = (n_ctx / 2).max(AUTO_N_CTX);
+                            eprintln!("context init failed at n_ctx {n_ctx} ({msg}); trying {ctx_cap}");
+                            continue;
+                        }
+                        // A failed context allocation (incl. a null return from
+                        // llama.cpp) is almost always memory pressure — back off the
+                        // GPU offload and retry rather than giving up.
+                        if layers > 0 {
+                            oom_fallback = true;
+                            eprintln!("context init failed at {layers} gpu layers ({msg}); backing off");
+                            layers = backoff_layers(layers);
+                            continue 'load;
+                        }
+                        if is_oom(&msg) {
+                            bail!(trf!(
+                                "内存不足,无法为该模型分配上下文。换更小的模型,或在设置里调低上下文长度。",
+                                "out of memory while allocating the model context — try a smaller model, or a shorter context in Settings."
+                            ));
+                        }
+                        bail!(trf!("推理上下文初始化失败:{msg}", "failed to initialize inference context: {msg}"));
                     }
-                    // A failed context allocation (incl. a null return from
-                    // llama.cpp) is almost always memory pressure — back off the
-                    // GPU offload and retry rather than giving up.
-                    if layers > 0 {
-                        oom_fallback = true;
-                        eprintln!("context init failed at {layers} gpu layers ({msg}); backing off");
-                        layers = backoff_layers(layers);
-                        continue;
-                    }
-                    if is_oom(&msg) {
-                        bail!(trf!(
-                            "内存不足,无法为该模型分配上下文。换更小的模型,或在设置里调低上下文长度。",
-                            "out of memory while allocating the model context — try a smaller model, or a shorter context in Settings."
-                        ));
-                    }
-                    bail!(trf!("推理上下文初始化失败:{msg}", "failed to initialize inference context: {msg}"));
+                    Err(_) => bail!(trf!(
+                        "推理线程在初始化期间退出",
+                        "the inference thread exited during initialization"
+                    )),
                 }
-                Err(_) => bail!(trf!(
-                    "推理线程在初始化期间退出",
-                    "the inference thread exited during initialization"
-                )),
             }
         };
 
@@ -3816,8 +3823,22 @@ fn fit_n_ctx(model: &LlamaModel, path: &Path, wanted: u32, auto: bool, gpu_layer
 fn free_today_n_ctx(model: &LlamaModel, path: &Path, n_ctx: u32) -> u32 {
     let per_tok = kv_bytes_per_token(model, path);
     match crate::gpu::reclaimable_memory() {
-        Some(free) if per_tok > 0 => n_ctx.min(free_ctx(free, per_tok)),
+        Some(free) if per_tok > 0 => today_ctx(n_ctx, free, per_tok),
         _ => n_ctx,
+    }
+}
+
+/// `n_ctx` while its KV cache at `per_tok` bytes fits in the `free` bytes,
+/// else what they hold beside the headroom (`free_ctx`). The headroom is kept
+/// when there is cutting to do, not taken off a context that fits: free memory
+/// moves a little from one load to the next, and a context that moved with it
+/// would be a little shorter, and said so, every time.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn today_ctx(n_ctx: u32, free: u64, per_tok: u64) -> u32 {
+    if u64::from(n_ctx).saturating_mul(per_tok) <= free {
+        n_ctx
+    } else {
+        n_ctx.min(free_ctx(free, per_tok))
     }
 }
 
@@ -4327,6 +4348,14 @@ mod tests {
         // Less than the headroom: the floor.
         assert_eq!(super::free_ctx(GIB, 64 * 1024), 2048);
         assert_eq!(super::free_ctx(3 * GIB, 100_000) % 256, 0);
+        // A context whose cache fits is left as it is, headroom or not: the
+        // same model the next day, a little less free, loads the same.
+        let per_tok = 144 * 1024;
+        assert_eq!(super::today_ctx(222_976, 222_976 * per_tok, per_tok), 222_976);
+        assert_eq!(super::today_ctx(222_976, 31 * GIB, per_tok), 222_976);
+        // One that does not fit is cut, and the headroom kept.
+        assert_eq!(super::today_ctx(222_976, 20 * GIB, per_tok), 131_072);
+        assert_eq!(super::today_ctx(222_976, 222_976 * per_tok - 1, per_tok), super::free_ctx(222_976 * per_tok - 1, per_tok));
     }
 
     /// The estimate against llama.cpp's own allocation, on real files: each
