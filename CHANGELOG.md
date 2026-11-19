@@ -71,6 +71,17 @@
   memory with it, and Chaty is left with no model rather than half of one. A switch that
   failed or was stopped no longer leaves the chip naming the model that was
   let go before it.
+- **A model loads with the context it settled on last time.** With the
+  context on Auto, the first load of a model on a computer works out how
+  much of it memory holds; later loads start from that — the same length
+  every time, said the first time and not again — where each worked it out
+  anew, and a GGUF the GPU could not give its first context tried that one
+  again and read all its weights once more for every halving. A new build, a
+  new copy of the model, another GPU-layer or speculative setting, or other
+  memory works it out afresh. The memory free that day is weighed all the
+  same, on a Mac too now: with less of it, another program holding some, the
+  context is shorter for that load and says so, and the next is back to the
+  usual one.
 
 ### Code mode
 
@@ -324,6 +335,21 @@
   where they sat centred on its left side, half-way down a long one. In Code
   mode the same, with copy beside rewind.
 
+### Taking a chat elsewhere
+
+- **Export a chat as a PDF**, from the same menu, saved where you choose with
+  no print dialog: laid out as Chaty draws the chat, in the theme you use —
+  its fonts, code colours, tables, formulas and diagrams — with the theme's
+  background edge to edge. It is cut into pages where it reads well: a code
+  block, a picture or a formula moves to the next page whole when it fits on
+  one, a long reply runs on across pages, and code the screen would scroll
+  wraps. Its text can be selected and searched, and it is titled after the
+  chat. On the paper your system uses, A4 or Letter.
+- **A chat exported as a web page prints whole** from the browser it opens
+  in, where it printed its first screen; and it keeps what the app shows —
+  your message's rounded corners, the code theme's background, the answer
+  size, and a theme that follows the system as it looks now.
+
 ### Building against newer engines
 
 - stable-diffusion.cpp's new C API — options set by name, pictures passed as
@@ -382,15 +408,7 @@
 
 - **Export a chat as a web page** — the replies as Chaty draws them, code
   coloured, tables, formulas and diagrams, in the theme you use, without the
-  app's buttons: one file any browser opens, and that prints whole from it.
-- **Export a chat as a PDF**, from the same menu, saved where you choose with
-  no print dialog: laid out as Chaty draws the chat, in the theme you use —
-  its fonts, code colours, tables, formulas and diagrams — with the theme's
-  background edge to edge. It is cut into pages where it reads well: a code
-  block, a picture or a formula moves to the next page whole when it fits on
-  one, a long reply runs on across pages, and code the screen would scroll
-  wraps. Its text can be selected and searched, and it is titled after the
-  chat. On the paper your system uses, A4 or Letter.
+  app's buttons: one file any browser opens.
 
 ## v2.4.1 — Read along (2026-11-12)
 
