@@ -17,10 +17,12 @@ const MARKER_WORDS = [
   "message_model", "message_user", "message_system", "message_tool", "end_message",
   "content_text", "content_thinking", "content_invoke_tool_json", "content_invoke_tool_text",
   "content_model_end_sampling", "content_tool_error", "content_image", "content_xml",
+  // Olala's channels.
+  "channel_start", "channel_end", "content", "im_start", "im_end",
 ];
 const CHANNEL_NAMES = ["analysis", "thought", "thinking", "final"];
 function trimPartialMarker(s: string): string {
-  return trimPartialInklingHeader(trimPartialRecipient(trimPartialTag(s)));
+  return trimPartialOlalaHeader(trimPartialInklingHeader(trimPartialRecipient(trimPartialTag(s))));
 }
 
 /// Inkling opens a block with `<|message_model|>` and only then says what it
@@ -39,6 +41,14 @@ function trimPartialInklingHeader(s: string): string {
 /// Only where a span can actually open — the head of the stream, or straight
 /// after `<|start|>assistant` — so a reply that ends on a literal `to=…` (a
 /// URL parameter, say) keeps its text instead of losing it to this rule.
+/// Olala opens a channel with `<|channel_start|>`, names it in plain text and
+/// only then starts it with `<|content|>`. Until then the name is protocol:
+/// shown, a `final` or `tools` flashed up as answer text.
+function trimPartialOlalaHeader(s: string): string {
+  const m = /<\|channel_start\|>[a-z_]*$/.exec(s);
+  return m ? s.slice(0, m.index) : s;
+}
+
 function trimPartialRecipient(s: string): string {
   const m = /(?:^|(<[|｜]start[|｜]>[ \t]*assistant))[ \t]*to=[\w.*-]*$/.exec(s);
   if (!m) return s;
@@ -86,6 +96,9 @@ export function withoutToolCallSpans(s: string): string {
   return s
     // Inkling's call block: the tool's name, its marker and the JSON.
     .replace(/(?:<\|message_model\|>)?[\w.-]*<\|content_invoke_tool_(?:json|text)\|>[\s\S]*?(?:<\|end_message\|>|$)/g, "")
+    // Olala's tools channel: `<toolcalls><call …>…</call></toolcalls>`.
+    .replace(/<\|channel_start\|>tools<\|content\|>[\s\S]*?(?:<\|channel_end\|>|$)/g, "")
+    .replace(/<toolcalls>[\s\S]*?(?:<\/toolcalls>|$)/g, "")
     .replace(/<[|｜]tool_call_start[|｜]>[\s\S]*?(?:<[|｜]tool_call_end[|｜]>|$)/gi, "")
     // K2 Horizon's call block, and a bare call without the block around it.
     .replace(/<ifm[|｜]tool_calls>[\s\S]*?(?:<\/ifm[|｜]tool_calls>|$)/gi, "")
@@ -107,7 +120,7 @@ export function normalizeChannels(s: string): string {
   // pipe — a plain `<think>` is the Qwen convention this function's OUTPUT
   // uses and must pass through untouched.
   if (
-    !/<[|｜]?(channel|turn)\b|\b(channel|turn)[|｜]>|<(?:[|｜](?:think|message|end|return|start|eom|eot)|(?:think|message|end|return|start|eom|eot)[|｜])|\bto=[\w.*-]+[ \t]*<[|｜]message[|｜]>|<\/?[a-z0-9]+[|｜]think|<\|(?:content_|end_message)/i.test(
+    !/<[|｜]?(channel|turn)\b|\b(channel|turn)[|｜]>|<(?:[|｜](?:think|message|end|return|start|eom|eot)|(?:think|message|end|return|start|eom|eot)[|｜])|\bto=[\w.*-]+[ \t]*<[|｜]message[|｜]>|<\/?[a-z0-9]+[|｜]think|<\|(?:content_|end_message|channel_start\|>|channel_end\|>)/i.test(
       held,
     )
   )
@@ -121,6 +134,16 @@ export function normalizeChannels(s: string): string {
     .replace(/(?:<\|message_model\|>)?<\|content_text\|>/g, FINAL)
     .replace(/<\|end_message\|>/g, END)
     .replace(/<\|(?:message_model|content_model_end_sampling)\|>/g, "")
+    // Olala writes a turn in named channels — `<|channel_start|>NAME<|content|>`
+    // to `<|channel_end|>`: its reasoning in `analysis`, the answer in `final`,
+    // calls in `tools` (shown nowhere; kept in the record). A turn with thinking
+    // off opens on an empty analysis channel.
+    .replace(/<\|channel_start\|>analysis<\|content\|>/g, THINK)
+    .replace(/<\|channel_start\|>final<\|content\|>/g, FINAL)
+    .replace(/<\|channel_start\|>tools<\|content\|>[\s\S]*?(?:<\|channel_end\|>|$)/g, "")
+    .replace(/<\|channel_start\|>[a-z_]*<\|content\|>/g, FINAL)
+    .replace(/<\|channel_end\|>/g, END)
+    .replace(/<\|im_(?:start|end)\|>/g, "")
     // Namespaced reasoning tags: K2 Horizon writes `<ifm|think>…</ifm|think>`
     // and, at lower effort, `think_fast` / `think_faster` spans. They are the
     // plain `<think>` convention under another name, so they become exactly

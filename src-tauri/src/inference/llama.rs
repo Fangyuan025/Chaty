@@ -521,6 +521,29 @@ fn no_thought(model: &LlamaModel, think: Option<bool>) -> Vec<LlamaToken> {
     }
 }
 
+/// Olala's template: a turn is named channels (see `is_olala_template`).
+fn is_olala(model: &LlamaModel) -> bool {
+    model
+        .meta_val_str("tokenizer.chat_template")
+        .map(|t| super::is_olala_template(&t))
+        .unwrap_or(false)
+}
+
+/// What an Olala generation prompt ends on, opened for the model: its
+/// analysis channel, and with thinking off that channel closed empty — as its
+/// template writes it for the `disabled` rung. The stream begins with it, so
+/// the turn goes back as the cache holds it.
+fn olala_opened(prompt: &str) -> String {
+    let closed = format!("{}<|channel_end|>", super::OLALA_ANALYSIS);
+    if prompt.ends_with(&closed) {
+        closed
+    } else if prompt.ends_with(super::OLALA_ANALYSIS) {
+        super::OLALA_ANALYSIS.to_string()
+    } else {
+        String::new()
+    }
+}
+
 /// Inkling's template: a turn is blocks of thought, text and calls.
 fn is_inkling(model: &LlamaModel) -> bool {
     model
@@ -1782,6 +1805,8 @@ fn run_turn(
     // the thought stands from it and the text generated after.
     let opened = if req.params.think == Some(false) && is_inkling(model) {
         INKLING_NO_THOUGHT.to_string()
+    } else if is_olala(model) {
+        olala_opened(&prompt)
     } else {
         preopened_think_tag(&prompt).map(|tag| opened_think_text(&prompt, tag)).unwrap_or_default()
     };
@@ -2975,9 +3000,22 @@ fn build_prompt_pair(
     // `INKLING_NO_THOUGHT`), the rung left as it was — a step with thinking
     // off that rewrote it changed the conversation's first tokens, and on a
     // model with recurrent state that is all of its cache gone.
+    //
+    // Olala has no switch either: its rung, `disabled` to `high`, is the
+    // system block's first line, and only `disabled` keeps it from reasoning —
+    // its analysis channel closed with the rung left as it was, it reasons in
+    // the answer instead ("17 * 23 = 391 … But the user asked…"). Turning it
+    // off rewrites the head of the conversation, and the next turn reads the
+    // conversation again; a conversation that keeps its setting reuses all of
+    // the last.
+    let olala = is_olala(model);
     let kw = super::jinja::Kwargs {
         enable_thinking: think,
-        reasoning_effort: effort.filter(|_| think != Some(false) || is_inkling(model)),
+        reasoning_effort: if olala && think == Some(false) {
+            Some("disabled")
+        } else {
+            effort.filter(|_| think != Some(false) || is_inkling(model))
+        },
     };
     let body = render_chat_with(model, messages, false, kw).unwrap_or_default();
     let mut prompt = render_chat_with(model, messages, true, kw)?;
@@ -3282,6 +3320,11 @@ pub(crate) fn effort_levels_of(template: &str) -> Vec<String> {
     }
     if !template.contains("reasoning_effort") {
         return Vec::new();
+    }
+    // Olala writes its rung into a sentence — `Reasoning effort: <rung>` —
+    // naming only the default; the others are its model card's.
+    if super::is_olala_template(template) {
+        return ["low", "medium", "high"].iter().map(|s| s.to_string()).collect();
     }
     // The rungs the template names, whichever of the four it offers: Qwen3.8
     // takes low/medium/xhigh, K2 Horizon and gpt-oss low/medium/high.

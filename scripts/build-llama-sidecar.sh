@@ -27,7 +27,9 @@ if [[ -n "${CHATY_LLAMA_REV:-}" ]]; then
     # upstream: one upstream already has is skipped, and one that no longer
     # applies fails the build — a pack without the fix would replace the
     # bundled engine that has it. A commit marked `Chaty-Carry: optional` (a
-    # speed-up, never a fix of results) is left out instead.
+    # speed-up, or an architecture upstream does not have yet, whose models then
+    # fall back to the bundled engine — never a fix of results) is left out
+    # instead.
     CARRY_TIP=$(git -C "$SUB" rev-parse HEAD)
     git -C "$SUB" fetch --quiet https://github.com/ggml-org/llama.cpp master
     UPSTREAM=$(git -C "$SUB" rev-parse FETCH_HEAD)

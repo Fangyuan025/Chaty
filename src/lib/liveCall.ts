@@ -83,6 +83,7 @@ export function callingName(raw: string): string | null {
     /<function\s+name\s*=\s*["']?([\w.-]+)["'\s>]/.exec(s) ??
     /<ifm\|tool_call>\s*([A-Za-z_][\w.-]*)\s/.exec(s) ??
     /^(?:<\|message_model\|>)?([\w.-]+)<\|content_invoke_tool_json\|>/.exec(s) ??
+    OLALA_CALL_HEAD.exec(s) ??
     /^<tool_call>\s*([A-Za-z_][\w.-]*)\s*(?:<arg_key>|<\/tool_call>)/.exec(s);
   return m ? m[1] : "";
 }
@@ -582,6 +583,8 @@ function partialEdits(src: string): LiveEdit[] {
 }
 
 const INKLING_CALL_HEAD = /^(?:<\|message_model\|>)?([\w.-]+)<\|content_invoke_tool_json\|>/;
+/** Olala's call as its tools channel holds it, up to where the arguments begin. */
+const OLALA_CALL_HEAD = /^(?:<\|channel_start\|>tools<\|content\|>)?\s*<toolcalls>\s*<call\b[^>]*>\s*<name>\s*([\w.-]+)\s*<\/name>\s*<arguments>/;
 
 /** The file write or edit being written at the end of `raw`, as far as it has
  *  got; null when the output is not (yet) such a call. */
@@ -617,6 +620,14 @@ export function liveFileCall(raw: string): LiveView | null {
     if (!head || !LIVE_TOOLS.has(head[1])) return null;
     name = head[1];
     const end = s.indexOf("<|end_message|>", head[0].length);
+    args = jsonArgs(s.slice(head[0].length, end === -1 ? undefined : end).trimStart()).args;
+  } else if (OLALA_CALL_HEAD.test(s)) {
+    // Olala: `<toolcalls><call …><name>NAME</name><arguments>{…}` in its tools
+    // channel, the arguments a JSON object of their own.
+    const head = OLALA_CALL_HEAD.exec(s);
+    if (!head || !LIVE_TOOLS.has(head[1])) return null;
+    name = head[1];
+    const end = s.indexOf("</arguments>", head[0].length);
     args = jsonArgs(s.slice(head[0].length, end === -1 ? undefined : end).trimStart()).args;
   } else if (s.startsWith("<|tool_call_start|>")) {
     const head = /^<\|tool_call_start\|>\s*\[?\s*([\w.-]+)\s*\(/.exec(s);

@@ -10,11 +10,12 @@
  *    ifm    K2 Horizon        <ifm|tool_calls>\n<ifm|tool_call>name\n<ifm|arg_key>key</ifm|arg_key>\n<ifm|arg_value>value</ifm|arg_value>\n</ifm|tool_call>\n</ifm|tool_calls>
  *    glm    GLM-4.5/4.6/4.7   <tool_call>name\n<arg_key>key</arg_key>\n<arg_value>value</arg_value>\n</tool_call>
  *    inkling Inkling 2        <|message_model|>name<|content_invoke_tool_json|>{"name":"name","args":{…}}<|end_message|>
+ *    olala  Olala             <|channel_start|>tools<|content|><toolcalls><call id="call_1"><name>name</name><arguments>{…}</arguments></call></toolcalls><|channel_end|>
  *
  *  Every format is always PARSED; this decides what the prompt and every
  *  correction teach, so none of them teaches a model a format it was not
  *  trained on. Set at the start of each turn. */
-export type CallFormat = "json" | "xml" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm" | "inkling";
+export type CallFormat = "json" | "xml" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm" | "inkling" | "olala";
 
 let format: CallFormat = "json";
 
@@ -71,6 +72,13 @@ export function callRule(zh: boolean, f: CallFormat): string {
       return zh
         ? '- 每次只调用一个工具。想清楚要做什么之后,用你自己的工具调用块写出这一个调用:工具名,然后是 JSON {"name":"工具名","args":{"参数名":"参数值"}}——写完就立即停止,调用之后不要再写任何文字,也不要写第二个调用。\n  必填参数一个都不能少;args 是一个 JSON 对象。'
         : '- Call ONE tool at a time. Think it through, then write the one call as your own tool-call block: the tool\'s name, then the JSON {"name":"tool_name","args":{"argument_name":"value"}} — and STOP immediately: nothing after the call, and no second call.\n  Every required argument must be there; args is a JSON object.';
+    case "olala":
+      // The channel is opened and closed by special tokens, which would be read
+      // as tokens here too — so the rule names the channel and writes only the
+      // call inside it, which is plain text.
+      return zh
+        ? '- 每次只调用一个工具。想清楚要做什么之后,在你的 tools 频道里写出这一个调用:<toolcalls><call id="call_1"><name>工具名</name><arguments>{"参数名": "参数值"}</arguments></call></toolcalls>——写完就立即停止,调用之后不要再写任何文字,也不要写第二个调用。\n  必填参数一个都不能少;arguments 是一个 JSON 对象。'
+        : '- Call ONE tool at a time. Think it through, then write the one call in your tools channel: <toolcalls><call id="call_1"><name>tool_name</name><arguments>{"argument_name": "value"}</arguments></call></toolcalls> — and STOP immediately: nothing after the call, and no second call.\n  Every required argument must be there; arguments is a JSON object.';
     default:
       return zh
         ? '- 每次只调用一个工具。想清楚要做什么之后,输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 就立即停止——调用之后不要再写任何文字,也不要写第二个调用。'
@@ -88,6 +96,9 @@ export function callClosers(f: CallFormat): string[] {
   return f === "minicpm" ? [...CALL_CLOSERS, "</function>"] : [...CALL_CLOSERS];
 }
 
+/** Olala's tools channel opener — its calls sit inside it. */
+const OLALA_TOOLS = "<|channel_start|>tools<|content|>";
+
 // Inner before outer: K2's call closes, then the block around it — with the
 // newline its template writes before the block's closer.
 const CALL_PAIRS: [string, string][] = [
@@ -99,6 +110,9 @@ const CALL_PAIRS: [string, string][] = [
   ["<function name=", "</function>"],
   ["<|message_model|>", "<|end_message|>"],
   ["<|content_invoke_tool_json|>", "<|end_message|>"],
+  [OLALA_TOOLS, "<|channel_end|>"],
+  ["<call id=", "</call>"],
+  ["<toolcalls>", "</toolcalls>"],
 ];
 
 /** Where the first tool call in a model's output begins, in any format; -1
@@ -111,7 +125,17 @@ export function callStart(text: string): number {
   }
   const ink = inklingCallStart(text);
   if (ink !== -1 && (at === -1 || ink < at)) at = ink;
+  const ol = olalaCallStart(text);
+  if (ol !== -1 && (at === -1 || ol < at)) at = ol;
   return at;
+}
+
+/** Where an Olala call begins — its tools channel, or the `<toolcalls>` it
+ *  holds when the channel's opener is not there — or -1. */
+function olalaCallStart(text: string): number {
+  const c = text.indexOf(OLALA_TOOLS);
+  if (c !== -1) return c;
+  return text.indexOf("<toolcalls>");
 }
 
 const INKLING_CALL = "<|content_invoke_tool_json|>";
@@ -156,6 +180,7 @@ export function closeOpenCalls(turn: string): string {
 /** The format a call in a model's output was written in. */
 export function formatOf(text: string): CallFormat {
   if (text.includes(INKLING_CALL)) return "inkling";
+  if (text.includes("<toolcalls>") || text.includes(OLALA_TOOLS)) return "olala";
   if (text.includes("<ifm|tool_call")) return "ifm";
   if (/<tool_call>\s*[A-Za-z_][\w.-]*\s*(?:<arg_key>|<\/tool_call>)/.test(text)) return "glm";
   if (/<function\s+name\s*=/.test(text)) return "minicpm";
@@ -190,6 +215,8 @@ export function renderCall(name: string, args: Record<string, unknown>, f: CallF
         .join("")}</tool_call>`;
     case "inkling":
       return `${INKLING_HEADER}${name}${INKLING_CALL}${JSON.stringify({ name, args })}<|end_message|>`;
+    case "olala":
+      return `${OLALA_TOOLS}<toolcalls><call id="call_1"><name>${name}</name><arguments>${JSON.stringify(args)}</arguments></call></toolcalls><|channel_end|>`;
     case "ifm":
       return `<ifm|tool_calls>\n<ifm|tool_call>${name}\n${entries
         .map(([k, v]) => `<ifm|arg_key>${k}</ifm|arg_key>\n<ifm|arg_value>${typeof v === "string" ? v : JSON.stringify(v)}</ifm|arg_value>\n`)
@@ -223,6 +250,8 @@ export function oneCall(zh: boolean): string {
       return zh ? '一个 <function name="工具名">…</function> 工具调用' : 'one <function name="tool_name">…</function> tool call';
     case "inkling":
       return zh ? '一个工具调用块(工具名,然后 {"name":…,"args":{…}})' : 'one tool-call block (the tool\'s name, then {"name":…,"args":{…}})';
+    case "olala":
+      return zh ? "tools 频道里的一个 <toolcalls><call …>…</call></toolcalls> 工具调用" : "one <toolcalls><call …>…</call></toolcalls> tool call in your tools channel";
     default:
       return zh
         ? '一行 <tool_call>{"name":"...","arguments":{...}}</tool_call>'
@@ -281,6 +310,8 @@ export function callExample(name: string, json: string, f: CallFormat = format):
         .join("")}</ifm|tool_call>`;
     case "inkling":
       return JSON.stringify({ name, args: o });
+    case "olala":
+      return `<call id="call_1"><name>${name}</name><arguments>${json}</arguments></call>`;
     default:
       return `${name} ${json}`;
   }
@@ -331,6 +362,8 @@ export function argsExample(json: string): string {
       return entries.map(([k, v]) => `<param name="${k}">${minicpmValue(v)}</param>`).join("");
     case "inkling":
       return `"args": ${json}`;
+    case "olala":
+      return `<arguments>${json}</arguments>`;
   }
   return `arguments: ${json}`;
 }

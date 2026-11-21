@@ -885,7 +885,7 @@ ${toolsDoc}
 
 调用规则(务必严格遵守):
 ${callRule(true, toolFormat)}
-- 系统会把结果以 <tool_result>...</tool_result> 返回给你,你再继续。
+${toolFormat === "olala" ? "- 系统会把结果作为一条工具消息返回给你,你再继续。" : "- 系统会把结果以 <tool_result>...</tool_result> 返回给你,你再继续。"}
 - 没有"当前目录"的概念:每条 bash 都是从工作区根目录启动的全新 shell,单独的 cd 不会保留到下一条命令。访问子目录请直接用相对路径,或在同一条命令内组合(cd src && npm test)。${shellNote}
 - 修改代码前,先用 outline 看文件结构、read_file / grep / list_dir 了解现状;改完可用 bash 跑测试/构建验证。
 - 读大文件别从头翻到尾:先用 search_code / grep 定位到相关位置,再用 read_file 带 offset/limit 只读需要的区段。
@@ -907,7 +907,7 @@ ${toolsDoc}
 
 Rules (follow strictly):
 ${callRule(false, toolFormat)}
-- You'll get the result as <tool_result>...</tool_result>, then continue.
+${toolFormat === "olala" ? "- You'll get the result back in a tool message, then continue." : "- You'll get the result as <tool_result>...</tool_result>, then continue."}
 - There is NO persistent working directory: every bash command starts a fresh shell at the workspace root, so a lone cd does NOT carry over. Use relative paths directly or combine in one command (cd src && npm test).${shellNote}
 - Before editing, understand the code with read_file / grep / list_dir; after editing, you can run tests/builds with bash.
 - Commands that don't exit quickly (dev servers, npm run dev, long builds) MUST run via bash_bg; check they started with bg_output, and bg_kill them when done.
@@ -1462,6 +1462,22 @@ export function parseInklingCall(text: string): ToolCall | null {
   return { name: name as AgentToolName, args: args as Record<string, unknown> };
 }
 
+/** Olala's call, in its tools channel: `<toolcalls><call id="…"><name>NAME</name>`
+ *  `<arguments>{…}</arguments></call></toolcalls>` — the arguments a JSON
+ *  object. The first call is the one taken. Exported for tests. */
+export function parseOlalaCall(text: string): ToolCall | null {
+  const m = /<call\b[^>]*>\s*<name>\s*([\w.-]+)\s*<\/name>\s*<arguments>([\s\S]*?)(?:<\/arguments>|$)/.exec(text);
+  if (!m) return null;
+  let o: unknown;
+  try {
+    o = JSON.parse(m[2].trim() || "{}");
+  } catch {
+    return null;
+  }
+  if (!o || typeof o !== "object" || Array.isArray(o)) return null;
+  return { name: m[1] as AgentToolName, args: o as Record<string, unknown> };
+}
+
 /** What to tell a model whose tool call could not be parsed: what broke and
  *  where, and — from the second failure in a row — a smaller way to make the
  *  change. The note used to say only "not valid", and the model wrote the
@@ -1475,7 +1491,11 @@ export function describeInvalidCall(raw: string, streak: number, lang: "zh" | "e
   if (closed) body = body.slice(0, closeAt);
   body = body.trim();
   let what: string;
-  if (raw.includes("<|content_invoke_tool_json|>")) {
+  if (raw.includes("<toolcalls>") || raw.includes("<|channel_start|>tools")) {
+    what = zh
+      ? '它是你 tools 频道里的调用,但格式不对或没写完整:要写成 <call id="call_1"><name>工具名</name><arguments>{…}</arguments></call>,arguments 是一个包含全部参数的完整 JSON 对象。'
+      : 'it is a call in your tools channel, but malformed or unfinished: it must be <call id="call_1"><name>tool_name</name><arguments>{…}</arguments></call>, with arguments one whole JSON object holding every argument.';
+  } else if (raw.includes("<|content_invoke_tool_json|>")) {
     what = zh
       ? "它是你的工具调用块,但里面的 JSON 不对或没写完整:要是一个完整的 JSON 对象,有工具的 name,和放全部参数的 args 对象。"
       : "it is your tool-call block, but its JSON is malformed or unfinished: it must be one whole JSON object, with the tool's name and an args object holding every argument.";
@@ -1912,6 +1932,12 @@ function parseAnyCall(text: string): ToolCall | null {
     const ink = parseInklingCall(text);
     if (ink) return ink;
   }
+  // Olala's: `<call …><name>…</name><arguments>{…}</arguments></call>` in its
+  // tools channel.
+  if (text.includes("<toolcalls>") || /<call\b[^>]*>\s*<name>/.test(text)) {
+    const ol = parseOlalaCall(text);
+    if (ol) return ol;
+  }
   // K2 Horizon's own format — its markers are special tokens no other format
   // writes.
   if (text.includes("<ifm|tool_call>")) {
@@ -2061,6 +2087,15 @@ function parseAnyCall(text: string): ToolCall | null {
 export function parseBareJsonCall(text: string): ToolCall | null {
   const closeAt = text.lastIndexOf("</think>");
   let t = (closeAt === -1 ? text : text.slice(closeAt + "</think>".length)).trim();
+  // Olala's answer is its final channel; the reasoning before it is the
+  // analysis one, which no `</think>` closes.
+  const finalAt = t.lastIndexOf("<|channel_start|>final<|content|>");
+  if (finalAt !== -1) {
+    t = t.slice(finalAt + "<|channel_start|>final<|content|>".length);
+    const end = t.indexOf("<|channel_end|>");
+    if (end !== -1) t = t.slice(0, end);
+    t = t.trim();
+  }
   t = t.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   if (!t.startsWith("{") || !t.endsWith("}")) return null;
   let obj: Record<string, unknown>;
@@ -2069,11 +2104,22 @@ export function parseBareJsonCall(text: string): ToolCall | null {
   } catch {
     return null;
   }
+  const isArgs = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
   const name = obj?.name;
-  if (typeof name !== "string" || !NATIVE_TOOL_NAMES.includes(name as AgentToolName)) return null;
+  if (typeof name !== "string") {
+    // The tool as the object's one key, its arguments the value:
+    // `{"bash": {"command": "sed -i …"}}` (Olala 7A1B, in place of its own
+    // format). Only a native tool's name, and only alone.
+    const keys = Object.keys(obj ?? {});
+    if (keys.length === 1 && NATIVE_TOOL_NAMES.includes(keys[0] as AgentToolName) && isArgs(obj[keys[0]])) {
+      return { name: keys[0] as AgentToolName, args: obj[keys[0]] as Record<string, unknown> };
+    }
+    return null;
+  }
+  if (!NATIVE_TOOL_NAMES.includes(name as AgentToolName)) return null;
   const args = obj.arguments ?? obj.parameters;
-  if (!args || typeof args !== "object" || Array.isArray(args)) return null;
-  return { name: name as AgentToolName, args: args as Record<string, unknown> };
+  if (!isArgs(args)) return null;
+  return { name: name as AgentToolName, args };
 }
 
 const asStr = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
@@ -2262,8 +2308,20 @@ export function codeNames(text: string): string[] {
     const w = m[0];
     if (/[a-z][A-Z]/.test(w) || /[A-Za-z]_[A-Za-z]/.test(w)) out.add(w);
   }
-  return [...out].filter((w) => !(NATIVE_TOOL_NAMES as readonly string[]).includes(w)).slice(0, 3);
+  return [...out]
+    .filter((w) => !(NATIVE_TOOL_NAMES as readonly string[]).includes(w) && !PROTOCOL_WORDS.has(w.toLowerCase()))
+    .slice(0, 3);
 }
+
+/** The loop's and the call formats' own words, which a model's reasoning
+ *  mentions and no workspace holds — looked up, `tool_result` came back as
+ *  "appears nowhere in the workspace — write it if you need it", and the model
+ *  that had just written a result of its own was told to write more. */
+const PROTOCOL_WORDS = new Set([
+  "tool_result", "tool_results", "tool_call", "tool_calls", "tool_use", "tool_output", "tool_name",
+  "arg_key", "arg_value", "function_call", "function_calls", "call_id", "tool_call_id",
+  "channel_start", "channel_end", "content_invoke_tool_json", "message_model", "end_message",
+]);
 
 /** Where what the model is reading a file again for actually is. Issue #25:
  *  a 9B read the whole of a 22-line game.js, then read it again and again,
@@ -4067,6 +4125,8 @@ export async function runAgentTurn(
   let obsStreak = 0;
   let obsHintsShown = 0;
   let planProseIntercepts = 0;
+  /** Answers held back for a tool result the model wrote itself. */
+  let forgedResultIntercepts = 0;
   let permHintsShown = 0;
   // Functional receipts (owner spec: compiling + launching is the entry
   // ticket, not the bar — every basic function must be EXECUTED before
@@ -4834,6 +4894,25 @@ export async function runAgentTurn(
           }
           if (again || invalidStreak >= 2) hotNext = true;
           pushUser(describeInvalidCall(raw, invalidStreak, lang));
+          continue;
+        }
+        // ── Forged-result breaker ── an "answer" that holds a tool result
+        // the model wrote itself: it read the file, then answered with
+        // `<tool_result name="edit_file">// config.json edited: port changed…`
+        // and never called the tool. The result envelope is the loop's own;
+        // in a model's answer it is a result nothing produced, and the task
+        // ended on a change that was never made (Olala 7A1B, 2 runs in 3).
+        // Held back twice at most: run the call it imagined, or answer plainly.
+        if (answer && /<tool_result\b/.test(answer) && forgedResultIntercepts < 2 && step < maxSteps - 1) {
+          forgedResultIntercepts++;
+          storeAssistantTurn(messages, raw, opts.reasoningField);
+          pushUser(
+            lang === "zh"
+              ? "你刚才自己写了一段工具结果(<tool_result>…),但工具结果只会在你真正调用工具之后由系统返回——你写的那段并没有执行,文件也没有变。如果还需要改动,现在就发" + callTag(true) + " 去执行;如果任务确实已经完成,直接给出最终总结,不要再写 <tool_result>。"
+              : "You just wrote a tool result yourself (<tool_result>…), but results only come back from the system after you actually call a tool — what you wrote did not run, and nothing changed. If a change is still needed, issue " + callTag(false) + " now to make it; if the task is genuinely complete, give the final summary without writing <tool_result>.",
+          );
+          cb.onThinking("");
+          cb.onAssistantText("");
           continue;
         }
         // ── Plan-prose final breaker ── an "answer" that opens with

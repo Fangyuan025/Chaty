@@ -90,6 +90,16 @@ pub fn think_closer(text: &str) -> Option<String> {
     open_thought(text).map(|(_, close)| close)
 }
 
+/// Olala's reasoning channel as its generation prompt opens it.
+pub(crate) const OLALA_ANALYSIS: &str = "<|channel_start|>analysis<|content|>";
+
+/// Olala's template: a turn is named channels — `analysis`, `final`, `tools` —
+/// each `<|channel_start|>NAME<|content|>` to `<|channel_end|>`, its calls
+/// `<toolcalls>` inside the tools one.
+pub fn is_olala_template(template: &str) -> bool {
+    template.contains("<|channel_start|>") && template.contains("<toolcalls>")
+}
+
 /// The thought `text` is in, as [`think_closer`] finds it: where its opener
 /// begins, and what closes it.
 pub fn open_thought(text: &str) -> Option<(usize, String)> {
@@ -146,6 +156,12 @@ pub fn open_thought(text: &str) -> Option<(usize, String)> {
     if let Some(at) = open_at("<|content_thinking|>", &["<|end_message|>"]) {
         offer(at, "<|end_message|><|message_model|><|content_text|>".into());
     }
+    // Olala: named channels, `<|channel_start|>NAME<|content|>` to
+    // `<|channel_end|>`; the thought is the analysis channel and the answer
+    // the final one.
+    if let Some(at) = open_at(OLALA_ANALYSIS, &["<|channel_end|>"]) {
+        offer(at, "<|channel_end|><|channel_start|>final<|content|>".into());
+    }
     best
 }
 
@@ -172,6 +188,10 @@ mod think_closer_tests {
             think_closer("<|message_model|><|content_thinking|>plan").as_deref(),
             Some("<|end_message|><|message_model|><|content_text|>")
         );
+        assert_eq!(
+            think_closer("<|channel_start|>analysis<|content|>plan").as_deref(),
+            Some("<|channel_end|><|channel_start|>final<|content|>")
+        );
     }
 
     #[test]
@@ -191,6 +211,12 @@ mod think_closer_tests {
             think_closer("<|message_model|><|content_thinking|>plan<|end_message|><|message_model|><|content_text|>4"),
             None
         );
+        assert_eq!(
+            think_closer("<|channel_start|>analysis<|content|>plan<|channel_end|><|channel_start|>final<|content|>4"),
+            None
+        );
+        // Thinking off: the analysis channel opened empty and closed at once.
+        assert_eq!(think_closer("<|channel_start|>analysis<|content|><|channel_end|><|channel_start|>final<|content|>"), None);
     }
 
     #[test]
@@ -881,6 +907,10 @@ pub fn native_tool_format(template: &str) -> Option<&'static str> {
     // `<|content_invoke_tool_json|>` before `{"name":…,"args":{…}}`.
     if template.contains("<|content_invoke_tool_json|>") {
         Some("inkling")
+    } else if is_olala_template(template) {
+        // Olala: `<toolcalls><call id=…><name>…</name><arguments>{…}</arguments>`
+        // in a tools channel — before XML and JSON, whose tags it does not use.
+        Some("olala")
     } else if template.contains("<ifm|tool_call>") {
         // K2 Horizon: `<ifm|tool_call>name` + `<ifm|arg_key>`/`<ifm|arg_value>`
         // pairs, all special tokens of its own.
@@ -928,6 +958,10 @@ mod tool_format_tests {
         let minicpm5 = "{{- '<function name=\"' ~ tool_call.name ~ '\">' }}{{- '<param name=\"' ~ param_name ~ '\">' }}";
         assert_eq!(native_tool_format(minicpm5), Some("minicpm"));
         let inkling = "{{- \"<|message_model|>\" ~ fn.name ~ \"<|content_invoke_tool_json|>\" -}}";
+        // Olala, verbatim: its calls are XML tags inside a channel of special
+        // tokens — and `<call>` has nothing of XML's `<function=`.
+        let olala = "<|im_start|>{{ message.role }}<|channel_start|>tools<|content|>{{ format_all_tool_calls(message.tool_calls) }}<|channel_end|><|im_end|>{%- macro format_all_tool_calls(tool_calls) -%}<toolcalls>{%- for tool_call in tool_calls -%}<call id=\"{{ tool_call_id }}\"><name>{{ tool_call.name }}</name></call>{%- endfor -%}</toolcalls>{%- endmacro -%}";
+        assert_eq!(native_tool_format(olala), Some("olala"));
         assert_eq!(native_tool_format(inkling), Some("inkling"));
         assert_eq!(native_tool_format("{% for m in messages %}{{ m.content }}{% endfor %}"), None);
     }

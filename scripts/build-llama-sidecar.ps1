@@ -31,7 +31,9 @@ if ($env:CHATY_LLAMA_REV) {
     # upstream: one upstream already has is skipped, and one that no longer
     # applies fails the build — a pack without the fix would replace the
     # bundled engine that has it. A commit marked `Chaty-Carry: optional` (a
-    # speed-up, never a fix of results) is left out instead.
+    # speed-up, or an architecture upstream does not have yet, whose models then
+    # fall back to the bundled engine — never a fix of results) is left out
+    # instead.
     $carryTip = (git -C $sub rev-parse HEAD).Trim()
     git -C $sub fetch --quiet https://github.com/ggml-org/llama.cpp master
     if ($LASTEXITCODE -ne 0) { throw "upstream llama.cpp not reachable" }

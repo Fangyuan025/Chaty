@@ -36,6 +36,9 @@ pub struct Compiled {
     /// Inkling's: a turn is blocks of thought, text and calls, and the
     /// template builds them from structured fields (see `inkling_turn`).
     inkling: bool,
+    /// Olala's: a turn is named channels, which the template builds from
+    /// structured fields too (see `olala_raw`).
+    olala: bool,
 }
 
 /// One message as a template sees it.
@@ -75,6 +78,7 @@ impl Compiled {
             eos: eos.to_string(),
             keeps_thinking_on_request: source.contains("preserve_thinking"),
             inkling: source.contains("<|message_model|>") && source.contains("<|content_invoke_tool_json|>"),
+            olala: super::is_olala_template(source),
         })
     }
 
@@ -97,8 +101,13 @@ impl Compiled {
             tool_calls: Option<Vec<serde_json::Value>>,
             #[serde(skip_serializing_if = "Option::is_none")]
             name: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            tool_call_id: Option<String>,
         }
         let mut last_call: Option<String> = None;
+        // Olala's calls of the last assistant turn, `(id, name)`, which the
+        // tool results after it answer in order.
+        let mut olala_calls: std::collections::VecDeque<(String, String)> = Default::default();
         // Inkling's turns go back as the model wrote them, spliced in where
         // the template puts a stand-in (see `inkling_turn`).
         let mut spliced: Vec<(String, String)> = Vec::new();
@@ -112,6 +121,7 @@ impl Compiled {
                     reasoning_content: t.reasoning.map(Into::into),
                     tool_calls: None,
                     name: None,
+                    tool_call_id: None,
                 };
                 if self.inkling && t.role == "assistant" {
                     let blocks = inkling_turn(t.content);
@@ -138,6 +148,28 @@ impl Compiled {
                     }
                 } else if self.inkling && t.role == "tool" {
                     m.name = last_call.clone();
+                } else if self.olala && t.role == "assistant" {
+                    if let Some(raw) = olala_raw(t.content) {
+                        olala_calls = olala_call_ids(raw).into();
+                        let stand_in = format!("\u{F8FF}chaty-turn-{i}\u{F8FF}");
+                        spliced.push((
+                            format!("{}<|channel_end|><|channel_start|>final<|content|>{stand_in}<|channel_end|>", super::OLALA_ANALYSIS),
+                            raw.to_string(),
+                        ));
+                        m.content = stand_in.into();
+                        m.reasoning_content = None;
+                    }
+                } else if self.olala && t.role == "tool" {
+                    // The template heads a result with the call it answers,
+                    // `{"name": …, "id": …}`; without them, `{}`.
+                    if let Some((id, name)) = olala_calls.pop_front() {
+                        m.name = Some(name);
+                        m.tool_call_id = Some(id);
+                    }
+                    // Its own tool_output channel holds the result; Chaty's
+                    // envelope around it is one more thing to imitate, and
+                    // Olala did — answering with `<tool_result>`s it wrote.
+                    m.content = olala_result_body(t.content).into();
                 }
                 Value::from_serialize(m)
             })
@@ -256,6 +288,55 @@ pub fn inkling_raw(content: &str) -> Option<&str> {
     let raw = content.trim_end();
     let raw = raw.strip_suffix("<|content_model_end_sampling|>").unwrap_or(raw);
     (raw.starts_with("<|message_model|>") && raw.contains("<|end_message|>")).then_some(raw)
+}
+
+/// An Olala turn as it goes back to the model: its channels exactly as it
+/// wrote them, less the turn's end, which the template writes after the turn.
+/// Rebuilt by the template a call came back with the template's own id
+/// (`call_0`) and `tojson`'s spacing, and its state is partly recurrent (Mamba
+/// layers), so a turn that is not the one in its cache to the token is the
+/// whole cache read again. `None` for a turn with no channels in it (one
+/// another model wrote), which the template renders as an answer.
+pub fn olala_raw(content: &str) -> Option<&str> {
+    let raw = content.trim_end();
+    let raw = raw.strip_suffix("<|im_end|>").unwrap_or(raw);
+    raw.starts_with("<|channel_start|>").then_some(raw)
+}
+
+/// A tool result as Olala's tool_output channel takes it: what Chaty's
+/// `<tool_result name="…">` envelope holds, the envelope itself left out.
+fn olala_result_body(content: &str) -> &str {
+    let Some(rest) = content.strip_prefix("<tool_result") else { return content };
+    let Some(gt) = rest.find(">\n") else { return content };
+    let body = &rest[gt + 2..];
+    let trimmed = body.trim_end();
+    trimmed.strip_suffix("\n</tool_result>").or_else(|| trimmed.strip_suffix("</tool_result>")).unwrap_or(body)
+}
+
+/// The calls an Olala turn makes, `(id, name)` in the order written.
+fn olala_call_ids(raw: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = raw;
+    while let Some(at) = rest.find("<call") {
+        let call = &rest[at..];
+        let end = call.find("</call>").map_or(call.len(), |e| e + "</call>".len());
+        let body = &call[..end];
+        let id = body
+            .split_once("id=\"")
+            .and_then(|(_, r)| r.split_once('"'))
+            .map(|(id, _)| id.to_string())
+            .unwrap_or_default();
+        let name = body
+            .split_once("<name>")
+            .and_then(|(_, r)| r.split_once("</name>"))
+            .map(|(n, _)| n.trim().to_string())
+            .unwrap_or_default();
+        if !name.is_empty() {
+            out.push((id, name));
+        }
+        rest = &call[end..];
+    }
+    out
 }
 
 /// A block put back as it was written.
@@ -722,6 +803,41 @@ mod tests {
         // A plain turn (another model's) is still text.
         let out = t.render(&[Turn { role: "user", content: "hi", reasoning: None }, Turn { role: "assistant", content: "hello", reasoning: None }], false).unwrap();
         assert!(out.contains("<|message_model|><|content_text|>hello<|end_message|><|content_model_end_sampling|>"), "{out}");
+    }
+
+    const OLALA: &str = include_str!("testdata/olala.jinja");
+
+    /// Olala's turns go back as it wrote them: its channels, the call with its
+    /// own id and spacing, and the reasoning of turns before the last question
+    /// kept (`preserve_thinking`), so each prompt is the last one and more.
+    #[test]
+    fn an_olala_turn_goes_back_exactly_as_written() {
+        let t = Compiled::new(OLALA, "", "").unwrap();
+        let said = "<|channel_start|>analysis<|content|>Read it first.<|channel_end|><|channel_start|>final<|content|><|channel_end|><|channel_start|>tools<|content|><toolcalls><call id=\"call_1\"><name>read_file</name><arguments>{\"path\":\"a.md\"}</arguments></call></toolcalls><|channel_end|>";
+        let answered = "<|channel_start|>analysis<|content|>It says hi.<|channel_end|><|channel_start|>final<|content|>It says hi.<|channel_end|>";
+        let turns = [
+            Turn { role: "user", content: "what is in a.md?", reasoning: None },
+            Turn { role: "assistant", content: said, reasoning: None },
+            Turn { role: "tool", content: "hi", reasoning: None },
+            Turn { role: "assistant", content: answered, reasoning: None },
+            Turn { role: "user", content: "thanks", reasoning: None },
+        ];
+        let out = t.render(&turns, true).unwrap();
+        assert!(
+            out.contains(&format!("<|im_start|>assistant{said}<|im_end|><|im_start|>tool<|channel_start|>metadata<|content|>{{\"name\": \"read_file\", \"id\": \"call_1\"}}<|channel_end|><|channel_start|>tool_output<|content|>hi<|channel_end|><|im_end|><|im_start|>assistant{answered}<|im_end|>")),
+            "{out}"
+        );
+        assert!(out.ends_with("<|im_start|>user<|channel_start|>text<|content|>thanks<|channel_end|><|im_end|><|im_start|>assistant<|channel_start|>analysis<|content|>"), "{out}");
+        // The turn before is the start of the one after.
+        let before = t.render(&turns[..4], false).unwrap();
+        assert!(out.starts_with(&before), "{before}\n---\n{out}");
+        // Thinking off is the `disabled` rung, the analysis channel closed.
+        let off = t.render_with(&turns[..1], true, Kwargs { reasoning_effort: Some("disabled"), ..Default::default() }).unwrap();
+        assert!(off.contains("Reasoning effort: disabled"), "{off}");
+        assert!(off.ends_with("<|im_start|>assistant<|channel_start|>analysis<|content|><|channel_end|>"), "{off}");
+        // Another model's plain turn is an answer.
+        let plain = t.render(&[Turn { role: "user", content: "hi", reasoning: None }, Turn { role: "assistant", content: "hello", reasoning: None }], false).unwrap();
+        assert!(plain.contains("<|im_start|>assistant<|channel_start|>analysis<|content|><|channel_end|><|channel_start|>final<|content|>hello<|channel_end|><|im_end|>"), "{plain}");
     }
 
     #[test]
