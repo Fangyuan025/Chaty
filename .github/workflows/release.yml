@@ -396,7 +396,8 @@ jobs:
 
             ## New architectures
 
-            SenseNova Loop 9B runs on llama.cpp with its reasoning, tool calls and pictures, and Olala
+            SenseNova Loop 9B runs on llama.cpp with its reasoning, tool calls and pictures, streaming
+            evenly at 21 tokens a second on a Mac, and Olala
             v1.0 mini — which only its authors' fork of llama.cpp ran — with its reasoning, effort
             ladder and tool calls, token for token what that fork writes. Raon-1, Dory and Maxwell-V1
             run from pull requests llama.cpp has not merged, and Unlimited-OCR-2 reads a page back as

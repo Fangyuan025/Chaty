@@ -433,7 +433,12 @@
   carries it, its 32 layers read as the 56 passes it makes, each with a cache
   of its own. Thinking switches as Qwen 3.5's does, calls are its XML ones,
   pictures go through its mmproj. Each turn reuses the whole of the last; in
-  Code mode it writes and edits, thinking on or off.
+  Code mode it writes and edits, thinking on or off. On a Mac the mixing of
+  its two streams — twenty normalising steps on every pass, for every token —
+  was some seventy small GPU jobs each time, and the reply came in jerks at 11
+  tokens a second; it is one job now, at 21, near Qwen 3.5 9B. Reordering the
+  GPU's work had also let one of those values be overwritten before it was
+  read; its answers now follow the CPU's as closely as other models' do.
 - **Olala v1.0 mini runs.** Only its authors' own fork of llama.cpp ran it.
   Chaty's engine carries the architecture onto upstream — its Mamba-3 mixer,
   its attention and its experts with their Metal kernels — and writes what

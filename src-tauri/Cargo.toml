@@ -79,12 +79,12 @@ anyhow = "1"
 # has them, and leaves out one that no longer applies: each is marked optional,
 # and a model only the bundled engine runs falls back to it
 # (scripts/build-llama-sidecar.sh).
-llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "cceba5af9f517c65a6964ea5fa718933cfce5f93", features = ["sampler", "mtmd"] }
+llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "03f5ef6f037addaa70005c5cc429350dff36b861", features = ["sampler", "mtmd"] }
 # The same crate llama-cpp-2 is built on (same revision, so nothing extra is
 # compiled): reached directly for `llama_log_set`, so llama.cpp's own reason
 # for refusing a model can be kept instead of discarded with the rest of its
 # log.
-llama-cpp-sys-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "cceba5af9f517c65a6964ea5fa718933cfce5f93" }
+llama-cpp-sys-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "03f5ef6f037addaa70005c5cc429350dff36b861" }
 # A real Jinja engine for GGUF chat templates. llama.cpp's own
 # `llama_chat_apply_template` does not run Jinja: it recognises a template by
 # substrings and prints its built-in version of that family, so anything the
