@@ -167,6 +167,9 @@ Any GGUF runs on llama.cpp (Metal, or Vulkan on NVIDIA, AMD and Intel); on Apple
 | Inkling 2 · 2 Mini | Its effort ladder, its own tool-call blocks and vision, on both engines |
 | SenseNova Loop | Thinking on or off, tool calls and vision |
 | Olala v1.0 mini | Its effort ladder and its own tool-call channel |
+| Spark-X2.6 · flint | Thinking on or off and `arg_key` tool calls, on both engines |
+| Raon-1 · Dory · Maxwell-V1 | Architectures llama.cpp has not merged yet, carried in Chaty's engine; Dory on MLX too |
+| Unlimited-OCR-2 | Reads a picture of a page back as its text |
 | [Chaty · Qwen3.5-4B design](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF) | Our own fine-tune for single-file web pages — one click at first launch |
 
 A community fine-tune whose chat template differs from llama.cpp's built-in guess is run with its own template, as transformers would run it. Text-to-image and text-to-music models load from the same place; their families are listed under [Image](#image) and [Music](#music).

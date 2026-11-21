@@ -426,7 +426,7 @@
   it. A fix that no longer applies holds that update back rather than ship
   llama.cpp without it; a speed-up that no longer applies is left out.
 
-### SenseNova Loop and Olala
+### New architectures
 
 - **SenseNova Loop 9B runs, with its reasoning, tool calls and pictures.** Its
   support is a pull request upstream llama.cpp has not merged; Chaty's engine
@@ -444,10 +444,39 @@
   it reasoning; the rung is written at the top of the conversation, so
   switching thinking reads the conversation again once, and otherwise each
   turn reuses the whole of the last.
+- **Raon-1, Dory and Maxwell-V1 run**, from pull requests upstream llama.cpp
+  has not merged: KRAFTON's Raon-1-nano and Raon-1-mini, NVIDIA's
+  Nemotron-Labs Dory — 72 layers out of a 4B model, its middle forty run
+  twice — and Maxwell-V1-Flash, a 37B MoE. Maxwell's most-downloaded files
+  name their pre-tokenizer otherwise than the pull request reads, and it routes
+  each token to twelve experts, a count a Mac's GPU had no kernel for: the
+  first prompt longer than a few words crashed the engine. Both handled; the
+  three write and edit in Code mode, thinking on or off.
+- **Unlimited-OCR-2 reads pages.** With its mmproj, a picture sent to it comes
+  back as the page's text, a title as a heading, without the boxes and markers
+  of its layout. It does one thing, and words written beside the picture —
+  "read the text in this" — reached it as a prompt it was never trained on: it
+  made up a sentence and repeated blocks until the reply ran out. A message
+  with a picture now goes to it as the page alone.
+- **On MLX: LFM3, Spark-X2.6, flint and Dory.** The MLX engine moves to a newer
+  mlx-swift-lm, which carries LFM3, and to the tokenizer release that honours
+  the `ignore_merges` rule LFM3's needs — it was refused as incompatible.
+  Spark-X2.5 and X2.6 are mlx-swift-lm's own pending model, flint and Dory
+  ports of mlx-lm's. The models that ran before write the same replies to the
+  byte.
+- **An MLX checkpoint packed at mixed precision loads.** One whose config names
+  a single width — flint's int4, with its embedding at 8 bits — had every
+  layer read at that width, and did not load; the width each layer was packed
+  at is now read off its tensors, as mlx-lm reads it.
+- **LFM3 on MLX keeps the reasoning of earlier turns**, as it already did on
+  llama.cpp: its template drops it unless asked not to, and each turn with
+  thinking on read the whole conversation again. And an empty vision
+  configuration no longer makes a text model a model with pictures, loaded
+  with a warning that its processor is missing.
 - **The bundled llama.cpp moves to upstream 690b87d**, where the Inkling fix
-  is merged. Engine updates carry SenseNova Loop and Olala onto upstream's
-  newest until upstream has them, and leave either out when it no longer
-  applies — its models then run on the bundled engine.
+  is merged. Engine updates carry these architectures onto upstream's newest
+  until upstream has them, and leave one out when it no longer applies — its
+  models then run on the bundled engine.
 
 ### Building against newer engines
 

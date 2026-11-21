@@ -394,12 +394,14 @@ jobs:
             layout llama.cpp reads; a looped model runs every pass on the GPU, and NVFP4 weights run on
             a Mac's GPU.
 
-            ## SenseNova Loop and Olala
+            ## New architectures
 
             SenseNova Loop 9B runs on llama.cpp with its reasoning, tool calls and pictures, and Olala
             v1.0 mini — which only its authors' fork of llama.cpp ran — with its reasoning, effort
-            ladder and tool calls, token for token what that fork writes. Each turn reuses the whole
-            of the last.
+            ladder and tool calls, token for token what that fork writes. Raon-1, Dory and Maxwell-V1
+            run from pull requests llama.cpp has not merged, and Unlimited-OCR-2 reads a page back as
+            its text. On MLX, LFM3, Spark-X2.6, flint and Dory join, and a checkpoint packed at mixed
+            precision loads.
 
             ## Code mode
 
