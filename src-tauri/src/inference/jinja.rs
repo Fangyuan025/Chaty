@@ -99,9 +99,13 @@ impl Compiled {
             name: Option<String>,
         }
         let mut last_call: Option<String> = None;
+        // Inkling's turns go back as the model wrote them, spliced in where
+        // the template puts a stand-in (see `inkling_turn`).
+        let mut spliced: Vec<(String, String)> = Vec::new();
         let messages: Vec<Value> = turns
             .iter()
-            .map(|t| {
+            .enumerate()
+            .map(|(i, t)| {
                 let mut m = Msg {
                     role: t.role,
                     content: t.content.into(),
@@ -112,18 +116,25 @@ impl Compiled {
                 if self.inkling && t.role == "assistant" {
                     let blocks = inkling_turn(t.content);
                     last_call = blocks.calls.last().map(|(name, _)| name.clone()).or(last_call.take());
-                    m.content = blocks.text.into();
-                    if m.reasoning_content.is_none() {
-                        m.reasoning_content = blocks.thought.map(Into::into);
-                    }
-                    if !blocks.calls.is_empty() {
-                        m.tool_calls = Some(
-                            blocks
-                                .calls
-                                .into_iter()
-                                .map(|(name, args)| serde_json::json!({ "type": "function", "function": { "name": name, "arguments": args } }))
-                                .collect(),
-                        );
+                    if let Some(raw) = inkling_raw(t.content) {
+                        let stand_in = format!("\u{F8FF}chaty-turn-{i}\u{F8FF}");
+                        spliced.push((format!("<|message_model|><|content_text|>{stand_in}<|end_message|>"), raw.to_string()));
+                        m.content = stand_in.into();
+                        m.reasoning_content = None;
+                    } else {
+                        m.content = blocks.text.into();
+                        if m.reasoning_content.is_none() {
+                            m.reasoning_content = blocks.thought.map(Into::into);
+                        }
+                        if !blocks.calls.is_empty() {
+                            m.tool_calls = Some(
+                                blocks
+                                    .calls
+                                    .into_iter()
+                                    .map(|(name, args)| serde_json::json!({ "type": "function", "function": { "name": name, "arguments": args } }))
+                                    .collect(),
+                            );
+                        }
                     }
                 } else if self.inkling && t.role == "tool" {
                     m.name = last_call.clone();
@@ -153,7 +164,15 @@ impl Compiled {
         if self.keeps_thinking_on_request {
             ctx.insert("preserve_thinking", Value::from(true));
         }
-        tmpl.render(Value::from_serialize(&ctx)).map_err(|e| anyhow!(trf!("模型的对话模板渲染失败:{e}", "the chat template failed to render: {e}")))
+        let mut out = tmpl
+            .render(Value::from_serialize(&ctx))
+            .map_err(|e| anyhow!(trf!("模型的对话模板渲染失败:{e}", "the chat template failed to render: {e}")))?;
+        for (stand_in, raw) in &spliced {
+            if out.contains(stand_in.as_str()) {
+                out = out.replacen(stand_in.as_str(), raw, 1);
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -201,12 +220,17 @@ pub fn inkling_turn(content: &str) -> InklingTurn {
         } else if let Some(t) = body.strip_prefix("<|content_text|>") {
             out.text.push_str(t);
         } else if let Some((name, json)) = body.split_once("<|content_invoke_tool_json|>") {
-            let args = serde_json::from_str::<serde_json::Value>(json)
-                .ok()
-                .and_then(|v| v.get("args").cloned())
-                .filter(|a| a.is_object());
+            let parsed = serde_json::from_str::<serde_json::Value>(json).ok();
+            let args = parsed.as_ref().and_then(|v| v.get("args").cloned()).filter(|a| a.is_object());
+            // The name before the marker, or — when the model left it out
+            // there — the one in its JSON.
+            let name = Some(name.trim())
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+                .or_else(|| parsed.as_ref().and_then(|v| v.get("name")?.as_str().map(str::to_string)))
+                .unwrap_or_default();
             match args {
-                Some(args) if !name.trim().is_empty() => out.calls.push((name.trim().to_string(), args)),
+                Some(args) if !name.is_empty() => out.calls.push((name, args)),
                 _ => out.text.push_str(&rest_of(HEADER, body, END, next.is_empty() && !block.contains(END))),
             }
         } else {
@@ -217,6 +241,21 @@ pub fn inkling_turn(content: &str) -> InklingTurn {
         out.thought = Some(thought);
     }
     out
+}
+
+/// An Inkling turn as it goes back to the model: the blocks exactly as it
+/// wrote them, less the turn's end, which the template writes after the turn.
+/// Taken apart and built again by the template, a turn came back as the
+/// template writes one — a call's tool name before its marker, its JSON keys
+/// sorted and spaces dropped — where the model had written its call without
+/// the name, or its text and call in another order; and the model's state is
+/// partly recurrent, so a turn that is not the one in its cache to the token
+/// is the whole cache read again. `None` for a turn with no blocks in it (one
+/// another model wrote), which the template renders as text.
+pub fn inkling_raw(content: &str) -> Option<&str> {
+    let raw = content.trim_end();
+    let raw = raw.strip_suffix("<|content_model_end_sampling|>").unwrap_or(raw);
+    (raw.starts_with("<|message_model|>") && raw.contains("<|end_message|>")).then_some(raw)
 }
 
 /// A block put back as it was written.
@@ -653,12 +692,36 @@ mod tests {
                 true,
             )
             .unwrap();
-        // Keys sorted, no spaces: the template's canonical call.
-        let canonical = "<|message_model|>read_file<|content_invoke_tool_json|>{\"name\":\"read_file\",\"args\":{\"limit\":5,\"path\":\"a.txt\"}}<|end_message|>";
+        // As written — not the template's canonical call, keys sorted — and
+        // the result under the call's name.
         assert!(
-            out.contains(&format!("<|message_model|><|content_thinking|>Read it.<|end_message|>{canonical}<|content_model_end_sampling|><|message_tool|>read_file<|content_text|>hello<|end_message|>")),
+            out.contains(&format!("{said}<|content_model_end_sampling|><|message_tool|>read_file<|content_text|>hello<|end_message|>")),
             "{out}"
         );
+    }
+
+    /// A call written without the tool's name before its marker, after a
+    /// text block: back to the token as written, the result named from the
+    /// call's JSON. Rebuilt by the template, it gained the name and lost the
+    /// text block's close, and the whole cache went with it.
+    #[test]
+    fn an_inkling_turn_goes_back_exactly_as_written() {
+        let t = Compiled::new(INKLING2, "", "").unwrap();
+        let said = "<|message_model|><|content_thinking|>Run it.<|end_message|><|message_model|><|content_text|>跑测试。<|end_message|><|message_model|><|content_invoke_tool_json|>{\"name\": \"bash\", \"args\": {\"command\": \"pytest\"}}<|end_message|>";
+        let out = t
+            .render(
+                &[
+                    Turn { role: "user", content: "test it", reasoning: None },
+                    Turn { role: "assistant", content: said, reasoning: None },
+                    Turn { role: "tool", content: "ok", reasoning: None },
+                ],
+                true,
+            )
+            .unwrap();
+        assert!(out.contains(&format!("{said}<|content_model_end_sampling|><|message_tool|>bash<|content_text|>ok<|end_message|>")), "{out}");
+        // A plain turn (another model's) is still text.
+        let out = t.render(&[Turn { role: "user", content: "hi", reasoning: None }, Turn { role: "assistant", content: "hello", reasoning: None }], false).unwrap();
+        assert!(out.contains("<|message_model|><|content_text|>hello<|end_message|><|content_model_end_sampling|>"), "{out}");
     }
 
     #[test]

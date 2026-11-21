@@ -17,6 +17,7 @@ const { parseToolCall } = await import("./agentLoop");
 const { renderCall, closeOpenCalls, callStart, formatOf, withoutCalls, callRule } = await import("./callFormat");
 const { liveFileCall, callingName } = await import("./liveCall");
 const { withoutToolCallSpans, stripThink, normalizeChannels, answerOnly } = await import("./voiceText");
+const { parseThinking } = await import("./reasoning");
 
 const THOUGHT = "<|message_model|><|content_thinking|>The file is small; read it.<|end_message|>";
 // Exactly what the template writes for a call: keys sorted, no spaces.
@@ -89,6 +90,19 @@ describe("Inkling turns on screen", () => {
     const turn = `${THOUGHT}<|message_model|><|content_text|>391<|end_message|>`;
     expect(normalizeChannels(turn)).toBe("<think>The file is small; read it.</think>391");
     expect(answerOnly(turn)).toBe("391");
+  });
+
+  it("show no reasoning for the empty thought a reply opens with when thinking is off", () => {
+    // The engines end the prompt on it and stream it first, so the turn goes
+    // back as the cache holds it — the reasoning panel must not open for it.
+    const turn = "<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_text|>399<|end_message|>";
+    const t = parseThinking(turn);
+    expect(t.reasoning).toBe("");
+    expect(t.thinking).toBe(false);
+    expect(t.answer).toBe("399");
+    expect(answerOnly(turn)).toBe("399");
+    // As it streams in: the first event is the whole opening.
+    expect(parseThinking("<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_text|>").thinking).toBe(false);
   });
 
   it("keep a thought open while it streams", () => {

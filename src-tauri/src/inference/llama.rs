@@ -490,6 +490,37 @@ fn gpu_over_working_set() -> bool {
     }
 }
 
+/// How Inkling's reply begins with thinking off: a thought written and closed
+/// with nothing in it, and a text block opened. Inkling has no off branch; its
+/// rung is a block at the head of the conversation, and a step that turned it
+/// down rewrote the conversation's first tokens — on a model with recurrent
+/// state, all of its cache. So the rung stays, and the prompt ends here. The
+/// stream begins with it, so the turn goes back as the cache holds it.
+///
+/// Each part is needed. The empty thought alone, and the model opened another
+/// and thought anyway, every time. The thought's token held back alone (see
+/// `no_thought`), and a model that meant to think wrote its reasoning into a
+/// call block (`<|content_invoke_tool_json|>{"name":"user wants…`) or after a
+/// header with no kind (`<|message_model|>The user wants…`). With the text
+/// block opened it answers: "Red", "Blue", "391", a description, a line of
+/// verse — and a model that has more to do still opens a call block after it.
+pub(crate) const INKLING_NO_THOUGHT: &str =
+    "<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_text|>";
+
+/// The tokens a reply may not draw because thinking is off: Inkling's
+/// `<|content_thinking|>`, which opens a thought — after the text block
+/// `INKLING_NO_THOUGHT` opens, a second thought. Empty everywhere else, and
+/// with thinking on.
+fn no_thought(model: &LlamaModel, think: Option<bool>) -> Vec<LlamaToken> {
+    if think != Some(false) || !is_inkling(model) {
+        return Vec::new();
+    }
+    match tokenize(model, "<|content_thinking|>", false).as_slice() {
+        [t] => vec![*t],
+        _ => Vec::new(),
+    }
+}
+
 /// Inkling's template: a turn is blocks of thought, text and calls.
 fn is_inkling(model: &LlamaModel) -> bool {
     model
@@ -1749,7 +1780,11 @@ fn run_turn(
     // inside one, and the stream has to say so.
     // The reply as the stream tells it begins with this; a Skip reads where
     // the thought stands from it and the text generated after.
-    let opened = preopened_think_tag(&prompt).map(|tag| opened_think_text(&prompt, tag)).unwrap_or_default();
+    let opened = if req.params.think == Some(false) && is_inkling(model) {
+        INKLING_NO_THOUGHT.to_string()
+    } else {
+        preopened_think_tag(&prompt).map(|tag| opened_think_text(&prompt, tag)).unwrap_or_default()
+    };
     if !opened.is_empty() {
         sink.emit(StreamEvent::Token { text: opened.clone() })?;
     }
@@ -2038,6 +2073,9 @@ fn run_turn(
     let think_budget = req.params.think_budget;
     let mut budget_spent = think_budget == 0;
     let mut floor = ThinkFloor::new(req.params.think_floor);
+    // Thinking off on Inkling: the reply is already in a text block (see
+    // `INKLING_NO_THOUGHT`), and no block after it may be a thought.
+    let no_thought = no_thought(model, req.params.think);
     // A thought going round is closed the same way, once it is seen to.
     let mut looper = super::ThoughtLoop::new();
     let mut looped = false;
@@ -2072,7 +2110,12 @@ fn run_turn(
                 None => {
                     let full = (n_past + n_extra) as i64 * 4 >= n_ctx as i64 * 3;
                     let held = floor.holds(model, || format!("{opened}{out}"), n_decoded, full, &turn_end);
-                    ThoughtGuard::sample(&thought_guard, held, &mut sampler, dec.ctx(), idx)
+                    if no_thought.is_empty() {
+                        ThoughtGuard::sample(&thought_guard, held, &mut sampler, dec.ctx(), idx)
+                    } else {
+                        let held: Vec<LlamaToken> = held.iter().chain(&no_thought).copied().collect();
+                        ThoughtGuard::sample(&thought_guard, &held, &mut sampler, dec.ctx(), idx)
+                    }
                 }
             },
         };
@@ -2926,17 +2969,15 @@ fn build_prompt_pair(
     let messages = with_think_off_prefix(model, messages, think);
     let messages = messages.as_slice();
     // The rung travels only with thinking on: a template's off branch is the
-    // off switch, and a rung asked for alongside it means nothing — except
-    // where the ladder's own bottom rung is the switch (Inkling: `none`, a
-    // thinking effort of 0, and no `enable_thinking` at all).
-    let template = model.meta_val_str("tokenizer.chat_template").unwrap_or_default();
+    // off switch, and a rung asked for alongside it means nothing. Inkling has
+    // no off branch, and writes its rung into a block at the head of the
+    // conversation: thinking off there is the end of the prompt (see
+    // `INKLING_NO_THOUGHT`), the rung left as it was — a step with thinking
+    // off that rewrote it changed the conversation's first tokens, and on a
+    // model with recurrent state that is all of its cache gone.
     let kw = super::jinja::Kwargs {
         enable_thinking: think,
-        reasoning_effort: if think == Some(false) {
-            off_rung(&template)
-        } else {
-            effort
-        },
+        reasoning_effort: effort.filter(|_| think != Some(false) || is_inkling(model)),
     };
     let body = render_chat_with(model, messages, false, kw).unwrap_or_default();
     let mut prompt = render_chat_with(model, messages, true, kw)?;
@@ -3006,6 +3047,10 @@ fn build_prompt_pair(
                 prompt.push_str(THINK_OFF_PREFIX);
             }
         }
+    }
+
+    if think == Some(false) && is_inkling(model) {
+        prompt.push_str(INKLING_NO_THOUGHT);
     }
 
     // The anchor only works if it really is a prefix of the full render
@@ -3222,14 +3267,6 @@ fn probe_tool_role(model: &LlamaModel) -> bool {
     // plain user text is counted as the user asking something new, and the
     // model says so, halfway through the work it was already doing.
     appends(Role::Tool)
-}
-
-/// The rung a template's effort ladder turns thinking off with, when it has
-/// one and no `enable_thinking` to do it: Inkling maps `none` to a thinking
-/// effort of 0.
-pub(crate) fn off_rung(template: &str) -> Option<&'static str> {
-    (template.contains("reasoning_effort") && !template.contains("enable_thinking") && template.contains("\"none\":"))
-        .then_some("none")
 }
 
 pub(crate) fn effort_levels_of(template: &str) -> Vec<String> {

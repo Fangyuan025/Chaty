@@ -204,7 +204,6 @@ impl Gguf {
 /// What a rewrite into mainline's `inkling2_loop` takes, read from a file in
 /// Unsloth's looped layout.
 struct Loop {
-    passes: u64,
     start: u64,
     end: u64,
     /// The layers that exist once: every pass counted, less the repeats.
@@ -237,7 +236,7 @@ fn plan(g: &Gguf) -> Option<Loop> {
         1 | 30 => 2,
         _ => return None,
     };
-    Some(Loop { passes, start, end, physical, row: res.dims[0] * elem })
+    Some(Loop { start, end, physical, row: res.dims[0] * elem })
 }
 
 /// Whether the file at `path` is in a layout llama.cpp does not read but this
@@ -535,7 +534,7 @@ mod tests {
         // The source's last tensor carries no trailing padding.
         let last = tensors.last().unwrap().2.len();
         data.truncate(data.len() - (32 - last));
-        while head.len() % 32 != 0 {
+        while !head.len().is_multiple_of(32) {
             head.push(0);
         }
         head.extend(data);

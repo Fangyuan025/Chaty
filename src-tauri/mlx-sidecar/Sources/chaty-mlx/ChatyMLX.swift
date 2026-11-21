@@ -299,6 +299,9 @@ struct ModelMeta {
     var effortKwarg = "reasoning_effort"
     var toolRole = false
     var reasoningField = false
+    /// Inkling's template: a turn is blocks of thought, text and calls,
+    /// prompted from its raw text (see `inklingPrompt`).
+    var inkling = false
     /// Best effort: the model emits <think> reasoning.
     var supportsThinking = false
     /// Best effort: the chat template supports tool / function calling.
@@ -645,6 +648,25 @@ struct SafeStreamingDetokenizer {
 struct HistoryShape {
     var toolRole = false
     var reasoningField = false
+}
+
+/// The tool an Inkling turn last called: the name before the call's marker,
+/// or the one in its JSON when the model left it out there.
+func inklingLastCall(_ turn: String) -> String? {
+    guard let marker = turn.range(of: "<|content_invoke_tool_json|>", options: .backwards) else { return nil }
+    let head = turn[..<marker.lowerBound]
+    if let h = head.range(of: "<|message_model|>", options: .backwards) {
+        let name = head[h.upperBound...].trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." || $0 == "-" }) {
+            return name
+        }
+    }
+    let body = turn[marker.upperBound...]
+    let json = body.range(of: "<|end_message|>").map { String(body[..<$0.lowerBound]) } ?? String(body)
+    guard let data = json.data(using: .utf8),
+        let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return nil }
+    return obj["name"] as? String
 }
 
 /// The chat template applied the way the model's own code would call it. A
@@ -1098,7 +1120,7 @@ func inspectModelDir(_ dir: URL) -> ModelMeta {
     meta.arch = cfg["model_type"] as? String
     meta.nLayer = text["num_hidden_layers"] as? Int
     meta.nEmbd = text["hidden_size"] as? Int
-    meta.nCtxTrain = text["max_position_embeddings"] as? Int
+    meta.nCtxTrain = (text["max_position_embeddings"] as? Int) ?? (text["model_max_length"] as? Int)
     if let q = cfg["quantization"] as? [String: Any] {
         meta.quantBits = q["bits"] as? Int
         meta.quantGroup = q["group_size"] as? Int ?? 64
@@ -1131,6 +1153,9 @@ func inspectModelDir(_ dir: URL) -> ModelMeta {
     }
     meta.hasChatTemplate = !template.isEmpty
     meta.thinkArg = template.contains("enable_thinking")
+    meta.inkling = template.contains("<|message_model|>") && template.contains("<|content_invoke_tool_json|>")
+    // Inkling's config does not name its image token; the model's default.
+    if meta.inkling, meta.multimodal, meta.imageTokenId == nil { meta.imageTokenId = 200_054 }
     // ATEM (Muse Glimmer) renders its rung into a sentence instead of
     // branching on each name, so the ladder cannot be read back out of the
     // template — these four are the protocol's.
@@ -1179,6 +1204,9 @@ final class Engine: @unchecked Sendable {
     /// and re-evaluates that text instead of trusting them).
     var kvCache: [KVCache]?
     var kvTokens: [Int] = []
+    /// Inkling: the text of what the cache holds, as scalars, and its ids —
+    /// what the next prompt starts from (see `inklingPrompt`).
+    var inklingAnchor: (text: [Unicode.Scalar], ids: [Int])?
     /// Exact number of tokens materialized in `kvCache` (prompt + decoded).
     /// Tracked here because the caches themselves can't be trusted for this:
     /// hybrid models put a MambaCache at layer 0 whose `offset` never
@@ -1471,7 +1499,9 @@ final class Engine: @unchecked Sendable {
         var meta = inspectModelDir(dir)
         var loadWarning: String?
         healTokenizerConfig(dir: dir, healTemplate: !healJinjaTemplateFile(dir: dir))
-        if meta.multimodal {
+        // Inkling's pictures are prepared here (Inkling2Pixels), not by a
+        // processor the VLM factory would need a configuration for.
+        if meta.multimodal, !meta.inkling {
             healProcessorConfig(dir: dir)
             let hasProcessorConfig = ["preprocessor_config.json", "processor_config.json"]
                 .contains { fname in
@@ -1494,7 +1524,7 @@ final class Engine: @unchecked Sendable {
         }
         self.meta = meta
         self.modelDir = dir
-        let useVLM = meta.multimodal
+        let useVLM = meta.multimodal && !meta.inkling
         let meter = LoadMeter()
         let weightBytes = Double(max(meta.sizeBytes, 1))
         let loadLog = ProcessInfo.processInfo.environment["CHATY_MLX_LOADLOG"] == "1"
@@ -1528,6 +1558,8 @@ final class Engine: @unchecked Sendable {
             // factory before it is asked for one. Idempotent.
             await MuseGlimmerRegistration.register()
             await K2HorizonRegistration.register()
+            Inkling2Registration.loadingDirectory = dir
+            await Inkling2Registration.register()
             await MuseGlimmerVisionRegistration.register()
             let loadText: @Sendable () async throws -> ModelContainer = {
                 try await LLMModelFactory.shared.loadContainer(
@@ -1558,6 +1590,15 @@ final class Engine: @unchecked Sendable {
                 container = try await withError { try await loadText() }
             }
             self.container = container
+            if meta.inkling, meta.multimodal {
+                // A checkpoint whose config names a tower its weights lack
+                // (or a text-only conversion) answers in text.
+                let sees = await container.perform { ctx in (ctx.model as? Inkling2Model)?.seesPictures ?? false }
+                if !sees {
+                    meta.multimodal = false
+                    self.meta = meta
+                }
+            }
             // A checkpoint that ships a multi-token-prediction head gets one
             // loaded now; everything else carries on exactly as before. A head
             // that cannot be loaded costs the speedup, never the model.
@@ -1587,7 +1628,9 @@ final class Engine: @unchecked Sendable {
             // Ask the loaded template itself, rather than guessing from a name.
             let shape = await container.perform { ctx in probeHistoryShape(ctx.tokenizer) }
             meta.toolRole = shape.toolRole
-            meta.reasoningField = shape.reasoningField
+            // Inkling's turns go back raw and are spliced into the prompt as
+            // written (`inklingPrompt`): its thought is never split out.
+            meta.reasoningField = meta.inkling ? false : shape.reasoningField
             meta.reasoningRequired = await container.perform { ctx in
                 let turn: [[String: any Sendable]] = [
                     ["role": "user", "content": "q"], ["role": "assistant", "content": "a"],
@@ -1762,6 +1805,85 @@ final class Engine: @unchecked Sendable {
         }
     }
 
+    /// Inkling's prompt. Its template builds an assistant turn out of
+    /// structured fields — a thought, text, calls with their JSON keys sorted
+    /// and the tool's name before the call's marker — and the model writes
+    /// its turns its own way (a call without the name, text and calls in its
+    /// own order); its state is partly recurrent, so a turn that is not the one
+    /// in the cache to the token is the whole cache read again. So each stored
+    /// turn goes in as written: the template renders a stand-in where it goes,
+    /// and the turn's text replaces it. A tool result is named after the call
+    /// before it, as the template names one. Then the prompt is encoded from
+    /// where the cache's own text ends (`inklingAnchor`): the ids of what the
+    /// cache holds, and only what is new encoded — re-encoding the model's own
+    /// text is not the inverse of generating it.
+    ///
+    /// A message's pictures are blocks of their own ahead of its text, as
+    /// llama.cpp's server lays them out: `<|content_image|>` and the image
+    /// token, which is then repeated once per token the picture takes
+    /// (`pictureTokens`, in prompt order).
+    func inklingPrompt(
+        _ tok: any MLXLMCommon.Tokenizer, messages: [WireMessage], effort: String?,
+        pictureTokens: [Int] = []
+    ) throws -> [Int] {
+        var dicts: [[String: any Sendable]] = []
+        var spliced: [(String, String)] = []
+        var lastCall: String?
+        for (i, m) in messages.enumerated() {
+            var d: [String: any Sendable] = ["role": m.role, "content": m.content]
+            if let images = m.images, !images.isEmpty {
+                var parts: [[String: any Sendable]] = images.map { _ in ["type": "image"] }
+                if !m.content.isEmpty { parts.append(["type": "text", "text": m.content]) }
+                d["content"] = parts
+            }
+            if m.role == "assistant" {
+                var raw = m.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if raw.hasSuffix("<|content_model_end_sampling|>") {
+                    raw = String(raw.dropLast("<|content_model_end_sampling|>".count))
+                }
+                if raw.hasPrefix("<|message_model|>"), raw.contains("<|end_message|>") {
+                    let stand = "\u{F8FF}chaty-turn-\(i)\u{F8FF}"
+                    spliced.append(("<|message_model|><|content_text|>\(stand)<|end_message|>", raw))
+                    d["content"] = stand
+                }
+                if let name = inklingLastCall(m.content) { lastCall = name }
+            } else if m.role == "tool", let lastCall {
+                d["name"] = lastCall
+            }
+            dicts.append(d)
+        }
+        var extra: [String: any Sendable] = [:]
+        if let effort, meta.effortLevels.contains(effort) { extra[meta.effortKwarg] = effort }
+        let ids = try applyTemplate(tok, messages: dicts, extra: extra.isEmpty ? nil : extra)
+        var text = tok.decode(tokenIds: ids, skipSpecialTokens: false)
+        for (stand, raw) in spliced {
+            if let r = text.range(of: stand) { text.replaceSubrange(r, with: raw) }
+        }
+        if !pictureTokens.isEmpty {
+            let slot = "<|content_image|><|unused_200054|>"
+            let pieces = text.components(separatedBy: slot)
+            guard pieces.count - 1 == pictureTokens.count else {
+                throw NSError(
+                    domain: "chaty-mlx", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "the prompt holds \(pieces.count - 1) pictures, not \(pictureTokens.count)"])
+            }
+            var expanded = pieces[0]
+            for (n, piece) in zip(pictureTokens, pieces.dropFirst()) {
+                expanded += "<|content_image|>" + String(repeating: "<|unused_200054|>", count: n) + piece
+            }
+            text = expanded
+        }
+        let scalars = Array(text.unicodeScalars)
+        if let a = inklingAnchor, !a.ids.isEmpty, scalars.count > a.text.count,
+            scalars[..<a.text.count].elementsEqual(a.text)
+        {
+            var rest = String.UnicodeScalarView()
+            rest.append(contentsOf: scalars[a.text.count...])
+            return a.ids + tok.encode(text: String(rest), addSpecialTokens: false)
+        }
+        return tok.encode(text: text, addSpecialTokens: false)
+    }
+
     func generate(messages: [WireMessage], params: WireParams) async {
         // A side generation — a chat title, a search-query rewrite — runs on a
         // cache of its own, and the conversation's cache and ledger come back
@@ -1825,6 +1947,12 @@ final class Engine: @unchecked Sendable {
 
     static let thinkOffPrefix = "<think>\n\n</think>\n\n"
 
+    /// How Inkling's reply begins with thinking off — an empty thought, then
+    /// a text block opened; any later thought is held back (`held` in
+    /// `decode`). The same string as llama.rs's INKLING_NO_THOUGHT.
+    static let inklingNoThought =
+        "<|message_model|><|content_thinking|><|end_message|><|message_model|><|content_text|>"
+
 
     private func run(context: ModelContext, messages: [WireMessage], params p: WireParams)
         async throws
@@ -1850,7 +1978,7 @@ final class Engine: @unchecked Sendable {
             let prefix =
                 meta.layout(thinking: thinking).map { $0.turnPrefix() }
                 ?? (thinking ? "" : meta.turnPrefix)
-            guard !prefix.isEmpty else { return messages }
+            guard !prefix.isEmpty, !meta.inkling else { return messages }
             return messages.map { m in
                 guard m.role == "assistant",
                     !m.content.hasPrefix(prefix),
@@ -1916,7 +2044,21 @@ final class Engine: @unchecked Sendable {
         // than the raw trace, which is what Google suggests for long sessions.
         //
         // https://ai.google.dev/gemma/docs/capabilities/thinking
-        if let layout = meta.layout(thinking: thinking), !hasImages {
+        /// Inkling's pictures, read once, in prompt order.
+        var inklingPictures: [Inkling2Picture] = []
+        if meta.inkling {
+            // Pictures in user and tool turns only — the template refuses
+            // them anywhere else.
+            inklingPictures = try messages.flatMap { $0.images ?? [] }.map {
+                try Inkling2Pixels.load(URL(fileURLWithPath: $0))
+            }
+            let ids = try inklingPrompt(
+                context.tokenizer, messages: messages, effort: p.effort,
+                pictureTokens: inklingPictures.map(\.tokens))
+            lmInput = LMInput(
+                text: .init(tokens: MLXArray(ids.map(Int32.init))),
+                image: inklingPictures.isEmpty ? nil : Inkling2Pixels.processed(inklingPictures))
+        } else if let layout = meta.layout(thinking: thinking), !hasImages {
             // Laid out one message at a time, so a follow-up question cannot
             // change how the turns before it render. Pixels still go through the
             // processor — it is the only position-correct entry point for them.
@@ -1965,7 +2107,7 @@ final class Engine: @unchecked Sendable {
         // Token-level and BEFORE lastMediaEnd is measured: this moves the image
         // placeholders, and everything downstream reads the final list.
         liveTurnKeys = nil
-        if !turnIds.isEmpty,
+        if !turnIds.isEmpty, !meta.inkling,
             let layout = meta.layout(thinking: thinking) ?? meta.anchor(thinking: thinking)
         {
             // The role header alone. A thinking template can fold a whole
@@ -2144,13 +2286,21 @@ final class Engine: @unchecked Sendable {
         // an empty think block so the model skips reasoning. Appended tokens
         // land in the chunked text tail, after every image placeholder, so
         // the processor's image positions are untouched — only the legacy
-        if p.think == false, !meta.thinkArg, meta.supportsThinking, segmented {
+        if p.think == false, !meta.thinkArg, meta.supportsThinking, segmented, !meta.inkling {
             // Closing the block the template already opened, where it opened
             // one (K2 Horizon pre-opens `<ifm|think>` and has no off switch).
             let tail = context.tokenizer.decode(
                 tokenIds: Array(tokens.suffix(8)), skipSpecialTokens: false)
             tokens += context.tokenizer.encode(
                 text: thinkOffSuffix(tail), addSpecialTokens: false)
+        }
+
+        // Inkling with thinking off: the prompt ends on an empty thought and an
+        // opened text block, its rung at the head left as it was (llama.rs's
+        // INKLING_NO_THOUGHT says why each part is there); the stream begins
+        // with it below, so the turn goes back as the cache holds it.
+        if p.think == false, meta.inkling {
+            tokens += context.tokenizer.encode(text: Self.inklingNoThought, addSpecialTokens: false)
         }
 
         // What this prompt ends with after the assistant header. Recorded with
@@ -2211,7 +2361,9 @@ final class Engine: @unchecked Sendable {
                 tokenIds: Array(tokens.suffix(6)), skipSpecialTokens: false)
             // The template's own tag: a stored turn carries it back to the
             // template, which reads K2 Horizon's `<ifm|think>` and not `<think>`.
-            if let tag = preopenedThinkTag(tail) {
+            if p.think == false, meta.inkling {
+                out.emit(["event": "token", "text": Self.inklingNoThought])
+            } else if let tag = preopenedThinkTag(tail) {
                 out.emit(["event": "token", "text": tag + "\n"])
             }
         }
@@ -2319,6 +2471,12 @@ final class Engine: @unchecked Sendable {
                 if lmInput.video == nil, mediaRuns.count == imageKeys.count, !mediaRuns.isEmpty {
                     var built: [LMInput.ProcessedImage] = []
                     for k in inPrefix ..< mediaRuns.count {
+                        if meta.inkling {
+                            let picture = inklingPictures[k]
+                            guard picture.tokens == mediaRuns[k].end - mediaRuns[k].start else { break }
+                            built.append(Inkling2Pixels.processed([picture]))
+                            continue
+                        }
                         let reduced = try await context.processor.prepare(
                             input: UserInput(chat: [
                                 .init(
@@ -2542,11 +2700,18 @@ final class Engine: @unchecked Sendable {
                 let closer = String(block[cut.lowerBound...])
                 return context.tokenizer.encode(text: closer, addSpecialTokens: false).first
             }()
+            // Thinking off on Inkling: the reply is already in a text block
+            // (`inklingNoThought`), and no block after it may be a thought. Its
+            // rung stays in the prompt as it was, where turning it down
+            // rewrote the conversation's first block.
+            let noThought: [Int] =
+                meta.inkling && !thinking
+                ? [context.tokenizer.convertTokenToId("<|content_thinking|>")].compactMap { $0 } : []
             try self.decode(
                 context: context, cache: warm, tokens: tokens, total: total,
                 state: state, gp: gp,
                 recorded: tokens, imageKeys: imageKeys,
-                reused: start, emptyThoughtClose: emptyClose)
+                reused: start, emptyThoughtClose: emptyClose, held: noThought)
         }
     }
 
@@ -2625,7 +2790,9 @@ final class Engine: @unchecked Sendable {
         recorded: [Int], imageKeys: [String], reused: Int,
         /// The token that would close a reasoning block that has said nothing
         /// yet — banned for the first few steps (see the call site).
-        emptyThoughtClose: Int? = nil
+        emptyThoughtClose: Int? = nil,
+        /// Tokens the reply may never draw.
+        held: [Int] = []
     ) throws {
         var state = initialState
         // The rope state saved for the next turn's resume: ropeDeltas is
@@ -2666,6 +2833,7 @@ final class Engine: @unchecked Sendable {
         // is still empty.
         let minThought = 16
         var banRow: MLXArray?
+        var heldRow: MLXArray?
         // The think floor: until `floorUntil` tokens, the thought's close and
         // every end of turn are out of reach — a model held from closing
         // would otherwise end the reply inside its thought. Given tokens (a
@@ -2681,6 +2849,14 @@ final class Engine: @unchecked Sendable {
             // the pick between them is arbitrary.
             var l = logits[0..., -1, 0...].asType(.float32)
             if let processor { l = processor.process(logits: l) }
+            if !held.isEmpty {
+                if heldRow == nil {
+                    var row = [Float](repeating: 0, count: l.dim(-1))
+                    for id in held where id >= 0 && id < row.count { row[id] = -Float.greatestFiniteMagnitude }
+                    heldRow = MLXArray(row).reshaped([1, row.count])
+                }
+                if let row = heldRow { l = l + row }
+            }
             if let close = emptyThoughtClose, done < minThought {
                 if banRow == nil {
                     var row = [Float](repeating: 0, count: l.dim(-1))
@@ -3185,6 +3361,11 @@ final class Engine: @unchecked Sendable {
         }
         if let generated {
             kvTokens = generated
+            if meta.inkling, let tok = lastTokenizer {
+                inklingAnchor = (Array(tok.decode(tokenIds: generated, skipSpecialTokens: false).unicodeScalars), generated)
+            } else {
+                inklingAnchor = nil
+            }
             kvImageKeys = images
             kvState = state
             kvEvaluated = evaluated
