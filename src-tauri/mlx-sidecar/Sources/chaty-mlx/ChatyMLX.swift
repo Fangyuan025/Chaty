@@ -512,6 +512,72 @@ func backUpOriginal(_ url: URL, _ data: Data) {
     try? data.write(to: URL(fileURLWithPath: url.path + ".chaty-orig"), options: .atomic)
 }
 
+/// The bits each quantized layer was packed with, where a mixed checkpoint's
+/// config names only the default. mlx-lm reads them off the tensors' shapes;
+/// mlx-swift-lm quantizes every layer at the config's bits, and a layer
+/// packed at others does not load — RecursiveSI/flint-int4 keeps its
+/// embedding at 8 bits under a config that says 4. Each such layer is written
+/// into the config as a layer of its own, with the default group size: what
+/// the scales and the packed width then imply, only where that is a real
+/// width other than the default. A config that already names the layer, or
+/// one that is not affine, is left as it is.
+func healMixedQuantization(dir: URL) {
+    let cfgURL = dir.appendingPathComponent("config.json")
+    guard let raw = try? Data(contentsOf: cfgURL),
+        var cfg = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
+        let q = cfg["quantization"] as? [String: Any],
+        let bits = q["bits"] as? Int, let group = q["group_size"] as? Int, group > 0,
+        (q["mode"] as? String ?? "affine") == "affine",
+        let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path)
+    else { return }
+    var tensors: [String: (dtype: String, shape: [Int])] = [:]
+    for name in files where name.hasSuffix(".safetensors") {
+        guard let h = FileHandle(forReadingAtPath: dir.appendingPathComponent(name).path) else { continue }
+        defer { try? h.close() }
+        guard let n = try? h.read(upToCount: 8), n.count == 8 else { continue }
+        let len = n.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }
+        guard len < 1 << 28, let body = try? h.read(upToCount: Int(len)),
+            let header = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+        else { continue }
+        for (k, v) in header {
+            guard let d = v as? [String: Any], let dtype = d["dtype"] as? String,
+                let shape = d["shape"] as? [Int]
+            else { continue }
+            tensors[k] = (dtype, shape)
+        }
+    }
+    var layers: [String: [String: Int]] = [:]
+    for (key, w) in tensors where key.hasSuffix(".weight") {
+        let path = String(key.dropLast(".weight".count))
+        guard q[path] == nil, let s = tensors[path + ".scales"], s.dtype != "U8",
+            let packed = w.shape.last, let groups = s.shape.last, groups > 0
+        else { continue }
+        let wordBits: Int
+        switch w.dtype {
+        case "U8": wordBits = 8
+        case "U32": wordBits = 32
+        default: continue
+        }
+        let inDims = groups * group
+        guard (packed * wordBits) % inDims == 0 else { continue }
+        let b = packed * wordBits / inDims
+        guard [2, 3, 4, 5, 6, 8].contains(b), b != bits else { continue }
+        layers[path] = ["group_size": group, "bits": b]
+    }
+    guard !layers.isEmpty else { return }
+    for k in ["quantization", "quantization_config"] {
+        guard var entry = cfg[k] as? [String: Any] else { continue }
+        for (path, layer) in layers where entry[path] == nil { entry[path] = layer }
+        cfg[k] = entry
+    }
+    guard let out = try? JSONSerialization.data(withJSONObject: cfg, options: [.prettyPrinted, .sortedKeys])
+    else { return }
+    backUpOriginal(cfgURL, raw)
+    if (try? out.write(to: cfgURL, options: .atomic)) != nil {
+        log("healed config.json: \(layers.count) layer(s) packed at other bits than the default \(bits): \(layers.keys.sorted().prefix(4).joined(separator: ", "))")
+    }
+}
+
 /// One read-modify-write over tokenizer_config.json, covering both repairs it
 /// can need, so the file is snapshotted once and the backup is never a
 /// half-healed intermediate.
@@ -1506,6 +1572,7 @@ final class Engine: @unchecked Sendable {
         var meta = inspectModelDir(dir)
         var loadWarning: String?
         healTokenizerConfig(dir: dir, healTemplate: !healJinjaTemplateFile(dir: dir))
+        healMixedQuantization(dir: dir)
         // Inkling's pictures are prepared here (Inkling2Pixels), not by a
         // processor the VLM factory would need a configuration for.
         if meta.multimodal, !meta.inkling {
@@ -1569,6 +1636,8 @@ final class Engine: @unchecked Sendable {
             await Inkling2Registration.register()
             await MuseGlimmerVisionRegistration.register()
             await SparkRegistration.register()
+            await FlintRegistration.register()
+            await DoryRegistration.register()
             let loadText: @Sendable () async throws -> ModelContainer = {
                 try await LLMModelFactory.shared.loadContainer(
                     from: dir, using: #huggingFaceTokenizerLoader())
