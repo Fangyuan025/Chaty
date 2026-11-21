@@ -351,6 +351,54 @@
   your message's rounded corners, the code theme's background, the answer
   size, and a theme that follows the system as it looks now.
 
+### Inkling 2
+
+- **Inkling 2 and Inkling 2 Mini run, with their reasoning, effort and tool
+  calls.** The bundled llama.cpp moves to upstream 29b52d3, where Inkling 2
+  Mini's looped layers arrived, with a fix upstream has not merged yet on top:
+  without it the passes through the loop after the first run the experts
+  without their NVFP4 scales, and Unsloth's quantizations answer at a
+  perplexity of 130 instead of 7.65. Its thought shows in the reasoning panel
+  and its answer as the reply, where generation stopped at the end of the
+  thought; its effort ladder — low · medium · high · xhigh — is offered, and
+  thinking off is its own lowest rung. In Code mode it calls tools in its own
+  blocks, read back to it as its template writes them, so the next turn
+  reuses the whole of the last. Pictures with its mmproj, each in a block of
+  its own as its template lays them out.
+- **A GGUF in Unsloth's own looped layout is converted once, on its first
+  load**, into the one llama.cpp reads, said on the model chip while it runs:
+  about 20 seconds for 16 GB, and what it writes is the file Unsloth publish
+  for llama.cpp, to the byte. Those files — the ones at the top of Unsloth's
+  repository — loaded nowhere but Unsloth's own builds.
+- **A looped model runs every pass on the GPU, with the context it can
+  hold.** "Every layer" was counted from the file, 24, where llama.cpp makes a
+  layer of each pass through the loop, 48: the repeats ran on the CPU, half
+  the cache with them. The automatic context counted the cache of 24 layers,
+  an eighth of what llama.cpp allocates for them.
+- **A context the GPU cannot run is made shorter when the model loads, not
+  failed on every reply.** On a Mac the automatic context fitted the weights
+  and the cache to the GPU's working set and left out the buffers the
+  context computes in — small for most models, but 11 GB for Inkling 2
+  Mini's attention at 109056 tokens: it loaded, and every prompt then ran
+  out of GPU memory and no reply came. A context that leaves the working set
+  under 512 MiB is now taken as one that did not allocate, and halved; the
+  model loads at 54528, and that is what it starts from next time.
+- **NVFP4 weights run on a Mac's GPU.** Metal had no kernels for them, and a
+  model whose experts are NVFP4 — Unsloth's quantizations of Inkling 2 Mini
+  among them — ran its experts on the CPU: a minute before the first word of
+  a reply, read at 57 tokens a second, written at 10. Now 210 and 22, every
+  matrix product checked against the CPU's.
+- **When an engine update and the bundled engine both refuse a model, the
+  update's reason is the one you read** — the newer engine's. An Inkling 2
+  Mini the update knew and could not load yet was reported as an
+  architecture llama.cpp did not know, and to wait for a Chaty update. An
+  architecture llama.cpp does not know now says that Chaty's engine updates
+  bring it once llama.cpp has it.
+- **Engine updates carry what upstream has not merged yet** onto upstream's
+  newest — the Inkling fix and the Metal kernels above — until upstream has
+  it. A fix that no longer applies holds that update back rather than ship
+  llama.cpp without it; a speed-up that no longer applies is left out.
+
 ### Building against newer engines
 
 - stable-diffusion.cpp's new C API — options set by name, pictures passed as
