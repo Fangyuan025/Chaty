@@ -394,6 +394,13 @@ jobs:
             layout llama.cpp reads; a looped model runs every pass on the GPU, and NVFP4 weights run on
             a Mac's GPU.
 
+            ## SenseNova Loop and Olala
+
+            SenseNova Loop 9B runs on llama.cpp with its reasoning, tool calls and pictures, and Olala
+            v1.0 mini — which only its authors' fork of llama.cpp ran — with its reasoning, effort
+            ladder and tool calls, token for token what that fork writes. Each turn reuses the whole
+            of the last.
+
             ## Code mode
 
             The first Qwen3 models keep thinking through a long task, and a few steps gone round

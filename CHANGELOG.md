@@ -163,6 +163,16 @@
   whose helper stays behind — is said to have finished, what it left kept as
   a background task, where it was taken for a dev server and the model sent
   to open it in the browser.
+- **A reply that writes a tool result of its own does not end the task.** A
+  model read the file, then answered with `<tool_result name="edit_file">
+  port changed to 8080</tool_result>` and never called the tool, and the turn
+  ended on a change that was never made. Such a reply is held back — twice
+  at most — and the model told that nothing ran.
+- **A call written as the tool's name and its arguments runs** —
+  `{"bash": {"command": "…"}}`, a whole reply and nothing else — where it was
+  taken as the answer. And a model re-reading a file for something is no
+  longer told the loop's own words, `tool_result`, appear nowhere in the
+  workspace and that it should write them.
 
 ### Nothing stutters
 
@@ -415,6 +425,29 @@
   newest — the Inkling fix and the Metal kernels above — until upstream has
   it. A fix that no longer applies holds that update back rather than ship
   llama.cpp without it; a speed-up that no longer applies is left out.
+
+### SenseNova Loop and Olala
+
+- **SenseNova Loop 9B runs, with its reasoning, tool calls and pictures.** Its
+  support is a pull request upstream llama.cpp has not merged; Chaty's engine
+  carries it, its 32 layers read as the 56 passes it makes, each with a cache
+  of its own. Thinking switches as Qwen 3.5's does, calls are its XML ones,
+  pictures go through its mmproj. Each turn reuses the whole of the last; in
+  Code mode it writes and edits, thinking on or off.
+- **Olala v1.0 mini runs.** Only its authors' own fork of llama.cpp ran it.
+  Chaty's engine carries the architecture onto upstream — its Mamba-3 mixer,
+  its attention and its experts with their Metal kernels — and writes what
+  the fork writes, token for token, at 95 tokens a second on an M4 Pro. Its
+  reasoning shows in the panel and its answer as the reply, its calls are
+  read from its tools channel, and its effort ladder — low · medium · high —
+  is offered. Thinking off is its `disabled` rung, the only thing that stops
+  it reasoning; the rung is written at the top of the conversation, so
+  switching thinking reads the conversation again once, and otherwise each
+  turn reuses the whole of the last.
+- **The bundled llama.cpp moves to upstream 690b87d**, where the Inkling fix
+  is merged. Engine updates carry SenseNova Loop and Olala onto upstream's
+  newest until upstream has them, and leave either out when it no longer
+  applies — its models then run on the bundled engine.
 
 ### Building against newer engines
 
