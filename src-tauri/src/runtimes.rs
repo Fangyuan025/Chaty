@@ -96,7 +96,7 @@ impl Engine {
 
     pub fn bundled(self) -> Bundled {
         match self {
-            Engine::Llama => Bundled { upstream: "ggml-org/llama.cpp", rev: "8642541b255bfb5dc39cd351a178be09013a55d6", date: "2026-10-28T11:30:38Z" },
+            Engine::Llama => Bundled { upstream: "ggml-org/llama.cpp", rev: "29b52d398b294509746ec0a3f28948a3107c0213", date: "2026-11-20T22:01:07Z" },
             Engine::Sd => Bundled { upstream: "leejet/stable-diffusion.cpp", rev: "532d2c15c430a785a712b2d94281f04e733008a4", date: "2026-11-15T10:33:53Z" },
             Engine::Audio => Bundled { upstream: "0xShug0/audio.cpp", rev: "955c8725c611d511774e6be132aff6609163b2d2", date: "2026-09-25T22:44:03Z" },
             Engine::Mlx => Bundled { upstream: "ml-explore/mlx-swift-lm", rev: "f5b0677f6b52b81d068871611cfcb82d1e7a0005", date: "2026-10-28T23:27:06Z" },
@@ -289,7 +289,10 @@ fn override_var(e: Engine) -> &'static str {
 /// Start engine `e` with its pack when one is in use, else with `bundled`.
 /// When the pack's start fails and the bundled engine's then succeeds, the
 /// pack was at fault: it is set aside for good. When both fail, the model
-/// was — the pack stays, and the bundled engine's error is the one returned.
+/// was — the pack stays, and its error is the one returned: it is the newer
+/// engine's word on the model. The older one's said "this llama.cpp does not
+/// know the architecture" of a model the pack knew and could not yet load
+/// (an Inkling 2 Mini in a layout llama.cpp had not settled on).
 pub fn start_with<T>(
     e: Engine,
     bundled: Option<PathBuf>,
@@ -307,9 +310,13 @@ pub fn start_with<T>(
         Err(with_pack) if crate::inference::load_cancelled() => Err(with_pack),
         Err(with_pack) => {
             let Some(bundled) = bundled else { return Err(with_pack) };
-            let t = start(&bundled)?;
-            set_aside(e, &format!("{with_pack:#}"));
-            Ok(t)
+            match start(&bundled) {
+                Ok(t) => {
+                    set_aside(e, &format!("{with_pack:#}"));
+                    Ok(t)
+                }
+                Err(_) => Err(with_pack),
+            }
         }
     }
 }

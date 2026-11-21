@@ -33,6 +33,9 @@ pub struct Compiled {
     /// reasoning of earlier turns instead of re-rendering them with an empty
     /// thinking block.
     keeps_thinking_on_request: bool,
+    /// Inkling's: a turn is blocks of thought, text and calls, and the
+    /// template builds them from structured fields (see `inkling_turn`).
+    inkling: bool,
 }
 
 /// One message as a template sees it.
@@ -71,6 +74,7 @@ impl Compiled {
             bos: bos.to_string(),
             eos: eos.to_string(),
             keeps_thinking_on_request: source.contains("preserve_thinking"),
+            inkling: source.contains("<|message_model|>") && source.contains("<|content_invoke_tool_json|>"),
         })
     }
 
@@ -86,13 +90,46 @@ impl Compiled {
         #[derive(serde::Serialize)]
         struct Msg<'a> {
             role: &'a str,
-            content: &'a str,
+            content: std::borrow::Cow<'a, str>,
             #[serde(skip_serializing_if = "Option::is_none")]
-            reasoning_content: Option<&'a str>,
+            reasoning_content: Option<std::borrow::Cow<'a, str>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            tool_calls: Option<Vec<serde_json::Value>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            name: Option<String>,
         }
+        let mut last_call: Option<String> = None;
         let messages: Vec<Value> = turns
             .iter()
-            .map(|t| Value::from_serialize(Msg { role: t.role, content: t.content, reasoning_content: t.reasoning }))
+            .map(|t| {
+                let mut m = Msg {
+                    role: t.role,
+                    content: t.content.into(),
+                    reasoning_content: t.reasoning.map(Into::into),
+                    tool_calls: None,
+                    name: None,
+                };
+                if self.inkling && t.role == "assistant" {
+                    let blocks = inkling_turn(t.content);
+                    last_call = blocks.calls.last().map(|(name, _)| name.clone()).or(last_call.take());
+                    m.content = blocks.text.into();
+                    if m.reasoning_content.is_none() {
+                        m.reasoning_content = blocks.thought.map(Into::into);
+                    }
+                    if !blocks.calls.is_empty() {
+                        m.tool_calls = Some(
+                            blocks
+                                .calls
+                                .into_iter()
+                                .map(|(name, args)| serde_json::json!({ "type": "function", "function": { "name": name, "arguments": args } }))
+                                .collect(),
+                        );
+                    }
+                } else if self.inkling && t.role == "tool" {
+                    m.name = last_call.clone();
+                }
+                Value::from_serialize(m)
+            })
             .collect();
         let tmpl = self.env.get_template("chat").map_err(|e| anyhow!("{e}"))?;
         let mut ctx: std::collections::BTreeMap<&str, Value> = std::collections::BTreeMap::new();
@@ -117,6 +154,77 @@ impl Compiled {
             ctx.insert("preserve_thinking", Value::from(true));
         }
         tmpl.render(Value::from_serialize(&ctx)).map_err(|e| anyhow!(trf!("模型的对话模板渲染失败:{e}", "the chat template failed to render: {e}")))
+    }
+}
+
+/// An Inkling turn as the model wrote it, taken apart into what its template
+/// builds one from.
+///
+/// The model writes a turn as blocks, each opened by `<|message_model|>` and
+/// closed by `<|end_message|>`: a thought (`<|content_thinking|>`), text
+/// (`<|content_text|>`), or a call (`NAME<|content_invoke_tool_json|>` and
+/// `{"name":…,"args":{…}}`). The template renders a turn from its
+/// `reasoning_content`, `content` and `tool_calls`, wrapping the content in a
+/// text block of its own — handed the blocks as they were written, it put
+/// them all inside one text block, calls included, and the model read back
+/// a turn it had never written. Text outside any block (a turn stored before
+/// the model's blocks were known, or cut short) stays text; a call whose JSON
+/// does not parse stays where it was, as text.
+#[derive(Debug, Default, PartialEq)]
+pub struct InklingTurn {
+    pub thought: Option<String>,
+    pub text: String,
+    pub calls: Vec<(String, serde_json::Value)>,
+}
+
+pub fn inkling_turn(content: &str) -> InklingTurn {
+    const HEADER: &str = "<|message_model|>";
+    const END: &str = "<|end_message|>";
+    let mut out = InklingTurn::default();
+    let mut thought = String::new();
+    let content = content.trim_end().strip_suffix("<|content_model_end_sampling|>").unwrap_or(content);
+    let mut rest = content;
+    while !rest.is_empty() {
+        let Some(at) = rest.find(HEADER) else {
+            out.text.push_str(rest);
+            break;
+        };
+        out.text.push_str(&rest[..at]);
+        let block = &rest[at + HEADER.len()..];
+        let (body, next) = match block.find(END) {
+            Some(e) => (&block[..e], &block[e + END.len()..]),
+            None => (block, ""),
+        };
+        rest = next;
+        if let Some(t) = body.strip_prefix("<|content_thinking|>") {
+            thought.push_str(t);
+        } else if let Some(t) = body.strip_prefix("<|content_text|>") {
+            out.text.push_str(t);
+        } else if let Some((name, json)) = body.split_once("<|content_invoke_tool_json|>") {
+            let args = serde_json::from_str::<serde_json::Value>(json)
+                .ok()
+                .and_then(|v| v.get("args").cloned())
+                .filter(|a| a.is_object());
+            match args {
+                Some(args) if !name.trim().is_empty() => out.calls.push((name.trim().to_string(), args)),
+                _ => out.text.push_str(&rest_of(HEADER, body, END, next.is_empty() && !block.contains(END))),
+            }
+        } else {
+            out.text.push_str(&rest_of(HEADER, body, END, next.is_empty() && !block.contains(END)));
+        }
+    }
+    if !thought.is_empty() {
+        out.thought = Some(thought);
+    }
+    out
+}
+
+/// A block put back as it was written.
+fn rest_of(header: &str, body: &str, end: &str, unclosed: bool) -> String {
+    if unclosed {
+        format!("{header}{body}")
+    } else {
+        format!("{header}{body}{end}")
     }
 }
 
@@ -505,5 +613,66 @@ mod tests {
     #[test]
     fn a_template_that_is_not_jinja_is_refused_not_guessed() {
         assert!(Compiled::new("{% for m in messages %}", "", "").is_err());
+    }
+
+    /// Inkling's own template, from the Inkling 2 Mini GGUF.
+    const INKLING2: &str = include_str!("testdata/inkling2.jinja");
+
+    /// A turn read back is the turn the model wrote: its blocks in their
+    /// order, then the turn's end — what the cache already holds.
+    #[test]
+    fn an_inkling_turn_reads_back_as_it_was_written() {
+        let t = Compiled::new(INKLING2, "", "").unwrap();
+        let said = "<|message_model|><|content_thinking|>17*23 is 391.<|end_message|><|message_model|><|content_text|>391<|end_message|>";
+        let out = t
+            .render(
+                &[
+                    Turn { role: "user", content: "17*23?", reasoning: None },
+                    Turn { role: "assistant", content: said, reasoning: None },
+                    Turn { role: "user", content: "thanks", reasoning: None },
+                ],
+                true,
+            )
+            .unwrap();
+        assert!(out.contains(&format!("<|content_text|>17*23?<|end_message|>{said}<|content_model_end_sampling|><|message_user|>")), "{out}");
+        assert!(out.starts_with("<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|>"), "{out}");
+    }
+
+    #[test]
+    fn an_inkling_call_and_its_result_read_back_natively() {
+        let t = Compiled::new(INKLING2, "", "").unwrap();
+        let call = "<|message_model|>read_file<|content_invoke_tool_json|>{\"name\":\"read_file\",\"args\":{\"path\":\"a.txt\",\"limit\":5}}<|end_message|>";
+        let said = format!("<|message_model|><|content_thinking|>Read it.<|end_message|>{call}");
+        let out = t
+            .render(
+                &[
+                    Turn { role: "user", content: "what is in a.txt?", reasoning: None },
+                    Turn { role: "assistant", content: &said, reasoning: None },
+                    Turn { role: "tool", content: "hello", reasoning: None },
+                ],
+                true,
+            )
+            .unwrap();
+        // Keys sorted, no spaces: the template's canonical call.
+        let canonical = "<|message_model|>read_file<|content_invoke_tool_json|>{\"name\":\"read_file\",\"args\":{\"limit\":5,\"path\":\"a.txt\"}}<|end_message|>";
+        assert!(
+            out.contains(&format!("<|message_model|><|content_thinking|>Read it.<|end_message|>{canonical}<|content_model_end_sampling|><|message_tool|>read_file<|content_text|>hello<|end_message|>")),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn an_inkling_turn_is_taken_apart_into_its_blocks() {
+        let turn = inkling_turn("<|message_model|><|content_thinking|>a<|end_message|><|message_model|><|content_text|>b<|end_message|><|message_model|>f<|content_invoke_tool_json|>{\"name\":\"f\",\"args\":{\"x\":1}}<|end_message|>");
+        assert_eq!(turn.thought.as_deref(), Some("a"));
+        assert_eq!(turn.text, "b");
+        assert_eq!(turn.calls, vec![("f".to_string(), serde_json::json!({ "x": 1 }))]);
+        // Plain text is text; a call that does not parse stays as written.
+        assert_eq!(inkling_turn("just text"), InklingTurn { text: "just text".into(), ..Default::default() });
+        let broken = "<|message_model|>f<|content_invoke_tool_json|>{\"name\":\"f\",\"args\":{<|end_message|>";
+        assert_eq!(inkling_turn(broken).text, broken);
+        assert!(inkling_turn(broken).calls.is_empty());
+        // Cut short mid-thought: the thought so far.
+        assert_eq!(inkling_turn("<|message_model|><|content_thinking|>half").thought.as_deref(), Some("half"));
     }
 }

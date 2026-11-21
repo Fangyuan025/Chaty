@@ -19,7 +19,8 @@ use crate::state::AppState;
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadProgress {
-    /// "eject" (freeing the old model) | "weights" (loading) | "ready".
+    /// "eject" (freeing the old model) | "rewrite" (a GGUF put into the
+    /// layout llama.cpp reads, once) | "weights" (loading) | "ready".
     pub phase: &'static str,
     pub frac: f32,
 }
@@ -259,6 +260,35 @@ pub async fn load_model(
     // MonotonicProgress) — a llama.cpp load that backs off its GPU offload
     // starts its count again.
     let gate = Arc::new(MonotonicProgress::new());
+
+    // A GGUF in a layout llama.cpp does not read, though the same weights in
+    // the one it does would load (Unsloth's looped Inkling 2 Mini): rewritten
+    // once, in place, before anything reads it.
+    if !is_mlx && !is_image && !is_music {
+        let p = std::path::PathBuf::from(&path);
+        let rewrite = tokio::task::spawn_blocking(move || crate::inference::gguf_layout::needs_rewrite(&p))
+            .await
+            .unwrap_or(false);
+        if rewrite {
+            let (p, chan) = (std::path::PathBuf::from(&path), on_progress.clone());
+            let _ = chan.send(LoadProgress { phase: "rewrite", frac: 0.0 });
+            let done = tokio::task::spawn_blocking(move || {
+                crate::inference::gguf_layout::rewrite(&p, move |frac| {
+                    let _ = chan.send(LoadProgress { phase: "rewrite", frac });
+                })
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            if crate::inference::load_cancelled() {
+                return Err(LOAD_CANCELLED.into());
+            }
+            if let Err(e) = done {
+                let msg = trf!("无法改写模型文件:{e:#}", "could not rewrite the model file: {e:#}");
+                crate::errlog::append_error("model-load", &format!("path: {path}\n{msg}"));
+                return Err(msg);
+            }
+        }
+    }
 
     // An automatic context starts from the one this model settled on here
     // last time (see autoctx), not from measuring it again.

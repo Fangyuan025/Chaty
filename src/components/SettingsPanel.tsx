@@ -149,7 +149,7 @@ export interface GenSettings extends ImageSettings, MusicSettings {
   codeThinkBudget: number;
   /** Code mode: how the model writes tool calls — "auto" = the format its
    *  chat template was trained on; or one format for every model. */
-  codeToolFormat: "auto" | "xml" | "json" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm";
+  codeToolFormat: "auto" | "xml" | "json" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm" | "inkling";
   /** Code mode: the format for a model whose template names none. */
   codeToolFallback: "xml" | "json";
   /** Shell id commands run in ("" = this platform's default; issue #19). */
@@ -326,7 +326,7 @@ type CatId =
   | "about";
 
 /** Tool-call formats by the family that trained them. */
-const TOOL_FORMAT_LABEL: Record<"xml" | "json" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm", string> = {
+const TOOL_FORMAT_LABEL: Record<"xml" | "json" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm" | "inkling", string> = {
   xml: "XML",
   json: "JSON",
   gemma: "Gemma",
@@ -334,6 +334,7 @@ const TOOL_FORMAT_LABEL: Record<"xml" | "json" | "gemma" | "lfm" | "ifm" | "glm"
   ifm: "K2",
   glm: "GLM",
   minicpm: "MiniCPM",
+  inkling: "Inkling",
 };
 
 const CAT_ICONS: Record<CatId, string> = {
@@ -1870,7 +1871,7 @@ export function SettingsPanel({
                   value={value.codeToolFormat}
                   ariaLabel={t("cmToolFormat")}
                   onChange={(v) => set("codeToolFormat", String(v) as GenSettings["codeToolFormat"])}
-                  options={(["auto", "xml", "json", "gemma", "lfm", "ifm", "glm", "minicpm"] as const).map((f) => ({
+                  options={(["auto", "xml", "json", "gemma", "lfm", "ifm", "glm", "minicpm", "inkling"] as const).map((f) => ({
                     value: f,
                     label: f === "auto" ? t("cmToolFormatAuto") : TOOL_FORMAT_LABEL[f],
                   }))}

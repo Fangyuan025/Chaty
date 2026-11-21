@@ -21,8 +21,31 @@ if [[ -n "${CHATY_LLAMA_REV:-}" ]]; then
     git clone --filter=blob:none "$URL" "$SRC"
     git -C "$SRC" checkout --quiet "$PIN"
     git -C "$SRC" submodule update --init --filter=blob:none llama-cpp-sys-2/llama.cpp
-    git -C "$SRC/llama-cpp-sys-2/llama.cpp" fetch --quiet origin "$CHATY_LLAMA_REV"
-    git -C "$SRC/llama-cpp-sys-2/llama.cpp" checkout --quiet FETCH_HEAD
+    SUB="$SRC/llama-cpp-sys-2/llama.cpp"
+    # The pinned llama.cpp can be upstream plus a fix upstream has not merged
+    # yet (on our fork of it). Those commits are carried onto the newer
+    # upstream: one upstream already has is skipped, and one that no longer
+    # applies fails the build — a pack without the fix would replace the
+    # bundled engine that has it. A commit marked `Chaty-Carry: optional` (a
+    # speed-up, never a fix of results) is left out instead.
+    CARRY_TIP=$(git -C "$SUB" rev-parse HEAD)
+    git -C "$SUB" fetch --quiet https://github.com/ggml-org/llama.cpp master
+    UPSTREAM=$(git -C "$SUB" rev-parse FETCH_HEAD)
+    git -C "$SUB" fetch --quiet origin "$CHATY_LLAMA_REV"
+    git -C "$SUB" checkout --quiet FETCH_HEAD
+    for C in $(git -C "$SUB" rev-list --reverse --no-merges "$UPSTREAM..$CARRY_TIP"); do
+      if git -C "$SUB" diff "$C^" "$C" | git -C "$SUB" apply --reverse --check - 2>/dev/null; then
+        echo "llama.cpp: $(git -C "$SUB" log -1 --format='%h %s' "$C") — upstream has it"
+      elif git -C "$SUB" -c user.name=chaty -c user.email=chaty@localhost cherry-pick "$C" >/dev/null; then
+        echo "llama.cpp: carried $(git -C "$SUB" log -1 --format='%h %s' "$C")"
+      elif [[ "$(git -C "$SUB" log -1 --format='%(trailers:key=Chaty-Carry,valueonly)' "$C" | tr -d '[:space:]')" == optional ]]; then
+        git -C "$SUB" cherry-pick --abort
+        echo "llama.cpp: left out $(git -C "$SUB" log -1 --format='%h %s' "$C") — does not apply, optional"
+      else
+        echo "error: $(git -C "$SUB" log -1 --format='%h %s' "$C") does not apply to llama.cpp $CHATY_LLAMA_REV" >&2
+        exit 1
+      fi
+    done
   fi
   echo "chaty-llama: bindings $PIN, llama.cpp $(git -C "$SRC/llama-cpp-sys-2/llama.cpp" rev-parse HEAD)"
   ARGS+=(--config "patch.\"$URL\".llama-cpp-2.path=\"$SRC/llama-cpp-2\""

@@ -271,14 +271,26 @@ pub(crate) fn probe_n_layer(backend: &LlamaBackend, path: &str) -> Option<u32> {
     let params = LlamaModelParams::default().with_vocab_only(true);
     let model = LlamaModel::load_from_file(backend, path, &params).ok()?;
     let arch = model.meta_val_str("general.architecture").ok()?;
-    model
+    let declared = model
         .meta_val_str(&format!("{arch}.block_count"))
         .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .or_else(|| match model.n_layer() {
-            0 => None,
-            n => Some(n),
-        })
+        .and_then(|s| s.trim().parse::<u32>().ok());
+    // The layers llama.cpp places, which can be more than the file declares:
+    // a looped model (Inkling 2 Mini) gets a layer for every pass through its
+    // loop, 48 of them for 24 in the file. Offloading "every layer" by the
+    // file's count put the passes after the first on the CPU — half the KV
+    // cache there, 436 graph splits, 10 tokens a second. (A vocabulary-only
+    // load does not expand the loop, so it is counted from the metadata.)
+    let key = |k: &str| model.meta_val_str(&format!("{arch}.loop.{k}")).ok().and_then(|s| s.trim().parse::<u32>().ok());
+    let repeats = match (key("count"), key("start"), key("end")) {
+        (Some(c), Some(s), Some(e)) if c > 1 && e > s => (c - 1) * (e - s),
+        _ => 0,
+    };
+    match (declared, model.n_layer()) {
+        (Some(d), _) => Some(d + repeats),
+        (None, 0) => None,
+        (None, n) => Some(n),
+    }
 }
 
 /// How many multi-token-prediction (`nextn`) layers the file declares.
@@ -442,6 +454,100 @@ fn inject_media_markers(messages: &[ChatMessage]) -> Vec<ChatMessage> {
             }
         })
         .collect()
+}
+
+/// What a context must leave of the GPU's working set, for what a prompt
+/// allocates as it runs.
+const GPU_SLACK: usize = 512 << 20;
+
+/// Whether what this process has allocated on the GPU leaves less than
+/// `GPU_SLACK` of the working set macOS gives it (llama.cpp's Metal device
+/// reports the working set less what is allocated, 0 past it). Elsewhere the
+/// automatic context is fitted to the card's free memory with half of it to
+/// spare, and an allocation past it fails where the back-off sees it.
+fn gpu_over_working_set() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: plain queries of ggml's device registry; the device lives as
+        // long as the backend, which outlives every load.
+        unsafe {
+            let dev = llama_cpp_sys_2::ggml_backend_dev_by_type(llama_cpp_sys_2::GGML_BACKEND_DEVICE_TYPE_GPU);
+            if dev.is_null() {
+                return false;
+            }
+            let (mut free, mut total) = (0usize, 0usize);
+            llama_cpp_sys_2::ggml_backend_dev_memory(dev, &mut free, &mut total);
+            let over = total > 0 && free < GPU_SLACK;
+            if over {
+                eprintln!("[llama] GPU working set {} MiB, {} MiB of it free after the context", total >> 20, free >> 20);
+            }
+            over
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// Inkling's template: a turn is blocks of thought, text and calls.
+fn is_inkling(model: &LlamaModel) -> bool {
+    model
+        .meta_val_str("tokenizer.chat_template")
+        .map(|t| t.contains("<|message_model|>") && t.contains("<|content_invoke_tool_json|>"))
+        .unwrap_or(false)
+}
+
+/// Inkling's pictures as its blocks carry them: each in a block of its own,
+/// the words in another. The template makes a block of every part of a
+/// message, but the picture reaches it as a marker inside the text, so the
+/// text block is split around it — `<|message_user|><|content_text|>{m}\nq`
+/// becomes `<|message_user|>{m}<|end_message|><|message_user|><|content_text|>q`,
+/// and the vision encoder opens the picture's block with `<|content_image|>`.
+/// As llama.cpp's own server lays it out (`inkling_split_media`).
+fn inkling_split_media(prompt: &str, marker: &str) -> String {
+    const TEXT: &str = "<|content_text|>";
+    const END: &str = "<|end_message|>";
+    let mut out = String::with_capacity(prompt.len() + 64);
+    let mut rest = prompt;
+    while let Some(t) = rest.find(TEXT) {
+        let after = &rest[t + TEXT.len()..];
+        let end = after.find(END).unwrap_or(after.len());
+        let body = &after[..end];
+        let header_at = rest[..t].rfind("<|message_");
+        match header_at {
+            Some(h) if body.contains(marker) => {
+                let header = &rest[h..t];
+                out.push_str(&rest[..h]);
+                let mut first = true;
+                let mut parts = body.split(marker).peekable();
+                while let Some(text) = parts.next() {
+                    // The newline Chaty writes after each marker belongs to
+                    // no block once the picture has one of its own.
+                    let text = if first { text } else { text.strip_prefix('\n').unwrap_or(text) };
+                    if !text.is_empty() {
+                        out.push_str(header);
+                        out.push_str(TEXT);
+                        out.push_str(text);
+                        out.push_str(END);
+                    }
+                    if parts.peek().is_some() {
+                        out.push_str(header);
+                        out.push_str(marker);
+                        out.push_str(END);
+                    }
+                    first = false;
+                }
+                rest = after.get(end + END.len()..).unwrap_or("");
+            }
+            _ => {
+                out.push_str(&rest[..t + TEXT.len()]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A unit of work sent to a model's worker thread.
@@ -702,7 +808,21 @@ impl LlamaEngine {
                     })
                     .context(trf!("无法启动推理线程", "failed to start the inference thread"))?;
 
-                match init_rx.recv() {
+                // What the context allocated, against what the GPU may hold. On
+                // a Mac the allocation succeeds past the working set and the
+                // first prompt then fails on the GPU, out of memory, every
+                // time: a context's compute buffers are not in the estimate
+                // the fit works from, and most models' are small, but one whose
+                // attention cannot run fused (Inkling 2: 11 GB at 109056
+                // tokens) holds as much as its cache. An automatic context
+                // that went over is taken as one that did not allocate.
+                let init = match init_rx.recv() {
+                    Ok(Ok(_)) if auto_ctx && n_ctx > AUTO_N_CTX && layers > 0 && gpu_over_working_set() => {
+                        Ok(Err(format!("the context's buffers leave the GPU under {} MiB of its working set", GPU_SLACK >> 20)))
+                    }
+                    other => other,
+                };
+                match init {
                     Ok(Ok(mtmd_err)) => break 'load (model, tx, handle, mtmd_err, n_ctx, n_ctx_wanted, base),
                     Ok(Err(msg)) => {
                         // The worker has already given up; wait for it to let go
@@ -1597,7 +1717,13 @@ fn run_turn(
     }
 
     let (prompt, prompt_body) = if media_turn {
-        build_prompt_pair(model, &inject_media_markers(&req.messages), req.params.think, req.params.effort.as_deref())?
+        let (prompt, body) = build_prompt_pair(model, &inject_media_markers(&req.messages), req.params.think, req.params.effort.as_deref())?;
+        if is_inkling(model) {
+            let marker = mtmd_default_marker();
+            (inkling_split_media(&prompt, marker), inkling_split_media(&body, marker))
+        } else {
+            (prompt, body)
+        }
     } else {
         (build_prompt(model, &req.messages, req.params.think, req.params.effort.as_deref())?, String::new())
     };
@@ -2800,10 +2926,17 @@ fn build_prompt_pair(
     let messages = with_think_off_prefix(model, messages, think);
     let messages = messages.as_slice();
     // The rung travels only with thinking on: a template's off branch is the
-    // off switch, and a rung asked for alongside it means nothing.
+    // off switch, and a rung asked for alongside it means nothing — except
+    // where the ladder's own bottom rung is the switch (Inkling: `none`, a
+    // thinking effort of 0, and no `enable_thinking` at all).
+    let template = model.meta_val_str("tokenizer.chat_template").unwrap_or_default();
     let kw = super::jinja::Kwargs {
         enable_thinking: think,
-        reasoning_effort: effort.filter(|_| think != Some(false)),
+        reasoning_effort: if think == Some(false) {
+            off_rung(&template)
+        } else {
+            effort
+        },
     };
     let body = render_chat_with(model, messages, false, kw).unwrap_or_default();
     let mut prompt = render_chat_with(model, messages, true, kw)?;
@@ -3091,6 +3224,14 @@ fn probe_tool_role(model: &LlamaModel) -> bool {
     appends(Role::Tool)
 }
 
+/// The rung a template's effort ladder turns thinking off with, when it has
+/// one and no `enable_thinking` to do it: Inkling maps `none` to a thinking
+/// effort of 0.
+pub(crate) fn off_rung(template: &str) -> Option<&'static str> {
+    (template.contains("reasoning_effort") && !template.contains("enable_thinking") && template.contains("\"none\":"))
+        .then_some("none")
+}
+
 pub(crate) fn effort_levels_of(template: &str) -> Vec<String> {
     // ATEM (Muse Glimmer) renders its rung into a sentence — `Reasoning
     // strength: <rung>.` — instead of branching on each name, so the ladder
@@ -3289,11 +3430,22 @@ fn turn_end_tokens(model: &LlamaModel) -> Vec<LlamaToken> {
         .ok()
         .and_then(|text| {
             let after = &text[text.find(MARK)? + MARK.len()..];
-            let first = *tokenize(model, after, false).first()?;
-            let piece = special_text(model, first);
-            let single = tokenize(model, &piece, false) == vec![first];
-            let tag = piece.len() >= 3 && piece.starts_with('<') && piece.ends_with('>');
-            (single && tag && !model.vocab().is_eog(first)).then_some(vec![first.0])
+            let tokens = tokenize(model, after, false);
+            let is_tag = |t: LlamaToken| {
+                let piece = special_text(model, t);
+                piece.len() >= 3 && piece.starts_with('<') && piece.ends_with('>') && tokenize(model, &piece, false) == vec![t]
+            };
+            let first = *tokens.first()?;
+            // A tag that closes the message's block, with the turn's own end
+            // straight after it (Inkling: `<|end_message|>` closes the
+            // answer, a thought and a call alike, and
+            // `<|content_model_end_sampling|>` ends the turn) is not where
+            // the turn ends: the vocabulary already stops at the one that is.
+            let run = tokens.iter().take_while(|&&t| is_tag(t));
+            if run.clone().any(|&t| model.vocab().is_eog(t)) {
+                return None;
+            }
+            (is_tag(first) && !model.vocab().is_eog(first)).then_some(vec![first.0])
         })
         .unwrap_or_default();
     if !found.is_empty() {
@@ -3895,10 +4047,37 @@ fn kv_bytes_per_token(model: &LlamaModel, path: &Path) -> u64 {
         &["attention.head_count", "attention.head_count_kv", "attention.recurrent_layers", "attention.sliding_window_pattern"]
             .map(|k| format!("{arch}.{k}")),
     );
+    // A looped model's lists name its physical layers; llama.cpp gives every
+    // pass through the loop a layer — and a cache — of its own, laid out as
+    // the physical layers and then each repeat of the loop's block.
+    let looped = |k: &str| model.meta_val_str(&format!("{arch}.loop.{k}")).ok().and_then(|v| v.trim().parse::<usize>().ok());
+    let lp = match (looped("start"), looped("end")) {
+        (Some(s), Some(e)) if s < e => Some((s, e)),
+        _ => None,
+    };
     kv_bytes_from_meta(model.n_layer(), model.n_embd().max(0) as u32, |key| {
         let key = format!("{arch}.{key}");
-        model.meta_val_str(&key).ok().or_else(|| arrays.get(&key).cloned())
+        let v = model.meta_val_str(&key).ok().or_else(|| arrays.get(&key).cloned())?;
+        Some(match lp {
+            Some((start, end)) => looped_list(&v, model.n_layer() as usize, start, end),
+            None => v,
+        })
     })
+}
+
+/// A per-layer list `v` ("[a, b, …]") of a looped model's physical layers,
+/// stretched over the `n` layers llama.cpp makes of them: the physical ones,
+/// then each further pass through layers `start..end` again. Anything that is
+/// not a list, or already as long, is as it was.
+fn looped_list(v: &str, n: usize, start: usize, end: usize) -> String {
+    let Some(inner) = v.trim().strip_prefix('[').and_then(|x| x.strip_suffix(']')) else { return v.to_string() };
+    let items: Vec<&str> = inner.split(',').map(str::trim).collect();
+    let phys = items.len();
+    if phys >= n || end > phys {
+        return v.to_string();
+    }
+    let all: Vec<&str> = (0..n).map(|il| if il < phys { items[il] } else { items[start + (il - phys) % (end - start)] }).collect();
+    format!("[{}]", all.join(", "))
 }
 
 /// The KV cache a context token costs, counted the way llama.cpp lays it out:
@@ -4400,6 +4579,23 @@ mod tests {
             ("full_attention_interval", "4"),
         ]);
         assert_eq!(super::kv_bytes_from_meta(32, 2560, qwen35), 8 * 4 * 512 * 2);
+        // A looped model (Inkling 2 Mini): 24 layers in the file, the 12 of
+        // its loop run three times — 48 caches, sliding-window ones full size.
+        let list = |x: &str| format!("[{}]", vec![x; 24].join(", "));
+        let pattern = format!("[{}]", (0..24).map(|i| if i % 6 == 5 { "false" } else { "true" }).collect::<Vec<_>>().join(", "));
+        let looped = |k: &str| -> Option<String> {
+            let v = match k {
+                "attention.head_count" => list("24"),
+                "attention.head_count_kv" => list("8"),
+                "attention.key_length" | "attention.value_length" | "attention.key_length_swa" | "attention.value_length_swa" => "128".into(),
+                "attention.sliding_window_pattern" => pattern.clone(),
+                _ => return None,
+            };
+            Some(super::looped_list(&v, 48, 6, 18))
+        };
+        assert_eq!(super::kv_bytes_from_meta(48, 2304, looped), 48 * 8 * 128 * 2 * 2, "192 KiB a token, as llama.cpp allocates");
+        assert_eq!(super::looped_list("[1, 2, 3, 4]", 6, 1, 3), "[1, 2, 3, 4, 2, 3]");
+        assert_eq!(super::looped_list("7", 6, 1, 3), "7");
         // LFM3-VL-2B: KV heads only on its attention layers (sliding ones too:
         // llama.cpp gives those a full-size cache).
         let lfm3 = meta(&[
@@ -4433,6 +4629,24 @@ mod tests {
         // Recurrent layers listed outright (booleans as llama.cpp's arrays read).
         let listed = meta(&[("attention.head_count", "8"), ("attention.head_count_kv", "2"), ("attention.key_length", "128"), ("attention.recurrent_layers", "[1, 1, 1, 0, 1, 1, 1, 0]")]);
         assert_eq!(super::kv_bytes_from_meta(8, 1024, listed), 2 * 2 * 256 * 2);
+    }
+
+    #[test]
+    fn an_inkling_picture_is_a_block_of_its_own() {
+        let m = "<__media__>";
+        let p = "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|><__media__>\nWhat is this?<|end_message|>";
+        assert_eq!(
+            super::inkling_split_media(p, m),
+            "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><__media__><|end_message|><|message_user|><|content_text|>What is this?<|end_message|>"
+        );
+        // Two pictures, and words before them.
+        let p = "<|message_user|><|content_text|>Compare <__media__>\n<__media__>\nthese.<|end_message|>";
+        assert_eq!(
+            super::inkling_split_media(p, m),
+            "<|message_user|><|content_text|>Compare <|end_message|><|message_user|><__media__><|end_message|><|message_user|><__media__><|end_message|><|message_user|><|content_text|>these.<|end_message|>"
+        );
+        let plain = "<|message_user|><|content_text|>hi<|end_message|>";
+        assert_eq!(super::inkling_split_media(plain, m), plain);
     }
 
     /// Issue #20, end to end through the real loader: a file whose weights use

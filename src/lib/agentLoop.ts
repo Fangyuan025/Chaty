@@ -1438,6 +1438,30 @@ export function parseXmlToolCall(text: string): ToolCall | null {
 }
 
 
+/** Inkling's call: `<|message_model|>NAME<|content_invoke_tool_json|>`, then
+ *  `{"name":"NAME","args":{…}}` up to `<|end_message|>`. The name in the JSON
+ *  is the call's; the one before the marker stands in when the JSON has none.
+ *  Exported for tests. */
+export function parseInklingCall(text: string): ToolCall | null {
+  const m = /(?:<\|message_model\|>)?([\w.-]*)<\|content_invoke_tool_json\|>/.exec(text);
+  if (!m) return null;
+  let body = text.slice(m.index + m[0].length);
+  const end = body.indexOf("<|end_message|>");
+  if (end !== -1) body = body.slice(0, end);
+  let o: unknown;
+  try {
+    o = JSON.parse(body.trim());
+  } catch {
+    return null;
+  }
+  if (!o || typeof o !== "object" || Array.isArray(o)) return null;
+  const rec = o as Record<string, unknown>;
+  const name = typeof rec.name === "string" && rec.name ? rec.name : m[1];
+  const args = rec.args ?? rec.arguments ?? {};
+  if (!name || !args || typeof args !== "object" || Array.isArray(args)) return null;
+  return { name: name as AgentToolName, args: args as Record<string, unknown> };
+}
+
 /** What to tell a model whose tool call could not be parsed: what broke and
  *  where, and — from the second failure in a row — a smaller way to make the
  *  change. The note used to say only "not valid", and the model wrote the
@@ -1451,7 +1475,11 @@ export function describeInvalidCall(raw: string, streak: number, lang: "zh" | "e
   if (closed) body = body.slice(0, closeAt);
   body = body.trim();
   let what: string;
-  if (raw.includes("<|tool_call>")) {
+  if (raw.includes("<|content_invoke_tool_json|>")) {
+    what = zh
+      ? "它是你的工具调用块,但里面的 JSON 不对或没写完整:要是一个完整的 JSON 对象,有工具的 name,和放全部参数的 args 对象。"
+      : "it is your tool-call block, but its JSON is malformed or unfinished: it must be one whole JSON object, with the tool's name and an args object holding every argument.";
+  } else if (raw.includes("<|tool_call>")) {
     what = zh
       ? '它用了 <|tool_call>call:工具名{…}<tool_call|> 写法,但格式不对或没写完整:参数写成 参数名:值,之间用逗号;文字值放在两个 <|"|> 之间;最后以 }<tool_call|> 结束。'
       : 'it uses the <|tool_call>call:tool_name{…}<tool_call|> form but is malformed or unfinished: arguments are name:value separated by commas, a text value sits between two <|"|>, and the call ends with }<tool_call|>.';
@@ -1878,6 +1906,12 @@ function tidyKeys(args: Record<string, unknown>): Record<string, unknown> {
 }
 
 function parseAnyCall(text: string): ToolCall | null {
+  // Inkling's: a block of its own, `NAME<|content_invoke_tool_json|>` and
+  // `{"name":"NAME","args":{…}}` — special tokens no other format writes.
+  if (text.includes("<|content_invoke_tool_json|>")) {
+    const ink = parseInklingCall(text);
+    if (ink) return ink;
+  }
   // K2 Horizon's own format — its markers are special tokens no other format
   // writes.
   if (text.includes("<ifm|tool_call>")) {

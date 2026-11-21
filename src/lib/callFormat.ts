@@ -9,11 +9,12 @@
  *    minicpm MiniCPM5         <function name="name"><param name="key">value</param></function>
  *    ifm    K2 Horizon        <ifm|tool_calls>\n<ifm|tool_call>name\n<ifm|arg_key>key</ifm|arg_key>\n<ifm|arg_value>value</ifm|arg_value>\n</ifm|tool_call>\n</ifm|tool_calls>
  *    glm    GLM-4.5/4.6/4.7   <tool_call>name\n<arg_key>key</arg_key>\n<arg_value>value</arg_value>\n</tool_call>
+ *    inkling Inkling 2        <|message_model|>name<|content_invoke_tool_json|>{"name":"name","args":{…}}<|end_message|>
  *
  *  Every format is always PARSED; this decides what the prompt and every
  *  correction teach, so none of them teaches a model a format it was not
  *  trained on. Set at the start of each turn. */
-export type CallFormat = "json" | "xml" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm";
+export type CallFormat = "json" | "xml" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm" | "inkling";
 
 let format: CallFormat = "json";
 
@@ -63,6 +64,13 @@ export function callRule(zh: boolean, f: CallFormat): string {
       return zh
         ? "- 每次只调用一个工具。想清楚要做什么之后,按下面的格式输出这一个调用就立即停止——调用之后不要再写任何文字,也不要写第二个调用:\n<tool_call>工具名\n<arg_key>参数名</arg_key>\n<arg_value>参数值(可以多行,原样书写,不需要任何转义)</arg_value>\n</tool_call>\n  必填参数一个都不能少,每个参数一对 arg_key/arg_value;数组或对象类型的参数(比如 multi_edit 的 edits)写成 JSON。"
         : "- Call ONE tool at a time. Think it through, then write the one call in this form and STOP immediately — nothing after the call, and no second call:\n<tool_call>tool_name\n<arg_key>argument_name</arg_key>\n<arg_value>the value (any number of lines, written as is, nothing escaped)</arg_value>\n</tool_call>\n  Every required argument must be there, each as an arg_key/arg_value pair; an array or object argument (multi_edit's edits, say) is written as JSON.";
+    case "inkling":
+      // Its call is a block of its own, opened and closed by special tokens
+      // that would be read as tokens here too — so the rule describes the
+      // block rather than writing one into the system prompt.
+      return zh
+        ? '- 每次只调用一个工具。想清楚要做什么之后,用你自己的工具调用块写出这一个调用:工具名,然后是 JSON {"name":"工具名","args":{"参数名":"参数值"}}——写完就立即停止,调用之后不要再写任何文字,也不要写第二个调用。\n  必填参数一个都不能少;args 是一个 JSON 对象。'
+        : '- Call ONE tool at a time. Think it through, then write the one call as your own tool-call block: the tool\'s name, then the JSON {"name":"tool_name","args":{"argument_name":"value"}} — and STOP immediately: nothing after the call, and no second call.\n  Every required argument must be there; args is a JSON object.';
     default:
       return zh
         ? '- 每次只调用一个工具。想清楚要做什么之后,输出一行 <tool_call>{"name":"工具名","arguments":{...}}</tool_call> 就立即停止——调用之后不要再写任何文字,也不要写第二个调用。'
@@ -89,6 +97,8 @@ const CALL_PAIRS: [string, string][] = [
   ["<ifm|tool_call>", "</ifm|tool_call>"],
   ["<ifm|tool_calls>", "\n</ifm|tool_calls>"],
   ["<function name=", "</function>"],
+  ["<|message_model|>", "<|end_message|>"],
+  ["<|content_invoke_tool_json|>", "<|end_message|>"],
 ];
 
 /** Where the first tool call in a model's output begins, in any format; -1
@@ -99,7 +109,21 @@ export function callStart(text: string): number {
     const i = text.indexOf(m);
     if (i !== -1 && (at === -1 || i < at)) at = i;
   }
+  const ink = inklingCallStart(text);
+  if (ink !== -1 && (at === -1 || ink < at)) at = ink;
   return at;
+}
+
+const INKLING_CALL = "<|content_invoke_tool_json|>";
+const INKLING_HEADER = "<|message_model|>";
+
+/** Where an Inkling call's block begins — the header before the tool's name
+ *  and `<|content_invoke_tool_json|>` — or -1. */
+function inklingCallStart(text: string): number {
+  const k = text.indexOf(INKLING_CALL);
+  if (k === -1) return -1;
+  const h = text.lastIndexOf(INKLING_HEADER, k);
+  return h !== -1 && /^[\w.-]+$/.test(text.slice(h + INKLING_HEADER.length, k)) ? h : k;
 }
 
 /** `text` without the tool calls written in it — reasoning as a person reads
@@ -131,6 +155,7 @@ export function closeOpenCalls(turn: string): string {
 
 /** The format a call in a model's output was written in. */
 export function formatOf(text: string): CallFormat {
+  if (text.includes(INKLING_CALL)) return "inkling";
   if (text.includes("<ifm|tool_call")) return "ifm";
   if (/<tool_call>\s*[A-Za-z_][\w.-]*\s*(?:<arg_key>|<\/tool_call>)/.test(text)) return "glm";
   if (/<function\s+name\s*=/.test(text)) return "minicpm";
@@ -163,6 +188,8 @@ export function renderCall(name: string, args: Record<string, unknown>, f: CallF
       return `<tool_call>${name}\n${entries
         .map(([k, v]) => `<arg_key>${k}</arg_key>\n<arg_value>${typeof v === "string" ? v : JSON.stringify(v)}</arg_value>\n`)
         .join("")}</tool_call>`;
+    case "inkling":
+      return `${INKLING_HEADER}${name}${INKLING_CALL}${JSON.stringify({ name, args })}<|end_message|>`;
     case "ifm":
       return `<ifm|tool_calls>\n<ifm|tool_call>${name}\n${entries
         .map(([k, v]) => `<ifm|arg_key>${k}</ifm|arg_key>\n<ifm|arg_value>${typeof v === "string" ? v : JSON.stringify(v)}</ifm|arg_value>\n`)
@@ -194,6 +221,8 @@ export function oneCall(zh: boolean): string {
       return zh ? "一个 <tool_call>工具名<arg_key>…</tool_call> 工具调用" : "one <tool_call>tool_name<arg_key>…</tool_call> tool call";
     case "minicpm":
       return zh ? '一个 <function name="工具名">…</function> 工具调用' : 'one <function name="tool_name">…</function> tool call';
+    case "inkling":
+      return zh ? '一个工具调用块(工具名,然后 {"name":…,"args":{…}})' : 'one tool-call block (the tool\'s name, then {"name":…,"args":{…}})';
     default:
       return zh
         ? '一行 <tool_call>{"name":"...","arguments":{...}}</tool_call>'
@@ -250,6 +279,8 @@ export function callExample(name: string, json: string, f: CallFormat = format):
       return `<ifm|tool_call>${name} ${entries
         .map(([k, v]) => `<ifm|arg_key>${k}</ifm|arg_key><ifm|arg_value>${typeof v === "string" ? v : JSON.stringify(v)}</ifm|arg_value>`)
         .join("")}</ifm|tool_call>`;
+    case "inkling":
+      return JSON.stringify({ name, args: o });
     default:
       return `${name} ${json}`;
   }
@@ -298,6 +329,8 @@ export function argsExample(json: string): string {
       return entries.map(([k, v]) => `<arg_key>${k}</arg_key>\n<arg_value>${typeof v === "string" ? v : JSON.stringify(v)}</arg_value>`).join("\n");
     case "minicpm":
       return entries.map(([k, v]) => `<param name="${k}">${minicpmValue(v)}</param>`).join("");
+    case "inkling":
+      return `"args": ${json}`;
   }
   return `arguments: ${json}`;
 }

@@ -560,6 +560,7 @@ export const T = {
   // The model chip while a model loads, names the one it is loading.
   loadingNamed: { zh: "正在加载 {name}", en: "Loading {name}", pt: "Carregando {name}" },
   reloadingNamed: { zh: "正在重新加载 {name}", en: "Reloading {name}", pt: "Recarregando {name}" },
+  rewritingNamed: { zh: "正在转换 {name} 的格式(仅此一次)", en: "Converting {name} for llama.cpp (once)", pt: "Convertendo {name} para o llama.cpp (uma vez)" },
   ejectingNamed: { zh: "正在卸载 {name}", en: "Unloading {name}", pt: "Descarregando {name}" },
   changeModel: { zh: "更换模型", en: "Change model", pt: "Trocar modelo" },
   modelsHeader: { zh: "models 文件夹", en: "Models folder", pt: "Pasta de modelos" },

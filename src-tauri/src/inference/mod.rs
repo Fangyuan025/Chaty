@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod autoctx;
+pub mod gguf_layout;
 pub mod gguf;
 pub mod jinja;
 pub mod llama;
@@ -82,8 +83,9 @@ pub static THINK_SKIP: AtomicBool = AtomicBool::new(false);
 /// engine sent first included — is in the middle of, written the way its model
 /// writes it; `None` when it is not in one. The markups are the ones the
 /// chat's reasoning panel reads: `<think>`, a namespaced `<ifm|think…>` (K2
-/// Horizon), Gemma 4's thought channel, Harmony's analysis channel and ATEM's
-/// `to=self` span. The innermost — latest — open one is the one closed.
+/// Horizon), Gemma 4's thought channel, Harmony's analysis channel, ATEM's
+/// `to=self` span and Inkling's thinking block. The innermost — latest — open
+/// one is the one closed.
 pub fn think_closer(text: &str) -> Option<String> {
     open_thought(text).map(|(_, close)| close)
 }
@@ -138,6 +140,12 @@ pub fn open_thought(text: &str) -> Option<(usize, String)> {
     if let Some(at) = open_at("to=self<|message|>", &["<|eom|>", "<|eot|>", "<|end|>"]) {
         offer(at, "<|eom|><|start|>assistant to=user<|message|>".into());
     }
+    // Inkling: a turn is blocks, each closed by `<|end_message|>`; the thought
+    // is the `<|content_thinking|>` one, and the answer the next block, of
+    // text.
+    if let Some(at) = open_at("<|content_thinking|>", &["<|end_message|>"]) {
+        offer(at, "<|end_message|><|message_model|><|content_text|>".into());
+    }
     best
 }
 
@@ -160,6 +168,10 @@ mod think_closer_tests {
             think_closer(" to=self<|message|>plan").as_deref(),
             Some("<|eom|><|start|>assistant to=user<|message|>")
         );
+        assert_eq!(
+            think_closer("<|message_model|><|content_thinking|>plan").as_deref(),
+            Some("<|end_message|><|message_model|><|content_text|>")
+        );
     }
 
     #[test]
@@ -175,6 +187,10 @@ mod think_closer_tests {
             None
         );
         assert_eq!(think_closer(" to=self<|message|>plan<|eom|><|start|>assistant to=user<|message|>4"), None);
+        assert_eq!(
+            think_closer("<|message_model|><|content_thinking|>plan<|end_message|><|message_model|><|content_text|>4"),
+            None
+        );
     }
 
     #[test]
@@ -859,10 +875,15 @@ pub struct ModelInfo {
 ///  - "xml":   Qwen3.5/3.6/3.8, `<tool_call>\n<function=name>\n<parameter=key>\n…`
 ///  - "json":  Hermes, `<tool_call>{"name": …, "arguments": {…}}</tool_call>`
 ///    (Qwen2.5/Qwen3, QwQ)
+///  - "inkling": Inkling, `<|message_model|>name<|content_invoke_tool_json|>{…}`
 pub fn native_tool_format(template: &str) -> Option<&'static str> {
-    // K2 Horizon: `<ifm|tool_call>name` + `<ifm|arg_key>`/`<ifm|arg_value>`
-    // pairs, all special tokens of its own.
-    if template.contains("<ifm|tool_call>") {
+    // Inkling: a call is a block of its own, the tool's name and
+    // `<|content_invoke_tool_json|>` before `{"name":…,"args":{…}}`.
+    if template.contains("<|content_invoke_tool_json|>") {
+        Some("inkling")
+    } else if template.contains("<ifm|tool_call>") {
+        // K2 Horizon: `<ifm|tool_call>name` + `<ifm|arg_key>`/`<ifm|arg_value>`
+        // pairs, all special tokens of its own.
         Some("ifm")
     } else if template.contains("<arg_key>") {
         // GLM-4.5/4.6/4.7: the same pairs without a namespace, after a bare
@@ -906,6 +927,8 @@ mod tool_format_tests {
         assert_eq!(native_tool_format(glm), Some("glm"));
         let minicpm5 = "{{- '<function name=\"' ~ tool_call.name ~ '\">' }}{{- '<param name=\"' ~ param_name ~ '\">' }}";
         assert_eq!(native_tool_format(minicpm5), Some("minicpm"));
+        let inkling = "{{- \"<|message_model|>\" ~ fn.name ~ \"<|content_invoke_tool_json|>\" -}}";
+        assert_eq!(native_tool_format(inkling), Some("inkling"));
         assert_eq!(native_tool_format("{% for m in messages %}{{ m.content }}{% endfor %}"), None);
     }
 

@@ -466,10 +466,11 @@ export default function App() {
       return t("ejectingNamed", { name: model.name.replace(/\.gguf$/i, "") });
     if (!loadTarget) return t("loadingModel");
     const name = loadTarget.name.replace(/\.gguf$/i, "");
+    if (loadProgress?.phase === "rewrite") return t("rewritingNamed", { name });
     return t(loadTarget.kind === "eject" ? "ejectingNamed" : loadTarget.kind === "reload" ? "reloadingNamed" : "loadingNamed", { name });
   })();
   const chipKey = loadingModel
-    ? `load:${loadTarget?.kind ?? ""}:${loadTarget?.name ?? ""}:${loadProgress?.phase === "eject" ? "eject" : ""}`
+    ? `load:${loadTarget?.kind ?? ""}:${loadTarget?.name ?? ""}:${loadProgress?.phase === "eject" || loadProgress?.phase === "rewrite" ? loadProgress.phase : ""}`
     : model
       ? `model:${model.path}`
       : "none";
@@ -5098,7 +5099,7 @@ ${pdf ? ready : ""}
             {loadingModel ? (
               <>
                 <span className="chip-name chip-loading">{chipLoadingLabel}</span>
-                {loadProgress?.phase === "weights" ? (
+                {loadProgress?.phase === "weights" || loadProgress?.phase === "rewrite" ? (
                   <span className="chip-meta chip-pct">{Math.round(loadProgress.frac * 100)}%</span>
                 ) : null}
               </>
@@ -5475,11 +5476,13 @@ ${pdf ? ready : ""}
         <div className="load-bar">
           <div
             // A new fill when the bar starts counting: the sliding one is
-            // not shrunk to the count's start, it is replaced by it.
-            key={loadProgress?.phase === "weights" ? "count" : "slide"}
-            className={`load-bar-fill ${loadProgress?.phase === "weights" ? "" : "indeterminate"}`}
+            // not shrunk to the count's start, it is replaced by it — and a
+            // count of its own for a file converted first, so the load's
+            // count starts afresh rather than running back from the end.
+            key={loadProgress?.phase === "weights" ? "count" : loadProgress?.phase === "rewrite" ? "rewrite" : "slide"}
+            className={`load-bar-fill ${loadProgress?.phase === "weights" || loadProgress?.phase === "rewrite" ? "" : "indeterminate"}`}
             style={
-              loadProgress?.phase === "weights"
+              loadProgress?.phase === "weights" || loadProgress?.phase === "rewrite"
                 ? { width: `${Math.max(2, Math.round(loadProgress.frac * 100))}%` }
                 : undefined
             }

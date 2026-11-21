@@ -92,7 +92,7 @@ export interface ModelInfo {
   reasoningField?: boolean;
   /** The tool-call format the chat template was trained on — read from the
    *  template at load. null ⇒ the template names none (unknown family). */
-  toolFormat?: "xml" | "json" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm" | null;
+  toolFormat?: "xml" | "json" | "gemma" | "lfm" | "ifm" | "glm" | "minicpm" | "inkling" | null;
   supportsTools: boolean;
   multimodal: boolean;
   /** The vision encoder (mmproj) is loaded — images actually work this session. */
@@ -1425,7 +1425,8 @@ export async function pickModelFolder(): Promise<string | null> {
  * (clamped to the model's trained length).
  */
 export interface LoadProgress {
-  /** "eject" (freeing the old model) | "weights" (loading) | "ready". */
+  /** "eject" (freeing the old model) | "rewrite" (a GGUF converted to the
+   *  layout llama.cpp reads, once) | "weights" (loading) | "ready". */
   phase: string;
   frac: number;
 }

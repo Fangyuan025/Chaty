@@ -82,6 +82,7 @@ export function callingName(raw: string): string | null {
     /<function=([\w.-]+)>/.exec(s) ??
     /<function\s+name\s*=\s*["']?([\w.-]+)["'\s>]/.exec(s) ??
     /<ifm\|tool_call>\s*([A-Za-z_][\w.-]*)\s/.exec(s) ??
+    /^(?:<\|message_model\|>)?([\w.-]+)<\|content_invoke_tool_json\|>/.exec(s) ??
     /^<tool_call>\s*([A-Za-z_][\w.-]*)\s*(?:<arg_key>|<\/tool_call>)/.exec(s);
   return m ? m[1] : "";
 }
@@ -92,6 +93,12 @@ export function thoughtEnd(raw: string): number {
   const close = /<\/think>|<channel\|>|<\/ifm[|｜]think\w*>/g;
   let end = -1;
   for (let m: RegExpExecArray | null; (m = close.exec(raw)); ) end = m.index + m[0].length;
+  // Inkling: a thought is a block of its own, closed by `<|end_message|>`.
+  const ink = raw.lastIndexOf("<|content_thinking|>");
+  if (ink !== -1) {
+    const e = raw.indexOf("<|end_message|>", ink);
+    if (e !== -1) end = Math.max(end, e + "<|end_message|>".length);
+  }
   return end;
 }
 
@@ -109,9 +116,9 @@ export function callAt(raw: string): number {
     const c2 = callStart(raw.slice(end));
     if (c2 !== -1) return end + c2;
   }
-  const inThought = end !== -1 ? c < end : /<think>|<\|channel>|<ifm[|｜]think/.test(raw.slice(0, c));
+  const inThought = end !== -1 ? c < end : /<think>|<\|channel>|<ifm[|｜]think|<\|content_thinking\|>/.test(raw.slice(0, c));
   if (inThought) {
-    const rest = end !== -1 ? raw.slice(c, end).replace(/(?:<\/think>|<channel\|>|<\/ifm[|｜]think\w*>)$/, "") : raw.slice(c);
+    const rest = end !== -1 ? raw.slice(c, end).replace(/(?:<\/think>|<channel\|>|<\/ifm[|｜]think\w*>|<\|end_message\|>)$/, "") : raw.slice(c);
     if (withoutCalls(rest).trim()) return -1;
   }
   return c;
@@ -365,7 +372,7 @@ function jsonArgs(src: string): { name?: string; args: Arg[] } {
           if (v.done) name = v.text;
         } else into.push({ key: key.text, text: v.text, done: v.done });
         if (!v.done) return false;
-      } else if (c === "{" && depth === 0 && (key.text === "arguments" || key.text === "parameters")) {
+      } else if (c === "{" && depth === 0 && (key.text === "arguments" || key.text === "parameters" || key.text === "args")) {
         sawNested = true;
         if (!object(nested, 1)) return false;
       } else if (c === "{" || c === "[") {
@@ -574,6 +581,8 @@ function partialEdits(src: string): LiveEdit[] {
   }
 }
 
+const INKLING_CALL_HEAD = /^(?:<\|message_model\|>)?([\w.-]+)<\|content_invoke_tool_json\|>/;
+
 /** The file write or edit being written at the end of `raw`, as far as it has
  *  got; null when the output is not (yet) such a call. */
 export function liveFileCall(raw: string): LiveView | null {
@@ -601,6 +610,14 @@ export function liveFileCall(raw: string): LiveView | null {
       args = argKeyArgs(body.slice(nm[0].length));
     }
     if (!name || !LIVE_TOOLS.has(name)) return null;
+  } else if (INKLING_CALL_HEAD.test(s)) {
+    // Inkling: `<|message_model|>NAME<|content_invoke_tool_json|>` and
+    // `{"name":"NAME","args":{…}}`.
+    const head = INKLING_CALL_HEAD.exec(s);
+    if (!head || !LIVE_TOOLS.has(head[1])) return null;
+    name = head[1];
+    const end = s.indexOf("<|end_message|>", head[0].length);
+    args = jsonArgs(s.slice(head[0].length, end === -1 ? undefined : end).trimStart()).args;
   } else if (s.startsWith("<|tool_call_start|>")) {
     const head = /^<\|tool_call_start\|>\s*\[?\s*([\w.-]+)\s*\(/.exec(s);
     if (!head || !LIVE_TOOLS.has(head[1])) return null;

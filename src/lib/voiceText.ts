@@ -11,10 +11,25 @@ const END = "\x00END\x00";
 // last `<` that is still a prefix of a known marker (optionally a channel
 // opener awaiting its name) is held back; ordinary text tails (`a < b`,
 // `<div`) are left alone.
-const MARKER_WORDS = ["channel", "turn", "think", "message", "end", "return", "start", "eom", "eot"];
+const MARKER_WORDS = [
+  "channel", "turn", "think", "message", "end", "return", "start", "eom", "eot",
+  // Inkling's blocks.
+  "message_model", "message_user", "message_system", "message_tool", "end_message",
+  "content_text", "content_thinking", "content_invoke_tool_json", "content_invoke_tool_text",
+  "content_model_end_sampling", "content_tool_error", "content_image", "content_xml",
+];
 const CHANNEL_NAMES = ["analysis", "thought", "thinking", "final"];
 function trimPartialMarker(s: string): string {
-  return trimPartialRecipient(trimPartialTag(s));
+  return trimPartialInklingHeader(trimPartialRecipient(trimPartialTag(s)));
+}
+
+/// Inkling opens a block with `<|message_model|>` and only then says what it
+/// is: a content token for a thought or text, or a tool's name before the
+/// call's own marker. Until that arrives, the header and any name after it
+/// are protocol — shown, a call's tool name flashed up as answer text.
+function trimPartialInklingHeader(s: string): string {
+  const m = /<\|message_model\|>[\w.-]*$/.exec(s);
+  return m ? s.slice(0, m.index) : s;
 }
 
 /// ATEM opens a span with `to=<recipient><|message|>`, and the recipient
@@ -69,6 +84,8 @@ function trimPartialTag(s: string): string {
  *  the recorded turn keeps every token of it. */
 export function withoutToolCallSpans(s: string): string {
   return s
+    // Inkling's call block: the tool's name, its marker and the JSON.
+    .replace(/(?:<\|message_model\|>)?[\w.-]*<\|content_invoke_tool_(?:json|text)\|>[\s\S]*?(?:<\|end_message\|>|$)/g, "")
     .replace(/<[|｜]tool_call_start[|｜]>[\s\S]*?(?:<[|｜]tool_call_end[|｜]>|$)/gi, "")
     // K2 Horizon's call block, and a bare call without the block around it.
     .replace(/<ifm[|｜]tool_calls>[\s\S]*?(?:<\/ifm[|｜]tool_calls>|$)/gi, "")
@@ -90,12 +107,20 @@ export function normalizeChannels(s: string): string {
   // pipe — a plain `<think>` is the Qwen convention this function's OUTPUT
   // uses and must pass through untouched.
   if (
-    !/<[|｜]?(channel|turn)\b|\b(channel|turn)[|｜]>|<(?:[|｜](?:think|message|end|return|start|eom|eot)|(?:think|message|end|return|start|eom|eot)[|｜])|\bto=[\w.*-]+[ \t]*<[|｜]message[|｜]>|<\/?[a-z0-9]+[|｜]think/i.test(
+    !/<[|｜]?(channel|turn)\b|\b(channel|turn)[|｜]>|<(?:[|｜](?:think|message|end|return|start|eom|eot)|(?:think|message|end|return|start|eom|eot)[|｜])|\bto=[\w.*-]+[ \t]*<[|｜]message[|｜]>|<\/?[a-z0-9]+[|｜]think|<\|(?:content_|end_message)/i.test(
       held,
     )
   )
     return held;
   const t = held
+    // Inkling writes a turn as blocks — `<|message_model|>` opens one, a
+    // content token says what it is, `<|end_message|>` closes it: a thought,
+    // text, or a call (taken out above for display; kept in the record). The
+    // turn's own end and the tokens of other roles never show.
+    .replace(/(?:<\|message_model\|>)?<\|content_thinking\|>/g, THINK)
+    .replace(/(?:<\|message_model\|>)?<\|content_text\|>/g, FINAL)
+    .replace(/<\|end_message\|>/g, END)
+    .replace(/<\|(?:message_model|content_model_end_sampling)\|>/g, "")
     // Namespaced reasoning tags: K2 Horizon writes `<ifm|think>…</ifm|think>`
     // and, at lower effort, `think_fast` / `think_faster` spans. They are the
     // plain `<think>` convention under another name, so they become exactly

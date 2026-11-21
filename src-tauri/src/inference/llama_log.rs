@@ -101,8 +101,8 @@ pub fn explain_refusal(said: &[String]) -> Option<String> {
         if let Some(rest) = line.split("unknown model architecture: '").nth(1) {
             let arch = rest.split('\'').next().unwrap_or(rest);
             return Some(trf!(
-                "这个 llama.cpp 版本不认识模型架构 \"{arch}\"。需要更新 Chaty 才能加载它;如果这个模型有 MLX 版本,在 Mac 上可以先用那个。",
-                "this llama.cpp build does not know the model architecture \"{arch}\". Chaty needs an update to load it; on a Mac, an MLX build of the same model may work in the meantime."
+                "这个 llama.cpp 版本还不认识模型架构 \"{arch}\"。llama.cpp 支持它之后,Chaty 的引擎更新(设置 → 运行时)会把支持带来;在 Mac 上,这个模型的 MLX 版本可以先用。",
+                "this llama.cpp build does not know the model architecture \"{arch}\" yet. Once llama.cpp supports it, Chaty's engine updates bring that in (Settings → Runtimes); on a Mac, an MLX build of the same model may work in the meantime."
             ));
         }
         if let Some(rest) = line.split("has invalid ggml type ").nth(1) {
