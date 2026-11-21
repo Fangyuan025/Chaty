@@ -19,14 +19,17 @@ let package = Package(
         // and mlx-swift's need Xcode 26's toolchain.
         .package(
             url: "https://github.com/ml-explore/mlx-swift-lm",
-            revision: "f5b0677f6b52b81d068871611cfcb82d1e7a0005"),
+            revision: "6759555f2bd8f18c242102d73d149efde9f2f2e0"),
         // mlx-swift-lm is tokenizer-agnostic; the swift-transformers tokenizer
         // is injected in OUR module via MLXHuggingFace's macros.
-        .package(url: "https://github.com/huggingface/swift-transformers", from: "1.0.0"),
-        // Root-level pin: swift-jinja 2.4.0 changed template-object keys to
-        // `ObjectKey`, which swift-transformers ≤1.3.3 doesn't compile
-        // against. Drop this once a fixed swift-transformers ships.
-        .package(url: "https://github.com/huggingface/swift-jinja.git", exact: "2.3.6"),
+        // 1.4.0: BPE honours `ignore_merges` and splits by code point, which
+        // LFM3's tokenizer needs (mlx-swift-lm refuses one that does not), and
+        // it builds against swift-jinja 2.4.
+        .package(url: "https://github.com/huggingface/swift-transformers", from: "1.4.0"),
+        // Root-level pin: the lowest swift-jinja 1.4.0 takes. Left to float it
+        // resolves to 3.x, a major version of the engine every MLX chat
+        // template is rendered with.
+        .package(url: "https://github.com/huggingface/swift-jinja.git", exact: "2.4.2"),
     ],
     targets: [
         .executableTarget(

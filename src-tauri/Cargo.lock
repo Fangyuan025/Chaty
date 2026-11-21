@@ -3425,7 +3425,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 [[package]]
 name = "llama-cpp-2"
 version = "0.1.161"
-source = "git+https://github.com/Fangyuan025/llama-cpp-rs?rev=6d2b8e3882356020a018b822fb9aac9f94bea0d4#6d2b8e3882356020a018b822fb9aac9f94bea0d4"
+source = "git+https://github.com/Fangyuan025/llama-cpp-rs?rev=12e3f7879766e475f65fc193666994726bef57c1#12e3f7879766e475f65fc193666994726bef57c1"
 dependencies = [
  "enumflags2",
  "llama-cpp-sys-2",
@@ -3437,7 +3437,7 @@ dependencies = [
 [[package]]
 name = "llama-cpp-sys-2"
 version = "0.1.161"
-source = "git+https://github.com/Fangyuan025/llama-cpp-rs?rev=6d2b8e3882356020a018b822fb9aac9f94bea0d4#6d2b8e3882356020a018b822fb9aac9f94bea0d4"
+source = "git+https://github.com/Fangyuan025/llama-cpp-rs?rev=12e3f7879766e475f65fc193666994726bef57c1#12e3f7879766e475f65fc193666994726bef57c1"
 dependencies = [
  "bindgen 0.72.1",
  "cc",

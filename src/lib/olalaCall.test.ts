@@ -117,3 +117,16 @@ describe("Names looked up for a model", () => {
     expect(codeNames("then I get the tool_result back and call startGame")).toEqual(["startGame"]);
   });
 });
+
+describe("Unlimited-OCR pages on screen", () => {
+  it("show the text of each block, a title as a heading, without boxes", async () => {
+    const { ocrPages } = await import("./voiceText");
+    const page = "<PAGE><BLOCK>title[40, 64, 507, 165]<FORK>Invoice No. 2026-1121\n<BLOCK>text[40, 348, 281, 436]<FORK>Total: $142.50\n<BLOCK>text[41, 519, 709, 609]<FORK>收货地址：北京市\n";
+    expect(ocrPages(page)).toBe("## Invoice No. 2026-1121\n\nTotal: $142.50\n\n收货地址：北京市\n");
+    // A second page after a rule; a block still being opened held back.
+    expect(ocrPages("<PAGE><BLOCK>text[1, 2, 3, 4]<FORK>a\n<PAGE><BLOCK>text[5, 6")).toBe("a\n\n\n---\n\n");
+    expect(normalizeChannels("<PAGE><BLOCK>text[1, 2, 3, 4]<FORK>hello")).toBe("hello");
+    // Text that merely mentions a block is left alone.
+    expect(ocrPages("Use <PAGE> tags")).toBe("Use <PAGE> tags");
+  });
+});

@@ -262,6 +262,9 @@ struct ModelMeta {
     var hasChatTemplate = false
     /// Chat template honours an `enable_thinking` kwarg (Qwen3 family).
     var thinkArg = false
+    /// Template offers `preserve_thinking` (LFM3's): asked, it keeps earlier
+    /// turns' reasoning rather than dropping it.
+    var keepsThinkingOnRequest = false
     /// A layout learned from the template and proven against its own token ids,
     /// used in place of it when the template cannot reproduce its own live
     /// prompt from a stored turn. Nil means the template is already append-safe.
@@ -1125,7 +1128,10 @@ func inspectModelDir(_ dir: URL) -> ModelMeta {
         meta.quantBits = q["bits"] as? Int
         meta.quantGroup = q["group_size"] as? Int ?? 64
     }
-    meta.multimodal = cfg["vision_config"] != nil
+    // A vision tower is a configuration of one: LFM3's text model carries an
+    // empty `vision_config`, and was taken for a model with pictures whose
+    // processor was missing, loaded with a warning saying so.
+    meta.multimodal = (cfg["vision_config"] as? [String: Any]).map { !$0.isEmpty } ?? false
     meta.imageTokenId = (cfg["image_token_id"] ?? cfg["image_token_index"]) as? Int
     meta.videoTokenId = (cfg["video_token_id"] ?? cfg["video_token_index"]) as? Int
 
@@ -1153,6 +1159,7 @@ func inspectModelDir(_ dir: URL) -> ModelMeta {
     }
     meta.hasChatTemplate = !template.isEmpty
     meta.thinkArg = template.contains("enable_thinking")
+    meta.keepsThinkingOnRequest = template.contains("preserve_thinking")
     meta.inkling = template.contains("<|message_model|>") && template.contains("<|content_invoke_tool_json|>")
     // Inkling's config does not name its image token; the model's default.
     if meta.inkling, meta.multimodal, meta.imageTokenId == nil { meta.imageTokenId = 200_054 }
@@ -1561,6 +1568,7 @@ final class Engine: @unchecked Sendable {
             Inkling2Registration.loadingDirectory = dir
             await Inkling2Registration.register()
             await MuseGlimmerVisionRegistration.register()
+            await SparkRegistration.register()
             let loadText: @Sendable () async throws -> ModelContainer = {
                 try await LLMModelFactory.shared.loadContainer(
                     from: dir, using: #huggingFaceTokenizerLoader())
@@ -2012,6 +2020,14 @@ final class Engine: @unchecked Sendable {
         var extra: [String: any Sendable] = [:]
         if let think = p.think, meta.thinkArg {
             extra["enable_thinking"] = think
+        }
+        // A template that drops earlier turns' reasoning unless asked not to
+        // (LFM3's) is asked not to — as the GGUF side asks it. Re-rendered
+        // without it, the turn the model just wrote no longer matched the
+        // cache, and a hybrid model's state cannot rewind: each turn with
+        // thinking on read the whole conversation again.
+        if meta.keepsThinkingOnRequest {
+            extra["preserve_thinking"] = true
         }
         // Native effort rung — only when the template declares the ladder and
         // thinking isn't off (the template rejects unknown values outright).

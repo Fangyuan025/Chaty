@@ -19,6 +19,8 @@ const MARKER_WORDS = [
   "content_model_end_sampling", "content_tool_error", "content_image", "content_xml",
   // Olala's channels.
   "channel_start", "channel_end", "content", "im_start", "im_end",
+  // Unlimited-OCR's page layout.
+  "PAGE", "BLOCK", "FORK",
 ];
 const CHANNEL_NAMES = ["analysis", "thought", "thinking", "final"];
 function trimPartialMarker(s: string): string {
@@ -105,6 +107,21 @@ export function withoutToolCallSpans(s: string): string {
     .replace(/<ifm[|｜]tool_call>[\s\S]*?(?:<\/ifm[|｜]tool_call>|$)/gi, "");
 }
 
+/** Unlimited-OCR reads a page as blocks — `<PAGE>`, then `<BLOCK>kind[x0, y0,
+ *  x1, y1]<FORK>` before each one's text. The boxes and the markers are the
+ *  layout; what a person reads is the text, a title as a heading and a new
+ *  page after a rule. A block still being opened is held back. */
+export function ocrPages(s: string): string {
+  if (!s.includes("<BLOCK>") && !s.startsWith("<PAGE>")) return s;
+  let page = 0;
+  return s
+    .replace(/<BLOCK>[^<]*$/, "")
+    .replace(/<PAGE>/g, () => (page++ === 0 ? "" : "\n\n---\n\n"))
+    .replace(/<BLOCK>(\w*)\[[\d,\s.]*\]<FORK>/g, (_m, kind: string) => (/title/i.test(kind) ? "\n## " : "\n"))
+    .replace(/<BLOCK>|<FORK>/g, "")
+    .replace(/^\n+/, "");
+}
+
 export function normalizeChannels(s: string): string {
   // LFM2 writes its tool calls as `<|tool_call_start|>[fn(arg='v')]<|tool_call_end|>`
   // whatever format the system prompt asks for. The engine now streams those
@@ -112,7 +129,7 @@ export function normalizeChannels(s: string): string {
   // the next prompt cannot reproduce the tokens and the KV prefix breaks — so
   // this is where they stop being shown to a person. The call itself is read
   // out of the raw text by parseNativeToolCall; what is left here is display.
-  const held = trimPartialMarker(s).replace(
+  const held = ocrPages(trimPartialMarker(s)).replace(
     /<[|｜]tool_(?:call|list)_(?:start|end)[|｜]>/gi,
     "",
   );

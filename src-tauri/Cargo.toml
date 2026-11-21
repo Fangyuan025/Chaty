@@ -69,20 +69,22 @@ anyhow = "1"
 # commits for the llama.cpp versions since (a field b11960 added, the fit
 # wrapper's list of paths, the calls upstream renamed), with its llama.cpp
 # submodule at Fangyuan025/llama.cpp chaty/newarch: upstream
-# 690b87d88151dbd775bb6eff5581663688785928 (runtimes.rs names it) with three
-# commits on top — Metal kernels for NVFP4 (after #20456), without which
-# Inkling 2's experts run on the CPU on a Mac; SenseNova Loop (#32588, not yet
-# merged); and Olala, which only its authors' fork (OVHai-LLM/llama.cpp) runs.
+# 690b87d88151dbd775bb6eff5581663688785928 (runtimes.rs names it) with commits
+# on top — Metal kernels for NVFP4 (after #20456), without which Inkling 2's
+# experts run on the CPU on a Mac; the architectures upstream has not merged
+# yet: SenseNova Loop (#32588), Raon-1 (#32200), Dory (#30306), Maxwell-V1
+# (#32643); and those only their authors' patches run: Olala
+# (OVHai-LLM/llama.cpp) and Unlimited-OCR-2 (RX5950XT's patch).
 # A runtime pack carries those commits onto upstream's newest until upstream
 # has them, and leaves out one that no longer applies: each is marked optional,
 # and a model only the bundled engine runs falls back to it
 # (scripts/build-llama-sidecar.sh).
-llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "6d2b8e3882356020a018b822fb9aac9f94bea0d4", features = ["sampler", "mtmd"] }
+llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "12e3f7879766e475f65fc193666994726bef57c1", features = ["sampler", "mtmd"] }
 # The same crate llama-cpp-2 is built on (same revision, so nothing extra is
 # compiled): reached directly for `llama_log_set`, so llama.cpp's own reason
 # for refusing a model can be kept instead of discarded with the rest of its
 # log.
-llama-cpp-sys-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "6d2b8e3882356020a018b822fb9aac9f94bea0d4" }
+llama-cpp-sys-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "12e3f7879766e475f65fc193666994726bef57c1" }
 # A real Jinja engine for GGUF chat templates. llama.cpp's own
 # `llama_chat_apply_template` does not run Jinja: it recognises a template by
 # substrings and prints its built-in version of that family, so anything the

@@ -23,8 +23,8 @@ path = "src/lib.rs"
 
 # Windows / Linux: cross-vendor Vulkan backend (needs the Vulkan SDK to build).
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "6d2b8e3882356020a018b822fb9aac9f94bea0d4", features = ["vulkan"] }
+llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "12e3f7879766e475f65fc193666994726bef57c1", features = ["vulkan"] }
 
 # macOS: Metal backend (self-contained — no SDK; embeds default.metallib).
 [target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "6d2b8e3882356020a018b822fb9aac9f94bea0d4", features = ["metal"] }
+llama-cpp-2 = { git = "https://github.com/Fangyuan025/llama-cpp-rs", rev = "12e3f7879766e475f65fc193666994726bef57c1", features = ["metal"] }

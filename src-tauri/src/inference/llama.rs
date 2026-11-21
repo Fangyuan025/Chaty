@@ -456,6 +456,32 @@ fn inject_media_markers(messages: &[ChatMessage]) -> Vec<ChatMessage> {
         .collect()
 }
 
+/// A model that only reads pages (Unlimited-OCR-2): its template turns each
+/// picture into a page and asks for its one task, "Multi page parsing.", only
+/// when the message ends on a picture. Words written with the picture — "read
+/// the text in this" — reached it as a prompt it was never trained on, and it
+/// made up a sentence and then repeated blocks until the reply ran out. Its
+/// messages with pictures go to it as the pages alone, one after another as
+/// its reference lays them out.
+fn as_pages(model: &LlamaModel, messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let reads_pages = model
+        .meta_val_str("tokenizer.chat_template")
+        .map(|t| t.contains("Multi page parsing."))
+        .unwrap_or(false);
+    if !reads_pages {
+        return messages;
+    }
+    messages
+        .into_iter()
+        .map(|mut m| {
+            if !m.images.is_empty() && matches!(m.role, Role::User) {
+                m.content = mtmd_default_marker().repeat(m.images.len());
+            }
+            m
+        })
+        .collect()
+}
+
 /// What a context must leave of the GPU's working set, for what a prompt
 /// allocates as it runs.
 const GPU_SLACK: usize = 512 << 20;
@@ -1771,7 +1797,7 @@ fn run_turn(
     }
 
     let (prompt, prompt_body) = if media_turn {
-        let (prompt, body) = build_prompt_pair(model, &inject_media_markers(&req.messages), req.params.think, req.params.effort.as_deref())?;
+        let (prompt, body) = build_prompt_pair(model, &as_pages(model, inject_media_markers(&req.messages)), req.params.think, req.params.effort.as_deref())?;
         if is_inkling(model) {
             let marker = mtmd_default_marker();
             (inkling_split_media(&prompt, marker), inkling_split_media(&body, marker))
