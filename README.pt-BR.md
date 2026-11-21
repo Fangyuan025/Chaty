@@ -164,7 +164,7 @@ Qualquer GGUF roda no llama.cpp (Metal, ou Vulkan em NVIDIA, AMD e Intel); no Ap
 | Llama 3 · Muse-Glimmer | Visão, e os quatro níveis de esforço do Muse-Glimmer |
 | LFM3 · LFM3-VL | Raciocínio ligado ou desligado; visão no LFM3-VL |
 | MiniCPM5 · LFM 2.5 | O formato de chamada de cada família |
-| Inkling 2 · 2 Mini | Seus níveis de esforço, seus próprios blocos de chamada e visão, no llama.cpp |
+| Inkling 2 · 2 Mini | Seus níveis de esforço, seus próprios blocos de chamada e visão, nos dois motores |
 | [Chaty · Qwen3.5-4B design](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF) | Nosso próprio ajuste fino para páginas web de um arquivo — um clique na primeira execução |
 
 Um ajuste fino da comunidade cujo template de chat difere do palpite embutido do llama.cpp roda com o próprio template, como o transformers o rodaria. Modelos de texto para imagem e para música carregam do mesmo lugar; as famílias estão em [Imagem](#imagem) e [Música](#música).

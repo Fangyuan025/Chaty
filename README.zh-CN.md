@@ -164,7 +164,7 @@
 | Llama 3 · Muse-Glimmer | 视觉，以及 Muse-Glimmer 的四档思考 |
 | LFM3 · LFM3-VL | 思考可开可关；LFM3-VL 能看图 |
 | MiniCPM5 · LFM 2.5 | 各自家族的工具调用格式 |
-| Inkling 2 · 2 Mini | 思考档位、它自己的工具调用块与看图(llama.cpp) |
+| Inkling 2 · 2 Mini | 思考档位、它自己的工具调用块与看图，两个引擎都支持 |
 | [Chaty · Qwen3.5-4B 设计版](https://huggingface.co/stevenpr/chaty-qwen3.5-4b-design-GGUF) | 我们自己微调的单文件网页设计模型——首次启动一键安装 |
 
 社区微调模型的聊天模板和 llama.cpp 内置的猜测不一致时，Chaty 直接执行模型自己的模板，行为与 transformers 一致。文生图和文生音乐模型也从同一个地方加载，支持的家族见[文生图](#文生图)和[文生音乐](#文生音乐)。

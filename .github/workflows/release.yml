@@ -388,10 +388,11 @@ jobs:
 
             ## Inkling 2
 
-            Inkling 2 and Inkling 2 Mini run on llama.cpp with their reasoning, effort ladder, tool calls
-            and pictures. Unsloth's own looped Inkling 2 Mini files are converted once, on their first
-            load, into the layout llama.cpp reads; a looped model runs every pass on the GPU, and NVFP4
-            weights run on a Mac's GPU.
+            Inkling 2 and Inkling 2 Mini run on llama.cpp and MLX with their reasoning, effort ladder,
+            tool calls and pictures, and each turn reuses the whole of the last, with thinking on or off.
+            Unsloth's own looped Inkling 2 Mini files are converted once, on their first load, into the
+            layout llama.cpp reads; a looped model runs every pass on the GPU, and NVFP4 weights run on
+            a Mac's GPU.
 
             ## Code mode
 

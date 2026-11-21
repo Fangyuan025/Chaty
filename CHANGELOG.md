@@ -360,11 +360,28 @@
   without their NVFP4 scales, and Unsloth's quantizations answer at a
   perplexity of 130 instead of 7.65. Its thought shows in the reasoning panel
   and its answer as the reply, where generation stopped at the end of the
-  thought; its effort ladder — low · medium · high · xhigh — is offered, and
-  thinking off is its own lowest rung. In Code mode it calls tools in its own
-  blocks, read back to it as its template writes them, so the next turn
-  reuses the whole of the last. Pictures with its mmproj, each in a block of
-  its own as its template lays them out.
+  thought; its effort ladder — low · medium · high · xhigh — is offered. In
+  Code mode it calls tools in its own blocks. Pictures with its mmproj, each
+  in a block of its own as its template lays them out.
+- **On MLX too, pictures included.** mlx-swift-lm does not carry Inkling, and
+  mlx-lm has it only in a pull request not yet merged; Chaty's MLX engine
+  ports it — the loop, experts in NVFP4 and MXFP8 as MLX checkpoints mix
+  them, and the vision tower, whose output matches the reference's to within
+  bf16 rounding. A picture is read as the reference reads it, its own colours
+  rather than converted from its profile: a Display P3 screenshot converted
+  to sRGB had most of its pixels moved by up to 20 levels.
+- **Each turn and each Code-mode step reuses the whole of the last, on both
+  engines.** Inkling's state runs through the whole conversation, so a prompt
+  that differed from what it had read by one token was read again from the
+  start. Its turns now go back to it exactly as it wrote them, where they
+  were rebuilt from their parts and came out differently; 94–100% of every
+  step's prompt is reused, thinking on or off.
+- **Thinking off answers straight away, and turning it off or on keeps the
+  conversation.** Inkling has no off switch, only an effort level written at
+  the top of the conversation: lowering it to turn thinking off changed the
+  conversation's first words, and the whole of it was read again whenever a
+  step switched. The level now stays and the reply starts past an empty
+  thought — "Red", "391", a line of verse — on both engines alike.
 - **A GGUF in Unsloth's own looped layout is converted once, on its first
   load**, into the one llama.cpp reads, said on the model chip while it runs:
   about 20 seconds for 16 GB, and what it writes is the file Unsloth publish
