@@ -462,12 +462,14 @@ fn inject_media_markers(messages: &[ChatMessage]) -> Vec<ChatMessage> {
 /// the text in this" — reached it as a prompt it was never trained on, and it
 /// made up a sentence and then repeated blocks until the reply ran out. Its
 /// messages with pictures go to it as the pages alone, one after another as
-/// its reference lays them out.
+/// its reference lays them out. The architecture says so too: the GGUFs of the
+/// patch's own author carry a template that only joins the messages.
 fn as_pages(model: &LlamaModel, messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    let reads_pages = model
-        .meta_val_str("tokenizer.chat_template")
-        .map(|t| t.contains("Multi page parsing."))
-        .unwrap_or(false);
+    let reads_pages = model.meta_val_str("general.architecture").is_ok_and(|a| a == "unlimited-ocr2")
+        || model
+            .meta_val_str("tokenizer.chat_template")
+            .map(|t| t.contains("Multi page parsing."))
+            .unwrap_or(false);
     if !reads_pages {
         return messages;
     }
@@ -851,10 +853,17 @@ impl LlamaEngine {
                         // it and has to survive being shown in a notice (the
                         // full path is in the error log's entry for this load).
                         let file = Path::new(path).file_name().and_then(|s| s.to_str()).unwrap_or(path);
-                        bail!(trf!(
+                        let message = trf!(
                             "无法加载 GGUF 模型 {file}:{why}",
                             "cannot load the GGUF model {file}: {why}"
-                        ));
+                        );
+                        // An architecture this llama.cpp does not know is said
+                        // so in a type of its own: a runtime pack that leaves
+                        // a carried one out is not broken for it.
+                        if let Some(arch) = super::llama_log::unknown_architecture(&said) {
+                            return Err(crate::runtimes::UnknownArchitecture { arch, message }.into());
+                        }
+                        bail!(message);
                     }
                     return Err(e).with_context(|| trf!("无法加载 GGUF 模型:{path}", "failed to load the GGUF model: {path}"));
                 }
@@ -1797,7 +1806,14 @@ fn run_turn(
     }
 
     let (prompt, prompt_body) = if media_turn {
-        let (prompt, body) = build_prompt_pair(model, &as_pages(model, inject_media_markers(&req.messages)), req.params.think, req.params.effort.as_deref())?;
+        let (mut prompt, body) = build_prompt_pair(model, &as_pages(model, inject_media_markers(&req.messages)), req.params.think, req.params.effort.as_deref())?;
+        // A template that only joins the messages (Unlimited-OCR-2's in its
+        // author's GGUFs) ends a picture-only turn on the picture: with no text
+        // after it the last chunk leaves no logits, and sampling aborted the
+        // engine. The newline the markers are written with elsewhere follows it.
+        if prompt.ends_with(mtmd_default_marker()) {
+            prompt.push('\n');
+        }
         if is_inkling(model) {
             let marker = mtmd_default_marker();
             (inkling_split_media(&prompt, marker), inkling_split_media(&body, marker))

@@ -96,7 +96,7 @@ impl Engine {
 
     pub fn bundled(self) -> Bundled {
         match self {
-            Engine::Llama => Bundled { upstream: "ggml-org/llama.cpp", rev: "690b87d88151dbd775bb6eff5581663688785928", date: "2026-11-21T11:10:38Z" },
+            Engine::Llama => Bundled { upstream: "ggml-org/llama.cpp", rev: "a07831a0081f00077b3cf676514c45e34167126c", date: "2026-11-26T23:47:37Z" },
             Engine::Sd => Bundled { upstream: "leejet/stable-diffusion.cpp", rev: "532d2c15c430a785a712b2d94281f04e733008a4", date: "2026-11-15T10:33:53Z" },
             Engine::Audio => Bundled { upstream: "0xShug0/audio.cpp", rev: "955c8725c611d511774e6be132aff6609163b2d2", date: "2026-09-25T22:44:03Z" },
             Engine::Mlx => Bundled { upstream: "ml-explore/mlx-swift-lm", rev: "6759555f2bd8f18c242102d73d149efde9f2f2e0", date: "2026-11-20T03:26:22Z" },
@@ -286,13 +286,40 @@ fn override_var(e: Engine) -> &'static str {
     }
 }
 
+/// An engine that started, read the model and does not know its architecture.
+/// From a pack that is no fault of the pack: one built on a newer upstream
+/// leaves out a carried architecture that no longer applies to it, and the
+/// bundled engine, which carries it, runs that model.
+#[derive(Debug)]
+pub struct UnknownArchitecture {
+    pub arch: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for UnknownArchitecture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for UnknownArchitecture {}
+
+/// Whether a pack's failed start, which the bundled engine then managed, puts
+/// the pack at fault. A model whose architecture the pack does not know is
+/// the bundled engine's to run, this time; the pack stays for the rest.
+fn pack_at_fault(with_pack: &anyhow::Error) -> bool {
+    !with_pack.chain().any(|c| c.is::<UnknownArchitecture>())
+}
+
 /// Start engine `e` with its pack when one is in use, else with `bundled`.
 /// When the pack's start fails and the bundled engine's then succeeds, the
-/// pack was at fault: it is set aside for good. When both fail, the model
-/// was — the pack stays, and its error is the one returned: it is the newer
-/// engine's word on the model. The older one's said "this llama.cpp does not
-/// know the architecture" of a model the pack knew and could not yet load
-/// (an Inkling 2 Mini in a layout llama.cpp had not settled on).
+/// pack was at fault: it is set aside for good — unless it only did not know
+/// the model's architecture (`UnknownArchitecture`), which the bundled engine
+/// carries. When both fail, the model was — the pack stays, and its error is
+/// the one returned: it is the newer engine's word on the model. The older
+/// one's said "this llama.cpp does not know the architecture" of a model the
+/// pack knew and could not yet load (an Inkling 2 Mini in a layout llama.cpp
+/// had not settled on).
 pub fn start_with<T>(
     e: Engine,
     bundled: Option<PathBuf>,
@@ -312,7 +339,11 @@ pub fn start_with<T>(
             let Some(bundled) = bundled else { return Err(with_pack) };
             match start(&bundled) {
                 Ok(t) => {
-                    set_aside(e, &format!("{with_pack:#}"));
+                    if pack_at_fault(&with_pack) {
+                        set_aside(e, &format!("{with_pack:#}"));
+                    } else {
+                        eprintln!("[runtimes] the {} pack does not know this model; the bundled engine runs it: {with_pack:#}", e.id());
+                    }
                     Ok(t)
                 }
                 Err(_) => Err(with_pack),
@@ -859,6 +890,16 @@ mod tests {
         assert!(read("audio-sidecar/CMakeLists.txt").contains(Engine::Audio.bundled().rev));
         assert!(read("mlx-sidecar/Package.swift").contains(Engine::Mlx.bundled().rev));
         assert!(read("Cargo.toml").contains(Engine::Llama.bundled().rev));
+    }
+
+    /// A pack that does not know a model's architecture is not set aside for it;
+    /// any other failure the bundled engine gets past still is.
+    #[test]
+    fn a_pack_that_does_not_know_an_architecture_is_not_at_fault() {
+        let unknown = anyhow::Error::new(UnknownArchitecture { arch: "olala".into(), message: "cannot load".into() });
+        assert!(!pack_at_fault(&unknown));
+        assert!(!pack_at_fault(&unknown.context("loading the model")));
+        assert!(pack_at_fault(&anyhow::anyhow!("the engine exited")));
     }
 
     /// A pack's archive cannot write outside its folder.

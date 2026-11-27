@@ -424,7 +424,10 @@
 - **Engine updates carry what upstream has not merged yet** onto upstream's
   newest — the Inkling fix and the Metal kernels above — until upstream has
   it. A fix that no longer applies holds that update back rather than ship
-  llama.cpp without it; a speed-up that no longer applies is left out.
+  llama.cpp without it; a speed-up that no longer applies is left out, and so
+  is an architecture, whose models then open with the engine Chaty came with
+  while every other model stays on the update. A model the update did not know
+  used to set the update aside for all of them.
 
 ### New architectures
 
@@ -462,7 +465,9 @@
   of its layout. It does one thing, and words written beside the picture —
   "read the text in this" — reached it as a prompt it was never trained on: it
   made up a sentence and repeated blocks until the reply ran out. A message
-  with a picture now goes to it as the page alone.
+  with a picture now goes to it as the page alone — the GGUFs of the patch's
+  own author included, whose template only joins the messages, and on which a
+  picture sent alone stopped the engine.
 - **On MLX: LFM3, Spark-X2.6, flint and Dory.** The MLX engine moves to a newer
   mlx-swift-lm, which carries LFM3, and to the tokenizer release that honours
   the `ignore_merges` rule LFM3's needs — it was refused as incompatible.

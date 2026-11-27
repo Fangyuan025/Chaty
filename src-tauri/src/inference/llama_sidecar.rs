@@ -10,7 +10,7 @@
 //! the UI language (`lang`), so what the engine says follows it.
 //!
 //!   → {"cmd":"load","path","gpuLayers","nCtx","nCtxKnown"?,"speculative"}
-//!       ← {"event":"progress","frac"}…  {"event":"loaded","info":ModelInfo} | {"event":"error","message"}
+//!       ← {"event":"progress","frac"}…  {"event":"loaded","info":ModelInfo} | {"event":"error","message","unknownArch"?}
 //!   → {"cmd":"generate","id","req":GenRequest}   ← {"event":"ev","id","data":StreamEvent}… {"event":"end","id","error"?}
 //!   → {"cmd":"collect","id","req":GenRequest}    ← {"event":"end","id","text"|"error"}
 //!   → {"cmd":"cancel","id"}
@@ -326,7 +326,11 @@ impl LlamaSidecar {
                 }
                 Some("error") => {
                     proc.kill();
-                    bail!("{}", ev["message"].as_str().unwrap_or("load failed"));
+                    let message = ev["message"].as_str().unwrap_or("load failed").to_string();
+                    if let Some(arch) = ev["unknownArch"].as_str() {
+                        return Err(crate::runtimes::UnknownArchitecture { arch: arch.to_string(), message }.into());
+                    }
+                    bail!("{message}");
                 }
                 Some("exited") => {
                     proc.kill();
@@ -583,7 +587,13 @@ pub fn serve() -> ! {
                             *engine.lock().unwrap() = Some(Arc::new(e));
                             out.emit(&json!({ "event": "loaded", "info": info }));
                         }
-                        Err(e) => out.emit(&json!({ "event": "error", "message": format!("{e:#}") })),
+                        Err(e) => {
+                            let arch = e
+                                .chain()
+                                .find_map(|c| c.downcast_ref::<crate::runtimes::UnknownArchitecture>())
+                                .map(|u| u.arch.clone());
+                            out.emit(&json!({ "event": "error", "message": format!("{e:#}"), "unknownArch": arch }));
+                        }
                     }
                 });
             }

@@ -93,13 +93,21 @@ pub fn since(mark: u64) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The architecture llama.cpp said it does not know, when that is why it
+/// refused the model.
+pub fn unknown_architecture(said: &[String]) -> Option<String> {
+    said.iter().find_map(|line| {
+        let rest = line.split("unknown model architecture: '").nth(1)?;
+        Some(rest.split('\'').next().unwrap_or(rest).to_string())
+    })
+}
+
 /// Turn what llama.cpp said while refusing a model into something a person can
 /// act on. The two refusals that have a clear remedy are named; anything else
 /// is passed on in llama.cpp's own words rather than guessed at.
 pub fn explain_refusal(said: &[String]) -> Option<String> {
     for line in said {
-        if let Some(rest) = line.split("unknown model architecture: '").nth(1) {
-            let arch = rest.split('\'').next().unwrap_or(rest);
+        if let Some(arch) = unknown_architecture(std::slice::from_ref(line)) {
             return Some(trf!(
                 "这个 llama.cpp 版本还不认识模型架构 \"{arch}\"。llama.cpp 支持它之后,Chaty 的引擎更新(设置 → 运行时)会把支持带来;在 Mac 上,这个模型的 MLX 版本可以先用。",
                 "this llama.cpp build does not know the model architecture \"{arch}\" yet. Once llama.cpp supports it, Chaty's engine updates bring that in (Settings → Runtimes); on a Mac, an MLX build of the same model may work in the meantime."
@@ -135,7 +143,10 @@ mod tests {
 
     #[test]
     fn a_refusal_is_explained_from_what_llama_cpp_said() {
-        let arch = explain_refusal(&["llama_model_load: error loading model: error loading model architecture: unknown model architecture: 'glimmer9'".into()]).unwrap();
+        let said: Vec<String> = vec!["llama_model_load: error loading model: error loading model architecture: unknown model architecture: 'glimmer9'".into()];
+        assert_eq!(unknown_architecture(&said).as_deref(), Some("glimmer9"));
+        assert_eq!(unknown_architecture(&["llama_model_load: error: something new went wrong".into()]), None);
+        let arch = explain_refusal(&said).unwrap();
         assert!(arch.contains("glimmer9"), "{arch}");
 
         // Issue #20: an unsupported quant type, NOT an unknown architecture.
